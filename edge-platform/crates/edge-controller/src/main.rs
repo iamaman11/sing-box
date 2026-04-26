@@ -27,8 +27,9 @@ use edge_shared_types::{
 use edge_singbox::default_trace_proxy_url;
 use edge_state::{EdgeState, StoredOperation, StoredOperationEvent};
 use edge_trace::trace_via_proxy;
+use edge_trust::{agent_endpoint_scheme, optional_agent_client_tls_from_env};
 use prost::Message;
-use tonic::transport::{Channel, Server};
+use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Status};
 
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
@@ -261,7 +262,8 @@ async fn bootstrap_runtime(
     endpoint: String,
     mode: BootstrapMode,
 ) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
-    let mut client = AgentServiceClient::<Channel>::connect(endpoint).await?;
+    let channel = connect_to_agent(endpoint).await?;
+    let mut client = AgentServiceClient::<Channel>::new(channel);
     let response = client
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
         .await?;
@@ -987,7 +989,7 @@ fn agent_endpoint_from_env() -> String {
 }
 
 async fn observe_agent(endpoint: &str) -> (AgentState, RuntimeObservation) {
-    let Ok(mut client) = AgentServiceClient::<Channel>::connect(endpoint.to_owned()).await else {
+    let Ok(channel) = connect_to_agent(endpoint.to_owned()).await else {
         let reason = format!("edge-agent is unreachable at {endpoint}");
         let agent_state = AgentState {
             healthy: false,
@@ -1005,6 +1007,7 @@ async fn observe_agent(endpoint: &str) -> (AgentState, RuntimeObservation) {
         };
         return (agent_state, RuntimeObservation::agent_unreachable(reason));
     };
+    let mut client = AgentServiceClient::<Channel>::new(channel);
 
     let health = client.get_health(Request::new(Empty {})).await;
     let readiness = client.get_readiness(Request::new(Empty {})).await;
@@ -1047,6 +1050,17 @@ async fn observe_agent(endpoint: &str) -> (AgentState, RuntimeObservation) {
 
     let runtime = RuntimeObservation::from_agent_state(&agent_state);
     (agent_state, runtime)
+}
+
+async fn connect_to_agent(endpoint: String) -> Result<Channel, Box<dyn std::error::Error>> {
+    let tls = optional_agent_client_tls_from_env()
+        .map_err(|err| format!("failed to load controller TLS configuration: {err}"))?;
+    let endpoint = agent_endpoint_scheme(&endpoint, tls.is_some());
+    let mut transport = Endpoint::from_shared(endpoint)?;
+    if let Some(tls) = tls {
+        transport = transport.tls_config(tls)?;
+    }
+    Ok(transport.connect().await?)
 }
 
 fn platform_error_to_status(err: PlatformError) -> Status {

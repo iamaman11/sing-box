@@ -10,6 +10,7 @@ use edge_shared_types::{
     AgentState, AgentVersion, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
     Empty,
 };
+use edge_trust::optional_agent_server_tls_from_env;
 use serde::Deserialize;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -42,7 +43,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve(addr: SocketAddr, stack_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    Server::builder()
+    let mut builder = Server::builder();
+    if let Some(tls) = optional_agent_server_tls_from_env()
+        .map_err(|err| format!("failed to load edge-agent TLS configuration: {err}"))?
+    {
+        builder = builder
+            .tls_config(tls)
+            .map_err(|err| format!("failed to apply edge-agent TLS configuration: {err}"))?;
+    }
+
+    builder
         .add_service(AgentServiceServer::new(AgentServerImpl { stack_dir }))
         .serve(addr)
         .await?;
@@ -52,6 +62,7 @@ async fn serve(addr: SocketAddr, stack_dir: PathBuf) -> Result<(), Box<dyn std::
 fn agent_addr_from_args(index: usize) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let addr = env::args()
         .nth(index)
+        .or_else(|| env::var("EDGE_AGENT_ADDR").ok())
         .unwrap_or_else(|| DEFAULT_AGENT_ADDR.to_owned());
     Ok(addr.parse()?)
 }

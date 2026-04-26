@@ -20,10 +20,12 @@ write_files:
 
       [Service]
       Type=simple
-      ExecStart=/opt/vultr-edge-stack/bin/edge-agent serve 127.0.0.1:50061 /opt/vultr-edge-stack/stack
+      ExecStart=/opt/vultr-edge-stack/bin/edge-agent serve
       Restart=always
       RestartSec=2
+      Environment=EDGE_AGENT_ADDR=127.0.0.1:50061
       Environment=EDGE_STACK_DIR=/opt/vultr-edge-stack/stack
+      EnvironmentFile=-/opt/vultr-edge-stack/edge-agent.env
       WorkingDirectory=/opt/vultr-edge-stack
 
       [Install]

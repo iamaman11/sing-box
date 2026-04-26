@@ -93,6 +93,17 @@ impl EdgeState {
             ",
         )?;
 
+        self.ensure_column("trust_store", "domain_name", "TEXT")?;
+        self.ensure_column("trust_store", "ca_cert_path", "TEXT")?;
+        self.ensure_column("trust_store", "server_cert_path", "TEXT")?;
+        self.ensure_column("trust_store", "client_cert_path", "TEXT")?;
+        self.conn.execute_batch(
+            "
+            CREATE UNIQUE INDEX IF NOT EXISTS trust_store_identity_idx
+            ON trust_store (deployment_id, instance_id, ip);
+            ",
+        )?;
+
         Ok(())
     }
 
@@ -208,6 +219,147 @@ impl EdgeState {
 
         rows.collect()
     }
+
+    pub fn upsert_trust_entry(
+        &self,
+        entry: NewTrustEntry<'_>,
+    ) -> rusqlite::Result<StoredTrustEntry> {
+        let updated_at = unix_now();
+        self.conn.execute(
+            "
+            INSERT INTO trust_store (
+                deployment_id,
+                instance_id,
+                ip,
+                known_host_line,
+                domain_name,
+                ca_cert_path,
+                server_cert_path,
+                client_cert_path,
+                updated_at_unix
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(deployment_id, instance_id, ip) DO UPDATE SET
+                known_host_line = excluded.known_host_line,
+                domain_name = excluded.domain_name,
+                ca_cert_path = excluded.ca_cert_path,
+                server_cert_path = excluded.server_cert_path,
+                client_cert_path = excluded.client_cert_path,
+                updated_at_unix = excluded.updated_at_unix
+            ",
+            params![
+                entry.deployment_id,
+                entry.instance_id,
+                entry.ip,
+                entry.known_host_line,
+                entry.domain_name,
+                entry.ca_cert_path,
+                entry.server_cert_path,
+                entry.client_cert_path,
+                updated_at,
+            ],
+        )?;
+
+        self.get_trust_entry(entry.deployment_id, entry.instance_id, entry.ip)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn get_trust_entry(
+        &self,
+        deployment_id: &str,
+        instance_id: &str,
+        ip: &str,
+    ) -> rusqlite::Result<Option<StoredTrustEntry>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT
+                id,
+                deployment_id,
+                instance_id,
+                ip,
+                known_host_line,
+                domain_name,
+                ca_cert_path,
+                server_cert_path,
+                client_cert_path,
+                updated_at_unix
+            FROM trust_store
+            WHERE deployment_id = ?1 AND instance_id = ?2 AND ip = ?3
+            ",
+        )?;
+        let mut rows = statement.query(params![deployment_id, instance_id, ip])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredTrustEntry {
+                id: row.get(0)?,
+                deployment_id: row.get(1)?,
+                instance_id: row.get(2)?,
+                ip: row.get(3)?,
+                known_host_line: row.get(4)?,
+                domain_name: row.get(5)?,
+                ca_cert_path: row.get(6)?,
+                server_cert_path: row.get(7)?,
+                client_cert_path: row.get(8)?,
+                updated_at_unix: row.get(9)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn list_trust_entries(&self) -> rusqlite::Result<Vec<StoredTrustEntry>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT
+                id,
+                deployment_id,
+                instance_id,
+                ip,
+                known_host_line,
+                domain_name,
+                ca_cert_path,
+                server_cert_path,
+                client_cert_path,
+                updated_at_unix
+            FROM trust_store
+            ORDER BY id ASC
+            ",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(StoredTrustEntry {
+                id: row.get(0)?,
+                deployment_id: row.get(1)?,
+                instance_id: row.get(2)?,
+                ip: row.get(3)?,
+                known_host_line: row.get(4)?,
+                domain_name: row.get(5)?,
+                ca_cert_path: row.get(6)?,
+                server_cert_path: row.get(7)?,
+                client_cert_path: row.get(8)?,
+                updated_at_unix: row.get(9)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    fn ensure_column(
+        &self,
+        table_name: &str,
+        column_name: &str,
+        definition: &str,
+    ) -> rusqlite::Result<()> {
+        let pragma = format!("PRAGMA table_info({table_name})");
+        let mut statement = self.conn.prepare(&pragma)?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        for column in columns {
+            if column? == column_name {
+                return Ok(());
+            }
+        }
+
+        let alter = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}");
+        self.conn.execute(&alter, [])?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +376,32 @@ pub struct StoredOperationEvent {
     pub operation_id: i64,
     pub message: String,
     pub created_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewTrustEntry<'a> {
+    pub deployment_id: &'a str,
+    pub instance_id: &'a str,
+    pub ip: &'a str,
+    pub known_host_line: &'a str,
+    pub domain_name: Option<&'a str>,
+    pub ca_cert_path: Option<&'a str>,
+    pub server_cert_path: Option<&'a str>,
+    pub client_cert_path: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredTrustEntry {
+    pub id: i64,
+    pub deployment_id: String,
+    pub instance_id: String,
+    pub ip: String,
+    pub known_host_line: String,
+    pub domain_name: Option<String>,
+    pub ca_cert_path: Option<String>,
+    pub server_cert_path: Option<String>,
+    pub client_cert_path: Option<String>,
+    pub updated_at_unix: i64,
 }
 
 fn unix_now() -> i64 {
@@ -263,6 +441,20 @@ mod tests {
         let stored = state.get_operation(operation.id).unwrap().unwrap();
         assert_eq!(stored.status, "SUCCEEDED");
         assert_eq!(state.list_operation_events(operation.id).unwrap().len(), 1);
+        let trust = state
+            .upsert_trust_entry(NewTrustEntry {
+                deployment_id: "deploy-1",
+                instance_id: "instance-1",
+                ip: "203.0.113.10",
+                known_host_line: "",
+                domain_name: Some("edge-agent"),
+                ca_cert_path: Some("/tmp/ca.pem"),
+                server_cert_path: Some("/tmp/agent-server.pem"),
+                client_cert_path: Some("/tmp/controller-client.pem"),
+            })
+            .unwrap();
+        assert_eq!(trust.domain_name.as_deref(), Some("edge-agent"));
+        assert_eq!(state.list_trust_entries().unwrap().len(), 1);
         let _ = std::fs::remove_file(db_path);
     }
 }

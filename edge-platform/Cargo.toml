@@ -11,6 +11,7 @@ members = [
     "crates/edge-state",
     "crates/edge-shared-types",
     "crates/edge-trace",
+    "crates/edge-trust",
 ]
 
 [workspace.package]

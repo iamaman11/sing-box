@@ -246,6 +246,19 @@ message TraceObservation {
   optional string note = 5;
 }
 
+message TrustEntry {
+  int64 id = 1;
+  string deployment_id = 2;
+  string instance_id = 3;
+  string ip = 4;
+  string known_host_line = 5;
+  optional string domain_name = 6;
+  optional string ca_cert_path = 7;
+  optional string server_cert_path = 8;
+  optional string client_cert_path = 9;
+  int64 updated_at_unix = 10;
+}
+
 message Operation {
   int64 id = 1;
   string kind = 2;
