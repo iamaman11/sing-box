@@ -54,6 +54,12 @@ impl AgentState {
     }
 }
 
+impl BootstrapRuntimeResponse {
+    pub fn encode_proto(&self) -> Vec<u8> {
+        self.encode_to_vec()
+    }
+}
+
 impl LocalSingboxState {
     pub fn placeholder(expected_config_path: impl Into<String>) -> Self {
         Self {

@@ -9,7 +9,10 @@ use edge_controller_core::collect_controller_status;
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
-use edge_shared_types::{AgentState, ControllerStatus, Empty, PlatformError, RuntimeObservation};
+use edge_shared_types::{
+    AgentState, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
+    Empty, PlatformError, RuntimeObservation,
+};
 use edge_state::EdgeState;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
@@ -44,6 +47,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             io::stdout().write_all(&status.encode_proto())?;
             Ok(())
         }
+        "bootstrap-runtime" => {
+            let mode = bootstrap_mode_from_args(2)?;
+            let endpoint = agent_endpoint_from_args(3);
+            let response = bootstrap_runtime(endpoint, mode).await?;
+            io::stdout().write_all(&response.encode_proto())?;
+            Ok(())
+        }
         other => Err(format!("unsupported command: {other}").into()),
     }
 }
@@ -70,6 +80,17 @@ async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std:
     Ok(response.into_inner())
 }
 
+async fn bootstrap_runtime(
+    endpoint: String,
+    mode: BootstrapMode,
+) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
+    let mut client = AgentServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
+        .await?;
+    Ok(response.into_inner())
+}
+
 fn controller_addr_from_args(index: usize) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let addr = env::args()
         .nth(index)
@@ -81,6 +102,25 @@ fn controller_endpoint_from_args(index: usize) -> String {
     env::args()
         .nth(index)
         .unwrap_or_else(|| format!("http://{DEFAULT_CONTROLLER_ADDR}"))
+}
+
+fn agent_endpoint_from_args(index: usize) -> String {
+    env::args()
+        .nth(index)
+        .or_else(|| env::var("EDGE_AGENT_ENDPOINT").ok())
+        .unwrap_or_else(|| DEFAULT_AGENT_ENDPOINT.to_owned())
+}
+
+fn bootstrap_mode_from_args(index: usize) -> Result<BootstrapMode, Box<dyn std::error::Error>> {
+    let mode = env::args()
+        .nth(index)
+        .ok_or("bootstrap-runtime requires mode: base, tunnel, or full")?;
+    match mode.as_str() {
+        "base" => Ok(BootstrapMode::BootstrapBase),
+        "tunnel" => Ok(BootstrapMode::BootstrapTunnel),
+        "full" => Ok(BootstrapMode::BootstrapFull),
+        _ => Err(format!("unsupported bootstrap mode: {mode}").into()),
+    }
 }
 
 fn repo_root_from_args(index: usize) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -224,6 +264,16 @@ mod tests {
     fn resolves_repo_root_from_workspace() {
         let repo_root = repo_root_from_args(usize::MAX).unwrap();
         assert!(repo_root.exists());
+    }
+
+    #[test]
+    fn generated_bootstrap_mode_names_are_stable() {
+        assert_eq!(BootstrapMode::BootstrapBase.as_str_name(), "BOOTSTRAP_BASE");
+        assert_eq!(
+            BootstrapMode::BootstrapTunnel.as_str_name(),
+            "BOOTSTRAP_TUNNEL"
+        );
+        assert_eq!(BootstrapMode::BootstrapFull.as_str_name(), "BOOTSTRAP_FULL");
     }
 
     #[tokio::test]
