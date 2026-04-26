@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use edge_shared_types::{
-    DeployPhase, ErrorSubsystem, FileCategory, FilePresence, InventoryReport, PlatformError,
+    AgentState, ControllerStatus, DeployPhase, ErrorSubsystem, FileCategory, FilePresence,
+    InventoryReport, PlatformError,
 };
 
 pub fn validate_deploy_transition(from: DeployPhase, to: DeployPhase) -> Result<(), PlatformError> {
@@ -157,6 +158,26 @@ pub fn collect_repo_inventory(repo_root: &Path) -> Result<InventoryReport, Platf
     })
 }
 
+pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, PlatformError> {
+    let inventory = collect_repo_inventory(repo_root)?;
+    let agent_state = AgentState::bootstrap_placeholder();
+    let mut status_notes = Vec::new();
+
+    if !inventory.blockers.is_empty() {
+        status_notes.push("migration is blocked on local-only live state review".to_owned());
+    }
+
+    if !agent_state.ready {
+        status_notes.push("agent is still in bootstrap placeholder mode".to_owned());
+    }
+
+    Ok(ControllerStatus {
+        inventory,
+        agent_state,
+        status_notes,
+    })
+}
+
 fn file_presence(repo_root: &Path, path: &str, category: FileCategory) -> FilePresence {
     FilePresence {
         path: path.to_owned(),
@@ -255,6 +276,23 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("required repository inputs are missing"))
         );
+    }
+
+    #[test]
+    fn collects_controller_status() {
+        let repo_root = temp_repo_root("controller_status");
+        create_file(&repo_root.join("RUST-ULTIMATE-PLATFORM-PLAN.md"));
+        create_file(&repo_root.join("win/vultr-waw/deploy-waw.ps1"));
+        create_file(&repo_root.join("win/vultr-waw/verify-edge.ps1"));
+        create_file(&repo_root.join("win/windows/singbox-dual-menu.ps1"));
+        create_file(&repo_root.join("win/windows/sync-vultr-dual-config.ps1"));
+        create_file(&repo_root.join("win/vultr-waw/stack/docker-compose.yml"));
+        create_file(&repo_root.join("win/vultr-waw/stack/tunnel-edge/config.template.json"));
+        create_file(&repo_root.join("edge-platform/Cargo.toml"));
+
+        let status = collect_controller_status(&repo_root).unwrap();
+        assert!(!status.status_notes.is_empty());
+        assert!(!status.agent_state.ready);
     }
 
     fn temp_repo_root(label: &str) -> PathBuf {

@@ -306,6 +306,25 @@ impl InventoryReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerStatus {
+    pub inventory: InventoryReport,
+    pub agent_state: AgentState,
+    pub status_notes: Vec<String>,
+}
+
+impl ControllerStatus {
+    pub fn encode_proto(&self) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        proto::encode_message(&mut buffer, 1, &self.inventory.encode_proto());
+        proto::encode_message(&mut buffer, 2, &self.agent_state.encode_proto());
+        for note in &self.status_notes {
+            proto::encode_string(&mut buffer, 3, note);
+        }
+        buffer
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +340,25 @@ mod tests {
     fn encodes_platform_error_as_proto() {
         let error = PlatformError::new("code", "stage", "message", true, ErrorSubsystem::State);
         let bytes = error.encode_proto();
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes[0], 0x0a);
+    }
+
+    #[test]
+    fn encodes_controller_status_as_proto() {
+        let status = ControllerStatus {
+            inventory: InventoryReport {
+                repo_root: "/tmp/repo".to_owned(),
+                rust_workspace_present: true,
+                required_repo_files: Vec::new(),
+                local_only_files: Vec::new(),
+                blockers: Vec::new(),
+                warnings: Vec::new(),
+            },
+            agent_state: AgentState::bootstrap_placeholder(),
+            status_notes: vec!["note".to_owned()],
+        };
+        let bytes = status.encode_proto();
         assert!(!bytes.is_empty());
         assert_eq!(bytes[0], 0x0a);
     }

@@ -49,3 +49,9 @@ message InventoryReport {
   repeated string blockers = 5;
   repeated string warnings = 6;
 }
+
+message ControllerStatus {
+  InventoryReport inventory = 1;
+  AgentState agent_state = 2;
+  repeated string status_notes = 3;
+}

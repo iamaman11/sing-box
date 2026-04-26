@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use edge_controller_core::collect_repo_inventory;
+use edge_controller_core::collect_controller_status;
 use edge_shared_types::PlatformError;
 
 fn main() -> ExitCode {
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), PlatformError> {
     let repo_root = repo_root_from_args()?;
-    let report = collect_repo_inventory(&repo_root)?;
+    let report = collect_controller_status(&repo_root)?;
     io::stdout()
         .write_all(&report.encode_proto())
         .map_err(|err| {
@@ -59,12 +59,13 @@ fn repo_root_from_args() -> Result<PathBuf, PlatformError> {
 
 #[cfg(test)]
 mod tests {
-    use edge_controller_core::collect_repo_inventory;
+    use edge_controller_core::collect_controller_status;
 
     #[test]
-    fn encodes_inventory_proto() {
+    fn encodes_controller_status_proto() {
         let report =
-            collect_repo_inventory(std::path::Path::new("/home/bose/projects/sing-box")).unwrap();
+            collect_controller_status(std::path::Path::new("/home/bose/projects/sing-box"))
+                .unwrap();
         let bytes = report.encode_proto();
         assert!(!bytes.is_empty());
         assert_eq!(bytes[0], 0x0a);
