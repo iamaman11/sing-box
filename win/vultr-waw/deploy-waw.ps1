@@ -26,6 +26,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+. (Join-Path $PSScriptRoot 'deploy-waw.helpers.ps1')
+
 $AppRoot = Join-Path $env:LOCALAPPDATA 'sing-box-vultr-dual'
 $StateRoot = Join-Path $AppRoot 'state'
 $LegacyStatePath = Join-Path $PSScriptRoot 'current-edge.json'
@@ -54,23 +56,6 @@ function New-HexSecret {
     $data = New-Object byte[] $Bytes
     $rng.GetBytes($data)
     -join ($data | ForEach-Object { $_.ToString('x2') })
-}
-
-function Read-EnvFile {
-    param([string]$Path)
-
-    $map = @{}
-    foreach ($line in Get-Content -LiteralPath $Path) {
-        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) {
-            continue
-        }
-
-        $parts = $line.Split('=', 2)
-        if ($parts.Count -eq 2) {
-            $map[$parts[0]] = $parts[1]
-        }
-    }
-    return $map
 }
 
 function Invoke-VultrApi {
@@ -282,35 +267,32 @@ $vlessWarpUuid = if ($existingEnv['VLESS_WARP_UUID']) { $existingEnv['VLESS_WARP
 $hy2WarpPassword = if ($existingEnv['HY2_WARP_PASSWORD']) { $existingEnv['HY2_WARP_PASSWORD'] } else { New-RandomSecret }
 $realityWarpShortId = if ($existingEnv['REALITY_WARP_SHORT_ID']) { $existingEnv['REALITY_WARP_SHORT_ID'] } else { New-HexSecret }
 $proxyCertCn = if ([string]::IsNullOrWhiteSpace($TunnelDomain)) { 'proxy.local' } else { $TunnelDomain }
-$usePrebuiltImageValue = if ($UsePrebuiltImages -or $env:EDGE_USE_PREBUILT_IMAGES -eq '1') { '1' } else { '0' }
-if ([string]::IsNullOrWhiteSpace($WarpEgressImage)) {
-    $WarpEgressImage = 'ghcr.io/iamaman11/vultr-warp-egress:latest'
-}
-if ([string]::IsNullOrWhiteSpace($GatewayImage)) {
-    $GatewayImage = 'ghcr.io/iamaman11/vultr-edge-gateway:latest'
-}
+$usePrebuiltImageValue = Get-EdgePrebuiltModeValue -UsePrebuiltImages $UsePrebuiltImages.IsPresent -EnvironmentValue $env:EDGE_USE_PREBUILT_IMAGES
+$resolvedImages = Get-EdgeImageConfig -WarpEgressImage $WarpEgressImage -GatewayImage $GatewayImage
+$WarpEgressImage = $resolvedImages.WarpEgressImage
+$GatewayImage = $resolvedImages.GatewayImage
 
-$envRuntime = @"
-PROXY_USERNAME=$proxyUser
-PROXY_PASSWORD=$proxyPassword
-PROXY_CERT_CN=$proxyCertCn
-VLESS_UUID=$vlessUuid
-HY2_PASSWORD=$hy2Password
-REALITY_PRIVATE_KEY=$realityPrivateKey
-REALITY_PUBLIC_KEY=$realityPublicKey
-REALITY_SHORT_ID=$realityShortId
-VLESS_WARP_UUID=$vlessWarpUuid
-HY2_WARP_PASSWORD=$hy2WarpPassword
-REALITY_WARP_PRIVATE_KEY=$realityWarpPrivateKey
-REALITY_WARP_PUBLIC_KEY=$realityWarpPublicKey
-REALITY_WARP_SHORT_ID=$realityWarpShortId
-REALITY_SERVER_NAME=www.microsoft.com
-TUNNEL_DOMAIN=$TunnelDomain
-ACME_EMAIL=$AcmeEmail
-EDGE_USE_PREBUILT_IMAGES=$usePrebuiltImageValue
-EDGE_WARP_EGRESS_IMAGE=$WarpEgressImage
-EDGE_GATEWAY_IMAGE=$GatewayImage
-"@
+$envRuntime = Get-EdgeRuntimeEnvContent -Values @{
+    PROXY_USERNAME = $proxyUser
+    PROXY_PASSWORD = $proxyPassword
+    PROXY_CERT_CN = $proxyCertCn
+    VLESS_UUID = $vlessUuid
+    HY2_PASSWORD = $hy2Password
+    REALITY_PRIVATE_KEY = $realityPrivateKey
+    REALITY_PUBLIC_KEY = $realityPublicKey
+    REALITY_SHORT_ID = $realityShortId
+    VLESS_WARP_UUID = $vlessWarpUuid
+    HY2_WARP_PASSWORD = $hy2WarpPassword
+    REALITY_WARP_PRIVATE_KEY = $realityWarpPrivateKey
+    REALITY_WARP_PUBLIC_KEY = $realityWarpPublicKey
+    REALITY_WARP_SHORT_ID = $realityWarpShortId
+    REALITY_SERVER_NAME = 'www.microsoft.com'
+    TUNNEL_DOMAIN = $TunnelDomain
+    ACME_EMAIL = $AcmeEmail
+    EDGE_USE_PREBUILT_IMAGES = $usePrebuiltImageValue
+    EDGE_WARP_EGRESS_IMAGE = $WarpEgressImage
+    EDGE_GATEWAY_IMAGE = $GatewayImage
+}
 
 $envRuntimePath = Join-Path $localStackDir '.env.runtime'
 [System.IO.File]::WriteAllText($envRuntimePath, $envRuntime, [System.Text.UTF8Encoding]::new($false))
