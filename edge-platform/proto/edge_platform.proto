@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+enum FileCategory {
+  FILE_CATEGORY_UNSPECIFIED = 0;
+  REQUIRED_REPO_INPUT = 1;
+  LOCAL_ONLY_SENSITIVE = 2;
+}
+
+enum ErrorSubsystem {
+  ERROR_SUBSYSTEM_UNSPECIFIED = 0;
+  PROVIDER_COMPUTE = 1;
+  PROVIDER_DNS = 2;
+  RUNTIME_COMPOSE = 3;
+  TRANSPORT_SSH = 4;
+  LOCAL_SINGBOX = 5;
+  SERVER_AGENT = 6;
+  STATE = 7;
+}
+
+message PlatformError {
+  string code = 1;
+  string stage = 2;
+  string message = 3;
+  bool retryable = 4;
+  ErrorSubsystem subsystem = 5;
+}
+
+message AgentState {
+  bool healthy = 1;
+  bool ready = 2;
+  string topology_version = 3;
+  optional string active_bundle_id = 4;
+  repeated string degraded_reasons = 5;
+}
+
+message FilePresence {
+  string path = 1;
+  bool present = 2;
+  FileCategory category = 3;
+}
+
+message InventoryReport {
+  string repo_root = 1;
+  bool rust_workspace_present = 2;
+  repeated FilePresence required_repo_files = 3;
+  repeated FilePresence local_only_files = 4;
+  repeated string blockers = 5;
+  repeated string warnings = 6;
+}

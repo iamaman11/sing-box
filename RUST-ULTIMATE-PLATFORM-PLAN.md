@@ -47,6 +47,19 @@ This slice intentionally excludes:
 - long-running local daemon behavior
 - replacing current PowerShell scripts
 
+## Contract format rule
+
+Controller, agent, and future local API contracts are proto-first.
+
+Rules:
+
+- no JSON request or response contracts
+- shared request/response schemas live in `.proto` files committed in the repo
+- wire encoding must be protobuf-compatible
+- Rust code may implement minimal encoding internally during the bootstrap
+  stage, but transport contracts remain proto, not ad-hoc text
+- shelling out to non-Rust tooling for normal contract handling is out of scope
+
 ## Migration blockers that must stay explicit
 
 Before any deploy/destroy operation is ported to Rust, the implementation must

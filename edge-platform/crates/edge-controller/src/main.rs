@@ -1,15 +1,16 @@
 use std::env;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use edge_controller_core::collect_repo_inventory;
-use edge_shared_types::{FilePresence, InventoryReport, PlatformError};
+use edge_shared_types::PlatformError;
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{}", render_error_json(&err));
+            let _ = io::stderr().write_all(&err.encode_proto());
             ExitCode::from(1)
         }
     }
@@ -18,7 +19,17 @@ fn main() -> ExitCode {
 fn run() -> Result<(), PlatformError> {
     let repo_root = repo_root_from_args()?;
     let report = collect_repo_inventory(&repo_root)?;
-    println!("{}", render_inventory_json(&report));
+    io::stdout()
+        .write_all(&report.encode_proto())
+        .map_err(|err| {
+            PlatformError::new(
+                "stdout_write_failed",
+                "controller.output",
+                format!("failed to write protobuf response: {err}"),
+                true,
+                edge_shared_types::ErrorSubsystem::State,
+            )
+        })?;
     Ok(())
 }
 
@@ -46,79 +57,16 @@ fn repo_root_from_args() -> Result<PathBuf, PlatformError> {
     }
 }
 
-fn render_inventory_json(report: &InventoryReport) -> String {
-    let required_repo_files = render_files(&report.required_repo_files);
-    let local_only_files = render_files(&report.local_only_files);
-    let blockers = render_string_array(&report.blockers);
-    let warnings = render_string_array(&report.warnings);
-
-    format!(
-        "{{\"repo_root\":\"{}\",\"rust_workspace_present\":{},\"required_repo_files\":[{}],\"local_only_files\":[{}],\"blockers\":[{}],\"warnings\":[{}]}}",
-        escape_json(&report.repo_root),
-        report.rust_workspace_present,
-        required_repo_files,
-        local_only_files,
-        blockers,
-        warnings
-    )
-}
-
-fn render_files(files: &[FilePresence]) -> String {
-    files
-        .iter()
-        .map(|file| {
-            format!(
-                "{{\"path\":\"{}\",\"present\":{},\"category\":\"{}\"}}",
-                escape_json(&file.path),
-                file.present,
-                file.category.as_str()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn render_string_array(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|value| format!("\"{}\"", escape_json(value)))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn render_error_json(err: &PlatformError) -> String {
-    format!(
-        "{{\"error\":{{\"code\":\"{}\",\"stage\":\"{}\",\"message\":\"{}\",\"retryable\":{},\"subsystem\":\"{}\"}}}}",
-        err.code,
-        err.stage,
-        escape_json(&err.message),
-        err.retryable,
-        err.subsystem.as_str()
-    )
-}
-
-fn escape_json(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
-            ch => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use edge_controller_core::collect_repo_inventory;
 
     #[test]
-    fn escapes_json_strings() {
-        assert_eq!(escape_json("a\"b\\c\n"), "a\\\"b\\\\c\\n");
+    fn encodes_inventory_proto() {
+        let report =
+            collect_repo_inventory(std::path::Path::new("/home/bose/projects/sing-box")).unwrap();
+        let bytes = report.encode_proto();
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes[0], 0x0a);
     }
 }
