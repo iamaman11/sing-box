@@ -259,6 +259,83 @@ message TrustEntry {
   int64 updated_at_unix = 10;
 }
 
+message BundleFile {
+  string relative_path = 1;
+  bytes content = 2;
+  bool executable = 3;
+}
+
+message ApplyBundleRequest {
+  repeated BundleFile stack_files = 1;
+  repeated BundleFile host_files = 2;
+  optional BundleFile deployment_summary = 3;
+  optional BundleFile agent_env_file = 4;
+  bool prune_existing = 5;
+}
+
+message ApplyBundleResponse {
+  bool success = 1;
+  repeated string written_paths = 2;
+  optional string stack_dir = 3;
+  repeated string warnings = 4;
+}
+
+message VerifyRuntimeRequest {
+  bool require_readiness = 1;
+}
+
+message ReadBundleIdentityRequest {}
+
+message ReadBundleIdentityResponse {
+  optional string active_bundle_id = 1;
+  optional string topology_version = 2;
+  optional string deployment_summary_path = 3;
+}
+
+message ReadRenderedArtifactsRequest {}
+
+message ReadRenderedArtifactsResponse {
+  repeated FilePresence files = 1;
+}
+
+message DeployRequest {
+  optional string label_prefix = 1;
+  optional string target_ip = 2;
+  optional string instance_id = 3;
+  optional string tunnel_domain = 4;
+  optional string acme_email = 5;
+  optional string dns_record_name = 6;
+  optional string cloudflare_zone_name = 7;
+  bool mock_provider = 8;
+  bool skip_dns = 9;
+}
+
+message DeployResponse {
+  bool success = 1;
+  DeploymentSummary deployment = 2;
+  ProviderObservation provider = 3;
+  RuntimeObservation runtime = 4;
+  repeated string warnings = 5;
+  optional Operation operation = 6;
+}
+
+message DestroyRequest {
+  optional string instance_id = 1;
+  optional string target_ip = 2;
+  optional string dns_record_name = 3;
+  optional string cloudflare_zone_name = 4;
+  bool mock_provider = 5;
+  bool delete_dns = 6;
+  bool delete_instance = 7;
+}
+
+message DestroyResponse {
+  bool success = 1;
+  repeated string warnings = 2;
+  optional Operation operation = 3;
+  optional DeploymentSummary deployment = 4;
+}
+
 message Operation {
   int64 id = 1;
   string kind = 2;
@@ -299,6 +376,8 @@ service ControllerService {
   rpc GetSelectorState(GetSelectorStateRequest) returns (SelectorState);
   rpc SetSelector(SetSelectorRequest) returns (SetSelectorResponse);
   rpc GetTrace(GetTraceRequest) returns (TraceObservation);
+  rpc Deploy(DeployRequest) returns (DeployResponse);
+  rpc Destroy(DestroyRequest) returns (DestroyResponse);
   rpc GetOperation(GetOperationRequest) returns (OperationStatus);
   rpc ListOperationEvents(ListOperationEventsRequest) returns (ListOperationEventsResponse);
 }
@@ -308,5 +387,9 @@ service AgentService {
   rpc GetReadiness(Empty) returns (AgentState);
   rpc GetRuntimeState(Empty) returns (AgentState);
   rpc GetVersion(Empty) returns (AgentVersion);
+  rpc ApplyBundle(ApplyBundleRequest) returns (ApplyBundleResponse);
   rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
+  rpc VerifyRuntime(VerifyRuntimeRequest) returns (AgentState);
+  rpc ReadBundleIdentity(ReadBundleIdentityRequest) returns (ReadBundleIdentityResponse);
+  rpc ReadRenderedArtifacts(ReadRenderedArtifactsRequest) returns (ReadRenderedArtifactsResponse);
 }

@@ -4,10 +4,11 @@ use std::process::ExitCode;
 
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
-    BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus, Empty,
-    GetSelectorStateRequest, GetTraceRequest, LocalRuntimeResponse, RestartLocalRuntimeRequest,
-    SelectorState, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
-    StopLocalRuntimeRequest, TraceObservation,
+    BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
+    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, Empty, GetSelectorStateRequest,
+    GetTraceRequest, LocalRuntimeResponse, RestartLocalRuntimeRequest, SelectorState,
+    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
+    TraceObservation,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -87,6 +88,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             print_bootstrap_result(&response);
             finish_bootstrap_result(response)
         }
+        "deploy" => {
+            let request = deploy_request_from_args();
+            let response = deploy(controller_endpoint_from_args(9), request).await?;
+            print_deploy_result(&response);
+            finish_deploy_result(response)
+        }
+        "destroy" => {
+            let request = destroy_request_from_args();
+            let response = destroy(controller_endpoint_from_args(7), request).await?;
+            print_destroy_result(&response);
+            finish_destroy_result(response)
+        }
         other => Err(format!("unsupported command: {other}").into()),
     }
 }
@@ -108,6 +121,8 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
         println!("11. Restart local runtime");
         println!("12. Bootstrap base runtime");
         println!("13. Bootstrap tunnel runtime");
+        println!("14. Deploy bundle to target");
+        println!("15. Destroy deployment state");
         println!("0. Exit");
         print!("Select: ");
         io::stdout().flush()?;
@@ -202,6 +217,55 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                         .await?;
                 print_bootstrap_result(&response);
             }
+            "14" => {
+                let target_ip = prompt("Target IP")?;
+                let tunnel_domain = prompt("Tunnel domain (blank to skip)")?;
+                let acme_email = prompt("ACME email (blank to skip)")?;
+                let response = deploy(
+                    controller_endpoint.clone(),
+                    DeployRequest {
+                        label_prefix: None,
+                        target_ip: if target_ip.trim().is_empty() {
+                            None
+                        } else {
+                            Some(target_ip)
+                        },
+                        instance_id: None,
+                        tunnel_domain: if tunnel_domain.trim().is_empty() {
+                            None
+                        } else {
+                            Some(tunnel_domain)
+                        },
+                        acme_email: if acme_email.trim().is_empty() {
+                            None
+                        } else {
+                            Some(acme_email)
+                        },
+                        dns_record_name: None,
+                        cloudflare_zone_name: None,
+                        mock_provider: false,
+                        skip_dns: false,
+                    },
+                )
+                .await?;
+                print_deploy_result(&response);
+            }
+            "15" => {
+                let response = destroy(
+                    controller_endpoint.clone(),
+                    DestroyRequest {
+                        instance_id: None,
+                        target_ip: None,
+                        dns_record_name: None,
+                        cloudflare_zone_name: None,
+                        mock_provider: false,
+                        delete_dns: true,
+                        delete_instance: false,
+                    },
+                )
+                .await?;
+                print_destroy_result(&response);
+            }
             "0" => return Ok(()),
             _ => println!("Unknown option"),
         }
@@ -213,6 +277,42 @@ fn controller_endpoint_from_args(index: usize) -> String {
         .nth(index)
         .or_else(|| env::var("EDGE_CONTROLLER_ENDPOINT").ok())
         .unwrap_or_else(|| DEFAULT_CONTROLLER_ENDPOINT.to_owned())
+}
+
+fn deploy_request_from_args() -> DeployRequest {
+    DeployRequest {
+        label_prefix: env::args().nth(2),
+        target_ip: env::args().nth(3),
+        instance_id: env::args().nth(4),
+        tunnel_domain: env::args().nth(5),
+        acme_email: env::args().nth(6),
+        dns_record_name: env::args().nth(7),
+        cloudflare_zone_name: env::args().nth(8),
+        mock_provider: env::var("EDGE_MOCK_PROVIDER")
+            .ok()
+            .is_some_and(|value| value == "1"),
+        skip_dns: env::var("EDGE_SKIP_DNS")
+            .ok()
+            .is_some_and(|value| value == "1"),
+    }
+}
+
+fn destroy_request_from_args() -> DestroyRequest {
+    DestroyRequest {
+        instance_id: env::args().nth(2),
+        target_ip: env::args().nth(3),
+        dns_record_name: env::args().nth(4),
+        cloudflare_zone_name: env::args().nth(5),
+        mock_provider: env::var("EDGE_MOCK_PROVIDER")
+            .ok()
+            .is_some_and(|value| value == "1"),
+        delete_dns: env::var("EDGE_DELETE_DNS")
+            .ok()
+            .is_none_or(|value| value == "1"),
+        delete_instance: env::var("EDGE_DELETE_INSTANCE")
+            .ok()
+            .is_none_or(|value| value == "1"),
+    }
 }
 
 async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {
@@ -301,6 +401,32 @@ async fn fetch_trace(endpoint: String) -> Result<TraceObservation, Box<dyn std::
         .get_trace(Request::new(GetTraceRequest { proxy_url: None }))
         .await?;
     Ok(response.into_inner())
+}
+
+async fn deploy(
+    endpoint: String,
+    request: DeployRequest,
+) -> Result<DeployResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client.deploy(Request::new(request)).await?;
+    Ok(response.into_inner())
+}
+
+async fn destroy(
+    endpoint: String,
+    request: DestroyRequest,
+) -> Result<DestroyResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client.destroy(Request::new(request)).await?;
+    Ok(response.into_inner())
+}
+
+fn prompt(label: &str) -> Result<String, Box<dyn std::error::Error>> {
+    print!("{label}: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_owned())
 }
 
 fn print_status(status: &ControllerStatus) {
@@ -520,6 +646,57 @@ fn print_set_selector_result(response: &SetSelectorResponse) {
     }
 }
 
+fn print_deploy_result(response: &DeployResponse) {
+    println!();
+    println!(
+        "Deploy success         : {}",
+        if response.success { "yes" } else { "no" }
+    );
+    if let Some(deployment) = &response.deployment {
+        if let Some(label) = &deployment.deployment_label {
+            println!("Deploy label           : {label}");
+        }
+        if let Some(instance_id) = &deployment.instance_id {
+            println!("Deploy instance id     : {instance_id}");
+        }
+        if let Some(server_ip) = &deployment.server_ip {
+            println!("Deploy server IP       : {server_ip}");
+        }
+    }
+    if let Some(runtime) = &response.runtime {
+        println!(
+            "Deploy runtime ready   : {}",
+            if runtime.edge_agent_reachable && runtime.docker_reachable {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+    }
+    for warning in &response.warnings {
+        println!("Deploy warning         : {warning}");
+    }
+}
+
+fn print_destroy_result(response: &DestroyResponse) {
+    println!();
+    println!(
+        "Destroy success        : {}",
+        if response.success { "yes" } else { "no" }
+    );
+    if let Some(deployment) = &response.deployment {
+        if let Some(label) = &deployment.deployment_label {
+            println!("Removed label          : {label}");
+        }
+        if let Some(instance_id) = &deployment.instance_id {
+            println!("Removed instance id    : {instance_id}");
+        }
+    }
+    for warning in &response.warnings {
+        println!("Destroy warning        : {warning}");
+    }
+}
+
 fn bootstrap_mode_label(mode: i32) -> &'static str {
     match BootstrapMode::try_from(mode) {
         Ok(BootstrapMode::BootstrapBase) => "base",
@@ -575,6 +752,22 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
         Ok(())
     } else {
         Err("selector update failed".into())
+    }
+}
+
+fn finish_deploy_result(response: DeployResponse) -> Result<(), Box<dyn std::error::Error>> {
+    if response.success {
+        Ok(())
+    } else {
+        Err("deploy failed".into())
+    }
+}
+
+fn finish_destroy_result(response: DestroyResponse) -> Result<(), Box<dyn std::error::Error>> {
+    if response.success {
+        Ok(())
+    } else {
+        Err("destroy failed".into())
     }
 }
 

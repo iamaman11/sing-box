@@ -1,0 +1,15 @@
+[package]
+name = "edge-provider-vultr"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64 = "0.22.1"
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+[lib]
+path = "src/lib.rs"

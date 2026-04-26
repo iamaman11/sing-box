@@ -2,11 +2,14 @@
 resolver = "2"
 members = [
     "crates/edge-agent",
+    "crates/edge-bundle",
     "crates/edge-clash",
     "crates/edge-console",
     "crates/edge-controller",
     "crates/edge-controller-core",
     "crates/edge-local-runtime",
+    "crates/edge-provider-cloudflare",
+    "crates/edge-provider-vultr",
     "crates/edge-singbox",
     "crates/edge-state",
     "crates/edge-shared-types",

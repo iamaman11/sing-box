@@ -1,10 +1,12 @@
 use std::env;
+use std::fs;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
+use edge_bundle::{BuildBundleRequest, PreparedDeploymentBundle, build_bundle};
 use edge_clash::{
     get_selector_state as get_live_selector_state, set_selector as set_live_selector,
 };
@@ -13,22 +15,27 @@ use edge_local_runtime::{
     LocalRuntimePaths, inspect_local_runtime, restart_local_runtime as restart_runtime_process,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
+use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
+use edge_provider_vultr::{destroy_instance, get_instance, mock_instance};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
 use edge_shared_types::{
-    AgentState, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    Empty, GetOperationRequest, GetSelectorStateRequest, GetTraceRequest,
-    ListOperationEventsRequest, ListOperationEventsResponse, LocalRuntimeResponse, Operation,
-    OperationEvent, OperationLifecycleStatus, OperationStatus, PlatformError,
-    RestartLocalRuntimeRequest, RuntimeObservation, SelectorState, SetSelectorRequest,
-    SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation,
+    AgentState, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
+    BootstrapRuntimeResponse, BundleFile, ControllerStatus, DeployRequest, DeployResponse,
+    DestroyRequest, DestroyResponse, Empty, GetOperationRequest, GetSelectorStateRequest,
+    GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse, LocalRuntimeResponse,
+    Operation, OperationEvent, OperationLifecycleStatus, OperationStatus, PlatformError,
+    ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation, SelectorState,
+    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
+    TraceObservation, VerifyRuntimeRequest,
 };
-use edge_singbox::default_trace_proxy_url;
-use edge_state::{EdgeState, StoredOperation, StoredOperationEvent};
+use edge_singbox::{default_trace_proxy_url, sync_local_config};
+use edge_state::{EdgeState, NewTrustEntry, StoredOperation, StoredOperationEvent};
 use edge_trace::trace_via_proxy;
 use edge_trust::{agent_endpoint_scheme, optional_agent_client_tls_from_env};
 use prost::Message;
+use serde_json::Value;
 use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Status};
 
@@ -37,6 +44,10 @@ const DEFAULT_STATE_DB: &str = "edge-platform/.runtime/controller-state.sqlite";
 const DEFAULT_AGENT_ENDPOINT: &str = "http://127.0.0.1:50061";
 const DEFAULT_LOCAL_CONFIG_PATH: &str = "win/windows/edge-dns-clean-vultr-dual.json";
 const DEFAULT_LIVE_STATE_PATH: &str = "win/vultr-waw/current-edge.json";
+const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
+const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
+const DEFAULT_REGION: &str = "waw";
+const DEFAULT_PLAN: &str = "vc2-1c-1gb";
 const DEFAULT_SINGBOX_BINARY_PATH: &str =
     "V:\\code\\sing-box-cl\\auto-route-sing-box\\sing-box.exe";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
@@ -143,6 +154,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let trace = get_trace_via_controller(endpoint).await?;
             io::stdout().write_all(&trace.encode_to_vec())?;
             Ok(())
+        }
+        "deploy" => {
+            let request = deploy_request_from_args()?;
+            let endpoint = controller_endpoint_from_args(9);
+            let response = deploy_via_controller(endpoint, request).await?;
+            io::stdout().write_all(&response.encode_to_vec())?;
+            if response.success {
+                Ok(())
+            } else {
+                Err("deploy failed".into())
+            }
+        }
+        "destroy" => {
+            let request = destroy_request_from_args()?;
+            let endpoint = controller_endpoint_from_args(7);
+            let response = destroy_via_controller(endpoint, request).await?;
+            io::stdout().write_all(&response.encode_to_vec())?;
+            if response.success {
+                Ok(())
+            } else {
+                Err("destroy failed".into())
+            }
         }
         other => Err(format!("unsupported command: {other}").into()),
     }
@@ -258,6 +291,24 @@ async fn get_trace_via_controller(
     Ok(response.into_inner())
 }
 
+async fn deploy_via_controller(
+    endpoint: String,
+    request: DeployRequest,
+) -> Result<DeployResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client.deploy(Request::new(request)).await?;
+    Ok(response.into_inner())
+}
+
+async fn destroy_via_controller(
+    endpoint: String,
+    request: DestroyRequest,
+) -> Result<DestroyResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client.destroy(Request::new(request)).await?;
+    Ok(response.into_inner())
+}
+
 async fn bootstrap_runtime(
     endpoint: String,
     mode: BootstrapMode,
@@ -318,6 +369,42 @@ fn bootstrap_mode_from_args(index: usize) -> Result<BootstrapMode, Box<dyn std::
         "full" => Ok(BootstrapMode::BootstrapFull),
         _ => Err(format!("unsupported bootstrap mode: {mode}").into()),
     }
+}
+
+fn deploy_request_from_args() -> Result<DeployRequest, Box<dyn std::error::Error>> {
+    Ok(DeployRequest {
+        label_prefix: env::args().nth(2),
+        target_ip: env::args().nth(3),
+        instance_id: env::args().nth(4),
+        tunnel_domain: env::args().nth(5),
+        acme_email: env::args().nth(6),
+        dns_record_name: env::args().nth(7),
+        cloudflare_zone_name: env::args().nth(8),
+        mock_provider: env::var("EDGE_MOCK_PROVIDER")
+            .ok()
+            .is_some_and(|value| value == "1"),
+        skip_dns: env::var("EDGE_SKIP_DNS")
+            .ok()
+            .is_some_and(|value| value == "1"),
+    })
+}
+
+fn destroy_request_from_args() -> Result<DestroyRequest, Box<dyn std::error::Error>> {
+    Ok(DestroyRequest {
+        instance_id: env::args().nth(2),
+        target_ip: env::args().nth(3),
+        dns_record_name: env::args().nth(4),
+        cloudflare_zone_name: env::args().nth(5),
+        mock_provider: env::var("EDGE_MOCK_PROVIDER")
+            .ok()
+            .is_some_and(|value| value == "1"),
+        delete_dns: env::var("EDGE_DELETE_DNS")
+            .ok()
+            .is_none_or(|value| value == "1"),
+        delete_instance: env::var("EDGE_DELETE_INSTANCE")
+            .ok()
+            .is_none_or(|value| value == "1"),
+    })
 }
 
 fn repo_root_from_args(index: usize) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -735,6 +822,269 @@ impl ControllerService for ControllerServerImpl {
         Ok(Response::new(trace))
     }
 
+    async fn deploy(
+        &self,
+        request: Request<DeployRequest>,
+    ) -> Result<Response<DeployResponse>, Status> {
+        let request = request.into_inner();
+        let operation = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .start_operation("deploy", "RUNNING")
+            .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
+        append_operation_event(&self.state, operation.id, "deploy requested")?;
+
+        let target = resolve_deploy_target(&request).await.map_err(|err| {
+            let _ = append_operation_event(&self.state, operation.id, &err);
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            Status::invalid_argument(err)
+        })?;
+        append_operation_event(
+            &self.state,
+            operation.id,
+            &format!(
+                "target resolved: {} ({})",
+                target.instance_id, target.target_ip
+            ),
+        )?;
+
+        let bundle = build_bundle(&BuildBundleRequest {
+            repo_root: &self.repo_root,
+            target_ip: &target.target_ip,
+            instance_id: &target.instance_id,
+            tunnel_domain: request.tunnel_domain.as_deref(),
+            acme_email: request.acme_email.as_deref(),
+            cloudflare_zone_name: request.cloudflare_zone_name.as_deref(),
+            dns_record_name: request.dns_record_name.as_deref(),
+            label_prefix: request.label_prefix.as_deref(),
+        })
+        .map_err(|err| {
+            let _ = append_operation_event(&self.state, operation.id, &err);
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            Status::internal(format!("failed to build deployment bundle: {err}"))
+        })?;
+        append_operation_event(
+            &self.state,
+            operation.id,
+            &format!("bundle rendered: {}", bundle.label),
+        )?;
+
+        persist_bundle_locally(&self.repo_root, &self.state, &bundle, &target).map_err(|err| {
+            Status::internal(format!("failed to persist deployment state: {err}"))
+        })?;
+        append_operation_event(
+            &self.state,
+            operation.id,
+            "local trust and deployment state persisted",
+        )?;
+
+        let apply_response = apply_bundle_to_agent(&self.agent_endpoint, &bundle)
+            .await
+            .map_err(|err| {
+                let _ = append_operation_event(&self.state, operation.id, &err);
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                Status::internal(format!("failed to apply bundle to agent: {err}"))
+            })?;
+        for path in &apply_response.written_paths {
+            append_operation_event(&self.state, operation.id, &format!("wrote {path}"))?;
+        }
+
+        let base = bootstrap_runtime(self.agent_endpoint.clone(), BootstrapMode::BootstrapBase)
+            .await
+            .map_err(|err| {
+                let _ = append_operation_event(&self.state, operation.id, &err.to_string());
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                Status::internal(format!("base bootstrap failed: {err}"))
+            })?;
+        if !base.success {
+            let _ =
+                append_operation_event(&self.state, operation.id, &format_bootstrap_failure(&base));
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            return Ok(Response::new(DeployResponse {
+                success: false,
+                deployment: Some(bundle_to_proto_summary(&bundle, &target)),
+                provider: Some(provider_observation_from_request(
+                    &request,
+                    &target.target_ip,
+                )),
+                runtime: Some(RuntimeObservation::from_agent_state(
+                    &base
+                        .post_state
+                        .clone()
+                        .unwrap_or_else(AgentState::bootstrap_placeholder),
+                )),
+                warnings: base.warnings,
+                operation: Some(operation_with_status(operation, "FAILED")),
+            }));
+        }
+        append_operation_event(&self.state, operation.id, "base bootstrap completed")?;
+
+        if should_update_dns(&request) {
+            let dns_note = apply_dns_update(&request, &target.target_ip)
+                .await
+                .map_err(|err| {
+                    let _ = append_operation_event(&self.state, operation.id, &err);
+                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                    Status::internal(err)
+                })?;
+            append_operation_event(&self.state, operation.id, &dns_note)?;
+        }
+
+        if request
+            .tunnel_domain
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            && request
+                .acme_email
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            let tunnel =
+                bootstrap_runtime(self.agent_endpoint.clone(), BootstrapMode::BootstrapTunnel)
+                    .await
+                    .map_err(|err| {
+                        let _ = append_operation_event(&self.state, operation.id, &err.to_string());
+                        let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                        Status::internal(format!("tunnel bootstrap failed: {err}"))
+                    })?;
+            if !tunnel.success {
+                let _ = append_operation_event(
+                    &self.state,
+                    operation.id,
+                    &format_bootstrap_failure(&tunnel),
+                );
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Ok(Response::new(DeployResponse {
+                    success: false,
+                    deployment: Some(bundle_to_proto_summary(&bundle, &target)),
+                    provider: Some(provider_observation_from_request(
+                        &request,
+                        &target.target_ip,
+                    )),
+                    runtime: Some(RuntimeObservation::from_agent_state(
+                        &tunnel
+                            .post_state
+                            .clone()
+                            .unwrap_or_else(AgentState::bootstrap_placeholder),
+                    )),
+                    warnings: tunnel.warnings,
+                    operation: Some(operation_with_status(operation, "FAILED")),
+                }));
+            }
+            append_operation_event(&self.state, operation.id, "tunnel bootstrap completed")?;
+        }
+
+        let runtime_state = verify_agent_runtime(&self.agent_endpoint, true)
+            .await
+            .map_err(|err| {
+                Status::internal(format!("failed to verify runtime readiness: {err}"))
+            })?;
+        let runtime = RuntimeObservation::from_agent_state(&runtime_state);
+
+        let sync = sync_local_config(
+            &default_local_config_path(&self.repo_root),
+            &default_live_state_path(&self.repo_root),
+            &default_runtime_root(&self.repo_root),
+        )
+        .map_err(|err| Status::internal(format!("failed to sync local config: {err}")))?;
+        append_operation_event(
+            &self.state,
+            operation.id,
+            &format!(
+                "local config synced for instance {}",
+                sync.instance_id.unwrap_or_default()
+            ),
+        )?;
+
+        update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
+        let response = DeployResponse {
+            success: true,
+            deployment: Some(bundle_to_proto_summary(&bundle, &target)),
+            provider: Some(provider_observation_from_request(
+                &request,
+                &target.target_ip,
+            )),
+            runtime: Some(runtime),
+            warnings: apply_response.warnings,
+            operation: Some(operation_with_status(operation, "SUCCEEDED")),
+        };
+        store_local_response(&self.state, "deploy_response", &response.encode_to_vec())?;
+        Ok(Response::new(response))
+    }
+
+    async fn destroy(
+        &self,
+        request: Request<DestroyRequest>,
+    ) -> Result<Response<DestroyResponse>, Status> {
+        let request = request.into_inner();
+        let operation = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .start_operation("destroy", "RUNNING")
+            .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
+        append_operation_event(&self.state, operation.id, "destroy requested")?;
+
+        let existing = read_live_deployment_summary(&self.repo_root)
+            .map_err(|err| Status::internal(format!("failed to read current state: {err}")))?;
+        let target_ip = request
+            .target_ip
+            .clone()
+            .or_else(|| existing.server_ip.clone())
+            .unwrap_or_default();
+        let instance_id = request
+            .instance_id
+            .clone()
+            .or_else(|| existing.instance_id.clone())
+            .unwrap_or_default();
+
+        if request.delete_dns {
+            let note = delete_dns_record(&request)
+                .await
+                .map_err(Status::internal)?;
+            append_operation_event(&self.state, operation.id, &note)?;
+        }
+        if request.delete_instance && !instance_id.trim().is_empty() && !request.mock_provider {
+            if let Ok(api_key) = env::var("VULTR_API_KEY") {
+                destroy_instance(&api_key, &instance_id)
+                    .await
+                    .map_err(Status::internal)?;
+                append_operation_event(
+                    &self.state,
+                    operation.id,
+                    "Vultr instance destroy requested",
+                )?;
+            }
+        }
+
+        clear_live_deployment_state(&self.repo_root, &self.state, &instance_id)
+            .map_err(|err| Status::internal(format!("failed to clear deployment state: {err}")))?;
+        append_operation_event(
+            &self.state,
+            operation.id,
+            &format!("cleared deployment state for {}", instance_id),
+        )?;
+
+        update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
+        let response = DestroyResponse {
+            success: true,
+            warnings: if target_ip.trim().is_empty() {
+                vec!["destroy completed without a known target IP".to_owned()]
+            } else {
+                Vec::new()
+            },
+            operation: Some(operation_with_status(operation, "SUCCEEDED")),
+            deployment: if existing.live_state_present {
+                Some(existing)
+            } else {
+                None
+            },
+        };
+        store_local_response(&self.state, "destroy_response", &response.encode_to_vec())?;
+        Ok(Response::new(response))
+    }
+
     async fn get_operation(
         &self,
         request: Request<GetOperationRequest>,
@@ -984,6 +1334,322 @@ fn store_local_response(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedDeployTarget {
+    instance_id: String,
+    target_ip: String,
+}
+
+async fn resolve_deploy_target(request: &DeployRequest) -> Result<ResolvedDeployTarget, String> {
+    if request.mock_provider {
+        let label = request
+            .label_prefix
+            .clone()
+            .unwrap_or_else(|| "mock-edge".to_owned());
+        let target_ip = request
+            .target_ip
+            .clone()
+            .unwrap_or_else(|| "203.0.113.10".to_owned());
+        let instance = mock_instance(&label, DEFAULT_REGION, DEFAULT_PLAN, &target_ip);
+        return Ok(ResolvedDeployTarget {
+            instance_id: instance.id,
+            target_ip: instance.main_ip,
+        });
+    }
+
+    if let (Some(instance_id), Ok(api_key)) =
+        (request.instance_id.as_deref(), env::var("VULTR_API_KEY"))
+    {
+        let instance = get_instance(&api_key, instance_id).await?;
+        if !instance.main_ip.trim().is_empty() {
+            return Ok(ResolvedDeployTarget {
+                instance_id: instance.id,
+                target_ip: instance.main_ip,
+            });
+        }
+    }
+
+    let Some(target_ip) = request
+        .target_ip
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Err(
+            "deploy requires target_ip or a resolvable instance_id; new host bootstrap is not wired into Rust yet"
+                .to_owned(),
+        );
+    };
+
+    Ok(ResolvedDeployTarget {
+        instance_id: request
+            .instance_id
+            .clone()
+            .unwrap_or_else(|| format!("manual-{}", target_ip.replace('.', "-"))),
+        target_ip,
+    })
+}
+
+async fn apply_bundle_to_agent(
+    endpoint: &str,
+    bundle: &PreparedDeploymentBundle,
+) -> Result<edge_shared_types::ApplyBundleResponse, String> {
+    let channel = connect_to_agent(endpoint.to_owned())
+        .await
+        .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
+    let mut client = AgentServiceClient::<Channel>::new(channel);
+    let response = client
+        .apply_bundle(Request::new(ApplyBundleRequest {
+            stack_files: bundle
+                .stack_files
+                .iter()
+                .map(bundle_file_payload_to_proto)
+                .collect(),
+            host_files: bundle
+                .host_files
+                .iter()
+                .map(bundle_file_payload_to_proto)
+                .collect(),
+            deployment_summary: Some(BundleFile {
+                relative_path: "deployment-summary.json".to_owned(),
+                content: bundle.deployment_summary_json.as_bytes().to_vec(),
+                executable: false,
+            }),
+            agent_env_file: Some(BundleFile {
+                relative_path: "edge-agent.env".to_owned(),
+                content: bundle.agent_env_content.as_bytes().to_vec(),
+                executable: false,
+            }),
+            prune_existing: true,
+        }))
+        .await
+        .map_err(|err| format!("edge-agent apply bundle RPC failed: {err}"))?;
+    Ok(response.into_inner())
+}
+
+async fn verify_agent_runtime(
+    endpoint: &str,
+    require_readiness: bool,
+) -> Result<AgentState, String> {
+    let channel = connect_to_agent(endpoint.to_owned())
+        .await
+        .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
+    let mut client = AgentServiceClient::<Channel>::new(channel);
+    let response = client
+        .verify_runtime(Request::new(VerifyRuntimeRequest { require_readiness }))
+        .await
+        .map_err(|err| format!("edge-agent verify runtime RPC failed: {err}"))?;
+    Ok(response.into_inner())
+}
+
+fn bundle_file_payload_to_proto(file: &edge_bundle::BundleFilePayload) -> BundleFile {
+    BundleFile {
+        relative_path: file.relative_path.clone(),
+        content: file.content.clone(),
+        executable: file.executable,
+    }
+}
+
+fn bundle_to_proto_summary(
+    bundle: &PreparedDeploymentBundle,
+    target: &ResolvedDeployTarget,
+) -> edge_shared_types::DeploymentSummary {
+    edge_shared_types::DeploymentSummary {
+        live_state_present: true,
+        source_state_path: None,
+        deployment_label: Some(bundle.label.clone()),
+        instance_id: Some(target.instance_id.clone()),
+        server_ip: Some(target.target_ip.clone()),
+        tunnel_domain: if bundle.deployment.tunnel.enabled {
+            Some(bundle.deployment.tunnel.domain.clone())
+        } else {
+            None
+        },
+    }
+}
+
+fn provider_observation_from_request(
+    request: &DeployRequest,
+    target_ip: &str,
+) -> ProviderObservation {
+    let mut warnings = Vec::new();
+    if request.mock_provider {
+        warnings.push("provider operations were executed in mock mode".to_owned());
+    }
+    if request.skip_dns {
+        warnings.push("DNS cutover was skipped for this deployment".to_owned());
+    }
+    if target_ip.trim().is_empty() {
+        warnings.push("target IP is empty".to_owned());
+    }
+    ProviderObservation {
+        configured: !request.mock_provider,
+        compute_provider: "vultr".to_owned(),
+        dns_provider: "cloudflare".to_owned(),
+        warnings,
+    }
+}
+
+fn should_update_dns(request: &DeployRequest) -> bool {
+    !request.skip_dns
+        && request
+            .dns_record_name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+async fn apply_dns_update(request: &DeployRequest, target_ip: &str) -> Result<String, String> {
+    let zone_name = request
+        .cloudflare_zone_name
+        .clone()
+        .unwrap_or_else(|| DEFAULT_CLOUDFLARE_ZONE.to_owned());
+    let record_name = request
+        .dns_record_name
+        .clone()
+        .unwrap_or_else(|| DEFAULT_DNS_RECORD.to_owned());
+
+    if request.mock_provider {
+        let record = mock_upsert_a_record(&zone_name, &record_name, target_ip);
+        return Ok(format!(
+            "mock DNS updated: {} -> {} ({})",
+            record.record_name, record.ip, record.zone_id
+        ));
+    }
+
+    let api_token = env::var("CLOUDFLARE_API_TOKEN")
+        .map_err(|_| "CLOUDFLARE_API_TOKEN is required for DNS cutover".to_owned())?;
+    let record = upsert_a_record(&api_token, &zone_name, &record_name, target_ip).await?;
+    Ok(format!(
+        "DNS updated: {} -> {} ({})",
+        record.record_name, record.ip, record.zone_id
+    ))
+}
+
+async fn delete_dns_record(request: &DestroyRequest) -> Result<String, String> {
+    let zone_name = request
+        .cloudflare_zone_name
+        .clone()
+        .unwrap_or_else(|| DEFAULT_CLOUDFLARE_ZONE.to_owned());
+    let record_name = request
+        .dns_record_name
+        .clone()
+        .unwrap_or_else(|| DEFAULT_DNS_RECORD.to_owned());
+
+    if request.mock_provider {
+        return Ok(format!("mock DNS delete requested for {}", record_name));
+    }
+
+    let api_token = env::var("CLOUDFLARE_API_TOKEN")
+        .map_err(|_| "CLOUDFLARE_API_TOKEN is required to delete DNS record".to_owned())?;
+    delete_a_record(&api_token, &zone_name, &record_name).await?;
+    Ok(format!("DNS delete requested for {}", record_name))
+}
+
+fn persist_bundle_locally(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+    bundle: &PreparedDeploymentBundle,
+    target: &ResolvedDeployTarget,
+) -> Result<(), String> {
+    let live_state_path = default_live_state_path(repo_root);
+    if let Some(parent) = live_state_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(&live_state_path, bundle.current_state_json.as_bytes())
+        .map_err(|err| format!("failed to write {}: {err}", live_state_path.display()))?;
+
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    guard
+        .record_deployment(&bundle.label, &target.instance_id, &target.target_ip)
+        .map_err(|err| format!("failed to record deployment: {err}"))?;
+    guard
+        .upsert_trust_entry(NewTrustEntry {
+            deployment_id: &bundle.label,
+            instance_id: &target.instance_id,
+            ip: &target.target_ip,
+            known_host_line: "",
+            domain_name: Some("edge-agent"),
+            ca_cert_path: Some(
+                bundle
+                    .local_trust_material
+                    .ca_cert_path
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
+            server_cert_path: Some(
+                bundle
+                    .local_trust_material
+                    .server_cert_path
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
+            client_cert_path: Some(
+                bundle
+                    .local_trust_material
+                    .client_cert_path
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
+        })
+        .map_err(|err| format!("failed to record trust entry: {err}"))?;
+    Ok(())
+}
+
+fn read_live_deployment_summary(
+    repo_root: &Path,
+) -> Result<edge_shared_types::DeploymentSummary, String> {
+    let path = default_live_state_path(repo_root);
+    if !path.is_file() {
+        return Ok(edge_shared_types::DeploymentSummary::missing());
+    }
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+    Ok(edge_shared_types::DeploymentSummary {
+        live_state_present: true,
+        source_state_path: Some(path.display().to_string()),
+        deployment_label: value
+            .get("label")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        instance_id: value
+            .get("instance_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        server_ip: value
+            .get("ip")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        tunnel_domain: value
+            .get("tunnel")
+            .and_then(Value::as_object)
+            .and_then(|tunnel| tunnel.get("domain"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn clear_live_deployment_state(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+    instance_id: &str,
+) -> Result<(), String> {
+    let live_state_path = default_live_state_path(repo_root);
+    if live_state_path.is_file() {
+        fs::remove_file(&live_state_path)
+            .map_err(|err| format!("failed to remove {}: {err}", live_state_path.display()))?;
+    }
+
+    state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .clear_deployment_by_instance(instance_id)
+        .map_err(|err| format!("failed to clear deployment row: {err}"))?;
+    Ok(())
+}
+
 fn agent_endpoint_from_env() -> String {
     env::var("EDGE_AGENT_ENDPOINT").unwrap_or_else(|_| DEFAULT_AGENT_ENDPOINT.to_owned())
 }
@@ -1070,6 +1736,7 @@ fn platform_error_to_status(err: PlatformError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn resolves_repo_root_from_workspace() {
@@ -1158,5 +1825,53 @@ mod tests {
             warnings: vec![],
         });
         assert!(message.contains("UNKNOWN(99)"));
+    }
+
+    #[tokio::test]
+    async fn resolves_mock_deploy_target() {
+        let target = resolve_deploy_target(&DeployRequest {
+            label_prefix: Some("mock-edge".to_owned()),
+            target_ip: None,
+            instance_id: None,
+            tunnel_domain: None,
+            acme_email: None,
+            dns_record_name: None,
+            cloudflare_zone_name: None,
+            mock_provider: true,
+            skip_dns: true,
+        })
+        .await
+        .unwrap();
+
+        assert!(target.instance_id.starts_with("mock-"));
+        assert_eq!(target.target_ip, "203.0.113.10");
+    }
+
+    #[test]
+    fn reads_live_deployment_summary_from_state_file() {
+        let root = temp_repo_root();
+        let state_dir = root.join("win/vultr-waw");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("current-edge.json"),
+            r#"{"label":"edge-a","instance_id":"instance-1","ip":"203.0.113.5","tunnel":{"domain":"edge.example.com"}}"#,
+        )
+        .unwrap();
+
+        let summary = read_live_deployment_summary(&root).unwrap();
+        assert_eq!(summary.deployment_label.as_deref(), Some("edge-a"));
+        assert_eq!(summary.instance_id.as_deref(), Some("instance-1"));
+        assert_eq!(summary.server_ip.as_deref(), Some("203.0.113.5"));
+        assert_eq!(summary.tunnel_domain.as_deref(), Some("edge.example.com"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn temp_repo_root() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("edge-controller-test-{unique}"))
     }
 }

@@ -133,6 +133,59 @@ impl EdgeState {
             })
     }
 
+    pub fn record_deployment(
+        &self,
+        deployment_label: &str,
+        instance_id: &str,
+        server_ip: &str,
+    ) -> rusqlite::Result<StoredDeployment> {
+        let created_at = unix_now();
+        self.conn.execute(
+            "
+            INSERT INTO deployments (deployment_label, instance_id, server_ip, created_at_unix)
+            VALUES (?1, ?2, ?3, ?4)
+            ",
+            params![deployment_label, instance_id, server_ip, created_at],
+        )?;
+        Ok(StoredDeployment {
+            id: self.conn.last_insert_rowid(),
+            deployment_label: deployment_label.to_owned(),
+            instance_id: instance_id.to_owned(),
+            server_ip: server_ip.to_owned(),
+            created_at_unix: created_at,
+        })
+    }
+
+    pub fn latest_deployment(&self) -> rusqlite::Result<Option<StoredDeployment>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT id, deployment_label, instance_id, server_ip, created_at_unix
+            FROM deployments
+            ORDER BY id DESC
+            LIMIT 1
+            ",
+        )?;
+        let mut rows = statement.query([])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredDeployment {
+                id: row.get(0)?,
+                deployment_label: row.get(1)?,
+                instance_id: row.get(2)?,
+                server_ip: row.get(3)?,
+                created_at_unix: row.get(4)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn clear_deployment_by_instance(&self, instance_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM deployments WHERE instance_id = ?1",
+            params![instance_id],
+        )?;
+        Ok(())
+    }
+
     pub fn start_operation(&self, kind: &str, status: &str) -> rusqlite::Result<StoredOperation> {
         let created_at = unix_now();
         self.conn.execute(
@@ -379,6 +432,15 @@ pub struct StoredOperationEvent {
 }
 
 #[derive(Debug, Clone)]
+pub struct StoredDeployment {
+    pub id: i64,
+    pub deployment_label: String,
+    pub instance_id: String,
+    pub server_ip: String,
+    pub created_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewTrustEntry<'a> {
     pub deployment_id: &'a str,
     pub instance_id: &'a str,
@@ -455,6 +517,16 @@ mod tests {
             .unwrap();
         assert_eq!(trust.domain_name.as_deref(), Some("edge-agent"));
         assert_eq!(state.list_trust_entries().unwrap().len(), 1);
+        let deployment = state
+            .record_deployment("deploy-1", "instance-1", "203.0.113.10")
+            .unwrap();
+        assert_eq!(deployment.server_ip, "203.0.113.10");
+        assert_eq!(
+            state.latest_deployment().unwrap().unwrap().instance_id,
+            "instance-1"
+        );
+        state.clear_deployment_by_instance("instance-1").unwrap();
+        assert!(state.latest_deployment().unwrap().is_none());
         let _ = std::fs::remove_file(db_path);
     }
 }

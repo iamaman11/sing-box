@@ -7,8 +7,10 @@ use std::process::{Command, ExitCode};
 
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
-    AgentState, AgentVersion, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    Empty,
+    AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
+    BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
+    FilePresence, ReadBundleIdentityRequest, ReadBundleIdentityResponse,
+    ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse, VerifyRuntimeRequest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use serde::Deserialize;
@@ -132,6 +134,59 @@ impl AgentService for AgentServerImpl {
 
         Ok(Response::new(run_bootstrap(&self.stack_dir, mode)))
     }
+
+    async fn apply_bundle(
+        &self,
+        request: Request<ApplyBundleRequest>,
+    ) -> Result<Response<ApplyBundleResponse>, Status> {
+        let response = apply_bundle(&self.stack_dir, request.into_inner())
+            .map_err(|err| Status::internal(format!("failed to apply bundle: {err}")))?;
+        Ok(Response::new(response))
+    }
+
+    async fn verify_runtime(
+        &self,
+        request: Request<VerifyRuntimeRequest>,
+    ) -> Result<Response<AgentState>, Status> {
+        let mode = if request.into_inner().require_readiness {
+            AgentMode::Readiness
+        } else {
+            AgentMode::Runtime
+        };
+        Ok(Response::new(inspect_runtime(&self.stack_dir, mode)))
+    }
+
+    async fn read_bundle_identity(
+        &self,
+        _request: Request<ReadBundleIdentityRequest>,
+    ) -> Result<Response<ReadBundleIdentityResponse>, Status> {
+        let summary_path = self
+            .stack_dir
+            .parent()
+            .map(|parent| parent.join("deployment-summary.json"));
+        let summary = summary_path
+            .as_ref()
+            .filter(|path| path.is_file())
+            .and_then(|path| read_bundle_summary(path));
+
+        Ok(Response::new(ReadBundleIdentityResponse {
+            active_bundle_id: summary.as_ref().and_then(|summary| summary.label.clone()),
+            topology_version: summary
+                .as_ref()
+                .and_then(|summary| summary.instance_id.clone())
+                .map(|instance_id| format!("vultr-edge:{instance_id}")),
+            deployment_summary_path: summary_path.map(|path| path.display().to_string()),
+        }))
+    }
+
+    async fn read_rendered_artifacts(
+        &self,
+        _request: Request<ReadRenderedArtifactsRequest>,
+    ) -> Result<Response<ReadRenderedArtifactsResponse>, Status> {
+        Ok(Response::new(ReadRenderedArtifactsResponse {
+            files: collect_rendered_artifacts(&self.stack_dir),
+        }))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -241,6 +296,49 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     }
 
     state
+}
+
+fn apply_bundle(
+    stack_dir: &Path,
+    request: ApplyBundleRequest,
+) -> Result<ApplyBundleResponse, String> {
+    let host_root = stack_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| stack_dir.to_path_buf());
+    let mut written_paths = Vec::new();
+    let mut warnings = Vec::new();
+
+    if request.prune_existing && stack_dir.exists() {
+        fs::remove_dir_all(stack_dir)
+            .map_err(|err| format!("failed to remove {}: {err}", stack_dir.display()))?;
+    }
+    fs::create_dir_all(stack_dir)
+        .map_err(|err| format!("failed to create {}: {err}", stack_dir.display()))?;
+
+    for file in request.stack_files {
+        write_bundle_file(stack_dir, &file, &mut written_paths)?;
+    }
+    for file in request.host_files {
+        write_bundle_file(&host_root, &file, &mut written_paths)?;
+    }
+    if let Some(file) = request.deployment_summary {
+        write_bundle_file(&host_root, &file, &mut written_paths)?;
+    } else {
+        warnings.push("deployment summary was not provided".to_owned());
+    }
+    if let Some(file) = request.agent_env_file {
+        write_bundle_file(&host_root, &file, &mut written_paths)?;
+    } else {
+        warnings.push("edge-agent environment file was not provided".to_owned());
+    }
+
+    Ok(ApplyBundleResponse {
+        success: true,
+        written_paths,
+        stack_dir: Some(stack_dir.display().to_string()),
+        warnings,
+    })
 }
 
 fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
@@ -561,6 +659,61 @@ fn join_ports(ports: &[u32]) -> String {
         .join(", ")
 }
 
+fn write_bundle_file(
+    root: &Path,
+    file: &BundleFile,
+    written_paths: &mut Vec<String>,
+) -> Result<(), String> {
+    let path = root.join(&file.relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&path, &file.content)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    #[cfg(unix)]
+    if file.executable {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&path)
+            .map_err(|err| format!("failed to read {} metadata: {err}", path.display()))?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions)
+            .map_err(|err| format!("failed to set {} executable bit: {err}", path.display()))?;
+    }
+    written_paths.push(path.display().to_string());
+    Ok(())
+}
+
+fn collect_rendered_artifacts(stack_dir: &Path) -> Vec<FilePresence> {
+    [
+        ("docker-compose.yml", FileCategory::RequiredRepoInput),
+        (".env.runtime", FileCategory::RequiredRepoInput),
+        (
+            "rendered/edge-gateway.json",
+            FileCategory::RequiredRepoInput,
+        ),
+        (
+            "rendered/edge-gateway-direct.json",
+            FileCategory::RequiredRepoInput,
+        ),
+        ("rendered/tunnel-edge.json", FileCategory::RequiredRepoInput),
+        (
+            "rendered/tunnel-edge-warp.json",
+            FileCategory::RequiredRepoInput,
+        ),
+        ("certs/proxy.crt", FileCategory::RequiredRepoInput),
+        ("certs/proxy.key", FileCategory::RequiredRepoInput),
+    ]
+    .into_iter()
+    .map(|(path, category)| FilePresence {
+        path: path.to_owned(),
+        present: stack_dir.join(path).is_file(),
+        category: category as i32,
+    })
+    .collect()
+}
+
 fn read_runtime_env(path: &Path) -> Option<std::collections::BTreeMap<String, String>> {
     let raw = fs::read_to_string(path).ok()?;
     let mut values = std::collections::BTreeMap::new();
@@ -667,6 +820,71 @@ mod tests {
         };
         let response = server.get_health(Request::new(Empty {})).await.unwrap();
         assert!(response.get_ref().observed_stack_path.is_some());
+    }
+
+    #[test]
+    fn applies_bundle_files_to_stack_and_host_roots() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+
+        let response = apply_bundle(
+            &stack,
+            ApplyBundleRequest {
+                stack_files: vec![BundleFile {
+                    relative_path: "docker-compose.yml".to_owned(),
+                    content: b"services: {}\n".to_vec(),
+                    executable: false,
+                }],
+                host_files: vec![BundleFile {
+                    relative_path: "tls/ca.pem".to_owned(),
+                    content: b"ca".to_vec(),
+                    executable: false,
+                }],
+                deployment_summary: Some(BundleFile {
+                    relative_path: "deployment-summary.json".to_owned(),
+                    content: br#"{"label":"bundle-a","instance_id":"instance-1"}"#.to_vec(),
+                    executable: false,
+                }),
+                agent_env_file: Some(BundleFile {
+                    relative_path: "edge-agent.env".to_owned(),
+                    content: b"EDGE_AGENT_TLS_CA_CERT_PATH=/opt/vultr-edge-stack/tls/ca.pem\n"
+                        .to_vec(),
+                    executable: false,
+                }),
+                prune_existing: true,
+            },
+        )
+        .unwrap();
+
+        assert!(response.success);
+        assert!(stack.join("docker-compose.yml").is_file());
+        assert!(root.join("tls/ca.pem").is_file());
+        assert!(root.join("deployment-summary.json").is_file());
+        assert!(root.join("edge-agent.env").is_file());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_rendered_artifacts() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(stack.join("certs")).unwrap();
+        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+        fs::write(stack.join(".env.runtime"), "").unwrap();
+        fs::write(stack.join("rendered/edge-gateway.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/edge-gateway-direct.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/tunnel-edge.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/tunnel-edge-warp.json"), "{}").unwrap();
+        fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
+        fs::write(stack.join("certs/proxy.key"), "key").unwrap();
+
+        let artifacts = collect_rendered_artifacts(&stack);
+        assert!(artifacts.iter().all(|entry| entry.present));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

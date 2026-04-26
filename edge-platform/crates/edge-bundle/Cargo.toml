@@ -1,0 +1,17 @@
+[package]
+name = "edge-bundle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64 = "0.22.1"
+edge-trust = { path = "../edge-trust" }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+
+[lib]
+path = "src/lib.rs"
