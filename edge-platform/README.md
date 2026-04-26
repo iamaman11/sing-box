@@ -27,6 +27,7 @@ Rust control plane for local `sing-box` operation and Vultr edge runtime.
 - base/tunnel bootstrap over gRPC
 - deploy/destroy orchestration in Rust
 - fresh-host Vultr create + initial host bootstrap in Rust
+- steady-state remote agent target resolution from persisted deployment + trust state
 
 ## Fresh-host bootstrap inputs
 
@@ -60,8 +61,10 @@ Bootstrap transport remains SSH-only for first host preparation:
 - open local SSH tunnel to host loopback agent
 - continue deploy through gRPC
 
-Normal status/runtime observation is still expected to move to direct authenticated
-remote gRPC as the final hardening step.
+Status/runtime observation can now resolve the active remote agent target from
+persisted deployment and trust rows. The remaining hardening step is to remove
+any bootstrap-tunnel assumptions from the operational path and finish the
+production mTLS cutover semantics.
 
 ## What is still left
 

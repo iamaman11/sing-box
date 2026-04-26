@@ -97,6 +97,7 @@ impl EdgeState {
         self.ensure_column("trust_store", "ca_cert_path", "TEXT")?;
         self.ensure_column("trust_store", "server_cert_path", "TEXT")?;
         self.ensure_column("trust_store", "client_cert_path", "TEXT")?;
+        self.ensure_column("trust_store", "client_key_path", "TEXT")?;
         self.conn.execute_batch(
             "
             CREATE UNIQUE INDEX IF NOT EXISTS trust_store_identity_idx
@@ -289,15 +290,17 @@ impl EdgeState {
                 ca_cert_path,
                 server_cert_path,
                 client_cert_path,
+                client_key_path,
                 updated_at_unix
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(deployment_id, instance_id, ip) DO UPDATE SET
                 known_host_line = excluded.known_host_line,
                 domain_name = excluded.domain_name,
                 ca_cert_path = excluded.ca_cert_path,
                 server_cert_path = excluded.server_cert_path,
                 client_cert_path = excluded.client_cert_path,
+                client_key_path = excluded.client_key_path,
                 updated_at_unix = excluded.updated_at_unix
             ",
             params![
@@ -309,6 +312,7 @@ impl EdgeState {
                 entry.ca_cert_path,
                 entry.server_cert_path,
                 entry.client_cert_path,
+                entry.client_key_path,
                 updated_at,
             ],
         )?;
@@ -335,6 +339,7 @@ impl EdgeState {
                 ca_cert_path,
                 server_cert_path,
                 client_cert_path,
+                client_key_path,
                 updated_at_unix
             FROM trust_store
             WHERE deployment_id = ?1 AND instance_id = ?2 AND ip = ?3
@@ -352,7 +357,8 @@ impl EdgeState {
                 ca_cert_path: row.get(6)?,
                 server_cert_path: row.get(7)?,
                 client_cert_path: row.get(8)?,
-                updated_at_unix: row.get(9)?,
+                client_key_path: row.get(9)?,
+                updated_at_unix: row.get(10)?,
             }));
         }
         Ok(None)
@@ -371,6 +377,7 @@ impl EdgeState {
                 ca_cert_path,
                 server_cert_path,
                 client_cert_path,
+                client_key_path,
                 updated_at_unix
             FROM trust_store
             ORDER BY id ASC
@@ -387,7 +394,8 @@ impl EdgeState {
                 ca_cert_path: row.get(6)?,
                 server_cert_path: row.get(7)?,
                 client_cert_path: row.get(8)?,
-                updated_at_unix: row.get(9)?,
+                client_key_path: row.get(9)?,
+                updated_at_unix: row.get(10)?,
             })
         })?;
 
@@ -450,6 +458,7 @@ pub struct NewTrustEntry<'a> {
     pub ca_cert_path: Option<&'a str>,
     pub server_cert_path: Option<&'a str>,
     pub client_cert_path: Option<&'a str>,
+    pub client_key_path: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -463,6 +472,7 @@ pub struct StoredTrustEntry {
     pub ca_cert_path: Option<String>,
     pub server_cert_path: Option<String>,
     pub client_cert_path: Option<String>,
+    pub client_key_path: Option<String>,
     pub updated_at_unix: i64,
 }
 
@@ -513,9 +523,14 @@ mod tests {
                 ca_cert_path: Some("/tmp/ca.pem"),
                 server_cert_path: Some("/tmp/agent-server.pem"),
                 client_cert_path: Some("/tmp/controller-client.pem"),
+                client_key_path: Some("/tmp/controller-client.key"),
             })
             .unwrap();
         assert_eq!(trust.domain_name.as_deref(), Some("edge-agent"));
+        assert_eq!(
+            trust.client_key_path.as_deref(),
+            Some("/tmp/controller-client.key")
+        );
         assert_eq!(state.list_trust_entries().unwrap().len(), 1);
         let deployment = state
             .record_deployment("deploy-1", "instance-1", "203.0.113.10")

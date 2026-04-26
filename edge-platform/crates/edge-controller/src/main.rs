@@ -36,9 +36,15 @@ use edge_shared_types::{
     TraceObservation, VerifyRuntimeRequest,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
-use edge_state::{EdgeState, NewTrustEntry, StoredOperation, StoredOperationEvent};
+use edge_state::{
+    EdgeState, NewTrustEntry, StoredDeployment, StoredOperation, StoredOperationEvent,
+    StoredTrustEntry,
+};
 use edge_trace::trace_via_proxy;
-use edge_trust::{agent_endpoint_scheme, optional_agent_client_tls_from_env};
+use edge_trust::{
+    AgentClientTlsPaths, agent_client_tls_from_paths, agent_endpoint_scheme,
+    optional_agent_client_tls_from_env,
+};
 use prost::Message;
 use serde_json::Value;
 use tokio::time::sleep;
@@ -82,12 +88,19 @@ struct BootstrapAccessConfig {
 #[derive(Debug)]
 struct AgentTransport {
     endpoint: String,
+    tls_paths: Option<AgentClientTlsPaths>,
     _tunnel: Option<SshTunnelGuard>,
 }
 
 #[derive(Debug)]
 struct SshTunnelGuard {
     child: Child,
+}
+
+#[derive(Debug, Clone)]
+struct AgentConnectionTarget {
+    endpoint: String,
+    tls_paths: Option<AgentClientTlsPaths>,
 }
 
 #[tokio::main]
@@ -351,7 +364,18 @@ async fn bootstrap_runtime(
     endpoint: String,
     mode: BootstrapMode,
 ) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
-    let channel = connect_to_agent(endpoint).await?;
+    let target = AgentConnectionTarget {
+        endpoint,
+        tls_paths: None,
+    };
+    bootstrap_runtime_with_tls(target, mode).await
+}
+
+async fn bootstrap_runtime_with_tls(
+    target: AgentConnectionTarget,
+    mode: BootstrapMode,
+) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
+    let channel = connect_to_agent_target(&target).await?;
     let mut client = AgentServiceClient::<Channel>::new(channel);
     let response = client
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
@@ -482,7 +506,7 @@ impl ControllerService for ControllerServerImpl {
     ) -> Result<Response<ControllerStatus>, Status> {
         let mut status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
-        let (agent_state, runtime) = observe_agent(&self.agent_endpoint).await;
+        let (agent_state, runtime) = observe_agent(&self.state, &self.agent_endpoint).await;
 
         if !agent_state.ready {
             status
@@ -526,7 +550,9 @@ impl ControllerService for ControllerServerImpl {
             return Err(Status::invalid_argument("bootstrap mode is required"));
         }
 
-        let response = bootstrap_runtime(self.agent_endpoint.clone(), mode)
+        let target = resolve_agent_connection_target(&self.state, &self.agent_endpoint)
+            .map_err(|err| Status::internal(format!("failed to resolve agent target: {err}")))?;
+        let response = bootstrap_runtime_with_tls(target, mode)
             .await
             .map_err(|err| Status::internal(format!("agent bootstrap RPC failed: {err}")))?;
 
@@ -556,7 +582,7 @@ impl ControllerService for ControllerServerImpl {
             .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
         append_operation_event(&self.state, operation.id, "start local runtime requested")?;
 
-        let (agent_state, _) = observe_agent(&self.agent_endpoint).await;
+        let (agent_state, _) = observe_agent(&self.state, &self.agent_endpoint).await;
         if !agent_state.ready {
             append_operation_event(
                 &self.state,
@@ -678,7 +704,7 @@ impl ControllerService for ControllerServerImpl {
             .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
         append_operation_event(&self.state, operation.id, "restart local runtime requested")?;
 
-        let (agent_state, _) = observe_agent(&self.agent_endpoint).await;
+        let (agent_state, _) = observe_agent(&self.state, &self.agent_endpoint).await;
         if !agent_state.ready {
             append_operation_event(
                 &self.state,
@@ -953,19 +979,28 @@ impl ControllerService for ControllerServerImpl {
             &format!("agent transport ready via {}", agent_transport.endpoint),
         )?;
 
-        let apply_response = apply_bundle_to_agent(&agent_transport.endpoint, &bundle)
-            .await
-            .map_err(|err| {
-                let _ = append_operation_event(&self.state, operation.id, &err);
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                Status::internal(format!("failed to apply bundle to agent: {err}"))
-            })?;
+        let apply_response = apply_bundle_to_agent_target(
+            &AgentConnectionTarget {
+                endpoint: agent_transport.endpoint.clone(),
+                tls_paths: agent_transport.tls_paths.clone(),
+            },
+            &bundle,
+        )
+        .await
+        .map_err(|err| {
+            let _ = append_operation_event(&self.state, operation.id, &err);
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            Status::internal(format!("failed to apply bundle to agent: {err}"))
+        })?;
         for path in &apply_response.written_paths {
             append_operation_event(&self.state, operation.id, &format!("wrote {path}"))?;
         }
 
-        let base = bootstrap_runtime(
-            agent_transport.endpoint.clone(),
+        let base = bootstrap_runtime_with_tls(
+            AgentConnectionTarget {
+                endpoint: agent_transport.endpoint.clone(),
+                tls_paths: agent_transport.tls_paths.clone(),
+            },
             BootstrapMode::BootstrapBase,
         )
         .await
@@ -1017,8 +1052,11 @@ impl ControllerService for ControllerServerImpl {
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty())
         {
-            let tunnel = bootstrap_runtime(
-                agent_transport.endpoint.clone(),
+            let tunnel = bootstrap_runtime_with_tls(
+                AgentConnectionTarget {
+                    endpoint: agent_transport.endpoint.clone(),
+                    tls_paths: agent_transport.tls_paths.clone(),
+                },
                 BootstrapMode::BootstrapTunnel,
             )
             .await
@@ -1054,11 +1092,15 @@ impl ControllerService for ControllerServerImpl {
             append_operation_event(&self.state, operation.id, "tunnel bootstrap completed")?;
         }
 
-        let runtime_state = verify_agent_runtime(&agent_transport.endpoint, true)
-            .await
-            .map_err(|err| {
-                Status::internal(format!("failed to verify runtime readiness: {err}"))
-            })?;
+        let runtime_state = verify_agent_runtime_target(
+            &AgentConnectionTarget {
+                endpoint: agent_transport.endpoint.clone(),
+                tls_paths: agent_transport.tls_paths.clone(),
+            },
+            true,
+        )
+        .await
+        .map_err(|err| Status::internal(format!("failed to verify runtime readiness: {err}")))?;
         let runtime = RuntimeObservation::from_agent_state(&runtime_state);
 
         let sync = sync_local_config(
@@ -1556,6 +1598,7 @@ async fn prepare_agent_transport(
     if !should_bootstrap_via_ssh(request, target) {
         return Ok(AgentTransport {
             endpoint: direct_endpoint.to_owned(),
+            tls_paths: None,
             _tunnel: None,
         });
     }
@@ -1581,6 +1624,7 @@ async fn prepare_agent_transport(
     let tunnel = start_ssh_tunnel(target, &config, local_port)?;
     Ok(AgentTransport {
         endpoint: format!("http://127.0.0.1:{local_port}"),
+        tls_paths: None,
         _tunnel: Some(tunnel),
     })
 }
@@ -1856,11 +1900,11 @@ fn run_command(program: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
-async fn apply_bundle_to_agent(
-    endpoint: &str,
+async fn apply_bundle_to_agent_target(
+    target: &AgentConnectionTarget,
     bundle: &PreparedDeploymentBundle,
 ) -> Result<edge_shared_types::ApplyBundleResponse, String> {
-    let channel = connect_to_agent(endpoint.to_owned())
+    let channel = connect_to_agent_target(target)
         .await
         .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
     let mut client = AgentServiceClient::<Channel>::new(channel);
@@ -1893,11 +1937,11 @@ async fn apply_bundle_to_agent(
     Ok(response.into_inner())
 }
 
-async fn verify_agent_runtime(
-    endpoint: &str,
+async fn verify_agent_runtime_target(
+    target: &AgentConnectionTarget,
     require_readiness: bool,
 ) -> Result<AgentState, String> {
-    let channel = connect_to_agent(endpoint.to_owned())
+    let channel = connect_to_agent_target(target)
         .await
         .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
     let mut client = AgentServiceClient::<Channel>::new(channel);
@@ -2058,6 +2102,13 @@ fn persist_bundle_locally(
                     .to_string_lossy()
                     .as_ref(),
             ),
+            client_key_path: Some(
+                bundle
+                    .local_trust_material
+                    .client_key_path
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
         })
         .map_err(|err| format!("failed to record trust entry: {err}"))?;
     Ok(())
@@ -2121,9 +2172,33 @@ fn agent_endpoint_from_env() -> String {
     env::var("EDGE_AGENT_ENDPOINT").unwrap_or_else(|_| DEFAULT_AGENT_ENDPOINT.to_owned())
 }
 
-async fn observe_agent(endpoint: &str) -> (AgentState, RuntimeObservation) {
-    let Ok(channel) = connect_to_agent(endpoint.to_owned()).await else {
-        let reason = format!("edge-agent is unreachable at {endpoint}");
+async fn observe_agent(
+    state: &Arc<Mutex<EdgeState>>,
+    default_endpoint: &str,
+) -> (AgentState, RuntimeObservation) {
+    let target = match resolve_agent_connection_target(state, default_endpoint) {
+        Ok(target) => target,
+        Err(err) => {
+            let agent_state = AgentState {
+                healthy: false,
+                ready: false,
+                topology_version: "agent-target-resolution-failed".to_owned(),
+                active_bundle_id: None,
+                degraded_reasons: vec![err.clone()],
+                docker_reachable: false,
+                compose_file_present: false,
+                observed_stack_path: None,
+                running_containers: Vec::new(),
+                missing_containers: Vec::new(),
+                listening_tcp_ports: Vec::new(),
+                listening_udp_ports: Vec::new(),
+            };
+            return (agent_state, RuntimeObservation::agent_unreachable(err));
+        }
+    };
+
+    let Ok(channel) = connect_to_agent_target(&target).await else {
+        let reason = format!("edge-agent is unreachable at {}", target.endpoint);
         let agent_state = AgentState {
             healthy: false,
             ready: false,
@@ -2148,7 +2223,7 @@ async fn observe_agent(endpoint: &str) -> (AgentState, RuntimeObservation) {
     let version = client.get_version(Request::new(Empty {})).await;
 
     let Ok(runtime_response) = runtime else {
-        let reason = format!("edge-agent runtime RPC failed at {endpoint}");
+        let reason = format!("edge-agent runtime RPC failed at {}", target.endpoint);
         let agent_state = AgentState {
             healthy: false,
             ready: false,
@@ -2185,15 +2260,117 @@ async fn observe_agent(endpoint: &str) -> (AgentState, RuntimeObservation) {
     (agent_state, runtime)
 }
 
-async fn connect_to_agent(endpoint: String) -> Result<Channel, Box<dyn std::error::Error>> {
-    let tls = optional_agent_client_tls_from_env()
-        .map_err(|err| format!("failed to load controller TLS configuration: {err}"))?;
-    let endpoint = agent_endpoint_scheme(&endpoint, tls.is_some());
+async fn connect_to_agent_target(
+    target: &AgentConnectionTarget,
+) -> Result<Channel, Box<dyn std::error::Error>> {
+    let tls = match &target.tls_paths {
+        Some(paths) => Some(agent_client_tls_from_paths(paths).map_err(|err| {
+            format!("failed to load persisted controller TLS configuration: {err}")
+        })?),
+        None => optional_agent_client_tls_from_env()
+            .map_err(|err| format!("failed to load controller TLS configuration: {err}"))?,
+    };
+    let endpoint = agent_endpoint_scheme(&target.endpoint, tls.is_some());
     let mut transport = Endpoint::from_shared(endpoint)?;
     if let Some(tls) = tls {
         transport = transport.tls_config(tls)?;
     }
     Ok(transport.connect().await?)
+}
+
+fn resolve_agent_connection_target(
+    state: &Arc<Mutex<EdgeState>>,
+    default_endpoint: &str,
+) -> Result<AgentConnectionTarget, String> {
+    if env::var_os("EDGE_AGENT_ENDPOINT").is_some() || default_endpoint != DEFAULT_AGENT_ENDPOINT {
+        return Ok(AgentConnectionTarget {
+            endpoint: default_endpoint.to_owned(),
+            tls_paths: None,
+        });
+    }
+
+    if let Some(target) = resolve_persisted_agent_connection_target(state)? {
+        return Ok(target);
+    }
+
+    Ok(AgentConnectionTarget {
+        endpoint: default_endpoint.to_owned(),
+        tls_paths: None,
+    })
+}
+
+fn resolve_persisted_agent_connection_target(
+    state: &Arc<Mutex<EdgeState>>,
+) -> Result<Option<AgentConnectionTarget>, String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let Some(deployment) = guard
+        .latest_deployment()
+        .map_err(|err| format!("failed to load latest deployment: {err}"))?
+    else {
+        return Ok(None);
+    };
+    let Some(trust) = guard
+        .get_trust_entry(
+            &deployment.deployment_label,
+            &deployment.instance_id,
+            &deployment.server_ip,
+        )
+        .map_err(|err| format!("failed to load persisted trust entry: {err}"))?
+    else {
+        return Ok(None);
+    };
+    drop(guard);
+
+    persisted_agent_connection_target(&deployment, &trust).map(Some)
+}
+
+fn persisted_agent_connection_target(
+    deployment: &StoredDeployment,
+    trust: &StoredTrustEntry,
+) -> Result<AgentConnectionTarget, String> {
+    let tls_paths = persisted_agent_tls_paths(trust)?.ok_or_else(|| {
+        format!(
+            "persisted trust entry for {} is missing client TLS material",
+            deployment.instance_id
+        )
+    })?;
+    let remote_port = env::var("EDGE_AGENT_REMOTE_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_AGENT_REMOTE_PORT);
+    Ok(AgentConnectionTarget {
+        endpoint: format!("https://{}:{remote_port}", deployment.server_ip),
+        tls_paths: Some(tls_paths),
+    })
+}
+
+fn persisted_agent_tls_paths(
+    trust: &StoredTrustEntry,
+) -> Result<Option<AgentClientTlsPaths>, String> {
+    match (
+        trust.ca_cert_path.as_deref(),
+        trust.client_cert_path.as_deref(),
+        trust.client_key_path.as_deref(),
+    ) {
+        (Some(ca_cert_path), Some(client_cert_path), Some(client_key_path)) => {
+            Ok(Some(AgentClientTlsPaths {
+                ca_cert_path: PathBuf::from(ca_cert_path),
+                client_cert_path: PathBuf::from(client_cert_path),
+                client_key_path: PathBuf::from(client_key_path),
+                domain_name: trust
+                    .domain_name
+                    .clone()
+                    .unwrap_or_else(|| "edge-agent".to_owned()),
+            }))
+        }
+        (None, None, None) => Ok(None),
+        _ => Err(format!(
+            "persisted trust entry for deployment {} has incomplete client TLS paths",
+            trust.deployment_id
+        )),
+    }
 }
 
 fn platform_error_to_status(err: PlatformError) -> Status {
@@ -2343,6 +2520,68 @@ mod tests {
         let template = read_cloud_init_template(Path::new("/home/bose/projects/sing-box")).unwrap();
         assert!(template.contains("edge-agent.service"));
         assert!(template.contains("install-docker.sh"));
+    }
+
+    #[test]
+    fn resolves_persisted_agent_target_from_state() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-state-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .record_deployment("deploy-1", "instance-1", "203.0.113.10")
+                .unwrap();
+            guard
+                .upsert_trust_entry(NewTrustEntry {
+                    deployment_id: "deploy-1",
+                    instance_id: "instance-1",
+                    ip: "203.0.113.10",
+                    known_host_line: "",
+                    domain_name: Some("edge-agent"),
+                    ca_cert_path: Some("/tmp/ca.pem"),
+                    server_cert_path: Some("/tmp/agent-server.pem"),
+                    client_cert_path: Some("/tmp/controller-client.pem"),
+                    client_key_path: Some("/tmp/controller-client.key"),
+                })
+                .unwrap();
+        }
+
+        let target = resolve_persisted_agent_connection_target(&state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.endpoint, "https://203.0.113.10:50061");
+        let tls_paths = target.tls_paths.unwrap();
+        assert_eq!(
+            tls_paths.client_key_path,
+            PathBuf::from("/tmp/controller-client.key")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn rejects_partial_persisted_tls_material() {
+        let trust = StoredTrustEntry {
+            id: 1,
+            deployment_id: "deploy-1".to_owned(),
+            instance_id: "instance-1".to_owned(),
+            ip: "203.0.113.10".to_owned(),
+            known_host_line: String::new(),
+            domain_name: Some("edge-agent".to_owned()),
+            ca_cert_path: Some("/tmp/ca.pem".to_owned()),
+            server_cert_path: None,
+            client_cert_path: Some("/tmp/controller-client.pem".to_owned()),
+            client_key_path: None,
+            updated_at_unix: 0,
+        };
+        let error = persisted_agent_tls_paths(&trust).unwrap_err();
+        assert!(error.contains("incomplete client TLS paths"));
     }
 
     fn temp_repo_root() -> PathBuf {
