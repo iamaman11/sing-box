@@ -124,6 +124,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-console"
+version = "0.1.0"
+dependencies = [
+ "edge-shared-types",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "edge-controller"
 version = "0.1.0"
 dependencies = [

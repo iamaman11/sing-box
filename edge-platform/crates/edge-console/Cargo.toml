@@ -1,0 +1,15 @@
+[package]
+name = "edge-console"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+edge-shared-types = { path = "../edge-shared-types" }
+tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread"] }
+tonic = "0.14.5"
+
+[[bin]]
+name = "edge-console"
+path = "src/main.rs"

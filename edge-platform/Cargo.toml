@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/edge-agent",
+    "crates/edge-console",
     "crates/edge-controller",
     "crates/edge-controller-core",
     "crates/edge-singbox",

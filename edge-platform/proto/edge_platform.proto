@@ -183,6 +183,7 @@ message SelectorState {
 
 service ControllerService {
   rpc GetStatus(Empty) returns (ControllerStatus);
+  rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
 }
 
 service AgentService {

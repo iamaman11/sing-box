@@ -47,6 +47,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             io::stdout().write_all(&status.encode_proto())?;
             Ok(())
         }
+        "controller-bootstrap-runtime" => {
+            let mode = bootstrap_mode_from_args(2)?;
+            let endpoint = controller_endpoint_from_args(3);
+            let response = controller_bootstrap_runtime(endpoint, mode).await?;
+            io::stdout().write_all(&response.encode_proto())?;
+            if response.success {
+                Ok(())
+            } else {
+                Err(format_bootstrap_failure(&response).into())
+            }
+        }
         "bootstrap-runtime" => {
             let mode = bootstrap_mode_from_args(2)?;
             let endpoint = agent_endpoint_from_args(3);
@@ -81,6 +92,17 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
 async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {
     let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
     let response = client.get_status(Request::new(Empty {})).await?;
+    Ok(response.into_inner())
+}
+
+async fn controller_bootstrap_runtime(
+    endpoint: String,
+    mode: BootstrapMode,
+) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
+        .await?;
     Ok(response.into_inner())
 }
 
@@ -203,6 +225,33 @@ impl ControllerService for ControllerServerImpl {
             .map_err(|err| Status::internal(format!("failed to store status snapshot: {err}")))?;
 
         Ok(Response::new(status))
+    }
+
+    async fn bootstrap_runtime(
+        &self,
+        request: Request<BootstrapRuntimeRequest>,
+    ) -> Result<Response<BootstrapRuntimeResponse>, Status> {
+        let mode = BootstrapMode::try_from(request.into_inner().mode)
+            .map_err(|_| Status::invalid_argument("unknown bootstrap mode"))?;
+        if mode == BootstrapMode::Unspecified {
+            return Err(Status::invalid_argument("bootstrap mode is required"));
+        }
+
+        let response = bootstrap_runtime(self.agent_endpoint.clone(), mode)
+            .await
+            .map_err(|err| Status::internal(format!("agent bootstrap RPC failed: {err}")))?;
+
+        self.state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .store_local_observation("bootstrap_runtime_response", &response.encode_proto())
+            .map_err(|err| {
+                Status::internal(format!(
+                    "failed to store bootstrap response snapshot: {err}"
+                ))
+            })?;
+
+        Ok(Response::new(response))
     }
 }
 
@@ -328,5 +377,19 @@ mod tests {
         assert!(response.get_ref().inventory.is_some());
         assert!(response.get_ref().runtime.is_some());
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn formats_unknown_bootstrap_failure_message() {
+        let message = format_bootstrap_failure(&BootstrapRuntimeResponse {
+            success: false,
+            mode: 99,
+            exit_code: 8,
+            stdout: String::new(),
+            stderr: String::new(),
+            post_state: None,
+            warnings: vec![],
+        });
+        assert!(message.contains("UNKNOWN(99)"));
     }
 }
