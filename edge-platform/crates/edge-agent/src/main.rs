@@ -132,6 +132,8 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         listening_udp_ports: Vec::new(),
     };
 
+    inspect_bundle_artifacts(stack_dir, &mut state);
+
     let compose_path = stack_dir.join("docker-compose.yml");
     let Some(compose) = inspect_compose(&compose_path, &mut state) else {
         state.healthy = false;
@@ -195,6 +197,10 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     }
 
     state.ready = state.compose_file_present
+        && !state
+            .degraded_reasons
+            .iter()
+            .any(|reason| reason.contains("bundle artifact"))
         && state.docker_reachable
         && state.missing_containers.is_empty()
         && missing_tcp.is_empty()
@@ -208,6 +214,61 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     }
 
     state
+}
+
+fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
+    let runtime_env = stack_dir.join(".env.runtime");
+    if !runtime_env.is_file() {
+        state.degraded_reasons.push(format!(
+            "bundle artifact missing: {}",
+            runtime_env.display()
+        ));
+    }
+
+    let rendered_dir = stack_dir.join("rendered");
+    let missing_rendered = [
+        "edge-gateway.json",
+        "edge-gateway-direct.json",
+        "tunnel-edge.json",
+        "tunnel-edge-warp.json",
+    ]
+    .iter()
+    .filter(|name| !rendered_dir.join(name).is_file())
+    .map(|name| (*name).to_owned())
+    .collect::<Vec<_>>();
+    if !missing_rendered.is_empty() {
+        state.degraded_reasons.push(format!(
+            "bundle artifact missing: rendered/{}",
+            missing_rendered.join(", rendered/")
+        ));
+    }
+
+    let certs_dir = stack_dir.join("certs");
+    let missing_certs = ["proxy.crt", "proxy.key"]
+        .iter()
+        .filter(|name| !certs_dir.join(name).is_file())
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    if !missing_certs.is_empty() {
+        state.degraded_reasons.push(format!(
+            "bundle artifact missing: certs/{}",
+            missing_certs.join(", certs/")
+        ));
+    }
+
+    if let Some(summary_path) = stack_dir
+        .parent()
+        .map(|parent| parent.join("deployment-summary.json"))
+        .filter(|path| path.is_file())
+        && let Some(summary) = read_bundle_summary(&summary_path)
+    {
+        if let Some(label) = summary.label {
+            state.active_bundle_id = Some(label);
+        }
+        if let Some(instance_id) = summary.instance_id {
+            state.topology_version = format!("{}:{}", state.topology_version, instance_id);
+        }
+    }
 }
 
 fn inspect_compose(compose_path: &Path, state: &mut AgentState) -> Option<ComposeObservation> {
@@ -348,6 +409,11 @@ fn join_ports(ports: &[u32]) -> String {
         .join(", ")
 }
 
+fn read_bundle_summary(path: &Path) -> Option<BundleSummary> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 #[derive(Debug)]
 struct ComposeObservation {
     expected_containers: Vec<String>,
@@ -396,6 +462,12 @@ struct ComposeService {
     container_name: Option<String>,
     #[serde(default)]
     ports: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundleSummary {
+    label: Option<String>,
+    instance_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -449,6 +521,43 @@ mod tests {
         assert_eq!(observation.expected_containers.len(), 2);
         assert_eq!(observation.expected_tcp_ports, vec![3128]);
         assert_eq!(observation.expected_udp_ports, vec![8443]);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_bundle_summary_and_artifacts() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(stack.join("certs")).unwrap();
+        fs::write(
+            stack.join(".env.runtime"),
+            "TUNNEL_DOMAIN=edge.example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/edge-gateway.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/edge-gateway-direct.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/tunnel-edge.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/tunnel-edge-warp.json"), "{}").unwrap();
+        fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
+        fs::write(stack.join("certs/proxy.key"), "key").unwrap();
+        fs::write(
+            root.join("deployment-summary.json"),
+            r#"{"label":"bundle-a","instance_id":"instance-1"}"#,
+        )
+        .unwrap();
+
+        let mut state = AgentState::bootstrap_placeholder();
+        inspect_bundle_artifacts(&stack, &mut state);
+        assert_eq!(state.active_bundle_id.as_deref(), Some("bundle-a"));
+        assert!(state.topology_version.contains("instance-1"));
+        assert!(
+            !state
+                .degraded_reasons
+                .iter()
+                .any(|reason| reason.contains("bundle artifact"))
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

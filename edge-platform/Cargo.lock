@@ -117,6 +117,7 @@ version = "0.1.0"
 dependencies = [
  "edge-shared-types",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tokio",
  "tonic",
