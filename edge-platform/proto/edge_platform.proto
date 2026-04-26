@@ -71,6 +71,13 @@ message AgentState {
   string topology_version = 3;
   optional string active_bundle_id = 4;
   repeated string degraded_reasons = 5;
+  bool docker_reachable = 6;
+  bool compose_file_present = 7;
+  optional string observed_stack_path = 8;
+  repeated string running_containers = 9;
+  repeated string missing_containers = 10;
+  repeated uint32 listening_tcp_ports = 11;
+  repeated uint32 listening_udp_ports = 12;
 }
 
 message FilePresence {
@@ -135,6 +142,15 @@ message RuntimeObservation {
   bool edge_agent_reachable = 1;
   string runtime_kind = 2;
   repeated string warnings = 3;
+  bool docker_reachable = 4;
+  optional string observed_stack_path = 5;
+  repeated string running_containers = 6;
+  repeated string missing_containers = 7;
+  repeated uint32 listening_tcp_ports = 8;
+  repeated uint32 listening_udp_ports = 9;
+  optional string topology_version = 10;
+  optional string active_bundle_id = 11;
+  bool compose_file_present = 12;
 }
 
 message SelectorState {

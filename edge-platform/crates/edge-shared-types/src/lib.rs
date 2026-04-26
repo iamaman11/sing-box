@@ -39,6 +39,13 @@ impl AgentState {
             topology_version: "unknown".to_owned(),
             active_bundle_id: None,
             degraded_reasons: vec!["runtime inspection not implemented in phase 0".to_owned()],
+            docker_reachable: false,
+            compose_file_present: false,
+            observed_stack_path: None,
+            running_containers: Vec::new(),
+            missing_containers: Vec::new(),
+            listening_tcp_ports: Vec::new(),
+            listening_udp_ports: Vec::new(),
         }
     }
 
@@ -90,6 +97,49 @@ impl RuntimeObservation {
             edge_agent_reachable: false,
             runtime_kind: "docker-compose".to_owned(),
             warnings: vec!["edge-agent gRPC probing not implemented in phase A".to_owned()],
+            docker_reachable: false,
+            observed_stack_path: None,
+            running_containers: Vec::new(),
+            missing_containers: Vec::new(),
+            listening_tcp_ports: Vec::new(),
+            listening_udp_ports: Vec::new(),
+            topology_version: None,
+            active_bundle_id: None,
+            compose_file_present: false,
+        }
+    }
+
+    pub fn from_agent_state(agent_state: &AgentState) -> Self {
+        Self {
+            edge_agent_reachable: true,
+            runtime_kind: "docker-compose".to_owned(),
+            warnings: agent_state.degraded_reasons.clone(),
+            docker_reachable: agent_state.docker_reachable,
+            observed_stack_path: agent_state.observed_stack_path.clone(),
+            running_containers: agent_state.running_containers.clone(),
+            missing_containers: agent_state.missing_containers.clone(),
+            listening_tcp_ports: agent_state.listening_tcp_ports.clone(),
+            listening_udp_ports: agent_state.listening_udp_ports.clone(),
+            topology_version: Some(agent_state.topology_version.clone()),
+            active_bundle_id: agent_state.active_bundle_id.clone(),
+            compose_file_present: agent_state.compose_file_present,
+        }
+    }
+
+    pub fn agent_unreachable(reason: impl Into<String>) -> Self {
+        Self {
+            edge_agent_reachable: false,
+            runtime_kind: "docker-compose".to_owned(),
+            warnings: vec![reason.into()],
+            docker_reachable: false,
+            observed_stack_path: None,
+            running_containers: Vec::new(),
+            missing_containers: Vec::new(),
+            listening_tcp_ports: Vec::new(),
+            listening_udp_ports: Vec::new(),
+            topology_version: None,
+            active_bundle_id: None,
+            compose_file_present: false,
         }
     }
 }
