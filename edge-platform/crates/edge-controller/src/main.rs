@@ -52,7 +52,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let endpoint = agent_endpoint_from_args(3);
             let response = bootstrap_runtime(endpoint, mode).await?;
             io::stdout().write_all(&response.encode_proto())?;
-            Ok(())
+            if response.success {
+                Ok(())
+            } else {
+                Err(format_bootstrap_failure(&response).into())
+            }
         }
         other => Err(format!("unsupported command: {other}").into()),
     }
@@ -89,6 +93,23 @@ async fn bootstrap_runtime(
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
         .await?;
     Ok(response.into_inner())
+}
+
+fn format_bootstrap_failure(response: &BootstrapRuntimeResponse) -> String {
+    let mode = BootstrapMode::try_from(response.mode)
+        .map(|value| value.as_str_name().to_owned())
+        .unwrap_or_else(|_| format!("UNKNOWN({})", response.mode));
+    let mut parts = vec![format!(
+        "bootstrap-runtime {mode} failed with exit code {}",
+        response.exit_code
+    )];
+    if !response.stderr.trim().is_empty() {
+        parts.push(response.stderr.trim().to_owned());
+    }
+    if !response.warnings.is_empty() {
+        parts.push(format!("warnings: {}", response.warnings.join("; ")));
+    }
+    parts.join(": ")
 }
 
 fn controller_addr_from_args(index: usize) -> Result<SocketAddr, Box<dyn std::error::Error>> {
@@ -274,6 +295,22 @@ mod tests {
             "BOOTSTRAP_TUNNEL"
         );
         assert_eq!(BootstrapMode::BootstrapFull.as_str_name(), "BOOTSTRAP_FULL");
+    }
+
+    #[test]
+    fn formats_bootstrap_failure_message() {
+        let message = format_bootstrap_failure(&BootstrapRuntimeResponse {
+            success: false,
+            mode: BootstrapMode::BootstrapTunnel as i32,
+            exit_code: 12,
+            stdout: String::new(),
+            stderr: "container missing".to_owned(),
+            post_state: None,
+            warnings: vec!["tunnel container was not ready".to_owned()],
+        });
+        assert!(message.contains("bootstrap-runtime BOOTSTRAP_TUNNEL failed with exit code 12"));
+        assert!(message.contains("container missing"));
+        assert!(message.contains("tunnel container was not ready"));
     }
 
     #[tokio::test]

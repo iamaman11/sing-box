@@ -23,6 +23,25 @@ Describe 'deploy-waw helpers' {
         $resolved.GatewayImage | Should -Be 'ghcr.io/iamaman11/vultr-edge-gateway:latest'
     }
 
+    It 'resolves default controller binary from repository root' {
+        $repoRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+        $binaryPath = Join-Path $repoRoot 'edge-platform/target/release/edge-controller.exe'
+        try {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $binaryPath) -Force | Out-Null
+            Set-Content -LiteralPath $binaryPath -Value 'stub' -Encoding utf8
+
+            $resolved = Resolve-EdgeControllerBinaryPath -ExplicitPath '' -RepositoryRoot $repoRoot
+            $resolved | Should -Be $binaryPath
+        } finally {
+            Remove-Item -LiteralPath $repoRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'builds local edge-agent endpoint from forwarded port' {
+        $endpoint = Get-EdgeAgentEndpoint -ExplicitEndpoint '' -LocalPort 51061
+        $endpoint | Should -Be 'http://127.0.0.1:51061'
+    }
+
     It 'builds runtime env content with prebuilt image keys' {
         $content = Get-EdgeRuntimeEnvContent -Values @{
             PROXY_USERNAME = 'v_user'

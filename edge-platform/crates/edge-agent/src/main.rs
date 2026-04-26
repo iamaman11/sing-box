@@ -255,15 +255,20 @@ fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeRespo
         .output();
 
     match output {
-        Ok(output) => BootstrapRuntimeResponse {
-            success: output.status.success(),
-            mode: mode as i32,
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            post_state: Some(inspect_runtime(stack_dir, AgentMode::Runtime)),
-            warnings,
-        },
+        Ok(output) => {
+            let post_state = inspect_runtime(stack_dir, AgentMode::Runtime);
+            let verified = verify_bootstrap_post_state(stack_dir, mode, &post_state);
+            warnings.extend(verified.warnings);
+            BootstrapRuntimeResponse {
+                success: output.status.success() && verified.success,
+                mode: mode as i32,
+                exit_code: output.status.code().unwrap_or(-1),
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                post_state: Some(post_state),
+                warnings,
+            }
+        }
         Err(err) => {
             warnings.push(format!("failed to execute bootstrap script: {err}"));
             BootstrapRuntimeResponse {
@@ -276,6 +281,70 @@ fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeRespo
                 warnings,
             }
         }
+    }
+}
+
+fn verify_bootstrap_post_state(
+    stack_dir: &Path,
+    mode: BootstrapMode,
+    post_state: &AgentState,
+) -> BootstrapVerification {
+    let mut warnings = Vec::new();
+
+    if !post_state.compose_file_present {
+        warnings.push("compose file was not observed after bootstrap".to_owned());
+    }
+    if !post_state.docker_reachable {
+        warnings.push("docker runtime is not reachable after bootstrap".to_owned());
+    }
+
+    let runtime_env = read_runtime_env(&stack_dir.join(".env.runtime"));
+    let tunnel_expected = runtime_env
+        .as_ref()
+        .map(|values| {
+            env_flag_present(values, "TUNNEL_DOMAIN") && env_flag_present(values, "ACME_EMAIL")
+        })
+        .unwrap_or(false);
+
+    let mut expected = vec![
+        "vultr-warp-egress",
+        "vultr-edge-gateway",
+        "vultr-edge-gateway-direct",
+    ];
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull
+    ) && tunnel_expected
+    {
+        expected.push("vultr-tunnel-edge");
+        expected.push("vultr-tunnel-edge-warp");
+    }
+
+    for container in expected {
+        if !post_state
+            .running_containers
+            .iter()
+            .any(|running| running == container)
+        {
+            warnings.push(format!(
+                "expected container is not running after bootstrap: {container}"
+            ));
+        }
+    }
+
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull
+    ) && !tunnel_expected
+    {
+        warnings.push(
+            "tunnel bootstrap requested but TUNNEL_DOMAIN/ACME_EMAIL are not configured".to_owned(),
+        );
+    }
+
+    BootstrapVerification {
+        success: warnings.is_empty(),
+        warnings,
     }
 }
 
@@ -481,9 +550,39 @@ fn join_ports(ports: &[u32]) -> String {
         .join(", ")
 }
 
+fn read_runtime_env(path: &Path) -> Option<std::collections::BTreeMap<String, String>> {
+    let raw = fs::read_to_string(path).ok()?;
+    let mut values = std::collections::BTreeMap::new();
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some((key, value)) = trimmed.split_once('=') {
+            values.insert(key.trim().to_owned(), value.trim().to_owned());
+        }
+    }
+
+    Some(values)
+}
+
+fn env_flag_present(values: &std::collections::BTreeMap<String, String>, key: &str) -> bool {
+    values
+        .get(key)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
 fn read_bundle_summary(path: &Path) -> Option<BundleSummary> {
     let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+#[derive(Debug)]
+struct BootstrapVerification {
+    success: bool,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -641,10 +740,11 @@ mod tests {
     fn runs_bootstrap_script_by_mode() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".env.runtime"), "TUNNEL_DOMAIN=\nACME_EMAIL=\n").unwrap();
         let script = root.join("bootstrap.sh");
         fs::write(
             &script,
-            "#!/usr/bin/env bash\nset -euo pipefail\necho mode:$1\n",
+            "#!/usr/bin/env bash\nset -euo pipefail\nmode=\"$1\"\nprintf '%s\n' \"$mode\" > .mode\ntouch docker-compose.yml\necho mode:$mode\n",
         )
         .unwrap();
         let mut permissions = fs::metadata(&script).unwrap().permissions();
@@ -652,9 +752,88 @@ mod tests {
         fs::set_permissions(&script, permissions).unwrap();
 
         let response = run_bootstrap(&root, BootstrapMode::BootstrapBase);
-        assert!(response.success);
+        assert!(!response.success);
         assert_eq!(response.mode, BootstrapMode::BootstrapBase as i32);
         assert!(response.stdout.contains("mode:base"));
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("vultr-warp-egress"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verifies_base_bootstrap_from_running_container_state() {
+        let state = AgentState {
+            healthy: true,
+            ready: true,
+            topology_version: "v1".to_owned(),
+            active_bundle_id: None,
+            degraded_reasons: Vec::new(),
+            docker_reachable: true,
+            compose_file_present: true,
+            observed_stack_path: Some("/opt/vultr-edge-stack/stack".to_owned()),
+            running_containers: vec![
+                "vultr-warp-egress".to_owned(),
+                "vultr-edge-gateway".to_owned(),
+                "vultr-edge-gateway-direct".to_owned(),
+            ],
+            missing_containers: Vec::new(),
+            listening_tcp_ports: Vec::new(),
+            listening_udp_ports: Vec::new(),
+        };
+
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".env.runtime"), "TUNNEL_DOMAIN=\nACME_EMAIL=\n").unwrap();
+
+        let verification = verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &state);
+        assert!(verification.success);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn requires_tunnel_containers_for_tunnel_bootstrap() {
+        let state = AgentState {
+            healthy: true,
+            ready: true,
+            topology_version: "v1".to_owned(),
+            active_bundle_id: None,
+            degraded_reasons: Vec::new(),
+            docker_reachable: true,
+            compose_file_present: true,
+            observed_stack_path: Some("/opt/vultr-edge-stack/stack".to_owned()),
+            running_containers: vec![
+                "vultr-warp-egress".to_owned(),
+                "vultr-edge-gateway".to_owned(),
+                "vultr-edge-gateway-direct".to_owned(),
+            ],
+            missing_containers: Vec::new(),
+            listening_tcp_ports: Vec::new(),
+            listening_udp_ports: Vec::new(),
+        };
+
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join(".env.runtime"),
+            "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\n",
+        )
+        .unwrap();
+
+        let verification =
+            verify_bootstrap_post_state(&root, BootstrapMode::BootstrapTunnel, &state);
+        assert!(!verification.success);
+        assert!(
+            verification
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("vultr-tunnel-edge"))
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

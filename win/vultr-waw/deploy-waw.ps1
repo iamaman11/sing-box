@@ -16,8 +16,11 @@ param(
     [string]$TunnelDomain = '',
     [string]$AcmeEmail = '',
     [string]$EdgeAgentBinaryPath = $env:EDGE_AGENT_BINARY_PATH,
+    [string]$EdgeControllerBinaryPath = $env:EDGE_CONTROLLER_BINARY_PATH,
     [string]$WarpEgressImage = $env:EDGE_WARP_EGRESS_IMAGE,
     [string]$GatewayImage = $env:EDGE_GATEWAY_IMAGE,
+    [string]$EdgeAgentEndpoint = '',
+    [int]$EdgeAgentForwardPort = 50061,
     [switch]$UsePrebuiltImages,
     [switch]$SkipCreate
 )
@@ -187,13 +190,87 @@ function Invoke-NativeChecked {
     param(
         [Parameter(Mandatory)] [string]$FilePath,
         [Parameter()] [string[]]$Arguments = @(),
-        [switch]$IgnoreExitCode
+        [switch]$IgnoreExitCode,
+        [switch]$DiscardStdout
     )
 
-    & $FilePath @Arguments
+    if ($DiscardStdout) {
+        & $FilePath @Arguments 1>$null
+    } else {
+        & $FilePath @Arguments
+    }
     $exitCode = $LASTEXITCODE
     if (-not $IgnoreExitCode -and $exitCode -ne 0) {
         throw ("Command failed with exit code {0}: {1} {2}" -f $exitCode, $FilePath, ($Arguments -join ' '))
+    }
+}
+
+function Start-EdgeAgentTunnel {
+    param(
+        [Parameter(Mandatory)] [string]$TargetIp,
+        [Parameter(Mandatory)] [string]$KeyPath,
+        [Parameter(Mandatory)] [string]$KnownHostsPath,
+        [int]$LocalPort = 50061,
+        [int]$RemotePort = 50061
+    )
+
+    $arguments = @(
+        '-i', $KeyPath,
+        '-o', 'StrictHostKeyChecking=yes',
+        '-o', "UserKnownHostsFile=$KnownHostsPath",
+        '-o', 'IdentitiesOnly=yes',
+        '-o', 'ExitOnForwardFailure=yes',
+        '-N',
+        '-L', "${LocalPort}:127.0.0.1:${RemotePort}",
+        "root@$TargetIp"
+    )
+
+    $process = Start-Process -FilePath 'ssh' -ArgumentList $arguments -PassThru -WindowStyle Hidden
+    for ($i = 0; $i -lt 40; $i++) {
+        if ($process.HasExited) {
+            throw "edge-agent SSH tunnel exited early with code $($process.ExitCode)"
+        }
+
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $async = $client.BeginConnect('127.0.0.1', $LocalPort, $null, $null)
+            if ($async.AsyncWaitHandle.WaitOne(250)) {
+                $client.EndConnect($async)
+                $client.Close()
+                return $process
+            }
+        } catch {
+        } finally {
+            $client.Dispose()
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    try {
+        if (-not $process.HasExited) {
+            $process.Kill()
+            $process.WaitForExit()
+        }
+    } catch {
+    }
+
+    throw "Timed out waiting for edge-agent SSH tunnel on localhost:$LocalPort"
+}
+
+function Stop-EdgeAgentTunnel {
+    param([System.Diagnostics.Process]$Process)
+
+    if ($null -eq $Process) {
+        return
+    }
+
+    try {
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+            $Process.WaitForExit()
+        }
+    } catch {
     }
 }
 
@@ -346,6 +423,7 @@ Write-Host "Target IP: $targetIp"
 $knownHostsPath = Initialize-KnownHostsFile -HostName $targetIp -KeyPath $scopedKeyPath -DestinationDirectory $generatedDir
 Write-Host 'SSH host key pinned'
 
+$repoRoot = Split-Path -Parent (Split-Path -Parent $root)
 $sshBase = @(
     '-i', $scopedKeyPath,
     '-o', 'StrictHostKeyChecking=yes',
@@ -394,36 +472,33 @@ if (-not [string]::IsNullOrWhiteSpace($EdgeAgentBinaryPath)) {
     Write-Host 'edge-agent host service is active'
 }
 
-$baseVerifyCommand = "docker ps --format '{{.Names}}' | grep -x 'vultr-warp-egress' >/dev/null && docker ps --format '{{.Names}}' | grep -x 'vultr-edge-gateway' >/dev/null && docker ps --format '{{.Names}}' | grep -x 'vultr-edge-gateway-direct' >/dev/null"
-$fullVerifyCommand = "$baseVerifyCommand && docker ps --format '{{.Names}}' | grep -x 'vultr-tunnel-edge' >/dev/null && docker ps --format '{{.Names}}' | grep -x 'vultr-tunnel-edge-warp' >/dev/null"
+$resolvedControllerBinaryPath = Resolve-EdgeControllerBinaryPath -ExplicitPath $EdgeControllerBinaryPath -RepositoryRoot $repoRoot
+$resolvedAgentEndpoint = Get-EdgeAgentEndpoint -ExplicitEndpoint $EdgeAgentEndpoint -LocalPort $EdgeAgentForwardPort
 $cloudflareZoneId = ''
+$edgeAgentTunnel = $null
 
-if (-not [string]::IsNullOrWhiteSpace($TunnelDomain) -and -not [string]::IsNullOrWhiteSpace($AcmeEmail)) {
+try {
+    $edgeAgentTunnel = Start-EdgeAgentTunnel -TargetIp $targetIp -KeyPath $scopedKeyPath -KnownHostsPath $knownHostsPath -LocalPort $EdgeAgentForwardPort
+    Write-Host 'edge-agent SSH tunnel is active'
+
     Write-Host 'Bootstrapping base stack...'
-    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", 'cd /opt/vultr-edge-stack/stack && chmod +x bootstrap.sh && ./bootstrap.sh base'))
-    Write-Host 'Verifying base containers...'
-    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", $baseVerifyCommand))
+    Invoke-NativeChecked -FilePath $resolvedControllerBinaryPath -Arguments @('bootstrap-runtime', 'base', $resolvedAgentEndpoint) -DiscardStdout
 
-    if (-not [string]::IsNullOrWhiteSpace($DnsRecordName)) {
-        Write-Host "Updating DNS: $DnsRecordName -> $targetIp"
-        $cloudflareZoneId = Update-CloudflareARecord -ZoneName $CloudflareZoneName -RecordName $DnsRecordName -IpAddress $targetIp
-        Start-Sleep -Seconds 10
-    }
+    if (-not [string]::IsNullOrWhiteSpace($TunnelDomain) -and -not [string]::IsNullOrWhiteSpace($AcmeEmail)) {
+        if (-not [string]::IsNullOrWhiteSpace($DnsRecordName)) {
+            Write-Host "Updating DNS: $DnsRecordName -> $targetIp"
+            $cloudflareZoneId = Update-CloudflareARecord -ZoneName $CloudflareZoneName -RecordName $DnsRecordName -IpAddress $targetIp
+            Start-Sleep -Seconds 10
+        }
 
-    Write-Host 'Bootstrapping tunnel stack...'
-    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", 'cd /opt/vultr-edge-stack/stack && ./bootstrap.sh tunnel'))
-    Write-Host 'Verifying tunnel containers...'
-    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", $fullVerifyCommand))
-} else {
-    Write-Host 'Bootstrapping base stack...'
-    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", 'cd /opt/vultr-edge-stack/stack && chmod +x bootstrap.sh && ./bootstrap.sh base'))
-    Write-Host 'Verifying base containers...'
-    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", $baseVerifyCommand))
-
-    if (-not [string]::IsNullOrWhiteSpace($DnsRecordName)) {
+        Write-Host 'Bootstrapping tunnel stack...'
+        Invoke-NativeChecked -FilePath $resolvedControllerBinaryPath -Arguments @('bootstrap-runtime', 'tunnel', $resolvedAgentEndpoint) -DiscardStdout
+    } elseif (-not [string]::IsNullOrWhiteSpace($DnsRecordName)) {
         Write-Host "Updating DNS: $DnsRecordName -> $targetIp"
         $cloudflareZoneId = Update-CloudflareARecord -ZoneName $CloudflareZoneName -RecordName $DnsRecordName -IpAddress $targetIp
     }
+} finally {
+    Stop-EdgeAgentTunnel -Process $edgeAgentTunnel
 }
 
 $summary = [ordered]@{

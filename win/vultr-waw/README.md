@@ -58,3 +58,9 @@ Prebuilt-image mode for the uploaded server bundle:
 `EdgeAgentBinaryPath` is optional during transition. When provided, the script
 uploads it to `/opt/vultr-edge-stack/bin/edge-agent`, enables the host
 `edge-agent.service`, restarts it, and checks that the service is active.
+
+`deploy-waw.ps1` now expects a local `edge-controller` binary for the
+bootstrap RPC path. It resolves this from `EDGE_CONTROLLER_BINARY_PATH` or the
+workspace default `edge-platform/target/{release,debug}/edge-controller(.exe)`.
+Bootstrap/update continues to use SSH only for upload and local port forwarding;
+the actual `base` / `tunnel` actions are executed through `AgentService.BootstrapRuntime`.

@@ -33,6 +33,49 @@ function Get-EdgeImageConfig {
     }
 }
 
+function Resolve-EdgeControllerBinaryPath {
+    param(
+        [string]$ExplicitPath,
+        [Parameter(Mandatory)] [string]$RepositoryRoot
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        if (-not (Test-Path -LiteralPath $ExplicitPath)) {
+            throw "edge-controller binary not found: $ExplicitPath"
+        }
+
+        return $ExplicitPath
+    }
+
+    $candidates = @(
+        (Join-Path $RepositoryRoot 'edge-platform/target/release/edge-controller.exe'),
+        (Join-Path $RepositoryRoot 'edge-platform/target/debug/edge-controller.exe'),
+        (Join-Path $RepositoryRoot 'edge-platform/target/release/edge-controller'),
+        (Join-Path $RepositoryRoot 'edge-platform/target/debug/edge-controller')
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    throw 'edge-controller binary not found. Set EDGE_CONTROLLER_BINARY_PATH or pass -EdgeControllerBinaryPath.'
+}
+
+function Get-EdgeAgentEndpoint {
+    param(
+        [string]$ExplicitEndpoint,
+        [int]$LocalPort = 50061
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitEndpoint)) {
+        return $ExplicitEndpoint
+    }
+
+    return "http://127.0.0.1:$LocalPort"
+}
+
 function Get-EdgeRuntimeEnvContent {
     param(
         [Parameter(Mandatory)] [hashtable]$Values
