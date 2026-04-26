@@ -4,6 +4,7 @@ members = [
     "crates/edge-agent",
     "crates/edge-controller",
     "crates/edge-controller-core",
+    "crates/edge-state",
     "crates/edge-shared-types",
 ]
 

@@ -2,6 +2,44 @@ syntax = "proto3";
 
 package edge.platform.v1;
 
+enum Profile {
+  PROFILE_UNSPECIFIED = 0;
+  DIRECT = 1;
+  WARP = 2;
+}
+
+enum OperationLifecycleStatus {
+  OPERATION_LIFECYCLE_STATUS_UNSPECIFIED = 0;
+  REQUESTED = 1;
+  RUNNING = 2;
+  SUCCEEDED = 3;
+  FAILED = 4;
+}
+
+enum DeployPhase {
+  DEPLOY_PHASE_UNSPECIFIED = 0;
+  DEPLOY_PHASE_REQUESTED = 1;
+  INSTANCE_CREATE_REQUESTED = 2;
+  INSTANCE_PROVISIONING = 3;
+  INSTANCE_ADDRESS_ASSIGNED = 4;
+  INSTANCE_RUNTIME_READY = 5;
+  HOST_TRUST_INITIALIZED = 6;
+  BUNDLE_RENDERED = 7;
+  BUNDLE_UPLOADED = 8;
+  BASE_BOOTSTRAP_STARTED = 9;
+  BASE_READY_VERIFIED = 10;
+  DNS_CUTOVER_STARTED = 11;
+  DNS_CUTOVER_VERIFIED = 12;
+  TUNNEL_BOOTSTRAP_STARTED = 13;
+  TUNNEL_READY_VERIFIED = 14;
+  DEPLOYMENT_PUBLISHED = 15;
+  LOCAL_CONFIG_SYNCED = 16;
+  DEPLOY_PHASE_COMPLETED = 17;
+  DEPLOY_PHASE_FAILED = 18;
+  ROLLBACK_STARTED = 19;
+  ROLLBACK_COMPLETED = 20;
+}
+
 enum FileCategory {
   FILE_CATEGORY_UNSPECIFIED = 0;
   REQUIRED_REPO_INPUT = 1;
@@ -53,5 +91,66 @@ message InventoryReport {
 message ControllerStatus {
   InventoryReport inventory = 1;
   AgentState agent_state = 2;
-  repeated string status_notes = 3;
+  LocalSingboxState local_singbox = 3;
+  DeploymentSummary deployment = 4;
+  ProviderObservation provider = 5;
+  RuntimeObservation runtime = 6;
+  SelectorState selector = 7;
+  repeated string status_notes = 8;
+}
+
+message Empty {}
+
+message AgentVersion {
+  string name = 1;
+  string version = 2;
+}
+
+message LocalSingboxState {
+  bool process_running = 1;
+  bool managed_config = 2;
+  string expected_config_path = 3;
+  optional string active_config_path = 4;
+  optional uint32 clash_api_port = 5;
+  repeated string warnings = 6;
+}
+
+message DeploymentSummary {
+  bool live_state_present = 1;
+  optional string source_state_path = 2;
+  optional string deployment_label = 3;
+  optional string instance_id = 4;
+  optional string server_ip = 5;
+  optional string tunnel_domain = 6;
+}
+
+message ProviderObservation {
+  bool configured = 1;
+  string compute_provider = 2;
+  string dns_provider = 3;
+  repeated string warnings = 4;
+}
+
+message RuntimeObservation {
+  bool edge_agent_reachable = 1;
+  string runtime_kind = 2;
+  repeated string warnings = 3;
+}
+
+message SelectorState {
+  optional string desired_main_route = 1;
+  optional string observed_main_route = 2;
+  bool degraded = 3;
+  repeated string warnings = 4;
+}
+
+service ControllerService {
+  rpc GetStatus(Empty) returns (ControllerStatus);
+}
+
+service AgentService {
+  rpc GetHealth(Empty) returns (AgentState);
+  rpc GetReadiness(Empty) returns (AgentState);
+  rpc GetRuntimeState(Empty) returns (AgentState);
+  rpc GetVersion(Empty) returns (AgentVersion);
 }

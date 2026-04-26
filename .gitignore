@@ -18,6 +18,7 @@ win/vultr-waw/current-edge.json
 *.db
 win/vultr-waw/generated/
 edge-platform/target/
+edge-platform/.runtime/
 
 # OS/editor noise
 .DS_Store
