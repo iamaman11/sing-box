@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/edge-agent",
+    "crates/edge-controller-core",
+    "crates/edge-shared-types",
+]
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+rust-version = "1.95"

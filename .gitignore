@@ -17,6 +17,7 @@ win/vultr-waw/current-edge.json
 # Local cache/state
 *.db
 win/vultr-waw/generated/
+edge-platform/target/
 
 # OS/editor noise
 .DS_Store

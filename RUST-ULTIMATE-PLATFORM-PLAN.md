@@ -1,5 +1,77 @@
 # Ultimate Rust Platform Plan for Modular Edge Architectures
 
+## Critical review and execution correction
+
+This plan is directionally correct, but the original version was an
+architecture target, not an executable migration plan. The critical risks are:
+
+- scope is too broad for a first implementation pass
+- server mutation appears before enough read-only observability exists
+- secrets and generated live state are not explicitly treated as migration
+  blockers
+- Windows-only behavior is mixed with Linux controller behavior without a
+  compatibility boundary
+- a web UI is listed before the underlying operation/status contracts are
+  stable
+- the first useful deliverable is not defined
+
+The corrected execution rule is:
+
+1. preserve the current PowerShell/docker/sing-box system as the production
+   path until the Rust controller can report equivalent status read-only
+2. build a Rust workspace with shared typed status, operation, phase, and error
+   contracts first
+3. implement read-only local inventory before any deploy/destroy mutation
+4. implement `edge-agent` as a local/server health binary that can be run
+   beside the existing stack without controlling it
+5. implement mutation only after status contracts, state persistence, and
+   secret handling are in place
+
+## First executable vertical slice
+
+The first slice must be small enough to compile and test locally:
+
+- Rust workspace under `edge-platform/`
+- `edge-shared-types` with deployment phases, operation status, health models,
+  profile names, and structured errors
+- `edge-controller-core` with pure state-machine transition validation
+- `edge-agent` CLI that emits local JSON health from static/sample input or
+  basic process/runtime probes
+- unit tests for legal and illegal phase transitions
+
+This slice intentionally excludes:
+
+- real Vultr mutation
+- real Cloudflare mutation
+- Windows service installation
+- long-running local daemon behavior
+- replacing current PowerShell scripts
+
+## Migration blockers that must stay explicit
+
+Before any deploy/destroy operation is ported to Rust, the implementation must
+answer these with code, not documentation only:
+
+- where live credentials are stored
+- how generated configs are rendered without committing secrets
+- how stale deployment credentials are detected
+- how a foreign `sing-box` process is distinguished from the managed one
+- how provider API failure is separated from server health
+- how rollback behaves after DNS has been changed
+
+## Repository safety rules
+
+The Rust platform source may be committed. Live state may not be committed.
+The following remain local-only artifacts:
+
+- current deployment state JSON
+- generated server bundles
+- generated SSH keys and known_hosts files
+- live `sing-box` configs with passwords, UUIDs, or private keys
+- local credential stores and cache DBs
+
+All examples committed to the repository must use templates or placeholders.
+
 ## Summary
 
 This document defines the target-state migration from the current PowerShell-
@@ -953,6 +1025,23 @@ Required:
 ---
 
 ## Migration strategy
+
+## Phase 0: safe foundation and inventory
+
+Build:
+
+- Rust workspace skeleton
+- shared domain/status/error types
+- deploy/destroy phase transition validator
+- local sample fixtures with placeholders only
+- repository safety checks for obvious private keys and live credentials
+
+Outcome:
+
+- a compileable Rust base exists
+- the current system is unchanged
+- no live deployment secrets are moved into git
+- the migration has a concrete first testable artifact
 
 ## Phase 1: foundation
 
