@@ -3,6 +3,8 @@ fn main() {
     let proto_file = proto_root.join("edge_platform.proto");
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc");
 
+    println!("cargo:rerun-if-changed={}", proto_file.display());
+
     unsafe {
         std::env::set_var("PROTOC", protoc);
     }

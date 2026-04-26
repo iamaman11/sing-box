@@ -40,6 +40,13 @@ enum DeployPhase {
   ROLLBACK_COMPLETED = 20;
 }
 
+enum BootstrapMode {
+  BOOTSTRAP_MODE_UNSPECIFIED = 0;
+  BOOTSTRAP_BASE = 1;
+  BOOTSTRAP_TUNNEL = 2;
+  BOOTSTRAP_FULL = 3;
+}
+
 enum FileCategory {
   FILE_CATEGORY_UNSPECIFIED = 0;
   REQUIRED_REPO_INPUT = 1;
@@ -113,6 +120,20 @@ message AgentVersion {
   string version = 2;
 }
 
+message BootstrapRuntimeRequest {
+  BootstrapMode mode = 1;
+}
+
+message BootstrapRuntimeResponse {
+  bool success = 1;
+  BootstrapMode mode = 2;
+  int32 exit_code = 3;
+  string stdout = 4;
+  string stderr = 5;
+  AgentState post_state = 6;
+  repeated string warnings = 7;
+}
+
 message LocalSingboxState {
   bool process_running = 1;
   bool managed_config = 2;
@@ -169,4 +190,5 @@ service AgentService {
   rpc GetReadiness(Empty) returns (AgentState);
   rpc GetRuntimeState(Empty) returns (AgentState);
   rpc GetVersion(Empty) returns (AgentVersion);
+  rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
 }

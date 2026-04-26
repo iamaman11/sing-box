@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
-use edge_shared_types::{AgentState, AgentVersion, Empty};
+use edge_shared_types::{
+    AgentState, AgentVersion, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
+    Empty,
+};
 use serde::Deserialize;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -104,6 +107,19 @@ impl AgentService for AgentServerImpl {
             name: "edge-agent".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
         }))
+    }
+
+    async fn bootstrap_runtime(
+        &self,
+        request: Request<BootstrapRuntimeRequest>,
+    ) -> Result<Response<BootstrapRuntimeResponse>, Status> {
+        let mode = BootstrapMode::try_from(request.into_inner().mode)
+            .map_err(|_| Status::invalid_argument("unknown bootstrap mode"))?;
+        if mode == BootstrapMode::Unspecified {
+            return Err(Status::invalid_argument("bootstrap mode is required"));
+        }
+
+        Ok(Response::new(run_bootstrap(&self.stack_dir, mode)))
     }
 }
 
@@ -214,6 +230,62 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     }
 
     state
+}
+
+fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
+    let script = stack_dir.join("bootstrap.sh");
+    let mut warnings = Vec::new();
+
+    if !script.is_file() {
+        warnings.push(format!("bootstrap script is missing: {}", script.display()));
+        return BootstrapRuntimeResponse {
+            success: false,
+            mode: mode as i32,
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: String::new(),
+            post_state: Some(inspect_runtime(stack_dir, AgentMode::Runtime)),
+            warnings,
+        };
+    }
+
+    let output = Command::new(&script)
+        .arg(bootstrap_mode_arg(mode))
+        .current_dir(stack_dir)
+        .output();
+
+    match output {
+        Ok(output) => BootstrapRuntimeResponse {
+            success: output.status.success(),
+            mode: mode as i32,
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            post_state: Some(inspect_runtime(stack_dir, AgentMode::Runtime)),
+            warnings,
+        },
+        Err(err) => {
+            warnings.push(format!("failed to execute bootstrap script: {err}"));
+            BootstrapRuntimeResponse {
+                success: false,
+                mode: mode as i32,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+                post_state: Some(inspect_runtime(stack_dir, AgentMode::Runtime)),
+                warnings,
+            }
+        }
+    }
+}
+
+fn bootstrap_mode_arg(mode: BootstrapMode) -> &'static str {
+    match mode {
+        BootstrapMode::BootstrapBase => "base",
+        BootstrapMode::BootstrapTunnel => "tunnel",
+        BootstrapMode::BootstrapFull => "full",
+        BootstrapMode::Unspecified => "full",
+    }
 }
 
 fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
@@ -474,6 +546,8 @@ struct BundleSummary {
 mod tests {
     use super::*;
     use edge_shared_types::agent_service_server::AgentService;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[tokio::test]
@@ -558,6 +632,29 @@ mod tests {
                 .iter()
                 .any(|reason| reason.contains("bundle artifact"))
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn runs_bootstrap_script_by_mode() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("bootstrap.sh");
+        fs::write(
+            &script,
+            "#!/usr/bin/env bash\nset -euo pipefail\necho mode:$1\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+
+        let response = run_bootstrap(&root, BootstrapMode::BootstrapBase);
+        assert!(response.success);
+        assert_eq!(response.mode, BootstrapMode::BootstrapBase as i32);
+        assert!(response.stdout.contains("mode:base"));
 
         fs::remove_dir_all(root).unwrap();
     }

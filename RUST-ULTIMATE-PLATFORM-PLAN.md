@@ -500,6 +500,14 @@ Endpoints:
 - `GET /version`
 - optional `GET /metrics`
 
+Proto/gRPC equivalents:
+
+- `AgentService.GetHealth`
+- `AgentService.GetReadiness`
+- `AgentService.GetRuntimeState`
+- `AgentService.GetVersion`
+- `AgentService.BootstrapRuntime`
+
 ## 2. What `edge-agent` checks
 
 - required containers present
@@ -541,6 +549,17 @@ The platform must distinguish:
 - warp profile is ready
 
 SSH must not remain the primary normal status path.
+
+`BootstrapRuntime` is the first controlled mutation RPC on the server side. It
+must execute only bounded local stack modes:
+
+- `base`
+- `tunnel`
+- `full`
+
+It returns protobuf status with exit code, stdout/stderr, and post-bootstrap
+runtime observation. SSH may trigger agent installation and bundle upload, but
+normal stack bootstrap should move to this RPC.
 
 ## Server efficiency rules
 
