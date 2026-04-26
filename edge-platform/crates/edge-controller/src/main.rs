@@ -1,12 +1,15 @@
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use edge_bundle::{BuildBundleRequest, PreparedDeploymentBundle, build_bundle};
+use edge_bundle::{
+    BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
+};
 use edge_clash::{
     get_selector_state as get_live_selector_state, set_selector as set_live_selector,
 };
@@ -16,7 +19,9 @@ use edge_local_runtime::{
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
-use edge_provider_vultr::{destroy_instance, get_instance, mock_instance};
+use edge_provider_vultr::{
+    CreateInstanceRequest, create_instance, destroy_instance, get_instance, mock_instance,
+};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
@@ -36,6 +41,7 @@ use edge_trace::trace_via_proxy;
 use edge_trust::{agent_endpoint_scheme, optional_agent_client_tls_from_env};
 use prost::Message;
 use serde_json::Value;
+use tokio::time::sleep;
 use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Status};
 
@@ -48,9 +54,41 @@ const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
 const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
 const DEFAULT_REGION: &str = "waw";
 const DEFAULT_PLAN: &str = "vc2-1c-1gb";
+const DEFAULT_VULTR_OS_ID: u32 = 2136;
+const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const DEFAULT_SINGBOX_BINARY_PATH: &str =
     "V:\\code\\sing-box-cl\\auto-route-sing-box\\sing-box.exe";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
+const DEFAULT_AGENT_REMOTE_PORT: u16 = 50061;
+const DEFAULT_SSH_USER: &str = "root";
+const DEFAULT_SSH_KNOWN_HOSTS_PATH: &str = "edge-platform/.runtime/ssh-known_hosts";
+
+#[derive(Debug, Clone)]
+struct ResolvedDeployTarget {
+    instance_id: String,
+    target_ip: String,
+    created_instance: bool,
+}
+
+#[derive(Debug, Clone)]
+struct BootstrapAccessConfig {
+    private_key_path: PathBuf,
+    agent_binary_path: PathBuf,
+    ssh_user: String,
+    remote_port: u16,
+    known_hosts_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct AgentTransport {
+    endpoint: String,
+    _tunnel: Option<SshTunnelGuard>,
+}
+
+#[derive(Debug)]
+struct SshTunnelGuard {
+    child: Child,
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -835,17 +873,32 @@ impl ControllerService for ControllerServerImpl {
             .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
         append_operation_event(&self.state, operation.id, "deploy requested")?;
 
-        let target = resolve_deploy_target(&request).await.map_err(|err| {
-            let _ = append_operation_event(&self.state, operation.id, &err);
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            Status::invalid_argument(err)
-        })?;
+        let deployment_label = generate_deployment_label(request.label_prefix.as_deref());
+        append_operation_event(
+            &self.state,
+            operation.id,
+            &format!("deployment label reserved: {deployment_label}"),
+        )?;
+
+        let target = resolve_deploy_target(&self.repo_root, &request, &deployment_label)
+            .await
+            .map_err(|err| {
+                let _ = append_operation_event(&self.state, operation.id, &err);
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                Status::invalid_argument(err)
+            })?;
         append_operation_event(
             &self.state,
             operation.id,
             &format!(
-                "target resolved: {} ({})",
-                target.instance_id, target.target_ip
+                "target resolved: {} ({}){}",
+                target.instance_id,
+                target.target_ip,
+                if target.created_instance {
+                    " [created]"
+                } else {
+                    ""
+                }
             ),
         )?;
 
@@ -858,6 +911,7 @@ impl ControllerService for ControllerServerImpl {
             cloudflare_zone_name: request.cloudflare_zone_name.as_deref(),
             dns_record_name: request.dns_record_name.as_deref(),
             label_prefix: request.label_prefix.as_deref(),
+            deployment_label: Some(&deployment_label),
         })
         .map_err(|err| {
             let _ = append_operation_event(&self.state, operation.id, &err);
@@ -879,7 +933,27 @@ impl ControllerService for ControllerServerImpl {
             "local trust and deployment state persisted",
         )?;
 
-        let apply_response = apply_bundle_to_agent(&self.agent_endpoint, &bundle)
+        let agent_transport = prepare_agent_transport(
+            &self.repo_root,
+            &self.agent_endpoint,
+            &request,
+            &target,
+            operation.id,
+            &self.state,
+        )
+        .await
+        .map_err(|err| {
+            let _ = append_operation_event(&self.state, operation.id, &err);
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            Status::internal(format!("failed to prepare agent transport: {err}"))
+        })?;
+        append_operation_event(
+            &self.state,
+            operation.id,
+            &format!("agent transport ready via {}", agent_transport.endpoint),
+        )?;
+
+        let apply_response = apply_bundle_to_agent(&agent_transport.endpoint, &bundle)
             .await
             .map_err(|err| {
                 let _ = append_operation_event(&self.state, operation.id, &err);
@@ -890,13 +964,16 @@ impl ControllerService for ControllerServerImpl {
             append_operation_event(&self.state, operation.id, &format!("wrote {path}"))?;
         }
 
-        let base = bootstrap_runtime(self.agent_endpoint.clone(), BootstrapMode::BootstrapBase)
-            .await
-            .map_err(|err| {
-                let _ = append_operation_event(&self.state, operation.id, &err.to_string());
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                Status::internal(format!("base bootstrap failed: {err}"))
-            })?;
+        let base = bootstrap_runtime(
+            agent_transport.endpoint.clone(),
+            BootstrapMode::BootstrapBase,
+        )
+        .await
+        .map_err(|err| {
+            let _ = append_operation_event(&self.state, operation.id, &err.to_string());
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            Status::internal(format!("base bootstrap failed: {err}"))
+        })?;
         if !base.success {
             let _ =
                 append_operation_event(&self.state, operation.id, &format_bootstrap_failure(&base));
@@ -940,14 +1017,16 @@ impl ControllerService for ControllerServerImpl {
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty())
         {
-            let tunnel =
-                bootstrap_runtime(self.agent_endpoint.clone(), BootstrapMode::BootstrapTunnel)
-                    .await
-                    .map_err(|err| {
-                        let _ = append_operation_event(&self.state, operation.id, &err.to_string());
-                        let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                        Status::internal(format!("tunnel bootstrap failed: {err}"))
-                    })?;
+            let tunnel = bootstrap_runtime(
+                agent_transport.endpoint.clone(),
+                BootstrapMode::BootstrapTunnel,
+            )
+            .await
+            .map_err(|err| {
+                let _ = append_operation_event(&self.state, operation.id, &err.to_string());
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                Status::internal(format!("tunnel bootstrap failed: {err}"))
+            })?;
             if !tunnel.success {
                 let _ = append_operation_event(
                     &self.state,
@@ -975,7 +1054,7 @@ impl ControllerService for ControllerServerImpl {
             append_operation_event(&self.state, operation.id, "tunnel bootstrap completed")?;
         }
 
-        let runtime_state = verify_agent_runtime(&self.agent_endpoint, true)
+        let runtime_state = verify_agent_runtime(&agent_transport.endpoint, true)
             .await
             .map_err(|err| {
                 Status::internal(format!("failed to verify runtime readiness: {err}"))
@@ -1334,13 +1413,20 @@ fn store_local_response(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct ResolvedDeployTarget {
-    instance_id: String,
-    target_ip: String,
+impl Drop for SshTunnelGuard {
+    fn drop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 }
 
-async fn resolve_deploy_target(request: &DeployRequest) -> Result<ResolvedDeployTarget, String> {
+async fn resolve_deploy_target(
+    repo_root: &Path,
+    request: &DeployRequest,
+    deployment_label: &str,
+) -> Result<ResolvedDeployTarget, String> {
     if request.mock_provider {
         let label = request
             .label_prefix
@@ -1354,6 +1440,7 @@ async fn resolve_deploy_target(request: &DeployRequest) -> Result<ResolvedDeploy
         return Ok(ResolvedDeployTarget {
             instance_id: instance.id,
             target_ip: instance.main_ip,
+            created_instance: false,
         });
     }
 
@@ -1365,28 +1452,408 @@ async fn resolve_deploy_target(request: &DeployRequest) -> Result<ResolvedDeploy
             return Ok(ResolvedDeployTarget {
                 instance_id: instance.id,
                 target_ip: instance.main_ip,
+                created_instance: false,
             });
         }
     }
 
-    let Some(target_ip) = request
+    if let Some(target_ip) = request
         .target_ip
         .clone()
         .filter(|value| !value.trim().is_empty())
-    else {
-        return Err(
-            "deploy requires target_ip or a resolvable instance_id; new host bootstrap is not wired into Rust yet"
-                .to_owned(),
-        );
-    };
+    {
+        return Ok(ResolvedDeployTarget {
+            instance_id: request
+                .instance_id
+                .clone()
+                .unwrap_or_else(|| format!("manual-{}", target_ip.replace('.', "-"))),
+            target_ip,
+            created_instance: false,
+        });
+    }
 
+    let api_key = env::var("VULTR_API_KEY").map_err(|_| {
+        "deploy requires target_ip, a resolvable instance_id, or VULTR_API_KEY + EDGE_VULTR_SSH_KEY_ID for fresh host create".to_owned()
+    })?;
+    let ssh_key_id = env::var("EDGE_VULTR_SSH_KEY_ID").map_err(|_| {
+        "deploy requires EDGE_VULTR_SSH_KEY_ID when creating a fresh Vultr host".to_owned()
+    })?;
+    let cloud_init = read_cloud_init_template(repo_root)?;
+    let region = env::var("EDGE_VULTR_REGION").unwrap_or_else(|_| DEFAULT_REGION.to_owned());
+    let plan = env::var("EDGE_VULTR_PLAN").unwrap_or_else(|_| DEFAULT_PLAN.to_owned());
+    let os_id = env::var("EDGE_VULTR_OS_ID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_VULTR_OS_ID);
+
+    let instance = create_instance(
+        &api_key,
+        &CreateInstanceRequest {
+            region: &region,
+            plan: &plan,
+            os_id,
+            label: deployment_label,
+            ssh_key_id: &ssh_key_id,
+            cloud_init: &cloud_init,
+        },
+    )
+    .await?;
+    let ready = wait_for_instance_ready(&api_key, &instance.id).await?;
+    if ready.main_ip.trim().is_empty() {
+        return Err(format!(
+            "created instance {} did not report a main IP after provisioning",
+            ready.id
+        ));
+    }
     Ok(ResolvedDeployTarget {
-        instance_id: request
-            .instance_id
-            .clone()
-            .unwrap_or_else(|| format!("manual-{}", target_ip.replace('.', "-"))),
-        target_ip,
+        instance_id: ready.id,
+        target_ip: ready.main_ip,
+        created_instance: true,
     })
+}
+
+async fn wait_for_instance_ready(
+    api_key: &str,
+    instance_id: &str,
+) -> Result<edge_provider_vultr::VultrInstance, String> {
+    let mut last = None;
+    for _ in 0..60 {
+        let current = get_instance(api_key, instance_id).await?;
+        if current.status == "active"
+            && current.server_status == "ok"
+            && !current.main_ip.trim().is_empty()
+        {
+            return Ok(current);
+        }
+        last = Some(current);
+        sleep(Duration::from_secs(5)).await;
+    }
+
+    let Some(last) = last else {
+        return Err(format!(
+            "instance {instance_id} never returned a readable provisioning status"
+        ));
+    };
+    Err(format!(
+        "instance {} did not become ready in time: status={}, server_status={}, main_ip={}",
+        last.id, last.status, last.server_status, last.main_ip
+    ))
+}
+
+fn read_cloud_init_template(repo_root: &Path) -> Result<String, String> {
+    let path = repo_root.join(DEFAULT_CLOUD_INIT_PATH);
+    fs::read_to_string(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))
+}
+
+async fn prepare_agent_transport(
+    repo_root: &Path,
+    direct_endpoint: &str,
+    request: &DeployRequest,
+    target: &ResolvedDeployTarget,
+    operation_id: i64,
+    state: &Arc<Mutex<EdgeState>>,
+) -> Result<AgentTransport, String> {
+    if !should_bootstrap_via_ssh(request, target) {
+        return Ok(AgentTransport {
+            endpoint: direct_endpoint.to_owned(),
+            _tunnel: None,
+        });
+    }
+
+    let config = resolve_bootstrap_access_config(repo_root)?;
+    append_operation_event(state, operation_id, "waiting for SSH reachability")
+        .map_err(|status| status.message().to_owned())?;
+    accept_ssh_host_key(target, &config).await?;
+    append_operation_event(state, operation_id, "SSH host key pinned")
+        .map_err(|status| status.message().to_owned())?;
+    wait_for_docker_runtime(target, &config).await?;
+    append_operation_event(state, operation_id, "cloud-init and docker are ready")
+        .map_err(|status| status.message().to_owned())?;
+    install_edge_agent_binary(target, &config).await?;
+    append_operation_event(
+        state,
+        operation_id,
+        "edge-agent binary uploaded and service restarted",
+    )
+    .map_err(|status| status.message().to_owned())?;
+
+    let local_port = reserve_local_port()?;
+    let tunnel = start_ssh_tunnel(target, &config, local_port)?;
+    Ok(AgentTransport {
+        endpoint: format!("http://127.0.0.1:{local_port}"),
+        _tunnel: Some(tunnel),
+    })
+}
+
+fn should_bootstrap_via_ssh(request: &DeployRequest, target: &ResolvedDeployTarget) -> bool {
+    target.created_instance
+        || env::var("EDGE_BOOTSTRAP_VIA_SSH")
+            .ok()
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        || (request
+            .target_ip
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            && env::var_os("EDGE_SSH_PRIVATE_KEY_PATH").is_some())
+}
+
+fn resolve_bootstrap_access_config(repo_root: &Path) -> Result<BootstrapAccessConfig, String> {
+    let private_key_path = env::var("EDGE_SSH_PRIVATE_KEY_PATH")
+        .map(PathBuf::from)
+        .map_err(|_| "EDGE_SSH_PRIVATE_KEY_PATH is required for SSH bootstrap".to_owned())?;
+    if !private_key_path.is_file() {
+        return Err(format!(
+            "SSH private key was not found: {}",
+            private_key_path.display()
+        ));
+    }
+
+    let agent_binary_path = env::var("EDGE_AGENT_BINARY_PATH")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| default_edge_agent_binary_path(repo_root))
+        .ok_or_else(|| {
+            "EDGE_AGENT_BINARY_PATH is required or edge-platform/target/debug/edge-agent must exist"
+                .to_owned()
+        })?;
+    if !agent_binary_path.is_file() {
+        return Err(format!(
+            "edge-agent binary was not found: {}",
+            agent_binary_path.display()
+        ));
+    }
+
+    let known_hosts_path = ensure_known_hosts_file(repo_root)?;
+    let ssh_user = env::var("EDGE_SSH_USER").unwrap_or_else(|_| DEFAULT_SSH_USER.to_owned());
+    let remote_port = env::var("EDGE_AGENT_REMOTE_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_AGENT_REMOTE_PORT);
+
+    Ok(BootstrapAccessConfig {
+        private_key_path,
+        agent_binary_path,
+        ssh_user,
+        remote_port,
+        known_hosts_path,
+    })
+}
+
+fn default_edge_agent_binary_path(repo_root: &Path) -> Option<PathBuf> {
+    let candidate = repo_root
+        .join("edge-platform")
+        .join("target")
+        .join("debug")
+        .join(format!("edge-agent{}", env::consts::EXE_SUFFIX));
+    candidate.is_file().then_some(candidate)
+}
+
+fn ensure_known_hosts_file(repo_root: &Path) -> Result<PathBuf, String> {
+    let path = repo_root.join(DEFAULT_SSH_KNOWN_HOSTS_PATH);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    if !path.exists() {
+        fs::write(&path, b"")
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    }
+    Ok(path)
+}
+
+async fn accept_ssh_host_key(
+    target: &ResolvedDeployTarget,
+    config: &BootstrapAccessConfig,
+) -> Result<(), String> {
+    for _ in 0..60 {
+        let result = run_command(
+            "ssh",
+            &[
+                "-i".to_owned(),
+                config.private_key_path.display().to_string(),
+                "-o".to_owned(),
+                "StrictHostKeyChecking=accept-new".to_owned(),
+                "-o".to_owned(),
+                format!("UserKnownHostsFile={}", config.known_hosts_path.display()),
+                "-o".to_owned(),
+                "IdentitiesOnly=yes".to_owned(),
+                "-o".to_owned(),
+                "ConnectTimeout=5".to_owned(),
+                format!("{}@{}", config.ssh_user, target.target_ip),
+                "exit".to_owned(),
+            ],
+        );
+        if result.is_ok() {
+            return Ok(());
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
+    Err(format!("timed out waiting for SSH on {}", target.target_ip))
+}
+
+async fn wait_for_docker_runtime(
+    target: &ResolvedDeployTarget,
+    config: &BootstrapAccessConfig,
+) -> Result<(), String> {
+    for _ in 0..90 {
+        let result = run_command(
+            "ssh",
+            &ssh_args(
+                config,
+                &target.target_ip,
+                "if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait >/dev/null 2>&1; fi; command -v docker >/dev/null 2>&1 && docker --version >/dev/null 2>&1",
+            ),
+        );
+        if result.is_ok() {
+            return Ok(());
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
+    Err(format!(
+        "docker runtime was not ready on {} after waiting for cloud-init",
+        target.target_ip
+    ))
+}
+
+async fn install_edge_agent_binary(
+    target: &ResolvedDeployTarget,
+    config: &BootstrapAccessConfig,
+) -> Result<(), String> {
+    run_command(
+        "ssh",
+        &ssh_args(
+            config,
+            &target.target_ip,
+            "mkdir -p /opt/vultr-edge-stack/bin",
+        ),
+    )?;
+    run_command(
+        "scp",
+        &scp_args(
+            config,
+            &target.target_ip,
+            &config.agent_binary_path,
+            "/opt/vultr-edge-stack/bin/edge-agent.tmp",
+        ),
+    )?;
+    run_command(
+        "ssh",
+        &ssh_args(
+            config,
+            &target.target_ip,
+            "install -m 0755 /opt/vultr-edge-stack/bin/edge-agent.tmp /opt/vultr-edge-stack/bin/edge-agent && rm -f /opt/vultr-edge-stack/bin/edge-agent.tmp && systemctl daemon-reload && systemctl enable edge-agent.service && systemctl restart edge-agent.service && systemctl is-active --quiet edge-agent.service",
+        ),
+    )?;
+    Ok(())
+}
+
+fn reserve_local_port() -> Result<u16, String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|err| format!("failed to reserve local agent tunnel port: {err}"))?;
+    listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|err| format!("failed to read local tunnel port: {err}"))
+}
+
+fn start_ssh_tunnel(
+    target: &ResolvedDeployTarget,
+    config: &BootstrapAccessConfig,
+    local_port: u16,
+) -> Result<SshTunnelGuard, String> {
+    let mut child = Command::new("ssh")
+        .args([
+            "-i",
+            &config.private_key_path.display().to_string(),
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            &format!("UserKnownHostsFile={}", config.known_hosts_path.display()),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-N",
+            "-L",
+            &format!("{local_port}:127.0.0.1:{}", config.remote_port),
+            &format!("{}@{}", config.ssh_user, target.target_ip),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to start SSH tunnel: {err}"))?;
+
+    let probe_addr = SocketAddr::from(([127, 0, 0, 1], local_port));
+    for _ in 0..40 {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to read SSH tunnel status: {err}"))?
+        {
+            return Err(format!("SSH tunnel exited early with status {status}"));
+        }
+        if TcpStream::connect_timeout(&probe_addr, Duration::from_millis(250)).is_ok() {
+            return Ok(SshTunnelGuard { child });
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(format!(
+        "timed out waiting for local SSH tunnel on 127.0.0.1:{local_port}"
+    ))
+}
+
+fn ssh_args(config: &BootstrapAccessConfig, target_ip: &str, command: &str) -> Vec<String> {
+    vec![
+        "-i".to_owned(),
+        config.private_key_path.display().to_string(),
+        "-o".to_owned(),
+        "StrictHostKeyChecking=yes".to_owned(),
+        "-o".to_owned(),
+        format!("UserKnownHostsFile={}", config.known_hosts_path.display()),
+        "-o".to_owned(),
+        "IdentitiesOnly=yes".to_owned(),
+        format!("{}@{}", config.ssh_user, target_ip),
+        command.to_owned(),
+    ]
+}
+
+fn scp_args(
+    config: &BootstrapAccessConfig,
+    target_ip: &str,
+    source_path: &Path,
+    remote_path: &str,
+) -> Vec<String> {
+    vec![
+        "-i".to_owned(),
+        config.private_key_path.display().to_string(),
+        "-o".to_owned(),
+        "StrictHostKeyChecking=yes".to_owned(),
+        "-o".to_owned(),
+        format!("UserKnownHostsFile={}", config.known_hosts_path.display()),
+        "-o".to_owned(),
+        "IdentitiesOnly=yes".to_owned(),
+        source_path.display().to_string(),
+        format!("{}@{}:{remote_path}", config.ssh_user, target_ip),
+    ]
+}
+
+fn run_command(program: &str, args: &[String]) -> Result<(), String> {
+    let status = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("failed to start {program}: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{program} exited with status {status} ({})",
+            args.join(" ")
+        ))
+    }
 }
 
 async fn apply_bundle_to_agent(
@@ -1829,17 +2296,21 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_mock_deploy_target() {
-        let target = resolve_deploy_target(&DeployRequest {
-            label_prefix: Some("mock-edge".to_owned()),
-            target_ip: None,
-            instance_id: None,
-            tunnel_domain: None,
-            acme_email: None,
-            dns_record_name: None,
-            cloudflare_zone_name: None,
-            mock_provider: true,
-            skip_dns: true,
-        })
+        let target = resolve_deploy_target(
+            Path::new("/home/bose/projects/sing-box"),
+            &DeployRequest {
+                label_prefix: Some("mock-edge".to_owned()),
+                target_ip: None,
+                instance_id: None,
+                tunnel_domain: None,
+                acme_email: None,
+                dns_record_name: None,
+                cloudflare_zone_name: None,
+                mock_provider: true,
+                skip_dns: true,
+            },
+            "mock-edge-1",
+        )
         .await
         .unwrap();
 
@@ -1865,6 +2336,13 @@ mod tests {
         assert_eq!(summary.tunnel_domain.as_deref(), Some("edge.example.com"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_cloud_init_template_from_repo() {
+        let template = read_cloud_init_template(Path::new("/home/bose/projects/sing-box")).unwrap();
+        assert!(template.contains("edge-agent.service"));
+        assert!(template.contains("install-docker.sh"));
     }
 
     fn temp_repo_root() -> PathBuf {

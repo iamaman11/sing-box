@@ -37,6 +37,7 @@ pub struct BuildBundleRequest<'a> {
     pub cloudflare_zone_name: Option<&'a str>,
     pub dns_record_name: Option<&'a str>,
     pub label_prefix: Option<&'a str>,
+    pub deployment_label: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,7 +114,10 @@ struct ExistingStateDocument {
 }
 
 pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeploymentBundle, String> {
-    let label = generate_label(request.label_prefix.unwrap_or(DEFAULT_LABEL_PREFIX));
+    let label = request
+        .deployment_label
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| generate_deployment_label(request.label_prefix));
     let generated_dir = request
         .repo_root
         .join(GENERATED_ROOT_PATH)
@@ -530,7 +534,8 @@ fn generate_uuid_v4() -> Result<String, String> {
     ))
 }
 
-fn generate_label(prefix: &str) -> String {
+pub fn generate_deployment_label(prefix: Option<&str>) -> String {
+    let prefix = prefix.unwrap_or(DEFAULT_LABEL_PREFIX);
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -581,6 +586,7 @@ mod tests {
             cloudflare_zone_name: Some("example.com"),
             dns_record_name: Some("edge.example.com"),
             label_prefix: Some("test-edge"),
+            deployment_label: None,
         };
 
         let bundle = build_bundle(&request).unwrap();
@@ -616,5 +622,32 @@ mod tests {
         let value = generate_uuid_v4().unwrap();
         assert_eq!(value.len(), 36);
         assert_eq!(value.as_bytes()[14], b'4');
+    }
+
+    #[test]
+    fn respects_explicit_deployment_label() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let request = BuildBundleRequest {
+            repo_root: &repo_root,
+            target_ip: "203.0.113.21",
+            instance_id: "instance-2",
+            tunnel_domain: None,
+            acme_email: None,
+            cloudflare_zone_name: None,
+            dns_record_name: None,
+            label_prefix: Some("ignored"),
+            deployment_label: Some("edge-fixed-label"),
+        };
+
+        let bundle = build_bundle(&request).unwrap();
+        assert_eq!(bundle.label, "edge-fixed-label");
+        let _ = fs::remove_dir_all(bundle.generated_dir);
     }
 }
