@@ -10,6 +10,13 @@ This document describes the current server-side architecture deployed by the
 - `vultr-waw/stack/docker-compose.yml`
 - generated runtime files under `%LOCALAPPDATA%\sing-box-vultr-dual\state\generated\...`
 
+It also captures the target Rust-side migration direction:
+
+- `edge-agent` runs on the Linux host as a dedicated Rust daemon
+- normal status and readiness move from SSH to `edge-agent` gRPC
+- deploy bundles are prepared locally and uploaded ready-to-run
+- dataplane images should be prebuilt and pulled, not built on the server
+
 ## Provider and Instance Model
 
 The current server target is a Vultr Shared CPU instance in `waw` (Warsaw).
@@ -22,6 +29,23 @@ The deployment model is:
 4. `bootstrap.sh` renders configs and starts containers.
 5. Health is checked over SSH before the deployment is considered successful.
 6. State is persisted in `%LOCALAPPDATA%\sing-box-vultr-dual\state\current-edge.json`.
+
+## Target Host Model
+
+The target Linux host shape is:
+
+1. Docker Engine and Compose plugin installed by `cloud-init`
+2. `edge-agent` installed as a host binary under `/opt/vultr-edge-stack/bin`
+3. `edge-agent` started and supervised by `systemd`
+4. stack artifacts unpacked into `/opt/vultr-edge-stack/stack`
+5. normal status/readiness served over local gRPC by `edge-agent`
+
+Operational boundary:
+
+- SSH remains only for bootstrap, upload, and controlled updates
+- SSH must not remain the normal status path
+- the server host should not build dataplane images during steady-state deploys
+- the uploaded bundle should already contain runtime env and rendered inputs
 
 ## Container Topology
 
@@ -176,6 +200,7 @@ Locally generated:
 
 Server-side persistent paths:
 
+- `/opt/vultr-edge-stack/bin/edge-agent`
 - `/opt/vultr-edge-stack/stack/warp-state`
 - `/opt/vultr-edge-stack/stack/tunnel-state`
 - `/opt/vultr-edge-stack/stack/certs`
@@ -201,6 +226,28 @@ The current deploy sequence is two-phase:
    - `vultr-tunnel-edge-warp`
 10. write final state and summary
 
+## Target Deploy Flow
+
+The target deploy flow should become:
+
+1. create instance
+2. wait for `cloud-init`, Docker, and host `edge-agent`
+3. pin SSH trust once for bootstrap/update operations
+4. upload a ready bundle:
+   - prebuilt image references
+   - `.env.runtime`
+   - rendered configs
+   - deployment summary
+   - host `edge-agent` binary when version changes
+5. restart `edge-agent` if the binary changed
+6. ask `edge-agent` to verify base readiness
+7. update DNS only after typed readiness is confirmed
+8. ask `edge-agent` to verify tunnel readiness
+9. persist final deployment state locally
+
+This keeps SSH on the bootstrap/update boundary and makes `edge-agent` the
+normal server truth source.
+
 This is stronger than the earlier model where DNS was updated before any
 meaningful verification.
 
@@ -222,6 +269,16 @@ meaningful verification.
 - proxy ports remain public and therefore remain abuse-sensitive
 - control plane still depends on one Windows operator host and local state file
 - firewall posture is not managed as code in the stack itself
+
+## Migration Direction
+
+The Rust migration should optimize the server path in these exact ways:
+
+- `edge-agent` installed through host preparation and run by `systemd`
+- no server-side image builds in the steady-state deploy path
+- prepared bundles uploaded from the controller side
+- SSH reserved for bootstrap and bundle update operations
+- normal runtime status and readiness served only through `edge-agent` gRPC
 
 ## Exact Public Surface
 

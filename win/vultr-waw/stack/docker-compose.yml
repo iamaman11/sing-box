@@ -2,6 +2,7 @@ name: vultr-edge
 
 services:
   warp-egress:
+    image: ${EDGE_WARP_EGRESS_IMAGE:-ghcr.io/iamaman11/vultr-warp-egress:latest}
     build:
       context: ./warp-egress
     container_name: vultr-warp-egress
@@ -17,6 +18,7 @@ services:
         ipv4_address: 172.22.10.2
 
   edge-gateway:
+    image: ${EDGE_GATEWAY_IMAGE:-ghcr.io/iamaman11/vultr-edge-gateway:latest}
     build:
       context: ./edge-gateway
     container_name: vultr-edge-gateway
@@ -40,6 +42,7 @@ services:
         ipv4_address: 172.22.10.3
 
   edge-gateway-direct:
+    image: ${EDGE_GATEWAY_IMAGE:-ghcr.io/iamaman11/vultr-edge-gateway:latest}
     build:
       context: ./edge-gateway
     container_name: vultr-edge-gateway-direct
@@ -60,6 +63,7 @@ services:
   tunnel-edge:
     profiles:
       - tunnel
+    image: ${EDGE_GATEWAY_IMAGE:-ghcr.io/iamaman11/vultr-edge-gateway:latest}
     build:
       context: ./edge-gateway
     container_name: vultr-tunnel-edge
@@ -79,6 +83,7 @@ services:
   tunnel-edge-warp:
     profiles:
       - tunnel
+    image: ${EDGE_GATEWAY_IMAGE:-ghcr.io/iamaman11/vultr-edge-gateway:latest}
     build:
       context: ./edge-gateway
     container_name: vultr-tunnel-edge-warp

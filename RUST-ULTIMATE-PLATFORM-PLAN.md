@@ -242,6 +242,17 @@ Responsibilities:
 - optional metrics endpoint
 - local container and port inspection
 
+Server deployment rules:
+
+- `edge-agent` is installed on the Linux host as a native binary
+- `edge-agent` is managed by `systemd`, not by Docker Compose
+- Docker and Compose are installed through `cloud-init`
+- the deploy bundle arrives already prepared from the controller side
+- dataplane images are prebuilt and pulled, not built on the server during
+  normal deploys
+- SSH remains only for bootstrap, upload, and controlled update operations
+- normal status and readiness must come from `edge-agent` gRPC
+
 It must not:
 
 - replace `sing-box`
@@ -497,6 +508,8 @@ Endpoints:
 - required rendered config files present
 - required runtime state directories present
 - bundle/version identity
+- runtime env presence
+- server-side bundle summary presence
 - optional cert and tunnel state expectations
 
 ## 3. What `edge-agent` returns
@@ -511,6 +524,8 @@ The response must be machine-readable and precise.
 - active bundle id
 - degraded reasons
 - runtime type
+- rendered artifact readiness
+- runtime env readiness
 - last health evaluation time
 
 ## 4. Health semantics
@@ -526,6 +541,24 @@ The platform must distinguish:
 - warp profile is ready
 
 SSH must not remain the primary normal status path.
+
+## Server efficiency rules
+
+The server path should optimize for low-latency provisioning and minimal
+runtime drift:
+
+- install host prerequisites once through `cloud-init`
+- keep `edge-agent` outside the dataplane container graph
+- upload a ready-to-run stack bundle instead of rendering it on the server
+- use prebuilt image references so `docker compose up` does not rebuild images
+- keep the normal observation path on local host reads plus gRPC, not SSH
+
+This reduces:
+
+- server creation latency
+- deploy-time Docker build cost
+- control-plane round trips
+- drift between uploaded templates and actual rendered runtime state
 
 ---
 

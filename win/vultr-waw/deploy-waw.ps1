@@ -15,6 +15,10 @@ param(
     [string]$TargetIp = '',
     [string]$TunnelDomain = '',
     [string]$AcmeEmail = '',
+    [string]$EdgeAgentBinaryPath = $env:EDGE_AGENT_BINARY_PATH,
+    [string]$WarpEgressImage = $env:EDGE_WARP_EGRESS_IMAGE,
+    [string]$GatewayImage = $env:EDGE_GATEWAY_IMAGE,
+    [switch]$UsePrebuiltImages,
     [switch]$SkipCreate
 )
 
@@ -278,6 +282,13 @@ $vlessWarpUuid = if ($existingEnv['VLESS_WARP_UUID']) { $existingEnv['VLESS_WARP
 $hy2WarpPassword = if ($existingEnv['HY2_WARP_PASSWORD']) { $existingEnv['HY2_WARP_PASSWORD'] } else { New-RandomSecret }
 $realityWarpShortId = if ($existingEnv['REALITY_WARP_SHORT_ID']) { $existingEnv['REALITY_WARP_SHORT_ID'] } else { New-HexSecret }
 $proxyCertCn = if ([string]::IsNullOrWhiteSpace($TunnelDomain)) { 'proxy.local' } else { $TunnelDomain }
+$usePrebuiltImageValue = if ($UsePrebuiltImages -or $env:EDGE_USE_PREBUILT_IMAGES -eq '1') { '1' } else { '0' }
+if ([string]::IsNullOrWhiteSpace($WarpEgressImage)) {
+    $WarpEgressImage = 'ghcr.io/iamaman11/vultr-warp-egress:latest'
+}
+if ([string]::IsNullOrWhiteSpace($GatewayImage)) {
+    $GatewayImage = 'ghcr.io/iamaman11/vultr-edge-gateway:latest'
+}
 
 $envRuntime = @"
 PROXY_USERNAME=$proxyUser
@@ -296,6 +307,9 @@ REALITY_WARP_SHORT_ID=$realityWarpShortId
 REALITY_SERVER_NAME=www.microsoft.com
 TUNNEL_DOMAIN=$TunnelDomain
 ACME_EMAIL=$AcmeEmail
+EDGE_USE_PREBUILT_IMAGES=$usePrebuiltImageValue
+EDGE_WARP_EGRESS_IMAGE=$WarpEgressImage
+EDGE_GATEWAY_IMAGE=$GatewayImage
 "@
 
 $envRuntimePath = Join-Path $localStackDir '.env.runtime'
@@ -384,6 +398,20 @@ for ($i = 0; $i -lt 90; $i++) {
 Write-Host 'Uploading stack to the server...'
 Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", 'mkdir -p /opt/vultr-edge-stack'))
 Invoke-NativeChecked -FilePath 'scp' -Arguments ($sshBase + @('-r', $localStackDir, "root@${targetIp}:/opt/vultr-edge-stack/"))
+
+if (-not [string]::IsNullOrWhiteSpace($EdgeAgentBinaryPath)) {
+    if (-not (Test-Path -LiteralPath $EdgeAgentBinaryPath)) {
+        throw "edge-agent binary not found: $EdgeAgentBinaryPath"
+    }
+
+    Write-Host 'Uploading edge-agent host binary...'
+    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", 'mkdir -p /opt/vultr-edge-stack/bin'))
+    Invoke-NativeChecked -FilePath 'scp' -Arguments ($sshBase + @($EdgeAgentBinaryPath, "root@${targetIp}:/opt/vultr-edge-stack/bin/edge-agent.tmp"))
+    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", 'install -m 0755 /opt/vultr-edge-stack/bin/edge-agent.tmp /opt/vultr-edge-stack/bin/edge-agent && rm -f /opt/vultr-edge-stack/bin/edge-agent.tmp && systemctl daemon-reload && systemctl enable edge-agent.service && systemctl restart edge-agent.service'))
+    Invoke-NativeChecked -FilePath 'ssh' -Arguments ($sshBase + @("root@$targetIp", 'systemctl is-active --quiet edge-agent.service'))
+    Write-Host 'edge-agent host service is active'
+}
+
 $baseVerifyCommand = "docker ps --format '{{.Names}}' | grep -x 'vultr-warp-egress' >/dev/null && docker ps --format '{{.Names}}' | grep -x 'vultr-edge-gateway' >/dev/null && docker ps --format '{{.Names}}' | grep -x 'vultr-edge-gateway-direct' >/dev/null"
 $fullVerifyCommand = "$baseVerifyCommand && docker ps --format '{{.Names}}' | grep -x 'vultr-tunnel-edge' >/dev/null && docker ps --format '{{.Names}}' | grep -x 'vultr-tunnel-edge-warp' >/dev/null"
 $cloudflareZoneId = ''

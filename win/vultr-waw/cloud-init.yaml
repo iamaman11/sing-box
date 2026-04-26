@@ -9,6 +9,25 @@ packages:
   - openssl
   - tar
 write_files:
+  - path: /etc/systemd/system/edge-agent.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Edge Agent
+      After=network-online.target docker.service
+      Wants=network-online.target
+      Requires=docker.service
+
+      [Service]
+      Type=simple
+      ExecStart=/opt/vultr-edge-stack/bin/edge-agent serve 127.0.0.1:50061 /opt/vultr-edge-stack/stack
+      Restart=always
+      RestartSec=2
+      Environment=EDGE_STACK_DIR=/opt/vultr-edge-stack/stack
+      WorkingDirectory=/opt/vultr-edge-stack
+
+      [Install]
+      WantedBy=multi-user.target
   - path: /usr/local/sbin/install-docker.sh
     permissions: "0755"
     content: |
@@ -32,6 +51,17 @@ write_files:
       apt-get update
       apt-get remove -y docker.io docker-compose containerd runc || true
       apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - path: /usr/local/sbin/prepare-edge-host.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      install -d -m 0755 /opt/vultr-edge-stack
+      install -d -m 0755 /opt/vultr-edge-stack/bin
+      install -d -m 0755 /opt/vultr-edge-stack/stack
+      systemctl daemon-reload
+      systemctl enable edge-agent.service
 runcmd:
   - [bash, -lc, "/usr/local/sbin/install-docker.sh"]
   - [bash, -lc, "systemctl enable docker --now"]
+  - [bash, -lc, "/usr/local/sbin/prepare-edge-host.sh"]
