@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-controller"
+version = "0.1.0"
+dependencies = [
+ "edge-controller-core",
+ "edge-shared-types",
+]
+
+[[package]]
 name = "edge-controller-core"
 version = "0.1.0"
 dependencies = [

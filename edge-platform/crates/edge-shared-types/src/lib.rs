@@ -163,3 +163,35 @@ impl AgentState {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileCategory {
+    RequiredRepoInput,
+    LocalOnlySensitive,
+}
+
+impl FileCategory {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::RequiredRepoInput => "required_repo_input",
+            Self::LocalOnlySensitive => "local_only_sensitive",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePresence {
+    pub path: String,
+    pub present: bool,
+    pub category: FileCategory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryReport {
+    pub repo_root: String,
+    pub rust_workspace_present: bool,
+    pub required_repo_files: Vec<FilePresence>,
+    pub local_only_files: Vec<FilePresence>,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+}
