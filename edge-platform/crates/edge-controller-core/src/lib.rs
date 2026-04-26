@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 use edge_shared_types::{
     AgentState, ControllerStatus, DeployPhase, DeploymentSummary, ErrorSubsystem, FileCategory,
-    FilePresence, InventoryReport, LocalSingboxState, PlatformError, ProviderObservation,
-    RuntimeObservation, SelectorState,
+    FilePresence, InventoryReport, PlatformError, ProviderObservation, RuntimeObservation,
 };
+use edge_singbox::{LocalConfigObservation, inspect_local_config};
 use serde::Deserialize;
 
 pub fn validate_deploy_transition(from: DeployPhase, to: DeployPhase) -> Result<(), PlatformError> {
@@ -198,11 +198,10 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     let repo_root = canonical_repo_root(repo_root)?;
     let inventory = collect_repo_inventory(&repo_root)?;
     let agent_state = AgentState::bootstrap_placeholder();
-    let local_singbox = collect_local_singbox_state(&repo_root);
+    let singbox = collect_local_singbox_state(&repo_root);
     let deployment = collect_deployment_summary(&repo_root)?;
     let provider = ProviderObservation::placeholder();
     let runtime = RuntimeObservation::placeholder();
-    let selector = SelectorState::placeholder();
 
     let mut status_notes = Vec::new();
     if !inventory.blockers.is_empty() {
@@ -211,21 +210,24 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     if !agent_state.ready {
         status_notes.push("agent is still in bootstrap placeholder mode".to_owned());
     }
-    if !local_singbox.process_running {
+    if !singbox.local_singbox.process_running {
         status_notes.push("local sing-box process is not running in this environment".to_owned());
     }
     if !deployment.live_state_present {
         status_notes.push("live deployment state file is absent".to_owned());
     }
+    if singbox.selector.degraded {
+        status_notes.push("local selector config requires review".to_owned());
+    }
 
     Ok(ControllerStatus {
         inventory: Some(inventory),
         agent_state: Some(agent_state),
-        local_singbox: Some(local_singbox),
+        local_singbox: Some(singbox.local_singbox),
         deployment: Some(deployment),
         provider: Some(provider),
         runtime: Some(runtime),
-        selector: Some(selector),
+        selector: Some(singbox.selector),
         status_notes,
     })
 }
@@ -245,15 +247,9 @@ fn canonical_repo_root(repo_root: &Path) -> Result<PathBuf, PlatformError> {
     })
 }
 
-fn collect_local_singbox_state(repo_root: &Path) -> LocalSingboxState {
+fn collect_local_singbox_state(repo_root: &Path) -> LocalConfigObservation {
     let expected_config_path = repo_root.join(EXPECTED_LOCAL_CONFIG_PATH);
-    let mut state = LocalSingboxState::placeholder(expected_config_path.display().to_string());
-    if !expected_config_path.exists() {
-        state
-            .warnings
-            .push("expected local sing-box config is missing".to_owned());
-    }
-    state
+    inspect_local_config(&expected_config_path)
 }
 
 fn collect_deployment_summary(repo_root: &Path) -> Result<DeploymentSummary, PlatformError> {
@@ -414,6 +410,11 @@ mod tests {
         let status = collect_controller_status(&repo_root).unwrap();
         assert!(!status.status_notes.is_empty());
         assert!(!status.agent_state.as_ref().unwrap().ready);
+        assert!(status.local_singbox.as_ref().unwrap().managed_config);
+        assert_eq!(
+            status.local_singbox.as_ref().unwrap().clash_api_port,
+            Some(9090)
+        );
         assert_eq!(
             status
                 .deployment
@@ -422,6 +423,15 @@ mod tests {
                 .deployment_label
                 .as_deref(),
             Some("edge-a")
+        );
+        assert_eq!(
+            status
+                .selector
+                .as_ref()
+                .unwrap()
+                .desired_main_route
+                .as_deref(),
+            Some("auto-direct-tunnel")
         );
     }
 
@@ -450,7 +460,37 @@ mod tests {
             "",
         );
         create_file(&repo_root.join("edge-platform/Cargo.toml"), "");
-        create_file(&repo_root.join(EXPECTED_LOCAL_CONFIG_PATH), "");
+        create_file(
+            &repo_root.join(EXPECTED_LOCAL_CONFIG_PATH),
+            r#"{
+  "experimental": {
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090"
+    }
+  },
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "proxy-selector",
+      "outbounds": [
+        "auto-direct-tunnel",
+        "auto-warp-tunnel",
+        "hysteria2-direct",
+        "vless-reality-direct",
+        "hysteria2-warp",
+        "vless-reality-warp"
+      ],
+      "default": "auto-direct-tunnel"
+    },
+    { "type": "urltest", "tag": "auto-direct-tunnel" },
+    { "type": "urltest", "tag": "auto-warp-tunnel" },
+    { "type": "hysteria2", "tag": "hysteria2-direct" },
+    { "type": "vless", "tag": "vless-reality-direct" },
+    { "type": "hysteria2", "tag": "hysteria2-warp" },
+    { "type": "vless", "tag": "vless-reality-warp" }
+  ]
+}"#,
+        );
     }
 
     fn temp_repo_root(label: &str) -> PathBuf {

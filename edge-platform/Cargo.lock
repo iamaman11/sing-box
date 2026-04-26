@@ -137,6 +137,7 @@ name = "edge-controller-core"
 version = "0.1.0"
 dependencies = [
  "edge-shared-types",
+ "edge-singbox",
  "serde",
  "serde_json",
 ]
@@ -152,6 +153,15 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "edge-singbox"
+version = "0.1.0"
+dependencies = [
+ "edge-shared-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
