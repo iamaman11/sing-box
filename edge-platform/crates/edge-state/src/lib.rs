@@ -402,6 +402,69 @@ impl EdgeState {
         rows.collect()
     }
 
+    pub fn find_latest_trust_entry(
+        &self,
+        instance_id: &str,
+        ip: &str,
+    ) -> rusqlite::Result<Option<StoredTrustEntry>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT
+                id,
+                deployment_id,
+                instance_id,
+                ip,
+                known_host_line,
+                domain_name,
+                ca_cert_path,
+                server_cert_path,
+                client_cert_path,
+                client_key_path,
+                updated_at_unix
+            FROM trust_store
+            WHERE instance_id = ?1 AND ip = ?2
+            ORDER BY updated_at_unix DESC, id DESC
+            LIMIT 1
+            ",
+        )?;
+        let mut rows = statement.query(params![instance_id, ip])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredTrustEntry {
+                id: row.get(0)?,
+                deployment_id: row.get(1)?,
+                instance_id: row.get(2)?,
+                ip: row.get(3)?,
+                known_host_line: row.get(4)?,
+                domain_name: row.get(5)?,
+                ca_cert_path: row.get(6)?,
+                server_cert_path: row.get(7)?,
+                client_cert_path: row.get(8)?,
+                client_key_path: row.get(9)?,
+                updated_at_unix: row.get(10)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn clear_trust_entries(
+        &self,
+        instance_id: Option<&str>,
+        ip: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        if let Some(instance_id) = instance_id.filter(|value| !value.trim().is_empty()) {
+            self.conn.execute(
+                "DELETE FROM trust_store WHERE instance_id = ?1",
+                params![instance_id],
+            )?;
+            return Ok(());
+        }
+        if let Some(ip) = ip.filter(|value| !value.trim().is_empty()) {
+            self.conn
+                .execute("DELETE FROM trust_store WHERE ip = ?1", params![ip])?;
+        }
+        Ok(())
+    }
+
     fn ensure_column(
         &self,
         table_name: &str,
@@ -531,6 +594,11 @@ mod tests {
             trust.client_key_path.as_deref(),
             Some("/tmp/controller-client.key")
         );
+        let latest_trust = state
+            .find_latest_trust_entry("instance-1", "203.0.113.10")
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest_trust.deployment_id, "deploy-1");
         assert_eq!(state.list_trust_entries().unwrap().len(), 1);
         let deployment = state
             .record_deployment("deploy-1", "instance-1", "203.0.113.10")
@@ -542,6 +610,10 @@ mod tests {
         );
         state.clear_deployment_by_instance("instance-1").unwrap();
         assert!(state.latest_deployment().unwrap().is_none());
+        state
+            .clear_trust_entries(Some("instance-1"), Some("203.0.113.10"))
+            .unwrap();
+        assert!(state.list_trust_entries().unwrap().is_empty());
         let _ = std::fs::remove_file(db_path);
     }
 }

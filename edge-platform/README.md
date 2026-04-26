@@ -61,6 +61,12 @@ Bootstrap transport remains SSH-only for first host preparation:
 - open local SSH tunnel to host loopback agent
 - continue deploy through gRPC
 
+For later remote deploy/redeploy operations, `edge-controller` now requires one of:
+
+- explicit `EDGE_AGENT_ENDPOINT`
+- targeted persisted trust material for the resolved `instance_id + ip`
+- forced SSH bootstrap via `EDGE_BOOTSTRAP_VIA_SSH=1`
+
 Status/runtime observation can now resolve the active remote agent target from
 persisted deployment and trust rows. The remaining hardening step is to remove
 any bootstrap-tunnel assumptions from the operational path and finish the

@@ -1179,7 +1179,7 @@ impl ControllerService for ControllerServerImpl {
             }
         }
 
-        clear_live_deployment_state(&self.repo_root, &self.state, &instance_id)
+        clear_live_deployment_state(&self.repo_root, &self.state, &instance_id, &target_ip)
             .map_err(|err| Status::internal(format!("failed to clear deployment state: {err}")))?;
         append_operation_event(
             &self.state,
@@ -1596,9 +1596,11 @@ async fn prepare_agent_transport(
     state: &Arc<Mutex<EdgeState>>,
 ) -> Result<AgentTransport, String> {
     if !should_bootstrap_via_ssh(request, target) {
+        let connection_target =
+            resolve_operation_agent_connection_target(state, target, direct_endpoint)?;
         return Ok(AgentTransport {
-            endpoint: direct_endpoint.to_owned(),
-            tls_paths: None,
+            endpoint: connection_target.endpoint,
+            tls_paths: connection_target.tls_paths,
             _tunnel: None,
         });
     }
@@ -1627,6 +1629,30 @@ async fn prepare_agent_transport(
         tls_paths: None,
         _tunnel: Some(tunnel),
     })
+}
+
+fn resolve_operation_agent_connection_target(
+    state: &Arc<Mutex<EdgeState>>,
+    target: &ResolvedDeployTarget,
+    default_endpoint: &str,
+) -> Result<AgentConnectionTarget, String> {
+    if env::var_os("EDGE_AGENT_ENDPOINT").is_some() || default_endpoint != DEFAULT_AGENT_ENDPOINT {
+        return Ok(AgentConnectionTarget {
+            endpoint: default_endpoint.to_owned(),
+            tls_paths: None,
+        });
+    }
+
+    if let Some(connection_target) =
+        resolve_targeted_agent_connection_target(state, &target.instance_id, &target.target_ip)?
+    {
+        return Ok(connection_target);
+    }
+
+    Err(format!(
+        "no persisted agent trust was found for instance {} at {}; set EDGE_AGENT_ENDPOINT explicitly or bootstrap via SSH",
+        target.instance_id, target.target_ip
+    ))
 }
 
 fn should_bootstrap_via_ssh(request: &DeployRequest, target: &ResolvedDeployTarget) -> bool {
@@ -2153,6 +2179,7 @@ fn clear_live_deployment_state(
     repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
     instance_id: &str,
+    target_ip: &str,
 ) -> Result<(), String> {
     let live_state_path = default_live_state_path(repo_root);
     if live_state_path.is_file() {
@@ -2165,6 +2192,11 @@ fn clear_live_deployment_state(
         .map_err(|_| "controller state mutex poisoned".to_owned())?
         .clear_deployment_by_instance(instance_id)
         .map_err(|err| format!("failed to clear deployment row: {err}"))?;
+    state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .clear_trust_entries(Some(instance_id), Some(target_ip))
+        .map_err(|err| format!("failed to clear trust rows: {err}"))?;
     Ok(())
 }
 
@@ -2320,6 +2352,32 @@ fn resolve_persisted_agent_connection_target(
         .map_err(|err| format!("failed to load persisted trust entry: {err}"))?
     else {
         return Ok(None);
+    };
+    drop(guard);
+
+    persisted_agent_connection_target(&deployment, &trust).map(Some)
+}
+
+fn resolve_targeted_agent_connection_target(
+    state: &Arc<Mutex<EdgeState>>,
+    instance_id: &str,
+    target_ip: &str,
+) -> Result<Option<AgentConnectionTarget>, String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let Some(trust) = guard
+        .find_latest_trust_entry(instance_id, target_ip)
+        .map_err(|err| format!("failed to load targeted trust entry: {err}"))?
+    else {
+        return Ok(None);
+    };
+    let deployment = StoredDeployment {
+        id: 0,
+        deployment_label: trust.deployment_id.clone(),
+        instance_id: trust.instance_id.clone(),
+        server_ip: trust.ip.clone(),
+        created_at_unix: trust.updated_at_unix,
     };
     drop(guard);
 
@@ -2561,6 +2619,69 @@ mod tests {
             tls_paths.client_key_path,
             PathBuf::from("/tmp/controller-client.key")
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn resolves_targeted_agent_target_for_redeploy() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-targeted-state-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .upsert_trust_entry(NewTrustEntry {
+                    deployment_id: "deploy-old",
+                    instance_id: "instance-9",
+                    ip: "203.0.113.19",
+                    known_host_line: "",
+                    domain_name: Some("edge-agent"),
+                    ca_cert_path: Some("/tmp/ca-old.pem"),
+                    server_cert_path: Some("/tmp/agent-server-old.pem"),
+                    client_cert_path: Some("/tmp/controller-client-old.pem"),
+                    client_key_path: Some("/tmp/controller-client-old.key"),
+                })
+                .unwrap();
+        }
+
+        let target = resolve_targeted_agent_connection_target(&state, "instance-9", "203.0.113.19")
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.endpoint, "https://203.0.113.19:50061");
+        assert_eq!(
+            target.tls_paths.unwrap().client_cert_path,
+            PathBuf::from("/tmp/controller-client-old.pem")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn rejects_operation_target_without_persisted_trust_or_override() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-missing-trust-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        let target = ResolvedDeployTarget {
+            instance_id: "instance-missing".to_owned(),
+            target_ip: "203.0.113.99".to_owned(),
+            created_instance: false,
+        };
+
+        let error =
+            resolve_operation_agent_connection_target(&state, &target, DEFAULT_AGENT_ENDPOINT)
+                .unwrap_err();
+        assert!(error.contains("no persisted agent trust"));
 
         let _ = std::fs::remove_file(db_path);
     }
