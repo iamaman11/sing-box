@@ -1,0 +1,19 @@
+name: tunnel-edge
+
+services:
+  tunnel-edge:
+    build:
+      context: ./edge-gateway
+    container_name: vm-tunnel-edge
+    restart: unless-stopped
+    command:
+      - run
+      - -c
+      - /etc/sing-box/config.json
+    ports:
+      - '80:80/tcp'
+      - '443:443/tcp'
+      - '8443:8443/udp'
+    volumes:
+      - ./tunnel-edge/config.live.json:/etc/sing-box/config.json:ro
+      - ./tunnel-state:/var/lib/sing-box

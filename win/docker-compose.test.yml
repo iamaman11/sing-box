@@ -1,0 +1,46 @@
+services:
+  warp-egress:
+    build:
+      context: ./warp-egress
+    container_name: vm-warp-egress-test
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./warp-state-test:/var/lib/cloudflare-warp
+    networks:
+      edge_net:
+        ipv4_address: 172.29.0.2
+
+  edge-gateway:
+    build:
+      context: ./edge-gateway
+    container_name: vm-edge-gateway-test
+    restart: unless-stopped
+    depends_on:
+      - warp-egress
+    command:
+      - run
+      - -c
+      - /etc/sing-box/config.json
+    ports:
+      - '1443:1443/tcp'
+      - '13128:13128/tcp'
+      - '11080:11080/tcp'
+      - '9443:9443/tcp'
+    volumes:
+      - ./edge-gateway/config.test.json:/etc/sing-box/config.json:ro
+      - /etc/sing-box/certs/proxy.crt:/certs/proxy.crt:ro
+      - /etc/sing-box/certs/proxy.key:/certs/proxy.key:ro
+    networks:
+      edge_net:
+        ipv4_address: 172.29.0.3
+
+networks:
+  edge_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

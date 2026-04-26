@@ -1,0 +1,107 @@
+name: vultr-edge
+
+services:
+  warp-egress:
+    build:
+      context: ./warp-egress
+    container_name: vultr-warp-egress
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./warp-state:/var/lib/cloudflare-warp
+    networks:
+      edge_net:
+        ipv4_address: 172.22.10.2
+
+  edge-gateway:
+    build:
+      context: ./edge-gateway
+    container_name: vultr-edge-gateway
+    restart: unless-stopped
+    depends_on:
+      - warp-egress
+    command:
+      - run
+      - -c
+      - /etc/sing-box/config.json
+    ports:
+      - "3128:3128/tcp"
+      - "1080:1080/tcp"
+      - "9443:9443/tcp"
+    volumes:
+      - ./rendered/edge-gateway.json:/etc/sing-box/config.json:ro
+      - ./certs/proxy.crt:/certs/proxy.crt:ro
+      - ./certs/proxy.key:/certs/proxy.key:ro
+    networks:
+      edge_net:
+        ipv4_address: 172.22.10.3
+
+  edge-gateway-direct:
+    build:
+      context: ./edge-gateway
+    container_name: vultr-edge-gateway-direct
+    restart: unless-stopped
+    command:
+      - run
+      - -c
+      - /etc/sing-box/config.json
+    ports:
+      - "4128:4128/tcp"
+      - "4080:4080/tcp"
+      - "4443:4443/tcp"
+    volumes:
+      - ./rendered/edge-gateway-direct.json:/etc/sing-box/config.json:ro
+      - ./certs/proxy.crt:/certs/proxy.crt:ro
+      - ./certs/proxy.key:/certs/proxy.key:ro
+
+  tunnel-edge:
+    profiles:
+      - tunnel
+    build:
+      context: ./edge-gateway
+    container_name: vultr-tunnel-edge
+    restart: unless-stopped
+    command:
+      - run
+      - -c
+      - /etc/sing-box/config.json
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "8443:8443/udp"
+    volumes:
+      - ./rendered/tunnel-edge.json:/etc/sing-box/config.json:ro
+      - ./tunnel-state:/var/lib/sing-box
+
+  tunnel-edge-warp:
+    profiles:
+      - tunnel
+    build:
+      context: ./edge-gateway
+    container_name: vultr-tunnel-edge-warp
+    restart: unless-stopped
+    depends_on:
+      - warp-egress
+    command:
+      - run
+      - -c
+      - /etc/sing-box/config.json
+    ports:
+      - "5443:5443/tcp"
+      - "9444:9444/udp"
+    volumes:
+      - ./rendered/tunnel-edge-warp.json:/etc/sing-box/config.json:ro
+      - ./tunnel-state:/var/lib/sing-box
+    networks:
+      edge_net:
+        ipv4_address: 172.22.10.4
+
+networks:
+  edge_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.10.0/24
