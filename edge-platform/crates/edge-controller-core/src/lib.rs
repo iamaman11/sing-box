@@ -5,7 +5,9 @@ use edge_shared_types::{
     AgentState, ControllerStatus, DeployPhase, DeploymentSummary, ErrorSubsystem, FileCategory,
     FilePresence, InventoryReport, PlatformError, ProviderObservation, RuntimeObservation,
 };
-use edge_singbox::{LocalConfigObservation, inspect_local_config};
+use edge_singbox::{
+    ExpectedTunnelBindings, LocalConfigObservation, TunnelBinding, inspect_local_config,
+};
 use serde::Deserialize;
 
 pub fn validate_deploy_transition(from: DeployPhase, to: DeployPhase) -> Result<(), PlatformError> {
@@ -249,7 +251,8 @@ fn canonical_repo_root(repo_root: &Path) -> Result<PathBuf, PlatformError> {
 
 fn collect_local_singbox_state(repo_root: &Path) -> LocalConfigObservation {
     let expected_config_path = repo_root.join(EXPECTED_LOCAL_CONFIG_PATH);
-    inspect_local_config(&expected_config_path)
+    let expected_bindings = read_expected_tunnel_bindings(repo_root);
+    inspect_local_config(&expected_config_path, expected_bindings.as_ref())
 }
 
 fn collect_deployment_summary(repo_root: &Path) -> Result<DeploymentSummary, PlatformError> {
@@ -305,11 +308,65 @@ struct CurrentEdgeState {
     instance_id: Option<String>,
     ip: Option<String>,
     tunnel: Option<CurrentTunnelState>,
+    tunnel_warp: Option<CurrentWarpTunnelState>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CurrentTunnelState {
     domain: Option<String>,
+    hy2_port: Option<u32>,
+    hy2_password: Option<String>,
+    vless_port: Option<u32>,
+    vless_uuid: Option<String>,
+    reality_public_key: Option<String>,
+    reality_short_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurrentWarpTunnelState {
+    domain: Option<String>,
+    hy2_port: Option<u32>,
+    hy2_password: Option<String>,
+    vless_port: Option<u32>,
+    vless_uuid: Option<String>,
+    reality_public_key: Option<String>,
+    reality_short_id: Option<String>,
+}
+
+fn read_expected_tunnel_bindings(repo_root: &Path) -> Option<ExpectedTunnelBindings> {
+    let state_path = repo_root.join(CURRENT_STATE_PATH);
+    let raw = fs::read_to_string(state_path).ok()?;
+    let parsed: CurrentEdgeState = serde_json::from_str(&raw).ok()?;
+
+    let direct = parsed.tunnel.and_then(tunnel_binding_from_state)?;
+    let warp = parsed
+        .tunnel_warp
+        .and_then(warp_tunnel_binding_from_state)?;
+    Some(ExpectedTunnelBindings { direct, warp })
+}
+
+fn tunnel_binding_from_state(tunnel: CurrentTunnelState) -> Option<TunnelBinding> {
+    Some(TunnelBinding {
+        domain: tunnel.domain?,
+        hy2_port: tunnel.hy2_port?,
+        hy2_password: tunnel.hy2_password?,
+        vless_port: tunnel.vless_port?,
+        vless_uuid: tunnel.vless_uuid?,
+        reality_public_key: tunnel.reality_public_key?,
+        reality_short_id: tunnel.reality_short_id?,
+    })
+}
+
+fn warp_tunnel_binding_from_state(tunnel: CurrentWarpTunnelState) -> Option<TunnelBinding> {
+    Some(TunnelBinding {
+        domain: tunnel.domain?,
+        hy2_port: tunnel.hy2_port?,
+        hy2_password: tunnel.hy2_password?,
+        vless_port: tunnel.vless_port?,
+        vless_uuid: tunnel.vless_uuid?,
+        reality_public_key: tunnel.reality_public_key?,
+        reality_short_id: tunnel.reality_short_id?,
+    })
 }
 
 #[cfg(test)]

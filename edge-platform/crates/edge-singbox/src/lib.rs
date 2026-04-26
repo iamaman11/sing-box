@@ -20,7 +20,27 @@ pub struct LocalConfigObservation {
     pub selector: SelectorState,
 }
 
-pub fn inspect_local_config(config_path: &Path) -> LocalConfigObservation {
+#[derive(Debug, Clone)]
+pub struct ExpectedTunnelBindings {
+    pub direct: TunnelBinding,
+    pub warp: TunnelBinding,
+}
+
+#[derive(Debug, Clone)]
+pub struct TunnelBinding {
+    pub domain: String,
+    pub hy2_port: u32,
+    pub hy2_password: String,
+    pub vless_port: u32,
+    pub vless_uuid: String,
+    pub reality_public_key: String,
+    pub reality_short_id: String,
+}
+
+pub fn inspect_local_config(
+    config_path: &Path,
+    expected_bindings: Option<&ExpectedTunnelBindings>,
+) -> LocalConfigObservation {
     let expected_config_path = config_path.display().to_string();
     let mut local_singbox = LocalSingboxState::placeholder(expected_config_path.clone());
     let mut selector = SelectorState::placeholder();
@@ -144,10 +164,173 @@ pub fn inspect_local_config(config_path: &Path) -> LocalConfigObservation {
         );
     }
 
+    if let Some(expected) = expected_bindings {
+        compare_tunnel_binding(
+            &parsed,
+            "hysteria2-direct",
+            "vless-reality-direct",
+            &expected.direct,
+            &mut local_singbox,
+            &mut selector,
+        );
+        compare_tunnel_binding(
+            &parsed,
+            "hysteria2-warp",
+            "vless-reality-warp",
+            &expected.warp,
+            &mut local_singbox,
+            &mut selector,
+        );
+    } else {
+        local_singbox.warnings.push(
+            "live tunnel state is unavailable, config/state parity was not checked".to_owned(),
+        );
+    }
+
     LocalConfigObservation {
         local_singbox,
         selector,
     }
+}
+
+fn compare_tunnel_binding(
+    parsed: &SingboxConfig,
+    hy2_tag: &str,
+    vless_tag: &str,
+    expected: &TunnelBinding,
+    local_singbox: &mut LocalSingboxState,
+    selector: &mut SelectorState,
+) {
+    let Some(hy2) = parsed
+        .outbounds
+        .iter()
+        .find(|outbound| outbound.tag == hy2_tag)
+    else {
+        local_singbox
+            .warnings
+            .push(format!("managed config is missing outbound {hy2_tag}"));
+        selector.degraded = true;
+        return;
+    };
+
+    let Some(vless) = parsed
+        .outbounds
+        .iter()
+        .find(|outbound| outbound.tag == vless_tag)
+    else {
+        local_singbox
+            .warnings
+            .push(format!("managed config is missing outbound {vless_tag}"));
+        selector.degraded = true;
+        return;
+    };
+
+    compare_field(
+        local_singbox,
+        selector,
+        hy2_tag,
+        "server",
+        hy2.server.as_deref(),
+        Some(expected.domain.as_str()),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        hy2_tag,
+        "server_port",
+        hy2.server_port,
+        Some(expected.hy2_port),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        hy2_tag,
+        "password",
+        hy2.password.as_deref(),
+        Some(expected.hy2_password.as_str()),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        hy2_tag,
+        "tls.server_name",
+        hy2.tls.as_ref().and_then(|tls| tls.server_name.as_deref()),
+        Some(expected.domain.as_str()),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        vless_tag,
+        "server",
+        vless.server.as_deref(),
+        Some(expected.domain.as_str()),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        vless_tag,
+        "server_port",
+        vless.server_port,
+        Some(expected.vless_port),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        vless_tag,
+        "uuid",
+        vless.uuid.as_deref(),
+        Some(expected.vless_uuid.as_str()),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        vless_tag,
+        "tls.reality.public_key",
+        vless
+            .tls
+            .as_ref()
+            .and_then(|tls| tls.reality.as_ref())
+            .and_then(|reality| reality.public_key.as_deref()),
+        Some(expected.reality_public_key.as_str()),
+    );
+    compare_field(
+        local_singbox,
+        selector,
+        vless_tag,
+        "tls.reality.short_id",
+        vless
+            .tls
+            .as_ref()
+            .and_then(|tls| tls.reality.as_ref())
+            .and_then(|reality| reality.short_id.as_deref()),
+        Some(expected.reality_short_id.as_str()),
+    );
+}
+
+fn compare_field<T>(
+    local_singbox: &mut LocalSingboxState,
+    selector: &mut SelectorState,
+    outbound_tag: &str,
+    field_name: &str,
+    observed: Option<T>,
+    expected: Option<T>,
+) where
+    T: PartialEq + std::fmt::Display,
+{
+    if observed == expected {
+        return;
+    }
+
+    let observed = observed
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<missing>".to_owned());
+    let expected = expected
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<missing>".to_owned());
+    local_singbox.warnings.push(format!(
+        "{outbound_tag}.{field_name} does not match live state: config={observed}, state={expected}"
+    ));
+    selector.degraded = true;
 }
 
 #[derive(Debug)]
@@ -245,6 +428,23 @@ struct Outbound {
     #[serde(default)]
     outbounds: Vec<String>,
     default: Option<String>,
+    server: Option<String>,
+    server_port: Option<u32>,
+    password: Option<String>,
+    uuid: Option<String>,
+    tls: Option<Tls>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Tls {
+    server_name: Option<String>,
+    reality: Option<Reality>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Reality {
+    public_key: Option<String>,
+    short_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -281,16 +481,76 @@ mod tests {
     },
     { "type": "urltest", "tag": "auto-direct-tunnel" },
     { "type": "urltest", "tag": "auto-warp-tunnel" },
-    { "type": "hysteria2", "tag": "hysteria2-direct" },
-    { "type": "vless", "tag": "vless-reality-direct" },
-    { "type": "hysteria2", "tag": "hysteria2-warp" },
-    { "type": "vless", "tag": "vless-reality-warp" }
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2-direct",
+      "server": "edge.alegria.by",
+      "server_port": 8443,
+      "password": "direct-password",
+      "tls": { "server_name": "edge.alegria.by" }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-direct",
+      "server": "edge.alegria.by",
+      "server_port": 443,
+      "uuid": "direct-uuid",
+      "tls": {
+        "reality": {
+          "public_key": "direct-public-key",
+          "short_id": "direct-short-id"
+        }
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2-warp",
+      "server": "edge.alegria.by",
+      "server_port": 9444,
+      "password": "warp-password",
+      "tls": { "server_name": "edge.alegria.by" }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-warp",
+      "server": "edge.alegria.by",
+      "server_port": 5443,
+      "uuid": "warp-uuid",
+      "tls": {
+        "reality": {
+          "public_key": "warp-public-key",
+          "short_id": "warp-short-id"
+        }
+      }
+    }
   ]
 }"#,
         )
         .unwrap();
 
-        let observation = inspect_local_config(&config_path);
+        let observation = inspect_local_config(
+            &config_path,
+            Some(&ExpectedTunnelBindings {
+                direct: TunnelBinding {
+                    domain: "edge.alegria.by".to_owned(),
+                    hy2_port: 8443,
+                    hy2_password: "direct-password".to_owned(),
+                    vless_port: 443,
+                    vless_uuid: "direct-uuid".to_owned(),
+                    reality_public_key: "direct-public-key".to_owned(),
+                    reality_short_id: "direct-short-id".to_owned(),
+                },
+                warp: TunnelBinding {
+                    domain: "edge.alegria.by".to_owned(),
+                    hy2_port: 9444,
+                    hy2_password: "warp-password".to_owned(),
+                    vless_port: 5443,
+                    vless_uuid: "warp-uuid".to_owned(),
+                    reality_public_key: "warp-public-key".to_owned(),
+                    reality_short_id: "warp-short-id".to_owned(),
+                },
+            }),
+        );
         assert!(observation.local_singbox.managed_config);
         assert_eq!(observation.local_singbox.clash_api_port, Some(9090));
         assert_eq!(
@@ -317,7 +577,7 @@ mod tests {
         )
         .unwrap();
 
-        let observation = inspect_local_config(&config_path);
+        let observation = inspect_local_config(&config_path, None);
         assert!(!observation.local_singbox.managed_config);
         assert!(observation.selector.degraded);
         assert!(
@@ -326,6 +586,118 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("proxy-selector"))
+        );
+        assert!(
+            observation
+                .local_singbox
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("live tunnel state is unavailable"))
+        );
+
+        fs::remove_dir_all(repo_root).unwrap();
+    }
+
+    #[test]
+    fn flags_config_state_mismatch() {
+        let repo_root = unique_test_dir();
+        let config_path = repo_root.join("edge-dns-clean-vultr-dual.json");
+        fs::create_dir_all(&repo_root).unwrap();
+        fs::write(
+            &config_path,
+            r#"{
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "proxy-selector",
+      "outbounds": [
+        "auto-direct-tunnel",
+        "auto-warp-tunnel",
+        "hysteria2-direct",
+        "vless-reality-direct",
+        "hysteria2-warp",
+        "vless-reality-warp"
+      ],
+      "default": "auto-direct-tunnel"
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2-direct",
+      "server": "wrong.example.com",
+      "server_port": 8443,
+      "password": "direct-password",
+      "tls": { "server_name": "wrong.example.com" }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-direct",
+      "server": "edge.alegria.by",
+      "server_port": 443,
+      "uuid": "direct-uuid",
+      "tls": {
+        "reality": {
+          "public_key": "wrong-public-key",
+          "short_id": "direct-short-id"
+        }
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2-warp",
+      "server": "edge.alegria.by",
+      "server_port": 9444,
+      "password": "warp-password",
+      "tls": { "server_name": "edge.alegria.by" }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-warp",
+      "server": "edge.alegria.by",
+      "server_port": 5443,
+      "uuid": "warp-uuid",
+      "tls": {
+        "reality": {
+          "public_key": "warp-public-key",
+          "short_id": "warp-short-id"
+        }
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let observation = inspect_local_config(
+            &config_path,
+            Some(&ExpectedTunnelBindings {
+                direct: TunnelBinding {
+                    domain: "edge.alegria.by".to_owned(),
+                    hy2_port: 8443,
+                    hy2_password: "direct-password".to_owned(),
+                    vless_port: 443,
+                    vless_uuid: "direct-uuid".to_owned(),
+                    reality_public_key: "direct-public-key".to_owned(),
+                    reality_short_id: "direct-short-id".to_owned(),
+                },
+                warp: TunnelBinding {
+                    domain: "edge.alegria.by".to_owned(),
+                    hy2_port: 9444,
+                    hy2_password: "warp-password".to_owned(),
+                    vless_port: 5443,
+                    vless_uuid: "warp-uuid".to_owned(),
+                    reality_public_key: "warp-public-key".to_owned(),
+                    reality_short_id: "warp-short-id".to_owned(),
+                },
+            }),
+        );
+
+        assert!(observation.selector.degraded);
+        assert!(
+            observation
+                .local_singbox
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("does not match live state"))
         );
 
         fs::remove_dir_all(repo_root).unwrap();
