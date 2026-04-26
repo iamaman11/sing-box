@@ -1,70 +1,48 @@
-This bundle provisions a new Vultr instance in Warsaw and deploys a modular edge stack.
+# Vultr WAW Stack
 
-Default target:
-- Region: `waw`
-- Plan: `vc2-1c-1gb`
-- OS: Debian 12 x64 (`2136`)
-- SSH key: `public vultr`
+## Current role
 
-Services:
-- `warp-egress`
-- `edge-gateway`
-- `tunnel-edge` (enabled only when `TunnelDomain` is provided)
+This directory now provides the server bundle templates and legacy reference
+material for the Warsaw edge deployment.
 
-Target server model:
+Primary orchestration is Rust-first:
 
-- Docker installed by `cloud-init`
-- `edge-agent` installed as a host binary under `/opt/vultr-edge-stack/bin`
-- normal runtime status/readiness served by `edge-agent` gRPC
-- deploy bundle uploaded already prepared
-- steady-state deploy path should use prebuilt images instead of server-side builds
-
-Primary control-plane entrypoint:
 - `edge-controller serve`
 - `edge-console deploy`
+- `edge-console destroy`
 
-Legacy reference only:
-- [deploy-waw.ps1](C:/Users/Bose/vm-edge-stack/vultr-waw/deploy-waw.ps1)
+## What stays here
 
-Legacy example:
+- `cloud-init.yaml`
+- `stack/`
+  - compose file
+  - bootstrap script
+  - config templates
+  - Dockerfiles for the current dataplane
 
-```powershell
-$env:VULTR_API_KEY = '...'
-& ".\deploy-waw.ps1"
-```
+These files remain inputs to the Rust bundle/render/apply pipeline.
 
-Legacy example with tunnel domain:
+## Current deployment model
 
-```powershell
-$env:VULTR_API_KEY = '...'
-& ".\deploy-waw.ps1" -TunnelDomain "waw.alegria.by" -AcmeEmail "admin@alegria.by"
-```
+The Rust controller:
 
-Prebuilt-image mode for the uploaded server bundle:
+1. resolves or creates the Vultr instance
+2. waits for host readiness
+3. installs `edge-agent`
+4. renders the full bundle locally
+5. sends the bundle to the host through `AgentService.ApplyBundle`
+6. drives `base` and `tunnel` bootstrap through `AgentService.BootstrapRuntime`
 
-- set `EDGE_USE_PREBUILT_IMAGES=1` in `.env.runtime`
-- provide image refs such as:
-  - `EDGE_WARP_EGRESS_IMAGE`
-  - `EDGE_GATEWAY_IMAGE`
-- `bootstrap.sh` then prefers `docker compose pull` + `docker compose up -d`
-  instead of `docker compose up -d --build`
+Steady-state status/readiness comes from `edge-agent` gRPC.
 
-Legacy `deploy-waw.ps1` can prepare this mode directly:
+## Legacy reference only
 
-```powershell
-& ".\deploy-waw.ps1" `
-  -UsePrebuiltImages `
-  -WarpEgressImage "ghcr.io/iamaman11/vultr-warp-egress:latest" `
-  -GatewayImage "ghcr.io/iamaman11/vultr-edge-gateway:latest" `
-  -EdgeAgentBinaryPath ".\edge-agent"
-```
+The old PowerShell scripts in this directory are preserved only for migration
+review:
 
-`EdgeAgentBinaryPath` is optional during transition. When provided, the script
-uploads it to `/opt/vultr-edge-stack/bin/edge-agent`, enables the host
-`edge-agent.service`, restarts it, and checks that the service is active.
+- `deploy-waw.ps1`
+- `destroy-edge.ps1`
+- `status-edge.ps1`
+- `verify-edge.ps1`
 
-`deploy-waw.ps1` now expects a local `edge-controller` binary for the
-bootstrap RPC path. It resolves this from `EDGE_CONTROLLER_BINARY_PATH` or the
-workspace default `edge-platform/target/{release,debug}/edge-controller(.exe)`.
-Bootstrap/update continues to use SSH only for upload and local port forwarding;
-the actual `base` / `tunnel` actions are executed through `AgentService.BootstrapRuntime`.
+They are not the primary deployment entrypoint anymore.

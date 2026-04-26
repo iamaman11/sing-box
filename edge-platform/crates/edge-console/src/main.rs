@@ -5,10 +5,11 @@ use std::process::ExitCode;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, Empty, GetSelectorStateRequest,
-    GetTraceRequest, LocalRuntimeResponse, RestartLocalRuntimeRequest, SelectorState,
-    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation,
+    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, Empty, GetOperationRequest,
+    GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
+    ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest,
+    SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -34,6 +35,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "status" => {
             let status = fetch_status(controller_endpoint_from_args(2)).await?;
             print_status(&status);
+            Ok(())
+        }
+        "secrets" => {
+            let secrets = list_secret_refs(controller_endpoint_from_args(2)).await?;
+            print_secret_refs(&secrets);
+            Ok(())
+        }
+        "get-secret" => {
+            let name = env::args()
+                .nth(2)
+                .ok_or("get-secret requires a secret name")?;
+            let entry = get_secret_ref(controller_endpoint_from_args(3), &name).await?;
+            print_secret_ref(&entry);
+            Ok(())
+        }
+        "set-secret" => {
+            let name = env::args()
+                .nth(2)
+                .ok_or("set-secret requires a secret name")?;
+            let secret_ref = env::args()
+                .nth(3)
+                .ok_or("set-secret requires a secret reference")?;
+            let entry =
+                set_secret_ref(controller_endpoint_from_args(4), &name, &secret_ref).await?;
+            print_secret_ref(&entry);
             Ok(())
         }
         "start-local" => {
@@ -100,6 +126,23 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             print_destroy_result(&response);
             finish_destroy_result(response)
         }
+        "get-operation" => {
+            let operation_id = env::args()
+                .nth(2)
+                .ok_or("get-operation requires an operation id")?
+                .parse::<i64>()?;
+            let status = get_operation(controller_endpoint_from_args(3), operation_id).await?;
+            print_operation_status(&status);
+            Ok(())
+        }
+        "watch-operation" => {
+            let operation_id = env::args()
+                .nth(2)
+                .ok_or("watch-operation requires an operation id")?
+                .parse::<i64>()?;
+            let endpoint = controller_endpoint_from_args(3);
+            watch_operation(endpoint, operation_id).await
+        }
         other => Err(format!("unsupported command: {other}").into()),
     }
 }
@@ -123,6 +166,9 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
         println!("13. Bootstrap tunnel runtime");
         println!("14. Deploy bundle to target");
         println!("15. Destroy deployment state");
+        println!("16. List configured secrets");
+        println!("17. Show operation");
+        println!("18. Watch operation");
         println!("0. Exit");
         print!("Select: ");
         io::stdout().flush()?;
@@ -266,6 +312,20 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 .await?;
                 print_destroy_result(&response);
             }
+            "16" => {
+                let secrets = list_secret_refs(controller_endpoint.clone()).await?;
+                print_secret_refs(&secrets);
+            }
+            "17" => {
+                let operation_id = prompt("Operation id")?;
+                let status =
+                    get_operation(controller_endpoint.clone(), operation_id.parse()?).await?;
+                print_operation_status(&status);
+            }
+            "18" => {
+                let operation_id = prompt("Operation id")?;
+                watch_operation(controller_endpoint.clone(), operation_id.parse()?).await?;
+            }
             "0" => return Ok(()),
             _ => println!("Unknown option"),
         }
@@ -318,6 +378,44 @@ fn destroy_request_from_args() -> DestroyRequest {
 async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {
     let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
     let response = client.get_status(Request::new(Empty {})).await?;
+    Ok(response.into_inner())
+}
+
+async fn list_secret_refs(
+    endpoint: String,
+) -> Result<Vec<SecretRefEntry>, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .list_secret_refs(Request::new(ListSecretRefsRequest {}))
+        .await?;
+    Ok(response.into_inner().secrets)
+}
+
+async fn get_secret_ref(
+    endpoint: String,
+    name: &str,
+) -> Result<SecretRefEntry, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .get_secret_ref(Request::new(GetSecretRefRequest {
+            name: name.to_owned(),
+        }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn set_secret_ref(
+    endpoint: String,
+    name: &str,
+    secret_ref: &str,
+) -> Result<SecretRefEntry, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .set_secret_ref(Request::new(SetSecretRefRequest {
+            name: name.to_owned(),
+            secret_ref: secret_ref.to_owned(),
+        }))
+        .await?;
     Ok(response.into_inner())
 }
 
@@ -419,6 +517,61 @@ async fn destroy(
     let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
     let response = client.destroy(Request::new(request)).await?;
     Ok(response.into_inner())
+}
+
+async fn get_operation(
+    endpoint: String,
+    operation_id: i64,
+) -> Result<OperationStatus, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .get_operation(Request::new(GetOperationRequest { operation_id }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn list_operation_events(
+    endpoint: String,
+    operation_id: i64,
+) -> Result<Vec<edge_shared_types::OperationEvent>, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .list_operation_events(Request::new(ListOperationEventsRequest { operation_id }))
+        .await?;
+    Ok(response.into_inner().events)
+}
+
+async fn watch_operation(
+    endpoint: String,
+    operation_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut last_event_id = 0_i64;
+    loop {
+        let status = get_operation(endpoint.clone(), operation_id).await?;
+        print_operation_summary(&status);
+
+        let events = list_operation_events(endpoint.clone(), operation_id).await?;
+        for event in events {
+            if event.id <= last_event_id {
+                continue;
+            }
+            println!("[{}] {}", event.id, event.message);
+            last_event_id = event.id;
+        }
+
+        let current = status
+            .operation
+            .as_ref()
+            .map(|operation| operation.status)
+            .unwrap_or_default();
+        if current == edge_shared_types::OperationLifecycleStatus::Succeeded as i32
+            || current == edge_shared_types::OperationLifecycleStatus::Failed as i32
+        {
+            return Ok(());
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
 }
 
 fn prompt(label: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -614,6 +767,20 @@ fn print_bootstrap_result(response: &BootstrapRuntimeResponse) {
     }
 }
 
+fn print_secret_refs(entries: &[SecretRefEntry]) {
+    println!();
+    println!("Configured secrets");
+    for entry in entries {
+        println!("{:<32} {}", entry.name, entry.secret_ref);
+    }
+}
+
+fn print_secret_ref(entry: &SecretRefEntry) {
+    println!();
+    println!("Secret name           : {}", entry.name);
+    println!("Secret reference      : {}", entry.secret_ref);
+}
+
 fn print_local_runtime_result(response: &LocalRuntimeResponse) {
     println!();
     println!(
@@ -623,6 +790,13 @@ fn print_local_runtime_result(response: &LocalRuntimeResponse) {
     println!("Local runtime note     : {}", response.note);
     if let Some(pid) = response.pid {
         println!("Local runtime PID      : {pid}");
+    }
+    if let Some(operation) = &response.operation {
+        println!("Operation id           : {}", operation.id);
+        println!(
+            "Operation status       : {}",
+            lifecycle_status_label(operation.status)
+        );
     }
     for warning in &response.warnings {
         println!("Local runtime warning  : {warning}");
@@ -640,6 +814,13 @@ fn print_set_selector_result(response: &SetSelectorResponse) {
     }
     if let Some(current) = &response.current {
         println!("Current route          : {current}");
+    }
+    if let Some(operation) = &response.operation {
+        println!("Operation id           : {}", operation.id);
+        println!(
+            "Operation status       : {}",
+            lifecycle_status_label(operation.status)
+        );
     }
     for warning in &response.warnings {
         println!("Selector warning       : {warning}");
@@ -673,6 +854,13 @@ fn print_deploy_result(response: &DeployResponse) {
             }
         );
     }
+    if let Some(operation) = &response.operation {
+        println!("Operation id           : {}", operation.id);
+        println!(
+            "Operation status       : {}",
+            lifecycle_status_label(operation.status)
+        );
+    }
     for warning in &response.warnings {
         println!("Deploy warning         : {warning}");
     }
@@ -692,8 +880,35 @@ fn print_destroy_result(response: &DestroyResponse) {
             println!("Removed instance id    : {instance_id}");
         }
     }
+    if let Some(operation) = &response.operation {
+        println!("Operation id           : {}", operation.id);
+        println!(
+            "Operation status       : {}",
+            lifecycle_status_label(operation.status)
+        );
+    }
     for warning in &response.warnings {
         println!("Destroy warning        : {warning}");
+    }
+}
+
+fn print_operation_status(status: &OperationStatus) {
+    println!();
+    print_operation_summary(status);
+    for event in &status.recent_events {
+        println!("[{}] {}", event.id, event.message);
+    }
+}
+
+fn print_operation_summary(status: &OperationStatus) {
+    if let Some(operation) = &status.operation {
+        println!("Operation id           : {}", operation.id);
+        println!("Operation kind         : {}", operation.kind);
+        println!(
+            "Operation status       : {}",
+            lifecycle_status_label(operation.status)
+        );
+        println!("Created at             : {}", operation.created_at_unix);
     }
 }
 
@@ -702,6 +917,16 @@ fn bootstrap_mode_label(mode: i32) -> &'static str {
         Ok(BootstrapMode::BootstrapBase) => "base",
         Ok(BootstrapMode::BootstrapTunnel) => "tunnel",
         Ok(BootstrapMode::BootstrapFull) => "full",
+        _ => "unknown",
+    }
+}
+
+fn lifecycle_status_label(status: i32) -> &'static str {
+    match edge_shared_types::OperationLifecycleStatus::try_from(status) {
+        Ok(edge_shared_types::OperationLifecycleStatus::Requested) => "requested",
+        Ok(edge_shared_types::OperationLifecycleStatus::Running) => "running",
+        Ok(edge_shared_types::OperationLifecycleStatus::Succeeded) => "succeeded",
+        Ok(edge_shared_types::OperationLifecycleStatus::Failed) => "failed",
         _ => "unknown",
     }
 }
@@ -802,5 +1027,14 @@ mod tests {
         assert!(message.contains("controller bootstrap base failed with exit code 3"));
         assert!(message.contains("docker not reachable"));
         assert!(message.contains("gateway container missing"));
+    }
+
+    #[test]
+    fn formats_operation_lifecycle_labels() {
+        assert_eq!(
+            lifecycle_status_label(edge_shared_types::OperationLifecycleStatus::Running as i32),
+            "running"
+        );
+        assert_eq!(lifecycle_status_label(99), "unknown");
     }
 }

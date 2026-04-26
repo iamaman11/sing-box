@@ -1,260 +1,128 @@
 # RUNBOOK
 
-## Scope
+## Primary entrypoint
 
-This runbook describes the practical day-to-day operation of the current
-Windows + Vultr stack.
+The normal operator workflow is now Rust-first.
 
-It assumes:
-
-- project copy is available under `\\wsl$\Ubuntu\home\bose\projects\sing-box\win`
-- Windows sing-box binary is available at:
-  - `V:\code\sing-box-cl\auto-route-sing-box\sing-box.exe`
-
-## Main Entry Points
-
-Menu:
+Start the controller daemon:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl$\Ubuntu\home\bose\projects\sing-box\win\windows\singbox-dual-menu.ps1"
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-controller.exe" serve
 ```
 
-Launcher:
+Open the operator console:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl$\Ubuntu\home\bose\projects\sing-box\win\windows\start-vultr-edge-session.ps1"
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" menu
 ```
 
-Direct dual sing-box start:
+You can also use command mode:
 
 ```powershell
-& "V:\code\sing-box-cl\auto-route-sing-box\sing-box.exe" run -c "\\wsl$\Ubuntu\home\bose\projects\sing-box\win\windows\edge-dns-clean-vultr-dual.json"
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" status
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" deploy
 ```
 
-## Menu Options
+## Main console actions
 
-`1. Status`
+- `status`
+  - local runtime state
+  - deployment summary
+  - agent/runtime reachability
+  - selector state
 
-- local sing-box status
-- current Vultr instance status
-- backend readiness
-- active selector state
+- `start-local`
+- `stop-local`
+- `restart-local`
 
-`2. Direct tunnel -> auto`
+- `get-selector`
+- `set-selector <name>`
 
-- sets `proxy-selector = auto-direct-tunnel`
+- `trace`
 
-`3. Direct tunnel -> hysteria2`
+- `deploy`
+- `destroy`
 
-- sets `proxy-selector = hysteria2-direct`
+- `secrets`
+- `get-secret <name>`
+- `set-secret <name> <secret-ref>`
 
-`4. Direct tunnel -> vless`
+- `get-operation <id>`
+- `watch-operation <id>`
 
-- sets `proxy-selector = vless-reality-direct`
+## Secret names
 
-`5. WARP tunnel -> auto`
+The controller persists secret references in SQLite.
 
-- sets `proxy-selector = auto-warp-tunnel`
+Supported names:
 
-`6. WARP tunnel -> hysteria2`
+- `provider.vultr.api_key`
+- `provider.cloudflare.api_token`
+- `bootstrap.vultr.ssh_key_id`
+- `bootstrap.ssh.private_key_path`
 
-- sets `proxy-selector = hysteria2-warp`
+Supported secret reference formats:
 
-`7. WARP tunnel -> vless`
+- `env:NAME`
+- `file:/abs/path`
+- `path:/abs/path`
+- `literal:value`
 
-- sets `proxy-selector = vless-reality-warp`
-
-`8. Show current IP`
-
-- checks current tunnel egress through local proxy `127.0.0.1:7890`
-
-`9. Start sing-box (new window)`
-
-- starts the dual Windows client
-- refuses to start if:
-  - Vultr backend is not ready
-  - another non-dual sing-box config is already running
-
-`10. Stop sing-box`
-
-- stops only the dual client
-- refuses to stop unrelated sing-box processes
-
-`11. Create/redeploy Vultr server`
-
-- creates a server if none exists
-- redeploys the current server if one exists
-- syncs local dual config from state
-
-`12. Delete current Vultr server`
-
-- deletes the current instance from state
-
-`13. Open UI`
-
-- opens:
-  - `http://127.0.0.1:9090/ui/#/proxies`
-
-## Recommended Flows
-
-### 1. Normal startup
-
-1. Open the menu.
-2. Press `1` and confirm:
-   - `Vultr server exists = True`
-   - `Vultr backend ready = True`
-3. Press `9`.
-4. Press `13`.
-5. In the UI or menu, choose:
-   - direct branch
-   - or WARP branch
-
-### 2. Full startup from scratch
-
-1. Open the menu.
-2. Press `11`.
-3. Wait for deploy to finish.
-4. Press `1` and confirm backend is ready.
-5. Press `9`.
-6. Press `13`.
-
-### 3. Switch to WARP
-
-In menu:
-
-- `5` for auto WARP
-- `6` for forced Hysteria2 WARP
-- `7` for forced VLESS WARP
-
-Expected validation:
+Example:
 
 ```powershell
-curl.exe --proxy "http://127.0.0.1:7890" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" set-secret provider.vultr.api_key env:VULTR_API_KEY
 ```
 
-Expected result:
+## Recommended flows
 
-- `warp=on`
-
-### 4. Switch to direct Vultr egress
-
-In menu:
-
-- `2` for auto direct
-- `3` for forced Hysteria2 direct
-- `4` for forced VLESS direct
-
-Expected validation:
+### 1. Inspect current state
 
 ```powershell
-curl.exe --proxy "http://127.0.0.1:7890" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" status
 ```
 
-Expected result:
-
-- `warp=off`
-- IP should be the Vultr public IP
-
-### 5. Delete server
-
-1. Open the menu.
-2. Press `12`.
-3. Confirm deletion.
-
-If server is already missing, the menu should report that instead of failing.
-
-## Direct Proxy Validation
-
-WARP HTTP proxy:
+### 2. Start the local client
 
 ```powershell
-curl.exe --proxy "http://v_user:<PASSWORD>@64.176.69.113:3128" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" start-local
 ```
 
-WARP SOCKS5 proxy:
+### 3. Switch route
+
+Direct:
 
 ```powershell
-curl.exe --socks5-hostname "64.176.69.113:1080" --proxy-user "v_user:<PASSWORD>" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" set-selector auto-direct-tunnel
 ```
 
-WARP HTTPS proxy:
+WARP:
 
 ```powershell
-curl.exe --proxy-insecure --proxy "https://v_user:<PASSWORD>@64.176.69.113:9443" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" set-selector auto-warp-tunnel
 ```
 
-Direct HTTP proxy:
+### 4. Deploy or redeploy
 
 ```powershell
-curl.exe --proxy "http://v_user:<PASSWORD>@64.176.69.113:4128" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" deploy
 ```
 
-Direct SOCKS5 proxy:
+If the deploy output returns an operation id, follow it with:
 
 ```powershell
-curl.exe --socks5-hostname "64.176.69.113:4080" --proxy-user "v_user:<PASSWORD>" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" watch-operation <id>
 ```
 
-Direct HTTPS proxy:
+### 5. Destroy
 
 ```powershell
-curl.exe --proxy-insecure --proxy "https://v_user:<PASSWORD>@64.176.69.113:4443" https://cloudflare.com/cdn-cgi/trace
+& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" destroy
 ```
 
-Note:
+## Legacy reference
 
-- actual password is stored in the current state file:
-  - `%LOCALAPPDATA%\sing-box-vultr-dual\state\current-edge.json`
-
-## State, Runtime, Secrets
-
-State:
-
-- `%LOCALAPPDATA%\sing-box-vultr-dual\state`
-
-Runtime:
-
-- `%LOCALAPPDATA%\sing-box-vultr-dual\runtime`
-
-Secrets:
-
-- `%LOCALAPPDATA%\sing-box-vultr-dual\secrets`
-
-## Recovery
-
-### If menu says backend not ready
-
-1. Press `1`
-2. Check `Vultr backend note`
-3. Press `11`
-4. Re-check `1`
-
-### If menu says another sing-box config is running
-
-That means a different config is already active, for example:
-
-- `edge-dns-clean-vm-alegria.json`
-
-Stop that process manually first, then start the dual client.
-
-### If UI opens but switching seems ineffective
-
-- old browser connections may still be alive
-- close the browser completely and reopen it
-- use menu option `8` to verify current tunnel IP directly
-
-## One-Command Startup
-
-If you want a simple start path:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "\\wsl$\Ubuntu\home\bose\projects\sing-box\win\windows\start-vultr-edge-session.ps1"
-```
-
-This will:
-
-1. verify current Vultr state
-2. create a server if needed
-3. verify backend health
-4. sync local config
-5. start the dual Windows sing-box client
+PowerShell scripts under `win/windows` and `win/vultr-waw` are retained only as
+historical reference during migration review. They are not the primary control
+path anymore.

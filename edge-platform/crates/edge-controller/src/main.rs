@@ -29,12 +29,13 @@ use edge_shared_types::controller_service_server::{ControllerService, Controller
 use edge_shared_types::{
     AgentState, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
     BootstrapRuntimeResponse, BundleFile, ControllerStatus, DeployRequest, DeployResponse,
-    DestroyRequest, DestroyResponse, Empty, GetOperationRequest, GetSelectorStateRequest,
-    GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse, LocalRuntimeResponse,
-    Operation, OperationEvent, OperationLifecycleStatus, OperationStatus, PlatformError,
-    ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation, SelectorState,
-    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, VerifyRuntimeRequest,
+    DestroyRequest, DestroyResponse, Empty, GetOperationRequest, GetSecretRefRequest,
+    GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
+    ListOperationEventsResponse, ListSecretRefsRequest, ListSecretRefsResponse,
+    LocalRuntimeResponse, Operation, OperationEvent, OperationLifecycleStatus, OperationStatus,
+    PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
+    SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -73,6 +74,12 @@ const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
 const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
 const SECRET_VULTR_SSH_KEY_ID: &str = "bootstrap.vultr.ssh_key_id";
 const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
+const KNOWN_SECRET_NAMES: &[&str] = &[
+    SECRET_VULTR_API_KEY,
+    SECRET_CLOUDFLARE_API_TOKEN,
+    SECRET_VULTR_SSH_KEY_ID,
+    SECRET_SSH_PRIVATE_KEY_PATH,
+];
 
 #[derive(Debug, Clone)]
 struct ResolvedDeployTarget {
@@ -535,6 +542,40 @@ fn has_configured_secret_ref(state: &Arc<Mutex<EdgeState>>, name: &str) -> bool 
         || env::var_os(secret_name_to_env(name)).is_some()
 }
 
+fn validate_secret_name(name: &str) -> Result<(), Status> {
+    if name.trim().is_empty() {
+        return Err(Status::invalid_argument("secret name is required"));
+    }
+    if KNOWN_SECRET_NAMES.contains(&name) {
+        return Ok(());
+    }
+    Err(Status::invalid_argument(format!(
+        "unsupported secret name: {name}"
+    )))
+}
+
+fn list_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<Vec<SecretRefEntry>, Status> {
+    for name in KNOWN_SECRET_NAMES {
+        let default_ref = default_env_ref(secret_name_to_env(name));
+        let _ = get_or_seed_secret_ref(state, name, &default_ref);
+    }
+
+    let rows = state
+        .lock()
+        .map_err(|_| Status::internal("controller state mutex poisoned"))?
+        .list_secret_refs()
+        .map_err(|err| Status::internal(format!("failed to list secret refs: {err}")))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|entry| SecretRefEntry {
+            name: entry.name,
+            secret_ref: entry.secret_ref,
+            updated_at_unix: entry.updated_at_unix,
+        })
+        .collect())
+}
+
 fn secret_name_to_env(name: &str) -> &'static str {
     match name {
         SECRET_VULTR_API_KEY => "VULTR_API_KEY",
@@ -614,6 +655,72 @@ impl ControllerService for ControllerServerImpl {
             .map_err(|err| Status::internal(format!("failed to store status snapshot: {err}")))?;
 
         Ok(Response::new(status))
+    }
+
+    async fn get_secret_ref(
+        &self,
+        request: Request<GetSecretRefRequest>,
+    ) -> Result<Response<SecretRefEntry>, Status> {
+        let name = request.into_inner().name;
+        validate_secret_name(&name)?;
+        let default_ref = default_env_ref(secret_name_to_env(&name));
+        let secret_ref =
+            get_or_seed_secret_ref(&self.state, &name, &default_ref).map_err(|err| {
+                Status::internal(format!("failed to resolve secret ref {name}: {err}"))
+            })?;
+        let entry = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .get_secret_ref(&name)
+            .map_err(|err| Status::internal(format!("failed to read secret ref {name}: {err}")))?
+            .map(|value| SecretRefEntry {
+                name: value.name,
+                secret_ref: value.secret_ref,
+                updated_at_unix: value.updated_at_unix,
+            })
+            .unwrap_or(SecretRefEntry {
+                name,
+                secret_ref,
+                updated_at_unix: 0,
+            });
+        Ok(Response::new(entry))
+    }
+
+    async fn set_secret_ref(
+        &self,
+        request: Request<SetSecretRefRequest>,
+    ) -> Result<Response<SecretRefEntry>, Status> {
+        let request = request.into_inner();
+        validate_secret_name(&request.name)?;
+        edge_secrets::parse_secret_reference(&request.secret_ref)
+            .map_err(Status::invalid_argument)?;
+        self.state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .upsert_secret_ref(&request.name, &request.secret_ref)
+            .map_err(|err| Status::internal(format!("failed to store secret ref: {err}")))?;
+        let stored = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .get_secret_ref(&request.name)
+            .map_err(|err| Status::internal(format!("failed to reload secret ref: {err}")))?
+            .ok_or_else(|| Status::internal("stored secret ref is missing"))?;
+        Ok(Response::new(SecretRefEntry {
+            name: stored.name,
+            secret_ref: stored.secret_ref,
+            updated_at_unix: stored.updated_at_unix,
+        }))
+    }
+
+    async fn list_secret_refs(
+        &self,
+        _request: Request<ListSecretRefsRequest>,
+    ) -> Result<Response<ListSecretRefsResponse>, Status> {
+        Ok(Response::new(ListSecretRefsResponse {
+            secrets: list_secret_refs(&self.state)?,
+        }))
     }
 
     async fn bootstrap_runtime(
@@ -3229,6 +3336,27 @@ mod tests {
         drop(guard);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lists_seeded_secret_refs() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-secrets-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        let secrets = list_secret_refs(&state).unwrap();
+        assert!(secrets.iter().any(|entry| {
+            entry.name == SECRET_VULTR_API_KEY && entry.secret_ref == "env:VULTR_API_KEY"
+        }));
+        assert!(secrets.iter().any(|entry| {
+            entry.name == SECRET_SSH_PRIVATE_KEY_PATH
+                && entry.secret_ref == "env:EDGE_SSH_PRIVATE_KEY_PATH"
+        }));
+        let _ = std::fs::remove_file(db_path);
     }
 
     fn temp_repo_root() -> PathBuf {

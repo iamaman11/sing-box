@@ -108,14 +108,17 @@ pub const fn is_allowed_deploy_transition(from: DeployPhase, to: DeployPhase) ->
 }
 
 const REQUIRED_REPO_FILES: &[&str] = &[
-    "RUST-ULTIMATE-PLATFORM-PLAN.md",
-    "win/vultr-waw/deploy-waw.ps1",
-    "win/vultr-waw/verify-edge.ps1",
-    "win/windows/singbox-dual-menu.ps1",
-    "win/windows/sync-vultr-dual-config.ps1",
+    "edge-platform/Cargo.toml",
+    "edge-platform/README.md",
+    "edge-platform/proto/edge_platform.proto",
+    "edge-platform/crates/edge-agent/src/main.rs",
+    "edge-platform/crates/edge-controller/src/main.rs",
+    "edge-platform/crates/edge-console/src/main.rs",
+    "edge-platform/FINALIZATION-PLAN.md",
+    "win/vultr-waw/cloud-init.yaml",
     "win/vultr-waw/stack/docker-compose.yml",
     "win/vultr-waw/stack/tunnel-edge/config.template.json",
-    "edge-platform/Cargo.toml",
+    "win/windows/edge-dns-clean-vultr-dual.json",
 ];
 
 const LOCAL_ONLY_FILES: &[&str] = &[
@@ -500,18 +503,29 @@ mod tests {
     }
 
     fn create_required_repo_files(repo_root: &Path) {
-        create_file(&repo_root.join("RUST-ULTIMATE-PLATFORM-PLAN.md"), "");
-        create_file(&repo_root.join("win/vultr-waw/deploy-waw.ps1"), "");
-        create_file(&repo_root.join("win/vultr-waw/verify-edge.ps1"), "");
-        create_file(&repo_root.join("win/windows/singbox-dual-menu.ps1"), "");
+        create_file(&repo_root.join("edge-platform/README.md"), "");
         create_file(
-            &repo_root.join("win/windows/sync-vultr-dual-config.ps1"),
+            &repo_root.join("edge-platform/proto/edge_platform.proto"),
             "",
         );
+        create_file(
+            &repo_root.join("edge-platform/crates/edge-agent/src/main.rs"),
+            "",
+        );
+        create_file(
+            &repo_root.join("edge-platform/crates/edge-controller/src/main.rs"),
+            "",
+        );
+        create_file(
+            &repo_root.join("edge-platform/crates/edge-console/src/main.rs"),
+            "",
+        );
+        create_file(&repo_root.join("edge-platform/FINALIZATION-PLAN.md"), "");
         create_file(
             &repo_root.join("win/vultr-waw/stack/docker-compose.yml"),
             "",
         );
+        create_file(&repo_root.join("win/vultr-waw/cloud-init.yaml"), "");
         create_file(
             &repo_root.join("win/vultr-waw/stack/tunnel-edge/config.template.json"),
             "",

@@ -20,6 +20,8 @@ Rust control plane for local `sing-box` operation and Vultr edge runtime.
 ## What already works
 
 - read-only controller status
+- persisted secret references in controller state
+- persisted operations and event trails
 - local `sing-box` start/stop/restart
 - Clash selector read/write
 - trace/IP observation
@@ -29,6 +31,7 @@ Rust control plane for local `sing-box` operation and Vultr edge runtime.
 - deploy/destroy orchestration in Rust
 - fresh-host Vultr create + initial host bootstrap in Rust
 - steady-state remote agent target resolution from persisted deployment + trust state
+- console-side secret and operation inspection
 
 ## Fresh-host bootstrap inputs
 
@@ -77,12 +80,12 @@ For later remote deploy/redeploy operations, `edge-controller` now requires one 
 - forced SSH bootstrap via `EDGE_BOOTSTRAP_VIA_SSH=1`
 
 Status/runtime observation can now resolve the active remote agent target from
-persisted deployment and trust rows. The remaining hardening step is to remove
-any bootstrap-tunnel assumptions from the operational path and finish the
-production mTLS cutover semantics.
+persisted deployment and trust rows. Normal steady-state operation should stay
+on this direct persisted-trust path, with SSH reserved for first-host bootstrap
+and controlled maintenance.
 
 ## What is still left
 
-- direct steady-state `mTLS` controller -> agent operation without SSH tunnel assumptions
-- provider-path hardening and recovery semantics
-- production cutover cleanup and retirement of legacy PowerShell workflow
+- live acceptance runs against real Vultr/Cloudflare targets
+- optional Windows-native secret backend integration beyond `env:/file:/path:/literal:` references
+- final archival/removal of legacy PowerShell wrappers after operational signoff

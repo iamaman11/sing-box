@@ -259,6 +259,27 @@ message TrustEntry {
   int64 updated_at_unix = 10;
 }
 
+message SecretRefEntry {
+  string name = 1;
+  string secret_ref = 2;
+  int64 updated_at_unix = 3;
+}
+
+message GetSecretRefRequest {
+  string name = 1;
+}
+
+message SetSecretRefRequest {
+  string name = 1;
+  string secret_ref = 2;
+}
+
+message ListSecretRefsRequest {}
+
+message ListSecretRefsResponse {
+  repeated SecretRefEntry secrets = 1;
+}
+
 message BundleFile {
   string relative_path = 1;
   bytes content = 2;
@@ -369,6 +390,9 @@ message ListOperationEventsResponse {
 
 service ControllerService {
   rpc GetStatus(Empty) returns (ControllerStatus);
+  rpc GetSecretRef(GetSecretRefRequest) returns (SecretRefEntry);
+  rpc SetSecretRef(SetSecretRefRequest) returns (SecretRefEntry);
+  rpc ListSecretRefs(ListSecretRefsRequest) returns (ListSecretRefsResponse);
   rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
   rpc StartLocalRuntime(StartLocalRuntimeRequest) returns (LocalRuntimeResponse);
   rpc StopLocalRuntime(StopLocalRuntimeRequest) returns (LocalRuntimeResponse);

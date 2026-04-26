@@ -167,6 +167,25 @@ impl EdgeState {
         Ok(None)
     }
 
+    pub fn list_secret_refs(&self) -> rusqlite::Result<Vec<StoredSecretRef>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT name, secret_ref, updated_at_unix
+            FROM secret_refs
+            ORDER BY name ASC
+            ",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(StoredSecretRef {
+                name: row.get(0)?,
+                secret_ref: row.get(1)?,
+                updated_at_unix: row.get(2)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
     pub fn record_deployment(
         &self,
         deployment_label: &str,
@@ -671,6 +690,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(secret_ref.secret_ref, "env:VULTR_API_KEY");
+        assert_eq!(state.list_secret_refs().unwrap().len(), 1);
         assert_eq!(state.list_trust_entries().unwrap().len(), 1);
         let deployment = state
             .record_deployment("deploy-1", "instance-1", "203.0.113.10")
