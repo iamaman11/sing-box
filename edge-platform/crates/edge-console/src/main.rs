@@ -5,6 +5,9 @@ use std::process::ExitCode;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus, Empty,
+    GetSelectorStateRequest, GetTraceRequest, LocalRuntimeResponse, RestartLocalRuntimeRequest,
+    SelectorState, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
+    StopLocalRuntimeRequest, TraceObservation,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -32,6 +35,40 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             print_status(&status);
             Ok(())
         }
+        "start-local" => {
+            let response = start_local(controller_endpoint_from_args(2)).await?;
+            print_local_runtime_result(&response);
+            finish_local_result(response)
+        }
+        "stop-local" => {
+            let response = stop_local(controller_endpoint_from_args(2)).await?;
+            print_local_runtime_result(&response);
+            finish_local_result(response)
+        }
+        "restart-local" => {
+            let response = restart_local(controller_endpoint_from_args(2)).await?;
+            print_local_runtime_result(&response);
+            finish_local_result(response)
+        }
+        "get-selector" => {
+            let selector = fetch_selector_state(controller_endpoint_from_args(2)).await?;
+            print_selector_state(&selector);
+            Ok(())
+        }
+        "set-selector" => {
+            let name = env::args()
+                .nth(2)
+                .ok_or("set-selector requires a selector target name")?;
+            let response =
+                set_selector(controller_endpoint_from_args(3), "proxy-selector", &name).await?;
+            print_set_selector_result(&response);
+            finish_selector_result(response)
+        }
+        "trace" => {
+            let trace = fetch_trace(controller_endpoint_from_args(2)).await?;
+            print_trace(&trace);
+            Ok(())
+        }
         "bootstrap-base" => {
             let response = bootstrap_runtime(
                 controller_endpoint_from_args(2),
@@ -39,11 +76,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
             print_bootstrap_result(&response);
-            if response.success {
-                Ok(())
-            } else {
-                Err(format_bootstrap_failure(&response).into())
-            }
+            finish_bootstrap_result(response)
         }
         "bootstrap-tunnel" => {
             let response = bootstrap_runtime(
@@ -52,11 +85,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
             print_bootstrap_result(&response);
-            if response.success {
-                Ok(())
-            } else {
-                Err(format_bootstrap_failure(&response).into())
-            }
+            finish_bootstrap_result(response)
         }
         other => Err(format!("unsupported command: {other}").into()),
     }
@@ -67,8 +96,18 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
         println!();
         println!("Edge Console");
         println!("1. Status");
-        println!("2. Bootstrap base runtime");
-        println!("3. Bootstrap tunnel runtime");
+        println!("2. Direct tunnel -> auto");
+        println!("3. Direct tunnel -> hysteria2");
+        println!("4. Direct tunnel -> vless");
+        println!("5. WARP tunnel -> auto");
+        println!("6. WARP tunnel -> hysteria2");
+        println!("7. WARP tunnel -> vless");
+        println!("8. Show current IP");
+        println!("9. Start local runtime");
+        println!("10. Stop local runtime");
+        println!("11. Restart local runtime");
+        println!("12. Bootstrap base runtime");
+        println!("13. Bootstrap tunnel runtime");
         println!("0. Exit");
         print!("Select: ");
         io::stdout().flush()?;
@@ -82,12 +121,82 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 print_status(&status);
             }
             "2" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    "proxy-selector",
+                    "auto-direct-tunnel",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "3" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    "proxy-selector",
+                    "hysteria2-direct",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "4" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    "proxy-selector",
+                    "vless-reality-direct",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "5" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    "proxy-selector",
+                    "auto-warp-tunnel",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "6" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    "proxy-selector",
+                    "hysteria2-warp",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "7" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    "proxy-selector",
+                    "vless-reality-warp",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "8" => {
+                let trace = fetch_trace(controller_endpoint.clone()).await?;
+                print_trace(&trace);
+            }
+            "9" => {
+                let response = start_local(controller_endpoint.clone()).await?;
+                print_local_runtime_result(&response);
+            }
+            "10" => {
+                let response = stop_local(controller_endpoint.clone()).await?;
+                print_local_runtime_result(&response);
+            }
+            "11" => {
+                let response = restart_local(controller_endpoint.clone()).await?;
+                print_local_runtime_result(&response);
+            }
+            "12" => {
                 let response =
                     bootstrap_runtime(controller_endpoint.clone(), BootstrapMode::BootstrapBase)
                         .await?;
                 print_bootstrap_result(&response);
             }
-            "3" => {
+            "13" => {
                 let response =
                     bootstrap_runtime(controller_endpoint.clone(), BootstrapMode::BootstrapTunnel)
                         .await?;
@@ -119,6 +228,77 @@ async fn bootstrap_runtime(
     let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
     let response = client
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn start_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .start_local_runtime(Request::new(StartLocalRuntimeRequest {
+            singbox_binary_path: None,
+            config_path: None,
+            state_path: None,
+            force_restart: false,
+        }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn stop_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .stop_local_runtime(Request::new(StopLocalRuntimeRequest {
+            config_path: None,
+            expected_config_only: true,
+        }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn restart_local(
+    endpoint: String,
+) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .restart_local_runtime(Request::new(RestartLocalRuntimeRequest {
+            singbox_binary_path: None,
+            config_path: None,
+            state_path: None,
+        }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn fetch_selector_state(
+    endpoint: String,
+) -> Result<SelectorState, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .get_selector_state(Request::new(GetSelectorStateRequest { group: None }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn set_selector(
+    endpoint: String,
+    group: &str,
+    name: &str,
+) -> Result<SetSelectorResponse, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .set_selector(Request::new(SetSelectorRequest {
+            group: group.to_owned(),
+            name: name.to_owned(),
+        }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn fetch_trace(endpoint: String) -> Result<TraceObservation, Box<dyn std::error::Error>> {
+    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let response = client
+        .get_trace(Request::new(GetTraceRequest { proxy_url: None }))
         .await?;
     Ok(response.into_inner())
 }
@@ -239,23 +419,54 @@ fn print_status(status: &ControllerStatus) {
     }
 
     if let Some(selector) = &status.selector {
-        if let Some(desired) = &selector.desired_main_route {
-            println!("Desired route          : {desired}");
-        }
-        if let Some(observed) = &selector.observed_main_route {
-            println!("Observed route         : {observed}");
-        }
-        println!(
-            "Selector degraded      : {}",
-            if selector.degraded { "yes" } else { "no" }
-        );
-        for warning in &selector.warnings {
-            println!("Selector warning       : {warning}");
-        }
+        print_selector_state(selector);
     }
 
     for note in &status.status_notes {
         println!("Status note            : {note}");
+    }
+}
+
+fn print_selector_state(selector: &SelectorState) {
+    if let Some(desired) = &selector.desired_main_route {
+        println!("Desired route          : {desired}");
+    }
+    if let Some(observed) = &selector.observed_main_route {
+        println!("Observed route         : {observed}");
+    }
+    println!(
+        "Selector degraded      : {}",
+        if selector.degraded { "yes" } else { "no" }
+    );
+    for group in &selector.proxy_groups {
+        if let Some(selected) = &group.selected {
+            println!("{:<24}: {}", group.name, selected);
+        } else {
+            println!("{:<24}: unavailable", group.name);
+        }
+    }
+    for warning in &selector.warnings {
+        println!("Selector warning       : {warning}");
+    }
+}
+
+fn print_trace(trace: &TraceObservation) {
+    println!();
+    if trace.available {
+        if let Some(ip) = &trace.ip {
+            println!("Current tunnel IP      : {ip}");
+        }
+        if let Some(warp) = &trace.warp {
+            println!("Current tunnel WARP    : {warp}");
+        }
+        if let Some(colo) = &trace.colo {
+            println!("Current tunnel colo    : {colo}");
+        }
+    } else {
+        println!(
+            "Current tunnel note    : {}",
+            trace.note.as_deref().unwrap_or("trace unavailable")
+        );
     }
 }
 
@@ -274,6 +485,38 @@ fn print_bootstrap_result(response: &BootstrapRuntimeResponse) {
         for warning in &response.warnings {
             println!("Bootstrap warning      : {warning}");
         }
+    }
+}
+
+fn print_local_runtime_result(response: &LocalRuntimeResponse) {
+    println!();
+    println!(
+        "Local runtime success  : {}",
+        if response.success { "yes" } else { "no" }
+    );
+    println!("Local runtime note     : {}", response.note);
+    if let Some(pid) = response.pid {
+        println!("Local runtime PID      : {pid}");
+    }
+    for warning in &response.warnings {
+        println!("Local runtime warning  : {warning}");
+    }
+}
+
+fn print_set_selector_result(response: &SetSelectorResponse) {
+    println!();
+    println!(
+        "Selector update        : {}",
+        if response.success { "ok" } else { "failed" }
+    );
+    if let Some(previous) = &response.previous {
+        println!("Previous route         : {previous}");
+    }
+    if let Some(current) = &response.current {
+        println!("Current route          : {current}");
+    }
+    for warning in &response.warnings {
+        println!("Selector warning       : {warning}");
     }
 }
 
@@ -307,6 +550,32 @@ fn join_ports(ports: &[u32]) -> String {
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn finish_bootstrap_result(
+    response: BootstrapRuntimeResponse,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if response.success {
+        Ok(())
+    } else {
+        Err(format_bootstrap_failure(&response).into())
+    }
+}
+
+fn finish_local_result(response: LocalRuntimeResponse) -> Result<(), Box<dyn std::error::Error>> {
+    if response.success {
+        Ok(())
+    } else {
+        Err(response.note.into())
+    }
+}
+
+fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn std::error::Error>> {
+    if response.success {
+        Ok(())
+    } else {
+        Err("selector update failed".into())
+    }
 }
 
 #[cfg(test)]

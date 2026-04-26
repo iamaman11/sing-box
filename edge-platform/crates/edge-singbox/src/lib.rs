@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use edge_shared_types::{LocalSingboxState, SelectorState};
 use serde::Deserialize;
+use serde_json::{Map, Value};
 
 const MANAGED_SELECTOR_TAG: &str = "proxy-selector";
 const EXPECTED_OUTBOUND_TAGS: &[&str] = &[
@@ -35,6 +36,12 @@ pub struct TunnelBinding {
     pub vless_uuid: String,
     pub reality_public_key: String,
     pub reality_short_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigSyncSummary {
+    pub instance_id: Option<String>,
+    pub config_path: String,
 }
 
 pub fn inspect_local_config(
@@ -191,6 +198,94 @@ pub fn inspect_local_config(
         local_singbox,
         selector,
     }
+}
+
+pub fn sync_local_config(
+    config_path: &Path,
+    state_path: &Path,
+    runtime_root: &Path,
+) -> Result<ConfigSyncSummary, String> {
+    let raw_config = fs::read_to_string(config_path)
+        .map_err(|err| format!("unable to read local sing-box config: {err}"))?;
+    let raw_state = fs::read_to_string(state_path)
+        .map_err(|err| format!("unable to read state file: {err}"))?;
+
+    let mut config: Value = serde_json::from_str(&raw_config)
+        .map_err(|err| format!("local sing-box config is not valid JSON: {err}"))?;
+    let state: SyncState = serde_json::from_str(&raw_state)
+        .map_err(|err| format!("state file is invalid JSON: {err}"))?;
+
+    let runtime_root = runtime_root.display().to_string();
+    if let Some(clash_api) = config
+        .pointer_mut("/experimental/clash_api")
+        .and_then(Value::as_object_mut)
+    {
+        clash_api.insert(
+            "external_ui".to_owned(),
+            Value::String(format!("{runtime_root}/metacubexd-ui")),
+        );
+    }
+    if let Some(cache_file) = config
+        .pointer_mut("/experimental/cache_file")
+        .and_then(Value::as_object_mut)
+    {
+        cache_file.insert(
+            "path".to_owned(),
+            Value::String(format!("{runtime_root}/cache-dns-vultr-dual.db")),
+        );
+    }
+
+    sync_tunnel_outbound(
+        &mut config,
+        "hysteria2-direct",
+        &state.tunnel,
+        TunnelKind::Hysteria2,
+    );
+    sync_tunnel_outbound(
+        &mut config,
+        "vless-reality-direct",
+        &state.tunnel,
+        TunnelKind::VlessReality,
+    );
+    sync_tunnel_outbound(
+        &mut config,
+        "hysteria2-warp",
+        &state.tunnel_warp,
+        TunnelKind::Hysteria2,
+    );
+    sync_tunnel_outbound(
+        &mut config,
+        "vless-reality-warp",
+        &state.tunnel_warp,
+        TunnelKind::VlessReality,
+    );
+
+    let rendered = serde_json::to_vec_pretty(&config)
+        .map_err(|err| format!("failed to render updated config: {err}"))?;
+    fs::write(config_path, rendered).map_err(|err| format!("failed to write config: {err}"))?;
+
+    Ok(ConfigSyncSummary {
+        instance_id: state.instance_id,
+        config_path: config_path.display().to_string(),
+    })
+}
+
+pub fn default_trace_proxy_url(config_path: &Path) -> Result<Option<String>, String> {
+    let raw_config = fs::read_to_string(config_path)
+        .map_err(|err| format!("unable to read local sing-box config: {err}"))?;
+    let parsed: TraceConfig = serde_json::from_str(&raw_config)
+        .map_err(|err| format!("invalid local config JSON: {err}"))?;
+
+    Ok(parsed.inbounds.into_iter().find_map(|inbound| {
+        if inbound.kind == "mixed" && inbound.tag == "mixed-in" {
+            let host = inbound.listen.unwrap_or_else(|| "127.0.0.1".to_owned());
+            inbound
+                .listen_port
+                .map(|port| format!("http://{host}:{port}"))
+        } else {
+            None
+        }
+    }))
 }
 
 fn compare_tunnel_binding(
@@ -403,6 +498,86 @@ fn parse_controller_port(value: &str) -> Option<u32> {
     value.rsplit(':').next()?.parse().ok()
 }
 
+#[derive(Clone, Copy)]
+enum TunnelKind {
+    Hysteria2,
+    VlessReality,
+}
+
+fn sync_tunnel_outbound(config: &mut Value, tag: &str, tunnel: &SyncTunnelState, kind: TunnelKind) {
+    let Some(outbound) = find_outbound_mut(config, tag) else {
+        return;
+    };
+
+    let Some(object) = outbound.as_object_mut() else {
+        return;
+    };
+
+    object.insert("server".to_owned(), Value::String(tunnel.domain.clone()));
+    match kind {
+        TunnelKind::Hysteria2 => {
+            object.insert(
+                "server_port".to_owned(),
+                Value::Number(tunnel.hy2_port.into()),
+            );
+            object.insert(
+                "password".to_owned(),
+                Value::String(tunnel.hy2_password.clone()),
+            );
+            let tls = ensure_child_object(object, "tls");
+            tls.insert(
+                "server_name".to_owned(),
+                Value::String(tunnel.domain.clone()),
+            );
+        }
+        TunnelKind::VlessReality => {
+            object.insert(
+                "server_port".to_owned(),
+                Value::Number(tunnel.vless_port.into()),
+            );
+            object.insert("uuid".to_owned(), Value::String(tunnel.vless_uuid.clone()));
+            let tls = ensure_child_object(object, "tls");
+            let reality = ensure_child_object(tls, "reality");
+            reality.insert(
+                "public_key".to_owned(),
+                Value::String(tunnel.reality_public_key.clone()),
+            );
+            reality.insert(
+                "short_id".to_owned(),
+                Value::String(tunnel.reality_short_id.clone()),
+            );
+        }
+    }
+}
+
+fn find_outbound_mut<'a>(config: &'a mut Value, tag: &str) -> Option<&'a mut Value> {
+    config
+        .get_mut("outbounds")
+        .and_then(Value::as_array_mut)
+        .and_then(|outbounds| {
+            outbounds.iter_mut().find(|outbound| {
+                outbound
+                    .get("tag")
+                    .and_then(Value::as_str)
+                    .map(|value| value == tag)
+                    .unwrap_or(false)
+            })
+        })
+}
+
+fn ensure_child_object<'a>(
+    parent: &'a mut Map<String, Value>,
+    key: &str,
+) -> &'a mut Map<String, Value> {
+    let value = parent
+        .entry(key.to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !value.is_object() {
+        *value = Value::Object(Map::new());
+    }
+    value.as_object_mut().expect("object inserted above")
+}
+
 #[derive(Debug, Deserialize)]
 struct SingboxConfig {
     #[serde(default)]
@@ -445,6 +620,39 @@ struct Tls {
 struct Reality {
     public_key: Option<String>,
     short_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SyncState {
+    instance_id: Option<String>,
+    tunnel: SyncTunnelState,
+    tunnel_warp: SyncTunnelState,
+}
+
+#[derive(Debug, Deserialize)]
+struct SyncTunnelState {
+    domain: String,
+    hy2_port: u32,
+    hy2_password: String,
+    vless_port: u32,
+    vless_uuid: String,
+    reality_public_key: String,
+    reality_short_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceConfig {
+    #[serde(default)]
+    inbounds: Vec<TraceInbound>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceInbound {
+    #[serde(rename = "type")]
+    kind: String,
+    tag: String,
+    listen: Option<String>,
+    listen_port: Option<u32>,
 }
 
 #[cfg(test)]
@@ -699,6 +907,103 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("does not match live state"))
         );
+
+        fs::remove_dir_all(repo_root).unwrap();
+    }
+
+    #[test]
+    fn syncs_local_config_from_state() {
+        let repo_root = unique_test_dir();
+        let config_path = repo_root.join("edge-dns-clean-vultr-dual.json");
+        let state_path = repo_root.join("current-edge.json");
+        let runtime_root = repo_root.join("runtime");
+        fs::create_dir_all(&repo_root).unwrap();
+        fs::write(
+            &config_path,
+            r#"{
+  "outbounds": [
+    { "type": "hysteria2", "tag": "hysteria2-direct", "tls": {} },
+    { "type": "vless", "tag": "vless-reality-direct", "tls": { "reality": {} } },
+    { "type": "hysteria2", "tag": "hysteria2-warp", "tls": {} },
+    { "type": "vless", "tag": "vless-reality-warp", "tls": { "reality": {} } }
+  ],
+  "experimental": {
+    "cache_file": {},
+    "clash_api": {}
+  }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            &state_path,
+            r#"{
+  "instance_id":"instance-1",
+  "tunnel":{
+    "domain":"edge.example.com",
+    "hy2_port":8443,
+    "hy2_password":"direct-password",
+    "vless_port":443,
+    "vless_uuid":"direct-uuid",
+    "reality_public_key":"direct-public-key",
+    "reality_short_id":"direct-short-id"
+  },
+  "tunnel_warp":{
+    "domain":"edge.example.com",
+    "hy2_port":9444,
+    "hy2_password":"warp-password",
+    "vless_port":5443,
+    "vless_uuid":"warp-uuid",
+    "reality_public_key":"warp-public-key",
+    "reality_short_id":"warp-short-id"
+  }
+}"#,
+        )
+        .unwrap();
+
+        let summary = sync_local_config(&config_path, &state_path, &runtime_root).unwrap();
+        assert_eq!(summary.instance_id.as_deref(), Some("instance-1"));
+
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            updated
+                .pointer("/experimental/clash_api/external_ui")
+                .and_then(serde_json::Value::as_str),
+            Some(format!("{}/metacubexd-ui", runtime_root.display()).as_str())
+        );
+        assert_eq!(
+            updated
+                .pointer("/outbounds/0/server")
+                .and_then(serde_json::Value::as_str),
+            Some("edge.example.com")
+        );
+        assert_eq!(
+            updated
+                .pointer("/outbounds/1/tls/reality/public_key")
+                .and_then(serde_json::Value::as_str),
+            Some("direct-public-key")
+        );
+
+        fs::remove_dir_all(repo_root).unwrap();
+    }
+
+    #[test]
+    fn derives_default_trace_proxy_url_from_config() {
+        let repo_root = unique_test_dir();
+        let config_path = repo_root.join("edge-dns-clean-vultr-dual.json");
+        fs::create_dir_all(&repo_root).unwrap();
+        fs::write(
+            &config_path,
+            r#"{
+  "inbounds": [
+    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 7890 }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let proxy = default_trace_proxy_url(&config_path).unwrap();
+        assert_eq!(proxy.as_deref(), Some("http://127.0.0.1:7890"));
 
         fs::remove_dir_all(repo_root).unwrap();
     }

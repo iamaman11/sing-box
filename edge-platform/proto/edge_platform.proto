@@ -143,6 +143,33 @@ message LocalSingboxState {
   repeated string warnings = 6;
 }
 
+message StartLocalRuntimeRequest {
+  optional string singbox_binary_path = 1;
+  optional string config_path = 2;
+  optional string state_path = 3;
+  bool force_restart = 4;
+}
+
+message StopLocalRuntimeRequest {
+  optional string config_path = 1;
+  bool expected_config_only = 2;
+}
+
+message RestartLocalRuntimeRequest {
+  optional string singbox_binary_path = 1;
+  optional string config_path = 2;
+  optional string state_path = 3;
+}
+
+message LocalRuntimeResponse {
+  bool success = 1;
+  optional uint32 pid = 2;
+  string note = 3;
+  repeated string warnings = 4;
+  optional Operation operation = 5;
+  LocalSingboxState local_singbox = 6;
+}
+
 message DeploymentSummary {
   bool live_state_present = 1;
   optional string source_state_path = 2;
@@ -174,16 +201,93 @@ message RuntimeObservation {
   bool compose_file_present = 12;
 }
 
+message ProxyGroupState {
+  string name = 1;
+  optional string selected = 2;
+  repeated string candidates = 3;
+  repeated string warnings = 4;
+}
+
 message SelectorState {
   optional string desired_main_route = 1;
   optional string observed_main_route = 2;
   bool degraded = 3;
   repeated string warnings = 4;
+  repeated ProxyGroupState proxy_groups = 5;
+}
+
+message GetSelectorStateRequest {
+  optional string group = 1;
+}
+
+message SetSelectorRequest {
+  string group = 1;
+  string name = 2;
+}
+
+message SetSelectorResponse {
+  bool success = 1;
+  optional string previous = 2;
+  optional string current = 3;
+  repeated string warnings = 4;
+  optional Operation operation = 5;
+  SelectorState selector = 6;
+}
+
+message GetTraceRequest {
+  optional string proxy_url = 1;
+}
+
+message TraceObservation {
+  bool available = 1;
+  optional string ip = 2;
+  optional string warp = 3;
+  optional string colo = 4;
+  optional string note = 5;
+}
+
+message Operation {
+  int64 id = 1;
+  string kind = 2;
+  OperationLifecycleStatus status = 3;
+  int64 created_at_unix = 4;
+}
+
+message OperationEvent {
+  int64 id = 1;
+  int64 operation_id = 2;
+  string message = 3;
+  int64 created_at_unix = 4;
+}
+
+message OperationStatus {
+  Operation operation = 1;
+  repeated OperationEvent recent_events = 2;
+}
+
+message GetOperationRequest {
+  int64 operation_id = 1;
+}
+
+message ListOperationEventsRequest {
+  int64 operation_id = 1;
+}
+
+message ListOperationEventsResponse {
+  repeated OperationEvent events = 1;
 }
 
 service ControllerService {
   rpc GetStatus(Empty) returns (ControllerStatus);
   rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
+  rpc StartLocalRuntime(StartLocalRuntimeRequest) returns (LocalRuntimeResponse);
+  rpc StopLocalRuntime(StopLocalRuntimeRequest) returns (LocalRuntimeResponse);
+  rpc RestartLocalRuntime(RestartLocalRuntimeRequest) returns (LocalRuntimeResponse);
+  rpc GetSelectorState(GetSelectorStateRequest) returns (SelectorState);
+  rpc SetSelector(SetSelectorRequest) returns (SetSelectorResponse);
+  rpc GetTrace(GetTraceRequest) returns (TraceObservation);
+  rpc GetOperation(GetOperationRequest) returns (OperationStatus);
+  rpc ListOperationEvents(ListOperationEventsRequest) returns (ListOperationEventsResponse);
 }
 
 service AgentService {

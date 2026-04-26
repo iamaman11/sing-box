@@ -6,9 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+edge-clash = { path = "../edge-clash" }
 edge-controller-core = { path = "../edge-controller-core" }
+edge-local-runtime = { path = "../edge-local-runtime" }
 edge-shared-types = { path = "../edge-shared-types" }
 edge-state = { version = "0.1.0", path = "../edge-state" }
+edge-singbox = { path = "../edge-singbox" }
+edge-trace = { path = "../edge-trace" }
 prost = "0.14.3"
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "net"] }
 tonic = "0.14.5"

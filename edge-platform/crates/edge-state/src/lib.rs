@@ -121,6 +121,109 @@ impl EdgeState {
                 row.get(0)
             })
     }
+
+    pub fn start_operation(&self, kind: &str, status: &str) -> rusqlite::Result<StoredOperation> {
+        let created_at = unix_now();
+        self.conn.execute(
+            "
+            INSERT INTO operations (kind, status, created_at_unix)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![kind, status, created_at],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        Ok(StoredOperation {
+            id,
+            kind: kind.to_owned(),
+            status: status.to_owned(),
+            created_at_unix: created_at,
+        })
+    }
+
+    pub fn update_operation_status(&self, operation_id: i64, status: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE operations SET status = ?2 WHERE id = ?1",
+            params![operation_id, status],
+        )?;
+        Ok(())
+    }
+
+    pub fn append_operation_event(
+        &self,
+        operation_id: i64,
+        message: &str,
+    ) -> rusqlite::Result<StoredOperationEvent> {
+        let created_at = unix_now();
+        self.conn.execute(
+            "
+            INSERT INTO operation_events (operation_id, message, created_at_unix)
+            VALUES (?1, ?2, ?3)
+            ",
+            params![operation_id, message, created_at],
+        )?;
+        Ok(StoredOperationEvent {
+            id: self.conn.last_insert_rowid(),
+            operation_id,
+            message: message.to_owned(),
+            created_at_unix: created_at,
+        })
+    }
+
+    pub fn get_operation(&self, operation_id: i64) -> rusqlite::Result<Option<StoredOperation>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, kind, status, created_at_unix FROM operations WHERE id = ?1")?;
+        let mut rows = statement.query(params![operation_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredOperation {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                status: row.get(2)?,
+                created_at_unix: row.get(3)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn list_operation_events(
+        &self,
+        operation_id: i64,
+    ) -> rusqlite::Result<Vec<StoredOperationEvent>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT id, operation_id, message, created_at_unix
+            FROM operation_events
+            WHERE operation_id = ?1
+            ORDER BY id ASC
+            ",
+        )?;
+        let rows = statement.query_map(params![operation_id], |row| {
+            Ok(StoredOperationEvent {
+                id: row.get(0)?,
+                operation_id: row.get(1)?,
+                message: row.get(2)?,
+                created_at_unix: row.get(3)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredOperation {
+    pub id: i64,
+    pub kind: String,
+    pub status: String,
+    pub created_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredOperationEvent {
+    pub id: i64,
+    pub operation_id: i64,
+    pub message: String,
+    pub created_at_unix: i64,
 }
 
 fn unix_now() -> i64 {
@@ -148,6 +251,18 @@ mod tests {
             .store_local_observation("controller_status", &[1, 2, 3])
             .unwrap();
         assert_eq!(state.local_observation_count().unwrap(), 1);
+        let operation = state
+            .start_operation("start_local_runtime", "RUNNING")
+            .unwrap();
+        state
+            .append_operation_event(operation.id, "starting local runtime")
+            .unwrap();
+        state
+            .update_operation_status(operation.id, "SUCCEEDED")
+            .unwrap();
+        let stored = state.get_operation(operation.id).unwrap().unwrap();
+        assert_eq!(stored.status, "SUCCEEDED");
+        assert_eq!(state.list_operation_events(operation.id).unwrap().len(), 1);
         let _ = std::fs::remove_file(db_path);
     }
 }

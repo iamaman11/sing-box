@@ -60,6 +60,12 @@ impl BootstrapRuntimeResponse {
     }
 }
 
+impl LocalRuntimeResponse {
+    pub fn encode_proto(&self) -> Vec<u8> {
+        self.encode_to_vec()
+    }
+}
+
 impl LocalSingboxState {
     pub fn placeholder(expected_config_path: impl Into<String>) -> Self {
         Self {
@@ -157,6 +163,7 @@ impl SelectorState {
             observed_main_route: None,
             degraded: false,
             warnings: vec!["selector observation not implemented in phase A".to_owned()],
+            proxy_groups: Vec::new(),
         }
     }
 }
@@ -164,6 +171,18 @@ impl SelectorState {
 impl ControllerStatus {
     pub fn encode_proto(&self) -> Vec<u8> {
         self.encode_to_vec()
+    }
+}
+
+impl TraceObservation {
+    pub fn unavailable(note: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            ip: None,
+            warp: None,
+            colo: None,
+            note: Some(note.into()),
+        }
     }
 }
 
