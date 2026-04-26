@@ -296,6 +296,7 @@ dependencies = [
  "edge-local-runtime",
  "edge-provider-cloudflare",
  "edge-provider-vultr",
+ "edge-secrets",
  "edge-shared-types",
  "edge-singbox",
  "edge-state",
@@ -344,6 +345,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "edge-secrets"
+version = "0.1.0"
 
 [[package]]
 name = "edge-shared-types"

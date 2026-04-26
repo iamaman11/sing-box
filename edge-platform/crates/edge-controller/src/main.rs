@@ -22,6 +22,7 @@ use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_r
 use edge_provider_vultr::{
     CreateInstanceRequest, create_instance, destroy_instance, get_instance, mock_instance,
 };
+use edge_secrets::{default_env_ref, resolve_secret_path, resolve_secret_text};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
@@ -68,6 +69,10 @@ const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
 const DEFAULT_AGENT_REMOTE_PORT: u16 = 50061;
 const DEFAULT_SSH_USER: &str = "root";
 const DEFAULT_SSH_KNOWN_HOSTS_PATH: &str = "edge-platform/.runtime/ssh-known_hosts";
+const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
+const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
+const SECRET_VULTR_SSH_KEY_ID: &str = "bootstrap.vultr.ssh_key_id";
+const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
 
 #[derive(Debug, Clone)]
 struct ResolvedDeployTarget {
@@ -101,6 +106,13 @@ struct SshTunnelGuard {
 struct AgentConnectionTarget {
     endpoint: String,
     tls_paths: Option<AgentClientTlsPaths>,
+}
+
+#[derive(Debug, Clone)]
+struct DeployRollbackContext {
+    deployment_label: String,
+    previous_live_state: Option<String>,
+    dns_updated: bool,
 }
 
 #[tokio::main]
@@ -143,7 +155,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "bootstrap-runtime" => {
             let mode = bootstrap_mode_from_args(2)?;
             let endpoint = agent_endpoint_from_args(3);
-            let response = bootstrap_runtime(endpoint, mode).await?;
+            let response = bootstrap_runtime(endpoint, mode)
+                .await
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
             io::stdout().write_all(&response.encode_proto())?;
             if response.success {
                 Ok(())
@@ -363,7 +377,7 @@ async fn destroy_via_controller(
 async fn bootstrap_runtime(
     endpoint: String,
     mode: BootstrapMode,
-) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
+) -> Result<BootstrapRuntimeResponse, String> {
     let target = AgentConnectionTarget {
         endpoint,
         tls_paths: None,
@@ -374,12 +388,15 @@ async fn bootstrap_runtime(
 async fn bootstrap_runtime_with_tls(
     target: AgentConnectionTarget,
     mode: BootstrapMode,
-) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
-    let channel = connect_to_agent_target(&target).await?;
+) -> Result<BootstrapRuntimeResponse, String> {
+    let channel = connect_to_agent_target(&target)
+        .await
+        .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
     let mut client = AgentServiceClient::<Channel>::new(channel);
     let response = client
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
-        .await?;
+        .await
+        .map_err(|err| format!("edge-agent bootstrap RPC failed: {err}"))?;
     Ok(response.into_inner())
 }
 
@@ -467,6 +484,65 @@ fn destroy_request_from_args() -> Result<DestroyRequest, Box<dyn std::error::Err
             .ok()
             .is_none_or(|value| value == "1"),
     })
+}
+
+fn resolve_text_secret(
+    state: &Arc<Mutex<EdgeState>>,
+    name: &str,
+    default_reference: &str,
+) -> Result<String, String> {
+    let reference = get_or_seed_secret_ref(state, name, default_reference)?;
+    resolve_secret_text(&reference)
+        .map_err(|err| format!("failed to resolve secret {name} via {reference}: {err}"))
+}
+
+fn resolve_path_secret(
+    state: &Arc<Mutex<EdgeState>>,
+    name: &str,
+    default_reference: &str,
+) -> Result<PathBuf, String> {
+    let reference = get_or_seed_secret_ref(state, name, default_reference)?;
+    resolve_secret_path(&reference)
+        .map_err(|err| format!("failed to resolve secret path {name} via {reference}: {err}"))
+}
+
+fn get_or_seed_secret_ref(
+    state: &Arc<Mutex<EdgeState>>,
+    name: &str,
+    default_reference: &str,
+) -> Result<String, String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    if let Some(secret_ref) = guard
+        .get_secret_ref(name)
+        .map_err(|err| format!("failed to read secret ref {name}: {err}"))?
+    {
+        return Ok(secret_ref.secret_ref);
+    }
+    guard
+        .upsert_secret_ref(name, default_reference)
+        .map_err(|err| format!("failed to store secret ref {name}: {err}"))?;
+    Ok(default_reference.to_owned())
+}
+
+fn has_configured_secret_ref(state: &Arc<Mutex<EdgeState>>, name: &str) -> bool {
+    state
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get_secret_ref(name).ok().flatten())
+        .is_some()
+        || env::var_os(secret_name_to_env(name)).is_some()
+}
+
+fn secret_name_to_env(name: &str) -> &'static str {
+    match name {
+        SECRET_VULTR_API_KEY => "VULTR_API_KEY",
+        SECRET_CLOUDFLARE_API_TOKEN => "CLOUDFLARE_API_TOKEN",
+        SECRET_VULTR_SSH_KEY_ID => "EDGE_VULTR_SSH_KEY_ID",
+        SECRET_SSH_PRIVATE_KEY_PATH => "EDGE_SSH_PRIVATE_KEY_PATH",
+        _ => "",
+    }
 }
 
 fn repo_root_from_args(index: usize) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -905,14 +981,22 @@ impl ControllerService for ControllerServerImpl {
             operation.id,
             &format!("deployment label reserved: {deployment_label}"),
         )?;
+        let previous_live_state = read_live_state_raw(&self.repo_root)
+            .map_err(|err| Status::internal(format!("failed to snapshot live state: {err}")))?;
+        let mut rollback = DeployRollbackContext {
+            deployment_label: deployment_label.clone(),
+            previous_live_state,
+            dns_updated: false,
+        };
 
-        let target = resolve_deploy_target(&self.repo_root, &request, &deployment_label)
-            .await
-            .map_err(|err| {
-                let _ = append_operation_event(&self.state, operation.id, &err);
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                Status::invalid_argument(err)
-            })?;
+        let target =
+            resolve_deploy_target(&self.repo_root, &self.state, &request, &deployment_label)
+                .await
+                .map_err(|err| {
+                    let _ = append_operation_event(&self.state, operation.id, &err);
+                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                    Status::invalid_argument(err)
+                })?;
         append_operation_event(
             &self.state,
             operation.id,
@@ -950,16 +1034,35 @@ impl ControllerService for ControllerServerImpl {
             &format!("bundle rendered: {}", bundle.label),
         )?;
 
-        persist_bundle_locally(&self.repo_root, &self.state, &bundle, &target).map_err(|err| {
-            Status::internal(format!("failed to persist deployment state: {err}"))
-        })?;
+        if let Err(err) = persist_bundle_locally(&self.repo_root, &self.state, &bundle, &target) {
+            let rollback_warnings = rollback_failed_deploy(
+                &self.repo_root,
+                &self.state,
+                &request,
+                &target,
+                &rollback,
+                operation.id,
+            )
+            .await;
+            let _ = append_operation_event(&self.state, operation.id, &err);
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            return Err(Status::internal(format!(
+                "failed to persist deployment state: {}{}",
+                err,
+                if rollback_warnings.is_empty() {
+                    String::new()
+                } else {
+                    format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                }
+            )));
+        }
         append_operation_event(
             &self.state,
             operation.id,
             "local trust and deployment state persisted",
         )?;
 
-        let agent_transport = prepare_agent_transport(
+        let agent_transport = match prepare_agent_transport(
             &self.repo_root,
             &self.agent_endpoint,
             &request,
@@ -968,18 +1071,38 @@ impl ControllerService for ControllerServerImpl {
             &self.state,
         )
         .await
-        .map_err(|err| {
-            let _ = append_operation_event(&self.state, operation.id, &err);
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            Status::internal(format!("failed to prepare agent transport: {err}"))
-        })?;
+        {
+            Ok(agent_transport) => agent_transport,
+            Err(err) => {
+                let rollback_warnings = rollback_failed_deploy(
+                    &self.repo_root,
+                    &self.state,
+                    &request,
+                    &target,
+                    &rollback,
+                    operation.id,
+                )
+                .await;
+                let _ = append_operation_event(&self.state, operation.id, &err);
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Err(Status::internal(format!(
+                    "failed to prepare agent transport: {}{}",
+                    err,
+                    if rollback_warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                    }
+                )));
+            }
+        };
         append_operation_event(
             &self.state,
             operation.id,
             &format!("agent transport ready via {}", agent_transport.endpoint),
         )?;
 
-        let apply_response = apply_bundle_to_agent_target(
+        let apply_response = match apply_bundle_to_agent_target(
             &AgentConnectionTarget {
                 endpoint: agent_transport.endpoint.clone(),
                 tls_paths: agent_transport.tls_paths.clone(),
@@ -987,16 +1110,36 @@ impl ControllerService for ControllerServerImpl {
             &bundle,
         )
         .await
-        .map_err(|err| {
-            let _ = append_operation_event(&self.state, operation.id, &err);
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            Status::internal(format!("failed to apply bundle to agent: {err}"))
-        })?;
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let rollback_warnings = rollback_failed_deploy(
+                    &self.repo_root,
+                    &self.state,
+                    &request,
+                    &target,
+                    &rollback,
+                    operation.id,
+                )
+                .await;
+                let _ = append_operation_event(&self.state, operation.id, &err);
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Err(Status::internal(format!(
+                    "failed to apply bundle to agent: {}{}",
+                    err,
+                    if rollback_warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                    }
+                )));
+            }
+        };
         for path in &apply_response.written_paths {
             append_operation_event(&self.state, operation.id, &format!("wrote {path}"))?;
         }
 
-        let base = bootstrap_runtime_with_tls(
+        let base = match bootstrap_runtime_with_tls(
             AgentConnectionTarget {
                 endpoint: agent_transport.endpoint.clone(),
                 tls_paths: agent_transport.tls_paths.clone(),
@@ -1004,12 +1147,43 @@ impl ControllerService for ControllerServerImpl {
             BootstrapMode::BootstrapBase,
         )
         .await
-        .map_err(|err| {
-            let _ = append_operation_event(&self.state, operation.id, &err.to_string());
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            Status::internal(format!("base bootstrap failed: {err}"))
-        })?;
+        {
+            Ok(response) => response,
+            Err(err_box) => {
+                let err = err_box.to_string();
+                drop(err_box);
+                let rollback_warnings = rollback_failed_deploy(
+                    &self.repo_root,
+                    &self.state,
+                    &request,
+                    &target,
+                    &rollback,
+                    operation.id,
+                )
+                .await;
+                let _ = append_operation_event(&self.state, operation.id, &err);
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Err(Status::internal(format!(
+                    "base bootstrap failed: {}{}",
+                    err,
+                    if rollback_warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                    }
+                )));
+            }
+        };
         if !base.success {
+            let rollback_warnings = rollback_failed_deploy(
+                &self.repo_root,
+                &self.state,
+                &request,
+                &target,
+                &rollback,
+                operation.id,
+            )
+            .await;
             let _ =
                 append_operation_event(&self.state, operation.id, &format_bootstrap_failure(&base));
             let _ = update_operation_status(&self.state, operation.id, "FAILED");
@@ -1026,21 +1200,40 @@ impl ControllerService for ControllerServerImpl {
                         .clone()
                         .unwrap_or_else(AgentState::bootstrap_placeholder),
                 )),
-                warnings: base.warnings,
+                warnings: merge_warnings(base.warnings, rollback_warnings),
                 operation: Some(operation_with_status(operation, "FAILED")),
             }));
         }
         append_operation_event(&self.state, operation.id, "base bootstrap completed")?;
 
         if should_update_dns(&request) {
-            let dns_note = apply_dns_update(&request, &target.target_ip)
-                .await
-                .map_err(|err| {
+            let dns_note = match apply_dns_update(&self.state, &request, &target.target_ip).await {
+                Ok(note) => note,
+                Err(err) => {
+                    let rollback_warnings = rollback_failed_deploy(
+                        &self.repo_root,
+                        &self.state,
+                        &request,
+                        &target,
+                        &rollback,
+                        operation.id,
+                    )
+                    .await;
                     let _ = append_operation_event(&self.state, operation.id, &err);
                     let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                    Status::internal(err)
-                })?;
+                    return Err(Status::internal(format!(
+                        "{}{}",
+                        err,
+                        if rollback_warnings.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                        }
+                    )));
+                }
+            };
             append_operation_event(&self.state, operation.id, &dns_note)?;
+            rollback.dns_updated = true;
         }
 
         if request
@@ -1052,7 +1245,7 @@ impl ControllerService for ControllerServerImpl {
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty())
         {
-            let tunnel = bootstrap_runtime_with_tls(
+            let tunnel = match bootstrap_runtime_with_tls(
                 AgentConnectionTarget {
                     endpoint: agent_transport.endpoint.clone(),
                     tls_paths: agent_transport.tls_paths.clone(),
@@ -1060,12 +1253,43 @@ impl ControllerService for ControllerServerImpl {
                 BootstrapMode::BootstrapTunnel,
             )
             .await
-            .map_err(|err| {
-                let _ = append_operation_event(&self.state, operation.id, &err.to_string());
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                Status::internal(format!("tunnel bootstrap failed: {err}"))
-            })?;
+            {
+                Ok(response) => response,
+                Err(err_box) => {
+                    let err = err_box.to_string();
+                    drop(err_box);
+                    let rollback_warnings = rollback_failed_deploy(
+                        &self.repo_root,
+                        &self.state,
+                        &request,
+                        &target,
+                        &rollback,
+                        operation.id,
+                    )
+                    .await;
+                    let _ = append_operation_event(&self.state, operation.id, &err);
+                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                    return Err(Status::internal(format!(
+                        "tunnel bootstrap failed: {}{}",
+                        err,
+                        if rollback_warnings.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                        }
+                    )));
+                }
+            };
             if !tunnel.success {
+                let rollback_warnings = rollback_failed_deploy(
+                    &self.repo_root,
+                    &self.state,
+                    &request,
+                    &target,
+                    &rollback,
+                    operation.id,
+                )
+                .await;
                 let _ = append_operation_event(
                     &self.state,
                     operation.id,
@@ -1085,14 +1309,14 @@ impl ControllerService for ControllerServerImpl {
                             .clone()
                             .unwrap_or_else(AgentState::bootstrap_placeholder),
                     )),
-                    warnings: tunnel.warnings,
+                    warnings: merge_warnings(tunnel.warnings, rollback_warnings),
                     operation: Some(operation_with_status(operation, "FAILED")),
                 }));
             }
             append_operation_event(&self.state, operation.id, "tunnel bootstrap completed")?;
         }
 
-        let runtime_state = verify_agent_runtime_target(
+        let runtime_state = match verify_agent_runtime_target(
             &AgentConnectionTarget {
                 endpoint: agent_transport.endpoint.clone(),
                 tls_paths: agent_transport.tls_paths.clone(),
@@ -1100,15 +1324,60 @@ impl ControllerService for ControllerServerImpl {
             true,
         )
         .await
-        .map_err(|err| Status::internal(format!("failed to verify runtime readiness: {err}")))?;
+        {
+            Ok(state) => state,
+            Err(err) => {
+                let rollback_warnings = rollback_failed_deploy(
+                    &self.repo_root,
+                    &self.state,
+                    &request,
+                    &target,
+                    &rollback,
+                    operation.id,
+                )
+                .await;
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Err(Status::internal(format!(
+                    "failed to verify runtime readiness: {}{}",
+                    err,
+                    if rollback_warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                    }
+                )));
+            }
+        };
         let runtime = RuntimeObservation::from_agent_state(&runtime_state);
 
-        let sync = sync_local_config(
+        let sync = match sync_local_config(
             &default_local_config_path(&self.repo_root),
             &default_live_state_path(&self.repo_root),
             &default_runtime_root(&self.repo_root),
-        )
-        .map_err(|err| Status::internal(format!("failed to sync local config: {err}")))?;
+        ) {
+            Ok(sync) => sync,
+            Err(err) => {
+                let rollback_warnings = rollback_failed_deploy(
+                    &self.repo_root,
+                    &self.state,
+                    &request,
+                    &target,
+                    &rollback,
+                    operation.id,
+                )
+                .await;
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Err(Status::internal(format!(
+                    "failed to sync local config: {}{}",
+                    err,
+                    if rollback_warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                    }
+                )));
+            }
+        };
         append_operation_event(
             &self.state,
             operation.id,
@@ -1161,13 +1430,17 @@ impl ControllerService for ControllerServerImpl {
             .unwrap_or_default();
 
         if request.delete_dns {
-            let note = delete_dns_record(&request)
+            let note = delete_dns_record(&self.state, &request)
                 .await
                 .map_err(Status::internal)?;
             append_operation_event(&self.state, operation.id, &note)?;
         }
         if request.delete_instance && !instance_id.trim().is_empty() && !request.mock_provider {
-            if let Ok(api_key) = env::var("VULTR_API_KEY") {
+            if let Ok(api_key) = resolve_text_secret(
+                &self.state,
+                SECRET_VULTR_API_KEY,
+                &default_env_ref("VULTR_API_KEY"),
+            ) {
                 destroy_instance(&api_key, &instance_id)
                     .await
                     .map_err(Status::internal)?;
@@ -1466,6 +1739,7 @@ impl Drop for SshTunnelGuard {
 
 async fn resolve_deploy_target(
     repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
     deployment_label: &str,
 ) -> Result<ResolvedDeployTarget, String> {
@@ -1486,16 +1760,20 @@ async fn resolve_deploy_target(
         });
     }
 
-    if let (Some(instance_id), Ok(api_key)) =
-        (request.instance_id.as_deref(), env::var("VULTR_API_KEY"))
-    {
-        let instance = get_instance(&api_key, instance_id).await?;
-        if !instance.main_ip.trim().is_empty() {
-            return Ok(ResolvedDeployTarget {
-                instance_id: instance.id,
-                target_ip: instance.main_ip,
-                created_instance: false,
-            });
+    if let Some(instance_id) = request.instance_id.as_deref() {
+        if let Ok(api_key) = resolve_text_secret(
+            state,
+            SECRET_VULTR_API_KEY,
+            &default_env_ref("VULTR_API_KEY"),
+        ) {
+            let instance = get_instance(&api_key, instance_id).await?;
+            if !instance.main_ip.trim().is_empty() {
+                return Ok(ResolvedDeployTarget {
+                    instance_id: instance.id,
+                    target_ip: instance.main_ip,
+                    created_instance: false,
+                });
+            }
         }
     }
 
@@ -1514,11 +1792,22 @@ async fn resolve_deploy_target(
         });
     }
 
-    let api_key = env::var("VULTR_API_KEY").map_err(|_| {
-        "deploy requires target_ip, a resolvable instance_id, or VULTR_API_KEY + EDGE_VULTR_SSH_KEY_ID for fresh host create".to_owned()
+    let api_key = resolve_text_secret(
+        state,
+        SECRET_VULTR_API_KEY,
+        &default_env_ref("VULTR_API_KEY"),
+    )
+    .map_err(|_| {
+        "deploy requires target_ip, a resolvable instance_id, or a configured Vultr API key secret"
+            .to_owned()
     })?;
-    let ssh_key_id = env::var("EDGE_VULTR_SSH_KEY_ID").map_err(|_| {
-        "deploy requires EDGE_VULTR_SSH_KEY_ID when creating a fresh Vultr host".to_owned()
+    let ssh_key_id = resolve_text_secret(
+        state,
+        SECRET_VULTR_SSH_KEY_ID,
+        &default_env_ref("EDGE_VULTR_SSH_KEY_ID"),
+    )
+    .map_err(|_| {
+        "deploy requires a configured Vultr SSH key id secret when creating a fresh host".to_owned()
     })?;
     let cloud_init = read_cloud_init_template(repo_root)?;
     let region = env::var("EDGE_VULTR_REGION").unwrap_or_else(|_| DEFAULT_REGION.to_owned());
@@ -1595,7 +1884,7 @@ async fn prepare_agent_transport(
     operation_id: i64,
     state: &Arc<Mutex<EdgeState>>,
 ) -> Result<AgentTransport, String> {
-    if !should_bootstrap_via_ssh(request, target) {
+    if !should_bootstrap_via_ssh(state, request, target) {
         let connection_target =
             resolve_operation_agent_connection_target(state, target, direct_endpoint)?;
         return Ok(AgentTransport {
@@ -1605,7 +1894,7 @@ async fn prepare_agent_transport(
         });
     }
 
-    let config = resolve_bootstrap_access_config(repo_root)?;
+    let config = resolve_bootstrap_access_config(repo_root, state)?;
     append_operation_event(state, operation_id, "waiting for SSH reachability")
         .map_err(|status| status.message().to_owned())?;
     accept_ssh_host_key(target, &config).await?;
@@ -1655,7 +1944,11 @@ fn resolve_operation_agent_connection_target(
     ))
 }
 
-fn should_bootstrap_via_ssh(request: &DeployRequest, target: &ResolvedDeployTarget) -> bool {
+fn should_bootstrap_via_ssh(
+    state: &Arc<Mutex<EdgeState>>,
+    request: &DeployRequest,
+    target: &ResolvedDeployTarget,
+) -> bool {
     target.created_instance
         || env::var("EDGE_BOOTSTRAP_VIA_SSH")
             .ok()
@@ -1664,13 +1957,21 @@ fn should_bootstrap_via_ssh(request: &DeployRequest, target: &ResolvedDeployTarg
             .target_ip
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
-            && env::var_os("EDGE_SSH_PRIVATE_KEY_PATH").is_some())
+            && has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH))
 }
 
-fn resolve_bootstrap_access_config(repo_root: &Path) -> Result<BootstrapAccessConfig, String> {
-    let private_key_path = env::var("EDGE_SSH_PRIVATE_KEY_PATH")
-        .map(PathBuf::from)
-        .map_err(|_| "EDGE_SSH_PRIVATE_KEY_PATH is required for SSH bootstrap".to_owned())?;
+fn resolve_bootstrap_access_config(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+) -> Result<BootstrapAccessConfig, String> {
+    let private_key_path = resolve_path_secret(
+        state,
+        SECRET_SSH_PRIVATE_KEY_PATH,
+        &default_env_ref("EDGE_SSH_PRIVATE_KEY_PATH"),
+    )
+    .map_err(|_| {
+        "a configured SSH private key path secret is required for SSH bootstrap".to_owned()
+    })?;
     if !private_key_path.is_file() {
         return Err(format!(
             "SSH private key was not found: {}",
@@ -2034,7 +2335,11 @@ fn should_update_dns(request: &DeployRequest) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
-async fn apply_dns_update(request: &DeployRequest, target_ip: &str) -> Result<String, String> {
+async fn apply_dns_update(
+    state: &Arc<Mutex<EdgeState>>,
+    request: &DeployRequest,
+    target_ip: &str,
+) -> Result<String, String> {
     let zone_name = request
         .cloudflare_zone_name
         .clone()
@@ -2052,8 +2357,14 @@ async fn apply_dns_update(request: &DeployRequest, target_ip: &str) -> Result<St
         ));
     }
 
-    let api_token = env::var("CLOUDFLARE_API_TOKEN")
-        .map_err(|_| "CLOUDFLARE_API_TOKEN is required for DNS cutover".to_owned())?;
+    let api_token = resolve_text_secret(
+        state,
+        SECRET_CLOUDFLARE_API_TOKEN,
+        &default_env_ref("CLOUDFLARE_API_TOKEN"),
+    )
+    .map_err(|_| {
+        "a configured Cloudflare API token secret is required for DNS cutover".to_owned()
+    })?;
     let record = upsert_a_record(&api_token, &zone_name, &record_name, target_ip).await?;
     Ok(format!(
         "DNS updated: {} -> {} ({})",
@@ -2061,7 +2372,10 @@ async fn apply_dns_update(request: &DeployRequest, target_ip: &str) -> Result<St
     ))
 }
 
-async fn delete_dns_record(request: &DestroyRequest) -> Result<String, String> {
+async fn delete_dns_record(
+    state: &Arc<Mutex<EdgeState>>,
+    request: &DestroyRequest,
+) -> Result<String, String> {
     let zone_name = request
         .cloudflare_zone_name
         .clone()
@@ -2075,8 +2389,14 @@ async fn delete_dns_record(request: &DestroyRequest) -> Result<String, String> {
         return Ok(format!("mock DNS delete requested for {}", record_name));
     }
 
-    let api_token = env::var("CLOUDFLARE_API_TOKEN")
-        .map_err(|_| "CLOUDFLARE_API_TOKEN is required to delete DNS record".to_owned())?;
+    let api_token = resolve_text_secret(
+        state,
+        SECRET_CLOUDFLARE_API_TOKEN,
+        &default_env_ref("CLOUDFLARE_API_TOKEN"),
+    )
+    .map_err(|_| {
+        "a configured Cloudflare API token secret is required to delete DNS record".to_owned()
+    })?;
     delete_a_record(&api_token, &zone_name, &record_name).await?;
     Ok(format!("DNS delete requested for {}", record_name))
 }
@@ -2175,6 +2495,16 @@ fn read_live_deployment_summary(
     })
 }
 
+fn read_live_state_raw(repo_root: &Path) -> Result<Option<String>, String> {
+    let path = default_live_state_path(repo_root);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    fs::read_to_string(&path)
+        .map(Some)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))
+}
+
 fn clear_live_deployment_state(
     repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
@@ -2198,6 +2528,126 @@ fn clear_live_deployment_state(
         .clear_trust_entries(Some(instance_id), Some(target_ip))
         .map_err(|err| format!("failed to clear trust rows: {err}"))?;
     Ok(())
+}
+
+fn rollback_live_deployment_state(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+    deployment_label: &str,
+    instance_id: &str,
+    target_ip: &str,
+    previous_live_state: Option<&str>,
+) -> Result<(), String> {
+    let live_state_path = default_live_state_path(repo_root);
+    if let Some(parent) = live_state_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match previous_live_state {
+        Some(raw) => fs::write(&live_state_path, raw.as_bytes())
+            .map_err(|err| format!("failed to restore {}: {err}", live_state_path.display()))?,
+        None if live_state_path.is_file() => fs::remove_file(&live_state_path)
+            .map_err(|err| format!("failed to remove {}: {err}", live_state_path.display()))?,
+        None => {}
+    }
+
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    guard
+        .clear_deployment_by_label(deployment_label)
+        .map_err(|err| format!("failed to clear deployment row: {err}"))?;
+    guard
+        .clear_trust_entry(deployment_label, instance_id, target_ip)
+        .map_err(|err| format!("failed to clear trust row: {err}"))?;
+    Ok(())
+}
+
+async fn rollback_failed_deploy(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+    request: &DeployRequest,
+    target: &ResolvedDeployTarget,
+    rollback: &DeployRollbackContext,
+    operation_id: i64,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let _ = append_operation_event(state, operation_id, "rollback started");
+
+    if rollback.dns_updated {
+        let destroy_request = DestroyRequest {
+            instance_id: Some(target.instance_id.clone()),
+            target_ip: Some(target.target_ip.clone()),
+            dns_record_name: request.dns_record_name.clone(),
+            cloudflare_zone_name: request.cloudflare_zone_name.clone(),
+            mock_provider: request.mock_provider,
+            delete_dns: true,
+            delete_instance: false,
+        };
+        match delete_dns_record(state, &destroy_request).await {
+            Ok(note) => {
+                let _ = append_operation_event(state, operation_id, &note);
+            }
+            Err(err) => {
+                warnings.push(format!("rollback DNS cleanup failed: {err}"));
+            }
+        }
+    }
+
+    if target.created_instance && !request.mock_provider {
+        match resolve_text_secret(
+            state,
+            SECRET_VULTR_API_KEY,
+            &default_env_ref("VULTR_API_KEY"),
+        ) {
+            Ok(api_key) => match destroy_instance(&api_key, &target.instance_id).await {
+                Ok(()) => {
+                    let _ = append_operation_event(
+                        state,
+                        operation_id,
+                        "rollback requested instance destroy",
+                    );
+                }
+                Err(err) => warnings.push(format!("rollback instance destroy failed: {err}")),
+            },
+            Err(err) => warnings.push(format!(
+                "rollback could not resolve Vultr API key secret: {err}"
+            )),
+        }
+    }
+
+    if let Err(err) = rollback_live_deployment_state(
+        repo_root,
+        state,
+        &rollback.deployment_label,
+        &target.instance_id,
+        &target.target_ip,
+        rollback.previous_live_state.as_deref(),
+    ) {
+        warnings.push(format!("rollback state restore failed: {err}"));
+    } else {
+        let _ = append_operation_event(
+            state,
+            operation_id,
+            "rollback restored local deployment state",
+        );
+    }
+
+    if warnings.is_empty() {
+        let _ = append_operation_event(state, operation_id, "rollback completed");
+    } else {
+        let _ = append_operation_event(
+            state,
+            operation_id,
+            &format!("rollback completed with warnings: {}", warnings.join("; ")),
+        );
+    }
+
+    warnings
+}
+
+fn merge_warnings(mut primary: Vec<String>, mut secondary: Vec<String>) -> Vec<String> {
+    primary.append(&mut secondary);
+    primary
 }
 
 fn agent_endpoint_from_env() -> String {
@@ -2501,7 +2951,13 @@ mod tests {
     #[tokio::test]
     async fn collects_status_through_service_impl() {
         let repo_root = PathBuf::from("/home/bose/projects/sing-box");
-        let db_path = repo_root.join("edge-platform/.runtime/test-controller-state.sqlite");
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-status-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
         let service = ControllerServerImpl {
             repo_root,
@@ -2531,8 +2987,17 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_mock_deploy_target() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-resolve-target-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
         let target = resolve_deploy_target(
             Path::new("/home/bose/projects/sing-box"),
+            &state,
             &DeployRequest {
                 label_prefix: Some("mock-edge".to_owned()),
                 target_ip: None,
@@ -2551,6 +3016,7 @@ mod tests {
 
         assert!(target.instance_id.starts_with("mock-"));
         assert_eq!(target.target_ip, "203.0.113.10");
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
@@ -2703,6 +3169,66 @@ mod tests {
         };
         let error = persisted_agent_tls_paths(&trust).unwrap_err();
         assert!(error.contains("incomplete client TLS paths"));
+    }
+
+    #[test]
+    fn rollback_restores_previous_live_state_and_clears_new_rows() {
+        let root = temp_repo_root();
+        let state_dir = root.join("win/vultr-waw");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let live_state_path = state_dir.join("current-edge.json");
+        std::fs::write(
+            &live_state_path,
+            r#"{"label":"old","instance_id":"instance-1"}"#,
+        )
+        .unwrap();
+
+        let db_path = root.join("edge-platform/.runtime/test-controller-state.sqlite");
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .record_deployment("deploy-new", "instance-1", "203.0.113.10")
+                .unwrap();
+            guard
+                .upsert_trust_entry(NewTrustEntry {
+                    deployment_id: "deploy-new",
+                    instance_id: "instance-1",
+                    ip: "203.0.113.10",
+                    known_host_line: "",
+                    domain_name: Some("edge-agent"),
+                    ca_cert_path: Some("/tmp/ca.pem"),
+                    server_cert_path: Some("/tmp/agent-server.pem"),
+                    client_cert_path: Some("/tmp/controller-client.pem"),
+                    client_key_path: Some("/tmp/controller-client.key"),
+                })
+                .unwrap();
+        }
+
+        std::fs::write(
+            &live_state_path,
+            r#"{"label":"deploy-new","instance_id":"instance-1"}"#,
+        )
+        .unwrap();
+
+        rollback_live_deployment_state(
+            &root,
+            &state,
+            "deploy-new",
+            "instance-1",
+            "203.0.113.10",
+            Some(r#"{"label":"old","instance_id":"instance-1"}"#),
+        )
+        .unwrap();
+
+        let restored = std::fs::read_to_string(&live_state_path).unwrap();
+        assert!(restored.contains(r#""label":"old""#));
+        let guard = state.lock().unwrap();
+        assert!(guard.latest_deployment().unwrap().is_none());
+        assert!(guard.list_trust_entries().unwrap().is_empty());
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn temp_repo_root() -> PathBuf {

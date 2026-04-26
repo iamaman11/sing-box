@@ -134,6 +134,39 @@ impl EdgeState {
             })
     }
 
+    pub fn upsert_secret_ref(&self, name: &str, secret_ref: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "
+            INSERT INTO secret_refs (name, secret_ref, updated_at_unix)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(name) DO UPDATE SET
+                secret_ref = excluded.secret_ref,
+                updated_at_unix = excluded.updated_at_unix
+            ",
+            params![name, secret_ref, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_secret_ref(&self, name: &str) -> rusqlite::Result<Option<StoredSecretRef>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT name, secret_ref, updated_at_unix
+            FROM secret_refs
+            WHERE name = ?1
+            ",
+        )?;
+        let mut rows = statement.query(params![name])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredSecretRef {
+                name: row.get(0)?,
+                secret_ref: row.get(1)?,
+                updated_at_unix: row.get(2)?,
+            }));
+        }
+        Ok(None)
+    }
+
     pub fn record_deployment(
         &self,
         deployment_label: &str,
@@ -177,6 +210,14 @@ impl EdgeState {
             }));
         }
         Ok(None)
+    }
+
+    pub fn clear_deployment_by_label(&self, deployment_label: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM deployments WHERE deployment_label = ?1",
+            params![deployment_label],
+        )?;
+        Ok(())
     }
 
     pub fn clear_deployment_by_instance(&self, instance_id: &str) -> rusqlite::Result<()> {
@@ -465,6 +506,22 @@ impl EdgeState {
         Ok(())
     }
 
+    pub fn clear_trust_entry(
+        &self,
+        deployment_id: &str,
+        instance_id: &str,
+        ip: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "
+            DELETE FROM trust_store
+            WHERE deployment_id = ?1 AND instance_id = ?2 AND ip = ?3
+            ",
+            params![deployment_id, instance_id, ip],
+        )?;
+        Ok(())
+    }
+
     fn ensure_column(
         &self,
         table_name: &str,
@@ -509,6 +566,13 @@ pub struct StoredDeployment {
     pub instance_id: String,
     pub server_ip: String,
     pub created_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredSecretRef {
+    pub name: String,
+    pub secret_ref: String,
+    pub updated_at_unix: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -599,7 +663,21 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(latest_trust.deployment_id, "deploy-1");
+        state
+            .upsert_secret_ref("provider.vultr.api_key", "env:VULTR_API_KEY")
+            .unwrap();
+        let secret_ref = state
+            .get_secret_ref("provider.vultr.api_key")
+            .unwrap()
+            .unwrap();
+        assert_eq!(secret_ref.secret_ref, "env:VULTR_API_KEY");
         assert_eq!(state.list_trust_entries().unwrap().len(), 1);
+        let deployment = state
+            .record_deployment("deploy-1", "instance-1", "203.0.113.10")
+            .unwrap();
+        assert_eq!(deployment.server_ip, "203.0.113.10");
+        state.clear_deployment_by_label("deploy-1").unwrap();
+        assert!(state.latest_deployment().unwrap().is_none());
         let deployment = state
             .record_deployment("deploy-1", "instance-1", "203.0.113.10")
             .unwrap();
@@ -608,6 +686,23 @@ mod tests {
             state.latest_deployment().unwrap().unwrap().instance_id,
             "instance-1"
         );
+        state
+            .clear_trust_entry("deploy-1", "instance-1", "203.0.113.10")
+            .unwrap();
+        assert!(state.list_trust_entries().unwrap().is_empty());
+        state
+            .upsert_trust_entry(NewTrustEntry {
+                deployment_id: "deploy-1",
+                instance_id: "instance-1",
+                ip: "203.0.113.10",
+                known_host_line: "",
+                domain_name: Some("edge-agent"),
+                ca_cert_path: Some("/tmp/ca.pem"),
+                server_cert_path: Some("/tmp/agent-server.pem"),
+                client_cert_path: Some("/tmp/controller-client.pem"),
+                client_key_path: Some("/tmp/controller-client.key"),
+            })
+            .unwrap();
         state.clear_deployment_by_instance("instance-1").unwrap();
         assert!(state.latest_deployment().unwrap().is_none());
         state

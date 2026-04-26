@@ -10,6 +10,7 @@ members = [
     "crates/edge-local-runtime",
     "crates/edge-provider-cloudflare",
     "crates/edge-provider-vultr",
+    "crates/edge-secrets",
     "crates/edge-singbox",
     "crates/edge-state",
     "crates/edge-shared-types",

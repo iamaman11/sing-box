@@ -12,6 +12,7 @@ Rust control plane for local `sing-box` operation and Vultr edge runtime.
 
 - machine transport: `gRPC + protobuf`
 - local state: `SQLite + rusqlite`
+- secret resolution: `edge-secrets` + persisted `secret_refs` in controller state
 - server runtime: `edge-agent` on the host, dataplane still in the existing 5-container topology
 - local operator flow: `edge-console` -> `edge-controller`
 - server flow: `edge-controller` -> `edge-agent`
@@ -39,6 +40,14 @@ Required environment:
 - `VULTR_API_KEY`
 - `EDGE_VULTR_SSH_KEY_ID`
 - `EDGE_SSH_PRIVATE_KEY_PATH`
+
+The controller now persists secret references in `secret_refs` and resolves them
+through `edge-secrets`. Default bootstrap references are seeded from:
+
+- `env:VULTR_API_KEY`
+- `env:CLOUDFLARE_API_TOKEN`
+- `env:EDGE_VULTR_SSH_KEY_ID`
+- `env:EDGE_SSH_PRIVATE_KEY_PATH`
 
 Optional environment:
 
@@ -75,6 +84,5 @@ production mTLS cutover semantics.
 ## What is still left
 
 - direct steady-state `mTLS` controller -> agent operation without SSH tunnel assumptions
-- dedicated `edge-secrets` backend instead of environment/file-driven bootstrap inputs
 - provider-path hardening and recovery semantics
 - production cutover cleanup and retirement of legacy PowerShell workflow

@@ -19,17 +19,21 @@ Target server model:
 - deploy bundle uploaded already prepared
 - steady-state deploy path should use prebuilt images instead of server-side builds
 
-Primary entrypoint:
+Primary control-plane entrypoint:
+- `edge-controller serve`
+- `edge-console deploy`
+
+Legacy reference only:
 - [deploy-waw.ps1](C:/Users/Bose/vm-edge-stack/vultr-waw/deploy-waw.ps1)
 
-Example:
+Legacy example:
 
 ```powershell
 $env:VULTR_API_KEY = '...'
 & ".\deploy-waw.ps1"
 ```
 
-With tunnel domain:
+Legacy example with tunnel domain:
 
 ```powershell
 $env:VULTR_API_KEY = '...'
@@ -45,7 +49,7 @@ Prebuilt-image mode for the uploaded server bundle:
 - `bootstrap.sh` then prefers `docker compose pull` + `docker compose up -d`
   instead of `docker compose up -d --build`
 
-`deploy-waw.ps1` can prepare this mode directly:
+Legacy `deploy-waw.ps1` can prepare this mode directly:
 
 ```powershell
 & ".\deploy-waw.ps1" `

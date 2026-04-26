@@ -12,6 +12,7 @@ edge-controller-core = { path = "../edge-controller-core" }
 edge-local-runtime = { path = "../edge-local-runtime" }
 edge-provider-cloudflare = { path = "../edge-provider-cloudflare" }
 edge-provider-vultr = { path = "../edge-provider-vultr" }
+edge-secrets = { path = "../edge-secrets" }
 edge-shared-types = { path = "../edge-shared-types" }
 edge-state = { version = "0.1.0", path = "../edge-state" }
 edge-singbox = { path = "../edge-singbox" }
