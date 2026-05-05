@@ -152,6 +152,12 @@ System package manager support:
 
 That allows `apt` to auto-detect the current WSL gateway dynamically.
 
+Git policy:
+
+- do not pin `git config --global http.proxy` or `https.proxy` to a static WSL gateway IP
+- `git` should inherit the same dynamic proxy environment as the shell
+- that keeps `git`, `curl`, and other proxy-aware CLI tools aligned when the WSL gateway changes
+
 ## Useful commands
 
 Status:

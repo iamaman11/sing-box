@@ -145,6 +145,13 @@ The user shell helper installed in Ubuntu exports proxy env vars automatically f
 - `https_proxy`
 - `all_proxy`
 
+`git` should use these shell environment variables too. Do not hardcode:
+
+- `git config --global http.proxy ...`
+- `git config --global https.proxy ...`
+
+to a specific WSL gateway IP, because the gateway can change between WSL sessions.
+
 ### 6. Deploy or redeploy
 
 ```powershell
