@@ -218,6 +218,9 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     if singbox.selector.degraded {
         status_notes.push("local selector config requires review".to_owned());
     }
+    if singbox.ubuntu_selector.degraded || !singbox.ubuntu_proxy.available {
+        status_notes.push("ubuntu WSL proxy path requires review".to_owned());
+    }
 
     Ok(ControllerStatus {
         inventory: Some(inventory),
@@ -227,6 +230,8 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
         provider: Some(provider),
         runtime: Some(runtime),
         selector: Some(singbox.selector),
+        ubuntu_selector: Some(singbox.ubuntu_selector),
+        ubuntu_proxy: Some(singbox.ubuntu_proxy),
         status_notes,
     })
 }
@@ -432,9 +437,9 @@ mod tests {
         assert!(report.rust_workspace_present);
         assert!(
             report
-                .blockers
+                .warnings
                 .iter()
-                .any(|line| line.contains("live local-only state exists"))
+                .any(|line| line.contains("live local-only state is present"))
         );
     }
 

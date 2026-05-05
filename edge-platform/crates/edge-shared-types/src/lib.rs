@@ -168,6 +168,18 @@ impl SelectorState {
     }
 }
 
+impl UbuntuProxyState {
+    pub fn unavailable(note: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            host: None,
+            port: None,
+            url: None,
+            warnings: vec![note.into()],
+        }
+    }
+}
+
 impl ControllerStatus {
     pub fn encode_proto(&self) -> Vec<u8> {
         self.encode_to_vec()
@@ -214,6 +226,8 @@ mod tests {
             provider: Some(ProviderObservation::placeholder()),
             runtime: Some(RuntimeObservation::placeholder()),
             selector: Some(SelectorState::placeholder()),
+            ubuntu_selector: Some(SelectorState::placeholder()),
+            ubuntu_proxy: Some(UbuntuProxyState::unavailable("unavailable")),
             status_notes: vec!["ok".to_owned()],
         };
         assert!(!status.encode_to_vec().is_empty());

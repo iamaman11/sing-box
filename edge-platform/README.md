@@ -1,108 +1,215 @@
 # edge-platform
 
-Rust control plane for local `sing-box` operation and Vultr edge runtime.
+Rust control plane for:
 
-## Executables
+- Windows-side local `sing-box`
+- Vultr edge runtime lifecycle
+- Ubuntu WSL egress through the Windows `sing-box`
 
-- `edge-controller` - local daemon/orchestrator
-- `edge-console` - operator console client
-- `edge-agent` - Linux host daemon on the Vultr server
+## Production entrypoint
 
-## Current shape
+The normal operator entrypoint is:
 
-- machine transport: `gRPC + protobuf`
-- local state: `SQLite + rusqlite`
-- secret resolution: `edge-secrets` + persisted `secret_refs` in controller state
-- server runtime: `edge-agent` on the host, dataplane still in the existing 5-container topology
-- local operator flow: `edge-console` -> `edge-controller`
-- server flow: `edge-controller` -> `edge-agent`
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe"
+```
 
-## What already works
+The console now autostarts `edge-controller.exe` on `127.0.0.1:50051` if it is not already running, and reuses the existing controller if it is already up.
 
-- read-only controller status
-- persisted secret references in controller state
-- persisted operations and event trails
+## Current architecture
+
+- local control plane:
+  - `edge-console -> edge-controller`
+- server control plane:
+  - `edge-controller -> edge-agent`
+- local Windows dataplane:
+  - one managed `sing-box`
+  - desktop/global selector:
+    - `proxy-selector`
+  - Ubuntu/WSL selector:
+    - `wsl-selector`
+- server dataplane:
+  - existing 5-container topology on the Vultr VM
+
+## Current source of truth
+
+Do not treat the AppData runtime JSON as authoritative.
+
+Authoritative layers are:
+
+- runtime config shape:
+  - `win/windows/edge-dns-clean-vultr-dual.json`
+- Windows-side sync and mutation:
+  - `edge-platform/crates/edge-singbox/src/lib.rs`
+- controller/runtime observation and selector control:
+  - `edge-platform/crates/edge-controller/src/main.rs`
+  - `edge-platform/crates/edge-console/src/main.rs`
+
+Derived/runtime copies include:
+
+- `C:\Users\Bose\AppData\Local\sing-box-vultr-dual\runtime\edge-dns-clean-vultr-dual.json`
+
+## What works
+
 - local `sing-box` start/stop/restart
-- Clash selector read/write
-- trace/IP observation
-- bundle rendering
-- runtime apply to `edge-agent`
-- base/tunnel bootstrap over gRPC
-- deploy/destroy orchestration in Rust
-- fresh-host Vultr create + initial host bootstrap in Rust
-- steady-state remote agent target resolution from persisted deployment + trust state
-- console-side secret and operation inspection
+- visible-window `sing-box` launch from the console
+- desktop selector read/write
+- Ubuntu/WSL selector read/write
+- desktop trace/IP observation
+- Ubuntu trace/IP observation through the Windows WSL inbound
+- deploy/destroy through the Rust state machine
+- VM creation from Vultr snapshot:
+  - `61605612-d7a2-47b1-85ef-aef90f5083df`
+- Cloudflare DNS update for:
+  - `edge.alegria.by`
+- persisted operations, secret refs, and controller state in SQLite
 
-## Windows controller startup
+## Current Windows selector model
 
-The recovered Windows production path uses:
+Desktop/global path:
 
-- repo root: `C:\Users\Bose\temp\sing-box`
-- controller binary: `C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-controller.exe`
-- console binary: `C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe`
+- selector tag:
+  - `proxy-selector`
+- menu items:
+  - `Direct tunnel -> ...`
+  - `WARP tunnel -> ...`
 
-To keep the controller available after logon without a manual `serve`, use:
+Ubuntu/WSL path:
 
-- `edge-platform/scripts/ensure-edge-controller.ps1`
-- `edge-platform/scripts/register-edge-controller-task.ps1`
+- inbound tag:
+  - `wsl-mixed-in`
+- selector tag:
+  - `wsl-selector`
+- menu items:
+  - `Ubuntu tunnel -> auto direct`
+  - `Ubuntu tunnel -> hysteria2 direct`
+  - `Ubuntu tunnel -> vless direct`
+  - `Ubuntu tunnel -> auto warp`
+  - `Ubuntu tunnel -> hysteria2 warp`
+  - `Ubuntu tunnel -> vless warp`
+  - `Show current Ubuntu tunnel`
+  - `Show current Ubuntu egress IP`
 
-The scheduled task name is:
+The two selector surfaces are independent:
 
-- `EdgePlatformController`
+- changing `proxy-selector` does not change `wsl-selector`
+- changing `wsl-selector` does not change `proxy-selector`
 
-## Fresh-host bootstrap inputs
+## Ubuntu WSL model
 
-The fresh-host create/bootstrap path is activated when `deploy` is called without
-`target_ip` and without `instance_id`.
+Ubuntu no longer relies on a Linux-side `sing-box` tunnel in the main supported path.
 
-Required environment:
+Instead:
 
-- `VULTR_API_KEY`
-- `EDGE_VULTR_SSH_KEY_ID`
-- `EDGE_SSH_PRIVATE_KEY_PATH`
+- Windows `sing-box` exposes a dedicated WSL inbound on:
+  - `0.0.0.0:17890`
+- Ubuntu reaches it through the current WSL gateway, typically:
+  - `172.26.16.1:17890`
 
-The controller now persists secret references in `secret_refs` and resolves them
-through `edge-secrets`. Default bootstrap references are seeded from:
+Effective Ubuntu proxy endpoint:
 
-- `env:VULTR_API_KEY`
-- `env:CLOUDFLARE_API_TOKEN`
-- `env:EDGE_VULTR_SSH_KEY_ID`
-- `env:EDGE_SSH_PRIVATE_KEY_PATH`
+```bash
+http://$(ip route show default | cut -d' ' -f3):17890
+```
 
-Optional environment:
+This is the endpoint that should be used by Ubuntu applications or shell proxy environment variables.
 
-- `EDGE_AGENT_BINARY_PATH`
-  - defaults to `edge-platform/target/debug/edge-agent` if present
-- `EDGE_VULTR_REGION`
-  - default: `waw`
-- `EDGE_VULTR_PLAN`
-  - default: `vc2-1c-1gb`
-- `EDGE_VULTR_OS_ID`
-  - default: `2136`
-- `EDGE_BOOTSTRAP_VIA_SSH=1`
-  - forces SSH bootstrap/tunnel for an existing remote target
+## Ubuntu shell setup
 
-Bootstrap transport remains SSH-only for first host preparation:
+The supported Ubuntu-side convenience setup now uses proxy environment variables, not a Linux-side `tun`.
 
-- wait for SSH
-- wait for cloud-init and Docker
-- upload/install `edge-agent`
-- open local SSH tunnel to host loopback agent
-- continue deploy through gRPC
+Installed user-side helper:
 
-For later remote deploy/redeploy operations, `edge-controller` now requires one of:
+- `~/.edge-platform-wsl-proxy.sh`
 
-- explicit `EDGE_AGENT_ENDPOINT`
-- targeted persisted trust material for the resolved `instance_id + ip`
-- forced SSH bootstrap via `EDGE_BOOTSTRAP_VIA_SSH=1`
+Sourced from:
 
-Status/runtime observation can now resolve the active remote agent target from
-persisted deployment and trust rows. Normal steady-state operation should stay
-on this direct persisted-trust path, with SSH reserved for first-host bootstrap
-and controlled maintenance.
+- `~/.profile`
+- `~/.bashrc`
 
-## What is still left
+This exports:
 
-- live acceptance runs against real Vultr/Cloudflare targets
-- optional Windows-native secret backend integration beyond `env:/file:/path:/literal:` references
-- final archival/removal of legacy PowerShell wrappers after operational signoff
+- `http_proxy`
+- `https_proxy`
+- `HTTP_PROXY`
+- `HTTPS_PROXY`
+- `all_proxy`
+- `ALL_PROXY`
+- `no_proxy`
+- `NO_PROXY`
+
+Current policy:
+
+- `http_proxy` / `https_proxy` point to:
+  - `http://<wsl-gateway>:17890`
+- `all_proxy` points to:
+  - `socks5h://<wsl-gateway>:17890`
+
+System package manager support:
+
+- `/usr/local/bin/edge-wsl-proxy-autodetect`
+- `/etc/apt/apt.conf.d/99edge-platform-proxy`
+
+That allows `apt` to auto-detect the current WSL gateway dynamically.
+
+## Useful commands
+
+Status:
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" status
+```
+
+Desktop selector:
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" get-selector
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-selector auto-direct-tunnel
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-selector auto-warp-tunnel
+```
+
+Ubuntu selector:
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" get-ubuntu-selector
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-ubuntu-selector auto-direct-tunnel
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-ubuntu-selector auto-warp-tunnel
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" trace-ubuntu
+```
+
+Local runtime:
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" start-local
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" restart-local
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" stop-local
+```
+
+Deploy/destroy:
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" destroy
+```
+
+## Secret names
+
+Persisted in controller SQLite:
+
+- `provider.vultr.api_key`
+- `provider.cloudflare.api_token`
+- `bootstrap.vultr.ssh_key_id`
+- `bootstrap.ssh.private_key_path`
+
+Supported secret reference formats:
+
+- `env:NAME`
+- `file:/abs/path`
+- `path:/abs/path`
+- `literal:value`
+
+## Notes
+
+- `edge-console` is the only intended operator entrypoint.
+- The old Linux-side WSL `tun` setup is retained only as historical reference and is not the primary supported Ubuntu path anymore.
+- `untracked` recovery artifacts such as `RECOVERY-NOTES.md` and `recovered/` are intentionally not part of the normal project state.

@@ -2,10 +2,13 @@ use edge_shared_types::{ProxyGroupState, SelectorState};
 use reqwest::Client;
 use serde::Deserialize;
 
-const MAIN_GROUP: &str = "proxy-selector";
-const AUX_GROUPS: &[&str] = &["auto-direct-tunnel", "auto-warp-tunnel"];
+const DEFAULT_AUX_GROUPS: &[&str] = &["auto-direct-tunnel", "auto-warp-tunnel"];
 
-pub async fn get_selector_state(controller_url: &str) -> Result<SelectorState, String> {
+pub async fn get_selector_state(
+    controller_url: &str,
+    main_group: &str,
+    aux_groups: &[&str],
+) -> Result<SelectorState, String> {
     let response = Client::new()
         .get(format!("{controller_url}/proxies"))
         .send()
@@ -19,15 +22,16 @@ pub async fn get_selector_state(controller_url: &str) -> Result<SelectorState, S
         .await
         .map_err(|err| format!("invalid clash API JSON: {err}"))?;
 
-    Ok(selector_state_from_payload(payload))
+    Ok(selector_state_from_payload(payload, main_group, aux_groups))
 }
 
 pub async fn set_selector(
     controller_url: &str,
     group: &str,
     name: &str,
+    aux_groups: &[&str],
 ) -> Result<(Option<String>, SelectorState), String> {
-    let before = get_selector_state(controller_url).await.ok();
+    let before = get_selector_state(controller_url, group, aux_groups).await.ok();
     let previous = before
         .as_ref()
         .and_then(|selector| selector.observed_main_route.clone());
@@ -44,11 +48,19 @@ pub async fn set_selector(
         .error_for_status()
         .map_err(|err| format!("clash selector update failed: {err}"))?;
 
-    let selector = get_selector_state(controller_url).await?;
+    let selector = get_selector_state(controller_url, group, aux_groups).await?;
     Ok((previous, selector))
 }
 
-fn selector_state_from_payload(payload: ProxiesResponse) -> SelectorState {
+pub fn default_aux_groups() -> &'static [&'static str] {
+    DEFAULT_AUX_GROUPS
+}
+
+fn selector_state_from_payload(
+    payload: ProxiesResponse,
+    main_group: &str,
+    aux_groups: &[&str],
+) -> SelectorState {
     let mut groups = Vec::new();
     let mut selector = SelectorState {
         desired_main_route: None,
@@ -58,18 +70,18 @@ fn selector_state_from_payload(payload: ProxiesResponse) -> SelectorState {
         proxy_groups: Vec::new(),
     };
 
-    for group_name in std::iter::once(MAIN_GROUP).chain(AUX_GROUPS.iter().copied()) {
+    for group_name in std::iter::once(main_group).chain(aux_groups.iter().copied()) {
         match payload.proxies.get(group_name) {
             Some(group) => {
                 let candidates = group.all.clone().unwrap_or_default();
                 let selected = group.now.clone();
-                if group_name == MAIN_GROUP {
+                if group_name == main_group {
                     selector.observed_main_route = selected.clone();
                     if selected.is_none() {
                         selector.degraded = true;
                         selector
                             .warnings
-                            .push("proxy-selector did not report an active route".to_owned());
+                            .push(format!("{main_group} did not report an active route"));
                     }
                 }
                 groups.push(ProxyGroupState {
@@ -157,7 +169,11 @@ mod tests {
             ]),
         };
 
-        let selector = selector_state_from_payload(payload);
+        let selector = selector_state_from_payload(
+            payload,
+            "proxy-selector",
+            default_aux_groups(),
+        );
         assert_eq!(
             selector.observed_main_route.as_deref(),
             Some("auto-direct-tunnel")

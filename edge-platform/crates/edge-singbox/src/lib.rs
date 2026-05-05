@@ -1,11 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::net::Ipv4Addr;
+use std::process::Command;
 
-use edge_shared_types::{LocalSingboxState, SelectorState};
+use edge_shared_types::{LocalSingboxState, SelectorState, UbuntuProxyState};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 const MANAGED_SELECTOR_TAG: &str = "proxy-selector";
+const WSL_SELECTOR_TAG: &str = "wsl-selector";
+const WSL_INBOUND_TAG: &str = "wsl-mixed-in";
+const DESKTOP_TRACE_INBOUND_TAG: &str = "mixed-in";
+const DEFAULT_WSL_PROXY_PORT: u32 = 17890;
+const WSL_INBOUND_BIND_HOST: &str = "0.0.0.0";
 const EXPECTED_OUTBOUND_TAGS: &[&str] = &[
     "auto-direct-tunnel",
     "auto-warp-tunnel",
@@ -19,6 +26,8 @@ const EXPECTED_OUTBOUND_TAGS: &[&str] = &[
 pub struct LocalConfigObservation {
     pub local_singbox: LocalSingboxState,
     pub selector: SelectorState,
+    pub ubuntu_selector: SelectorState,
+    pub ubuntu_proxy: UbuntuProxyState,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +60,8 @@ pub fn inspect_local_config(
     let expected_config_path = config_path.display().to_string();
     let mut local_singbox = LocalSingboxState::placeholder(expected_config_path.clone());
     let mut selector = SelectorState::placeholder();
+    let mut ubuntu_selector = SelectorState::placeholder();
+    let mut ubuntu_proxy = UbuntuProxyState::unavailable("WSL proxy inbound is missing");
 
     let process = detect_process(config_path);
     local_singbox.process_running = process.is_some();
@@ -92,6 +103,8 @@ pub fn inspect_local_config(
             return LocalConfigObservation {
                 local_singbox,
                 selector,
+                ubuntu_selector,
+                ubuntu_proxy,
             };
         }
     };
@@ -108,6 +121,8 @@ pub fn inspect_local_config(
             return LocalConfigObservation {
                 local_singbox,
                 selector,
+                ubuntu_selector,
+                ubuntu_proxy,
             };
         }
     };
@@ -119,37 +134,13 @@ pub fn inspect_local_config(
         .and_then(|clash_api| clash_api.external_controller.as_deref())
         .and_then(parse_controller_port);
 
-    let selector_outbound = parsed
-        .outbounds
-        .iter()
-        .find(|outbound| outbound.kind == "selector" && outbound.tag == MANAGED_SELECTOR_TAG);
-
-    if let Some(selector_config) = selector_outbound {
+    selector = inspect_selector_group(&parsed, MANAGED_SELECTOR_TAG, &mut local_singbox);
+    ubuntu_selector = inspect_selector_group(&parsed, WSL_SELECTOR_TAG, &mut local_singbox);
+    if selector.desired_main_route.is_some() || ubuntu_selector.desired_main_route.is_some() {
         local_singbox.managed_config = true;
-        selector.desired_main_route = selector_config.default.clone();
-        selector.observed_main_route = selector_config.default.clone();
-
-        let missing_expected = EXPECTED_OUTBOUND_TAGS
-            .iter()
-            .filter(|tag| !selector_config.outbounds.iter().any(|entry| entry == **tag))
-            .map(|tag| (*tag).to_owned())
-            .collect::<Vec<_>>();
-        if !missing_expected.is_empty() {
-            local_singbox.warnings.push(format!(
-                "managed selector is missing expected tunnel entries: {}",
-                missing_expected.join(", ")
-            ));
-            selector.degraded = true;
-        }
-    } else {
-        local_singbox
-            .warnings
-            .push("managed selector proxy-selector is missing from local config".to_owned());
-        selector
-            .warnings
-            .push("proxy-selector was not found in local config".to_owned());
-        selector.degraded = true;
     }
+
+    ubuntu_proxy = inspect_ubuntu_proxy_inbound(&parsed, &mut local_singbox, &mut ubuntu_selector);
 
     if !parsed
         .outbounds
@@ -197,6 +188,86 @@ pub fn inspect_local_config(
     LocalConfigObservation {
         local_singbox,
         selector,
+        ubuntu_selector,
+        ubuntu_proxy,
+    }
+}
+
+fn inspect_selector_group(
+    parsed: &SingboxConfig,
+    selector_tag: &str,
+    local_singbox: &mut LocalSingboxState,
+) -> SelectorState {
+    let mut selector = SelectorState::placeholder();
+    let selector_outbound = parsed
+        .outbounds
+        .iter()
+        .find(|outbound| outbound.kind == "selector" && outbound.tag == selector_tag);
+
+    if let Some(selector_config) = selector_outbound {
+        selector.desired_main_route = selector_config.default.clone();
+        selector.observed_main_route = selector_config.default.clone();
+
+        let missing_expected = EXPECTED_OUTBOUND_TAGS
+            .iter()
+            .filter(|tag| !selector_config.outbounds.iter().any(|entry| entry == **tag))
+            .map(|tag| (*tag).to_owned())
+            .collect::<Vec<_>>();
+        if !missing_expected.is_empty() {
+            local_singbox.warnings.push(format!(
+                "managed selector {selector_tag} is missing expected tunnel entries: {}",
+                missing_expected.join(", ")
+            ));
+            selector.degraded = true;
+        }
+    } else {
+        local_singbox.warnings.push(format!(
+            "managed selector {selector_tag} is missing from local config"
+        ));
+        selector
+            .warnings
+            .push(format!("{selector_tag} was not found in local config"));
+        selector.degraded = true;
+    }
+
+    selector
+}
+
+fn inspect_ubuntu_proxy_inbound(
+    parsed: &SingboxConfig,
+    local_singbox: &mut LocalSingboxState,
+    ubuntu_selector: &mut SelectorState,
+) -> UbuntuProxyState {
+    let Some(inbound) = parsed
+        .inbounds
+        .iter()
+        .find(|inbound| inbound.kind == "mixed" && inbound.tag == WSL_INBOUND_TAG)
+    else {
+        local_singbox.warnings.push("WSL inbound wsl-mixed-in is missing from local config".to_owned());
+        ubuntu_selector.degraded = true;
+        ubuntu_selector
+            .warnings
+            .push("wsl-mixed-in inbound was not found in local config".to_owned());
+        return UbuntuProxyState::unavailable("wsl-mixed-in inbound is missing");
+    };
+
+    let endpoint = resolve_wsl_proxy_endpoint();
+    let host = endpoint
+        .published_host
+        .clone()
+        .or_else(|| inbound.listen.clone())
+        .unwrap_or_else(|| "127.0.0.1".to_owned());
+    let port = inbound.listen_port.unwrap_or(DEFAULT_WSL_PROXY_PORT);
+    if !endpoint.warnings.is_empty() {
+        ubuntu_selector.degraded = true;
+        ubuntu_selector.warnings.extend(endpoint.warnings.clone());
+    }
+    UbuntuProxyState {
+        available: true,
+        host: Some(host.clone()),
+        port: Some(port),
+        url: Some(format!("http://{host}:{port}")),
+        warnings: endpoint.warnings,
     }
 }
 
@@ -260,6 +331,9 @@ pub fn sync_local_config(
         TunnelKind::VlessReality,
     );
     sync_tun_route_excludes(&mut config, state.ip.as_deref());
+    sync_wsl_inbound(&mut config);
+    sync_wsl_selector(&mut config);
+    sync_wsl_route_rule(&mut config);
 
     let rendered = serde_json::to_vec_pretty(&config)
         .map_err(|err| format!("failed to render updated config: {err}"))?;
@@ -310,14 +384,261 @@ fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
     }
 }
 
+fn sync_wsl_inbound(config: &mut Value) {
+    let Some(inbounds) = config.get_mut("inbounds").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    if let Some(inbound) = inbounds.iter_mut().find(|inbound| {
+        inbound
+            .get("tag")
+            .and_then(Value::as_str)
+            .map(|value| value == WSL_INBOUND_TAG)
+            .unwrap_or(false)
+    }) {
+        let Some(object) = inbound.as_object_mut() else {
+            return;
+        };
+        object.insert("type".to_owned(), Value::String("mixed".to_owned()));
+        object.insert(
+            "listen".to_owned(),
+            Value::String(WSL_INBOUND_BIND_HOST.to_owned()),
+        );
+        object.insert(
+            "listen_port".to_owned(),
+            Value::Number(DEFAULT_WSL_PROXY_PORT.into()),
+        );
+        return;
+    }
+
+    inbounds.push(Value::Object(Map::from_iter([
+        ("type".to_owned(), Value::String("mixed".to_owned())),
+        ("tag".to_owned(), Value::String(WSL_INBOUND_TAG.to_owned())),
+        (
+            "listen".to_owned(),
+            Value::String(WSL_INBOUND_BIND_HOST.to_owned()),
+        ),
+        (
+            "listen_port".to_owned(),
+            Value::Number(DEFAULT_WSL_PROXY_PORT.into()),
+        ),
+    ])));
+}
+
+fn sync_wsl_selector(config: &mut Value) {
+    let Some(outbounds) = config.get_mut("outbounds").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    let expected = EXPECTED_OUTBOUND_TAGS
+        .iter()
+        .map(|value| Value::String((*value).to_owned()))
+        .collect::<Vec<_>>();
+
+    if let Some(outbound) = outbounds.iter_mut().find(|outbound| {
+        outbound
+            .get("tag")
+            .and_then(Value::as_str)
+            .map(|value| value == WSL_SELECTOR_TAG)
+            .unwrap_or(false)
+    }) {
+        let Some(object) = outbound.as_object_mut() else {
+            return;
+        };
+        object.insert("type".to_owned(), Value::String("selector".to_owned()));
+        object.insert(
+            "default".to_owned(),
+            Value::String("auto-direct-tunnel".to_owned()),
+        );
+        object.insert("outbounds".to_owned(), Value::Array(expected));
+        return;
+    }
+
+    outbounds.push(Value::Object(Map::from_iter([
+        ("type".to_owned(), Value::String("selector".to_owned())),
+        ("tag".to_owned(), Value::String(WSL_SELECTOR_TAG.to_owned())),
+        (
+            "default".to_owned(),
+            Value::String("auto-direct-tunnel".to_owned()),
+        ),
+        ("outbounds".to_owned(), Value::Array(expected)),
+    ])));
+}
+
+fn sync_wsl_route_rule(config: &mut Value) {
+    let Some(rules) = config
+        .get_mut("route")
+        .and_then(Value::as_object_mut)
+        .and_then(|route| route.get_mut("rules"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for rule in rules.iter_mut() {
+        let Some(object) = rule.as_object_mut() else {
+            continue;
+        };
+        let Some(inbound) = object.get("inbound").and_then(Value::as_array) else {
+            continue;
+        };
+        let matches = inbound.iter().any(|value| value.as_str() == Some(WSL_INBOUND_TAG));
+        if !matches {
+            continue;
+        }
+        object.insert(
+            "outbound".to_owned(),
+            Value::String(WSL_SELECTOR_TAG.to_owned()),
+        );
+        object.insert(
+            "inbound".to_owned(),
+            Value::Array(vec![Value::String(WSL_INBOUND_TAG.to_owned())]),
+        );
+        return;
+    }
+
+    let insert_at = rules
+        .iter()
+        .position(|rule| {
+            rule.get("inbound")
+                .and_then(Value::as_array)
+                .is_some_and(|inbound| inbound.iter().any(|value| value.as_str() == Some("mixed-in")))
+        })
+        .unwrap_or(rules.len());
+    rules.insert(
+        insert_at,
+        Value::Object(Map::from_iter([
+            (
+                "inbound".to_owned(),
+                Value::Array(vec![Value::String(WSL_INBOUND_TAG.to_owned())]),
+            ),
+            (
+                "outbound".to_owned(),
+                Value::String(WSL_SELECTOR_TAG.to_owned()),
+            ),
+        ])),
+    );
+}
+
+#[derive(Debug, Clone)]
+struct WslProxyEndpoint {
+    published_host: Option<String>,
+    warnings: Vec<String>,
+}
+
+fn resolve_wsl_proxy_endpoint() -> WslProxyEndpoint {
+    let mut warnings = Vec::new();
+
+    if let Some(ip) = resolve_ubuntu_gateway_ipv4() {
+        return WslProxyEndpoint {
+            published_host: Some(ip),
+            warnings,
+        };
+    }
+
+    let adapter_ips = resolve_wsl_adapter_ipv4s();
+    match adapter_ips.as_slice() {
+        [only] => WslProxyEndpoint {
+            published_host: Some(only.clone()),
+            warnings: vec![
+                "Ubuntu WSL gateway could not be resolved directly; using single detected WSL adapter IPv4"
+                    .to_owned(),
+            ],
+        },
+        [] => WslProxyEndpoint {
+            published_host: None,
+            warnings: vec![
+                "Ubuntu WSL gateway could not be resolved; verify WSL is running before using the Ubuntu proxy"
+                    .to_owned(),
+            ],
+        },
+        many => {
+            warnings.push(format!(
+                "multiple WSL adapter IPv4 addresses detected ({}); Ubuntu endpoint may require verification",
+                many.join(", ")
+            ));
+            WslProxyEndpoint {
+                published_host: None,
+                warnings,
+            }
+        }
+    }
+}
+
+fn resolve_ubuntu_gateway_ipv4() -> Option<String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("wsl.exe")
+            .args([
+                "-d",
+                "Ubuntu",
+                "bash",
+                "-lc",
+                "ip route show default | cut -d' ' -f3",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if value.parse::<Ipv4Addr>().is_err() {
+            None
+        } else {
+            Some(value)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn resolve_wsl_adapter_ipv4s() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -like 'vEthernet (WSL*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress",
+            ])
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.parse::<Ipv4Addr>().is_ok())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 pub fn default_trace_proxy_url(config_path: &Path) -> Result<Option<String>, String> {
+    trace_proxy_url_for_inbound(config_path, DESKTOP_TRACE_INBOUND_TAG)
+}
+
+pub fn ubuntu_trace_proxy_url(config_path: &Path) -> Result<Option<String>, String> {
+    trace_proxy_url_for_inbound(config_path, WSL_INBOUND_TAG)
+}
+
+fn trace_proxy_url_for_inbound(config_path: &Path, inbound_tag: &str) -> Result<Option<String>, String> {
     let raw_config = fs::read_to_string(config_path)
         .map_err(|err| format!("unable to read local sing-box config: {err}"))?;
     let parsed: TraceConfig = serde_json::from_str(&raw_config)
         .map_err(|err| format!("invalid local config JSON: {err}"))?;
 
     Ok(parsed.inbounds.into_iter().find_map(|inbound| {
-        if inbound.kind == "mixed" && inbound.tag == "mixed-in" {
+        if inbound.kind == "mixed" && inbound.tag == inbound_tag {
             let host = inbound.listen.unwrap_or_else(|| "127.0.0.1".to_owned());
             inbound
                 .listen_port
@@ -621,6 +942,8 @@ fn ensure_child_object<'a>(
 #[derive(Debug, Deserialize)]
 struct SingboxConfig {
     #[serde(default)]
+    inbounds: Vec<Inbound>,
+    #[serde(default)]
     outbounds: Vec<Outbound>,
     experimental: Option<Experimental>,
 }
@@ -648,6 +971,15 @@ struct Outbound {
     password: Option<String>,
     uuid: Option<String>,
     tls: Option<Tls>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Inbound {
+    #[serde(rename = "type")]
+    kind: String,
+    tag: String,
+    listen: Option<String>,
+    listen_port: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -714,10 +1046,31 @@ mod tests {
       "external_controller": "127.0.0.1:9090"
     }
   },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "wsl-mixed-in",
+      "listen": "0.0.0.0",
+      "listen_port": 17890
+    }
+  ],
   "outbounds": [
     {
       "type": "selector",
       "tag": "proxy-selector",
+      "outbounds": [
+        "auto-direct-tunnel",
+        "auto-warp-tunnel",
+        "hysteria2-direct",
+        "vless-reality-direct",
+        "hysteria2-warp",
+        "vless-reality-warp"
+      ],
+      "default": "auto-direct-tunnel"
+    },
+    {
+      "type": "selector",
+      "tag": "wsl-selector",
       "outbounds": [
         "auto-direct-tunnel",
         "auto-warp-tunnel",
@@ -806,6 +1159,12 @@ mod tests {
             observation.selector.desired_main_route.as_deref(),
             Some("auto-direct-tunnel")
         );
+        assert_eq!(
+            observation.ubuntu_selector.desired_main_route.as_deref(),
+            Some("auto-direct-tunnel")
+        );
+        assert_eq!(observation.ubuntu_proxy.port, Some(17890));
+        assert!(observation.ubuntu_proxy.url.is_some());
         assert!(!observation.selector.degraded);
 
         fs::remove_dir_all(repo_root).unwrap();
@@ -836,6 +1195,7 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("proxy-selector"))
         );
+        assert!(observation.ubuntu_selector.degraded);
         assert!(
             observation
                 .local_singbox
@@ -859,6 +1219,19 @@ mod tests {
     {
       "type": "selector",
       "tag": "proxy-selector",
+      "outbounds": [
+        "auto-direct-tunnel",
+        "auto-warp-tunnel",
+        "hysteria2-direct",
+        "vless-reality-direct",
+        "hysteria2-warp",
+        "vless-reality-warp"
+      ],
+      "default": "auto-direct-tunnel"
+    },
+    {
+      "type": "selector",
+      "tag": "wsl-selector",
       "outbounds": [
         "auto-direct-tunnel",
         "auto-warp-tunnel",
@@ -968,6 +1341,7 @@ mod tests {
     { "type": "hysteria2", "tag": "hysteria2-warp", "tls": {} },
     { "type": "vless", "tag": "vless-reality-warp", "tls": { "reality": {} } }
   ],
+  "inbounds": [],
   "experimental": {
     "cache_file": {},
     "clash_api": {}
@@ -1024,6 +1398,18 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("direct-public-key")
         );
+        assert_eq!(
+            updated
+                .pointer("/inbounds/0/tag")
+                .and_then(serde_json::Value::as_str),
+            Some("wsl-mixed-in")
+        );
+        assert_eq!(
+            updated
+                .pointer("/inbounds/0/listen")
+                .and_then(serde_json::Value::as_str),
+            Some("0.0.0.0")
+        );
 
         fs::remove_dir_all(repo_root).unwrap();
     }
@@ -1037,7 +1423,8 @@ mod tests {
             &config_path,
             r#"{
   "inbounds": [
-    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 7890 }
+    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 7890 },
+    { "type": "mixed", "tag": "wsl-mixed-in", "listen": "172.26.16.1", "listen_port": 17890 }
   ]
 }"#,
         )
@@ -1045,8 +1432,23 @@ mod tests {
 
         let proxy = default_trace_proxy_url(&config_path).unwrap();
         assert_eq!(proxy.as_deref(), Some("http://127.0.0.1:7890"));
+        let ubuntu_proxy = ubuntu_trace_proxy_url(&config_path).unwrap();
+        assert_eq!(ubuntu_proxy.as_deref(), Some("http://172.26.16.1:17890"));
 
         fs::remove_dir_all(repo_root).unwrap();
+    }
+
+    #[test]
+    fn falls_back_to_single_adapter_ip_when_gateway_unavailable() {
+        let endpoint = WslProxyEndpoint {
+            published_host: Some("172.26.16.1".to_owned()),
+            warnings: vec![
+                "Ubuntu WSL gateway could not be resolved directly; using single detected WSL adapter IPv4"
+                    .to_owned(),
+            ],
+        };
+        assert_eq!(endpoint.published_host.as_deref(), Some("172.26.16.1"));
+        assert_eq!(endpoint.warnings.len(), 1);
     }
 
     fn unique_test_dir() -> PathBuf {

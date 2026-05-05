@@ -111,6 +111,8 @@ message ControllerStatus {
   RuntimeObservation runtime = 6;
   SelectorState selector = 7;
   repeated string status_notes = 8;
+  SelectorState ubuntu_selector = 9;
+  UbuntuProxyState ubuntu_proxy = 10;
 }
 
 message Empty {}
@@ -216,6 +218,14 @@ message SelectorState {
   bool degraded = 3;
   repeated string warnings = 4;
   repeated ProxyGroupState proxy_groups = 5;
+}
+
+message UbuntuProxyState {
+  bool available = 1;
+  optional string host = 2;
+  optional uint32 port = 3;
+  optional string url = 4;
+  repeated string warnings = 5;
 }
 
 message GetSelectorStateRequest {

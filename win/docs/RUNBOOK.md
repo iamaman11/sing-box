@@ -2,26 +2,22 @@
 
 ## Primary entrypoint
 
-The normal operator workflow is now Rust-first.
+The normal operator workflow is Rust-first and production-first.
 
-Start the controller daemon:
-
-```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-controller.exe" serve
-```
-
-Open the operator console:
+Open the console:
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" menu
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe"
 ```
+
+The console autostarts `edge-controller.exe` on `127.0.0.1:50051` if needed.
 
 You can also use command mode:
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" status
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" trace
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" deploy
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" status
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" trace
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy
 ```
 
 ## Main console actions
@@ -38,8 +34,11 @@ You can also use command mode:
 
 - `get-selector`
 - `set-selector <name>`
+- `get-ubuntu-selector`
+- `set-ubuntu-selector <name>`
 
 - `trace`
+- `trace-ubuntu`
 
 - `deploy`
 - `destroy`
@@ -72,7 +71,7 @@ Supported secret reference formats:
 Example:
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" set-secret provider.vultr.api_key env:VULTR_API_KEY
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-secret provider.vultr.api_key env:VULTR_API_KEY
 ```
 
 ## Recommended flows
@@ -80,49 +79,105 @@ Example:
 ### 1. Inspect current state
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" status
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" status
 ```
 
 ### 2. Start the local client
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" start-local
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" start-local
 ```
 
-### 3. Switch route
+### 3. Switch desktop route
 
 Direct:
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" set-selector auto-direct-tunnel
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-selector auto-direct-tunnel
 ```
 
 WARP:
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" set-selector auto-warp-tunnel
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-selector auto-warp-tunnel
 ```
 
-### 4. Deploy or redeploy
+### 4. Switch Ubuntu WSL route
+
+Direct:
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" deploy
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-ubuntu-selector auto-direct-tunnel
+```
+
+WARP:
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-ubuntu-selector auto-warp-tunnel
+```
+
+Show Ubuntu route and egress:
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" get-ubuntu-selector
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" trace-ubuntu
+```
+
+### 5. Ubuntu-side usage
+
+The supported Ubuntu path is now Windows-side proxying, not Linux-side `tun`.
+
+Current endpoint from Ubuntu:
+
+```bash
+http://$(ip route show default | cut -d' ' -f3):17890
+```
+
+Ad-hoc command:
+
+```bash
+curl -4 --proxy http://$(ip route show default | cut -d' ' -f3):17890 https://api.ipify.org
+```
+
+The user shell helper installed in Ubuntu exports proxy env vars automatically for new shells:
+
+- `http_proxy`
+- `https_proxy`
+- `all_proxy`
+
+### 6. Deploy or redeploy
+
+```powershell
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy
 ```
 
 If the deploy output returns an operation id, follow it with:
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" watch-operation <id>
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" watch-operation <id>
 ```
 
-### 5. Destroy
+### 7. Destroy
 
 ```powershell
-& "\\wsl$\Ubuntu\home\bose\projects\sing-box\edge-platform\target\debug\edge-console.exe" destroy
+& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" destroy
 ```
 
-## Legacy reference
+## Current WSL proxy behavior
 
-PowerShell scripts under `win/windows` and `win/vultr-waw` are retained only as
-historical reference during migration review. They are not the primary control
-path anymore.
+- Windows `sing-box` exposes:
+  - `wsl-mixed-in`
+  - port `17890`
+- the inbound is routed to:
+  - `wsl-selector`
+- `wsl-selector` is independent from:
+  - `proxy-selector`
+
+That means:
+
+- desktop selector changes do not change Ubuntu selector
+- Ubuntu selector changes do not change desktop selector
+
+## Historical note
+
+PowerShell scripts under `win/windows` and `win/vultr-waw`, and the old Linux-side WSL `tun` setup, are retained only as historical reference. They are not the primary supported control path anymore.

@@ -11,7 +11,8 @@ use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
 };
 use edge_clash::{
-    get_selector_state as get_live_selector_state, set_selector as set_live_selector,
+    default_aux_groups, get_selector_state as get_live_selector_state,
+    set_selector as set_live_selector,
 };
 use edge_controller_core::collect_controller_status;
 use edge_local_runtime::{
@@ -68,6 +69,8 @@ const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const DEFAULT_SINGBOX_BINARY_PATH: &str =
     "C:\\Users\\Bose\\AppData\\Local\\sing-box-vultr-dual\\runtime\\sing-box.exe";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
+const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
+const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 const DEFAULT_AGENT_REMOTE_PORT: u16 = 50061;
 const DEFAULT_SSH_USER: &str = "root";
 const DEFAULT_SSH_KNOWN_HOSTS_PATH: &str = "edge-platform/.runtime/ssh-known_hosts";
@@ -656,10 +659,21 @@ impl ControllerService for ControllerServerImpl {
             status.local_singbox.take(),
             inspect_local_runtime(&local_config_path),
         );
-        let merged_selector =
-            observe_selector_state(merged_local.clone(), status.selector.take()).await;
+        let merged_selector = observe_selector_state(
+            merged_local.clone(),
+            status.selector.take(),
+            DESKTOP_SELECTOR_GROUP,
+        )
+        .await;
+        let merged_ubuntu_selector = observe_selector_state(
+            merged_local.clone(),
+            status.ubuntu_selector.take(),
+            UBUNTU_SELECTOR_GROUP,
+        )
+        .await;
         status.local_singbox = Some(merged_local);
         status.selector = Some(merged_selector);
+        status.ubuntu_selector = Some(merged_ubuntu_selector);
 
         self.state
             .lock()
@@ -962,20 +976,30 @@ impl ControllerService for ControllerServerImpl {
 
     async fn get_selector_state(
         &self,
-        _request: Request<GetSelectorStateRequest>,
+        request: Request<GetSelectorStateRequest>,
     ) -> Result<Response<SelectorState>, Status> {
+        let request = request.into_inner();
+        let group = normalize_selector_group(request.group.as_deref())?;
         let base_status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
         let local_singbox = merge_local_runtime(
-            base_status.local_singbox,
+            base_status.local_singbox.clone(),
             inspect_local_runtime(&default_local_config_path(&self.repo_root)),
         );
-        let selector = observe_selector_state(local_singbox, base_status.selector).await;
+        let base_selector = if group == UBUNTU_SELECTOR_GROUP {
+            base_status.ubuntu_selector
+        } else {
+            base_status.selector
+        };
+        let selector = observe_selector_state(local_singbox, base_selector, group).await;
 
         self.state
             .lock()
             .map_err(|_| Status::internal("controller state mutex poisoned"))?
-            .store_local_observation("selector_state", &selector.encode_to_vec())
+            .store_local_observation(
+                &format!("selector_state::{group}"),
+                &selector.encode_to_vec(),
+            )
             .map_err(|err| {
                 Status::internal(format!("failed to store selector observation: {err}"))
             })?;
@@ -999,11 +1023,12 @@ impl ControllerService for ControllerServerImpl {
             operation.id,
             &format!("setting selector {} -> {}", request.group, request.name),
         )?;
+        let group = normalize_selector_group(Some(&request.group))?.to_owned();
 
         let base_status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
         let local_singbox = merge_local_runtime(
-            base_status.local_singbox,
+            base_status.local_singbox.clone(),
             inspect_local_runtime(&default_local_config_path(&self.repo_root)),
         );
         let Some(controller_url) = clash_controller_url(&local_singbox) else {
@@ -1015,19 +1040,23 @@ impl ControllerService for ControllerServerImpl {
                 warnings: vec!["clash API endpoint is not configured".to_owned()],
                 operation: Some(operation_with_status(operation, "FAILED")),
                 selector: Some(
-                    base_status
-                        .selector
+                    selector_state_for_group(&base_status, &group)
+                        .cloned()
                         .unwrap_or_else(SelectorState::placeholder),
                 ),
             }));
         };
 
-        let response = match set_live_selector(&controller_url, &request.group, &request.name).await
-        {
+        let response = match set_live_selector(
+            &controller_url,
+            &group,
+            &request.name,
+            default_aux_groups(),
+        )
+        .await {
             Ok((previous, mut selector)) => {
-                let desired = base_status
-                    .selector
-                    .and_then(|selector| selector.desired_main_route);
+                let desired = selector_state_for_group(&base_status, &group)
+                    .and_then(|selector| selector.desired_main_route.clone());
                 selector.desired_main_route =
                     desired.or_else(|| selector.observed_main_route.clone());
                 append_operation_event(&self.state, operation.id, "selector updated successfully")?;
@@ -1044,8 +1073,8 @@ impl ControllerService for ControllerServerImpl {
             Err(err) => {
                 append_operation_event(&self.state, operation.id, &err)?;
                 update_operation_status(&self.state, operation.id, "FAILED")?;
-                let mut selector = base_status
-                    .selector
+                let mut selector = selector_state_for_group(&base_status, &group)
+                    .cloned()
                     .unwrap_or_else(SelectorState::placeholder);
                 selector.degraded = true;
                 selector.warnings.push(err.clone());
@@ -1755,6 +1784,7 @@ fn merge_local_runtime(
 async fn observe_selector_state(
     local_singbox: edge_shared_types::LocalSingboxState,
     base_selector: Option<SelectorState>,
+    group: &str,
 ) -> SelectorState {
     let mut selector = base_selector.unwrap_or_else(SelectorState::placeholder);
     let Some(controller_url) = clash_controller_url(&local_singbox) else {
@@ -1765,13 +1795,36 @@ async fn observe_selector_state(
         return selector;
     };
 
-    match get_live_selector_state(&controller_url).await {
+    match get_live_selector_state(&controller_url, group, default_aux_groups()).await {
         Ok(live) => merge_selector_state(selector, live),
         Err(err) => {
             selector.degraded = true;
             selector.warnings.push(err);
             selector
         }
+    }
+}
+
+fn normalize_selector_group(group: Option<&str>) -> Result<&'static str, Status> {
+    match group {
+        Some(value) if value == UBUNTU_SELECTOR_GROUP => Ok(UBUNTU_SELECTOR_GROUP),
+        Some(value) if value == DESKTOP_SELECTOR_GROUP => Ok(DESKTOP_SELECTOR_GROUP),
+        Some(value) if value.trim().is_empty() => Ok(DESKTOP_SELECTOR_GROUP),
+        None => Ok(DESKTOP_SELECTOR_GROUP),
+        Some(value) => Err(Status::invalid_argument(format!(
+            "unknown selector group: {value}"
+        ))),
+    }
+}
+
+fn selector_state_for_group<'a>(
+    status: &'a ControllerStatus,
+    group: &str,
+) -> Option<&'a SelectorState> {
+    if group == UBUNTU_SELECTOR_GROUP {
+        status.ubuntu_selector.as_ref()
+    } else {
+        status.selector.as_ref()
     }
 }
 

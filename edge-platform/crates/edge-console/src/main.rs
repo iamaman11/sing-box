@@ -13,7 +13,7 @@ use edge_shared_types::{
     GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
     ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest,
     SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
-    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -24,6 +24,8 @@ const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
 const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
 const DEFAULT_ACME_EMAIL: &str = "admin@alegria.by";
 const DEFAULT_VULTR_SNAPSHOT_ID: &str = "61605612-d7a2-47b1-85ef-aef90f5083df";
+const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
+const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -97,8 +99,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             finish_local_result(response)
         }
         "get-selector" => {
-            let selector = fetch_selector_state(controller_endpoint_from_args(2)).await?;
+            let selector =
+                fetch_selector_state(controller_endpoint_from_args(2), DESKTOP_SELECTOR_GROUP)
+                    .await?;
             print_selector_state(&selector);
+            Ok(())
+        }
+        "get-ubuntu-selector" => {
+            let selector =
+                fetch_selector_state(controller_endpoint_from_args(2), UBUNTU_SELECTOR_GROUP)
+                    .await?;
+            print_selector_state_with_label("Ubuntu selector", &selector);
             Ok(())
         }
         "set-selector" => {
@@ -106,13 +117,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .nth(2)
                 .ok_or("set-selector requires a selector target name")?;
             let response =
-                set_selector(controller_endpoint_from_args(3), "proxy-selector", &name).await?;
+                set_selector(controller_endpoint_from_args(3), DESKTOP_SELECTOR_GROUP, &name)
+                    .await?;
+            print_set_selector_result(&response);
+            finish_selector_result(response)
+        }
+        "set-ubuntu-selector" => {
+            let name = env::args()
+                .nth(2)
+                .ok_or("set-ubuntu-selector requires a selector target name")?;
+            let response =
+                set_selector(controller_endpoint_from_args(3), UBUNTU_SELECTOR_GROUP, &name)
+                    .await?;
             print_set_selector_result(&response);
             finish_selector_result(response)
         }
         "trace" => {
             let trace = fetch_trace(controller_endpoint_from_args(2)).await?;
             print_trace(&trace);
+            Ok(())
+        }
+        "trace-ubuntu" => {
+            let status = fetch_status(controller_endpoint_from_args(2)).await?;
+            let proxy_url = ubuntu_proxy_url_from_status(&status)
+                .ok_or("ubuntu proxy endpoint is not available in controller status")?;
+            let trace =
+                fetch_trace_with_proxy(controller_endpoint_from_args(2), Some(proxy_url)).await?;
+            print_trace_with_label("Ubuntu egress IP", &trace);
             Ok(())
         }
         "bootstrap-base" => {
@@ -177,17 +208,25 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
         println!("5. WARP tunnel -> auto");
         println!("6. WARP tunnel -> hysteria2");
         println!("7. WARP tunnel -> vless");
-        println!("8. Show current IP");
-        println!("9. Start sing-box (visible window)");
-        println!("10. Stop sing-box");
-        println!("11. Restart sing-box (visible window)");
-        println!("12. Bootstrap base runtime (internal)");
-        println!("13. Bootstrap tunnel runtime (internal)");
-        println!("14. Create VM from snapshot");
-        println!("15. Delete current VM");
-        println!("16. List configured secrets");
-        println!("17. Show operation");
-        println!("18. Watch operation");
+        println!("8. Ubuntu tunnel -> auto direct");
+        println!("9. Ubuntu tunnel -> hysteria2 direct");
+        println!("10. Ubuntu tunnel -> vless direct");
+        println!("11. Ubuntu tunnel -> auto warp");
+        println!("12. Ubuntu tunnel -> hysteria2 warp");
+        println!("13. Ubuntu tunnel -> vless warp");
+        println!("14. Show current Ubuntu tunnel");
+        println!("15. Show current Ubuntu egress IP");
+        println!("16. Show current desktop IP");
+        println!("17. Start sing-box (visible window)");
+        println!("18. Stop sing-box");
+        println!("19. Restart sing-box (visible window)");
+        println!("20. Bootstrap base runtime (internal)");
+        println!("21. Bootstrap tunnel runtime (internal)");
+        println!("22. Create VM from snapshot");
+        println!("23. Delete current VM");
+        println!("24. List configured secrets");
+        println!("25. Show operation");
+        println!("26. Watch operation");
         println!("0. Exit");
         print!("Select: ");
         io::stdout().flush()?;
@@ -203,7 +242,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             "2" => {
                 let response = set_selector(
                     controller_endpoint.clone(),
-                    "proxy-selector",
+                    DESKTOP_SELECTOR_GROUP,
                     "auto-direct-tunnel",
                 )
                 .await?;
@@ -212,7 +251,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             "3" => {
                 let response = set_selector(
                     controller_endpoint.clone(),
-                    "proxy-selector",
+                    DESKTOP_SELECTOR_GROUP,
                     "hysteria2-direct",
                 )
                 .await?;
@@ -221,7 +260,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             "4" => {
                 let response = set_selector(
                     controller_endpoint.clone(),
-                    "proxy-selector",
+                    DESKTOP_SELECTOR_GROUP,
                     "vless-reality-direct",
                 )
                 .await?;
@@ -230,7 +269,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             "5" => {
                 let response = set_selector(
                     controller_endpoint.clone(),
-                    "proxy-selector",
+                    DESKTOP_SELECTOR_GROUP,
                     "auto-warp-tunnel",
                 )
                 .await?;
@@ -239,7 +278,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             "6" => {
                 let response = set_selector(
                     controller_endpoint.clone(),
-                    "proxy-selector",
+                    DESKTOP_SELECTOR_GROUP,
                     "hysteria2-warp",
                 )
                 .await?;
@@ -248,41 +287,109 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             "7" => {
                 let response = set_selector(
                     controller_endpoint.clone(),
-                    "proxy-selector",
+                    DESKTOP_SELECTOR_GROUP,
                     "vless-reality-warp",
                 )
                 .await?;
                 print_set_selector_result(&response);
             }
             "8" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    UBUNTU_SELECTOR_GROUP,
+                    "auto-direct-tunnel",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "9" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    UBUNTU_SELECTOR_GROUP,
+                    "hysteria2-direct",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "10" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    UBUNTU_SELECTOR_GROUP,
+                    "vless-reality-direct",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "11" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    UBUNTU_SELECTOR_GROUP,
+                    "auto-warp-tunnel",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "12" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    UBUNTU_SELECTOR_GROUP,
+                    "hysteria2-warp",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "13" => {
+                let response = set_selector(
+                    controller_endpoint.clone(),
+                    UBUNTU_SELECTOR_GROUP,
+                    "vless-reality-warp",
+                )
+                .await?;
+                print_set_selector_result(&response);
+            }
+            "14" => {
+                let selector =
+                    fetch_selector_state(controller_endpoint.clone(), UBUNTU_SELECTOR_GROUP)
+                        .await?;
+                print_selector_state_with_label("Ubuntu selector", &selector);
+            }
+            "15" => {
+                let status = fetch_status(controller_endpoint.clone()).await?;
+                let proxy_url = ubuntu_proxy_url_from_status(&status)
+                    .ok_or("ubuntu proxy endpoint is not available in controller status")?;
+                let trace =
+                    fetch_trace_with_proxy(controller_endpoint.clone(), Some(proxy_url)).await?;
+                print_trace_with_label("Ubuntu egress IP", &trace);
+            }
+            "16" => {
                 let trace = fetch_trace(controller_endpoint.clone()).await?;
                 print_trace(&trace);
             }
-            "9" => {
+            "17" => {
                 let response = start_local_visible(controller_endpoint.clone()).await?;
                 print_local_runtime_result(&response);
             }
-            "10" => {
+            "18" => {
                 let response = stop_local(controller_endpoint.clone()).await?;
                 print_local_runtime_result(&response);
             }
-            "11" => {
+            "19" => {
                 let response = restart_local_visible(controller_endpoint.clone()).await?;
                 print_local_runtime_result(&response);
             }
-            "12" => {
+            "20" => {
                 let response =
                     bootstrap_runtime(controller_endpoint.clone(), BootstrapMode::BootstrapBase)
                         .await?;
                 print_bootstrap_result(&response);
             }
-            "13" => {
+            "21" => {
                 let response =
                     bootstrap_runtime(controller_endpoint.clone(), BootstrapMode::BootstrapTunnel)
                         .await?;
                 print_bootstrap_result(&response);
             }
-            "14" => {
+            "22" => {
                 let response = deploy(
                     controller_endpoint.clone(),
                     DeployRequest {
@@ -301,7 +408,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 .await?;
                 print_deploy_result(&response);
             }
-            "15" => {
+            "23" => {
                 let response = destroy(
                     controller_endpoint.clone(),
                     DestroyRequest {
@@ -317,17 +424,17 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 .await?;
                 print_destroy_result(&response);
             }
-            "16" => {
+            "24" => {
                 let secrets = list_secret_refs(controller_endpoint.clone()).await?;
                 print_secret_refs(&secrets);
             }
-            "17" => {
+            "25" => {
                 let operation_id = prompt("Operation id")?;
                 let status =
                     get_operation(controller_endpoint.clone(), operation_id.parse()?).await?;
                 print_operation_status(&status);
             }
-            "18" => {
+            "26" => {
                 let operation_id = prompt("Operation id")?;
                 watch_operation(controller_endpoint.clone(), operation_id.parse()?).await?;
             }
@@ -658,10 +765,13 @@ async fn restart_local_visible(
 
 async fn fetch_selector_state(
     endpoint: String,
+    group: &str,
 ) -> Result<SelectorState, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client
-        .get_selector_state(Request::new(GetSelectorStateRequest { group: None }))
+        .get_selector_state(Request::new(GetSelectorStateRequest {
+            group: Some(group.to_owned()),
+        }))
         .await?;
     Ok(response.into_inner())
 }
@@ -682,9 +792,16 @@ async fn set_selector(
 }
 
 async fn fetch_trace(endpoint: String) -> Result<TraceObservation, Box<dyn std::error::Error>> {
+    fetch_trace_with_proxy(endpoint, None).await
+}
+
+async fn fetch_trace_with_proxy(
+    endpoint: String,
+    proxy_url: Option<String>,
+) -> Result<TraceObservation, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client
-        .get_trace(Request::new(GetTraceRequest { proxy_url: None }))
+        .get_trace(Request::new(GetTraceRequest { proxy_url }))
         .await?;
     Ok(response.into_inner())
 }
@@ -886,7 +1003,15 @@ fn print_status(status: &ControllerStatus) {
     }
 
     if let Some(selector) = &status.selector {
-        print_selector_state(selector);
+        print_selector_state_with_label("Desktop selector", selector);
+    }
+
+    if let Some(selector) = &status.ubuntu_selector {
+        print_selector_state_with_label("Ubuntu selector", selector);
+    }
+
+    if let Some(proxy) = &status.ubuntu_proxy {
+        print_ubuntu_proxy_state(proxy);
     }
 
     for note in &status.status_notes {
@@ -895,6 +1020,12 @@ fn print_status(status: &ControllerStatus) {
 }
 
 fn print_selector_state(selector: &SelectorState) {
+    print_selector_state_with_label("Selector", selector);
+}
+
+fn print_selector_state_with_label(label: &str, selector: &SelectorState) {
+    println!();
+    println!("{label}");
     if let Some(desired) = &selector.desired_main_route {
         println!("Desired route          : {desired}");
     }
@@ -917,24 +1048,56 @@ fn print_selector_state(selector: &SelectorState) {
     }
 }
 
+fn print_ubuntu_proxy_state(proxy: &UbuntuProxyState) {
+    println!();
+    println!("Ubuntu proxy");
+    println!(
+        "Ubuntu proxy available : {}",
+        if proxy.available { "yes" } else { "no" }
+    );
+    if let Some(host) = &proxy.host {
+        println!("Ubuntu proxy host      : {host}");
+    }
+    if let Some(port) = proxy.port {
+        println!("Ubuntu proxy port      : {port}");
+    }
+    if let Some(url) = &proxy.url {
+        println!("Ubuntu proxy URL       : {url}");
+    }
+    for warning in &proxy.warnings {
+        println!("Ubuntu proxy warning   : {warning}");
+    }
+}
+
 fn print_trace(trace: &TraceObservation) {
+    print_trace_with_label("Current tunnel", trace);
+}
+
+fn print_trace_with_label(label: &str, trace: &TraceObservation) {
     println!();
     if trace.available {
         if let Some(ip) = &trace.ip {
-            println!("Current tunnel IP      : {ip}");
+            println!("{label} IP      : {ip}");
         }
         if let Some(warp) = &trace.warp {
-            println!("Current tunnel WARP    : {warp}");
+            println!("{label} WARP    : {warp}");
         }
         if let Some(colo) = &trace.colo {
-            println!("Current tunnel colo    : {colo}");
+            println!("{label} colo    : {colo}");
         }
     } else {
         println!(
-            "Current tunnel note    : {}",
+            "{label} note    : {}",
             trace.note.as_deref().unwrap_or("trace unavailable")
         );
     }
+}
+
+fn ubuntu_proxy_url_from_status(status: &ControllerStatus) -> Option<String> {
+    status
+        .ubuntu_proxy
+        .as_ref()
+        .and_then(|proxy| proxy.url.clone())
 }
 
 fn print_bootstrap_result(response: &BootstrapRuntimeResponse) {
