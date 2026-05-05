@@ -162,7 +162,7 @@ impl SelectorState {
             desired_main_route: None,
             observed_main_route: None,
             degraded: false,
-            warnings: vec!["selector observation not implemented in phase A".to_owned()],
+            warnings: Vec::new(),
             proxy_groups: Vec::new(),
         }
     }

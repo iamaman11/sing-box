@@ -175,8 +175,8 @@ pub fn collect_repo_inventory(repo_root: &Path) -> Result<InventoryReport, Platf
         .map(|file| file.path.clone())
         .collect::<Vec<_>>();
     if !live_files.is_empty() {
-        blockers.push(format!(
-            "live local-only state exists and must not be migrated blindly: {}",
+        warnings.push(format!(
+            "live local-only state is present: {}",
             live_files.join(", ")
         ));
     }
@@ -210,13 +210,7 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
 
     let mut status_notes = Vec::new();
     if !inventory.blockers.is_empty() {
-        status_notes.push("migration is blocked on local-only live state review".to_owned());
-    }
-    if !agent_state.ready {
-        status_notes.push("agent is still in bootstrap placeholder mode".to_owned());
-    }
-    if !singbox.local_singbox.process_running {
-        status_notes.push("local sing-box process is not running in this environment".to_owned());
+        status_notes.push("required repository inputs are incomplete".to_owned());
     }
     if !deployment.live_state_present {
         status_notes.push("live deployment state file is absent".to_owned());

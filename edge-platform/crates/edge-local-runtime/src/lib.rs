@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 use edge_shared_types::LocalSingboxState;
 use edge_singbox::sync_local_config;
@@ -59,7 +61,10 @@ pub fn inspect_local_runtime(config_path: &Path) -> LocalSingboxState {
     local
 }
 
-pub fn start_local_runtime(paths: &LocalRuntimePaths) -> Result<RuntimeOperationResult, String> {
+pub fn start_local_runtime(
+    paths: &LocalRuntimePaths,
+    visible_window: bool,
+) -> Result<RuntimeOperationResult, String> {
     let runtime = inspect_runtime_process(&paths.config_path);
     if let Some(process) = runtime.as_ref()
         && let Some(config) = process.config_path.as_deref()
@@ -84,20 +89,83 @@ pub fn start_local_runtime(paths: &LocalRuntimePaths) -> Result<RuntimeOperation
         ));
     }
 
-    let mut command = Command::new(&paths.singbox_binary_path);
-    command.arg("run").arg("-c").arg(&paths.config_path);
-    if let Some(parent) = paths.config_path.parent() {
-        command.current_dir(parent);
-    }
+    let mut child = if visible_window && cfg!(windows) {
+        let config_parent = paths
+            .config_path
+            .parent()
+            .map(|value| value.display().to_string())
+            .unwrap_or_else(|| ".".to_owned());
+        let command = format!(
+            "Set-Location -LiteralPath '{}'; (Start-Process -FilePath '{}' -ArgumentList @('run','-c','{}') -WorkingDirectory '{}' -PassThru).Id",
+            escape_ps_single(&config_parent),
+            escape_ps_single(&paths.singbox_binary_path.display().to_string()),
+            escape_ps_single(&paths.config_path.display().to_string()),
+            escape_ps_single(&config_parent),
+        );
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", &command])
+            .output()
+            .map_err(|err| format!("failed to start visible sing-box window: {err}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(if stderr.is_empty() {
+                format!(
+                    "failed to start visible sing-box window with status {}",
+                    output.status
+                )
+            } else {
+                format!("failed to start visible sing-box window: {stderr}")
+            });
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let pid = stdout
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .next()
+            .ok_or_else(|| "failed to capture sing-box pid from visible window launch".to_owned())?;
+        SpawnedChild::ExternalPid(pid)
+    } else {
+        let mut command = Command::new(&paths.singbox_binary_path);
+        command.arg("run").arg("-c").arg(&paths.config_path);
+        if let Some(parent) = paths.config_path.parent() {
+            command.current_dir(parent);
+        }
+        let child = command
+            .spawn()
+            .map_err(|err| format!("failed to start sing-box: {err}"))?;
+        SpawnedChild::Owned(child)
+    };
 
-    let child = command
-        .spawn()
-        .map_err(|err| format!("failed to start sing-box: {err}"))?;
+    // Give sing-box a short grace period so immediate config/runtime failures
+    // are surfaced to the caller instead of being reported as a false success.
+    thread::sleep(Duration::from_secs(2));
+    match &mut child {
+        SpawnedChild::Owned(process) => {
+            if let Some(status) = process
+                .try_wait()
+                .map_err(|err| format!("failed to observe sing-box startup: {err}"))?
+            {
+                return Err(format!(
+                    "sing-box exited immediately with status {}",
+                    status
+                ));
+            }
+        }
+        SpawnedChild::ExternalPid(pid) => {
+            if !process_exists(*pid) {
+                return Err("sing-box exited immediately after visible window launch".to_owned());
+            }
+        }
+    }
 
     let local_singbox = inspect_local_runtime(&paths.config_path);
     Ok(RuntimeOperationResult {
-        pid: Some(child.id()),
-        note: "local sing-box started".to_owned(),
+        pid: Some(child.pid()),
+        note: if visible_window {
+            "local sing-box started in a visible window".to_owned()
+        } else {
+            "local sing-box started".to_owned()
+        },
         warnings: local_singbox.warnings.clone(),
         local_singbox,
     })
@@ -138,9 +206,18 @@ pub fn stop_local_runtime(
     })
 }
 
-pub fn restart_local_runtime(paths: &LocalRuntimePaths) -> Result<RuntimeOperationResult, String> {
+pub fn restart_local_runtime(
+    paths: &LocalRuntimePaths,
+) -> Result<RuntimeOperationResult, String> {
     let _ = stop_local_runtime(&paths.config_path, true)?;
-    start_local_runtime(paths)
+    start_local_runtime(paths, false)
+}
+
+pub fn restart_local_runtime_visible(
+    paths: &LocalRuntimePaths,
+) -> Result<RuntimeOperationResult, String> {
+    let _ = stop_local_runtime(&paths.config_path, true)?;
+    start_local_runtime(paths, true)
 }
 
 pub fn inspect_runtime_process(config_path: &Path) -> Option<ProcessObservation> {
@@ -215,6 +292,30 @@ fn same_path_string(candidate: &str, expected: &Path) -> bool {
     match (candidate.canonicalize(), expected.canonicalize()) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
+    }
+}
+
+fn escape_ps_single(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn process_exists(pid: u32) -> bool {
+    let mut system = System::new_all();
+    system.refresh_all();
+    system.process(Pid::from_u32(pid)).is_some()
+}
+
+enum SpawnedChild {
+    Owned(std::process::Child),
+    ExternalPid(u32),
+}
+
+impl SpawnedChild {
+    fn pid(&self) -> u32 {
+        match self {
+            SpawnedChild::Owned(child) => child.id(),
+            SpawnedChild::ExternalPid(pid) => *pid,
+        }
     }
 }
 

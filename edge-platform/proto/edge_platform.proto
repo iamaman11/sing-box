@@ -148,6 +148,7 @@ message StartLocalRuntimeRequest {
   optional string config_path = 2;
   optional string state_path = 3;
   bool force_restart = 4;
+  bool visible_window = 5;
 }
 
 message StopLocalRuntimeRequest {
@@ -159,6 +160,7 @@ message RestartLocalRuntimeRequest {
   optional string singbox_binary_path = 1;
   optional string config_path = 2;
   optional string state_path = 3;
+  bool visible_window = 4;
 }
 
 message LocalRuntimeResponse {
@@ -329,6 +331,7 @@ message DeployRequest {
   optional string cloudflare_zone_name = 7;
   bool mock_provider = 8;
   bool skip_dns = 9;
+  optional string snapshot_id = 10;
 }
 
 message DeployResponse {

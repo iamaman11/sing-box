@@ -1,6 +1,10 @@
 use std::env;
 use std::io::{self, Write};
-use std::process::ExitCode;
+use std::net::{SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
@@ -15,6 +19,11 @@ use tonic::Request;
 use tonic::transport::Channel;
 
 const DEFAULT_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:50051";
+const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
+const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
+const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
+const DEFAULT_ACME_EMAIL: &str = "admin@alegria.by";
+const DEFAULT_VULTR_SNAPSHOT_ID: &str = "61605612-d7a2-47b1-85ef-aef90f5083df";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -67,6 +76,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             print_local_runtime_result(&response);
             finish_local_result(response)
         }
+        "start-local-visible" => {
+            let response = start_local_visible(controller_endpoint_from_args(2)).await?;
+            print_local_runtime_result(&response);
+            finish_local_result(response)
+        }
         "stop-local" => {
             let response = stop_local(controller_endpoint_from_args(2)).await?;
             print_local_runtime_result(&response);
@@ -74,6 +88,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "restart-local" => {
             let response = restart_local(controller_endpoint_from_args(2)).await?;
+            print_local_runtime_result(&response);
+            finish_local_result(response)
+        }
+        "restart-local-visible" => {
+            let response = restart_local_visible(controller_endpoint_from_args(2)).await?;
             print_local_runtime_result(&response);
             finish_local_result(response)
         }
@@ -116,7 +135,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "deploy" => {
             let request = deploy_request_from_args();
-            let response = deploy(controller_endpoint_from_args(9), request).await?;
+            let response = deploy(controller_endpoint_from_args(10), request).await?;
             print_deploy_result(&response);
             finish_deploy_result(response)
         }
@@ -159,13 +178,13 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
         println!("6. WARP tunnel -> hysteria2");
         println!("7. WARP tunnel -> vless");
         println!("8. Show current IP");
-        println!("9. Start local runtime");
-        println!("10. Stop local runtime");
-        println!("11. Restart local runtime");
-        println!("12. Bootstrap base runtime");
-        println!("13. Bootstrap tunnel runtime");
-        println!("14. Deploy bundle to target");
-        println!("15. Destroy deployment state");
+        println!("9. Start sing-box (visible window)");
+        println!("10. Stop sing-box");
+        println!("11. Restart sing-box (visible window)");
+        println!("12. Bootstrap base runtime (internal)");
+        println!("13. Bootstrap tunnel runtime (internal)");
+        println!("14. Create VM from snapshot");
+        println!("15. Delete current VM");
         println!("16. List configured secrets");
         println!("17. Show operation");
         println!("18. Watch operation");
@@ -240,7 +259,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 print_trace(&trace);
             }
             "9" => {
-                let response = start_local(controller_endpoint.clone()).await?;
+                let response = start_local_visible(controller_endpoint.clone()).await?;
                 print_local_runtime_result(&response);
             }
             "10" => {
@@ -248,7 +267,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 print_local_runtime_result(&response);
             }
             "11" => {
-                let response = restart_local(controller_endpoint.clone()).await?;
+                let response = restart_local_visible(controller_endpoint.clone()).await?;
                 print_local_runtime_result(&response);
             }
             "12" => {
@@ -264,33 +283,19 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 print_bootstrap_result(&response);
             }
             "14" => {
-                let target_ip = prompt("Target IP")?;
-                let tunnel_domain = prompt("Tunnel domain (blank to skip)")?;
-                let acme_email = prompt("ACME email (blank to skip)")?;
                 let response = deploy(
                     controller_endpoint.clone(),
                     DeployRequest {
-                        label_prefix: None,
-                        target_ip: if target_ip.trim().is_empty() {
-                            None
-                        } else {
-                            Some(target_ip)
-                        },
+                        label_prefix: Some("waw-edge".to_owned()),
+                        target_ip: None,
                         instance_id: None,
-                        tunnel_domain: if tunnel_domain.trim().is_empty() {
-                            None
-                        } else {
-                            Some(tunnel_domain)
-                        },
-                        acme_email: if acme_email.trim().is_empty() {
-                            None
-                        } else {
-                            Some(acme_email)
-                        },
-                        dns_record_name: None,
-                        cloudflare_zone_name: None,
+                        tunnel_domain: Some(DEFAULT_DNS_RECORD.to_owned()),
+                        acme_email: Some(DEFAULT_ACME_EMAIL.to_owned()),
+                        dns_record_name: Some(DEFAULT_DNS_RECORD.to_owned()),
+                        cloudflare_zone_name: Some(DEFAULT_CLOUDFLARE_ZONE.to_owned()),
                         mock_provider: false,
                         skip_dns: false,
+                        snapshot_id: Some(DEFAULT_VULTR_SNAPSHOT_ID.to_owned()),
                     },
                 )
                 .await?;
@@ -302,11 +307,11 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                     DestroyRequest {
                         instance_id: None,
                         target_ip: None,
-                        dns_record_name: None,
-                        cloudflare_zone_name: None,
+                        dns_record_name: Some(DEFAULT_DNS_RECORD.to_owned()),
+                        cloudflare_zone_name: Some(DEFAULT_CLOUDFLARE_ZONE.to_owned()),
                         mock_provider: false,
                         delete_dns: true,
-                        delete_instance: false,
+                        delete_instance: true,
                     },
                 )
                 .await?;
@@ -339,6 +344,155 @@ fn controller_endpoint_from_args(index: usize) -> String {
         .unwrap_or_else(|| DEFAULT_CONTROLLER_ENDPOINT.to_owned())
 }
 
+fn looks_like_repo_root(path: &Path) -> bool {
+    path.join("edge-platform").join("Cargo.toml").is_file()
+        || (path.join("Cargo.toml").is_file() && path.join("crates").is_dir())
+}
+
+fn resolve_repo_root_for_controller() -> Option<PathBuf> {
+    if let Ok(value) = env::var("EDGE_PLATFORM_REPO_ROOT") {
+        let path = PathBuf::from(value);
+        if looks_like_repo_root(&path) {
+            return Some(path);
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        if looks_like_repo_root(&cwd) {
+            return Some(cwd);
+        }
+        if let Some(parent) = cwd.parent()
+            && looks_like_repo_root(parent)
+        {
+            return Some(parent.to_path_buf());
+        }
+    }
+
+    if let Ok(user_profile) = env::var("USERPROFILE") {
+        for candidate in [
+            PathBuf::from(&user_profile).join("temp").join("sing-box"),
+            PathBuf::from(&user_profile)
+                .join("temp")
+                .join("sing-box")
+                .join("edge-platform"),
+            PathBuf::from(&user_profile).join("projects").join("sing-box"),
+            PathBuf::from(&user_profile)
+                .join("projects")
+                .join("sing-box")
+                .join("edge-platform"),
+        ] {
+            if looks_like_repo_root(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn controller_binary_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let current = env::current_exe()?;
+    let parent = current
+        .parent()
+        .ok_or("failed to resolve console binary directory")?;
+    Ok(parent.join("edge-controller.exe"))
+}
+
+fn parse_loopback_addr(endpoint: &str) -> Option<SocketAddr> {
+    let value = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))
+        .unwrap_or(endpoint);
+    let addr: SocketAddr = value.parse().ok()?;
+    if addr.ip().is_loopback() {
+        Some(addr)
+    } else {
+        None
+    }
+}
+
+fn wait_for_controller(addr: SocketAddr, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(addr) = parse_loopback_addr(endpoint) else {
+        return Ok(());
+    };
+    if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+        return Ok(());
+    }
+
+    let controller_binary = controller_binary_path()?;
+    let repo_root = resolve_repo_root_for_controller()
+        .ok_or("failed to resolve EDGE_PLATFORM_REPO_ROOT for controller autostart")?;
+    let runtime_root = if repo_root.join("edge-platform").is_dir() {
+        repo_root.join("edge-platform").join(".runtime")
+    } else {
+        repo_root.join(".runtime")
+    };
+    std::fs::create_dir_all(&runtime_root)?;
+
+    let stdout = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime_root.join("controller-service-stdout.log"))?;
+    let stderr = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime_root.join("controller-service-stderr.log"))?;
+
+    Command::new(controller_binary)
+        .arg("serve")
+        .arg(repo_root)
+        .arg(DEFAULT_CONTROLLER_ADDR)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
+
+    if wait_for_controller(addr, Duration::from_secs(10)) {
+        Ok(())
+    } else {
+        Err("edge-controller did not start listening on 127.0.0.1:50051 in time".into())
+    }
+}
+
+async fn connect_controller(
+    endpoint: String,
+) -> Result<ControllerServiceClient<Channel>, Box<dyn std::error::Error>> {
+    match ControllerServiceClient::<Channel>::connect(endpoint.clone()).await {
+        Ok(client) => Ok(client),
+        Err(first_err) => {
+            ensure_controller_running(&endpoint)?;
+            let mut last_error = None;
+            for _ in 0..20 {
+                match ControllerServiceClient::<Channel>::connect(endpoint.clone()).await {
+                    Ok(client) => return Ok(client),
+                    Err(err) => {
+                        last_error = Some(err);
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+            let second_err = last_error
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "unknown error".to_owned());
+            Err(format!(
+                "failed to connect to controller after autostart: first={first_err}; second={second_err}"
+            )
+            .into())
+        }
+    }
+}
+
 fn deploy_request_from_args() -> DeployRequest {
     DeployRequest {
         label_prefix: env::args().nth(2),
@@ -354,6 +508,7 @@ fn deploy_request_from_args() -> DeployRequest {
         skip_dns: env::var("EDGE_SKIP_DNS")
             .ok()
             .is_some_and(|value| value == "1"),
+        snapshot_id: env::args().nth(9),
     }
 }
 
@@ -376,7 +531,7 @@ fn destroy_request_from_args() -> DestroyRequest {
 }
 
 async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client.get_status(Request::new(Empty {})).await?;
     Ok(response.into_inner())
 }
@@ -384,7 +539,7 @@ async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std:
 async fn list_secret_refs(
     endpoint: String,
 ) -> Result<Vec<SecretRefEntry>, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .list_secret_refs(Request::new(ListSecretRefsRequest {}))
         .await?;
@@ -395,7 +550,7 @@ async fn get_secret_ref(
     endpoint: String,
     name: &str,
 ) -> Result<SecretRefEntry, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .get_secret_ref(Request::new(GetSecretRefRequest {
             name: name.to_owned(),
@@ -409,7 +564,7 @@ async fn set_secret_ref(
     name: &str,
     secret_ref: &str,
 ) -> Result<SecretRefEntry, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .set_secret_ref(Request::new(SetSecretRefRequest {
             name: name.to_owned(),
@@ -423,7 +578,7 @@ async fn bootstrap_runtime(
     endpoint: String,
     mode: BootstrapMode,
 ) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
         .await?;
@@ -431,20 +586,37 @@ async fn bootstrap_runtime(
 }
 
 async fn start_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .start_local_runtime(Request::new(StartLocalRuntimeRequest {
             singbox_binary_path: None,
             config_path: None,
             state_path: None,
             force_restart: false,
+            visible_window: false,
+        }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn start_local_visible(
+    endpoint: String,
+) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    let response = client
+        .start_local_runtime(Request::new(StartLocalRuntimeRequest {
+            singbox_binary_path: None,
+            config_path: None,
+            state_path: None,
+            force_restart: false,
+            visible_window: true,
         }))
         .await?;
     Ok(response.into_inner())
 }
 
 async fn stop_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .stop_local_runtime(Request::new(StopLocalRuntimeRequest {
             config_path: None,
@@ -457,12 +629,28 @@ async fn stop_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn st
 async fn restart_local(
     endpoint: String,
 ) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .restart_local_runtime(Request::new(RestartLocalRuntimeRequest {
             singbox_binary_path: None,
             config_path: None,
             state_path: None,
+            visible_window: false,
+        }))
+        .await?;
+    Ok(response.into_inner())
+}
+
+async fn restart_local_visible(
+    endpoint: String,
+) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    let response = client
+        .restart_local_runtime(Request::new(RestartLocalRuntimeRequest {
+            singbox_binary_path: None,
+            config_path: None,
+            state_path: None,
+            visible_window: true,
         }))
         .await?;
     Ok(response.into_inner())
@@ -471,7 +659,7 @@ async fn restart_local(
 async fn fetch_selector_state(
     endpoint: String,
 ) -> Result<SelectorState, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .get_selector_state(Request::new(GetSelectorStateRequest { group: None }))
         .await?;
@@ -483,7 +671,7 @@ async fn set_selector(
     group: &str,
     name: &str,
 ) -> Result<SetSelectorResponse, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .set_selector(Request::new(SetSelectorRequest {
             group: group.to_owned(),
@@ -494,7 +682,7 @@ async fn set_selector(
 }
 
 async fn fetch_trace(endpoint: String) -> Result<TraceObservation, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .get_trace(Request::new(GetTraceRequest { proxy_url: None }))
         .await?;
@@ -505,7 +693,7 @@ async fn deploy(
     endpoint: String,
     request: DeployRequest,
 ) -> Result<DeployResponse, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client.deploy(Request::new(request)).await?;
     Ok(response.into_inner())
 }
@@ -514,7 +702,7 @@ async fn destroy(
     endpoint: String,
     request: DestroyRequest,
 ) -> Result<DestroyResponse, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client.destroy(Request::new(request)).await?;
     Ok(response.into_inner())
 }
@@ -523,7 +711,7 @@ async fn get_operation(
     endpoint: String,
     operation_id: i64,
 ) -> Result<OperationStatus, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .get_operation(Request::new(GetOperationRequest { operation_id }))
         .await?;
@@ -534,7 +722,7 @@ async fn list_operation_events(
     endpoint: String,
     operation_id: i64,
 ) -> Result<Vec<edge_shared_types::OperationEvent>, Box<dyn std::error::Error>> {
-    let mut client = ControllerServiceClient::<Channel>::connect(endpoint).await?;
+    let mut client = connect_controller(endpoint).await?;
     let response = client
         .list_operation_events(Request::new(ListOperationEventsRequest { operation_id }))
         .await?;

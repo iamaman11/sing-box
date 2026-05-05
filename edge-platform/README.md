@@ -33,6 +33,23 @@ Rust control plane for local `sing-box` operation and Vultr edge runtime.
 - steady-state remote agent target resolution from persisted deployment + trust state
 - console-side secret and operation inspection
 
+## Windows controller startup
+
+The recovered Windows production path uses:
+
+- repo root: `C:\Users\Bose\temp\sing-box`
+- controller binary: `C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-controller.exe`
+- console binary: `C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe`
+
+To keep the controller available after logon without a manual `serve`, use:
+
+- `edge-platform/scripts/ensure-edge-controller.ps1`
+- `edge-platform/scripts/register-edge-controller-task.ps1`
+
+The scheduled task name is:
+
+- `EdgePlatformController`
+
 ## Fresh-host bootstrap inputs
 
 The fresh-host create/bootstrap path is activated when `deploy` is called without

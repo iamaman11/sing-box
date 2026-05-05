@@ -180,6 +180,13 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
     let local_trust_dir = generated_dir.join("trust");
     let local_trust_material = write_agent_tls_material(&local_trust_dir, &tls_material)?;
 
+    let published_host = request
+        .dns_record_name
+        .filter(|value| !value.trim().is_empty())
+        .or(request.tunnel_domain.filter(|value| !value.trim().is_empty()))
+        .unwrap_or(request.target_ip)
+        .to_owned();
+
     let deployment = DeploymentStateDocument {
         label: label.clone(),
         instance_id: request.instance_id.to_owned(),
@@ -187,7 +194,7 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
         plan: DEFAULT_PLAN.to_owned(),
         region: DEFAULT_REGION.to_owned(),
         proxy: ProxyDocument {
-            host: request.target_ip.to_owned(),
+            host: published_host.clone(),
             http_port: 3128,
             socks5_port: 1080,
             https_port: 9443,
@@ -195,7 +202,7 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
             password: env_values.proxy_password.clone(),
         },
         warp_proxy: ProxyDocument {
-            host: request.target_ip.to_owned(),
+            host: published_host.clone(),
             http_port: 3128,
             socks5_port: 1080,
             https_port: 9443,
@@ -203,7 +210,7 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
             password: env_values.proxy_password.clone(),
         },
         direct_proxy: ProxyDocument {
-            host: request.target_ip.to_owned(),
+            host: published_host,
             http_port: 4128,
             socks5_port: 4080,
             https_port: 4443,
@@ -327,8 +334,8 @@ fn collect_dir_recursive(
             .to_string_lossy()
             .replace('\\', "/");
         let executable = relative_path == "bootstrap.sh";
-        let content =
-            fs::read(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let content = read_template_file(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
         files.push(BundleFilePayload {
             relative_path,
             content,
@@ -336,6 +343,14 @@ fn collect_dir_recursive(
         });
     }
     Ok(())
+}
+
+fn read_template_file(path: &Path) -> Result<Vec<u8>, String> {
+    let raw = fs::read(path).map_err(|err| err.to_string())?;
+    match String::from_utf8(raw) {
+        Ok(text) => Ok(text.replace("\r\n", "\n").into_bytes()),
+        Err(err) => Ok(err.into_bytes()),
+    }
 }
 
 fn write_bundle_files(root: &Path, files: &[BundleFilePayload]) -> Result<(), String> {
@@ -614,6 +629,17 @@ mod tests {
                 .contains("\"instance_id\": \"instance-1\"")
         );
         assert!(bundle.agent_env_content.contains(SERVER_TLS_ROOT));
+        let bootstrap = bundle
+            .stack_files
+            .iter()
+            .find(|file| file.relative_path == "bootstrap.sh")
+            .expect("bootstrap.sh should exist in stack bundle");
+        let bootstrap_text =
+            String::from_utf8(bootstrap.content.clone()).expect("bootstrap.sh should be utf-8");
+        assert!(
+            !bootstrap_text.contains("\r\n"),
+            "bootstrap.sh should use LF line endings"
+        );
         let _ = fs::remove_dir_all(bundle.generated_dir);
     }
 

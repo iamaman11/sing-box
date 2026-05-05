@@ -20,7 +20,8 @@ pub struct VultrInstance {
 pub struct CreateInstanceRequest<'a> {
     pub region: &'a str,
     pub plan: &'a str,
-    pub os_id: u32,
+    pub os_id: Option<u32>,
+    pub snapshot_id: Option<&'a str>,
     pub label: &'a str,
     pub ssh_key_id: &'a str,
     pub cloud_init: &'a str,
@@ -110,6 +111,7 @@ fn build_create_instance_payload(
         region: request.region.to_owned(),
         plan: request.plan.to_owned(),
         os_id: request.os_id,
+        snapshot_id: request.snapshot_id.map(ToOwned::to_owned),
         label: request.label.to_owned(),
         hostname: request.label.to_owned(),
         enable_ipv6: true,
@@ -136,7 +138,10 @@ async fn parse_success_json<T: for<'de> Deserialize<'de>>(
 struct CreateInstancePayload {
     region: String,
     plan: String,
-    os_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    os_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_id: Option<String>,
     label: String,
     hostname: String,
     enable_ipv6: bool,
@@ -184,7 +189,8 @@ mod tests {
         let payload = build_create_instance_payload(&CreateInstanceRequest {
             region: "waw",
             plan: "vc2-1c-1gb",
-            os_id: 2136,
+            os_id: Some(2136),
+            snapshot_id: None,
             label: "edge-1",
             ssh_key_id: "ssh-key-1",
             cloud_init: "#cloud-config\npackages: []\n",
@@ -193,7 +199,29 @@ mod tests {
         let json = serde_json::to_value(payload).unwrap();
         assert_eq!(json["region"], "waw");
         assert_eq!(json["label"], "edge-1");
+        assert_eq!(json["os_id"], 2136);
+        assert!(json.get("snapshot_id").is_none());
         assert!(json["user_data"].as_str().unwrap().len() > 8);
+    }
+
+    #[test]
+    fn serializes_snapshot_based_create_payload() {
+        let payload = build_create_instance_payload(&CreateInstanceRequest {
+            region: "waw",
+            plan: "vc2-1c-1gb",
+            os_id: None,
+            snapshot_id: Some("61605612-d7a2-47b1-85ef-aef90f5083df"),
+            label: "edge-1",
+            ssh_key_id: "ssh-key-1",
+            cloud_init: "#cloud-config\npackages: []\n",
+        })
+        .unwrap();
+        let json = serde_json::to_value(payload).unwrap();
+        assert!(json.get("os_id").is_none());
+        assert_eq!(
+            json["snapshot_id"],
+            "61605612-d7a2-47b1-85ef-aef90f5083df"
+        );
     }
 
     #[test]

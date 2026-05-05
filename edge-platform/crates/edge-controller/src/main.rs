@@ -16,6 +16,7 @@ use edge_clash::{
 use edge_controller_core::collect_controller_status;
 use edge_local_runtime::{
     LocalRuntimePaths, inspect_local_runtime, restart_local_runtime as restart_runtime_process,
+    restart_local_runtime_visible as restart_runtime_process_visible,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
@@ -65,7 +66,7 @@ const DEFAULT_PLAN: &str = "vc2-1c-1gb";
 const DEFAULT_VULTR_OS_ID: u32 = 2136;
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const DEFAULT_SINGBOX_BINARY_PATH: &str =
-    "V:\\code\\sing-box-cl\\auto-route-sing-box\\sing-box.exe";
+    "C:\\Users\\Bose\\AppData\\Local\\sing-box-vultr-dual\\runtime\\sing-box.exe";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
 const DEFAULT_AGENT_REMOTE_PORT: u16 = 50061;
 const DEFAULT_SSH_USER: &str = "root";
@@ -229,7 +230,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "deploy" => {
             let request = deploy_request_from_args()?;
-            let endpoint = controller_endpoint_from_args(9);
+            let endpoint = controller_endpoint_from_args(10);
             let response = deploy_via_controller(endpoint, request).await?;
             io::stdout().write_all(&response.encode_to_vec())?;
             if response.success {
@@ -296,6 +297,7 @@ async fn start_local_runtime_via_controller(
             config_path: None,
             state_path: None,
             force_restart: false,
+            visible_window: false,
         }))
         .await?;
     Ok(response.into_inner())
@@ -323,6 +325,7 @@ async fn restart_local_runtime_via_controller(
             singbox_binary_path: None,
             config_path: None,
             state_path: None,
+            visible_window: false,
         }))
         .await?;
     Ok(response.into_inner())
@@ -472,6 +475,7 @@ fn deploy_request_from_args() -> Result<DeployRequest, Box<dyn std::error::Error
         skip_dns: env::var("EDGE_SKIP_DNS")
             .ok()
             .is_some_and(|value| value == "1"),
+        snapshot_id: env::args().nth(9),
     })
 }
 
@@ -624,16 +628,25 @@ impl ControllerService for ControllerServerImpl {
         let mut status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
         let (agent_state, runtime) = observe_agent(&self.state, &self.agent_endpoint).await;
+        let backend_ready_from_state = status
+            .deployment
+            .as_ref()
+            .is_some_and(|deployment| deployment.live_state_present);
 
-        if !agent_state.ready {
+        if !agent_state.ready && !backend_ready_from_state {
             status
                 .status_notes
                 .push("server agent has not reached runtime readiness".to_owned());
         }
-        if !runtime.edge_agent_reachable {
+        if !runtime.edge_agent_reachable && !backend_ready_from_state {
             status
                 .status_notes
                 .push("server runtime observation is running in degraded fallback mode".to_owned());
+        } else if !runtime.edge_agent_reachable && backend_ready_from_state {
+            status.status_notes.push(
+                "server runtime observation is unavailable; using persisted live deployment state"
+                    .to_owned(),
+            );
         }
         status.agent_state = Some(agent_state);
         status.runtime = Some(runtime);
@@ -766,7 +779,7 @@ impl ControllerService for ControllerServerImpl {
         append_operation_event(&self.state, operation.id, "start local runtime requested")?;
 
         let (agent_state, _) = observe_agent(&self.state, &self.agent_endpoint).await;
-        if !agent_state.ready {
+        if !agent_state.ready && !backend_ready_for_local_runtime(&self.repo_root) {
             append_operation_event(
                 &self.state,
                 operation.id,
@@ -785,7 +798,7 @@ impl ControllerService for ControllerServerImpl {
         }
 
         let paths = local_runtime_paths_from_start(&self.repo_root, &request);
-        let response = match start_runtime_process(&paths) {
+        let response = match start_runtime_process(&paths, request.visible_window) {
             Ok(result) => {
                 append_operation_event(&self.state, operation.id, &result.note)?;
                 update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
@@ -888,7 +901,7 @@ impl ControllerService for ControllerServerImpl {
         append_operation_event(&self.state, operation.id, "restart local runtime requested")?;
 
         let (agent_state, _) = observe_agent(&self.state, &self.agent_endpoint).await;
-        if !agent_state.ready {
+        if !agent_state.ready && !backend_ready_for_local_runtime(&self.repo_root) {
             append_operation_event(
                 &self.state,
                 operation.id,
@@ -907,7 +920,11 @@ impl ControllerService for ControllerServerImpl {
         }
 
         let paths = local_runtime_paths_from_restart(&self.repo_root, &request);
-        let response = match restart_runtime_process(&paths) {
+        let response = match if request.visible_window {
+            restart_runtime_process_visible(&paths)
+        } else {
+            restart_runtime_process(&paths)
+        } {
             Ok(result) => {
                 append_operation_event(&self.state, operation.id, &result.note)?;
                 update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
@@ -1651,9 +1668,21 @@ fn default_runtime_root(repo_root: &Path) -> PathBuf {
 }
 
 fn default_singbox_binary_path() -> PathBuf {
-    env::var("EDGE_SINGBOX_BINARY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_SINGBOX_BINARY_PATH))
+    if let Ok(explicit) = env::var("EDGE_SINGBOX_BINARY_PATH") {
+        return PathBuf::from(explicit);
+    }
+
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        let runtime_path = PathBuf::from(local_app_data)
+            .join("sing-box-vultr-dual")
+            .join("runtime")
+            .join("sing-box.exe");
+        if runtime_path.is_file() {
+            return runtime_path;
+        }
+    }
+
+    PathBuf::from(DEFAULT_SINGBOX_BINARY_PATH)
 }
 
 fn local_runtime_paths_from_start(
@@ -1919,10 +1948,20 @@ async fn resolve_deploy_target(
     let cloud_init = read_cloud_init_template(repo_root)?;
     let region = env::var("EDGE_VULTR_REGION").unwrap_or_else(|_| DEFAULT_REGION.to_owned());
     let plan = env::var("EDGE_VULTR_PLAN").unwrap_or_else(|_| DEFAULT_PLAN.to_owned());
-    let os_id = env::var("EDGE_VULTR_OS_ID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_VULTR_OS_ID);
+    let snapshot_id = request
+        .snapshot_id
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let os_id = if snapshot_id.is_none() {
+        Some(
+            env::var("EDGE_VULTR_OS_ID")
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(DEFAULT_VULTR_OS_ID),
+        )
+    } else {
+        None
+    };
 
     let instance = create_instance(
         &api_key,
@@ -1930,6 +1969,7 @@ async fn resolve_deploy_target(
             region: &region,
             plan: &plan,
             os_id,
+            snapshot_id: snapshot_id.as_deref(),
             label: deployment_label,
             ssh_key_id: &ssh_key_id,
             cloud_init: &cloud_init,
@@ -2010,13 +2050,9 @@ async fn prepare_agent_transport(
     wait_for_docker_runtime(target, &config).await?;
     append_operation_event(state, operation_id, "cloud-init and docker are ready")
         .map_err(|status| status.message().to_owned())?;
-    install_edge_agent_binary(target, &config).await?;
-    append_operation_event(
-        state,
-        operation_id,
-        "edge-agent binary uploaded and service restarted",
-    )
-    .map_err(|status| status.message().to_owned())?;
+    ensure_edge_agent_service(target, &config).await?;
+    append_operation_event(state, operation_id, "edge-agent service is running")
+        .map_err(|status| status.message().to_owned())?;
 
     let local_port = reserve_local_port()?;
     let tunnel = start_ssh_tunnel(target, &config, local_port)?;
@@ -2071,7 +2107,7 @@ fn resolve_bootstrap_access_config(
     repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
 ) -> Result<BootstrapAccessConfig, String> {
-    let private_key_path = resolve_path_secret(
+    let source_private_key_path = resolve_path_secret(
         state,
         SECRET_SSH_PRIVATE_KEY_PATH,
         &default_env_ref("EDGE_SSH_PRIVATE_KEY_PATH"),
@@ -2079,12 +2115,13 @@ fn resolve_bootstrap_access_config(
     .map_err(|_| {
         "a configured SSH private key path secret is required for SSH bootstrap".to_owned()
     })?;
-    if !private_key_path.is_file() {
+    if !source_private_key_path.is_file() {
         return Err(format!(
             "SSH private key was not found: {}",
-            private_key_path.display()
+            source_private_key_path.display()
         ));
     }
+    let private_key_path = stage_ssh_private_key(repo_root, &source_private_key_path)?;
 
     let agent_binary_path = env::var("EDGE_AGENT_BINARY_PATH")
         .map(PathBuf::from)
@@ -2117,6 +2154,12 @@ fn resolve_bootstrap_access_config(
     })
 }
 
+fn backend_ready_for_local_runtime(repo_root: &Path) -> bool {
+    read_live_deployment_summary(repo_root)
+        .map(|summary| summary.live_state_present)
+        .unwrap_or(false)
+}
+
 fn default_edge_agent_binary_path(repo_root: &Path) -> Option<PathBuf> {
     let candidate = repo_root
         .join("edge-platform")
@@ -2124,6 +2167,62 @@ fn default_edge_agent_binary_path(repo_root: &Path) -> Option<PathBuf> {
         .join("debug")
         .join(format!("edge-agent{}", env::consts::EXE_SUFFIX));
     candidate.is_file().then_some(candidate)
+}
+
+fn stage_ssh_private_key(repo_root: &Path, source_path: &Path) -> Result<PathBuf, String> {
+    let runtime_dir = repo_root.join("edge-platform").join(".runtime");
+    fs::create_dir_all(&runtime_dir)
+        .map_err(|err| format!("failed to create {}: {err}", runtime_dir.display()))?;
+    let staged_path = runtime_dir.join(format!("bootstrap-staged-key-{}", unix_timestamp()));
+    fs::copy(source_path, &staged_path).map_err(|err| {
+        format!(
+            "failed to stage SSH private key from {} to {}: {err}",
+            source_path.display(),
+            staged_path.display()
+        )
+    })?;
+
+    if cfg!(windows) {
+        let username = env::var("USERNAME")
+            .map_err(|_| "USERNAME is required to secure staged SSH private key".to_owned())?;
+        let staged_str = staged_path.display().to_string();
+
+        let status = Command::new("icacls")
+            .args([&staged_str, "/inheritance:r"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|err| format!("failed to start icacls for {}: {err}", staged_path.display()))?;
+        if !status.success() {
+            return Err(format!(
+                "icacls failed to disable inheritance for staged SSH key {} with status {status}",
+                staged_path.display()
+            ));
+        }
+
+        let grant_target = format!("{username}:R");
+        let status = Command::new("icacls")
+            .args([&staged_str, "/grant:r", &grant_target])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|err| format!("failed to start icacls grant for {}: {err}", staged_path.display()))?;
+        if !status.success() {
+            return Err(format!(
+                "icacls failed to grant access to staged SSH key {} with status {status}",
+                staged_path.display()
+            ));
+        }
+    }
+
+    Ok(staged_path)
+}
+
+fn unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 fn ensure_known_hosts_file(repo_root: &Path) -> Result<PathBuf, String> {
@@ -2143,6 +2242,19 @@ async fn accept_ssh_host_key(
     target: &ResolvedDeployTarget,
     config: &BootstrapAccessConfig,
 ) -> Result<(), String> {
+    if target.created_instance {
+        let _ = Command::new("ssh-keygen")
+            .args([
+                "-R",
+                &target.target_ip,
+                "-f",
+                &config.known_hosts_path.display().to_string(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
     for _ in 0..60 {
         let result = run_command(
             "ssh",
@@ -2193,10 +2305,27 @@ async fn wait_for_docker_runtime(
     ))
 }
 
-async fn install_edge_agent_binary(
+async fn ensure_edge_agent_service(
     target: &ResolvedDeployTarget,
     config: &BootstrapAccessConfig,
 ) -> Result<(), String> {
+    if cfg!(windows)
+        && config
+            .agent_binary_path
+            .extension()
+            .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+    {
+        run_command(
+            "ssh",
+            &ssh_args(
+                config,
+                &target.target_ip,
+                "systemctl daemon-reload && systemctl enable edge-agent.service && systemctl restart edge-agent.service && systemctl is-active --quiet edge-agent.service",
+            ),
+        )?;
+        return Ok(());
+    }
+
     run_command(
         "ssh",
         &ssh_args(
@@ -3057,7 +3186,38 @@ mod tests {
 
     #[tokio::test]
     async fn collects_status_through_service_impl() {
-        let repo_root = PathBuf::from("/home/bose/projects/sing-box");
+        let repo_root = temp_repo_root();
+        std::fs::create_dir_all(repo_root.join("edge-platform/crates/edge-agent/src")).unwrap();
+        std::fs::create_dir_all(repo_root.join("edge-platform/crates/edge-controller/src"))
+            .unwrap();
+        std::fs::create_dir_all(repo_root.join("edge-platform/crates/edge-console/src")).unwrap();
+        std::fs::create_dir_all(repo_root.join("edge-platform/proto")).unwrap();
+        std::fs::create_dir_all(repo_root.join("win/vultr-waw/stack/tunnel-edge")).unwrap();
+        std::fs::create_dir_all(repo_root.join("win/windows")).unwrap();
+        std::fs::write(repo_root.join("edge-platform/Cargo.toml"), "").unwrap();
+        std::fs::write(repo_root.join("edge-platform/README.md"), "").unwrap();
+        std::fs::write(repo_root.join("edge-platform/FINALIZATION-PLAN.md"), "").unwrap();
+        std::fs::write(repo_root.join("edge-platform/proto/edge_platform.proto"), "").unwrap();
+        std::fs::write(repo_root.join("edge-platform/crates/edge-agent/src/main.rs"), "").unwrap();
+        std::fs::write(repo_root.join("edge-platform/crates/edge-controller/src/main.rs"), "")
+            .unwrap();
+        std::fs::write(repo_root.join("edge-platform/crates/edge-console/src/main.rs"), "")
+            .unwrap();
+        std::fs::write(repo_root.join("win/vultr-waw/cloud-init.yaml"), "edge-agent.service")
+            .unwrap();
+        std::fs::write(
+            repo_root.join("win/vultr-waw/stack/docker-compose.yml"),
+            "services: {}",
+        )
+        .unwrap();
+        std::fs::write(
+            repo_root.join("win/vultr-waw/stack/tunnel-edge/config.template.json"),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(repo_root.join("win/windows/edge-dns-clean-vultr-dual.json"), "{}")
+            .unwrap();
+        std::fs::write(repo_root.join("win/vultr-waw/current-edge.json"), "{}").unwrap();
         let db_path = std::env::temp_dir().join(format!(
             "edge-controller-status-{}.sqlite",
             SystemTime::now()
@@ -3067,7 +3227,7 @@ mod tests {
         ));
         let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
         let service = ControllerServerImpl {
-            repo_root,
+            repo_root: repo_root.clone(),
             state,
             agent_endpoint: "http://127.0.0.1:59999".to_owned(),
         };
@@ -3075,6 +3235,7 @@ mod tests {
         let response = service.get_status(Request::new(Empty {})).await.unwrap();
         assert!(response.get_ref().inventory.is_some());
         assert!(response.get_ref().runtime.is_some());
+        let _ = std::fs::remove_dir_all(repo_root);
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -3115,6 +3276,7 @@ mod tests {
                 cloudflare_zone_name: None,
                 mock_provider: true,
                 skip_dns: true,
+                snapshot_id: None,
             },
             "mock-edge-1",
         )
@@ -3148,9 +3310,17 @@ mod tests {
 
     #[test]
     fn reads_cloud_init_template_from_repo() {
-        let template = read_cloud_init_template(Path::new("/home/bose/projects/sing-box")).unwrap();
+        let root = temp_repo_root();
+        std::fs::create_dir_all(root.join("win/vultr-waw")).unwrap();
+        std::fs::write(
+            root.join("win/vultr-waw/cloud-init.yaml"),
+            "edge-agent.service\ninstall-docker.sh\n",
+        )
+        .unwrap();
+        let template = read_cloud_init_template(&root).unwrap();
         assert!(template.contains("edge-agent.service"));
         assert!(template.contains("install-docker.sh"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

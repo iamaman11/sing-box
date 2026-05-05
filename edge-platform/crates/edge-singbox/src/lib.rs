@@ -259,6 +259,7 @@ pub fn sync_local_config(
         &state.tunnel_warp,
         TunnelKind::VlessReality,
     );
+    sync_tun_route_excludes(&mut config, state.ip.as_deref());
 
     let rendered = serde_json::to_vec_pretty(&config)
         .map_err(|err| format!("failed to render updated config: {err}"))?;
@@ -268,6 +269,45 @@ pub fn sync_local_config(
         instance_id: state.instance_id,
         config_path: config_path.display().to_string(),
     })
+}
+
+fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
+    let Some(server_ip) = server_ip else {
+        return;
+    };
+    if server_ip.trim().is_empty() {
+        return;
+    }
+    let Some(inbounds) = config.get_mut("inbounds").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    let server_cidr = format!("{server_ip}/32");
+    for inbound in inbounds {
+        let Some(object) = inbound.as_object_mut() else {
+            continue;
+        };
+        if object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|value| value != "tun")
+            .unwrap_or(true)
+        {
+            continue;
+        }
+
+        let excludes = object
+            .entry("route_exclude_address".to_owned())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if !excludes.is_array() {
+            *excludes = Value::Array(Vec::new());
+        }
+        let excludes = excludes.as_array_mut().expect("array inserted above");
+        let exists = excludes.iter().any(|value| value.as_str() == Some(server_cidr.as_str()));
+        if !exists {
+            excludes.push(Value::String(server_cidr.clone()));
+        }
+    }
 }
 
 pub fn default_trace_proxy_url(config_path: &Path) -> Result<Option<String>, String> {
@@ -625,6 +665,7 @@ struct Reality {
 #[derive(Debug, Deserialize)]
 struct SyncState {
     instance_id: Option<String>,
+    ip: Option<String>,
     tunnel: SyncTunnelState,
     tunnel_warp: SyncTunnelState,
 }
