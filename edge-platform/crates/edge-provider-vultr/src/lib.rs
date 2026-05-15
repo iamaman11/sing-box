@@ -2,6 +2,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 
 const API_ROOT: &str = "https://api.vultr.com/v2";
 
@@ -38,7 +39,7 @@ pub async fn create_instance(
         .json(&body)
         .send()
         .await
-        .map_err(|err| format!("failed to create Vultr instance: {err}"))?;
+        .map_err(|err| format!("failed to create Vultr instance: {}", error_chain(&err)))?;
     let payload: InstanceEnvelope = parse_success_json(response).await?;
     Ok(payload.instance.into())
 }
@@ -49,7 +50,7 @@ pub async fn get_instance(api_key: &str, instance_id: &str) -> Result<VultrInsta
         .get(format!("{API_ROOT}/instances/{instance_id}"))
         .send()
         .await
-        .map_err(|err| format!("failed to read Vultr instance: {err}"))?;
+        .map_err(|err| format!("failed to read Vultr instance: {}", error_chain(&err)))?;
     let payload: InstanceEnvelope = parse_success_json(response).await?;
     Ok(payload.instance.into())
 }
@@ -60,7 +61,7 @@ pub async fn destroy_instance(api_key: &str, instance_id: &str) -> Result<(), St
         .delete(format!("{API_ROOT}/instances/{instance_id}"))
         .send()
         .await
-        .map_err(|err| format!("failed to destroy Vultr instance: {err}"))?;
+        .map_err(|err| format!("failed to destroy Vultr instance: {}", error_chain(&err)))?;
     let status = response.status();
     if status.is_success() {
         return Ok(());
@@ -70,6 +71,16 @@ pub async fn destroy_instance(api_key: &str, instance_id: &str) -> Result<(), St
         .await
         .map_err(|err| format!("failed to read Vultr destroy response body: {err}"))?;
     Err(format!("Vultr API returned {status}: {body}"))
+}
+
+fn error_chain(err: &reqwest::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(err) = source {
+        parts.push(err.to_string());
+        source = err.source();
+    }
+    parts.join(": ")
 }
 
 pub fn mock_instance(label: &str, region: &str, plan: &str, ip: &str) -> VultrInstance {
@@ -218,10 +229,7 @@ mod tests {
         .unwrap();
         let json = serde_json::to_value(payload).unwrap();
         assert!(json.get("os_id").is_none());
-        assert_eq!(
-            json["snapshot_id"],
-            "61605612-d7a2-47b1-85ef-aef90f5083df"
-        );
+        assert_eq!(json["snapshot_id"], "61605612-d7a2-47b1-85ef-aef90f5083df");
     }
 
     #[test]

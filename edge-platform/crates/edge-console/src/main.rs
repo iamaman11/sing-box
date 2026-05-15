@@ -116,9 +116,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let name = env::args()
                 .nth(2)
                 .ok_or("set-selector requires a selector target name")?;
-            let response =
-                set_selector(controller_endpoint_from_args(3), DESKTOP_SELECTOR_GROUP, &name)
-                    .await?;
+            let response = set_selector(
+                controller_endpoint_from_args(3),
+                DESKTOP_SELECTOR_GROUP,
+                &name,
+            )
+            .await?;
             print_set_selector_result(&response);
             finish_selector_result(response)
         }
@@ -126,9 +129,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let name = env::args()
                 .nth(2)
                 .ok_or("set-ubuntu-selector requires a selector target name")?;
-            let response =
-                set_selector(controller_endpoint_from_args(3), UBUNTU_SELECTOR_GROUP, &name)
-                    .await?;
+            let response = set_selector(
+                controller_endpoint_from_args(3),
+                UBUNTU_SELECTOR_GROUP,
+                &name,
+            )
+            .await?;
             print_set_selector_result(&response);
             finish_selector_result(response)
         }
@@ -482,7 +488,9 @@ fn resolve_repo_root_for_controller() -> Option<PathBuf> {
                 .join("temp")
                 .join("sing-box")
                 .join("edge-platform"),
-            PathBuf::from(&user_profile).join("projects").join("sing-box"),
+            PathBuf::from(&user_profile)
+                .join("projects")
+                .join("sing-box"),
             PathBuf::from(&user_profile)
                 .join("projects")
                 .join("sing-box")

@@ -154,6 +154,16 @@ to a specific WSL gateway IP, because the gateway can change between WSL session
 
 ### 6. Deploy or redeploy
 
+Before repeated destroy/create cycles, make sure the local durable ACME cache exists:
+
+```powershell
+Test-Path "C:\Users\Bose\temp\sing-box\edge-platform\.runtime\cert-cache\acme"
+```
+
+This cache contains the `edge.alegria.by` ACME account, certificate, and private key used by the tunnel containers. It is intentionally local-only and ignored by git.
+
+Normal deploys upload that cache to the VM and start tunnels with the official sing-box ACME manager pointed at the preloaded cache. They should not request a fresh Let's Encrypt certificate on every VM recreation, but renewal remains possible before expiry.
+
 ```powershell
 & "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy
 ```
@@ -168,6 +178,24 @@ If the deploy output returns an operation id, follow it with:
 
 ```powershell
 & "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" destroy
+```
+
+Destroying a VM must not delete the local ACME cache:
+
+```powershell
+Get-ChildItem -Recurse "C:\Users\Bose\temp\sing-box\edge-platform\.runtime\cert-cache\acme\certificates" -Filter "*.crt"
+```
+
+If the cache is missing, recover it from a known-good server or from:
+
+```text
+C:\Users\Bose\temp\sing-box\recovered\vm\vultr-edge-stack\stack\tunnel-state\acme
+```
+
+`recovered/` is only a seed source. The working source is always:
+
+```text
+C:\Users\Bose\temp\sing-box\edge-platform\.runtime\cert-cache\acme
 ```
 
 ## Current WSL proxy behavior

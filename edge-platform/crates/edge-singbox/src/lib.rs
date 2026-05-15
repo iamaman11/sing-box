@@ -1,6 +1,6 @@
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use edge_shared_types::{LocalSingboxState, SelectorState, UbuntuProxyState};
@@ -243,7 +243,9 @@ fn inspect_ubuntu_proxy_inbound(
         .iter()
         .find(|inbound| inbound.kind == "mixed" && inbound.tag == WSL_INBOUND_TAG)
     else {
-        local_singbox.warnings.push("WSL inbound wsl-mixed-in is missing from local config".to_owned());
+        local_singbox
+            .warnings
+            .push("WSL inbound wsl-mixed-in is missing from local config".to_owned());
         ubuntu_selector.degraded = true;
         ubuntu_selector
             .warnings
@@ -377,7 +379,9 @@ fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
             *excludes = Value::Array(Vec::new());
         }
         let excludes = excludes.as_array_mut().expect("array inserted above");
-        let exists = excludes.iter().any(|value| value.as_str() == Some(server_cidr.as_str()));
+        let exists = excludes
+            .iter()
+            .any(|value| value.as_str() == Some(server_cidr.as_str()));
         if !exists {
             excludes.push(Value::String(server_cidr.clone()));
         }
@@ -482,7 +486,9 @@ fn sync_wsl_route_rule(config: &mut Value) {
         let Some(inbound) = object.get("inbound").and_then(Value::as_array) else {
             continue;
         };
-        let matches = inbound.iter().any(|value| value.as_str() == Some(WSL_INBOUND_TAG));
+        let matches = inbound
+            .iter()
+            .any(|value| value.as_str() == Some(WSL_INBOUND_TAG));
         if !matches {
             continue;
         }
@@ -502,7 +508,11 @@ fn sync_wsl_route_rule(config: &mut Value) {
         .position(|rule| {
             rule.get("inbound")
                 .and_then(Value::as_array)
-                .is_some_and(|inbound| inbound.iter().any(|value| value.as_str() == Some("mixed-in")))
+                .is_some_and(|inbound| {
+                    inbound
+                        .iter()
+                        .any(|value| value.as_str() == Some("mixed-in"))
+                })
         })
         .unwrap_or(rules.len());
     rules.insert(
@@ -631,7 +641,10 @@ pub fn ubuntu_trace_proxy_url(config_path: &Path) -> Result<Option<String>, Stri
     trace_proxy_url_for_inbound(config_path, WSL_INBOUND_TAG)
 }
 
-fn trace_proxy_url_for_inbound(config_path: &Path, inbound_tag: &str) -> Result<Option<String>, String> {
+fn trace_proxy_url_for_inbound(
+    config_path: &Path,
+    inbound_tag: &str,
+) -> Result<Option<String>, String> {
     let raw_config = fs::read_to_string(config_path)
         .map_err(|err| format!("unable to read local sing-box config: {err}"))?;
     let parsed: TraceConfig = serde_json::from_str(&raw_config)

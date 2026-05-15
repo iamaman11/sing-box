@@ -14,6 +14,8 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 const TEMPLATE_STACK_PATH: &str = "win/vultr-waw/stack";
 const GENERATED_ROOT_PATH: &str = "edge-platform/.runtime/generated";
+const DURABLE_ACME_CACHE_PATH: &str = "edge-platform/.runtime/cert-cache/acme";
+const RECOVERED_ACME_CACHE_PATH: &str = "recovered/vm/vultr-edge-stack/stack/tunnel-state/acme";
 const DEFAULT_LABEL_PREFIX: &str = "waw-edge";
 const DEFAULT_PLAN: &str = "vc2-1c-1gb";
 const DEFAULT_REGION: &str = "waw";
@@ -183,7 +185,9 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
     let published_host = request
         .dns_record_name
         .filter(|value| !value.trim().is_empty())
-        .or(request.tunnel_domain.filter(|value| !value.trim().is_empty()))
+        .or(request
+            .tunnel_domain
+            .filter(|value| !value.trim().is_empty()))
         .unwrap_or(request.target_ip)
         .to_owned();
 
@@ -256,6 +260,7 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
     let current_state_json = deployment_summary_json.clone();
 
     let mut stack_files = collect_template_stack_files(&template_stack_dir)?;
+    append_preloaded_acme_cache(request.repo_root, &mut stack_files)?;
     stack_files.push(BundleFilePayload {
         relative_path: ".env.runtime".to_owned(),
         content: env_runtime_content.as_bytes().to_vec(),
@@ -306,6 +311,168 @@ fn collect_template_stack_files(
     let mut files = Vec::new();
     collect_dir_recursive(template_stack_dir, template_stack_dir, &mut files)?;
     Ok(files)
+}
+
+fn append_preloaded_acme_cache(
+    repo_root: &Path,
+    files: &mut Vec<BundleFilePayload>,
+) -> Result<(), String> {
+    let cache_root = ensure_durable_acme_cache(repo_root)?;
+    if !cache_root.is_dir() {
+        return Ok(());
+    }
+    let mut cache_files = Vec::new();
+    collect_acme_cache_recursive(&cache_root, &cache_root, &mut cache_files)?;
+    files.extend(cache_files);
+    Ok(())
+}
+
+fn ensure_durable_acme_cache(repo_root: &Path) -> Result<PathBuf, String> {
+    let durable_root = repo_root.join(DURABLE_ACME_CACHE_PATH);
+    if acme_cache_has_certificate_material(&durable_root)? {
+        return Ok(durable_root);
+    }
+
+    let recovered_root = repo_root.join(RECOVERED_ACME_CACHE_PATH);
+    if recovered_root.is_dir() && acme_cache_has_certificate_material(&recovered_root)? {
+        seed_durable_acme_cache(&recovered_root, &durable_root)?;
+    }
+
+    Ok(durable_root)
+}
+
+fn acme_cache_has_certificate_material(root: &Path) -> Result<bool, String> {
+    if !root.is_dir() {
+        return Ok(false);
+    }
+
+    let mut has_cert = false;
+    let mut has_key = false;
+    inspect_acme_cache_recursive(root, &mut has_cert, &mut has_key)?;
+    Ok(has_cert && has_key)
+}
+
+fn inspect_acme_cache_recursive(
+    current: &Path,
+    has_cert: &mut bool,
+    has_key: &mut bool,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current)
+        .map_err(|err| format!("failed to read {}: {err}", current.display()))?
+    {
+        let entry = entry.map_err(|err| format!("failed to iterate directory entry: {err}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("failed to read file type for {}: {err}", path.display()))?;
+        if file_type.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "locks" || name == "challenge_tokens" {
+                continue;
+            }
+            inspect_acme_cache_recursive(&path, has_cert, has_key)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        match path.extension().and_then(|value| value.to_str()) {
+            Some("crt") => *has_cert = true,
+            Some("key") => *has_key = true,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn seed_durable_acme_cache(source_root: &Path, target_root: &Path) -> Result<(), String> {
+    copy_acme_cache_recursive(source_root, source_root, target_root)
+}
+
+fn copy_acme_cache_recursive(
+    source_root: &Path,
+    current: &Path,
+    target_root: &Path,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current)
+        .map_err(|err| format!("failed to read {}: {err}", current.display()))?
+    {
+        let entry = entry.map_err(|err| format!("failed to iterate directory entry: {err}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("failed to read file type for {}: {err}", path.display()))?;
+        if file_type.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "locks" || name == "challenge_tokens" {
+                continue;
+            }
+            copy_acme_cache_recursive(source_root, &path, target_root)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(source_root)
+            .map_err(|err| format!("failed to strip prefix from {}: {err}", path.display()))?;
+        let target = target_root.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+        }
+        if target.exists() {
+            continue;
+        }
+        fs::copy(&path, &target).map_err(|err| {
+            format!(
+                "failed to seed ACME cache from {} to {}: {err}",
+                path.display(),
+                target.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn collect_acme_cache_recursive(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<BundleFilePayload>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current)
+        .map_err(|err| format!("failed to read {}: {err}", current.display()))?
+    {
+        let entry = entry.map_err(|err| format!("failed to iterate directory entry: {err}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("failed to read file type for {}: {err}", path.display()))?;
+        if file_type.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "locks" || name == "challenge_tokens" {
+                continue;
+            }
+            collect_acme_cache_recursive(root, &path, files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|err| format!("failed to strip prefix from {}: {err}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        files.push(BundleFilePayload {
+            relative_path: format!("tunnel-state/acme/{relative}"),
+            content: fs::read(&path)
+                .map_err(|err| format!("failed to read {}: {err}", path.display()))?,
+            executable: false,
+        });
+    }
+    Ok(())
 }
 
 fn collect_dir_recursive(

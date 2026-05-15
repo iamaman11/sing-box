@@ -53,6 +53,15 @@ start_tunnels() {
     return 0
   fi
 
+  local acme_cert_dir="tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory/${TUNNEL_DOMAIN}"
+  local acme_cert="${acme_cert_dir}/${TUNNEL_DOMAIN}.crt"
+  local acme_key="${acme_cert_dir}/${TUNNEL_DOMAIN}.key"
+  if [[ ! -s "$acme_cert" || ! -s "$acme_key" ]]; then
+    echo "ACME certificate cache is missing for ${TUNNEL_DOMAIN}: expected ${acme_cert} and ${acme_key}" >&2
+    echo "Seed edge-platform/.runtime/cert-cache/acme before deploying tunnels." >&2
+    exit 1
+  fi
+
   envsubst < tunnel-edge/config.template.json > rendered/tunnel-edge.json
   envsubst < tunnel-edge/config.warp.template.json > rendered/tunnel-edge-warp.json
   compose_up --profile tunnel tunnel-edge

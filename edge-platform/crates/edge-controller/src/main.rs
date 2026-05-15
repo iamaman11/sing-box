@@ -1047,47 +1047,48 @@ impl ControllerService for ControllerServerImpl {
             }));
         };
 
-        let response = match set_live_selector(
-            &controller_url,
-            &group,
-            &request.name,
-            default_aux_groups(),
-        )
-        .await {
-            Ok((previous, mut selector)) => {
-                let desired = selector_state_for_group(&base_status, &group)
-                    .and_then(|selector| selector.desired_main_route.clone());
-                selector.desired_main_route =
-                    desired.or_else(|| selector.observed_main_route.clone());
-                append_operation_event(&self.state, operation.id, "selector updated successfully")?;
-                update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
-                SetSelectorResponse {
-                    success: true,
-                    previous,
-                    current: selector.observed_main_route.clone(),
-                    warnings: selector.warnings.clone(),
-                    operation: Some(operation_with_status(operation, "SUCCEEDED")),
-                    selector: Some(selector),
+        let response =
+            match set_live_selector(&controller_url, &group, &request.name, default_aux_groups())
+                .await
+            {
+                Ok((previous, mut selector)) => {
+                    let desired = selector_state_for_group(&base_status, &group)
+                        .and_then(|selector| selector.desired_main_route.clone());
+                    selector.desired_main_route =
+                        desired.or_else(|| selector.observed_main_route.clone());
+                    append_operation_event(
+                        &self.state,
+                        operation.id,
+                        "selector updated successfully",
+                    )?;
+                    update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
+                    SetSelectorResponse {
+                        success: true,
+                        previous,
+                        current: selector.observed_main_route.clone(),
+                        warnings: selector.warnings.clone(),
+                        operation: Some(operation_with_status(operation, "SUCCEEDED")),
+                        selector: Some(selector),
+                    }
                 }
-            }
-            Err(err) => {
-                append_operation_event(&self.state, operation.id, &err)?;
-                update_operation_status(&self.state, operation.id, "FAILED")?;
-                let mut selector = selector_state_for_group(&base_status, &group)
-                    .cloned()
-                    .unwrap_or_else(SelectorState::placeholder);
-                selector.degraded = true;
-                selector.warnings.push(err.clone());
-                SetSelectorResponse {
-                    success: false,
-                    previous: selector.observed_main_route.clone(),
-                    current: selector.observed_main_route.clone(),
-                    warnings: selector.warnings.clone(),
-                    operation: Some(operation_with_status(operation, "FAILED")),
-                    selector: Some(selector),
+                Err(err) => {
+                    append_operation_event(&self.state, operation.id, &err)?;
+                    update_operation_status(&self.state, operation.id, "FAILED")?;
+                    let mut selector = selector_state_for_group(&base_status, &group)
+                        .cloned()
+                        .unwrap_or_else(SelectorState::placeholder);
+                    selector.degraded = true;
+                    selector.warnings.push(err.clone());
+                    SetSelectorResponse {
+                        success: false,
+                        previous: selector.observed_main_route.clone(),
+                        current: selector.observed_main_route.clone(),
+                        warnings: selector.warnings.clone(),
+                        operation: Some(operation_with_status(operation, "FAILED")),
+                        selector: Some(selector),
+                    }
                 }
-            }
-        };
+            };
 
         Ok(Response::new(response))
     }
@@ -1469,15 +1470,55 @@ impl ControllerService for ControllerServerImpl {
             append_operation_event(&self.state, operation.id, "tunnel bootstrap completed")?;
         }
 
-        let runtime_state = match verify_agent_runtime_target(
-            &AgentConnectionTarget {
+        let final_agent_target = if target.created_instance {
+            let restart_result = resolve_bootstrap_access_config(&self.repo_root, &self.state)
+                .and_then(|config| restart_edge_agent_service(&target, &config));
+            if let Err(err) = restart_result {
+                let rollback_warnings = rollback_failed_deploy(
+                    &self.repo_root,
+                    &self.state,
+                    &request,
+                    &target,
+                    &rollback,
+                    operation.id,
+                )
+                .await;
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Err(Status::internal(format!(
+                    "failed to restart edge-agent with deployment TLS env: {}{}",
+                    err,
+                    if rollback_warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
+                    }
+                )));
+            }
+            append_operation_event(
+                &self.state,
+                operation.id,
+                "edge-agent service restarted with deployment TLS env",
+            )?;
+            resolve_targeted_agent_connection_target(
+                &self.state,
+                &target.instance_id,
+                &target.target_ip,
+            )
+            .map_err(|err| {
+                Status::internal(format!("failed to resolve final agent target: {err}"))
+            })?
+            .unwrap_or_else(|| AgentConnectionTarget {
                 endpoint: agent_transport.endpoint.clone(),
                 tls_paths: agent_transport.tls_paths.clone(),
-            },
-            true,
-        )
-        .await
-        {
+            })
+        } else {
+            AgentConnectionTarget {
+                endpoint: agent_transport.endpoint.clone(),
+                tls_paths: agent_transport.tls_paths.clone(),
+            }
+        };
+
+        let runtime_state = match verify_agent_runtime_target(&final_agent_target, true).await {
             Ok(state) => state,
             Err(err) => {
                 let rollback_warnings = rollback_failed_deploy(
@@ -2181,12 +2222,22 @@ fn resolve_bootstrap_access_config(
         .ok()
         .or_else(|| default_edge_agent_binary_path(repo_root))
         .ok_or_else(|| {
-            "EDGE_AGENT_BINARY_PATH is required or edge-platform/target/debug/edge-agent must exist"
+            "EDGE_AGENT_BINARY_PATH is required or a Linux edge-agent binary must exist under edge-platform/target"
                 .to_owned()
         })?;
     if !agent_binary_path.is_file() {
         return Err(format!(
             "edge-agent binary was not found: {}",
+            agent_binary_path.display()
+        ));
+    }
+    if cfg!(windows)
+        && agent_binary_path
+            .extension()
+            .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+    {
+        return Err(format!(
+            "Windows deploy requires a Linux edge-agent binary, but resolved {}",
             agent_binary_path.display()
         ));
     }
@@ -2214,12 +2265,39 @@ fn backend_ready_for_local_runtime(repo_root: &Path) -> bool {
 }
 
 fn default_edge_agent_binary_path(repo_root: &Path) -> Option<PathBuf> {
-    let candidate = repo_root
-        .join("edge-platform")
-        .join("target")
-        .join("debug")
-        .join(format!("edge-agent{}", env::consts::EXE_SUFFIX));
-    candidate.is_file().then_some(candidate)
+    let target_dir = repo_root.join("edge-platform").join("target");
+    let candidates = if cfg!(windows) {
+        vec![
+            target_dir
+                .join("x86_64-unknown-linux-gnu")
+                .join("debug")
+                .join("edge-agent"),
+            target_dir
+                .join("x86_64-unknown-linux-musl")
+                .join("debug")
+                .join("edge-agent"),
+            target_dir
+                .join("x86_64-unknown-linux-gnu")
+                .join("release")
+                .join("edge-agent"),
+            target_dir
+                .join("x86_64-unknown-linux-musl")
+                .join("release")
+                .join("edge-agent"),
+            repo_root
+                .join("recovered")
+                .join("vm")
+                .join("vultr-edge-stack")
+                .join("bin")
+                .join("edge-agent"),
+        ]
+    } else {
+        vec![
+            target_dir.join("debug").join("edge-agent"),
+            target_dir.join("release").join("edge-agent"),
+        ]
+    };
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 fn stage_ssh_private_key(repo_root: &Path, source_path: &Path) -> Result<PathBuf, String> {
@@ -2245,7 +2323,12 @@ fn stage_ssh_private_key(repo_root: &Path, source_path: &Path) -> Result<PathBuf
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|err| format!("failed to start icacls for {}: {err}", staged_path.display()))?;
+            .map_err(|err| {
+                format!(
+                    "failed to start icacls for {}: {err}",
+                    staged_path.display()
+                )
+            })?;
         if !status.success() {
             return Err(format!(
                 "icacls failed to disable inheritance for staged SSH key {} with status {status}",
@@ -2259,7 +2342,12 @@ fn stage_ssh_private_key(repo_root: &Path, source_path: &Path) -> Result<PathBuf
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|err| format!("failed to start icacls grant for {}: {err}", staged_path.display()))?;
+            .map_err(|err| {
+                format!(
+                    "failed to start icacls grant for {}: {err}",
+                    staged_path.display()
+                )
+            })?;
         if !status.success() {
             return Err(format!(
                 "icacls failed to grant access to staged SSH key {} with status {status}",
@@ -2362,21 +2450,15 @@ async fn ensure_edge_agent_service(
     target: &ResolvedDeployTarget,
     config: &BootstrapAccessConfig,
 ) -> Result<(), String> {
-    if cfg!(windows)
-        && config
-            .agent_binary_path
-            .extension()
-            .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
+    if config
+        .agent_binary_path
+        .extension()
+        .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
     {
-        run_command(
-            "ssh",
-            &ssh_args(
-                config,
-                &target.target_ip,
-                "systemctl daemon-reload && systemctl enable edge-agent.service && systemctl restart edge-agent.service && systemctl is-active --quiet edge-agent.service",
-            ),
-        )?;
-        return Ok(());
+        return Err(format!(
+            "refusing to upload non-Linux edge-agent binary: {}",
+            config.agent_binary_path.display()
+        ));
     }
 
     run_command(
@@ -2405,6 +2487,20 @@ async fn ensure_edge_agent_service(
         ),
     )?;
     Ok(())
+}
+
+fn restart_edge_agent_service(
+    target: &ResolvedDeployTarget,
+    config: &BootstrapAccessConfig,
+) -> Result<(), String> {
+    run_command(
+        "ssh",
+        &ssh_args(
+            config,
+            &target.target_ip,
+            "systemctl daemon-reload && systemctl restart edge-agent.service && systemctl is-active --quiet edge-agent.service",
+        ),
+    )
 }
 
 fn reserve_local_port() -> Result<u16, String> {
@@ -3250,14 +3346,31 @@ mod tests {
         std::fs::write(repo_root.join("edge-platform/Cargo.toml"), "").unwrap();
         std::fs::write(repo_root.join("edge-platform/README.md"), "").unwrap();
         std::fs::write(repo_root.join("edge-platform/FINALIZATION-PLAN.md"), "").unwrap();
-        std::fs::write(repo_root.join("edge-platform/proto/edge_platform.proto"), "").unwrap();
-        std::fs::write(repo_root.join("edge-platform/crates/edge-agent/src/main.rs"), "").unwrap();
-        std::fs::write(repo_root.join("edge-platform/crates/edge-controller/src/main.rs"), "")
-            .unwrap();
-        std::fs::write(repo_root.join("edge-platform/crates/edge-console/src/main.rs"), "")
-            .unwrap();
-        std::fs::write(repo_root.join("win/vultr-waw/cloud-init.yaml"), "edge-agent.service")
-            .unwrap();
+        std::fs::write(
+            repo_root.join("edge-platform/proto/edge_platform.proto"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            repo_root.join("edge-platform/crates/edge-agent/src/main.rs"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            repo_root.join("edge-platform/crates/edge-controller/src/main.rs"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            repo_root.join("edge-platform/crates/edge-console/src/main.rs"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            repo_root.join("win/vultr-waw/cloud-init.yaml"),
+            "edge-agent.service",
+        )
+        .unwrap();
         std::fs::write(
             repo_root.join("win/vultr-waw/stack/docker-compose.yml"),
             "services: {}",
@@ -3268,8 +3381,11 @@ mod tests {
             "{}",
         )
         .unwrap();
-        std::fs::write(repo_root.join("win/windows/edge-dns-clean-vultr-dual.json"), "{}")
-            .unwrap();
+        std::fs::write(
+            repo_root.join("win/windows/edge-dns-clean-vultr-dual.json"),
+            "{}",
+        )
+        .unwrap();
         std::fs::write(repo_root.join("win/vultr-waw/current-edge.json"), "{}").unwrap();
         let db_path = std::env::temp_dir().join(format!(
             "edge-controller-status-{}.sqlite",

@@ -49,6 +49,50 @@ Derived/runtime copies include:
 
 - `C:\Users\Bose\AppData\Local\sing-box-vultr-dual\runtime\edge-dns-clean-vultr-dual.json`
 
+## Certificate lifecycle
+
+The canonical tunnel hostname is:
+
+- `edge.alegria.by`
+
+Do not create a new random hostname per VM for the normal path. New VMs should update the existing Cloudflare `A` record for `edge.alegria.by`.
+
+Server tunnel containers use the official sing-box ACME manager with a preloaded local durable ACME cache. This avoids exact-set rate limits when VMs are repeatedly destroyed and recreated, while still preserving normal ACME renewal behavior before expiry.
+
+Durable local certificate cache:
+
+- `edge-platform/.runtime/cert-cache/acme`
+
+This directory is local runtime state and is intentionally ignored by git because it contains private key material.
+
+Recovery seed only:
+
+- `recovered/vm/vultr-edge-stack/stack/tunnel-state/acme`
+
+If the durable cache is empty and the recovery seed exists, the bundle builder seeds `.runtime/cert-cache/acme` from `recovered/` once and then uses the durable cache as the working source.
+
+On deploy, the controller uploads the cached ACME files into:
+
+- `/opt/vultr-edge-stack/stack/tunnel-state/acme`
+
+Tunnel bootstrap checks that the expected certificate and key exist before starting containers. If the cache is missing, deploy fails explicitly instead of letting tunnel containers restart-loop or trigger uncontrolled ACME attempts.
+
+The sing-box tunnel configs use:
+
+- `tls.acme.provider = letsencrypt`
+- `tls.acme.data_directory = /var/lib/sing-box/acme`
+
+Current recovered certificate validity at the time of this repair:
+
+- not before: `2026-05-03 10:01:51 UTC`
+- not after: `2026-08-01 10:01:50 UTC`
+
+Operational rule:
+
+- normal destroy/create cycles should reuse this durable cache and must not burn new Let's Encrypt issuance attempts
+- before the certificate gets close to expiry, let sing-box renew from the preloaded ACME state and persist the refreshed ACME cache back into `.runtime/cert-cache/acme`
+- never commit `.runtime/cert-cache/acme` or recovered private keys to GitHub
+
 ## What works
 
 - local `sing-box` start/stop/restart

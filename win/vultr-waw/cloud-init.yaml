@@ -23,7 +23,7 @@ write_files:
       ExecStart=/opt/vultr-edge-stack/bin/edge-agent serve
       Restart=always
       RestartSec=2
-      Environment=EDGE_AGENT_ADDR=127.0.0.1:50061
+      Environment=EDGE_AGENT_ADDR=0.0.0.0:50061
       Environment=EDGE_STACK_DIR=/opt/vultr-edge-stack/stack
       EnvironmentFile=-/opt/vultr-edge-stack/edge-agent.env
       WorkingDirectory=/opt/vultr-edge-stack

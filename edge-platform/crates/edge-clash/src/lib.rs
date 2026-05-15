@@ -31,7 +31,9 @@ pub async fn set_selector(
     name: &str,
     aux_groups: &[&str],
 ) -> Result<(Option<String>, SelectorState), String> {
-    let before = get_selector_state(controller_url, group, aux_groups).await.ok();
+    let before = get_selector_state(controller_url, group, aux_groups)
+        .await
+        .ok();
     let previous = before
         .as_ref()
         .and_then(|selector| selector.observed_main_route.clone());
@@ -169,11 +171,7 @@ mod tests {
             ]),
         };
 
-        let selector = selector_state_from_payload(
-            payload,
-            "proxy-selector",
-            default_aux_groups(),
-        );
+        let selector = selector_state_from_payload(payload, "proxy-selector", default_aux_groups());
         assert_eq!(
             selector.observed_main_route.as_deref(),
             Some("auto-direct-tunnel")

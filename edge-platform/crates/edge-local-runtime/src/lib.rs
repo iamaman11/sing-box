@@ -122,7 +122,9 @@ pub fn start_local_runtime(
             .lines()
             .filter_map(|line| line.trim().parse::<u32>().ok())
             .next()
-            .ok_or_else(|| "failed to capture sing-box pid from visible window launch".to_owned())?;
+            .ok_or_else(|| {
+                "failed to capture sing-box pid from visible window launch".to_owned()
+            })?;
         SpawnedChild::ExternalPid(pid)
     } else {
         let mut command = Command::new(&paths.singbox_binary_path);
@@ -206,9 +208,7 @@ pub fn stop_local_runtime(
     })
 }
 
-pub fn restart_local_runtime(
-    paths: &LocalRuntimePaths,
-) -> Result<RuntimeOperationResult, String> {
+pub fn restart_local_runtime(paths: &LocalRuntimePaths) -> Result<RuntimeOperationResult, String> {
     let _ = stop_local_runtime(&paths.config_path, true)?;
     start_local_runtime(paths, false)
 }
