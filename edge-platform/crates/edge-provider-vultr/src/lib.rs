@@ -3,8 +3,11 @@ use base64::engine::general_purpose::STANDARD;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use tokio::time::{Duration, sleep};
 
 const API_ROOT: &str = "https://api.vultr.com/v2";
+const SAFE_REQUEST_ATTEMPTS: usize = 4;
+const SAFE_REQUEST_RETRY_DELAYS_SECS: [u64; SAFE_REQUEST_ATTEMPTS - 1] = [2, 4, 8];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VultrInstance {
@@ -45,23 +48,29 @@ pub async fn create_instance(
 }
 
 pub async fn get_instance(api_key: &str, instance_id: &str) -> Result<VultrInstance, String> {
-    let client = authorized_client(api_key)?;
-    let response = client
-        .get(format!("{API_ROOT}/instances/{instance_id}"))
-        .send()
-        .await
-        .map_err(|err| format!("failed to read Vultr instance: {}", error_chain(&err)))?;
+    let response = send_with_safe_retries("read Vultr instance", || async {
+        let client = authorized_client(api_key)?;
+        client
+            .get(format!("{API_ROOT}/instances/{instance_id}"))
+            .send()
+            .await
+            .map_err(|err| format!("failed to read Vultr instance: {}", error_chain(&err)))
+    })
+    .await?;
     let payload: InstanceEnvelope = parse_success_json(response).await?;
     Ok(payload.instance.into())
 }
 
 pub async fn destroy_instance(api_key: &str, instance_id: &str) -> Result<(), String> {
-    let client = authorized_client(api_key)?;
-    let response = client
-        .delete(format!("{API_ROOT}/instances/{instance_id}"))
-        .send()
-        .await
-        .map_err(|err| format!("failed to destroy Vultr instance: {}", error_chain(&err)))?;
+    let response = send_with_safe_retries("destroy Vultr instance", || async {
+        let client = authorized_client(api_key)?;
+        client
+            .delete(format!("{API_ROOT}/instances/{instance_id}"))
+            .send()
+            .await
+            .map_err(|err| format!("failed to destroy Vultr instance: {}", error_chain(&err)))
+    })
+    .await?;
     let status = response.status();
     if status.is_success() {
         return Ok(());
@@ -73,6 +82,20 @@ pub async fn destroy_instance(api_key: &str, instance_id: &str) -> Result<(), St
     Err(format!("Vultr API returned {status}: {body}"))
 }
 
+pub async fn list_instances(api_key: &str) -> Result<Vec<VultrInstance>, String> {
+    let response = send_with_safe_retries("list Vultr instances", || async {
+        let client = authorized_client(api_key)?;
+        client
+            .get(format!("{API_ROOT}/instances"))
+            .send()
+            .await
+            .map_err(|err| format!("failed to list Vultr instances: {}", error_chain(&err)))
+    })
+    .await?;
+    let payload: ListInstancesEnvelope = parse_success_json(response).await?;
+    Ok(payload.instances.into_iter().map(Into::into).collect())
+}
+
 fn error_chain(err: &reqwest::Error) -> String {
     let mut parts = vec![err.to_string()];
     let mut source = err.source();
@@ -81,6 +104,46 @@ fn error_chain(err: &reqwest::Error) -> String {
         source = err.source();
     }
     parts.join(": ")
+}
+
+fn is_retryable_transport_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("client error (connect)")
+        || normalized.contains("dns error")
+        || normalized.contains("tcp connect error")
+        || normalized.contains("connection reset")
+        || normalized.contains("timed out")
+        || normalized.contains("timeout")
+}
+
+async fn send_with_safe_retries<F, Fut>(
+    action_name: &str,
+    mut action: F,
+) -> Result<reqwest::Response, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, String>>,
+{
+    let mut last_error = None;
+    for attempt in 0..SAFE_REQUEST_ATTEMPTS {
+        match action().await {
+            Ok(response) => return Ok(response),
+            Err(err) if attempt + 1 < SAFE_REQUEST_ATTEMPTS && is_retryable_transport_error(&err) => {
+                last_error = Some(err);
+                sleep(Duration::from_secs(
+                    SAFE_REQUEST_RETRY_DELAYS_SECS[attempt],
+                ))
+                .await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        format!(
+            "{} failed after {} attempts with an unknown transport error",
+            action_name, SAFE_REQUEST_ATTEMPTS
+        )
+    }))
 }
 
 pub fn mock_instance(label: &str, region: &str, plan: &str, ip: &str) -> VultrInstance {
@@ -163,6 +226,11 @@ struct CreateInstancePayload {
 #[derive(Debug, Deserialize)]
 struct InstanceEnvelope {
     instance: VultrInstancePayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListInstancesEnvelope {
+    instances: Vec<VultrInstancePayload>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct EdgeState {
     conn: Connection,
@@ -45,12 +45,6 @@ impl EdgeState {
                 created_at_unix INTEGER NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS desired_state (
-                key TEXT PRIMARY KEY,
-                value_blob BLOB NOT NULL,
-                updated_at_unix INTEGER NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS provider_observations (
                 id INTEGER PRIMARY KEY,
                 payload BLOB NOT NULL,
@@ -90,6 +84,25 @@ impl EdgeState {
                 details TEXT NOT NULL,
                 created_at_unix INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS controller_state (
+                singleton_key INTEGER PRIMARY KEY CHECK (singleton_key = 1),
+                active_deployment_label TEXT,
+                active_instance_id TEXT,
+                active_server_ip TEXT,
+                active_tunnel_domain TEXT,
+                deploy_phase TEXT NOT NULL,
+                app_readiness_phase TEXT NOT NULL,
+                last_error_code TEXT,
+                last_error_message TEXT,
+                updated_at_unix INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS selector_intents (
+                group_name TEXT PRIMARY KEY,
+                desired_route TEXT NOT NULL,
+                updated_at_unix INTEGER NOT NULL
+            );
             ",
         )?;
 
@@ -104,6 +117,23 @@ impl EdgeState {
             ON trust_store (deployment_id, instance_id, ip);
             ",
         )?;
+        self.conn.execute(
+            "
+            INSERT INTO controller_state (
+                singleton_key,
+                deploy_phase,
+                app_readiness_phase,
+                updated_at_unix
+            )
+            VALUES (1, 'DEPLOYMENT_ABSENT', 'DEPLOYMENT_ABSENT', ?1)
+            ON CONFLICT(singleton_key) DO NOTHING
+            ",
+            params![unix_now()],
+        )?;
+        // `desired_state` was a legacy table from an older controller model.
+        // Drop it so diagnostics cannot drift from the true SQLite state.
+        self.conn
+            .execute("DROP TABLE IF EXISTS desired_state", [])?;
 
         Ok(())
     }
@@ -132,6 +162,165 @@ impl EdgeState {
             .query_row("SELECT COUNT(*) FROM local_observations", [], |row| {
                 row.get(0)
             })
+    }
+
+    pub fn upsert_controller_state(
+        &self,
+        state: NewControllerState<'_>,
+    ) -> rusqlite::Result<StoredControllerState> {
+        let updated_at = unix_now();
+        self.conn.execute(
+            "
+            INSERT INTO controller_state (
+                singleton_key,
+                active_deployment_label,
+                active_instance_id,
+                active_server_ip,
+                active_tunnel_domain,
+                deploy_phase,
+                app_readiness_phase,
+                last_error_code,
+                last_error_message,
+                updated_at_unix
+            )
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(singleton_key) DO UPDATE SET
+                active_deployment_label = excluded.active_deployment_label,
+                active_instance_id = excluded.active_instance_id,
+                active_server_ip = excluded.active_server_ip,
+                active_tunnel_domain = excluded.active_tunnel_domain,
+                deploy_phase = excluded.deploy_phase,
+                app_readiness_phase = excluded.app_readiness_phase,
+                last_error_code = excluded.last_error_code,
+                last_error_message = excluded.last_error_message,
+                updated_at_unix = excluded.updated_at_unix
+            ",
+            params![
+                state.active_deployment_label,
+                state.active_instance_id,
+                state.active_server_ip,
+                state.active_tunnel_domain,
+                state.deploy_phase,
+                state.app_readiness_phase,
+                state.last_error_code,
+                state.last_error_message,
+                updated_at,
+            ],
+        )?;
+        self.get_controller_state()?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn get_controller_state(&self) -> rusqlite::Result<Option<StoredControllerState>> {
+        self.conn
+            .query_row(
+                "
+                SELECT
+                    active_deployment_label,
+                    active_instance_id,
+                    active_server_ip,
+                    active_tunnel_domain,
+                    deploy_phase,
+                    app_readiness_phase,
+                    last_error_code,
+                    last_error_message,
+                    updated_at_unix
+                FROM controller_state
+                WHERE singleton_key = 1
+                ",
+                [],
+                |row| {
+                    Ok(StoredControllerState {
+                        active_deployment_label: row.get(0)?,
+                        active_instance_id: row.get(1)?,
+                        active_server_ip: row.get(2)?,
+                        active_tunnel_domain: row.get(3)?,
+                        deploy_phase: row.get(4)?,
+                        app_readiness_phase: row.get(5)?,
+                        last_error_code: row.get(6)?,
+                        last_error_message: row.get(7)?,
+                        updated_at_unix: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn clear_controller_state(&self) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "
+            UPDATE controller_state
+            SET
+                active_deployment_label = NULL,
+                active_instance_id = NULL,
+                active_server_ip = NULL,
+                active_tunnel_domain = NULL,
+                deploy_phase = 'DEPLOYMENT_ABSENT',
+                app_readiness_phase = 'DEPLOYMENT_ABSENT',
+                last_error_code = NULL,
+                last_error_message = NULL,
+                updated_at_unix = ?1
+            WHERE singleton_key = 1
+            ",
+            params![unix_now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_selector_intent(
+        &self,
+        group_name: &str,
+        desired_route: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "
+            INSERT INTO selector_intents (group_name, desired_route, updated_at_unix)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(group_name) DO UPDATE SET
+                desired_route = excluded.desired_route,
+                updated_at_unix = excluded.updated_at_unix
+            ",
+            params![group_name, desired_route, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_selector_intent(&self, group_name: &str) -> rusqlite::Result<Option<StoredSelectorIntent>> {
+        self.conn
+            .query_row(
+                "
+                SELECT group_name, desired_route, updated_at_unix
+                FROM selector_intents
+                WHERE group_name = ?1
+                ",
+                params![group_name],
+                |row| {
+                    Ok(StoredSelectorIntent {
+                        group_name: row.get(0)?,
+                        desired_route: row.get(1)?,
+                        updated_at_unix: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn list_selector_intents(&self) -> rusqlite::Result<Vec<StoredSelectorIntent>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT group_name, desired_route, updated_at_unix
+            FROM selector_intents
+            ORDER BY group_name ASC
+            ",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(StoredSelectorIntent {
+                group_name: row.get(0)?,
+                desired_route: row.get(1)?,
+                updated_at_unix: row.get(2)?,
+            })
+        })?;
+        rows.collect()
     }
 
     pub fn upsert_secret_ref(&self, name: &str, secret_ref: &str) -> rusqlite::Result<()> {
@@ -331,6 +520,29 @@ impl EdgeState {
             })
         })?;
 
+        rows.collect()
+    }
+
+    pub fn list_operations_by_status(
+        &self,
+        status: &str,
+    ) -> rusqlite::Result<Vec<StoredOperation>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT id, kind, status, created_at_unix
+            FROM operations
+            WHERE status = ?1
+            ORDER BY id ASC
+            ",
+        )?;
+        let rows = statement.query_map(params![status], |row| {
+            Ok(StoredOperation {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                status: row.get(2)?,
+                created_at_unix: row.get(3)?,
+            })
+        })?;
         rows.collect()
     }
 
@@ -595,6 +807,38 @@ pub struct StoredSecretRef {
 }
 
 #[derive(Debug, Clone)]
+pub struct NewControllerState<'a> {
+    pub active_deployment_label: Option<&'a str>,
+    pub active_instance_id: Option<&'a str>,
+    pub active_server_ip: Option<&'a str>,
+    pub active_tunnel_domain: Option<&'a str>,
+    pub deploy_phase: &'a str,
+    pub app_readiness_phase: &'a str,
+    pub last_error_code: Option<&'a str>,
+    pub last_error_message: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredControllerState {
+    pub active_deployment_label: Option<String>,
+    pub active_instance_id: Option<String>,
+    pub active_server_ip: Option<String>,
+    pub active_tunnel_domain: Option<String>,
+    pub deploy_phase: String,
+    pub app_readiness_phase: String,
+    pub last_error_code: Option<String>,
+    pub last_error_message: Option<String>,
+    pub updated_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredSelectorIntent {
+    pub group_name: String,
+    pub desired_route: String,
+    pub updated_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct NewTrustEntry<'a> {
     pub deployment_id: &'a str,
     pub instance_id: &'a str,
@@ -690,6 +934,29 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(secret_ref.secret_ref, "env:VULTR_API_KEY");
+        let controller_state = state
+            .upsert_controller_state(NewControllerState {
+                active_deployment_label: Some("deploy-1"),
+                active_instance_id: Some("instance-1"),
+                active_server_ip: Some("203.0.113.10"),
+                active_tunnel_domain: Some("edge.alegria.by"),
+                deploy_phase: "APP_READY_COMPLETED",
+                app_readiness_phase: "APP_READY",
+                last_error_code: None,
+                last_error_message: None,
+            })
+            .unwrap();
+        assert_eq!(
+            controller_state.active_deployment_label.as_deref(),
+            Some("deploy-1")
+        );
+        state
+            .upsert_selector_intent("proxy-selector", "auto-direct-tunnel")
+            .unwrap();
+        state
+            .upsert_selector_intent("wsl-selector", "auto-warp-tunnel")
+            .unwrap();
+        assert_eq!(state.list_selector_intents().unwrap().len(), 2);
         assert_eq!(state.list_secret_refs().unwrap().len(), 1);
         assert_eq!(state.list_trust_entries().unwrap().len(), 1);
         let deployment = state
@@ -729,6 +996,52 @@ mod tests {
             .clear_trust_entries(Some("instance-1"), Some("203.0.113.10"))
             .unwrap();
         assert!(state.list_trust_entries().unwrap().is_empty());
+        state.clear_controller_state().unwrap();
+        assert_eq!(
+            state
+                .get_controller_state()
+                .unwrap()
+                .unwrap()
+                .app_readiness_phase,
+            "DEPLOYMENT_ABSENT"
+        );
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn drops_legacy_desired_state_table_during_migration() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-state-migrate-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE desired_state (
+                key TEXT PRIMARY KEY,
+                value_blob BLOB NOT NULL,
+                updated_at_unix INTEGER NOT NULL
+            );
+            INSERT INTO desired_state (key, value_blob, updated_at_unix)
+            VALUES ('active_deployment_label', x'74657374', 1);
+            ",
+        )
+        .unwrap();
+        drop(conn);
+
+        let state = EdgeState::open_or_create(&db_path).unwrap();
+        let exists: i64 = state
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'desired_state'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0);
         let _ = std::fs::remove_file(db_path);
     }
 }

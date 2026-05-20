@@ -1,6 +1,8 @@
 use edge_shared_types::{ProxyGroupState, SelectorState};
 use reqwest::Client;
 use serde::Deserialize;
+use std::thread;
+use std::time::Duration;
 
 const DEFAULT_AUX_GROUPS: &[&str] = &["auto-direct-tunnel", "auto-warp-tunnel"];
 
@@ -50,8 +52,19 @@ pub async fn set_selector(
         .error_for_status()
         .map_err(|err| format!("clash selector update failed: {err}"))?;
 
+    for _ in 0..10 {
+        let selector = get_selector_state(controller_url, group, aux_groups).await?;
+        if selector.observed_main_route.as_deref() == Some(name) {
+            return Ok((previous, selector));
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+
     let selector = get_selector_state(controller_url, group, aux_groups).await?;
-    Ok((previous, selector))
+    Err(format!(
+        "clash selector did not converge to {name}; observed {}",
+        selector.observed_main_route.as_deref().unwrap_or("<none>")
+    ))
 }
 
 pub fn default_aux_groups() -> &'static [&'static str] {

@@ -186,6 +186,12 @@ impl ControllerStatus {
     }
 }
 
+impl DoctorResponse {
+    pub fn encode_proto(&self) -> Vec<u8> {
+        self.encode_to_vec()
+    }
+}
+
 impl TraceObservation {
     pub fn unavailable(note: impl Into<String>) -> Self {
         Self {
@@ -229,6 +235,7 @@ mod tests {
             ubuntu_selector: Some(SelectorState::placeholder()),
             ubuntu_proxy: Some(UbuntuProxyState::unavailable("unavailable")),
             status_notes: vec!["ok".to_owned()],
+            app_readiness_phase: AppReadinessPhase::DeploymentAbsent as i32,
         };
         assert!(!status.encode_to_vec().is_empty());
     }

@@ -65,12 +65,19 @@ start_tunnels() {
   envsubst < tunnel-edge/config.template.json > rendered/tunnel-edge.json
   envsubst < tunnel-edge/config.warp.template.json > rendered/tunnel-edge-warp.json
   compose_up --profile tunnel tunnel-edge
+  local tunnel_ready=0
   for _ in $(seq 1 60); do
-    if docker compose ps tunnel-edge | grep -q "running"; then
+    if docker compose --profile tunnel ps --status running --services | grep -Fxq "tunnel-edge"; then
+      tunnel_ready=1
       break
     fi
     sleep 2
   done
+  if [[ "$tunnel_ready" != "1" ]]; then
+    docker compose --profile tunnel logs --tail=80 tunnel-edge >&2 || true
+    echo "tunnel-edge did not reach running state within 120s" >&2
+    exit 1
+  fi
   compose_up --profile tunnel tunnel-edge-warp
 }
 

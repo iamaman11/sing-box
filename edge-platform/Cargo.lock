@@ -314,6 +314,7 @@ version = "0.1.0"
 dependencies = [
  "edge-shared-types",
  "edge-singbox",
+ "edge-state",
  "serde",
  "serde_json",
 ]
@@ -344,6 +345,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

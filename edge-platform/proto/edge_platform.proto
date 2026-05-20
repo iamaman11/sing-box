@@ -38,6 +38,23 @@ enum DeployPhase {
   DEPLOY_PHASE_FAILED = 18;
   ROLLBACK_STARTED = 19;
   ROLLBACK_COMPLETED = 20;
+  LOCAL_RUNTIME_START_STARTED = 21;
+  LOCAL_RUNTIME_READY_VERIFIED = 22;
+  SELECTOR_INTENTS_RECONCILING = 23;
+  SELECTORS_VERIFIED = 24;
+  APP_EGRESS_VERIFIED = 25;
+  APP_READY_COMPLETED = 26;
+}
+
+enum AppReadinessPhase {
+  APP_READINESS_PHASE_UNSPECIFIED = 0;
+  DEPLOYMENT_ABSENT = 1;
+  SERVER_RUNTIME_READY = 2;
+  LOCAL_RUNTIME_READY = 3;
+  SELECTORS_READY = 4;
+  APP_EGRESS_READY = 5;
+  APP_READY = 6;
+  APP_READINESS_FAILED = 7;
 }
 
 enum BootstrapMode {
@@ -113,6 +130,7 @@ message ControllerStatus {
   repeated string status_notes = 8;
   SelectorState ubuntu_selector = 9;
   UbuntuProxyState ubuntu_proxy = 10;
+  AppReadinessPhase app_readiness_phase = 11;
 }
 
 message Empty {}
@@ -256,6 +274,27 @@ message TraceObservation {
   optional string warp = 3;
   optional string colo = 4;
   optional string note = 5;
+}
+
+message DoctorRequest {
+  bool require_server_ready = 1;
+  bool require_local_runtime = 2;
+  bool require_egress_traces = 3;
+}
+
+message DoctorCheck {
+  string name = 1;
+  bool ok = 2;
+  string detail = 3;
+}
+
+message DoctorResponse {
+  bool ok = 1;
+  repeated DoctorCheck checks = 2;
+  ControllerStatus status = 3;
+  optional TraceObservation desktop_trace = 4;
+  optional TraceObservation ubuntu_trace = 5;
+  optional Operation operation = 6;
 }
 
 message TrustEntry {
@@ -403,6 +442,7 @@ message ListOperationEventsResponse {
 
 service ControllerService {
   rpc GetStatus(Empty) returns (ControllerStatus);
+  rpc Doctor(DoctorRequest) returns (DoctorResponse);
   rpc GetSecretRef(GetSecretRefRequest) returns (SecretRefEntry);
   rpc SetSecretRef(SetSecretRefRequest) returns (SecretRefEntry);
   rpc ListSecretRefs(ListSecretRefsRequest) returns (ListSecretRefsResponse);

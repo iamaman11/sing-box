@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
@@ -22,7 +22,8 @@ use edge_local_runtime::{
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
 use edge_provider_vultr::{
-    CreateInstanceRequest, create_instance, destroy_instance, get_instance, mock_instance,
+    CreateInstanceRequest, create_instance, destroy_instance, get_instance, list_instances,
+    mock_instance,
 };
 use edge_secrets::{default_env_ref, resolve_secret_path, resolve_secret_text};
 use edge_shared_types::agent_service_client::AgentServiceClient;
@@ -31,18 +32,19 @@ use edge_shared_types::controller_service_server::{ControllerService, Controller
 use edge_shared_types::{
     AgentState, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
     BootstrapRuntimeResponse, BundleFile, ControllerStatus, DeployRequest, DeployResponse,
-    DestroyRequest, DestroyResponse, Empty, GetOperationRequest, GetSecretRefRequest,
-    GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
-    ListOperationEventsResponse, ListSecretRefsRequest, ListSecretRefsResponse,
-    LocalRuntimeResponse, Operation, OperationEvent, OperationLifecycleStatus, OperationStatus,
-    PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
-    SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
-    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
+    DestroyRequest, DestroyResponse, DoctorCheck, DoctorRequest, DoctorResponse, Empty,
+    GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
+    ListOperationEventsRequest, ListOperationEventsResponse, ListSecretRefsRequest,
+    ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent,
+    OperationLifecycleStatus, OperationStatus, PlatformError, ProviderObservation,
+    RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry, SelectorState,
+    SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
+    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
-    EdgeState, NewTrustEntry, StoredDeployment, StoredOperation, StoredOperationEvent,
-    StoredTrustEntry,
+    EdgeState, NewControllerState, NewTrustEntry, StoredDeployment, StoredOperation,
+    StoredOperationEvent, StoredTrustEntry,
 };
 use edge_trace::trace_via_proxy;
 use edge_trust::{
@@ -51,7 +53,7 @@ use edge_trust::{
 };
 use prost::Message;
 use serde_json::Value;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Status};
 
@@ -74,6 +76,11 @@ const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 const DEFAULT_AGENT_REMOTE_PORT: u16 = 50061;
 const DEFAULT_SSH_USER: &str = "root";
 const DEFAULT_SSH_KNOWN_HOSTS_PATH: &str = "edge-platform/.runtime/ssh-known_hosts";
+const BASE_BOOTSTRAP_TIMEOUT_SECS: u64 = 300;
+const TUNNEL_BOOTSTRAP_TIMEOUT_SECS: u64 = 900;
+const EGRESS_TRACE_TIMEOUT_SECS: u64 = 60;
+const BOOTSTRAP_RPC_ATTEMPTS: usize = 3;
+const VULTR_CREATE_ATTEMPTS: usize = 3;
 const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
 const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
 const SECRET_VULTR_SSH_KEY_ID: &str = "bootstrap.vultr.ssh_key_id";
@@ -260,6 +267,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = repo_root.join(DEFAULT_STATE_DB);
     let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path)?));
+    interrupt_stale_running_operations(&state)?;
+    ensure_selector_intents_seeded(&repo_root, &state).await?;
     let service = ControllerServerImpl {
         repo_root,
         state,
@@ -406,11 +415,74 @@ async fn bootstrap_runtime_with_tls(
         .await
         .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
     let mut client = AgentServiceClient::<Channel>::new(channel);
-    let response = client
-        .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
-        .await
-        .map_err(|err| format!("edge-agent bootstrap RPC failed: {err}"))?;
+    let timeout_secs = match mode {
+        BootstrapMode::BootstrapBase => BASE_BOOTSTRAP_TIMEOUT_SECS,
+        BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull => {
+            TUNNEL_BOOTSTRAP_TIMEOUT_SECS
+        }
+        BootstrapMode::Unspecified => TUNNEL_BOOTSTRAP_TIMEOUT_SECS,
+    };
+    let response = timeout(
+        Duration::from_secs(timeout_secs),
+        client.bootstrap_runtime(Request::new(BootstrapRuntimeRequest {
+            mode: mode as i32,
+        })),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "edge-agent bootstrap RPC timed out after {timeout_secs}s for mode {}",
+            mode.as_str_name()
+        )
+    })?
+    .map_err(|err| format!("edge-agent bootstrap RPC failed: {err}"))?;
     Ok(response.into_inner())
+}
+
+fn is_retryable_bootstrap_transport_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("transport error")
+        || normalized.contains("connection reset")
+        || normalized.contains("broken pipe")
+        || normalized.contains("connection refused")
+        || normalized.contains("unavailable")
+}
+
+async fn bootstrap_runtime_with_tls_resilient(
+    state: &Arc<Mutex<EdgeState>>,
+    operation_id: i64,
+    target: AgentConnectionTarget,
+    mode: BootstrapMode,
+) -> Result<BootstrapRuntimeResponse, String> {
+    let mut last_error = None;
+    for attempt in 1..=BOOTSTRAP_RPC_ATTEMPTS {
+        match bootstrap_runtime_with_tls(target.clone(), mode).await {
+            Ok(response) => return Ok(response),
+            Err(err)
+                if attempt < BOOTSTRAP_RPC_ATTEMPTS
+                    && is_retryable_bootstrap_transport_error(&err) =>
+            {
+                let _ = append_operation_event(
+                    state,
+                    operation_id,
+                    &format!(
+                        "edge-agent bootstrap RPC transient failure for {} on attempt {attempt}; retrying: {}",
+                        mode.as_str_name(),
+                        err
+                    ),
+                );
+                last_error = Some(err);
+                sleep(Duration::from_secs((attempt as u64) * 2)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        format!(
+            "edge-agent bootstrap RPC failed for {}",
+            mode.as_str_name()
+        )
+    }))
 }
 
 fn format_bootstrap_failure(response: &BootstrapRuntimeResponse) -> String {
@@ -628,6 +700,9 @@ impl ControllerService for ControllerServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ControllerStatus>, Status> {
+        ensure_selector_intents_seeded(&self.repo_root, &self.state)
+            .await
+            .map_err(Status::internal)?;
         let mut status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
         let (agent_state, runtime) = observe_agent(&self.state, &self.agent_endpoint).await;
@@ -682,6 +757,77 @@ impl ControllerService for ControllerServerImpl {
             .map_err(|err| Status::internal(format!("failed to store status snapshot: {err}")))?;
 
         Ok(Response::new(status))
+    }
+
+    async fn doctor(
+        &self,
+        request: Request<DoctorRequest>,
+    ) -> Result<Response<DoctorResponse>, Status> {
+        let request = request.into_inner();
+        let operation = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .start_operation("doctor", "RUNNING")
+            .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
+        append_operation_event(&self.state, operation.id, "doctor requested")?;
+
+        let status = self.get_status(Request::new(Empty {})).await?.into_inner();
+        let desktop_trace = if request.require_egress_traces {
+            Some(trace_via_proxy(
+                &default_trace_proxy_url(&default_local_config_path(&self.repo_root))
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| DEFAULT_TRACE_PROXY_URL.to_owned()),
+            )
+            .await)
+        } else {
+            None
+        };
+        let ubuntu_trace = if request.require_egress_traces {
+            match ubuntu_proxy_url_from_status(&status) {
+                Some(url) => Some(trace_via_proxy(&url).await),
+                None => Some(TraceObservation::unavailable(
+                    "ubuntu proxy endpoint is not available in controller status",
+                )),
+            }
+        } else {
+            None
+        };
+
+        let checks = build_doctor_checks(
+            &status,
+            desktop_trace.as_ref(),
+            ubuntu_trace.as_ref(),
+            &request,
+        );
+        let ok = checks.iter().all(|check| check.ok);
+        append_operation_event(
+            &self.state,
+            operation.id,
+            if ok {
+                "doctor completed: all checks passed"
+            } else {
+                "doctor completed: one or more checks failed"
+            },
+        )?;
+        update_operation_status(
+            &self.state,
+            operation.id,
+            if ok { "SUCCEEDED" } else { "FAILED" },
+        )?;
+
+        Ok(Response::new(DoctorResponse {
+            ok,
+            checks,
+            status: Some(status),
+            desktop_trace,
+            ubuntu_trace,
+            operation: Some(operation_with_status(
+                operation,
+                if ok { "SUCCEEDED" } else { "FAILED" },
+            )),
+        }))
     }
 
     async fn get_secret_ref(
@@ -813,7 +959,20 @@ impl ControllerService for ControllerServerImpl {
 
         let paths = local_runtime_paths_from_start(&self.repo_root, &request);
         let response = match start_runtime_process(&paths, request.visible_window) {
-            Ok(result) => {
+            Ok(mut result) => {
+                let _ = reconcile_selector_intents_for_running_local(
+                    &self.repo_root,
+                    &self.state,
+                    &result.local_singbox,
+                )
+                .await
+                .map(|warnings| result.warnings.extend(warnings));
+                let _ = refresh_app_readiness_phase(
+                    &self.repo_root,
+                    &self.state,
+                    &result.local_singbox,
+                )
+                .await;
                 append_operation_event(&self.state, operation.id, &result.note)?;
                 update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
                 LocalRuntimeResponse {
@@ -939,7 +1098,20 @@ impl ControllerService for ControllerServerImpl {
         } else {
             restart_runtime_process(&paths)
         } {
-            Ok(result) => {
+            Ok(mut result) => {
+                let _ = reconcile_selector_intents_for_running_local(
+                    &self.repo_root,
+                    &self.state,
+                    &result.local_singbox,
+                )
+                .await
+                .map(|warnings| result.warnings.extend(warnings));
+                let _ = refresh_app_readiness_phase(
+                    &self.repo_root,
+                    &self.state,
+                    &result.local_singbox,
+                )
+                .await;
                 append_operation_event(&self.state, operation.id, &result.note)?;
                 update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
                 LocalRuntimeResponse {
@@ -980,6 +1152,9 @@ impl ControllerService for ControllerServerImpl {
     ) -> Result<Response<SelectorState>, Status> {
         let request = request.into_inner();
         let group = normalize_selector_group(request.group.as_deref())?;
+        ensure_selector_intents_seeded(&self.repo_root, &self.state)
+            .await
+            .map_err(Status::internal)?;
         let base_status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
         let local_singbox = merge_local_runtime(
@@ -1024,6 +1199,15 @@ impl ControllerService for ControllerServerImpl {
             &format!("setting selector {} -> {}", request.group, request.name),
         )?;
         let group = normalize_selector_group(Some(&request.group))?.to_owned();
+        if !is_allowed_selector_route(&request.name) {
+            update_operation_status(&self.state, operation.id, "FAILED")?;
+            return Err(Status::invalid_argument(format!(
+                "unknown selector route: {}",
+                request.name
+            )));
+        }
+        upsert_selector_intent(&self.state, &group, &request.name)
+            .map_err(Status::internal)?;
 
         let base_status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
@@ -1052,10 +1236,7 @@ impl ControllerService for ControllerServerImpl {
                 .await
             {
                 Ok((previous, mut selector)) => {
-                    let desired = selector_state_for_group(&base_status, &group)
-                        .and_then(|selector| selector.desired_main_route.clone());
-                    selector.desired_main_route =
-                        desired.or_else(|| selector.observed_main_route.clone());
+                    selector.desired_main_route = Some(request.name.clone());
                     append_operation_event(
                         &self.state,
                         operation.id,
@@ -1128,6 +1309,13 @@ impl ControllerService for ControllerServerImpl {
             .start_operation("deploy", "RUNNING")
             .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
         append_operation_event(&self.state, operation.id, "deploy requested")?;
+        let _ = upsert_controller_phases(
+            &self.state,
+            "REQUESTED",
+            "DEPLOYMENT_ABSENT",
+            None,
+            None,
+        );
 
         let deployment_label = generate_deployment_label(request.label_prefix.as_deref());
         append_operation_event(
@@ -1293,7 +1481,9 @@ impl ControllerService for ControllerServerImpl {
             append_operation_event(&self.state, operation.id, &format!("wrote {path}"))?;
         }
 
-        let base = match bootstrap_runtime_with_tls(
+        let base = match bootstrap_runtime_with_tls_resilient(
+            &self.state,
+            operation.id,
             AgentConnectionTarget {
                 endpoint: agent_transport.endpoint.clone(),
                 tls_paths: agent_transport.tls_paths.clone(),
@@ -1303,9 +1493,7 @@ impl ControllerService for ControllerServerImpl {
         .await
         {
             Ok(response) => response,
-            Err(err_box) => {
-                let err = err_box.to_string();
-                drop(err_box);
+            Err(err) => {
                 let rollback_warnings = rollback_failed_deploy(
                     &self.repo_root,
                     &self.state,
@@ -1399,7 +1587,9 @@ impl ControllerService for ControllerServerImpl {
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty())
         {
-            let tunnel = match bootstrap_runtime_with_tls(
+            let tunnel = match bootstrap_runtime_with_tls_resilient(
+                &self.state,
+                operation.id,
                 AgentConnectionTarget {
                     endpoint: agent_transport.endpoint.clone(),
                     tls_paths: agent_transport.tls_paths.clone(),
@@ -1409,9 +1599,7 @@ impl ControllerService for ControllerServerImpl {
             .await
             {
                 Ok(response) => response,
-                Err(err_box) => {
-                    let err = err_box.to_string();
-                    drop(err_box);
+                Err(err) => {
                     let rollback_warnings = rollback_failed_deploy(
                         &self.repo_root,
                         &self.state,
@@ -1499,10 +1687,11 @@ impl ControllerService for ControllerServerImpl {
                 operation.id,
                 "edge-agent service restarted with deployment TLS env",
             )?;
-            resolve_targeted_agent_connection_target(
+            resolve_targeted_agent_connection_target_for_endpoint(
                 &self.state,
                 &target.instance_id,
                 &target.target_ip,
+                &agent_transport.endpoint,
             )
             .map_err(|err| {
                 Status::internal(format!("failed to resolve final agent target: {err}"))
@@ -1518,9 +1707,19 @@ impl ControllerService for ControllerServerImpl {
             }
         };
 
-        let runtime_state = match verify_agent_runtime_target(&final_agent_target, true).await {
+        let runtime_state = match wait_for_agent_runtime_target(&final_agent_target, true).await {
             Ok(state) => state,
             Err(err) => {
+                if let Ok(config) = resolve_bootstrap_access_config(&self.repo_root, &self.state) {
+                    if let Ok(diag) = collect_edge_agent_diagnostics(&target, &config) {
+                        let _ = append_operation_event(
+                            &self.state,
+                            operation.id,
+                            &format!("edge-agent diagnostics: {diag}"),
+                        );
+                    }
+                }
+                let _ = append_operation_event(&self.state, operation.id, &err);
                 let rollback_warnings = rollback_failed_deploy(
                     &self.repo_root,
                     &self.state,
@@ -1543,6 +1742,13 @@ impl ControllerService for ControllerServerImpl {
             }
         };
         let runtime = RuntimeObservation::from_agent_state(&runtime_state);
+        let _ = upsert_controller_phases(
+            &self.state,
+            "TUNNEL_READY_VERIFIED",
+            "SERVER_RUNTIME_READY",
+            None,
+            None,
+        );
 
         let sync = match sync_local_config(
             &default_local_config_path(&self.repo_root),
@@ -1580,6 +1786,214 @@ impl ControllerService for ControllerServerImpl {
                 sync.instance_id.unwrap_or_default()
             ),
         )?;
+        let _ = upsert_controller_phases(
+            &self.state,
+            "LOCAL_CONFIG_SYNCED",
+            "SERVER_RUNTIME_READY",
+            None,
+            None,
+        );
+
+        let _ = upsert_controller_phases(
+            &self.state,
+            "LOCAL_RUNTIME_START_STARTED",
+            "SERVER_RUNTIME_READY",
+            None,
+            None,
+        );
+        let local_paths = LocalRuntimePaths {
+            singbox_binary_path: default_singbox_binary_path(),
+            config_path: default_local_config_path(&self.repo_root),
+            state_path: default_live_state_path(&self.repo_root),
+            runtime_root: default_runtime_root(&self.repo_root),
+        };
+        let local_runtime = match restart_runtime_process(&local_paths) {
+            Ok(result) => result,
+            Err(err) => {
+                let _ = upsert_controller_phases(
+                    &self.state,
+                    "FAILED",
+                    "APP_READINESS_FAILED",
+                    Some("local_runtime_start_failed"),
+                    Some(err.as_str()),
+                );
+                let _ = append_operation_event(
+                    &self.state,
+                    operation.id,
+                    &format!("local sing-box start failed: {err}"),
+                );
+                let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                return Ok(Response::new(DeployResponse {
+                    success: false,
+                    deployment: Some(bundle_to_proto_summary(&bundle, &target)),
+                    provider: Some(provider_observation_from_request(
+                        &request,
+                        &target.target_ip,
+                    )),
+                    runtime: Some(runtime),
+                    warnings: vec![err],
+                    operation: Some(operation_with_status(operation, "FAILED")),
+                }));
+            }
+        };
+        append_operation_event(&self.state, operation.id, &local_runtime.note)?;
+        let local_reconcile_warnings = reconcile_selector_intents_for_running_local(
+            &self.repo_root,
+            &self.state,
+            &local_runtime.local_singbox,
+        )
+        .await
+        .unwrap_or_else(|err| vec![err]);
+        let _ = upsert_controller_phases(
+            &self.state,
+            "LOCAL_RUNTIME_READY_VERIFIED",
+            "LOCAL_RUNTIME_READY",
+            None,
+            None,
+        );
+
+        let base_status =
+            collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
+        let observed_local = merge_local_runtime(
+            base_status.local_singbox.clone(),
+            inspect_local_runtime(&default_local_config_path(&self.repo_root)),
+        );
+        let desktop_selector = observe_selector_state(
+            observed_local.clone(),
+            base_status.selector.clone(),
+            DESKTOP_SELECTOR_GROUP,
+        )
+        .await;
+        let ubuntu_selector = observe_selector_state(
+            observed_local.clone(),
+            base_status.ubuntu_selector.clone(),
+            UBUNTU_SELECTOR_GROUP,
+        )
+        .await;
+        let selectors_ok = selector_is_converged(&desktop_selector) && selector_is_converged(&ubuntu_selector);
+        if !selectors_ok {
+            let _ = upsert_controller_phases(
+                &self.state,
+                "FAILED",
+                "APP_READINESS_FAILED",
+                Some("selector_reconcile_failed"),
+                Some("one or more selector groups did not converge to persisted intent"),
+            );
+            let _ = append_operation_event(
+                &self.state,
+                operation.id,
+                "selector verification failed after local runtime start",
+            );
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            let mut warnings = local_reconcile_warnings;
+            warnings.push(format!(
+                "desktop desired={:?} observed={:?}; ubuntu desired={:?} observed={:?}",
+                desktop_selector.desired_main_route,
+                desktop_selector.observed_main_route,
+                ubuntu_selector.desired_main_route,
+                ubuntu_selector.observed_main_route
+            ));
+            return Ok(Response::new(DeployResponse {
+                success: false,
+                deployment: Some(bundle_to_proto_summary(&bundle, &target)),
+                provider: Some(provider_observation_from_request(
+                    &request,
+                    &target.target_ip,
+                )),
+                runtime: Some(runtime),
+                warnings,
+                operation: Some(operation_with_status(operation, "FAILED")),
+            }));
+        }
+        let _ = upsert_controller_phases(
+            &self.state,
+            "SELECTORS_VERIFIED",
+            "SELECTORS_READY",
+            None,
+            None,
+        );
+
+        let _ = append_operation_event(
+            &self.state,
+            operation.id,
+            "waiting for desktop and ubuntu egress trace convergence",
+        );
+        let desktop_proxy = default_trace_proxy_url(&default_local_config_path(&self.repo_root))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| DEFAULT_TRACE_PROXY_URL.to_owned());
+        let desktop_trace = wait_for_trace_via_proxy(&desktop_proxy, EGRESS_TRACE_TIMEOUT_SECS).await;
+        let ubuntu_trace = match ubuntu_proxy_url_from_status(&ControllerStatus {
+            inventory: base_status.inventory.clone(),
+            agent_state: base_status.agent_state.clone(),
+            local_singbox: Some(observed_local.clone()),
+            deployment: base_status.deployment.clone(),
+            provider: base_status.provider.clone(),
+            runtime: base_status.runtime.clone(),
+            selector: Some(desktop_selector.clone()),
+            status_notes: base_status.status_notes.clone(),
+            ubuntu_selector: Some(ubuntu_selector.clone()),
+            ubuntu_proxy: base_status.ubuntu_proxy.clone(),
+            app_readiness_phase: base_status.app_readiness_phase,
+        }) {
+            Some(url) => wait_for_trace_via_proxy(&url, EGRESS_TRACE_TIMEOUT_SECS).await,
+            None => TraceObservation::unavailable(
+                "ubuntu proxy endpoint is not available in controller status",
+            ),
+        };
+        if !desktop_trace.available || !ubuntu_trace.available {
+            let _ = upsert_controller_phases(
+                &self.state,
+                "FAILED",
+                "APP_READINESS_FAILED",
+                Some("egress_trace_failed"),
+                Some("desktop or ubuntu egress trace failed"),
+            );
+            let _ = append_operation_event(
+                &self.state,
+                operation.id,
+                "egress trace verification failed",
+            );
+            let _ = update_operation_status(&self.state, operation.id, "FAILED");
+            let mut warnings = local_reconcile_warnings;
+            warnings.push(
+                desktop_trace
+                    .note
+                    .clone()
+                    .unwrap_or_else(|| "desktop trace unavailable".to_owned()),
+            );
+            warnings.push(
+                ubuntu_trace
+                    .note
+                    .clone()
+                    .unwrap_or_else(|| "ubuntu trace unavailable".to_owned()),
+            );
+            return Ok(Response::new(DeployResponse {
+                success: false,
+                deployment: Some(bundle_to_proto_summary(&bundle, &target)),
+                provider: Some(provider_observation_from_request(
+                    &request,
+                    &target.target_ip,
+                )),
+                runtime: Some(runtime),
+                warnings,
+                operation: Some(operation_with_status(operation, "FAILED")),
+            }));
+        }
+        let _ = upsert_controller_phases(
+            &self.state,
+            "APP_EGRESS_VERIFIED",
+            "APP_EGRESS_READY",
+            None,
+            None,
+        );
+        let _ = upsert_controller_phases(
+            &self.state,
+            "APP_READY_COMPLETED",
+            "APP_READY",
+            None,
+            None,
+        );
 
         update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
         let response = DeployResponse {
@@ -1590,7 +2004,7 @@ impl ControllerService for ControllerServerImpl {
                 &target.target_ip,
             )),
             runtime: Some(runtime),
-            warnings: apply_response.warnings,
+            warnings: merge_warnings(apply_response.warnings, local_reconcile_warnings),
             operation: Some(operation_with_status(operation, "SUCCEEDED")),
         };
         store_local_response(&self.state, "deploy_response", &response.encode_to_vec())?;
@@ -1958,6 +2372,428 @@ fn store_local_response(
     Ok(())
 }
 
+fn interrupt_stale_running_operations(state: &Arc<Mutex<EdgeState>>) -> Result<(), String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let running = guard
+        .list_operations_by_status("RUNNING")
+        .map_err(|err| format!("failed to list running operations: {err}"))?;
+    for operation in running {
+        guard
+            .append_operation_event(
+                operation.id,
+                "controller restarted while operation was still RUNNING; marked as INTERRUPTED/FAILED",
+            )
+            .map_err(|err| format!("failed to append interrupted operation event: {err}"))?;
+        guard
+            .update_operation_status(operation.id, "FAILED")
+            .map_err(|err| format!("failed to mark interrupted operation failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn upsert_selector_intent(
+    state: &Arc<Mutex<EdgeState>>,
+    group: &str,
+    route: &str,
+) -> Result<(), String> {
+    state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .upsert_selector_intent(group, route)
+        .map_err(|err| format!("failed to store selector intent: {err}"))
+}
+
+fn is_allowed_selector_route(route: &str) -> bool {
+    matches!(
+        route,
+        "auto-direct-tunnel"
+            | "hysteria2-direct"
+            | "vless-reality-direct"
+            | "auto-warp-tunnel"
+            | "hysteria2-warp"
+            | "vless-reality-warp"
+    )
+}
+
+async fn ensure_selector_intents_seeded(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+) -> Result<(), String> {
+    let missing_groups = {
+        let guard = state
+            .lock()
+            .map_err(|_| "controller state mutex poisoned".to_owned())?;
+        [DESKTOP_SELECTOR_GROUP, UBUNTU_SELECTOR_GROUP]
+            .into_iter()
+            .filter(|group| {
+                guard
+                    .get_selector_intent(group)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            })
+            .collect::<Vec<_>>()
+    };
+    if missing_groups.is_empty() {
+        return Ok(());
+    }
+
+    let local = inspect_local_runtime(&default_local_config_path(repo_root));
+    let controller_url = clash_controller_url(&local);
+    for group in missing_groups {
+        let desired = if let Some(url) = controller_url.as_ref() {
+            get_live_selector_state(url, group, default_aux_groups())
+                .await
+                .ok()
+                .and_then(|selector| selector.observed_main_route)
+        } else {
+            None
+        }
+        .or_else(|| {
+            let status = collect_controller_status(repo_root).ok()?;
+            selector_state_for_group(&status, group)?.desired_main_route.clone()
+        })
+        .unwrap_or_else(|| "auto-direct-tunnel".to_owned());
+        upsert_selector_intent(state, group, &desired)?;
+    }
+    Ok(())
+}
+
+async fn reconcile_selector_intents_for_running_local(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+    local_singbox: &edge_shared_types::LocalSingboxState,
+) -> Result<Vec<String>, String> {
+    ensure_selector_intents_seeded(repo_root, state).await?;
+    let Some(controller_url) = clash_controller_url(local_singbox) else {
+        return Ok(vec!["clash API endpoint is not configured".to_owned()]);
+    };
+
+    let intents = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .list_selector_intents()
+        .map_err(|err| format!("failed to list selector intents: {err}"))?;
+    let mut warnings = Vec::new();
+    for intent in intents {
+        match set_live_selector(
+            &controller_url,
+            &intent.group_name,
+            &intent.desired_route,
+            default_aux_groups(),
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(err) => warnings.push(format!(
+                "{} -> {} reconciliation failed: {}",
+                intent.group_name, intent.desired_route, err
+            )),
+        }
+    }
+    Ok(warnings)
+}
+
+async fn refresh_app_readiness_phase(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+    local_singbox: &edge_shared_types::LocalSingboxState,
+) -> Result<(), String> {
+    let base_status = collect_controller_status(repo_root)
+        .map_err(|err| format!("failed to collect controller status: {}", err.message))?;
+    let desktop_selector = observe_selector_state(
+        local_singbox.clone(),
+        base_status.selector.clone(),
+        DESKTOP_SELECTOR_GROUP,
+    )
+    .await;
+    let ubuntu_selector = observe_selector_state(
+        local_singbox.clone(),
+        base_status.ubuntu_selector.clone(),
+        UBUNTU_SELECTOR_GROUP,
+    )
+    .await;
+
+    if !local_singbox.process_running {
+        return upsert_controller_phases(
+            state,
+            "FAILED",
+            "APP_READINESS_FAILED",
+            Some("local_runtime_not_running"),
+            Some("local sing-box is not running"),
+        );
+    }
+    if !selector_is_converged(&desktop_selector) || !selector_is_converged(&ubuntu_selector) {
+        return upsert_controller_phases(
+            state,
+            "SELECTOR_INTENTS_RECONCILING",
+            "LOCAL_RUNTIME_READY",
+            None,
+            None,
+        );
+    }
+
+    let desktop_proxy = default_trace_proxy_url(&default_local_config_path(repo_root))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| DEFAULT_TRACE_PROXY_URL.to_owned());
+    let desktop_trace = trace_via_proxy(&desktop_proxy).await;
+    let ubuntu_trace = match base_status
+        .ubuntu_proxy
+        .as_ref()
+        .and_then(|proxy| proxy.url.clone())
+    {
+        Some(url) => trace_via_proxy(&url).await,
+        None => TraceObservation::unavailable("ubuntu proxy endpoint unavailable"),
+    };
+    if desktop_trace.available && ubuntu_trace.available {
+        upsert_controller_phases(
+            state,
+            "APP_READY_COMPLETED",
+            "APP_READY",
+            None,
+            None,
+        )
+    } else {
+        upsert_controller_phases(
+            state,
+            "SELECTORS_VERIFIED",
+            "SELECTORS_READY",
+            None,
+            None,
+        )
+    }
+}
+
+fn ubuntu_proxy_url_from_status(status: &ControllerStatus) -> Option<String> {
+    status
+        .ubuntu_proxy
+        .as_ref()
+        .and_then(|proxy| proxy.url.clone())
+}
+
+async fn wait_for_trace_via_proxy(proxy_url: &str, timeout_secs: u64) -> TraceObservation {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let mut last_observation = trace_via_proxy(proxy_url).await;
+    if last_observation.available {
+        return last_observation;
+    }
+
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        sleep(Duration::from_secs(2)).await;
+        last_observation = trace_via_proxy(proxy_url).await;
+        if last_observation.available {
+            return last_observation;
+        }
+    }
+
+    if last_observation.available {
+        return last_observation;
+    }
+
+    let timeout_note = match last_observation.note.clone() {
+        Some(note) if !note.is_empty() => format!(
+            "trace did not become available within {}s; last error: {}",
+            timeout_secs, note
+        ),
+        _ => format!(
+            "trace did not become available within {}s",
+            timeout_secs
+        ),
+    };
+    TraceObservation {
+        note: Some(timeout_note),
+        ..last_observation
+    }
+}
+
+fn build_doctor_checks(
+    status: &ControllerStatus,
+    desktop_trace: Option<&TraceObservation>,
+    ubuntu_trace: Option<&TraceObservation>,
+    request: &DoctorRequest,
+) -> Vec<DoctorCheck> {
+    let deployment = status.deployment.as_ref();
+    let runtime = status.runtime.as_ref();
+    let local = status.local_singbox.as_ref();
+    let selector = status.selector.as_ref();
+    let ubuntu_selector = status.ubuntu_selector.as_ref();
+    let ubuntu_proxy = status.ubuntu_proxy.as_ref();
+
+    let mut checks = vec![
+        DoctorCheck {
+            name: "state.active_deployment_present".to_owned(),
+            ok: deployment.is_some_and(|value| value.live_state_present),
+            detail: deployment
+                .and_then(|value| value.deployment_label.clone())
+                .unwrap_or_else(|| "no active deployment".to_owned()),
+        },
+        DoctorCheck {
+            name: "state.selector_intents_present".to_owned(),
+            ok: selector
+                .and_then(|value| value.desired_main_route.as_ref())
+                .is_some()
+                && ubuntu_selector
+                    .and_then(|value| value.desired_main_route.as_ref())
+                    .is_some(),
+            detail: "desktop and ubuntu desired routes must be persisted".to_owned(),
+        },
+        DoctorCheck {
+            name: "server.edge_agent_reachable".to_owned(),
+            ok: runtime.is_some_and(|value| value.edge_agent_reachable),
+            detail: runtime
+                .map(|value| value.warnings.join("; "))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "edge-agent status unavailable".to_owned()),
+        },
+        DoctorCheck {
+            name: "local.singbox_running".to_owned(),
+            ok: local.is_some_and(|value| value.process_running),
+            detail: local
+                .map(|value| value.warnings.join("; "))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "local sing-box runtime inspected".to_owned()),
+        },
+        DoctorCheck {
+            name: "selector.desktop_converged".to_owned(),
+            ok: selector.is_some_and(|value| {
+                value.desired_main_route.is_some()
+                    && value.desired_main_route == value.observed_main_route
+                    && !value.degraded
+            }),
+            detail: selector
+                .map(|value| {
+                    format!(
+                        "desired={:?}, observed={:?}",
+                        value.desired_main_route, value.observed_main_route
+                    )
+                })
+                .unwrap_or_else(|| "desktop selector state unavailable".to_owned()),
+        },
+        DoctorCheck {
+            name: "selector.ubuntu_converged".to_owned(),
+            ok: ubuntu_selector.is_some_and(|value| {
+                value.desired_main_route.is_some()
+                    && value.desired_main_route == value.observed_main_route
+                    && !value.degraded
+            }),
+            detail: ubuntu_selector
+                .map(|value| {
+                    format!(
+                        "desired={:?}, observed={:?}",
+                        value.desired_main_route, value.observed_main_route
+                    )
+                })
+                .unwrap_or_else(|| "ubuntu selector state unavailable".to_owned()),
+        },
+        DoctorCheck {
+            name: "ubuntu.proxy_available".to_owned(),
+            ok: ubuntu_proxy.is_some_and(|value| value.available),
+            detail: ubuntu_proxy
+                .and_then(|value| value.url.clone())
+                .unwrap_or_else(|| "ubuntu proxy URL unavailable".to_owned()),
+        },
+    ];
+
+    if request.require_server_ready {
+        checks.push(DoctorCheck {
+            name: "server.runtime_ready".to_owned(),
+            ok: runtime.is_some_and(|value| {
+                value.edge_agent_reachable
+                    && value.docker_reachable
+                    && value.compose_file_present
+                    && value.missing_containers.is_empty()
+            }),
+            detail: runtime
+                .map(|value| {
+                    format!(
+                        "docker={}, compose={}, missing={}",
+                        value.docker_reachable,
+                        value.compose_file_present,
+                        value.missing_containers.join(", ")
+                    )
+                })
+                .unwrap_or_else(|| "server runtime unavailable".to_owned()),
+        });
+    }
+    if request.require_local_runtime {
+        checks.push(DoctorCheck {
+            name: "local.managed_config_active".to_owned(),
+            ok: local.is_some_and(|value| value.managed_config),
+            detail: local
+                .and_then(|value| value.active_config_path.clone())
+                .unwrap_or_else(|| "active local config unavailable".to_owned()),
+        });
+    }
+    if request.require_egress_traces {
+        checks.push(DoctorCheck {
+            name: "egress.desktop_trace_available".to_owned(),
+            ok: desktop_trace.is_some_and(|value| value.available),
+            detail: desktop_trace
+                .and_then(|value| value.ip.clone())
+                .or_else(|| desktop_trace.and_then(|value| value.note.clone()))
+                .unwrap_or_else(|| "desktop trace unavailable".to_owned()),
+        });
+        checks.push(DoctorCheck {
+            name: "egress.ubuntu_trace_available".to_owned(),
+            ok: ubuntu_trace.is_some_and(|value| value.available),
+            detail: ubuntu_trace
+                .and_then(|value| value.ip.clone())
+                .or_else(|| ubuntu_trace.and_then(|value| value.note.clone()))
+                .unwrap_or_else(|| "ubuntu trace unavailable".to_owned()),
+        });
+    }
+
+    checks
+}
+
+fn selector_is_converged(selector: &SelectorState) -> bool {
+    selector.desired_main_route.is_some()
+        && selector.desired_main_route == selector.observed_main_route
+        && !selector.degraded
+}
+
+fn upsert_controller_phases(
+    state: &Arc<Mutex<EdgeState>>,
+    deploy_phase: &str,
+    app_readiness_phase: &str,
+    last_error_code: Option<&str>,
+    last_error_message: Option<&str>,
+) -> Result<(), String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let existing = guard
+        .get_controller_state()
+        .map_err(|err| format!("failed to read controller state: {err}"))?;
+    guard
+        .upsert_controller_state(NewControllerState {
+            active_deployment_label: existing
+                .as_ref()
+                .and_then(|value| value.active_deployment_label.as_deref()),
+            active_instance_id: existing
+                .as_ref()
+                .and_then(|value| value.active_instance_id.as_deref()),
+            active_server_ip: existing
+                .as_ref()
+                .and_then(|value| value.active_server_ip.as_deref()),
+            active_tunnel_domain: existing
+                .as_ref()
+                .and_then(|value| value.active_tunnel_domain.as_deref()),
+            deploy_phase,
+            app_readiness_phase,
+            last_error_code,
+            last_error_message,
+        })
+        .map_err(|err| format!("failed to update controller state phases: {err}"))?;
+    Ok(())
+}
+
 impl Drop for SshTunnelGuard {
     fn drop(&mut self) {
         if let Ok(None) = self.child.try_wait() {
@@ -2057,7 +2893,7 @@ async fn resolve_deploy_target(
         None
     };
 
-    let instance = create_instance(
+    let instance = create_or_adopt_vultr_instance(
         &api_key,
         &CreateInstanceRequest {
             region: &region,
@@ -2068,6 +2904,7 @@ async fn resolve_deploy_target(
             ssh_key_id: &ssh_key_id,
             cloud_init: &cloud_init,
         },
+        deployment_label,
     )
     .await?;
     let ready = wait_for_instance_ready(&api_key, &instance.id).await?;
@@ -2110,6 +2947,57 @@ async fn wait_for_instance_ready(
         "instance {} did not become ready in time: status={}, server_status={}, main_ip={}",
         last.id, last.status, last.server_status, last.main_ip
     ))
+}
+
+fn is_retryable_vultr_transport_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("client error (connect)")
+        || normalized.contains("dns error")
+        || normalized.contains("tcp connect error")
+        || normalized.contains("connection reset")
+        || normalized.contains("timed out")
+        || normalized.contains("timeout")
+}
+
+async fn find_vultr_instance_by_label(
+    api_key: &str,
+    deployment_label: &str,
+) -> Result<Option<edge_provider_vultr::VultrInstance>, String> {
+    let instances = list_instances(api_key).await?;
+    Ok(instances
+        .into_iter()
+        .find(|instance| instance.label == deployment_label))
+}
+
+async fn create_or_adopt_vultr_instance(
+    api_key: &str,
+    request: &CreateInstanceRequest<'_>,
+    deployment_label: &str,
+) -> Result<edge_provider_vultr::VultrInstance, String> {
+    let mut last_error = None;
+    for attempt in 1..=VULTR_CREATE_ATTEMPTS {
+        match create_instance(api_key, request).await {
+            Ok(instance) => return Ok(instance),
+            Err(err) if is_retryable_vultr_transport_error(&err) => {
+                if let Some(instance) = find_vultr_instance_by_label(api_key, deployment_label).await?
+                {
+                    return Ok(instance);
+                }
+                last_error = Some(err);
+                if attempt < VULTR_CREATE_ATTEMPTS {
+                    sleep(Duration::from_secs((attempt as u64) * 3)).await;
+                    continue;
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        format!(
+            "failed to create or adopt Vultr instance for {}",
+            deployment_label
+        )
+    }))
 }
 
 fn read_cloud_init_template(repo_root: &Path) -> Result<String, String> {
@@ -2259,9 +3147,15 @@ fn resolve_bootstrap_access_config(
 }
 
 fn backend_ready_for_local_runtime(repo_root: &Path) -> bool {
-    read_live_deployment_summary(repo_root)
-        .map(|summary| summary.live_state_present)
-        .unwrap_or(false)
+    let db_path = repo_root.join(DEFAULT_STATE_DB);
+    let Ok(state) = EdgeState::open_or_create(&db_path) else {
+        return false;
+    };
+    state
+        .get_controller_state()
+        .ok()
+        .flatten()
+        .is_some_and(|value| value.active_instance_id.is_some() || value.active_server_ip.is_some())
 }
 
 fn default_edge_agent_binary_path(repo_root: &Path) -> Option<PathBuf> {
@@ -2612,6 +3506,46 @@ fn run_command(program: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
+fn run_command_capture(program: &str, args: &[String]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|err| format!("failed to start {program}: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if output.status.success() {
+        if stdout.is_empty() {
+            Ok(stderr)
+        } else if stderr.is_empty() {
+            Ok(stdout)
+        } else {
+            Ok(format!("{stdout} | {stderr}"))
+        }
+    } else {
+        Err(format!(
+            "{program} exited with status {}: {} {}",
+            output.status,
+            stdout,
+            stderr
+        ))
+    }
+}
+
+fn collect_edge_agent_diagnostics(
+    target: &ResolvedDeployTarget,
+    config: &BootstrapAccessConfig,
+) -> Result<String, String> {
+    let status = run_command_capture(
+        "ssh",
+        &ssh_args(
+            config,
+            &target.target_ip,
+            "systemctl is-active edge-agent.service && journalctl -u edge-agent.service -n 20 --no-pager",
+        ),
+    )?;
+    Ok(status.replace('\n', " | "))
+}
+
 async fn apply_bundle_to_agent_target(
     target: &AgentConnectionTarget,
     bundle: &PreparedDeploymentBundle,
@@ -2662,6 +3596,31 @@ async fn verify_agent_runtime_target(
         .await
         .map_err(|err| format!("edge-agent verify runtime RPC failed: {err}"))?;
     Ok(response.into_inner())
+}
+
+async fn wait_for_agent_runtime_target(
+    target: &AgentConnectionTarget,
+    require_readiness: bool,
+) -> Result<AgentState, String> {
+    let mut last_error = None;
+    for _ in 0..20 {
+        match verify_agent_runtime_target(target, require_readiness).await {
+            Ok(state) if !require_readiness || state.ready => return Ok(state),
+            Ok(state) => {
+                last_error = Some(format!(
+                    "edge-agent responded but readiness is false: {}",
+                    state.degraded_reasons.join("; ")
+                ));
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+    Err(last_error.unwrap_or_else(|| {
+        "edge-agent did not become reachable before readiness timeout".to_owned()
+    }))
 }
 
 fn bundle_file_payload_to_proto(file: &edge_bundle::BundleFilePayload) -> BundleFile {
@@ -2805,6 +3764,25 @@ fn persist_bundle_locally(
     guard
         .record_deployment(&bundle.label, &target.instance_id, &target.target_ip)
         .map_err(|err| format!("failed to record deployment: {err}"))?;
+    let live_state: Value = serde_json::from_str(&bundle.current_state_json)
+        .map_err(|err| format!("failed to parse rendered current state JSON: {err}"))?;
+    let tunnel_domain = live_state
+        .get("tunnel")
+        .and_then(Value::as_object)
+        .and_then(|tunnel| tunnel.get("domain"))
+        .and_then(Value::as_str);
+    guard
+        .upsert_controller_state(NewControllerState {
+            active_deployment_label: Some(&bundle.label),
+            active_instance_id: Some(&target.instance_id),
+            active_server_ip: Some(&target.target_ip),
+            active_tunnel_domain: tunnel_domain,
+            deploy_phase: "DEPLOYMENT_PUBLISHED",
+            app_readiness_phase: "SERVER_RUNTIME_READY",
+            last_error_code: None,
+            last_error_message: None,
+        })
+        .map_err(|err| format!("failed to update controller state: {err}"))?;
     guard
         .upsert_trust_entry(NewTrustEntry {
             deployment_id: &bundle.label,
@@ -2848,6 +3826,31 @@ fn persist_bundle_locally(
 fn read_live_deployment_summary(
     repo_root: &Path,
 ) -> Result<edge_shared_types::DeploymentSummary, String> {
+    let db_path = repo_root.join(DEFAULT_STATE_DB);
+    if db_path.is_file() {
+        let state = EdgeState::open_or_create(&db_path)
+            .map_err(|err| format!("failed to open {}: {err}", db_path.display()))?;
+        if let Some(controller) = state
+            .get_controller_state()
+            .map_err(|err| format!("failed to read controller state: {err}"))?
+        {
+            let live_state_present = controller.active_deployment_label.is_some()
+                || controller.active_instance_id.is_some()
+                || controller.active_server_ip.is_some();
+            if live_state_present {
+                return Ok(edge_shared_types::DeploymentSummary {
+                    live_state_present: true,
+                    source_state_path: Some(db_path.display().to_string()),
+                    deployment_label: controller.active_deployment_label,
+                    instance_id: controller.active_instance_id,
+                    server_ip: controller.active_server_ip,
+                    tunnel_domain: controller.active_tunnel_domain,
+                });
+            }
+            return Ok(edge_shared_types::DeploymentSummary::missing());
+        }
+    }
+
     let path = default_live_state_path(repo_root);
     if !path.is_file() {
         return Ok(edge_shared_types::DeploymentSummary::missing());
@@ -2910,6 +3913,11 @@ fn clear_live_deployment_state(
     state
         .lock()
         .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .clear_controller_state()
+        .map_err(|err| format!("failed to clear controller state: {err}"))?;
+    state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?
         .clear_trust_entries(Some(instance_id), Some(target_ip))
         .map_err(|err| format!("failed to clear trust rows: {err}"))?;
     Ok(())
@@ -2944,6 +3952,32 @@ fn rollback_live_deployment_state(
     guard
         .clear_trust_entry(deployment_label, instance_id, target_ip)
         .map_err(|err| format!("failed to clear trust row: {err}"))?;
+    match previous_live_state {
+        Some(raw) => {
+            let value: Value = serde_json::from_str(raw)
+                .map_err(|err| format!("failed to parse rollback current state JSON: {err}"))?;
+            let tunnel_domain = value
+                .get("tunnel")
+                .and_then(Value::as_object)
+                .and_then(|tunnel| tunnel.get("domain"))
+                .and_then(Value::as_str);
+            guard
+                .upsert_controller_state(NewControllerState {
+                    active_deployment_label: value.get("label").and_then(Value::as_str),
+                    active_instance_id: value.get("instance_id").and_then(Value::as_str),
+                    active_server_ip: value.get("ip").and_then(Value::as_str),
+                    active_tunnel_domain: tunnel_domain,
+                    deploy_phase: "DEPLOYMENT_PUBLISHED",
+                    app_readiness_phase: "SERVER_RUNTIME_READY",
+                    last_error_code: None,
+                    last_error_message: None,
+                })
+                .map_err(|err| format!("failed to restore controller state: {err}"))?;
+        }
+        None => guard
+            .clear_controller_state()
+            .map_err(|err| format!("failed to clear controller state: {err}"))?,
+    }
     Ok(())
 }
 
@@ -3217,6 +4251,28 @@ fn resolve_targeted_agent_connection_target(
     drop(guard);
 
     persisted_agent_connection_target(&deployment, &trust).map(Some)
+}
+
+fn resolve_targeted_agent_connection_target_for_endpoint(
+    state: &Arc<Mutex<EdgeState>>,
+    instance_id: &str,
+    target_ip: &str,
+    endpoint: &str,
+) -> Result<Option<AgentConnectionTarget>, String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let Some(trust) = guard
+        .find_latest_trust_entry(instance_id, target_ip)
+        .map_err(|err| format!("failed to load targeted trust entry: {err}"))?
+    else {
+        return Ok(None);
+    };
+    let tls_paths = persisted_agent_tls_paths(&trust)?;
+    Ok(Some(AgentConnectionTarget {
+        endpoint: endpoint.to_owned(),
+        tls_paths,
+    }))
 }
 
 fn persisted_agent_connection_target(

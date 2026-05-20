@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+edge-state = { path = "../edge-state" }
 edge-singbox = { path = "../edge-singbox" }
 edge-shared-types = { path = "../edge-shared-types" }
 serde = { version = "1.0.228", features = ["derive"] }

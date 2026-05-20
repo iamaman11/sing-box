@@ -1,9 +1,11 @@
+use edge_state::EdgeState;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use edge_shared_types::{
-    AgentState, ControllerStatus, DeployPhase, DeploymentSummary, ErrorSubsystem, FileCategory,
-    FilePresence, InventoryReport, PlatformError, ProviderObservation, RuntimeObservation,
+    AgentState, AppReadinessPhase, ControllerStatus, DeployPhase, DeploymentSummary,
+    ErrorSubsystem, FileCategory, FilePresence, InventoryReport, PlatformError,
+    ProviderObservation, RuntimeObservation,
 };
 use edge_singbox::{
     ExpectedTunnelBindings, LocalConfigObservation, TunnelBinding, inspect_local_config,
@@ -139,6 +141,9 @@ const LOCAL_ONLY_FILES: &[&str] = &[
 
 const CURRENT_STATE_PATH: &str = "win/vultr-waw/current-edge.json";
 const EXPECTED_LOCAL_CONFIG_PATH: &str = "win/windows/edge-dns-clean-vultr-dual.json";
+const DEFAULT_STATE_DB_PATH: &str = "edge-platform/.runtime/controller-state.sqlite";
+const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
+const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 
 pub fn collect_repo_inventory(repo_root: &Path) -> Result<InventoryReport, PlatformError> {
     let repo_root = canonical_repo_root(repo_root)?;
@@ -203,17 +208,19 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     let repo_root = canonical_repo_root(repo_root)?;
     let inventory = collect_repo_inventory(&repo_root)?;
     let agent_state = AgentState::bootstrap_placeholder();
-    let singbox = collect_local_singbox_state(&repo_root);
-    let deployment = collect_deployment_summary(&repo_root)?;
+    let mut singbox = collect_local_singbox_state(&repo_root);
+    let controller_state = read_controller_state(&repo_root)?;
+    let deployment = collect_deployment_summary(&repo_root, controller_state.as_ref())?;
     let provider = ProviderObservation::placeholder();
     let runtime = RuntimeObservation::placeholder();
+    apply_selector_intents(&repo_root, &mut singbox);
 
     let mut status_notes = Vec::new();
     if !inventory.blockers.is_empty() {
         status_notes.push("required repository inputs are incomplete".to_owned());
     }
     if !deployment.live_state_present {
-        status_notes.push("live deployment state file is absent".to_owned());
+        status_notes.push("active deployment is absent in authoritative controller state".to_owned());
     }
     if singbox.selector.degraded {
         status_notes.push("local selector config requires review".to_owned());
@@ -233,6 +240,10 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
         ubuntu_selector: Some(singbox.ubuntu_selector),
         ubuntu_proxy: Some(singbox.ubuntu_proxy),
         status_notes,
+        app_readiness_phase: controller_state
+            .as_ref()
+            .map(|state| app_readiness_phase_from_str(&state.app_readiness_phase) as i32)
+            .unwrap_or(AppReadinessPhase::DeploymentAbsent as i32),
     })
 }
 
@@ -257,7 +268,27 @@ fn collect_local_singbox_state(repo_root: &Path) -> LocalConfigObservation {
     inspect_local_config(&expected_config_path, expected_bindings.as_ref())
 }
 
-fn collect_deployment_summary(repo_root: &Path) -> Result<DeploymentSummary, PlatformError> {
+fn collect_deployment_summary(
+    repo_root: &Path,
+    controller_state: Option<&edge_state::StoredControllerState>,
+) -> Result<DeploymentSummary, PlatformError> {
+    if let Some(state) = controller_state {
+        let live_state_present = state.active_instance_id.is_some()
+            || state.active_server_ip.is_some()
+            || state.active_deployment_label.is_some();
+        if live_state_present {
+            return Ok(DeploymentSummary {
+                live_state_present: true,
+                source_state_path: Some(repo_root.join(DEFAULT_STATE_DB_PATH).display().to_string()),
+                deployment_label: state.active_deployment_label.clone(),
+                instance_id: state.active_instance_id.clone(),
+                server_ip: state.active_server_ip.clone(),
+                tunnel_domain: state.active_tunnel_domain.clone(),
+            });
+        }
+        return Ok(DeploymentSummary::missing());
+    }
+
     let state_path = repo_root.join(CURRENT_STATE_PATH);
     if !state_path.exists() {
         return Ok(DeploymentSummary::missing());
@@ -294,6 +325,58 @@ fn collect_deployment_summary(repo_root: &Path) -> Result<DeploymentSummary, Pla
             .and_then(|tunnel| tunnel.domain)
             .filter(|value| !value.is_empty()),
     })
+}
+
+fn read_controller_state(
+    repo_root: &Path,
+) -> Result<Option<edge_state::StoredControllerState>, PlatformError> {
+    let db_path = repo_root.join(DEFAULT_STATE_DB_PATH);
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+    let state = EdgeState::open_or_create(&db_path).map_err(|err| {
+        PlatformError::new(
+            "controller_state_open_failed",
+            "controller.status",
+            format!("failed to open {}: {err}", db_path.display()),
+            true,
+            ErrorSubsystem::State,
+        )
+    })?;
+    state.get_controller_state().map_err(|err| {
+        PlatformError::new(
+            "controller_state_read_failed",
+            "controller.status",
+            format!("failed to read controller state: {err}"),
+            true,
+            ErrorSubsystem::State,
+        )
+    })
+}
+
+fn apply_selector_intents(repo_root: &Path, singbox: &mut LocalConfigObservation) {
+    let db_path = repo_root.join(DEFAULT_STATE_DB_PATH);
+    let Ok(state) = EdgeState::open_or_create(&db_path) else {
+        return;
+    };
+    if let Ok(Some(intent)) = state.get_selector_intent(DESKTOP_SELECTOR_GROUP) {
+        singbox.selector.desired_main_route = Some(intent.desired_route);
+    }
+    if let Ok(Some(intent)) = state.get_selector_intent(UBUNTU_SELECTOR_GROUP) {
+        singbox.ubuntu_selector.desired_main_route = Some(intent.desired_route);
+    }
+}
+
+fn app_readiness_phase_from_str(value: &str) -> AppReadinessPhase {
+    match value {
+        "SERVER_RUNTIME_READY" => AppReadinessPhase::ServerRuntimeReady,
+        "LOCAL_RUNTIME_READY" => AppReadinessPhase::LocalRuntimeReady,
+        "SELECTORS_READY" => AppReadinessPhase::SelectorsReady,
+        "APP_EGRESS_READY" => AppReadinessPhase::AppEgressReady,
+        "APP_READY" => AppReadinessPhase::AppReady,
+        "APP_READINESS_FAILED" => AppReadinessPhase::AppReadinessFailed,
+        _ => AppReadinessPhase::DeploymentAbsent,
+    }
 }
 
 fn file_presence(repo_root: &Path, path: &str, category: FileCategory) -> FilePresence {

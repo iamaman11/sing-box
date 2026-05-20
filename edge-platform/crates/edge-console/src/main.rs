@@ -9,17 +9,19 @@ use std::time::{Duration, Instant};
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, Empty, GetOperationRequest,
-    GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
-    ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest,
-    SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
-    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
+    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DoctorRequest,
+    DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest,
+    GetTraceRequest, ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse,
+    OperationStatus, RestartLocalRuntimeRequest, SecretRefEntry, SelectorState,
+    SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
+    StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
 };
 use tonic::Request;
 use tonic::transport::Channel;
 
 const DEFAULT_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:50051";
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
+const MAX_CONTROLLER_SERVICE_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
 const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
 const DEFAULT_ACME_EMAIL: &str = "admin@alegria.by";
@@ -47,6 +49,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let status = fetch_status(controller_endpoint_from_args(2)).await?;
             print_status(&status);
             Ok(())
+        }
+        "doctor" => {
+            let doctor = fetch_doctor(controller_endpoint_from_args(2)).await?;
+            print_doctor(&doctor);
+            if doctor.ok {
+                Ok(())
+            } else {
+                Err("doctor reported failing checks".into())
+            }
         }
         "secrets" => {
             let secrets = list_secret_refs(controller_endpoint_from_args(2)).await?;
@@ -233,6 +244,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
         println!("24. List configured secrets");
         println!("25. Show operation");
         println!("26. Watch operation");
+        println!("27. Doctor");
         println!("0. Exit");
         print!("Select: ");
         io::stdout().flush()?;
@@ -444,6 +456,10 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 let operation_id = prompt("Operation id")?;
                 watch_operation(controller_endpoint.clone(), operation_id.parse()?).await?;
             }
+            "27" => {
+                let doctor = fetch_doctor(controller_endpoint.clone()).await?;
+                print_doctor(&doctor);
+            }
             "0" => return Ok(()),
             _ => println!("Unknown option"),
         }
@@ -554,6 +570,14 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
         repo_root.join(".runtime")
     };
     std::fs::create_dir_all(&runtime_root)?;
+    rotate_service_log_if_needed(
+        &runtime_root.join("controller-service-stdout.log"),
+        MAX_CONTROLLER_SERVICE_LOG_BYTES,
+    )?;
+    rotate_service_log_if_needed(
+        &runtime_root.join("controller-service-stderr.log"),
+        MAX_CONTROLLER_SERVICE_LOG_BYTES,
+    )?;
 
     let stdout = std::fs::OpenOptions::new()
         .create(true)
@@ -578,6 +602,22 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
     } else {
         Err("edge-controller did not start listening on 127.0.0.1:50051 in time".into())
     }
+}
+
+fn rotate_service_log_if_needed(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    if metadata.len() <= max_bytes {
+        return Ok(());
+    }
+    std::fs::write(path, b"")?;
+    Ok(())
 }
 
 async fn connect_controller(
@@ -610,20 +650,30 @@ async fn connect_controller(
 
 fn deploy_request_from_args() -> DeployRequest {
     DeployRequest {
-        label_prefix: env::args().nth(2),
+        label_prefix: env::args().nth(2).or_else(|| Some("waw-edge".to_owned())),
         target_ip: env::args().nth(3),
         instance_id: env::args().nth(4),
-        tunnel_domain: env::args().nth(5),
-        acme_email: env::args().nth(6),
-        dns_record_name: env::args().nth(7),
-        cloudflare_zone_name: env::args().nth(8),
+        tunnel_domain: env::args()
+            .nth(5)
+            .or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
+        acme_email: env::args()
+            .nth(6)
+            .or_else(|| Some(DEFAULT_ACME_EMAIL.to_owned())),
+        dns_record_name: env::args()
+            .nth(7)
+            .or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
+        cloudflare_zone_name: env::args()
+            .nth(8)
+            .or_else(|| Some(DEFAULT_CLOUDFLARE_ZONE.to_owned())),
         mock_provider: env::var("EDGE_MOCK_PROVIDER")
             .ok()
             .is_some_and(|value| value == "1"),
         skip_dns: env::var("EDGE_SKIP_DNS")
             .ok()
             .is_some_and(|value| value == "1"),
-        snapshot_id: env::args().nth(9),
+        snapshot_id: env::args()
+            .nth(9)
+            .or_else(|| Some(DEFAULT_VULTR_SNAPSHOT_ID.to_owned())),
     }
 }
 
@@ -648,6 +698,18 @@ fn destroy_request_from_args() -> DestroyRequest {
 async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client.get_status(Request::new(Empty {})).await?;
+    Ok(response.into_inner())
+}
+
+async fn fetch_doctor(endpoint: String) -> Result<DoctorResponse, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    let response = client
+        .doctor(Request::new(DoctorRequest {
+            require_server_ready: true,
+            require_local_runtime: true,
+            require_egress_traces: true,
+        }))
+        .await?;
     Ok(response.into_inner())
 }
 
@@ -946,6 +1008,10 @@ fn print_status(status: &ControllerStatus) {
             println!("Tunnel domain          : {tunnel_domain}");
         }
     }
+    println!(
+        "App readiness phase    : {}",
+        app_readiness_label(status.app_readiness_phase)
+    );
 
     if let Some(runtime) = &status.runtime {
         println!(
@@ -1024,6 +1090,28 @@ fn print_status(status: &ControllerStatus) {
 
     for note in &status.status_notes {
         println!("Status note            : {note}");
+    }
+}
+
+fn print_doctor(doctor: &DoctorResponse) {
+    println!();
+    println!(
+        "Doctor verdict         : {}",
+        if doctor.ok { "ok" } else { "failed" }
+    );
+    for check in &doctor.checks {
+        println!(
+            "{} : {} ({})",
+            check.name,
+            if check.ok { "ok" } else { "failed" },
+            check.detail
+        );
+    }
+    if let Some(trace) = &doctor.desktop_trace {
+        print_trace_with_label("Desktop egress", trace);
+    }
+    if let Some(trace) = &doctor.ubuntu_trace {
+        print_trace_with_label("Ubuntu egress", trace);
     }
 }
 
@@ -1123,6 +1211,21 @@ fn print_bootstrap_result(response: &BootstrapRuntimeResponse) {
         for warning in &response.warnings {
             println!("Bootstrap warning      : {warning}");
         }
+    }
+}
+
+fn app_readiness_label(value: i32) -> &'static str {
+    match edge_shared_types::AppReadinessPhase::try_from(value)
+        .unwrap_or(edge_shared_types::AppReadinessPhase::Unspecified)
+    {
+        edge_shared_types::AppReadinessPhase::DeploymentAbsent => "deployment absent",
+        edge_shared_types::AppReadinessPhase::ServerRuntimeReady => "server runtime ready",
+        edge_shared_types::AppReadinessPhase::LocalRuntimeReady => "local runtime ready",
+        edge_shared_types::AppReadinessPhase::SelectorsReady => "selectors ready",
+        edge_shared_types::AppReadinessPhase::AppEgressReady => "app egress ready",
+        edge_shared_types::AppReadinessPhase::AppReady => "app ready",
+        edge_shared_types::AppReadinessPhase::AppReadinessFailed => "app readiness failed",
+        edge_shared_types::AppReadinessPhase::Unspecified => "unspecified",
     }
 }
 
@@ -1395,5 +1498,23 @@ mod tests {
             "running"
         );
         assert_eq!(lifecycle_status_label(99), "unknown");
+    }
+
+    #[test]
+    fn rotates_large_controller_service_log() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "edge-console-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let path = temp_root.join("controller-service-stderr.log");
+        std::fs::write(&path, vec![b'x'; 32]).unwrap();
+        rotate_service_log_if_needed(&path, 8).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }
