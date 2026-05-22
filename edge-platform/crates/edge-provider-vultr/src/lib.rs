@@ -112,8 +112,18 @@ fn is_retryable_transport_error(message: &str) -> bool {
         || normalized.contains("dns error")
         || normalized.contains("tcp connect error")
         || normalized.contains("connection reset")
+        || normalized.contains("connection aborted")
+        || normalized.contains("broken pipe")
+        || normalized.contains("connection refused")
+        || normalized.contains("unexpected eof")
         || normalized.contains("timed out")
         || normalized.contains("timeout")
+        || normalized.contains("os error 10053")
+        || normalized.contains("os error 10054")
+        || normalized.contains("os error 10060")
+        || normalized.contains("os error 104")
+        || normalized.contains("os error 110")
+        || normalized.contains("os error 111")
 }
 
 async fn send_with_safe_retries<F, Fut>(

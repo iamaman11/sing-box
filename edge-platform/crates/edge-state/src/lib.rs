@@ -91,6 +91,7 @@ impl EdgeState {
                 active_instance_id TEXT,
                 active_server_ip TEXT,
                 active_tunnel_domain TEXT,
+                active_deployment_state_json TEXT,
                 deploy_phase TEXT NOT NULL,
                 app_readiness_phase TEXT NOT NULL,
                 last_error_code TEXT,
@@ -111,6 +112,7 @@ impl EdgeState {
         self.ensure_column("trust_store", "server_cert_path", "TEXT")?;
         self.ensure_column("trust_store", "client_cert_path", "TEXT")?;
         self.ensure_column("trust_store", "client_key_path", "TEXT")?;
+        self.ensure_column("controller_state", "active_deployment_state_json", "TEXT")?;
         self.conn.execute_batch(
             "
             CREATE UNIQUE INDEX IF NOT EXISTS trust_store_identity_idx
@@ -177,18 +179,20 @@ impl EdgeState {
                 active_instance_id,
                 active_server_ip,
                 active_tunnel_domain,
+                active_deployment_state_json,
                 deploy_phase,
                 app_readiness_phase,
                 last_error_code,
                 last_error_message,
                 updated_at_unix
             )
-            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(singleton_key) DO UPDATE SET
                 active_deployment_label = excluded.active_deployment_label,
                 active_instance_id = excluded.active_instance_id,
                 active_server_ip = excluded.active_server_ip,
                 active_tunnel_domain = excluded.active_tunnel_domain,
+                active_deployment_state_json = excluded.active_deployment_state_json,
                 deploy_phase = excluded.deploy_phase,
                 app_readiness_phase = excluded.app_readiness_phase,
                 last_error_code = excluded.last_error_code,
@@ -200,6 +204,7 @@ impl EdgeState {
                 state.active_instance_id,
                 state.active_server_ip,
                 state.active_tunnel_domain,
+                state.active_deployment_state_json,
                 state.deploy_phase,
                 state.app_readiness_phase,
                 state.last_error_code,
@@ -220,6 +225,7 @@ impl EdgeState {
                     active_instance_id,
                     active_server_ip,
                     active_tunnel_domain,
+                    active_deployment_state_json,
                     deploy_phase,
                     app_readiness_phase,
                     last_error_code,
@@ -235,11 +241,12 @@ impl EdgeState {
                         active_instance_id: row.get(1)?,
                         active_server_ip: row.get(2)?,
                         active_tunnel_domain: row.get(3)?,
-                        deploy_phase: row.get(4)?,
-                        app_readiness_phase: row.get(5)?,
-                        last_error_code: row.get(6)?,
-                        last_error_message: row.get(7)?,
-                        updated_at_unix: row.get(8)?,
+                        active_deployment_state_json: row.get(4)?,
+                        deploy_phase: row.get(5)?,
+                        app_readiness_phase: row.get(6)?,
+                        last_error_code: row.get(7)?,
+                        last_error_message: row.get(8)?,
+                        updated_at_unix: row.get(9)?,
                     })
                 },
             )
@@ -255,6 +262,7 @@ impl EdgeState {
                 active_instance_id = NULL,
                 active_server_ip = NULL,
                 active_tunnel_domain = NULL,
+                active_deployment_state_json = NULL,
                 deploy_phase = 'DEPLOYMENT_ABSENT',
                 app_readiness_phase = 'DEPLOYMENT_ABSENT',
                 last_error_code = NULL,
@@ -420,6 +428,32 @@ impl EdgeState {
         Ok(None)
     }
 
+    pub fn find_deployment_by_instance(
+        &self,
+        instance_id: &str,
+    ) -> rusqlite::Result<Option<StoredDeployment>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT id, deployment_label, instance_id, server_ip, created_at_unix
+            FROM deployments
+            WHERE instance_id = ?1
+            ORDER BY id DESC
+            LIMIT 1
+            ",
+        )?;
+        let mut rows = statement.query(params![instance_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredDeployment {
+                id: row.get(0)?,
+                deployment_label: row.get(1)?,
+                instance_id: row.get(2)?,
+                server_ip: row.get(3)?,
+                created_at_unix: row.get(4)?,
+            }));
+        }
+        Ok(None)
+    }
+
     pub fn clear_deployment_by_label(&self, deployment_label: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "DELETE FROM deployments WHERE deployment_label = ?1",
@@ -488,6 +522,28 @@ impl EdgeState {
             .conn
             .prepare("SELECT id, kind, status, created_at_unix FROM operations WHERE id = ?1")?;
         let mut rows = statement.query(params![operation_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredOperation {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                status: row.get(2)?,
+                created_at_unix: row.get(3)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn latest_operation_by_kind(&self, kind: &str) -> rusqlite::Result<Option<StoredOperation>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT id, kind, status, created_at_unix
+            FROM operations
+            WHERE kind = ?1
+            ORDER BY id DESC
+            LIMIT 1
+            ",
+        )?;
+        let mut rows = statement.query(params![kind])?;
         if let Some(row) = rows.next()? {
             return Ok(Some(StoredOperation {
                 id: row.get(0)?,
@@ -812,6 +868,7 @@ pub struct NewControllerState<'a> {
     pub active_instance_id: Option<&'a str>,
     pub active_server_ip: Option<&'a str>,
     pub active_tunnel_domain: Option<&'a str>,
+    pub active_deployment_state_json: Option<&'a str>,
     pub deploy_phase: &'a str,
     pub app_readiness_phase: &'a str,
     pub last_error_code: Option<&'a str>,
@@ -824,6 +881,7 @@ pub struct StoredControllerState {
     pub active_instance_id: Option<String>,
     pub active_server_ip: Option<String>,
     pub active_tunnel_domain: Option<String>,
+    pub active_deployment_state_json: Option<String>,
     pub deploy_phase: String,
     pub app_readiness_phase: String,
     pub last_error_code: Option<String>,
@@ -902,6 +960,11 @@ mod tests {
             .unwrap();
         let stored = state.get_operation(operation.id).unwrap().unwrap();
         assert_eq!(stored.status, "SUCCEEDED");
+        let latest_operation = state
+            .latest_operation_by_kind("start_local_runtime")
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest_operation.id, operation.id);
         assert_eq!(state.list_operation_events(operation.id).unwrap().len(), 1);
         let trust = state
             .upsert_trust_entry(NewTrustEntry {
@@ -940,6 +1003,7 @@ mod tests {
                 active_instance_id: Some("instance-1"),
                 active_server_ip: Some("203.0.113.10"),
                 active_tunnel_domain: Some("edge.alegria.by"),
+                active_deployment_state_json: Some(r#"{"label":"deploy-1","instance_id":"instance-1"}"#),
                 deploy_phase: "APP_READY_COMPLETED",
                 app_readiness_phase: "APP_READY",
                 last_error_code: None,
@@ -949,6 +1013,12 @@ mod tests {
         assert_eq!(
             controller_state.active_deployment_label.as_deref(),
             Some("deploy-1")
+        );
+        assert!(
+            controller_state
+                .active_deployment_state_json
+                .as_deref()
+                .is_some_and(|value| value.contains(r#""instance_id":"instance-1""#))
         );
         state
             .upsert_selector_intent("proxy-selector", "auto-direct-tunnel")
@@ -963,6 +1033,11 @@ mod tests {
             .record_deployment("deploy-1", "instance-1", "203.0.113.10")
             .unwrap();
         assert_eq!(deployment.server_ip, "203.0.113.10");
+        let found_deployment = state
+            .find_deployment_by_instance("instance-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found_deployment.deployment_label, "deploy-1");
         state.clear_deployment_by_label("deploy-1").unwrap();
         assert!(state.latest_deployment().unwrap().is_none());
         let deployment = state

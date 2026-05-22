@@ -130,6 +130,7 @@ struct AgentConnectionTarget {
 struct DeployRollbackContext {
     deployment_label: String,
     previous_live_state: Option<String>,
+    previous_controller_state: Option<edge_state::StoredControllerState>,
     dns_updated: bool,
 }
 
@@ -268,6 +269,7 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
     let db_path = repo_root.join(DEFAULT_STATE_DB);
     let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path)?));
     interrupt_stale_running_operations(&state)?;
+    reconcile_active_deployment_state(&repo_root, &state)?;
     ensure_selector_intents_seeded(&repo_root, &state).await?;
     let service = ControllerServerImpl {
         repo_root,
@@ -700,6 +702,9 @@ impl ControllerService for ControllerServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ControllerStatus>, Status> {
+        reconcile_authoritative_deployment_state(&self.repo_root, &self.state)
+            .await
+            .map_err(Status::internal)?;
         ensure_selector_intents_seeded(&self.repo_root, &self.state)
             .await
             .map_err(Status::internal)?;
@@ -1302,6 +1307,12 @@ impl ControllerService for ControllerServerImpl {
         request: Request<DeployRequest>,
     ) -> Result<Response<DeployResponse>, Status> {
         let request = request.into_inner();
+        let previous_controller_state = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .get_controller_state()
+            .map_err(|err| Status::internal(format!("failed to read controller state: {err}")))?;
         let operation = self
             .state
             .lock()
@@ -1328,6 +1339,7 @@ impl ControllerService for ControllerServerImpl {
         let mut rollback = DeployRollbackContext {
             deployment_label: deployment_label.clone(),
             previous_live_state,
+            previous_controller_state,
             dns_updated: false,
         };
 
@@ -1335,9 +1347,20 @@ impl ControllerService for ControllerServerImpl {
             resolve_deploy_target(&self.repo_root, &self.state, &request, &deployment_label)
                 .await
                 .map_err(|err| {
+                    let _ = upsert_controller_phases(
+                        &self.state,
+                        "FAILED",
+                        "APP_READINESS_FAILED",
+                        Some("target_resolution_failed"),
+                        Some(err.as_str()),
+                    );
+                    let _ = restore_controller_state_snapshot(
+                        &self.state,
+                        rollback.previous_controller_state.as_ref(),
+                    );
                     let _ = append_operation_event(&self.state, operation.id, &err);
                     let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                    Status::invalid_argument(err)
+                    status_for_target_resolution_error(err)
                 })?;
         append_operation_event(
             &self.state,
@@ -1376,6 +1399,17 @@ impl ControllerService for ControllerServerImpl {
             &format!("bundle rendered: {}", bundle.label),
         )?;
 
+        let preexisting_agent_target =
+            resolve_targeted_agent_connection_target(&self.state, &target.instance_id, &target.target_ip)
+                .map_err(|err| {
+                    let _ = append_operation_event(&self.state, operation.id, &err);
+                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
+                    Status::internal(format!(
+                        "failed to resolve persisted agent target before deploy: {err}"
+                    ))
+                })?;
+        let preexisting_agent_trust = preexisting_agent_target.is_some();
+
         if let Err(err) = persist_bundle_locally(&self.repo_root, &self.state, &bundle, &target) {
             let rollback_warnings = rollback_failed_deploy(
                 &self.repo_root,
@@ -1409,6 +1443,8 @@ impl ControllerService for ControllerServerImpl {
             &self.agent_endpoint,
             &request,
             &target,
+            preexisting_agent_target,
+            preexisting_agent_trust,
             operation.id,
             &self.state,
         )
@@ -1658,7 +1694,7 @@ impl ControllerService for ControllerServerImpl {
             append_operation_event(&self.state, operation.id, "tunnel bootstrap completed")?;
         }
 
-        let final_agent_target = if target.created_instance {
+        let final_agent_target = if has_configured_secret_ref(&self.state, SECRET_SSH_PRIVATE_KEY_PATH) {
             let restart_result = resolve_bootstrap_access_config(&self.repo_root, &self.state)
                 .and_then(|config| restart_edge_agent_service(&target, &config));
             if let Err(err) = restart_result {
@@ -1687,19 +1723,34 @@ impl ControllerService for ControllerServerImpl {
                 operation.id,
                 "edge-agent service restarted with deployment TLS env",
             )?;
-            resolve_targeted_agent_connection_target_for_endpoint(
-                &self.state,
-                &target.instance_id,
-                &target.target_ip,
-                &agent_transport.endpoint,
-            )
-            .map_err(|err| {
-                Status::internal(format!("failed to resolve final agent target: {err}"))
-            })?
-            .unwrap_or_else(|| AgentConnectionTarget {
-                endpoint: agent_transport.endpoint.clone(),
-                tls_paths: agent_transport.tls_paths.clone(),
-            })
+            if agent_transport._tunnel.is_some() {
+                resolve_targeted_agent_connection_target_for_endpoint(
+                    &self.state,
+                    &target.instance_id,
+                    &target.target_ip,
+                    &agent_transport.endpoint,
+                )
+                .map_err(|err| {
+                    Status::internal(format!("failed to resolve final agent target: {err}"))
+                })?
+                .unwrap_or_else(|| AgentConnectionTarget {
+                    endpoint: agent_transport.endpoint.clone(),
+                    tls_paths: agent_transport.tls_paths.clone(),
+                })
+            } else {
+                resolve_targeted_agent_connection_target(
+                    &self.state,
+                    &target.instance_id,
+                    &target.target_ip,
+                )
+                .map_err(|err| {
+                    Status::internal(format!("failed to resolve final agent target: {err}"))
+                })?
+                .unwrap_or_else(|| AgentConnectionTarget {
+                    endpoint: agent_transport.endpoint.clone(),
+                    tls_paths: agent_transport.tls_paths.clone(),
+                })
+            }
         } else {
             AgentConnectionTarget {
                 endpoint: agent_transport.endpoint.clone(),
@@ -2393,6 +2444,196 @@ fn interrupt_stale_running_operations(state: &Arc<Mutex<EdgeState>>) -> Result<(
     Ok(())
 }
 
+async fn reconcile_authoritative_deployment_state(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+) -> Result<(), String> {
+    reconcile_active_deployment_state(repo_root, state)?;
+    reconcile_provider_active_deployment_state(state).await
+}
+
+fn reconcile_active_deployment_state(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+) -> Result<(), String> {
+    let live_state_raw = read_live_state_raw(repo_root).ok().flatten();
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let existing = guard
+        .get_controller_state()
+        .map_err(|err| format!("failed to read controller state: {err}"))?;
+    if existing.as_ref().is_some_and(|value| {
+        value.active_deployment_label.is_some()
+            || value.active_instance_id.is_some()
+            || value.active_server_ip.is_some()
+            || value.active_deployment_state_json.is_some()
+    }) {
+        return Ok(());
+    }
+
+    let Some(latest) = guard
+        .latest_deployment()
+        .map_err(|err| format!("failed to read latest deployment: {err}"))?
+    else {
+        return Ok(());
+    };
+
+    let tunnel_domain = live_state_raw
+        .as_deref()
+        .map(parse_tunnel_domain_from_state_json)
+        .transpose()?
+        .flatten();
+    guard
+        .upsert_controller_state(NewControllerState {
+            active_deployment_label: Some(&latest.deployment_label),
+            active_instance_id: Some(&latest.instance_id),
+            active_server_ip: Some(&latest.server_ip),
+            active_tunnel_domain: tunnel_domain.as_deref(),
+            active_deployment_state_json: live_state_raw.as_deref(),
+            deploy_phase: "DEPLOYMENT_PUBLISHED",
+            app_readiness_phase: "SERVER_RUNTIME_READY",
+            last_error_code: None,
+            last_error_message: None,
+        })
+        .map_err(|err| format!("failed to reconcile controller state: {err}"))?;
+    Ok(())
+}
+
+async fn reconcile_provider_active_deployment_state(
+    state: &Arc<Mutex<EdgeState>>,
+) -> Result<(), String> {
+    let api_key = match resolve_text_secret(
+        state,
+        SECRET_VULTR_API_KEY,
+        &default_env_ref("VULTR_API_KEY"),
+    ) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+    let instances = list_instances(&api_key).await?;
+    if instances.is_empty() {
+        return Ok(());
+    }
+
+    let current_state = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .get_controller_state()
+        .map_err(|err| format!("failed to read controller state: {err}"))?;
+    let latest_requested_label = latest_deploy_attempt_label(state)?;
+    let current_instance_id = current_state
+        .as_ref()
+        .and_then(|value| value.active_instance_id.as_deref());
+    let current_exists = current_instance_id
+        .is_some_and(|instance_id| instances.iter().any(|instance| instance.id == instance_id));
+    let candidate = latest_requested_label
+        .as_deref()
+        .and_then(|label| instances.iter().find(|instance| instance.label == label))
+        .or_else(|| {
+            if current_exists {
+                None
+            } else {
+                choose_single_reconcilable_instance(&instances)
+            }
+        });
+    let Some(candidate) = candidate else {
+        return Ok(());
+    };
+    if current_state.as_ref().is_some_and(|value| {
+        value.active_instance_id.as_deref() == Some(candidate.id.as_str())
+            && value.active_server_ip.as_deref() == Some(candidate.main_ip.as_str())
+            && value.active_deployment_label.as_deref() == Some(candidate.label.as_str())
+    }) {
+        return Ok(());
+    }
+
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    if guard
+        .find_deployment_by_instance(&candidate.id)
+        .map_err(|err| format!("failed to query deployment rows: {err}"))?
+        .is_none()
+    {
+        guard
+            .record_deployment(&candidate.label, &candidate.id, &candidate.main_ip)
+            .map_err(|err| format!("failed to record provider-reconciled deployment: {err}"))?;
+    }
+    let active_state_json = current_state
+        .as_ref()
+        .and_then(|value| value.active_deployment_state_json.as_deref())
+        .filter(|_| {
+            current_state
+                .as_ref()
+                .and_then(|value| value.active_instance_id.as_deref())
+                == Some(candidate.id.as_str())
+        });
+    let active_tunnel_domain = current_state
+        .as_ref()
+        .and_then(|value| value.active_tunnel_domain.as_deref())
+        .or(Some(DEFAULT_DNS_RECORD));
+    guard
+        .upsert_controller_state(NewControllerState {
+            active_deployment_label: Some(&candidate.label),
+            active_instance_id: Some(&candidate.id),
+            active_server_ip: Some(&candidate.main_ip),
+            active_tunnel_domain: active_tunnel_domain,
+            active_deployment_state_json: active_state_json,
+            deploy_phase: if active_state_json.is_some() {
+                "DEPLOYMENT_PUBLISHED"
+            } else {
+                "INSTANCE_ADDRESS_ASSIGNED"
+            },
+            app_readiness_phase: if active_state_json.is_some() {
+                current_state
+                    .as_ref()
+                    .map(|value| value.app_readiness_phase.as_str())
+                    .unwrap_or("SERVER_RUNTIME_READY")
+            } else {
+                "DEPLOYMENT_ABSENT"
+            },
+            last_error_code: None,
+            last_error_message: None,
+        })
+        .map_err(|err| format!("failed to persist provider-reconciled controller state: {err}"))?;
+    Ok(())
+}
+
+fn latest_deploy_attempt_label(state: &Arc<Mutex<EdgeState>>) -> Result<Option<String>, String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let Some(operation) = guard
+        .latest_operation_by_kind("deploy")
+        .map_err(|err| format!("failed to read latest deploy operation: {err}"))?
+    else {
+        return Ok(None);
+    };
+    let events = guard
+        .list_operation_events(operation.id)
+        .map_err(|err| format!("failed to read latest deploy events: {err}"))?;
+    Ok(events
+        .into_iter()
+        .find_map(|event| event.message.strip_prefix("deployment label reserved: ").map(ToOwned::to_owned)))
+}
+
+fn choose_single_reconcilable_instance(
+    instances: &[edge_provider_vultr::VultrInstance],
+) -> Option<&edge_provider_vultr::VultrInstance> {
+    let mut reconcilable = instances.iter().filter(|instance| {
+        instance.status == "active"
+            && instance.server_status == "ok"
+            && !instance.main_ip.trim().is_empty()
+            && instance.label.contains("edge")
+    });
+    let first = reconcilable.next()?;
+    if reconcilable.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
 fn upsert_selector_intent(
     state: &Arc<Mutex<EdgeState>>,
     group: &str,
@@ -2785,6 +3026,9 @@ fn upsert_controller_phases(
             active_tunnel_domain: existing
                 .as_ref()
                 .and_then(|value| value.active_tunnel_domain.as_deref()),
+            active_deployment_state_json: existing
+                .as_ref()
+                .and_then(|value| value.active_deployment_state_json.as_deref()),
             deploy_phase,
             app_readiness_phase,
             last_error_code,
@@ -2955,8 +3199,30 @@ fn is_retryable_vultr_transport_error(message: &str) -> bool {
         || normalized.contains("dns error")
         || normalized.contains("tcp connect error")
         || normalized.contains("connection reset")
+        || normalized.contains("connection aborted")
+        || normalized.contains("broken pipe")
+        || normalized.contains("connection refused")
+        || normalized.contains("unexpected eof")
         || normalized.contains("timed out")
         || normalized.contains("timeout")
+        || normalized.contains("os error 10053")
+        || normalized.contains("os error 10054")
+        || normalized.contains("os error 10060")
+        || normalized.contains("os error 104")
+        || normalized.contains("os error 110")
+        || normalized.contains("os error 111")
+}
+
+fn status_for_target_resolution_error(message: String) -> Status {
+    if is_retryable_vultr_transport_error(&message)
+        || message.contains("failed to read Vultr instance")
+        || message.contains("failed to create Vultr instance")
+        || message.contains("failed to list Vultr instances")
+    {
+        Status::unavailable(message)
+    } else {
+        Status::invalid_argument(message)
+    }
 }
 
 async fn find_vultr_instance_by_label(
@@ -3010,23 +3276,38 @@ async fn prepare_agent_transport(
     direct_endpoint: &str,
     request: &DeployRequest,
     target: &ResolvedDeployTarget,
+    preexisting_agent_target: Option<AgentConnectionTarget>,
+    preexisting_agent_trust: bool,
     operation_id: i64,
     state: &Arc<Mutex<EdgeState>>,
 ) -> Result<AgentTransport, String> {
-    if !should_bootstrap_via_ssh(state, request, target) {
-        let connection_target =
-            resolve_operation_agent_connection_target(state, target, direct_endpoint)?;
-        return Ok(AgentTransport {
-            endpoint: connection_target.endpoint,
-            tls_paths: connection_target.tls_paths,
-            _tunnel: None,
-        });
+    if !should_bootstrap_via_ssh(state, request, target, preexisting_agent_trust) {
+        let connection_target = preexisting_agent_target.clone().unwrap_or(
+            resolve_operation_agent_connection_target(state, target, direct_endpoint)?,
+        );
+        if should_fallback_to_ssh_bootstrap(direct_endpoint, state, target)
+            && connect_to_agent_target(&connection_target).await.is_err()
+        {
+            append_operation_event(
+                state,
+                operation_id,
+                "direct edge-agent transport is unavailable; falling back to SSH bootstrap",
+            )
+            .map_err(|status| status.message().to_owned())?;
+        } else {
+            return Ok(AgentTransport {
+                endpoint: connection_target.endpoint,
+                tls_paths: connection_target.tls_paths,
+                _tunnel: None,
+            });
+        }
     }
 
     let config = resolve_bootstrap_access_config(repo_root, state)?;
     append_operation_event(state, operation_id, "waiting for SSH reachability")
         .map_err(|status| status.message().to_owned())?;
-    accept_ssh_host_key(target, &config).await?;
+    accept_ssh_host_key(target, &config, target.created_instance || !preexisting_agent_trust)
+        .await?;
     append_operation_event(state, operation_id, "SSH host key pinned")
         .map_err(|status| status.message().to_owned())?;
     wait_for_docker_runtime(target, &config).await?;
@@ -3038,11 +3319,35 @@ async fn prepare_agent_transport(
 
     let local_port = reserve_local_port()?;
     let tunnel = start_ssh_tunnel(target, &config, local_port)?;
+    let tunnel_endpoint = format!("http://127.0.0.1:{local_port}");
+    if let Some(connection_target) = preexisting_agent_target
+        .as_ref()
+        .map(|value| retarget_agent_connection_target(value, tunnel_endpoint.clone()))
+        && connect_to_agent_target(&connection_target).await.is_ok()
+    {
+        return Ok(AgentTransport {
+            endpoint: connection_target.endpoint,
+            tls_paths: connection_target.tls_paths,
+            _tunnel: Some(tunnel),
+        });
+    }
+
     Ok(AgentTransport {
-        endpoint: format!("http://127.0.0.1:{local_port}"),
+        endpoint: tunnel_endpoint,
         tls_paths: None,
         _tunnel: Some(tunnel),
     })
+}
+
+fn should_fallback_to_ssh_bootstrap(
+    direct_endpoint: &str,
+    state: &Arc<Mutex<EdgeState>>,
+    target: &ResolvedDeployTarget,
+) -> bool {
+    env::var_os("EDGE_AGENT_ENDPOINT").is_none()
+        && direct_endpoint == DEFAULT_AGENT_ENDPOINT
+        && !target.created_instance
+        && has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH)
 }
 
 fn resolve_operation_agent_connection_target(
@@ -3073,7 +3378,11 @@ fn should_bootstrap_via_ssh(
     state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
     target: &ResolvedDeployTarget,
+    preexisting_agent_trust: bool,
 ) -> bool {
+    let ssh_available = has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH);
+    let missing_persisted_trust = !preexisting_agent_trust;
+
     target.created_instance
         || env::var("EDGE_BOOTSTRAP_VIA_SSH")
             .ok()
@@ -3082,7 +3391,8 @@ fn should_bootstrap_via_ssh(
             .target_ip
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
-            && has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH))
+            && ssh_available)
+        || (missing_persisted_trust && ssh_available)
 }
 
 fn resolve_bootstrap_access_config(
@@ -3273,29 +3583,49 @@ fn ensure_known_hosts_file(repo_root: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn remove_known_host_entry(target_ip: &str, known_hosts_path: &Path) -> Result<(), String> {
+    let known_hosts = known_hosts_path.display().to_string();
+    let status = Command::new("ssh-keygen")
+        .args(["-R", target_ip, "-f", &known_hosts])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("failed to start ssh-keygen for {target_ip}: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "ssh-keygen failed to prune known host entry for {target_ip} from {} with status {status}",
+            known_hosts_path.display()
+        ))
+    }
+}
+
+fn is_stale_known_host_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("remote host identification has changed")
+        || lower.contains("host key verification failed")
+        || lower.contains("offending")
+}
+
 async fn accept_ssh_host_key(
     target: &ResolvedDeployTarget,
     config: &BootstrapAccessConfig,
+    allow_host_key_refresh: bool,
 ) -> Result<(), String> {
     if target.created_instance {
-        let _ = Command::new("ssh-keygen")
-            .args([
-                "-R",
-                &target.target_ip,
-                "-f",
-                &config.known_hosts_path.display().to_string(),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let _ = remove_known_host_entry(&target.target_ip, &config.known_hosts_path);
     }
 
+    let mut refreshed_host_key = false;
     for _ in 0..60 {
-        let result = run_command(
+        let result = run_command_capture(
             "ssh",
             &[
                 "-i".to_owned(),
                 config.private_key_path.display().to_string(),
+                "-o".to_owned(),
+                "BatchMode=yes".to_owned(),
                 "-o".to_owned(),
                 "StrictHostKeyChecking=accept-new".to_owned(),
                 "-o".to_owned(),
@@ -3308,8 +3638,19 @@ async fn accept_ssh_host_key(
                 "exit".to_owned(),
             ],
         );
-        if result.is_ok() {
-            return Ok(());
+        match result {
+            Ok(_) => return Ok(()),
+            Err(err)
+                if allow_host_key_refresh
+                    && !refreshed_host_key
+                    && is_stale_known_host_error(&err) =>
+            {
+                remove_known_host_entry(&target.target_ip, &config.known_hosts_path)?;
+                refreshed_host_key = true;
+                sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            Err(_) => {}
         }
         sleep(Duration::from_secs(5)).await;
     }
@@ -3416,6 +3757,8 @@ fn start_ssh_tunnel(
             "-i",
             &config.private_key_path.display().to_string(),
             "-o",
+            "BatchMode=yes",
+            "-o",
             "StrictHostKeyChecking=yes",
             "-o",
             &format!("UserKnownHostsFile={}", config.known_hosts_path.display()),
@@ -3459,6 +3802,8 @@ fn ssh_args(config: &BootstrapAccessConfig, target_ip: &str, command: &str) -> V
         "-i".to_owned(),
         config.private_key_path.display().to_string(),
         "-o".to_owned(),
+        "BatchMode=yes".to_owned(),
+        "-o".to_owned(),
         "StrictHostKeyChecking=yes".to_owned(),
         "-o".to_owned(),
         format!("UserKnownHostsFile={}", config.known_hosts_path.display()),
@@ -3478,6 +3823,8 @@ fn scp_args(
     vec![
         "-i".to_owned(),
         config.private_key_path.display().to_string(),
+        "-o".to_owned(),
+        "BatchMode=yes".to_owned(),
         "-o".to_owned(),
         "StrictHostKeyChecking=yes".to_owned(),
         "-o".to_owned(),
@@ -3777,6 +4124,7 @@ fn persist_bundle_locally(
             active_instance_id: Some(&target.instance_id),
             active_server_ip: Some(&target.target_ip),
             active_tunnel_domain: tunnel_domain,
+            active_deployment_state_json: Some(&bundle.current_state_json),
             deploy_phase: "DEPLOYMENT_PUBLISHED",
             app_readiness_phase: "SERVER_RUNTIME_READY",
             last_error_code: None,
@@ -3834,6 +4182,45 @@ fn read_live_deployment_summary(
             .get_controller_state()
             .map_err(|err| format!("failed to read controller state: {err}"))?
         {
+            if let Some(raw) = controller.active_deployment_state_json.as_deref() {
+                let value: Value = serde_json::from_str(raw)
+                    .map_err(|err| format!("failed to parse controller deployment state JSON: {err}"))?;
+                let live_state_present = controller.active_deployment_label.is_some()
+                    || controller.active_instance_id.is_some()
+                    || controller.active_server_ip.is_some()
+                    || value.get("label").is_some()
+                    || value.get("instance_id").is_some()
+                    || value.get("ip").is_some();
+                if live_state_present {
+                    return Ok(edge_shared_types::DeploymentSummary {
+                        live_state_present: true,
+                        source_state_path: Some(db_path.display().to_string()),
+                        deployment_label: controller.active_deployment_label.or_else(|| {
+                            value
+                                .get("label")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned)
+                        }),
+                        instance_id: controller.active_instance_id.or_else(|| {
+                            value
+                                .get("instance_id")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned)
+                        }),
+                        server_ip: controller.active_server_ip.or_else(|| {
+                            value.get("ip").and_then(Value::as_str).map(ToOwned::to_owned)
+                        }),
+                        tunnel_domain: controller.active_tunnel_domain.or_else(|| {
+                            value
+                                .get("tunnel")
+                                .and_then(Value::as_object)
+                                .and_then(|tunnel| tunnel.get("domain"))
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned)
+                        }),
+                    });
+                }
+            }
             let live_state_present = controller.active_deployment_label.is_some()
                 || controller.active_instance_id.is_some()
                 || controller.active_server_ip.is_some();
@@ -3893,6 +4280,45 @@ fn read_live_state_raw(repo_root: &Path) -> Result<Option<String>, String> {
         .map_err(|err| format!("failed to read {}: {err}", path.display()))
 }
 
+fn parse_tunnel_domain_from_state_json(raw: &str) -> Result<Option<String>, String> {
+    let value: Value =
+        serde_json::from_str(raw).map_err(|err| format!("failed to parse deployment state JSON: {err}"))?;
+    Ok(value
+        .get("tunnel")
+        .and_then(Value::as_object)
+        .and_then(|tunnel| tunnel.get("domain"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned))
+}
+
+fn restore_controller_state_snapshot(
+    state: &Arc<Mutex<EdgeState>>,
+    snapshot: Option<&edge_state::StoredControllerState>,
+) -> Result<(), String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    match snapshot {
+        Some(value) => guard
+            .upsert_controller_state(NewControllerState {
+                active_deployment_label: value.active_deployment_label.as_deref(),
+                active_instance_id: value.active_instance_id.as_deref(),
+                active_server_ip: value.active_server_ip.as_deref(),
+                active_tunnel_domain: value.active_tunnel_domain.as_deref(),
+                active_deployment_state_json: value.active_deployment_state_json.as_deref(),
+                deploy_phase: &value.deploy_phase,
+                app_readiness_phase: &value.app_readiness_phase,
+                last_error_code: value.last_error_code.as_deref(),
+                last_error_message: value.last_error_message.as_deref(),
+            })
+            .map(|_| ())
+            .map_err(|err| format!("failed to restore controller state snapshot: {err}")),
+        None => guard
+            .clear_controller_state()
+            .map_err(|err| format!("failed to clear controller state: {err}")),
+    }
+}
+
 fn clear_live_deployment_state(
     repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
@@ -3905,19 +4331,16 @@ fn clear_live_deployment_state(
             .map_err(|err| format!("failed to remove {}: {err}", live_state_path.display()))?;
     }
 
-    state
+    let guard = state
         .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    guard
         .clear_deployment_by_instance(instance_id)
         .map_err(|err| format!("failed to clear deployment row: {err}"))?;
-    state
-        .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?
+    guard
         .clear_controller_state()
         .map_err(|err| format!("failed to clear controller state: {err}"))?;
-    state
-        .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?
+    guard
         .clear_trust_entries(Some(instance_id), Some(target_ip))
         .map_err(|err| format!("failed to clear trust rows: {err}"))?;
     Ok(())
@@ -3930,12 +4353,16 @@ fn rollback_live_deployment_state(
     instance_id: &str,
     target_ip: &str,
     previous_live_state: Option<&str>,
+    previous_controller_state: Option<&edge_state::StoredControllerState>,
 ) -> Result<(), String> {
     let live_state_path = default_live_state_path(repo_root);
     if let Some(parent) = live_state_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    match previous_live_state {
+    let previous_state_json = previous_live_state.or_else(|| {
+        previous_controller_state.and_then(|value| value.active_deployment_state_json.as_deref())
+    });
+    match previous_state_json {
         Some(raw) => fs::write(&live_state_path, raw.as_bytes())
             .map_err(|err| format!("failed to restore {}: {err}", live_state_path.display()))?,
         None if live_state_path.is_file() => fs::remove_file(&live_state_path)
@@ -3952,31 +4379,77 @@ fn rollback_live_deployment_state(
     guard
         .clear_trust_entry(deployment_label, instance_id, target_ip)
         .map_err(|err| format!("failed to clear trust row: {err}"))?;
-    match previous_live_state {
-        Some(raw) => {
-            let value: Value = serde_json::from_str(raw)
-                .map_err(|err| format!("failed to parse rollback current state JSON: {err}"))?;
-            let tunnel_domain = value
-                .get("tunnel")
-                .and_then(Value::as_object)
-                .and_then(|tunnel| tunnel.get("domain"))
-                .and_then(Value::as_str);
+    match previous_controller_state {
+        Some(snapshot) => {
+            let snapshot_state_json = snapshot
+                .active_deployment_state_json
+                .as_deref()
+                .or(previous_state_json);
+            let snapshot_tunnel_domain = snapshot
+                .active_tunnel_domain
+                .clone()
+                .or_else(|| {
+                    snapshot_state_json
+                        .and_then(|raw| parse_tunnel_domain_from_state_json(raw).ok())
+                        .flatten()
+                });
             guard
                 .upsert_controller_state(NewControllerState {
-                    active_deployment_label: value.get("label").and_then(Value::as_str),
-                    active_instance_id: value.get("instance_id").and_then(Value::as_str),
-                    active_server_ip: value.get("ip").and_then(Value::as_str),
-                    active_tunnel_domain: tunnel_domain,
-                    deploy_phase: "DEPLOYMENT_PUBLISHED",
-                    app_readiness_phase: "SERVER_RUNTIME_READY",
+                    active_deployment_label: snapshot.active_deployment_label.as_deref(),
+                    active_instance_id: snapshot.active_instance_id.as_deref(),
+                    active_server_ip: snapshot.active_server_ip.as_deref(),
+                    active_tunnel_domain: snapshot_tunnel_domain.as_deref(),
+                    active_deployment_state_json: snapshot_state_json,
+                    deploy_phase: &snapshot.deploy_phase,
+                    app_readiness_phase: &snapshot.app_readiness_phase,
+                    last_error_code: snapshot.last_error_code.as_deref(),
+                    last_error_message: snapshot.last_error_message.as_deref(),
+                })
+                .map_err(|err| format!("failed to restore controller state: {err}"))?;
+        }
+        None => {
+            let parsed_value = previous_state_json
+                .map(|raw| {
+                    serde_json::from_str::<Value>(raw)
+                        .map_err(|err| format!("failed to parse rollback current state JSON: {err}"))
+                })
+                .transpose()?;
+            let has_previous_state = previous_state_json.is_some();
+            let deployment_label = parsed_value
+                .as_ref()
+                .and_then(|value| value.get("label").and_then(Value::as_str).map(ToOwned::to_owned));
+            let active_instance_id = parsed_value
+                .as_ref()
+                .and_then(|value| value.get("instance_id").and_then(Value::as_str).map(ToOwned::to_owned));
+            let active_server_ip = parsed_value
+                .as_ref()
+                .and_then(|value| value.get("ip").and_then(Value::as_str).map(ToOwned::to_owned));
+            let tunnel_domain = previous_state_json
+                .map(parse_tunnel_domain_from_state_json)
+                .transpose()?
+                .flatten();
+            guard
+                .upsert_controller_state(NewControllerState {
+                    active_deployment_label: deployment_label.as_deref(),
+                    active_instance_id: active_instance_id.as_deref(),
+                    active_server_ip: active_server_ip.as_deref(),
+                    active_tunnel_domain: tunnel_domain.as_deref(),
+                    active_deployment_state_json: previous_state_json,
+                    deploy_phase: if has_previous_state {
+                        "DEPLOYMENT_PUBLISHED"
+                    } else {
+                        "DEPLOYMENT_ABSENT"
+                    },
+                    app_readiness_phase: if has_previous_state {
+                        "SERVER_RUNTIME_READY"
+                    } else {
+                        "DEPLOYMENT_ABSENT"
+                    },
                     last_error_code: None,
                     last_error_message: None,
                 })
                 .map_err(|err| format!("failed to restore controller state: {err}"))?;
         }
-        None => guard
-            .clear_controller_state()
-            .map_err(|err| format!("failed to clear controller state: {err}"))?,
     }
     Ok(())
 }
@@ -4041,6 +4514,7 @@ async fn rollback_failed_deploy(
         &target.instance_id,
         &target.target_ip,
         rollback.previous_live_state.as_deref(),
+        rollback.previous_controller_state.as_ref(),
     ) {
         warnings.push(format!("rollback state restore failed: {err}"));
     } else {
@@ -4206,6 +4680,43 @@ fn resolve_persisted_agent_connection_target(
     let guard = state
         .lock()
         .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    if let Some(controller) = guard
+        .get_controller_state()
+        .map_err(|err| format!("failed to load controller state: {err}"))?
+        && let (Some(instance_id), Some(server_ip)) = (
+            controller.active_instance_id.as_deref(),
+            controller.active_server_ip.as_deref(),
+        )
+    {
+        if let Some(trust) = guard
+            .find_latest_trust_entry(instance_id, server_ip)
+            .map_err(|err| format!("failed to load persisted trust entry: {err}"))?
+        {
+            let deployment = StoredDeployment {
+                id: 0,
+                deployment_label: controller
+                    .active_deployment_label
+                    .clone()
+                    .unwrap_or_else(|| trust.deployment_id.clone()),
+                instance_id: instance_id.to_owned(),
+                server_ip: server_ip.to_owned(),
+                created_at_unix: trust.updated_at_unix,
+            };
+            drop(guard);
+            return persisted_agent_connection_target(&deployment, &trust).map(Some);
+        }
+
+        let remote_port = env::var("EDGE_AGENT_REMOTE_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_AGENT_REMOTE_PORT);
+        return Err(format!(
+            "no persisted agent trust for active deployment {} ({instance_id}, {server_ip}); expected edge-agent target https://{server_ip}:{remote_port}",
+            controller
+                .active_deployment_label
+                .unwrap_or_else(|| "<unknown>".to_owned())
+        ));
+    }
     let Some(deployment) = guard
         .latest_deployment()
         .map_err(|err| format!("failed to load latest deployment: {err}"))?
@@ -4273,6 +4784,16 @@ fn resolve_targeted_agent_connection_target_for_endpoint(
         endpoint: endpoint.to_owned(),
         tls_paths,
     }))
+}
+
+fn retarget_agent_connection_target(
+    target: &AgentConnectionTarget,
+    endpoint: String,
+) -> AgentConnectionTarget {
+    AgentConnectionTarget {
+        endpoint,
+        tls_paths: target.tls_paths.clone(),
+    }
 }
 
 fn persisted_agent_connection_target(
@@ -4592,6 +5113,92 @@ mod tests {
     }
 
     #[test]
+    fn resolves_persisted_agent_target_from_authoritative_controller_state() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-authoritative-target-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .upsert_controller_state(NewControllerState {
+                    active_deployment_label: Some("deploy-auth"),
+                    active_instance_id: Some("instance-auth"),
+                    active_server_ip: Some("203.0.113.77"),
+                    active_tunnel_domain: Some("edge.example.com"),
+                    active_deployment_state_json: None,
+                    deploy_phase: "INSTANCE_ADDRESS_ASSIGNED",
+                    app_readiness_phase: "DEPLOYMENT_ABSENT",
+                    last_error_code: None,
+                    last_error_message: None,
+                })
+                .unwrap();
+            guard
+                .upsert_trust_entry(NewTrustEntry {
+                    deployment_id: "deploy-auth",
+                    instance_id: "instance-auth",
+                    ip: "203.0.113.77",
+                    known_host_line: "",
+                    domain_name: Some("edge-agent"),
+                    ca_cert_path: Some("/tmp/ca-auth.pem"),
+                    server_cert_path: Some("/tmp/agent-server-auth.pem"),
+                    client_cert_path: Some("/tmp/controller-client-auth.pem"),
+                    client_key_path: Some("/tmp/controller-client-auth.key"),
+                })
+                .unwrap();
+        }
+
+        let target = resolve_persisted_agent_connection_target(&state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.endpoint, "https://203.0.113.77:50061");
+        assert_eq!(
+            target.tls_paths.unwrap().client_key_path,
+            PathBuf::from("/tmp/controller-client-auth.key")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn rejects_active_controller_target_without_persisted_trust() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-active-missing-trust-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .upsert_controller_state(NewControllerState {
+                    active_deployment_label: Some("deploy-missing"),
+                    active_instance_id: Some("instance-missing"),
+                    active_server_ip: Some("203.0.113.88"),
+                    active_tunnel_domain: Some("edge.example.com"),
+                    active_deployment_state_json: None,
+                    deploy_phase: "INSTANCE_ADDRESS_ASSIGNED",
+                    app_readiness_phase: "DEPLOYMENT_ABSENT",
+                    last_error_code: None,
+                    last_error_message: None,
+                })
+                .unwrap();
+        }
+
+        let error = resolve_persisted_agent_connection_target(&state).unwrap_err();
+        assert!(error.contains("instance-missing"));
+        assert!(error.contains("203.0.113.88"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn resolves_targeted_agent_target_for_redeploy() {
         let db_path = std::env::temp_dir().join(format!(
             "edge-controller-targeted-state-{}.sqlite",
@@ -4650,6 +5257,45 @@ mod tests {
             resolve_operation_agent_connection_target(&state, &target, DEFAULT_AGENT_ENDPOINT)
                 .unwrap_err();
         assert!(error.contains("no persisted agent trust"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn bootstraps_existing_instance_via_ssh_when_trust_is_missing() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-controller-bootstrap-ssh-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .upsert_secret_ref(SECRET_SSH_PRIVATE_KEY_PATH, "path:/tmp/id_rsa")
+                .unwrap();
+        }
+        let target = ResolvedDeployTarget {
+            instance_id: "instance-bootstrap".to_owned(),
+            target_ip: "203.0.113.120".to_owned(),
+            created_instance: false,
+        };
+        let request = DeployRequest {
+            label_prefix: Some("waw-edge".to_owned()),
+            target_ip: None,
+            instance_id: Some("instance-bootstrap".to_owned()),
+            tunnel_domain: None,
+            acme_email: None,
+            dns_record_name: None,
+            cloudflare_zone_name: None,
+            mock_provider: false,
+            skip_dns: true,
+            snapshot_id: None,
+        };
+
+        assert!(should_bootstrap_via_ssh(&state, &request, &target, false));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -4720,6 +5366,7 @@ mod tests {
             "instance-1",
             "203.0.113.10",
             Some(r#"{"label":"old","instance_id":"instance-1"}"#),
+            None,
         )
         .unwrap();
 
@@ -4728,6 +5375,120 @@ mod tests {
         let guard = state.lock().unwrap();
         assert!(guard.latest_deployment().unwrap().is_none());
         assert!(guard.list_trust_entries().unwrap().is_empty());
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rollback_restores_controller_snapshot_when_file_snapshot_is_missing() {
+        let root = temp_repo_root();
+        let state_dir = root.join("win/vultr-waw");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let live_state_path = state_dir.join("current-edge.json");
+        std::fs::write(
+            &live_state_path,
+            r#"{"label":"deploy-new","instance_id":"instance-9"}"#,
+        )
+        .unwrap();
+
+        let db_path = root.join("edge-platform/.runtime/test-controller-state.sqlite");
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        let previous_controller_state = {
+            let guard = state.lock().unwrap();
+            guard
+                .upsert_controller_state(NewControllerState {
+                    active_deployment_label: Some("edge-old"),
+                    active_instance_id: Some("instance-old"),
+                    active_server_ip: Some("203.0.113.50"),
+                    active_tunnel_domain: Some("edge.example.com"),
+                    active_deployment_state_json: Some(
+                        r#"{"label":"edge-old","instance_id":"instance-old","ip":"203.0.113.50","tunnel":{"domain":"edge.example.com"}}"#,
+                    ),
+                    deploy_phase: "DEPLOYMENT_PUBLISHED",
+                    app_readiness_phase: "SERVER_RUNTIME_READY",
+                    last_error_code: None,
+                    last_error_message: None,
+                })
+                .unwrap();
+            guard
+                .record_deployment("deploy-new", "instance-9", "203.0.113.10")
+                .unwrap();
+            guard
+                .upsert_trust_entry(NewTrustEntry {
+                    deployment_id: "deploy-new",
+                    instance_id: "instance-9",
+                    ip: "203.0.113.10",
+                    known_host_line: "",
+                    domain_name: Some("edge-agent"),
+                    ca_cert_path: Some("/tmp/ca.pem"),
+                    server_cert_path: Some("/tmp/agent-server.pem"),
+                    client_cert_path: Some("/tmp/controller-client.pem"),
+                    client_key_path: Some("/tmp/controller-client.key"),
+                })
+                .unwrap();
+            guard.get_controller_state().unwrap().unwrap()
+        };
+
+        rollback_live_deployment_state(
+            &root,
+            &state,
+            "deploy-new",
+            "instance-9",
+            "203.0.113.10",
+            None,
+            Some(&previous_controller_state),
+        )
+        .unwrap();
+
+        let restored = std::fs::read_to_string(&live_state_path).unwrap();
+        assert!(restored.contains(r#""label":"edge-old""#));
+        let guard = state.lock().unwrap();
+        let controller_state = guard.get_controller_state().unwrap().unwrap();
+        assert_eq!(
+            controller_state.active_deployment_label.as_deref(),
+            Some("edge-old")
+        );
+        assert!(guard.list_trust_entries().unwrap().is_empty());
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_restores_active_deployment_from_latest_deployment() {
+        let root = temp_repo_root();
+        let state_dir = root.join("win/vultr-waw");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("current-edge.json"),
+            r#"{"label":"edge-recovered","instance_id":"instance-7","ip":"203.0.113.7","tunnel":{"domain":"edge.example.com"}}"#,
+        )
+        .unwrap();
+        let db_path = root.join("edge-platform/.runtime/test-controller-state.sqlite");
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .record_deployment("edge-recovered", "instance-7", "203.0.113.7")
+                .unwrap();
+            guard.clear_controller_state().unwrap();
+        }
+
+        reconcile_active_deployment_state(&root, &state).unwrap();
+
+        let guard = state.lock().unwrap();
+        let controller_state = guard.get_controller_state().unwrap().unwrap();
+        assert_eq!(
+            controller_state.active_deployment_label.as_deref(),
+            Some("edge-recovered")
+        );
+        assert!(
+            controller_state
+                .active_deployment_state_json
+                .as_deref()
+                .is_some_and(|value| value.contains(r#""instance_id":"instance-7""#))
+        );
         drop(guard);
 
         let _ = std::fs::remove_dir_all(root);

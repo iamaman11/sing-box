@@ -208,8 +208,8 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     let repo_root = canonical_repo_root(repo_root)?;
     let inventory = collect_repo_inventory(&repo_root)?;
     let agent_state = AgentState::bootstrap_placeholder();
-    let mut singbox = collect_local_singbox_state(&repo_root);
     let controller_state = read_controller_state(&repo_root)?;
+    let mut singbox = collect_local_singbox_state(&repo_root, controller_state.as_ref());
     let deployment = collect_deployment_summary(&repo_root, controller_state.as_ref())?;
     let provider = ProviderObservation::placeholder();
     let runtime = RuntimeObservation::placeholder();
@@ -262,9 +262,12 @@ fn canonical_repo_root(repo_root: &Path) -> Result<PathBuf, PlatformError> {
     })
 }
 
-fn collect_local_singbox_state(repo_root: &Path) -> LocalConfigObservation {
+fn collect_local_singbox_state(
+    repo_root: &Path,
+    controller_state: Option<&edge_state::StoredControllerState>,
+) -> LocalConfigObservation {
     let expected_config_path = repo_root.join(EXPECTED_LOCAL_CONFIG_PATH);
-    let expected_bindings = read_expected_tunnel_bindings(repo_root);
+    let expected_bindings = read_expected_tunnel_bindings(repo_root, controller_state);
     inspect_local_config(&expected_config_path, expected_bindings.as_ref())
 }
 
@@ -273,17 +276,38 @@ fn collect_deployment_summary(
     controller_state: Option<&edge_state::StoredControllerState>,
 ) -> Result<DeploymentSummary, PlatformError> {
     if let Some(state) = controller_state {
+        let parsed = state
+            .active_deployment_state_json
+            .as_deref()
+            .map(|raw| parse_current_edge_state(raw, "controller_state.active_deployment_state_json"))
+            .transpose()?;
         let live_state_present = state.active_instance_id.is_some()
             || state.active_server_ip.is_some()
-            || state.active_deployment_label.is_some();
+            || state.active_deployment_label.is_some()
+            || parsed.is_some();
         if live_state_present {
             return Ok(DeploymentSummary {
                 live_state_present: true,
                 source_state_path: Some(repo_root.join(DEFAULT_STATE_DB_PATH).display().to_string()),
-                deployment_label: state.active_deployment_label.clone(),
-                instance_id: state.active_instance_id.clone(),
-                server_ip: state.active_server_ip.clone(),
-                tunnel_domain: state.active_tunnel_domain.clone(),
+                deployment_label: state
+                    .active_deployment_label
+                    .clone()
+                    .or_else(|| parsed.as_ref().and_then(|value| value.label.clone())),
+                instance_id: state
+                    .active_instance_id
+                    .clone()
+                    .or_else(|| parsed.as_ref().and_then(|value| value.instance_id.clone())),
+                server_ip: state
+                    .active_server_ip
+                    .clone()
+                    .or_else(|| parsed.as_ref().and_then(|value| value.ip.clone())),
+                tunnel_domain: state.active_tunnel_domain.clone().or_else(|| {
+                    parsed
+                        .as_ref()
+                        .and_then(|value| value.tunnel.as_ref())
+                        .and_then(|tunnel| tunnel.domain.clone())
+                        .filter(|value| !value.is_empty())
+                }),
             });
         }
         return Ok(DeploymentSummary::missing());
@@ -304,15 +328,7 @@ fn collect_deployment_summary(
         )
     })?;
 
-    let parsed: CurrentEdgeState = serde_json::from_str(&raw).map_err(|err| {
-        PlatformError::new(
-            "current_state_parse_failed",
-            "controller.status",
-            format!("failed to parse {}: {err}", state_path.display()),
-            false,
-            ErrorSubsystem::State,
-        )
-    })?;
+    let parsed = parse_current_edge_state(&raw, &state_path.display().to_string())?;
 
     Ok(DeploymentSummary {
         live_state_present: true,
@@ -367,6 +383,21 @@ fn apply_selector_intents(repo_root: &Path, singbox: &mut LocalConfigObservation
     }
 }
 
+fn parse_current_edge_state(
+    raw: &str,
+    source: &str,
+) -> Result<CurrentEdgeState, PlatformError> {
+    serde_json::from_str(raw).map_err(|err| {
+        PlatformError::new(
+            "current_state_parse_failed",
+            "controller.status",
+            format!("failed to parse {source}: {err}"),
+            false,
+            ErrorSubsystem::State,
+        )
+    })
+}
+
 fn app_readiness_phase_from_str(value: &str) -> AppReadinessPhase {
     match value {
         "SERVER_RUNTIME_READY" => AppReadinessPhase::ServerRuntimeReady,
@@ -418,10 +449,23 @@ struct CurrentWarpTunnelState {
     reality_short_id: Option<String>,
 }
 
-fn read_expected_tunnel_bindings(repo_root: &Path) -> Option<ExpectedTunnelBindings> {
-    let state_path = repo_root.join(CURRENT_STATE_PATH);
-    let raw = fs::read_to_string(state_path).ok()?;
-    let parsed: CurrentEdgeState = serde_json::from_str(&raw).ok()?;
+fn read_expected_tunnel_bindings(
+    repo_root: &Path,
+    controller_state: Option<&edge_state::StoredControllerState>,
+) -> Option<ExpectedTunnelBindings> {
+    let parsed = match controller_state {
+        Some(value) => value
+            .active_deployment_state_json
+            .as_deref()
+            .and_then(|raw| {
+                parse_current_edge_state(raw, "controller_state.active_deployment_state_json").ok()
+            }),
+        None => {
+            let state_path = repo_root.join(CURRENT_STATE_PATH);
+            let raw = fs::read_to_string(state_path).ok()?;
+            parse_current_edge_state(&raw, CURRENT_STATE_PATH).ok()
+        }
+    }?;
 
     let direct = parsed.tunnel.and_then(tunnel_binding_from_state)?;
     let warp = parsed
@@ -575,6 +619,65 @@ mod tests {
                 .as_deref(),
             Some("auto-direct-tunnel")
         );
+    }
+
+    #[test]
+    fn collects_controller_status_from_authoritative_controller_snapshot() {
+        let repo_root = temp_repo_root("controller_status_controller_snapshot");
+        create_required_repo_files(&repo_root);
+        let db_path = repo_root.join(DEFAULT_STATE_DB_PATH);
+        let state = edge_state::EdgeState::open_or_create(&db_path).unwrap();
+        state
+            .upsert_controller_state(edge_state::NewControllerState {
+                active_deployment_label: Some("edge-authoritative"),
+                active_instance_id: Some("instance-auth"),
+                active_server_ip: Some("203.0.113.10"),
+                active_tunnel_domain: Some("edge.example.com"),
+                active_deployment_state_json: Some(
+                    r#"{
+  "label":"edge-authoritative",
+  "instance_id":"instance-auth",
+  "ip":"203.0.113.10",
+  "tunnel":{
+    "domain":"edge.example.com",
+    "hy2_port":8443,
+    "hy2_password":"direct-password",
+    "vless_port":443,
+    "vless_uuid":"direct-uuid",
+    "reality_public_key":"direct-public-key",
+    "reality_short_id":"direct-short-id"
+  },
+  "tunnel_warp":{
+    "domain":"edge.example.com",
+    "hy2_port":9444,
+    "hy2_password":"warp-password",
+    "vless_port":5443,
+    "vless_uuid":"warp-uuid",
+    "reality_public_key":"warp-public-key",
+    "reality_short_id":"warp-short-id"
+  }
+}"#,
+                ),
+                deploy_phase: "DEPLOYMENT_PUBLISHED",
+                app_readiness_phase: "APP_READY",
+                last_error_code: None,
+                last_error_message: None,
+            })
+            .unwrap();
+
+        let status = collect_controller_status(&repo_root).unwrap();
+        assert_eq!(
+            status
+                .deployment
+                .as_ref()
+                .unwrap()
+                .deployment_label
+                .as_deref(),
+            Some("edge-authoritative")
+        );
+        assert!(!status.local_singbox.as_ref().unwrap().warnings.iter().any(|warning| {
+            warning.contains("does not match expected direct tunnel parameters")
+        }));
     }
 
     #[test]
