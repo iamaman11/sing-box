@@ -680,6 +680,7 @@ pub(crate) async fn execute(
             "selector verification failed after local runtime start; deployment completed in degraded state",
         );
         let mut warnings = local_reconcile_warnings;
+        append_local_runtime_dns_guard(&server.repo_root, &mut warnings);
         warnings.push(format!(
             "desktop desired={:?} observed={:?}; ubuntu desired={:?} observed={:?}",
             desktop_selector.desired_main_route,
@@ -761,6 +762,7 @@ pub(crate) async fn execute(
             "egress trace verification failed; deployment completed in degraded state",
         );
         let mut warnings = local_reconcile_warnings;
+        append_local_runtime_dns_guard(&server.repo_root, &mut warnings);
         warnings.push(
             desktop_trace
                 .note
@@ -860,6 +862,17 @@ fn format_rollback_warnings(warnings: &[String]) -> String {
     } else {
         format!("; rollback warnings: {}", warnings.join("; "))
     }
+}
+
+fn append_local_runtime_dns_guard(repo_root: &Path, warnings: &mut Vec<String>) {
+    let observed = inspect_local_runtime(&default_local_config_path(repo_root));
+    if observed.process_running {
+        return;
+    }
+
+    warnings.push("local sing-box stopped before readiness verification completed".to_owned());
+    warnings.extend(observed.warnings);
+    warnings.extend(restore_windows_dns_if_owned());
 }
 
 fn phase_journal(

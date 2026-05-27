@@ -19,7 +19,7 @@ use edge_clash::{
 use edge_controller_core::{collect_controller_status, validate_deploy_transition};
 use edge_local_runtime::{
     LocalRuntimePaths, inspect_local_runtime, restart_local_runtime as restart_runtime_process,
-    restart_local_runtime_visible as restart_runtime_process_visible,
+    restart_local_runtime_visible as restart_runtime_process_visible, restore_windows_dns_if_owned,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
@@ -45,9 +45,9 @@ use edge_shared_types::{
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
-    ControllerStateTransition, DestroyAuthorityTransition, EdgeState, NewControllerState,
-    NewTrustEntry, OperationJournalUpdate, StoredDeployment, StoredOperation, StoredOperationEvent,
-    StoredTrustEntry,
+    AppReadinessUpdate, ControllerStateTransition, DestroyAuthorityTransition, EdgeState,
+    NewControllerState, NewTrustEntry, OperationJournalUpdate, StoredDeployment, StoredOperation,
+    StoredOperationEvent, StoredTrustEntry,
 };
 use edge_trace::trace_via_proxy;
 use edge_trust::{
@@ -716,9 +716,13 @@ impl ControllerService for ControllerServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ControllerStatus>, Status> {
-        reconcile_authoritative_deployment_state(&self.repo_root, &self.state)
-            .await
-            .map_err(Status::internal)?;
+        let reconcile_warning =
+            match reconcile_authoritative_deployment_state(&self.repo_root, &self.state).await {
+                Ok(()) => None,
+                Err(err) => Some(format!(
+                    "authoritative provider reconciliation unavailable: {err}"
+                )),
+            };
         ensure_selector_intents_seeded(&self.repo_root, &self.state)
             .await
             .map_err(Status::internal)?;
@@ -775,6 +779,10 @@ impl ControllerService for ControllerServerImpl {
         status.local_singbox = Some(merged_local);
         status.selector = Some(merged_selector);
         status.ubuntu_selector = Some(merged_ubuntu_selector);
+        refresh_app_readiness_from_observed_status(&self.state, &mut status)?;
+        if let Some(warning) = reconcile_warning {
+            status.status_notes.push(warning);
+        }
 
         self.state
             .lock()
@@ -1002,15 +1010,41 @@ impl ControllerService for ControllerServerImpl {
                     &result.local_singbox,
                 )
                 .await;
-                append_operation_event(&self.state, operation.id, &result.note)?;
-                update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
-                LocalRuntimeResponse {
-                    success: true,
-                    pid: result.pid,
-                    note: result.note,
-                    warnings: result.warnings,
-                    operation: Some(operation_with_status(operation, "SUCCEEDED")),
-                    local_singbox: Some(result.local_singbox),
+                let observed_after_start = inspect_local_runtime(&paths.config_path);
+                if !observed_after_start.process_running {
+                    result
+                        .warnings
+                        .push("local sing-box stopped before start operation completed".to_owned());
+                    result
+                        .warnings
+                        .extend(observed_after_start.warnings.clone());
+                    result.warnings.extend(restore_windows_dns_if_owned());
+                    append_operation_event(
+                        &self.state,
+                        operation.id,
+                        "local sing-box stopped before start operation completed",
+                    )?;
+                    update_operation_status(&self.state, operation.id, "FAILED")?;
+                    LocalRuntimeResponse {
+                        success: false,
+                        pid: result.pid,
+                        note: "local sing-box stopped before start operation completed".to_owned(),
+                        warnings: result.warnings,
+                        operation: Some(operation_with_status(operation, "FAILED")),
+                        local_singbox: Some(observed_after_start),
+                    }
+                } else {
+                    result.local_singbox = observed_after_start;
+                    append_operation_event(&self.state, operation.id, &result.note)?;
+                    update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
+                    LocalRuntimeResponse {
+                        success: true,
+                        pid: result.pid,
+                        note: result.note,
+                        warnings: result.warnings,
+                        operation: Some(operation_with_status(operation, "SUCCEEDED")),
+                        local_singbox: Some(result.local_singbox),
+                    }
                 }
             }
             Err(err) => {
@@ -1141,15 +1175,42 @@ impl ControllerService for ControllerServerImpl {
                     &result.local_singbox,
                 )
                 .await;
-                append_operation_event(&self.state, operation.id, &result.note)?;
-                update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
-                LocalRuntimeResponse {
-                    success: true,
-                    pid: result.pid,
-                    note: result.note,
-                    warnings: result.warnings,
-                    operation: Some(operation_with_status(operation, "SUCCEEDED")),
-                    local_singbox: Some(result.local_singbox),
+                let observed_after_start = inspect_local_runtime(&paths.config_path);
+                if !observed_after_start.process_running {
+                    result.warnings.push(
+                        "local sing-box stopped before restart operation completed".to_owned(),
+                    );
+                    result
+                        .warnings
+                        .extend(observed_after_start.warnings.clone());
+                    result.warnings.extend(restore_windows_dns_if_owned());
+                    append_operation_event(
+                        &self.state,
+                        operation.id,
+                        "local sing-box stopped before restart operation completed",
+                    )?;
+                    update_operation_status(&self.state, operation.id, "FAILED")?;
+                    LocalRuntimeResponse {
+                        success: false,
+                        pid: result.pid,
+                        note: "local sing-box stopped before restart operation completed"
+                            .to_owned(),
+                        warnings: result.warnings,
+                        operation: Some(operation_with_status(operation, "FAILED")),
+                        local_singbox: Some(observed_after_start),
+                    }
+                } else {
+                    result.local_singbox = observed_after_start;
+                    append_operation_event(&self.state, operation.id, &result.note)?;
+                    update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
+                    LocalRuntimeResponse {
+                        success: true,
+                        pid: result.pid,
+                        note: result.note,
+                        warnings: result.warnings,
+                        operation: Some(operation_with_status(operation, "SUCCEEDED")),
+                        local_singbox: Some(result.local_singbox),
+                    }
                 }
             }
             Err(err) => {
@@ -2078,22 +2139,15 @@ async fn refresh_app_readiness_phase(
     .await;
 
     if !local_singbox.process_running {
-        return upsert_controller_phases(
+        return upsert_app_readiness_phase(
             state,
-            DeployPhase::Failed,
             AppReadinessPhase::AppReadinessFailed,
             Some("local_runtime_not_running"),
             Some("local sing-box is not running"),
         );
     }
     if !selector_is_converged(&desktop_selector) || !selector_is_converged(&ubuntu_selector) {
-        return upsert_controller_phases(
-            state,
-            DeployPhase::SelectorIntentsReconciling,
-            AppReadinessPhase::LocalRuntimeReady,
-            None,
-            None,
-        );
+        return upsert_app_readiness_phase(state, AppReadinessPhase::LocalRuntimeReady, None, None);
     }
 
     let desktop_proxy = default_trace_proxy_url(&default_local_config_path(repo_root))
@@ -2110,22 +2164,46 @@ async fn refresh_app_readiness_phase(
         None => TraceObservation::unavailable("ubuntu proxy endpoint unavailable"),
     };
     if desktop_trace.available && ubuntu_trace.available {
-        upsert_controller_phases(
-            state,
-            DeployPhase::AppReadyCompleted,
-            AppReadinessPhase::AppReady,
-            None,
-            None,
-        )
+        upsert_app_readiness_phase(state, AppReadinessPhase::AppReady, None, None)
     } else {
-        upsert_controller_phases(
-            state,
-            DeployPhase::SelectorsVerified,
-            AppReadinessPhase::SelectorsReady,
-            None,
-            None,
-        )
+        upsert_app_readiness_phase(state, AppReadinessPhase::SelectorsReady, None, None)
     }
+}
+
+fn refresh_app_readiness_from_observed_status(
+    state: &Arc<Mutex<EdgeState>>,
+    status: &mut ControllerStatus,
+) -> Result<(), Status> {
+    let phase = if status
+        .deployment
+        .as_ref()
+        .is_none_or(|deployment| !deployment.live_state_present)
+    {
+        AppReadinessPhase::DeploymentAbsent
+    } else if status
+        .local_singbox
+        .as_ref()
+        .is_none_or(|local| !local.process_running)
+    {
+        AppReadinessPhase::AppReadinessFailed
+    } else if status
+        .selector
+        .as_ref()
+        .is_none_or(|selector| !selector_is_converged(selector))
+        || status
+            .ubuntu_selector
+            .as_ref()
+            .is_none_or(|selector| !selector_is_converged(selector))
+    {
+        AppReadinessPhase::LocalRuntimeReady
+    } else {
+        AppReadinessPhase::AppReady
+    };
+
+    upsert_app_readiness_phase(state, phase, None, None)
+        .map_err(|err| Status::internal(format!("failed to refresh app readiness: {err}")))?;
+    status.app_readiness_phase = phase as i32;
+    Ok(())
 }
 
 fn ubuntu_proxy_url_from_status(status: &ControllerStatus) -> Option<String> {
@@ -2323,21 +2401,22 @@ fn selector_is_converged(selector: &SelectorState) -> bool {
         && !selector.degraded
 }
 
-fn upsert_controller_phases(
+fn upsert_app_readiness_phase(
     state: &Arc<Mutex<EdgeState>>,
-    deploy_phase: DeployPhase,
     app_readiness_phase: AppReadinessPhase,
     last_error_code: Option<&str>,
     last_error_message: Option<&str>,
 ) -> Result<(), String> {
-    upsert_controller_phases_with_journal(
-        state,
-        deploy_phase,
-        app_readiness_phase,
-        last_error_code,
-        last_error_message,
-        None,
-    )
+    state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?
+        .update_app_readiness_phase(AppReadinessUpdate {
+            app_readiness_phase,
+            last_error_code,
+            last_error_message,
+        })
+        .map_err(|err| format!("failed to update app readiness phase: {err}"))?;
+    Ok(())
 }
 
 fn upsert_controller_phases_with_journal(

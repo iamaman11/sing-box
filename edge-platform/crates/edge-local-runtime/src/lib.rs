@@ -1,11 +1,15 @@
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use edge_shared_types::LocalSingboxState;
 use edge_singbox::sync_local_config;
 use sysinfo::{Pid, Signal, System};
+
+const STARTUP_OBSERVATION_SECS: u64 = 10;
+const STARTUP_OBSERVATION_INTERVAL_MS: u64 = 500;
 
 #[derive(Debug, Clone)]
 pub struct LocalRuntimePaths {
@@ -28,6 +32,17 @@ pub struct RuntimeOperationResult {
     pub note: String,
     pub warnings: Vec<String>,
     pub local_singbox: LocalSingboxState,
+}
+
+pub fn restore_windows_dns_if_owned() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        restore_windows_dns_if_owned_windows()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
 }
 
 pub fn inspect_local_runtime(config_path: &Path) -> LocalSingboxState {
@@ -83,10 +98,10 @@ pub fn start_local_runtime(
     }
 
     if !paths.singbox_binary_path.is_file() {
-        return Err(format!(
+        return Err(with_dns_guard_on_failure(format!(
             "sing-box binary was not found: {}",
             paths.singbox_binary_path.display()
-        ));
+        )));
     }
 
     let mut child = if visible_window && cfg!(windows) {
@@ -132,33 +147,14 @@ pub fn start_local_runtime(
         if let Some(parent) = paths.config_path.parent() {
             command.current_dir(parent);
         }
+        attach_runtime_logs(&mut command, &paths.runtime_root);
         let child = command
             .spawn()
-            .map_err(|err| format!("failed to start sing-box: {err}"))?;
+            .map_err(|err| with_dns_guard_on_failure(format!("failed to start sing-box: {err}")))?;
         SpawnedChild::Owned(child)
     };
 
-    // Give sing-box a short grace period so immediate config/runtime failures
-    // are surfaced to the caller instead of being reported as a false success.
-    thread::sleep(Duration::from_secs(2));
-    match &mut child {
-        SpawnedChild::Owned(process) => {
-            if let Some(status) = process
-                .try_wait()
-                .map_err(|err| format!("failed to observe sing-box startup: {err}"))?
-            {
-                return Err(format!(
-                    "sing-box exited immediately with status {}",
-                    status
-                ));
-            }
-        }
-        SpawnedChild::ExternalPid(pid) => {
-            if !process_exists(*pid) {
-                return Err("sing-box exited immediately after visible window launch".to_owned());
-            }
-        }
-    }
+    observe_startup(&mut child).map_err(with_dns_guard_on_failure)?;
 
     let local_singbox = inspect_local_runtime(&paths.config_path);
     Ok(RuntimeOperationResult {
@@ -180,10 +176,12 @@ pub fn stop_local_runtime(
     let runtime = detect_process(config_path);
     let Some(process) = runtime else {
         let local_singbox = inspect_local_runtime(config_path);
+        let mut warnings = local_singbox.warnings.clone();
+        warnings.extend(restore_windows_dns_if_owned());
         return Ok(RuntimeOperationResult {
             pid: None,
             note: "sing-box is not running".to_owned(),
-            warnings: local_singbox.warnings.clone(),
+            warnings,
             local_singbox,
         });
     };
@@ -200,10 +198,12 @@ pub fn stop_local_runtime(
 
     stop_process(process.pid);
     let local_singbox = inspect_local_runtime(config_path);
+    let mut warnings = local_singbox.warnings.clone();
+    warnings.extend(restore_windows_dns_if_owned());
     Ok(RuntimeOperationResult {
         pid: Some(process.pid),
         note: "local sing-box stopped".to_owned(),
-        warnings: local_singbox.warnings.clone(),
+        warnings,
         local_singbox,
     })
 }
@@ -230,6 +230,100 @@ fn stop_process(pid: u32) {
     if let Some(process) = system.process(Pid::from_u32(pid)) {
         let _ = process.kill_with(Signal::Kill);
         let _ = process.kill();
+    }
+}
+
+fn observe_startup(child: &mut SpawnedChild) -> Result<(), String> {
+    let attempts = (STARTUP_OBSERVATION_SECS * 1000) / STARTUP_OBSERVATION_INTERVAL_MS;
+    for _ in 0..attempts {
+        thread::sleep(Duration::from_millis(STARTUP_OBSERVATION_INTERVAL_MS));
+        match child {
+            SpawnedChild::Owned(process) => {
+                if let Some(status) = process
+                    .try_wait()
+                    .map_err(|err| format!("failed to observe sing-box startup: {err}"))?
+                {
+                    return Err(format!(
+                        "sing-box exited during startup observation with status {status}"
+                    ));
+                }
+            }
+            SpawnedChild::ExternalPid(pid) => {
+                if !process_exists(*pid) {
+                    return Err(
+                        "sing-box exited during visible window startup observation".to_owned()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn attach_runtime_logs(command: &mut Command, runtime_root: &Path) {
+    if fs::create_dir_all(runtime_root).is_err() {
+        return;
+    }
+    if let Ok(stdout) = File::create(runtime_root.join("sing-box.stdout.log")) {
+        command.stdout(Stdio::from(stdout));
+    }
+    if let Ok(stderr) = File::create(runtime_root.join("sing-box.stderr.log")) {
+        command.stderr(Stdio::from(stderr));
+    }
+}
+
+fn with_dns_guard_on_failure(message: String) -> String {
+    let warnings = restore_windows_dns_if_owned();
+    if warnings.is_empty() {
+        message
+    } else {
+        format!("{message}; {}", warnings.join("; "))
+    }
+}
+
+#[cfg(windows)]
+fn restore_windows_dns_if_owned_windows() -> Vec<String> {
+    let script = r#"
+$owned = @('127.0.2.2', '127.0.2.3')
+$adapters = @(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object {
+    $addresses = @($_.ServerAddresses)
+    @($owned | Where-Object { $addresses -contains $_ }).Count -gt 0
+})
+foreach ($adapter in $adapters) {
+    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses
+    "reset Windows DNS on $($adapter.InterfaceAlias) [$($adapter.InterfaceIndex)]"
+}
+if ($adapters.Count -gt 0) {
+    Clear-DnsClientCache
+    "cleared Windows DNS client cache"
+}
+"#;
+
+    match Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| format!("windows DNS guard: {line}"))
+            .collect(),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            vec![if stderr.is_empty() {
+                format!("windows DNS guard failed with status {}", output.status)
+            } else {
+                format!("windows DNS guard failed: {stderr}")
+            }]
+        }
+        Err(err) => vec![format!("windows DNS guard failed to run: {err}")],
     }
 }
 

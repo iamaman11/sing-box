@@ -11,7 +11,7 @@ pub async fn get_selector_state(
     main_group: &str,
     aux_groups: &[&str],
 ) -> Result<SelectorState, String> {
-    let response = Client::new()
+    let response = clash_control_client()?
         .get(format!("{controller_url}/proxies"))
         .send()
         .await
@@ -40,7 +40,7 @@ pub async fn set_selector(
         .as_ref()
         .and_then(|selector| selector.observed_main_route.clone());
 
-    let response = Client::new()
+    let response = clash_control_client()?
         .put(format!("{controller_url}/proxies/{group}"))
         .json(&SelectorMutationBody {
             name: name.to_owned(),
@@ -69,6 +69,13 @@ pub async fn set_selector(
 
 pub fn default_aux_groups() -> &'static [&'static str] {
     DEFAULT_AUX_GROUPS
+}
+
+fn clash_control_client() -> Result<Client, String> {
+    Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|err| format!("failed to build clash control HTTP client: {err}"))
 }
 
 fn selector_state_from_payload(
@@ -191,5 +198,10 @@ mod tests {
         );
         assert_eq!(selector.proxy_groups.len(), 3);
         assert!(!selector.degraded);
+    }
+
+    #[test]
+    fn builds_proxy_bypassing_local_control_client() {
+        assert!(clash_control_client().is_ok());
     }
 }

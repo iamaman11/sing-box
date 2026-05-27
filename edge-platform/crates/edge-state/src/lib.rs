@@ -229,6 +229,32 @@ impl EdgeState {
         })
     }
 
+    pub fn update_app_readiness_phase(
+        &self,
+        update: AppReadinessUpdate<'_>,
+    ) -> rusqlite::Result<StoredControllerState> {
+        self.with_immediate_transaction(|conn| {
+            conn.execute(
+                "
+                UPDATE controller_state
+                SET
+                    app_readiness_phase = ?1,
+                    last_error_code = ?2,
+                    last_error_message = ?3,
+                    updated_at_unix = ?4
+                WHERE singleton_key = 1
+                ",
+                params![
+                    app_readiness_phase_storage_name(update.app_readiness_phase),
+                    update.last_error_code,
+                    update.last_error_message,
+                    unix_now()
+                ],
+            )?;
+            get_controller_state_in_conn(conn)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+        })
+    }
+
     pub fn get_controller_state(&self) -> rusqlite::Result<Option<StoredControllerState>> {
         get_controller_state_in_conn(&self.conn)
     }
@@ -1051,6 +1077,13 @@ pub struct OperationJournalUpdate<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct AppReadinessUpdate<'a> {
+    pub app_readiness_phase: AppReadinessPhase,
+    pub last_error_code: Option<&'a str>,
+    pub last_error_message: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct DestroyAuthorityTransition<'a> {
     pub deployment_label: Option<&'a str>,
     pub instance_id: Option<&'a str>,
@@ -1651,6 +1684,45 @@ mod tests {
             "destroy committed"
         );
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn app_readiness_update_does_not_mutate_deploy_phase() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-state-readiness-update-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = EdgeState::open_or_create(&db_path).unwrap();
+        state
+            .upsert_controller_state(NewControllerState {
+                active_deployment_label: Some("deploy-1"),
+                active_instance_id: Some("instance-1"),
+                active_server_ip: Some("203.0.113.10"),
+                active_tunnel_domain: Some("edge.example.com"),
+                active_deployment_state_json: None,
+                deploy_phase: DeployPhase::Completed,
+                app_readiness_phase: AppReadinessPhase::AppReadinessFailed,
+                last_error_code: Some("egress_trace_failed"),
+                last_error_message: Some("trace unavailable"),
+            })
+            .unwrap();
+
+        let stored = state
+            .update_app_readiness_phase(AppReadinessUpdate {
+                app_readiness_phase: AppReadinessPhase::AppReady,
+                last_error_code: None,
+                last_error_message: None,
+            })
+            .unwrap();
+
+        assert_eq!(stored.deploy_phase, DeployPhase::Completed);
+        assert_eq!(stored.app_readiness_phase, AppReadinessPhase::AppReady);
+        assert!(stored.last_error_code.is_none());
+        assert!(stored.last_error_message.is_none());
         let _ = std::fs::remove_file(db_path);
     }
 
