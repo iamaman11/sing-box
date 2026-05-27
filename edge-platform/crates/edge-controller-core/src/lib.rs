@@ -87,6 +87,30 @@ pub const fn is_allowed_deploy_transition(from: DeployPhase, to: DeployPhase) ->
                 DeployPhase::DeploymentPublished,
                 DeployPhase::LocalConfigSynced
             )
+            | (
+                DeployPhase::LocalConfigSynced,
+                DeployPhase::LocalRuntimeStartStarted
+            )
+            | (
+                DeployPhase::LocalRuntimeStartStarted,
+                DeployPhase::LocalRuntimeReadyVerified
+            )
+            | (
+                DeployPhase::LocalRuntimeReadyVerified,
+                DeployPhase::SelectorIntentsReconciling
+            )
+            | (
+                DeployPhase::SelectorIntentsReconciling,
+                DeployPhase::SelectorsVerified
+            )
+            | (
+                DeployPhase::SelectorsVerified,
+                DeployPhase::AppEgressVerified
+            )
+            | (
+                DeployPhase::AppEgressVerified,
+                DeployPhase::AppReadyCompleted
+            )
             | (DeployPhase::LocalConfigSynced, DeployPhase::Completed)
             | (
                 DeployPhase::LocalRuntimeReadyVerified,
@@ -110,6 +134,11 @@ pub const fn is_allowed_deploy_transition(from: DeployPhase, to: DeployPhase) ->
             | (DeployPhase::TunnelReadyVerified, DeployPhase::Failed)
             | (DeployPhase::DeploymentPublished, DeployPhase::Failed)
             | (DeployPhase::LocalConfigSynced, DeployPhase::Failed)
+            | (DeployPhase::LocalRuntimeStartStarted, DeployPhase::Failed)
+            | (DeployPhase::LocalRuntimeReadyVerified, DeployPhase::Failed)
+            | (DeployPhase::SelectorIntentsReconciling, DeployPhase::Failed)
+            | (DeployPhase::SelectorsVerified, DeployPhase::Failed)
+            | (DeployPhase::AppEgressVerified, DeployPhase::Failed)
             | (DeployPhase::Failed, DeployPhase::RollbackStarted)
             | (DeployPhase::RollbackStarted, DeployPhase::RollbackCompleted)
     )
@@ -521,12 +550,28 @@ mod tests {
             DeployPhase::TunnelReadyVerified,
             DeployPhase::DeploymentPublished,
             DeployPhase::LocalConfigSynced,
-            DeployPhase::Completed,
+            DeployPhase::LocalRuntimeStartStarted,
+            DeployPhase::LocalRuntimeReadyVerified,
+            DeployPhase::SelectorIntentsReconciling,
+            DeployPhase::SelectorsVerified,
+            DeployPhase::AppEgressVerified,
+            DeployPhase::AppReadyCompleted,
         ];
 
         for window in path.windows(2) {
             validate_deploy_transition(window[0], window[1]).unwrap();
         }
+    }
+
+    #[test]
+    fn accepts_degraded_runtime_completion_paths() {
+        validate_deploy_transition(
+            DeployPhase::LocalRuntimeReadyVerified,
+            DeployPhase::Completed,
+        )
+        .unwrap();
+        validate_deploy_transition(DeployPhase::SelectorsVerified, DeployPhase::Completed).unwrap();
+        validate_deploy_transition(DeployPhase::AppEgressVerified, DeployPhase::Completed).unwrap();
     }
 
     #[test]
