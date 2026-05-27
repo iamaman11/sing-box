@@ -1480,6 +1480,8 @@ impl ControllerService for ControllerServerImpl {
             }
         }
 
+        stop_local_runtime_for_destroy(&self.repo_root, &self.state, operation.id, &mut warnings)?;
+
         clear_live_deployment_state(
             &self.repo_root,
             &self.state,
@@ -3804,6 +3806,37 @@ fn clear_live_deployment_state(
         })
         .map_err(|err| format!("failed to mark deployment absent: {err}"))?;
     Ok(())
+}
+
+fn stop_local_runtime_for_destroy(
+    repo_root: &Path,
+    state: &Arc<Mutex<EdgeState>>,
+    operation_id: i64,
+    warnings: &mut Vec<String>,
+) -> Result<(), Status> {
+    let config_path = default_local_config_path(repo_root);
+    match stop_runtime_process(&config_path, true) {
+        Ok(result) => {
+            append_operation_event(
+                state,
+                operation_id,
+                &format!("destroy local runtime stop: {}", result.note),
+            )?;
+            warnings.extend(
+                result
+                    .warnings
+                    .into_iter()
+                    .filter(|warning| warning != "sing-box process is not running"),
+            );
+            Ok(())
+        }
+        Err(err) => {
+            let warning = format!("destroy local runtime stop failed: {err}");
+            append_operation_event(state, operation_id, &warning)?;
+            warnings.push(warning);
+            Ok(())
+        }
+    }
 }
 
 fn is_tombstoned_candidate(
