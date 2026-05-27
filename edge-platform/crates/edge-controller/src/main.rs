@@ -7,6 +7,8 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod deploy_orchestrator;
+
 use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
 };
@@ -22,8 +24,8 @@ use edge_local_runtime::{
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
 use edge_provider_vultr::{
-    CreateInstanceRequest, create_instance, destroy_instance, get_instance, list_instances,
-    mock_instance,
+    CreateInstanceRequest, create_instance, destroy_instance, get_instance, is_not_found_error,
+    list_instances, mock_instance,
 };
 use edge_secrets::{default_env_ref, resolve_secret_path, resolve_secret_text};
 use edge_shared_types::agent_service_client::AgentServiceClient;
@@ -43,8 +45,9 @@ use edge_shared_types::{
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
-    EdgeState, NewControllerState, NewTrustEntry, StoredDeployment, StoredOperation,
-    StoredOperationEvent, StoredTrustEntry,
+    ControllerStateTransition, DestroyAuthorityTransition, EdgeState, NewControllerState,
+    NewTrustEntry, OperationJournalUpdate, StoredDeployment, StoredOperation, StoredOperationEvent,
+    StoredTrustEntry,
 };
 use edge_trace::trace_via_proxy;
 use edge_trust::{
@@ -65,6 +68,12 @@ const DEFAULT_LIVE_STATE_PATH: &str = "win/vultr-waw/current-edge.json";
 const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
 const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
 const DEFAULT_REGION: &str = "waw";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DestroyInstanceOutcome {
+    Requested,
+    AlreadyAbsent,
+}
 const DEFAULT_PLAN: &str = "vc2-1c-1gb";
 const DEFAULT_VULTR_OS_ID: u32 = 2136;
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
@@ -512,6 +521,17 @@ fn controller_endpoint_from_args(index: usize) -> String {
         .unwrap_or_else(|| format!("http://{DEFAULT_CONTROLLER_ADDR}"))
 }
 
+fn optional_arg(index: usize) -> Option<String> {
+    env::args().nth(index).and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
 fn agent_endpoint_from_args(index: usize) -> String {
     env::args()
         .nth(index)
@@ -533,29 +553,29 @@ fn bootstrap_mode_from_args(index: usize) -> Result<BootstrapMode, Box<dyn std::
 
 fn deploy_request_from_args() -> Result<DeployRequest, Box<dyn std::error::Error>> {
     Ok(DeployRequest {
-        label_prefix: env::args().nth(2),
-        target_ip: env::args().nth(3),
-        instance_id: env::args().nth(4),
-        tunnel_domain: env::args().nth(5),
-        acme_email: env::args().nth(6),
-        dns_record_name: env::args().nth(7),
-        cloudflare_zone_name: env::args().nth(8),
+        label_prefix: optional_arg(2),
+        target_ip: optional_arg(3),
+        instance_id: optional_arg(4),
+        tunnel_domain: optional_arg(5),
+        acme_email: optional_arg(6),
+        dns_record_name: optional_arg(7),
+        cloudflare_zone_name: optional_arg(8),
         mock_provider: env::var("EDGE_MOCK_PROVIDER")
             .ok()
             .is_some_and(|value| value == "1"),
         skip_dns: env::var("EDGE_SKIP_DNS")
             .ok()
             .is_some_and(|value| value == "1"),
-        snapshot_id: env::args().nth(9),
+        snapshot_id: optional_arg(9),
     })
 }
 
 fn destroy_request_from_args() -> Result<DestroyRequest, Box<dyn std::error::Error>> {
     Ok(DestroyRequest {
-        instance_id: env::args().nth(2),
-        target_ip: env::args().nth(3),
-        dns_record_name: env::args().nth(4),
-        cloudflare_zone_name: env::args().nth(5),
+        instance_id: optional_arg(2),
+        target_ip: optional_arg(3),
+        dns_record_name: optional_arg(4),
+        cloudflare_zone_name: optional_arg(5),
         mock_provider: env::var("EDGE_MOCK_PROVIDER")
             .ok()
             .is_some_and(|value| value == "1"),
@@ -709,6 +729,7 @@ impl ControllerService for ControllerServerImpl {
             .deployment
             .as_ref()
             .is_some_and(|deployment| deployment.live_state_present);
+        let live_state_artifact_present = live_state_artifact_present(&self.repo_root);
 
         if !agent_state.ready && !backend_ready_from_state {
             status
@@ -722,6 +743,12 @@ impl ControllerService for ControllerServerImpl {
         } else if !runtime.edge_agent_reachable && backend_ready_from_state {
             status.status_notes.push(
                 "server runtime observation is unavailable; using persisted live deployment state"
+                    .to_owned(),
+            );
+        }
+        if backend_ready_from_state && !live_state_artifact_present {
+            status.status_notes.push(
+                "local runtime artifact current-edge.json is missing; start-local cannot be trusted"
                     .to_owned(),
             );
         }
@@ -797,6 +824,7 @@ impl ControllerService for ControllerServerImpl {
         };
 
         let checks = build_doctor_checks(
+            &self.repo_root,
             &status,
             desktop_trace.as_ref(),
             ubuntu_trace.as_ref(),
@@ -1207,7 +1235,6 @@ impl ControllerService for ControllerServerImpl {
                 request.name
             )));
         }
-        upsert_selector_intent(&self.state, &group, &request.name).map_err(Status::internal)?;
 
         let base_status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
@@ -1236,6 +1263,20 @@ impl ControllerService for ControllerServerImpl {
                 .await
             {
                 Ok((previous, mut selector)) => {
+                    if let Err(err) = upsert_selector_intent(&self.state, &group, &request.name) {
+                        append_operation_event(&self.state, operation.id, &err)?;
+                        update_operation_status(&self.state, operation.id, "FAILED")?;
+                        selector.degraded = true;
+                        selector.warnings.push(err.clone());
+                        return Ok(Response::new(SetSelectorResponse {
+                            success: false,
+                            previous,
+                            current: selector.observed_main_route.clone(),
+                            warnings: selector.warnings.clone(),
+                            operation: Some(operation_with_status(operation, "FAILED")),
+                            selector: Some(selector),
+                        }));
+                    }
                     selector.desired_main_route = Some(request.name.clone());
                     append_operation_event(
                         &self.state,
@@ -1301,773 +1342,26 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<DeployRequest>,
     ) -> Result<Response<DeployResponse>, Status> {
-        let request = request.into_inner();
-        let previous_controller_state = self
-            .state
-            .lock()
-            .map_err(|_| Status::internal("controller state mutex poisoned"))?
-            .get_controller_state()
-            .map_err(|err| Status::internal(format!("failed to read controller state: {err}")))?;
-        let operation = self
-            .state
-            .lock()
-            .map_err(|_| Status::internal("controller state mutex poisoned"))?
-            .start_operation("deploy", "RUNNING")
-            .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
-        append_operation_event(&self.state, operation.id, "deploy requested")?;
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::Requested,
-            AppReadinessPhase::DeploymentAbsent,
-            None,
-            None,
-        );
-
-        let deployment_label = generate_deployment_label(request.label_prefix.as_deref());
-        append_operation_event(
-            &self.state,
-            operation.id,
-            &format!("deployment label reserved: {deployment_label}"),
-        )?;
-        let previous_live_state = read_live_state_raw(&self.repo_root)
-            .map_err(|err| Status::internal(format!("failed to snapshot live state: {err}")))?;
-        let mut rollback = DeployRollbackContext {
-            deployment_label: deployment_label.clone(),
-            previous_live_state,
-            previous_controller_state,
-            dns_updated: false,
-        };
-
-        let target =
-            resolve_deploy_target(&self.repo_root, &self.state, &request, &deployment_label)
-                .await
-                .map_err(|err| {
-                    let _ = upsert_controller_phases(
-                        &self.state,
-                        DeployPhase::Failed,
-                        AppReadinessPhase::AppReadinessFailed,
-                        Some("target_resolution_failed"),
-                        Some(err.as_str()),
-                    );
-                    let _ = restore_controller_state_snapshot(
-                        &self.state,
-                        rollback.previous_controller_state.as_ref(),
-                    );
-                    let _ = append_operation_event(&self.state, operation.id, &err);
-                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                    status_for_target_resolution_error(err)
-                })?;
-        append_operation_event(
-            &self.state,
-            operation.id,
-            &format!(
-                "target resolved: {} ({}){}",
-                target.instance_id,
-                target.target_ip,
-                if target.created_instance {
-                    " [created]"
-                } else {
-                    ""
-                }
-            ),
-        )?;
-
-        let bundle = build_bundle(&BuildBundleRequest {
-            repo_root: &self.repo_root,
-            target_ip: &target.target_ip,
-            instance_id: &target.instance_id,
-            tunnel_domain: request.tunnel_domain.as_deref(),
-            acme_email: request.acme_email.as_deref(),
-            cloudflare_zone_name: request.cloudflare_zone_name.as_deref(),
-            dns_record_name: request.dns_record_name.as_deref(),
-            label_prefix: request.label_prefix.as_deref(),
-            deployment_label: Some(&deployment_label),
-        })
-        .map_err(|err| {
-            let _ = append_operation_event(&self.state, operation.id, &err);
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            Status::internal(format!("failed to build deployment bundle: {err}"))
-        })?;
-        append_operation_event(
-            &self.state,
-            operation.id,
-            &format!("bundle rendered: {}", bundle.label),
-        )?;
-
-        let preexisting_agent_target = resolve_targeted_agent_connection_target(
-            &self.state,
-            &target.instance_id,
-            &target.target_ip,
-        )
-        .map_err(|err| {
-            let _ = append_operation_event(&self.state, operation.id, &err);
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            Status::internal(format!(
-                "failed to resolve persisted agent target before deploy: {err}"
-            ))
-        })?;
-        let preexisting_agent_trust = preexisting_agent_target.is_some();
-
-        if let Err(err) = persist_bundle_locally(&self.repo_root, &self.state, &bundle, &target) {
-            let rollback_warnings = rollback_failed_deploy(
-                &self.repo_root,
-                &self.state,
-                &request,
-                &target,
-                &rollback,
-                operation.id,
-            )
-            .await;
-            let _ = append_operation_event(&self.state, operation.id, &err);
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            return Err(Status::internal(format!(
-                "failed to persist deployment state: {}{}",
-                err,
-                if rollback_warnings.is_empty() {
-                    String::new()
-                } else {
-                    format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                }
-            )));
-        }
-        append_operation_event(
-            &self.state,
-            operation.id,
-            "local trust and deployment state persisted",
-        )?;
-
-        let agent_transport = match prepare_agent_transport(PrepareAgentTransportContext {
-            repo_root: &self.repo_root,
-            direct_endpoint: &self.agent_endpoint,
-            request: &request,
-            target: &target,
-            preexisting_agent_target,
-            preexisting_agent_trust,
-            operation_id: operation.id,
-            state: &self.state,
-        })
-        .await
-        {
-            Ok(agent_transport) => agent_transport,
-            Err(err) => {
-                let rollback_warnings = rollback_failed_deploy(
-                    &self.repo_root,
-                    &self.state,
-                    &request,
-                    &target,
-                    &rollback,
-                    operation.id,
-                )
-                .await;
-                let _ = append_operation_event(&self.state, operation.id, &err);
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                return Err(Status::internal(format!(
-                    "failed to prepare agent transport: {}{}",
-                    err,
-                    if rollback_warnings.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                    }
-                )));
-            }
-        };
-        append_operation_event(
-            &self.state,
-            operation.id,
-            &format!("agent transport ready via {}", agent_transport.endpoint),
-        )?;
-
-        let apply_response = match apply_bundle_to_agent_target(
-            &AgentConnectionTarget {
-                endpoint: agent_transport.endpoint.clone(),
-                tls_paths: agent_transport.tls_paths.clone(),
+        let result = deploy_orchestrator::execute(
+            self,
+            deploy_orchestrator::DeployCommand {
+                request: request.into_inner(),
             },
-            &bundle,
+            deploy_orchestrator::RollbackPolicy::STRICT,
         )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                let rollback_warnings = rollback_failed_deploy(
-                    &self.repo_root,
-                    &self.state,
-                    &request,
-                    &target,
-                    &rollback,
-                    operation.id,
-                )
-                .await;
-                let _ = append_operation_event(&self.state, operation.id, &err);
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                return Err(Status::internal(format!(
-                    "failed to apply bundle to agent: {}{}",
-                    err,
-                    if rollback_warnings.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                    }
-                )));
-            }
-        };
-        for path in &apply_response.written_paths {
-            append_operation_event(&self.state, operation.id, &format!("wrote {path}"))?;
-        }
-
-        let base = match bootstrap_runtime_with_tls_resilient(
-            &self.state,
-            operation.id,
-            AgentConnectionTarget {
-                endpoint: agent_transport.endpoint.clone(),
-                tls_paths: agent_transport.tls_paths.clone(),
-            },
-            BootstrapMode::BootstrapBase,
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                let rollback_warnings = rollback_failed_deploy(
-                    &self.repo_root,
-                    &self.state,
-                    &request,
-                    &target,
-                    &rollback,
-                    operation.id,
-                )
-                .await;
-                let _ = append_operation_event(&self.state, operation.id, &err);
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                return Err(Status::internal(format!(
-                    "base bootstrap failed: {}{}",
-                    err,
-                    if rollback_warnings.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                    }
-                )));
-            }
-        };
-        if !base.success {
-            let rollback_warnings = rollback_failed_deploy(
-                &self.repo_root,
-                &self.state,
-                &request,
-                &target,
-                &rollback,
-                operation.id,
-            )
-            .await;
-            let _ =
-                append_operation_event(&self.state, operation.id, &format_bootstrap_failure(&base));
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            return Ok(Response::new(DeployResponse {
-                success: false,
-                deployment: Some(bundle_to_proto_summary(&bundle, &target)),
-                provider: Some(provider_observation_from_request(
-                    &request,
-                    &target.target_ip,
-                )),
-                runtime: Some(RuntimeObservation::from_agent_state(
-                    &base
-                        .post_state
-                        .clone()
-                        .unwrap_or_else(AgentState::bootstrap_placeholder),
-                )),
-                warnings: merge_warnings(base.warnings, rollback_warnings),
-                operation: Some(operation_with_status(operation, "FAILED")),
-            }));
-        }
-        append_operation_event(&self.state, operation.id, "base bootstrap completed")?;
-
-        if should_update_dns(&request) {
-            let dns_note = match apply_dns_update(&self.state, &request, &target.target_ip).await {
-                Ok(note) => note,
-                Err(err) => {
-                    let rollback_warnings = rollback_failed_deploy(
-                        &self.repo_root,
-                        &self.state,
-                        &request,
-                        &target,
-                        &rollback,
-                        operation.id,
-                    )
-                    .await;
-                    let _ = append_operation_event(&self.state, operation.id, &err);
-                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                    return Err(Status::internal(format!(
-                        "{}{}",
-                        err,
-                        if rollback_warnings.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                        }
-                    )));
-                }
-            };
-            append_operation_event(&self.state, operation.id, &dns_note)?;
-            rollback.dns_updated = true;
-        }
-
-        if request
-            .tunnel_domain
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
-            && request
-                .acme_email
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
-        {
-            let tunnel = match bootstrap_runtime_with_tls_resilient(
-                &self.state,
-                operation.id,
-                AgentConnectionTarget {
-                    endpoint: agent_transport.endpoint.clone(),
-                    tls_paths: agent_transport.tls_paths.clone(),
-                },
-                BootstrapMode::BootstrapTunnel,
-            )
-            .await
-            {
-                Ok(response) => response,
-                Err(err) => {
-                    let rollback_warnings = rollback_failed_deploy(
-                        &self.repo_root,
-                        &self.state,
-                        &request,
-                        &target,
-                        &rollback,
-                        operation.id,
-                    )
-                    .await;
-                    let _ = append_operation_event(&self.state, operation.id, &err);
-                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                    return Err(Status::internal(format!(
-                        "tunnel bootstrap failed: {}{}",
-                        err,
-                        if rollback_warnings.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                        }
-                    )));
-                }
-            };
-            if !tunnel.success {
-                let rollback_warnings = rollback_failed_deploy(
-                    &self.repo_root,
-                    &self.state,
-                    &request,
-                    &target,
-                    &rollback,
-                    operation.id,
-                )
-                .await;
-                let _ = append_operation_event(
-                    &self.state,
-                    operation.id,
-                    &format_bootstrap_failure(&tunnel),
-                );
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                return Ok(Response::new(DeployResponse {
-                    success: false,
-                    deployment: Some(bundle_to_proto_summary(&bundle, &target)),
-                    provider: Some(provider_observation_from_request(
-                        &request,
-                        &target.target_ip,
-                    )),
-                    runtime: Some(RuntimeObservation::from_agent_state(
-                        &tunnel
-                            .post_state
-                            .clone()
-                            .unwrap_or_else(AgentState::bootstrap_placeholder),
-                    )),
-                    warnings: merge_warnings(tunnel.warnings, rollback_warnings),
-                    operation: Some(operation_with_status(operation, "FAILED")),
-                }));
-            }
-            append_operation_event(&self.state, operation.id, "tunnel bootstrap completed")?;
-        }
-
-        let final_agent_target =
-            if has_configured_secret_ref(&self.state, SECRET_SSH_PRIVATE_KEY_PATH) {
-                let restart_result = resolve_bootstrap_access_config(&self.repo_root, &self.state)
-                    .and_then(|config| restart_edge_agent_service(&target, &config));
-                if let Err(err) = restart_result {
-                    let rollback_warnings = rollback_failed_deploy(
-                        &self.repo_root,
-                        &self.state,
-                        &request,
-                        &target,
-                        &rollback,
-                        operation.id,
-                    )
-                    .await;
-                    let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                    return Err(Status::internal(format!(
-                        "failed to restart edge-agent with deployment TLS env: {}{}",
-                        err,
-                        if rollback_warnings.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                        }
-                    )));
-                }
-                append_operation_event(
-                    &self.state,
-                    operation.id,
-                    "edge-agent service restarted with deployment TLS env",
-                )?;
-                if agent_transport._tunnel.is_some() {
-                    resolve_targeted_agent_connection_target_for_endpoint(
-                        &self.state,
-                        &target.instance_id,
-                        &target.target_ip,
-                        &agent_transport.endpoint,
-                    )
-                    .map_err(|err| {
-                        Status::internal(format!("failed to resolve final agent target: {err}"))
-                    })?
-                    .unwrap_or_else(|| AgentConnectionTarget {
-                        endpoint: agent_transport.endpoint.clone(),
-                        tls_paths: agent_transport.tls_paths.clone(),
-                    })
-                } else {
-                    resolve_targeted_agent_connection_target(
-                        &self.state,
-                        &target.instance_id,
-                        &target.target_ip,
-                    )
-                    .map_err(|err| {
-                        Status::internal(format!("failed to resolve final agent target: {err}"))
-                    })?
-                    .unwrap_or_else(|| AgentConnectionTarget {
-                        endpoint: agent_transport.endpoint.clone(),
-                        tls_paths: agent_transport.tls_paths.clone(),
-                    })
-                }
-            } else {
-                AgentConnectionTarget {
-                    endpoint: agent_transport.endpoint.clone(),
-                    tls_paths: agent_transport.tls_paths.clone(),
-                }
-            };
-
-        let runtime_state = match wait_for_agent_runtime_target(&final_agent_target, true).await {
-            Ok(state) => state,
-            Err(err) => {
-                if let Ok(config) = resolve_bootstrap_access_config(&self.repo_root, &self.state)
-                    && let Ok(diag) = collect_edge_agent_diagnostics(&target, &config)
-                {
-                    let _ = append_operation_event(
-                        &self.state,
-                        operation.id,
-                        &format!("edge-agent diagnostics: {diag}"),
-                    );
-                }
-                let _ = append_operation_event(&self.state, operation.id, &err);
-                let rollback_warnings = rollback_failed_deploy(
-                    &self.repo_root,
-                    &self.state,
-                    &request,
-                    &target,
-                    &rollback,
-                    operation.id,
-                )
-                .await;
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                return Err(Status::internal(format!(
-                    "failed to verify runtime readiness: {}{}",
-                    err,
-                    if rollback_warnings.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                    }
-                )));
-            }
-        };
-        let runtime = RuntimeObservation::from_agent_state(&runtime_state);
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::TunnelReadyVerified,
-            AppReadinessPhase::ServerRuntimeReady,
-            None,
-            None,
-        );
-
-        let sync = match sync_local_config(
-            &default_local_config_path(&self.repo_root),
-            &default_live_state_path(&self.repo_root),
-            &default_runtime_root(&self.repo_root),
-        ) {
-            Ok(sync) => sync,
-            Err(err) => {
-                let rollback_warnings = rollback_failed_deploy(
-                    &self.repo_root,
-                    &self.state,
-                    &request,
-                    &target,
-                    &rollback,
-                    operation.id,
-                )
-                .await;
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                return Err(Status::internal(format!(
-                    "failed to sync local config: {}{}",
-                    err,
-                    if rollback_warnings.is_empty() {
-                        String::new()
-                    } else {
-                        format!("; rollback warnings: {}", rollback_warnings.join("; "))
-                    }
-                )));
-            }
-        };
-        append_operation_event(
-            &self.state,
-            operation.id,
-            &format!(
-                "local config synced for instance {}",
-                sync.instance_id.unwrap_or_default()
-            ),
-        )?;
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::LocalConfigSynced,
-            AppReadinessPhase::ServerRuntimeReady,
-            None,
-            None,
-        );
-
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::LocalRuntimeStartStarted,
-            AppReadinessPhase::ServerRuntimeReady,
-            None,
-            None,
-        );
-        let local_paths = LocalRuntimePaths {
-            singbox_binary_path: default_singbox_binary_path(),
-            config_path: default_local_config_path(&self.repo_root),
-            state_path: default_live_state_path(&self.repo_root),
-            runtime_root: default_runtime_root(&self.repo_root),
-        };
-        let local_runtime = match restart_runtime_process(&local_paths) {
-            Ok(result) => result,
-            Err(err) => {
-                let _ = upsert_controller_phases(
-                    &self.state,
-                    DeployPhase::Failed,
-                    AppReadinessPhase::AppReadinessFailed,
-                    Some("local_runtime_start_failed"),
-                    Some(err.as_str()),
-                );
-                let _ = append_operation_event(
-                    &self.state,
-                    operation.id,
-                    &format!("local sing-box start failed: {err}"),
-                );
-                let _ = update_operation_status(&self.state, operation.id, "FAILED");
-                return Ok(Response::new(DeployResponse {
-                    success: false,
-                    deployment: Some(bundle_to_proto_summary(&bundle, &target)),
-                    provider: Some(provider_observation_from_request(
-                        &request,
-                        &target.target_ip,
-                    )),
-                    runtime: Some(runtime),
-                    warnings: vec![err],
-                    operation: Some(operation_with_status(operation, "FAILED")),
-                }));
-            }
-        };
-        append_operation_event(&self.state, operation.id, &local_runtime.note)?;
-        let local_reconcile_warnings = reconcile_selector_intents_for_running_local(
-            &self.repo_root,
-            &self.state,
-            &local_runtime.local_singbox,
-        )
-        .await
-        .unwrap_or_else(|err| vec![err]);
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::LocalRuntimeReadyVerified,
-            AppReadinessPhase::LocalRuntimeReady,
-            None,
-            None,
-        );
-
-        let base_status =
-            collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
-        let observed_local = merge_local_runtime(
-            base_status.local_singbox.clone(),
-            inspect_local_runtime(&default_local_config_path(&self.repo_root)),
-        );
-        let desktop_selector = observe_selector_state(
-            observed_local.clone(),
-            base_status.selector.clone(),
-            DESKTOP_SELECTOR_GROUP,
-        )
-        .await;
-        let ubuntu_selector = observe_selector_state(
-            observed_local.clone(),
-            base_status.ubuntu_selector.clone(),
-            UBUNTU_SELECTOR_GROUP,
-        )
-        .await;
-        let selectors_ok =
-            selector_is_converged(&desktop_selector) && selector_is_converged(&ubuntu_selector);
-        if !selectors_ok {
-            let _ = upsert_controller_phases(
-                &self.state,
-                DeployPhase::Failed,
-                AppReadinessPhase::AppReadinessFailed,
-                Some("selector_reconcile_failed"),
-                Some("one or more selector groups did not converge to persisted intent"),
-            );
-            let _ = append_operation_event(
-                &self.state,
-                operation.id,
-                "selector verification failed after local runtime start",
-            );
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            let mut warnings = local_reconcile_warnings;
-            warnings.push(format!(
-                "desktop desired={:?} observed={:?}; ubuntu desired={:?} observed={:?}",
-                desktop_selector.desired_main_route,
-                desktop_selector.observed_main_route,
-                ubuntu_selector.desired_main_route,
-                ubuntu_selector.observed_main_route
-            ));
-            return Ok(Response::new(DeployResponse {
-                success: false,
-                deployment: Some(bundle_to_proto_summary(&bundle, &target)),
-                provider: Some(provider_observation_from_request(
-                    &request,
-                    &target.target_ip,
-                )),
-                runtime: Some(runtime),
-                warnings,
-                operation: Some(operation_with_status(operation, "FAILED")),
-            }));
-        }
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::SelectorsVerified,
-            AppReadinessPhase::SelectorsReady,
-            None,
-            None,
-        );
-
-        let _ = append_operation_event(
-            &self.state,
-            operation.id,
-            "waiting for desktop and ubuntu egress trace convergence",
-        );
-        let desktop_proxy = default_trace_proxy_url(&default_local_config_path(&self.repo_root))
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| DEFAULT_TRACE_PROXY_URL.to_owned());
-        let desktop_trace =
-            wait_for_trace_via_proxy(&desktop_proxy, EGRESS_TRACE_TIMEOUT_SECS).await;
-        let ubuntu_trace = match ubuntu_proxy_url_from_status(&ControllerStatus {
-            inventory: base_status.inventory.clone(),
-            agent_state: base_status.agent_state.clone(),
-            local_singbox: Some(observed_local.clone()),
-            deployment: base_status.deployment.clone(),
-            provider: base_status.provider.clone(),
-            runtime: base_status.runtime.clone(),
-            selector: Some(desktop_selector.clone()),
-            status_notes: base_status.status_notes.clone(),
-            ubuntu_selector: Some(ubuntu_selector.clone()),
-            ubuntu_proxy: base_status.ubuntu_proxy.clone(),
-            app_readiness_phase: base_status.app_readiness_phase,
-        }) {
-            Some(url) => wait_for_trace_via_proxy(&url, EGRESS_TRACE_TIMEOUT_SECS).await,
-            None => TraceObservation::unavailable(
-                "ubuntu proxy endpoint is not available in controller status",
-            ),
-        };
-        if !desktop_trace.available || !ubuntu_trace.available {
-            let _ = upsert_controller_phases(
-                &self.state,
-                DeployPhase::Failed,
-                AppReadinessPhase::AppReadinessFailed,
-                Some("egress_trace_failed"),
-                Some("desktop or ubuntu egress trace failed"),
-            );
-            let _ = append_operation_event(
-                &self.state,
-                operation.id,
-                "egress trace verification failed",
-            );
-            let _ = update_operation_status(&self.state, operation.id, "FAILED");
-            let mut warnings = local_reconcile_warnings;
-            warnings.push(
-                desktop_trace
-                    .note
-                    .clone()
-                    .unwrap_or_else(|| "desktop trace unavailable".to_owned()),
-            );
-            warnings.push(
-                ubuntu_trace
-                    .note
-                    .clone()
-                    .unwrap_or_else(|| "ubuntu trace unavailable".to_owned()),
-            );
-            return Ok(Response::new(DeployResponse {
-                success: false,
-                deployment: Some(bundle_to_proto_summary(&bundle, &target)),
-                provider: Some(provider_observation_from_request(
-                    &request,
-                    &target.target_ip,
-                )),
-                runtime: Some(runtime),
-                warnings,
-                operation: Some(operation_with_status(operation, "FAILED")),
-            }));
-        }
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::AppEgressVerified,
-            AppReadinessPhase::AppEgressReady,
-            None,
-            None,
-        );
-        let _ = upsert_controller_phases(
-            &self.state,
-            DeployPhase::AppReadyCompleted,
-            AppReadinessPhase::AppReady,
-            None,
-            None,
-        );
-
-        update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
-        let response = DeployResponse {
-            success: true,
-            deployment: Some(bundle_to_proto_summary(&bundle, &target)),
-            provider: Some(provider_observation_from_request(
-                &request,
-                &target.target_ip,
-            )),
-            runtime: Some(runtime),
-            warnings: merge_warnings(apply_response.warnings, local_reconcile_warnings),
-            operation: Some(operation_with_status(operation, "SUCCEEDED")),
-        };
-        store_local_response(&self.state, "deploy_response", &response.encode_to_vec())?;
-        Ok(Response::new(response))
+        .await?;
+        Ok(Response::new(result.response))
     }
 
     async fn destroy(
         &self,
         request: Request<DestroyRequest>,
     ) -> Result<Response<DestroyResponse>, Status> {
-        let request = request.into_inner();
+        let mut request = request.into_inner();
+        request.instance_id = blank_option(request.instance_id.take());
+        request.target_ip = blank_option(request.target_ip.take());
+        request.dns_record_name = blank_option(request.dns_record_name.take());
+        request.cloudflare_zone_name = blank_option(request.cloudflare_zone_name.take());
         let operation = self
             .state
             .lock()
@@ -2088,6 +1382,7 @@ impl ControllerService for ControllerServerImpl {
             .clone()
             .or_else(|| existing.instance_id.clone())
             .unwrap_or_default();
+        let mut warnings = Vec::new();
 
         if request.delete_dns {
             let note = delete_dns_record(&self.state, &request)
@@ -2104,31 +1399,42 @@ impl ControllerService for ControllerServerImpl {
                 &default_env_ref("VULTR_API_KEY"),
             )
         {
-            destroy_instance(&api_key, &instance_id)
-                .await
-                .map_err(Status::internal)?;
-            append_operation_event(
-                &self.state,
-                operation.id,
-                "Vultr instance destroy requested",
-            )?;
+            match classify_destroy_instance_result(destroy_instance(&api_key, &instance_id).await)
+                .map_err(Status::internal)?
+            {
+                DestroyInstanceOutcome::Requested => {
+                    append_operation_event(
+                        &self.state,
+                        operation.id,
+                        "Vultr instance destroy requested",
+                    )?;
+                }
+                DestroyInstanceOutcome::AlreadyAbsent => {
+                    let warning = format!(
+                        "Vultr instance {instance_id} was already absent; authoritative state was reconciled locally"
+                    );
+                    warnings.push(warning.clone());
+                    append_operation_event(&self.state, operation.id, &warning)?;
+                }
+            }
         }
 
-        clear_live_deployment_state(&self.repo_root, &self.state, &instance_id, &target_ip)
-            .map_err(|err| Status::internal(format!("failed to clear deployment state: {err}")))?;
-        append_operation_event(
+        clear_live_deployment_state(
+            &self.repo_root,
             &self.state,
+            existing.deployment_label.as_deref(),
+            &instance_id,
+            &target_ip,
             operation.id,
-            &format!("cleared deployment state for {}", instance_id),
-        )?;
-
-        update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
+        )
+        .map_err(|err| Status::internal(format!("failed to clear deployment state: {err}")))?;
         let response = DestroyResponse {
             success: true,
-            warnings: if target_ip.trim().is_empty() {
-                vec!["destroy completed without a known target IP".to_owned()]
-            } else {
-                Vec::new()
+            warnings: {
+                if target_ip.trim().is_empty() {
+                    warnings.push("destroy completed without a known target IP".to_owned());
+                }
+                warnings
             },
             operation: Some(operation_with_status(operation, "SUCCEEDED")),
             deployment: if existing.live_state_present {
@@ -2460,6 +1766,9 @@ fn reconcile_active_deployment_state(
     state: &Arc<Mutex<EdgeState>>,
 ) -> Result<(), String> {
     let live_state_raw = read_live_state_raw(repo_root).ok().flatten();
+    if live_state_raw.is_none() {
+        return Ok(());
+    }
     let guard = state
         .lock()
         .map_err(|_| "controller state mutex poisoned".to_owned())?;
@@ -2543,6 +1852,15 @@ async fn reconcile_provider_active_deployment_state(
     let Some(candidate) = candidate else {
         return Ok(());
     };
+    let tombstoned = {
+        let guard = state
+            .lock()
+            .map_err(|_| "controller state mutex poisoned".to_owned())?;
+        is_tombstoned_candidate(&guard, &candidate.label, &candidate.id)?
+    };
+    if tombstoned {
+        return Ok(());
+    }
     if current_state.as_ref().is_some_and(|value| {
         value.active_instance_id.as_deref() == Some(candidate.id.as_str())
             && value.active_server_ip.as_deref() == Some(candidate.main_ip.as_str())
@@ -2853,6 +2171,7 @@ async fn wait_for_trace_via_proxy(proxy_url: &str, timeout_secs: u64) -> TraceOb
 }
 
 fn build_doctor_checks(
+    repo_root: &Path,
     status: &ControllerStatus,
     desktop_trace: Option<&TraceObservation>,
     ubuntu_trace: Option<&TraceObservation>,
@@ -2864,6 +2183,7 @@ fn build_doctor_checks(
     let selector = status.selector.as_ref();
     let ubuntu_selector = status.ubuntu_selector.as_ref();
     let ubuntu_proxy = status.ubuntu_proxy.as_ref();
+    let live_state_artifact_present = live_state_artifact_present(repo_root);
 
     let mut checks = vec![
         DoctorCheck {
@@ -2882,6 +2202,11 @@ fn build_doctor_checks(
                     .and_then(|value| value.desired_main_route.as_ref())
                     .is_some(),
             detail: "desktop and ubuntu desired routes must be persisted".to_owned(),
+        },
+        DoctorCheck {
+            name: "state.live_state_artifact_present".to_owned(),
+            ok: live_state_artifact_present,
+            detail: default_live_state_path(repo_root).display().to_string(),
         },
         DoctorCheck {
             name: "server.edge_agent_reachable".to_owned(),
@@ -3005,6 +2330,24 @@ fn upsert_controller_phases(
     last_error_code: Option<&str>,
     last_error_message: Option<&str>,
 ) -> Result<(), String> {
+    upsert_controller_phases_with_journal(
+        state,
+        deploy_phase,
+        app_readiness_phase,
+        last_error_code,
+        last_error_message,
+        None,
+    )
+}
+
+fn upsert_controller_phases_with_journal(
+    state: &Arc<Mutex<EdgeState>>,
+    deploy_phase: DeployPhase,
+    app_readiness_phase: AppReadinessPhase,
+    last_error_code: Option<&str>,
+    last_error_message: Option<&str>,
+    journal: Option<OperationJournalUpdate<'_>>,
+) -> Result<(), String> {
     let guard = state
         .lock()
         .map_err(|_| "controller state mutex poisoned".to_owned())?;
@@ -3018,26 +2361,12 @@ fn upsert_controller_phases(
             .map_err(|err| format!("invalid controller phase transition: {}", err.message))?;
     }
     guard
-        .upsert_controller_state(NewControllerState {
-            active_deployment_label: existing
-                .as_ref()
-                .and_then(|value| value.active_deployment_label.as_deref()),
-            active_instance_id: existing
-                .as_ref()
-                .and_then(|value| value.active_instance_id.as_deref()),
-            active_server_ip: existing
-                .as_ref()
-                .and_then(|value| value.active_server_ip.as_deref()),
-            active_tunnel_domain: existing
-                .as_ref()
-                .and_then(|value| value.active_tunnel_domain.as_deref()),
-            active_deployment_state_json: existing
-                .as_ref()
-                .and_then(|value| value.active_deployment_state_json.as_deref()),
+        .transition_controller_state_with_operation(ControllerStateTransition {
             deploy_phase,
             app_readiness_phase,
             last_error_code,
             last_error_message,
+            journal,
         })
         .map_err(|err| format!("failed to update controller state phases: {err}"))?;
     Ok(())
@@ -3493,6 +2822,9 @@ fn resolve_bootstrap_access_config(
 }
 
 fn backend_ready_for_local_runtime(repo_root: &Path) -> bool {
+    if !live_state_artifact_present(repo_root) {
+        return false;
+    }
     let db_path = repo_root.join(DEFAULT_STATE_DB);
     let Ok(state) = EdgeState::open_or_create(&db_path) else {
         return false;
@@ -3502,6 +2834,10 @@ fn backend_ready_for_local_runtime(repo_root: &Path) -> bool {
         .ok()
         .flatten()
         .is_some_and(|value| value.active_instance_id.is_some() || value.active_server_ip.is_some())
+}
+
+fn live_state_artifact_present(repo_root: &Path) -> bool {
+    default_live_state_path(repo_root).is_file()
 }
 
 fn default_edge_agent_binary_path(repo_root: &Path) -> Option<PathBuf> {
@@ -4143,6 +3479,9 @@ fn persist_bundle_locally(
         .lock()
         .map_err(|_| "controller state mutex poisoned".to_owned())?;
     guard
+        .clear_destroy_tombstones(Some(&bundle.label), Some(&target.instance_id))
+        .map_err(|err| format!("failed to clear destroy tombstones: {err}"))?;
+    guard
         .record_deployment(&bundle.label, &target.instance_id, &target.target_ip)
         .map_err(|err| format!("failed to record deployment: {err}"))?;
     let live_state: Value = serde_json::from_str(&bundle.current_state_json)
@@ -4360,8 +3699,10 @@ fn restore_controller_state_snapshot(
 fn clear_live_deployment_state(
     repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
+    deployment_label: Option<&str>,
     instance_id: &str,
     target_ip: &str,
+    operation_id: i64,
 ) -> Result<(), String> {
     let live_state_path = default_live_state_path(repo_root);
     if live_state_path.is_file() {
@@ -4372,16 +3713,50 @@ fn clear_live_deployment_state(
     let guard = state
         .lock()
         .map_err(|_| "controller state mutex poisoned".to_owned())?;
+    let event_message = format!("cleared deployment state for {instance_id}");
     guard
-        .clear_deployment_by_instance(instance_id)
-        .map_err(|err| format!("failed to clear deployment row: {err}"))?;
-    guard
-        .clear_controller_state()
-        .map_err(|err| format!("failed to clear controller state: {err}"))?;
-    guard
-        .clear_trust_entries(Some(instance_id), Some(target_ip))
-        .map_err(|err| format!("failed to clear trust rows: {err}"))?;
+        .mark_authoritative_absent_for_destroy(DestroyAuthorityTransition {
+            deployment_label,
+            instance_id: Some(instance_id),
+            server_ip: Some(target_ip),
+            operation_id,
+            operation_status: Some("SUCCEEDED"),
+            event_message: Some(&event_message),
+        })
+        .map_err(|err| format!("failed to mark deployment absent: {err}"))?;
     Ok(())
+}
+
+fn is_tombstoned_candidate(
+    state: &EdgeState,
+    deployment_label: &str,
+    instance_id: &str,
+) -> Result<bool, String> {
+    state
+        .find_destroy_tombstone(Some(deployment_label), Some(instance_id))
+        .map(|value| value.is_some())
+        .map_err(|err| format!("failed to query destroy tombstones: {err}"))
+}
+
+fn classify_destroy_instance_result(
+    result: Result<(), String>,
+) -> Result<DestroyInstanceOutcome, String> {
+    match result {
+        Ok(()) => Ok(DestroyInstanceOutcome::Requested),
+        Err(err) if is_not_found_error(&err) => Ok(DestroyInstanceOutcome::AlreadyAbsent),
+        Err(err) => Err(err),
+    }
+}
+
+fn blank_option(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
 }
 
 fn rollback_live_deployment_state(
@@ -4536,16 +3911,27 @@ async fn rollback_failed_deploy(
             SECRET_VULTR_API_KEY,
             &default_env_ref("VULTR_API_KEY"),
         ) {
-            Ok(api_key) => match destroy_instance(&api_key, &target.instance_id).await {
-                Ok(()) => {
-                    let _ = append_operation_event(
-                        state,
-                        operation_id,
-                        "rollback requested instance destroy",
-                    );
+            Ok(api_key) => {
+                match classify_destroy_instance_result(
+                    destroy_instance(&api_key, &target.instance_id).await,
+                ) {
+                    Ok(DestroyInstanceOutcome::Requested) => {
+                        let _ = append_operation_event(
+                            state,
+                            operation_id,
+                            "rollback requested instance destroy",
+                        );
+                    }
+                    Ok(DestroyInstanceOutcome::AlreadyAbsent) => {
+                        let _ = append_operation_event(
+                            state,
+                            operation_id,
+                            "rollback observed instance already absent; local state restore continues",
+                        );
+                    }
+                    Err(err) => warnings.push(format!("rollback instance destroy failed: {err}")),
                 }
-                Err(err) => warnings.push(format!("rollback instance destroy failed: {err}")),
-            },
+            }
             Err(err) => warnings.push(format!(
                 "rollback could not resolve Vultr API key secret: {err}"
             )),
@@ -4927,6 +4313,35 @@ mod tests {
         assert!(message.contains("bootstrap-runtime BOOTSTRAP_TUNNEL failed with exit code 12"));
         assert!(message.contains("container missing"));
         assert!(message.contains("tunnel container was not ready"));
+    }
+
+    #[test]
+    fn classify_destroy_instance_result_treats_not_found_as_already_absent() {
+        let outcome = classify_destroy_instance_result(Err(
+            "Vultr API returned 404 Not Found: {\"error\":\"Not found.\",\"status\":404}"
+                .to_owned(),
+        ))
+        .unwrap();
+        assert_eq!(outcome, DestroyInstanceOutcome::AlreadyAbsent);
+    }
+
+    #[test]
+    fn classify_destroy_instance_result_preserves_real_errors() {
+        let error = classify_destroy_instance_result(Err(
+            "Vultr API returned 500 Internal Server Error".to_owned(),
+        ))
+        .unwrap_err();
+        assert!(error.contains("500 Internal Server Error"));
+    }
+
+    #[test]
+    fn blank_option_normalizes_empty_strings() {
+        assert_eq!(blank_option(Some("".to_owned())), None);
+        assert_eq!(blank_option(Some("   ".to_owned())), None);
+        assert_eq!(
+            blank_option(Some("  edge.alegria.by  ".to_owned())),
+            Some("edge.alegria.by".to_owned())
+        );
     }
 
     #[test]
@@ -5501,6 +4916,76 @@ mod tests {
     }
 
     #[test]
+    fn rollback_is_idempotent_for_same_snapshot() {
+        let root = temp_repo_root();
+        let state_dir = root.join("win/vultr-waw");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let live_state_path = state_dir.join("current-edge.json");
+        std::fs::write(
+            &live_state_path,
+            r#"{"label":"deploy-new","instance_id":"instance-9"}"#,
+        )
+        .unwrap();
+
+        let db_path = root.join("edge-platform/.runtime/test-controller-state.sqlite");
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        let previous_controller_state = {
+            let guard = state.lock().unwrap();
+            guard
+                .upsert_controller_state(NewControllerState {
+                    active_deployment_label: Some("edge-old"),
+                    active_instance_id: Some("instance-old"),
+                    active_server_ip: Some("203.0.113.50"),
+                    active_tunnel_domain: Some("edge.example.com"),
+                    active_deployment_state_json: Some(
+                        r#"{"label":"edge-old","instance_id":"instance-old","ip":"203.0.113.50","tunnel":{"domain":"edge.example.com"}}"#,
+                    ),
+                    deploy_phase: DeployPhase::DeploymentPublished,
+                    app_readiness_phase: AppReadinessPhase::ServerRuntimeReady,
+                    last_error_code: None,
+                    last_error_message: None,
+                })
+                .unwrap();
+            guard.get_controller_state().unwrap().unwrap()
+        };
+
+        rollback_live_deployment_state(
+            &root,
+            &state,
+            "deploy-new",
+            "instance-9",
+            "203.0.113.10",
+            None,
+            Some(&previous_controller_state),
+        )
+        .unwrap();
+        rollback_live_deployment_state(
+            &root,
+            &state,
+            "deploy-new",
+            "instance-9",
+            "203.0.113.10",
+            None,
+            Some(&previous_controller_state),
+        )
+        .unwrap();
+
+        let restored = std::fs::read_to_string(&live_state_path).unwrap();
+        assert!(restored.contains(r#""label":"edge-old""#));
+        let guard = state.lock().unwrap();
+        let controller_state = guard.get_controller_state().unwrap().unwrap();
+        assert_eq!(
+            controller_state.active_deployment_label.as_deref(),
+            Some("edge-old")
+        );
+        assert!(guard.latest_deployment().unwrap().is_none());
+        assert!(guard.list_trust_entries().unwrap().is_empty());
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn reconcile_restores_active_deployment_from_latest_deployment() {
         let root = temp_repo_root();
         let state_dir = root.join("win/vultr-waw");
@@ -5534,6 +5019,32 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.contains(r#""instance_id":"instance-7""#))
         );
+        drop(guard);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_does_not_restore_authority_without_live_state_artifact() {
+        let root = temp_repo_root();
+        std::fs::create_dir_all(root.join("win/vultr-waw")).unwrap();
+        let db_path = root.join("edge-platform/.runtime/test-controller-state.sqlite");
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .record_deployment("edge-stale", "instance-stale", "203.0.113.44")
+                .unwrap();
+            guard.clear_controller_state().unwrap();
+        }
+
+        reconcile_active_deployment_state(&root, &state).unwrap();
+
+        let guard = state.lock().unwrap();
+        let controller_state = guard.get_controller_state().unwrap().unwrap();
+        assert!(controller_state.active_deployment_label.is_none());
+        assert!(controller_state.active_instance_id.is_none());
+        assert!(controller_state.active_server_ip.is_none());
         drop(guard);
 
         let _ = std::fs::remove_dir_all(root);

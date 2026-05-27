@@ -473,6 +473,17 @@ fn controller_endpoint_from_args(index: usize) -> String {
         .unwrap_or_else(|| DEFAULT_CONTROLLER_ENDPOINT.to_owned())
 }
 
+fn optional_arg(index: usize) -> Option<String> {
+    env::args().nth(index).and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
 fn looks_like_repo_root(path: &Path) -> bool {
     path.join("edge-platform").join("Cargo.toml").is_file()
         || (path.join("Cargo.toml").is_file() && path.join("crates").is_dir())
@@ -650,39 +661,29 @@ async fn connect_controller(
 
 fn deploy_request_from_args() -> DeployRequest {
     DeployRequest {
-        label_prefix: env::args().nth(2).or_else(|| Some("waw-edge".to_owned())),
-        target_ip: env::args().nth(3),
-        instance_id: env::args().nth(4),
-        tunnel_domain: env::args()
-            .nth(5)
-            .or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
-        acme_email: env::args()
-            .nth(6)
-            .or_else(|| Some(DEFAULT_ACME_EMAIL.to_owned())),
-        dns_record_name: env::args()
-            .nth(7)
-            .or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
-        cloudflare_zone_name: env::args()
-            .nth(8)
-            .or_else(|| Some(DEFAULT_CLOUDFLARE_ZONE.to_owned())),
+        label_prefix: optional_arg(2).or_else(|| Some("waw-edge".to_owned())),
+        target_ip: optional_arg(3),
+        instance_id: optional_arg(4),
+        tunnel_domain: optional_arg(5).or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
+        acme_email: optional_arg(6).or_else(|| Some(DEFAULT_ACME_EMAIL.to_owned())),
+        dns_record_name: optional_arg(7).or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
+        cloudflare_zone_name: optional_arg(8).or_else(|| Some(DEFAULT_CLOUDFLARE_ZONE.to_owned())),
         mock_provider: env::var("EDGE_MOCK_PROVIDER")
             .ok()
             .is_some_and(|value| value == "1"),
         skip_dns: env::var("EDGE_SKIP_DNS")
             .ok()
             .is_some_and(|value| value == "1"),
-        snapshot_id: env::args()
-            .nth(9)
-            .or_else(|| Some(DEFAULT_VULTR_SNAPSHOT_ID.to_owned())),
+        snapshot_id: optional_arg(9).or_else(|| Some(DEFAULT_VULTR_SNAPSHOT_ID.to_owned())),
     }
 }
 
 fn destroy_request_from_args() -> DestroyRequest {
     DestroyRequest {
-        instance_id: env::args().nth(2),
-        target_ip: env::args().nth(3),
-        dns_record_name: env::args().nth(4),
-        cloudflare_zone_name: env::args().nth(5),
+        instance_id: optional_arg(2),
+        target_ip: optional_arg(3),
+        dns_record_name: optional_arg(4),
+        cloudflare_zone_name: optional_arg(5),
         mock_provider: env::var("EDGE_MOCK_PROVIDER")
             .ok()
             .is_some_and(|value| value == "1"),
@@ -1489,6 +1490,24 @@ mod tests {
         assert!(message.contains("controller bootstrap base failed with exit code 3"));
         assert!(message.contains("docker not reachable"));
         assert!(message.contains("gateway container missing"));
+    }
+
+    #[test]
+    fn optional_arg_like_normalization_drops_blank_values() {
+        let normalize = |value: Option<&str>| {
+            value.and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                }
+            })
+        };
+
+        assert_eq!(normalize(Some("")), None);
+        assert_eq!(normalize(Some("   ")), None);
+        assert_eq!(normalize(Some("  edge  ")), Some("edge".to_owned()));
     }
 
     #[test]

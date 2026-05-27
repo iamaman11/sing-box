@@ -1,6 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::Client;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use tokio::time::{Duration, sleep};
@@ -82,6 +83,12 @@ pub async fn destroy_instance(api_key: &str, instance_id: &str) -> Result<(), St
     Err(format!("Vultr API returned {status}: {body}"))
 }
 
+pub fn is_not_found_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("404 not found")
+        || (normalized.contains("\"status\":404") && normalized.contains("not found"))
+}
+
 pub async fn list_instances(api_key: &str) -> Result<Vec<VultrInstance>, String> {
     let response = send_with_safe_retries("list Vultr instances", || async {
         let client = authorized_client(api_key)?;
@@ -126,6 +133,10 @@ fn is_retryable_transport_error(message: &str) -> bool {
         || normalized.contains("os error 111")
 }
 
+fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
 async fn send_with_safe_retries<F, Fut>(
     action_name: &str,
     mut action: F,
@@ -135,19 +146,27 @@ where
     Fut: std::future::Future<Output = Result<reqwest::Response, String>>,
 {
     let mut last_error = None;
-    for (attempt, retry_delay_secs) in SAFE_REQUEST_RETRY_DELAYS_SECS
-        .iter()
-        .copied()
-        .enumerate()
-        .take(SAFE_REQUEST_ATTEMPTS)
-    {
+    for attempt in 1..=SAFE_REQUEST_ATTEMPTS {
         match action().await {
-            Ok(response) => return Ok(response),
-            Err(err)
-                if attempt + 1 < SAFE_REQUEST_ATTEMPTS && is_retryable_transport_error(&err) =>
+            Ok(response)
+                if attempt < SAFE_REQUEST_ATTEMPTS && is_retryable_status(response.status()) =>
             {
+                let status = response.status();
+                last_error = Some(format!(
+                    "{action_name} returned retryable HTTP status {status}"
+                ));
+                sleep(Duration::from_secs(
+                    SAFE_REQUEST_RETRY_DELAYS_SECS[attempt - 1],
+                ))
+                .await;
+            }
+            Ok(response) => return Ok(response),
+            Err(err) if attempt < SAFE_REQUEST_ATTEMPTS && is_retryable_transport_error(&err) => {
                 last_error = Some(err);
-                sleep(Duration::from_secs(retry_delay_secs)).await;
+                sleep(Duration::from_secs(
+                    SAFE_REQUEST_RETRY_DELAYS_SECS[attempt - 1],
+                ))
+                .await;
             }
             Err(err) => return Err(err),
         }
@@ -319,5 +338,22 @@ mod tests {
         let instance = mock_instance("edge-1", "waw", "vc2-1c-1gb", "203.0.113.10");
         assert_eq!(instance.status, "active");
         assert_eq!(instance.main_ip, "203.0.113.10");
+    }
+
+    #[test]
+    fn detects_vultr_not_found_errors() {
+        assert!(is_not_found_error(
+            "Vultr API returned 404 Not Found: {\"error\":\"Not found.\",\"status\":404}"
+        ));
+        assert!(!is_not_found_error(
+            "Vultr API returned 500 Internal Server Error: {\"error\":\"boom\"}"
+        ));
+    }
+
+    #[test]
+    fn classifies_retryable_http_statuses() {
+        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
     }
 }

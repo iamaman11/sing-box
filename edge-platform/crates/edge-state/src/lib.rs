@@ -107,6 +107,14 @@ impl EdgeState {
                 desired_route TEXT NOT NULL,
                 updated_at_unix INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS destroy_tombstones (
+                id INTEGER PRIMARY KEY,
+                deployment_label TEXT,
+                instance_id TEXT,
+                server_ip TEXT,
+                created_at_unix INTEGER NOT NULL
+            );
             ",
         )?;
 
@@ -178,87 +186,51 @@ impl EdgeState {
         &self,
         state: NewControllerState<'_>,
     ) -> rusqlite::Result<StoredControllerState> {
-        let updated_at = unix_now();
-        self.conn.execute(
-            "
-            INSERT INTO controller_state (
-                singleton_key,
-                active_deployment_label,
-                active_instance_id,
-                active_server_ip,
-                active_tunnel_domain,
-                active_deployment_state_json,
-                deploy_phase,
-                app_readiness_phase,
-                last_error_code,
-                last_error_message,
-                updated_at_unix
-            )
-            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(singleton_key) DO UPDATE SET
-                active_deployment_label = excluded.active_deployment_label,
-                active_instance_id = excluded.active_instance_id,
-                active_server_ip = excluded.active_server_ip,
-                active_tunnel_domain = excluded.active_tunnel_domain,
-                active_deployment_state_json = excluded.active_deployment_state_json,
-                deploy_phase = excluded.deploy_phase,
-                app_readiness_phase = excluded.app_readiness_phase,
-                last_error_code = excluded.last_error_code,
-                last_error_message = excluded.last_error_message,
-                updated_at_unix = excluded.updated_at_unix
-            ",
-            params![
-                state.active_deployment_label,
-                state.active_instance_id,
-                state.active_server_ip,
-                state.active_tunnel_domain,
-                state.active_deployment_state_json,
-                deploy_phase_storage_name(state.deploy_phase),
-                app_readiness_phase_storage_name(state.app_readiness_phase),
-                state.last_error_code,
-                state.last_error_message,
-                updated_at,
-            ],
-        )?;
-        self.get_controller_state()?
-            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+        upsert_controller_state_in_conn(&self.conn, state)
+    }
+
+    pub fn transition_controller_state_with_operation(
+        &self,
+        transition: ControllerStateTransition<'_>,
+    ) -> rusqlite::Result<StoredControllerState> {
+        self.with_immediate_transaction(|conn| {
+            let current = get_controller_state_in_conn(conn)?;
+            let next_state = NewControllerState {
+                active_deployment_label: current
+                    .as_ref()
+                    .and_then(|value| value.active_deployment_label.as_deref()),
+                active_instance_id: current
+                    .as_ref()
+                    .and_then(|value| value.active_instance_id.as_deref()),
+                active_server_ip: current
+                    .as_ref()
+                    .and_then(|value| value.active_server_ip.as_deref()),
+                active_tunnel_domain: current
+                    .as_ref()
+                    .and_then(|value| value.active_tunnel_domain.as_deref()),
+                active_deployment_state_json: current
+                    .as_ref()
+                    .and_then(|value| value.active_deployment_state_json.as_deref()),
+                deploy_phase: transition.deploy_phase,
+                app_readiness_phase: transition.app_readiness_phase,
+                last_error_code: transition.last_error_code,
+                last_error_message: transition.last_error_message,
+            };
+            let stored = upsert_controller_state_in_conn(conn, next_state)?;
+            if let Some(journal) = transition.journal {
+                if let Some(status) = journal.operation_status {
+                    update_operation_status_in_conn(conn, journal.operation_id, status)?;
+                }
+                if let Some(message) = journal.message {
+                    append_operation_event_in_conn(conn, journal.operation_id, message)?;
+                }
+            }
+            Ok(stored)
+        })
     }
 
     pub fn get_controller_state(&self) -> rusqlite::Result<Option<StoredControllerState>> {
-        self.conn
-            .query_row(
-                "
-                SELECT
-                    active_deployment_label,
-                    active_instance_id,
-                    active_server_ip,
-                    active_tunnel_domain,
-                    active_deployment_state_json,
-                    deploy_phase,
-                    app_readiness_phase,
-                    last_error_code,
-                    last_error_message,
-                    updated_at_unix
-                FROM controller_state
-                WHERE singleton_key = 1
-                ",
-                [],
-                |row| {
-                    Ok(StoredControllerState {
-                        active_deployment_label: row.get(0)?,
-                        active_instance_id: row.get(1)?,
-                        active_server_ip: row.get(2)?,
-                        active_tunnel_domain: row.get(3)?,
-                        active_deployment_state_json: row.get(4)?,
-                        deploy_phase: parse_deploy_phase_storage_value(row.get(5)?)?,
-                        app_readiness_phase: parse_app_readiness_phase_storage_value(row.get(6)?)?,
-                        last_error_code: row.get(7)?,
-                        last_error_message: row.get(8)?,
-                        updated_at_unix: row.get(9)?,
-                    })
-                },
-            )
-            .optional()
+        get_controller_state_in_conn(&self.conn)
     }
 
     pub fn clear_controller_state(&self) -> rusqlite::Result<()> {
@@ -485,6 +457,165 @@ impl EdgeState {
         Ok(())
     }
 
+    pub fn record_destroy_tombstone(
+        &self,
+        deployment_label: Option<&str>,
+        instance_id: Option<&str>,
+        server_ip: Option<&str>,
+    ) -> rusqlite::Result<StoredDestroyTombstone> {
+        let created_at = unix_now();
+        self.conn.execute(
+            "
+            INSERT INTO destroy_tombstones (
+                deployment_label,
+                instance_id,
+                server_ip,
+                created_at_unix
+            )
+            VALUES (?1, ?2, ?3, ?4)
+            ",
+            params![deployment_label, instance_id, server_ip, created_at],
+        )?;
+        Ok(StoredDestroyTombstone {
+            id: self.conn.last_insert_rowid(),
+            deployment_label: deployment_label.map(ToOwned::to_owned),
+            instance_id: instance_id.map(ToOwned::to_owned),
+            server_ip: server_ip.map(ToOwned::to_owned),
+            created_at_unix: created_at,
+        })
+    }
+
+    pub fn find_destroy_tombstone(
+        &self,
+        deployment_label: Option<&str>,
+        instance_id: Option<&str>,
+    ) -> rusqlite::Result<Option<StoredDestroyTombstone>> {
+        let mut statement = self.conn.prepare(
+            "
+            SELECT id, deployment_label, instance_id, server_ip, created_at_unix
+            FROM destroy_tombstones
+            WHERE
+                (?1 IS NOT NULL AND deployment_label = ?1)
+                OR (?2 IS NOT NULL AND instance_id = ?2)
+            ORDER BY id DESC
+            LIMIT 1
+            ",
+        )?;
+        let mut rows = statement.query(params![deployment_label, instance_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(StoredDestroyTombstone {
+                id: row.get(0)?,
+                deployment_label: row.get(1)?,
+                instance_id: row.get(2)?,
+                server_ip: row.get(3)?,
+                created_at_unix: row.get(4)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn clear_destroy_tombstones(
+        &self,
+        deployment_label: Option<&str>,
+        instance_id: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "
+            DELETE FROM destroy_tombstones
+            WHERE
+                (?1 IS NOT NULL AND deployment_label = ?1)
+                OR (?2 IS NOT NULL AND instance_id = ?2)
+            ",
+            params![deployment_label, instance_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_authoritative_absent_for_destroy(
+        &self,
+        transition: DestroyAuthorityTransition<'_>,
+    ) -> rusqlite::Result<()> {
+        self.with_immediate_transaction(|conn| {
+            let deployment_label = transition
+                .deployment_label
+                .filter(|value| !value.trim().is_empty());
+            let instance_id = transition
+                .instance_id
+                .filter(|value| !value.trim().is_empty());
+            let server_ip = transition
+                .server_ip
+                .filter(|value| !value.trim().is_empty());
+
+            if deployment_label.is_some() || instance_id.is_some() || server_ip.is_some() {
+                conn.execute(
+                    "
+                    INSERT INTO destroy_tombstones (
+                        deployment_label,
+                        instance_id,
+                        server_ip,
+                        created_at_unix
+                    )
+                    VALUES (?1, ?2, ?3, ?4)
+                    ",
+                    params![deployment_label, instance_id, server_ip, unix_now()],
+                )?;
+            }
+
+            if let Some(instance_id) = instance_id {
+                conn.execute(
+                    "DELETE FROM deployments WHERE instance_id = ?1",
+                    params![instance_id],
+                )?;
+                conn.execute(
+                    "DELETE FROM trust_store WHERE instance_id = ?1",
+                    params![instance_id],
+                )?;
+            } else if let Some(deployment_label) = deployment_label {
+                conn.execute(
+                    "DELETE FROM deployments WHERE deployment_label = ?1",
+                    params![deployment_label],
+                )?;
+                conn.execute(
+                    "DELETE FROM trust_store WHERE deployment_id = ?1",
+                    params![deployment_label],
+                )?;
+            } else if let Some(server_ip) = server_ip {
+                conn.execute("DELETE FROM trust_store WHERE ip = ?1", params![server_ip])?;
+            }
+
+            conn.execute(
+                "
+                UPDATE controller_state
+                SET
+                    active_deployment_label = NULL,
+                    active_instance_id = NULL,
+                    active_server_ip = NULL,
+                    active_tunnel_domain = NULL,
+                    active_deployment_state_json = NULL,
+                    deploy_phase = ?2,
+                    app_readiness_phase = ?3,
+                    last_error_code = NULL,
+                    last_error_message = NULL,
+                    updated_at_unix = ?1
+                WHERE singleton_key = 1
+                ",
+                params![
+                    unix_now(),
+                    deploy_phase_storage_name(DeployPhase::Unspecified),
+                    app_readiness_phase_storage_name(AppReadinessPhase::DeploymentAbsent)
+                ],
+            )?;
+
+            if let Some(status) = transition.operation_status {
+                update_operation_status_in_conn(conn, transition.operation_id, status)?;
+            }
+            if let Some(message) = transition.event_message {
+                append_operation_event_in_conn(conn, transition.operation_id, message)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn start_operation(&self, kind: &str, status: &str) -> rusqlite::Result<StoredOperation> {
         let created_at = unix_now();
         self.conn.execute(
@@ -504,11 +635,7 @@ impl EdgeState {
     }
 
     pub fn update_operation_status(&self, operation_id: i64, status: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE operations SET status = ?2 WHERE id = ?1",
-            params![operation_id, status],
-        )?;
-        Ok(())
+        update_operation_status_in_conn(&self.conn, operation_id, status)
     }
 
     pub fn append_operation_event(
@@ -846,6 +973,24 @@ impl EdgeState {
         self.conn.execute(&alter, [])?;
         Ok(())
     }
+
+    fn with_immediate_transaction<T, F>(&self, f: F) -> rusqlite::Result<T>
+    where
+        F: FnOnce(&Connection) -> rusqlite::Result<T>,
+    {
+        self.conn.execute("BEGIN IMMEDIATE TRANSACTION", [])?;
+        let result = f(&self.conn);
+        match result {
+            Ok(value) => {
+                self.conn.execute("COMMIT", [])?;
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = self.conn.execute("ROLLBACK", []);
+                Err(err)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -874,10 +1019,45 @@ pub struct StoredDeployment {
 }
 
 #[derive(Debug, Clone)]
+pub struct StoredDestroyTombstone {
+    pub id: i64,
+    pub deployment_label: Option<String>,
+    pub instance_id: Option<String>,
+    pub server_ip: Option<String>,
+    pub created_at_unix: i64,
+}
+
+#[derive(Debug, Clone)]
 pub struct StoredSecretRef {
     pub name: String,
     pub secret_ref: String,
     pub updated_at_unix: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ControllerStateTransition<'a> {
+    pub deploy_phase: DeployPhase,
+    pub app_readiness_phase: AppReadinessPhase,
+    pub last_error_code: Option<&'a str>,
+    pub last_error_message: Option<&'a str>,
+    pub journal: Option<OperationJournalUpdate<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OperationJournalUpdate<'a> {
+    pub operation_id: i64,
+    pub operation_status: Option<&'a str>,
+    pub message: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DestroyAuthorityTransition<'a> {
+    pub deployment_label: Option<&'a str>,
+    pub instance_id: Option<&'a str>,
+    pub server_ip: Option<&'a str>,
+    pub operation_id: i64,
+    pub operation_status: Option<&'a str>,
+    pub event_message: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -939,6 +1119,123 @@ fn invalid_controller_state_enum(column: &str, value: &str) -> rusqlite::Error {
             format!("invalid controller state {column}: {value}"),
         )),
     )
+}
+
+fn upsert_controller_state_in_conn(
+    conn: &Connection,
+    state: NewControllerState<'_>,
+) -> rusqlite::Result<StoredControllerState> {
+    let updated_at = unix_now();
+    conn.execute(
+        "
+        INSERT INTO controller_state (
+            singleton_key,
+            active_deployment_label,
+            active_instance_id,
+            active_server_ip,
+            active_tunnel_domain,
+            active_deployment_state_json,
+            deploy_phase,
+            app_readiness_phase,
+            last_error_code,
+            last_error_message,
+            updated_at_unix
+        )
+        VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        ON CONFLICT(singleton_key) DO UPDATE SET
+            active_deployment_label = excluded.active_deployment_label,
+            active_instance_id = excluded.active_instance_id,
+            active_server_ip = excluded.active_server_ip,
+            active_tunnel_domain = excluded.active_tunnel_domain,
+            active_deployment_state_json = excluded.active_deployment_state_json,
+            deploy_phase = excluded.deploy_phase,
+            app_readiness_phase = excluded.app_readiness_phase,
+            last_error_code = excluded.last_error_code,
+            last_error_message = excluded.last_error_message,
+            updated_at_unix = excluded.updated_at_unix
+        ",
+        params![
+            state.active_deployment_label,
+            state.active_instance_id,
+            state.active_server_ip,
+            state.active_tunnel_domain,
+            state.active_deployment_state_json,
+            deploy_phase_storage_name(state.deploy_phase),
+            app_readiness_phase_storage_name(state.app_readiness_phase),
+            state.last_error_code,
+            state.last_error_message,
+            updated_at,
+        ],
+    )?;
+    get_controller_state_in_conn(conn)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+fn get_controller_state_in_conn(
+    conn: &Connection,
+) -> rusqlite::Result<Option<StoredControllerState>> {
+    conn.query_row(
+        "
+        SELECT
+            active_deployment_label,
+            active_instance_id,
+            active_server_ip,
+            active_tunnel_domain,
+            active_deployment_state_json,
+            deploy_phase,
+            app_readiness_phase,
+            last_error_code,
+            last_error_message,
+            updated_at_unix
+        FROM controller_state
+        WHERE singleton_key = 1
+        ",
+        [],
+        |row| {
+            Ok(StoredControllerState {
+                active_deployment_label: row.get(0)?,
+                active_instance_id: row.get(1)?,
+                active_server_ip: row.get(2)?,
+                active_tunnel_domain: row.get(3)?,
+                active_deployment_state_json: row.get(4)?,
+                deploy_phase: parse_deploy_phase_storage_value(row.get(5)?)?,
+                app_readiness_phase: parse_app_readiness_phase_storage_value(row.get(6)?)?,
+                last_error_code: row.get(7)?,
+                last_error_message: row.get(8)?,
+                updated_at_unix: row.get(9)?,
+            })
+        },
+    )
+    .optional()
+}
+
+fn update_operation_status_in_conn(
+    conn: &Connection,
+    operation_id: i64,
+    status: &str,
+) -> rusqlite::Result<()> {
+    let updated = conn.execute(
+        "UPDATE operations SET status = ?2 WHERE id = ?1",
+        params![operation_id, status],
+    )?;
+    if updated == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    Ok(())
+}
+
+fn append_operation_event_in_conn(
+    conn: &Connection,
+    operation_id: i64,
+    message: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "
+        INSERT INTO operation_events (operation_id, message, created_at_unix)
+        VALUES (?1, ?2, ?3)
+        ",
+        params![operation_id, message, unix_now()],
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1171,6 +1468,235 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exists, 0);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn transition_controller_state_updates_phase_and_journal_atomically() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-state-transition-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = EdgeState::open_or_create(&db_path).unwrap();
+        let operation = state.start_operation("deploy", "RUNNING").unwrap();
+
+        let stored = state
+            .transition_controller_state_with_operation(ControllerStateTransition {
+                deploy_phase: DeployPhase::Requested,
+                app_readiness_phase: AppReadinessPhase::DeploymentAbsent,
+                last_error_code: None,
+                last_error_message: None,
+                journal: Some(OperationJournalUpdate {
+                    operation_id: operation.id,
+                    operation_status: Some("RUNNING"),
+                    message: Some("DEPLOY_PHASE_REQUESTED"),
+                }),
+            })
+            .unwrap();
+
+        assert_eq!(stored.deploy_phase, DeployPhase::Requested);
+        assert_eq!(
+            state.get_operation(operation.id).unwrap().unwrap().status,
+            "RUNNING"
+        );
+        let events = state.list_operation_events(operation.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message, "DEPLOY_PHASE_REQUESTED");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn transition_controller_state_rolls_back_when_journal_update_fails() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-state-transition-rollback-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = EdgeState::open_or_create(&db_path).unwrap();
+        let before = state.get_controller_state().unwrap().unwrap();
+
+        let err = state
+            .transition_controller_state_with_operation(ControllerStateTransition {
+                deploy_phase: DeployPhase::Requested,
+                app_readiness_phase: AppReadinessPhase::DeploymentAbsent,
+                last_error_code: None,
+                last_error_message: None,
+                journal: Some(OperationJournalUpdate {
+                    operation_id: 999_999,
+                    operation_status: Some("RUNNING"),
+                    message: Some("DEPLOY_PHASE_REQUESTED"),
+                }),
+            })
+            .unwrap_err();
+        assert!(matches!(err, rusqlite::Error::QueryReturnedNoRows));
+
+        let after = state.get_controller_state().unwrap().unwrap();
+        assert_eq!(after.deploy_phase, before.deploy_phase);
+        assert_eq!(after.app_readiness_phase, before.app_readiness_phase);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn records_and_clears_destroy_tombstones() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-state-tombstones-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = EdgeState::open_or_create(&db_path).unwrap();
+
+        let stored = state
+            .record_destroy_tombstone(Some("edge-a"), Some("instance-a"), Some("203.0.113.10"))
+            .unwrap();
+        assert_eq!(stored.deployment_label.as_deref(), Some("edge-a"));
+
+        let found = state
+            .find_destroy_tombstone(Some("edge-a"), Some("instance-a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.instance_id.as_deref(), Some("instance-a"));
+
+        state
+            .clear_destroy_tombstones(Some("edge-a"), Some("instance-a"))
+            .unwrap();
+        assert!(
+            state
+                .find_destroy_tombstone(Some("edge-a"), Some("instance-a"))
+                .unwrap()
+                .is_none()
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn mark_authoritative_absent_for_destroy_is_transactional() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-state-destroy-authority-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = EdgeState::open_or_create(&db_path).unwrap();
+        let operation = state.start_operation("destroy", "RUNNING").unwrap();
+        state
+            .record_deployment("edge-a", "instance-a", "203.0.113.10")
+            .unwrap();
+        state
+            .upsert_controller_state(NewControllerState {
+                active_deployment_label: Some("edge-a"),
+                active_instance_id: Some("instance-a"),
+                active_server_ip: Some("203.0.113.10"),
+                active_tunnel_domain: Some("edge.example.com"),
+                active_deployment_state_json: None,
+                deploy_phase: DeployPhase::DeploymentPublished,
+                app_readiness_phase: AppReadinessPhase::ServerRuntimeReady,
+                last_error_code: None,
+                last_error_message: None,
+            })
+            .unwrap();
+        state
+            .upsert_trust_entry(NewTrustEntry {
+                deployment_id: "edge-a",
+                instance_id: "instance-a",
+                ip: "203.0.113.10",
+                known_host_line: "",
+                domain_name: None,
+                ca_cert_path: None,
+                server_cert_path: None,
+                client_cert_path: None,
+                client_key_path: None,
+            })
+            .unwrap();
+
+        state
+            .mark_authoritative_absent_for_destroy(DestroyAuthorityTransition {
+                deployment_label: Some("edge-a"),
+                instance_id: Some("instance-a"),
+                server_ip: Some("203.0.113.10"),
+                operation_id: operation.id,
+                operation_status: Some("SUCCEEDED"),
+                event_message: Some("destroy committed"),
+            })
+            .unwrap();
+
+        let controller = state.get_controller_state().unwrap().unwrap();
+        assert!(controller.active_deployment_label.is_none());
+        assert_eq!(
+            controller.app_readiness_phase,
+            AppReadinessPhase::DeploymentAbsent
+        );
+        assert!(state.latest_deployment().unwrap().is_none());
+        assert!(state.list_trust_entries().unwrap().is_empty());
+        assert!(
+            state
+                .find_destroy_tombstone(Some("edge-a"), Some("instance-a"))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            state.get_operation(operation.id).unwrap().unwrap().status,
+            "SUCCEEDED"
+        );
+        assert_eq!(
+            state.list_operation_events(operation.id).unwrap()[0].message,
+            "destroy committed"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn reads_legacy_controller_phase_values() {
+        let db_path = std::env::temp_dir().join(format!(
+            "edge-state-legacy-phase-{}.sqlite",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE controller_state (
+                singleton_key INTEGER PRIMARY KEY CHECK (singleton_key = 1),
+                active_deployment_label TEXT,
+                active_instance_id TEXT,
+                active_server_ip TEXT,
+                active_tunnel_domain TEXT,
+                active_deployment_state_json TEXT,
+                deploy_phase TEXT NOT NULL,
+                app_readiness_phase TEXT NOT NULL,
+                last_error_code TEXT,
+                last_error_message TEXT,
+                updated_at_unix INTEGER NOT NULL
+            );
+            INSERT INTO controller_state (
+                singleton_key,
+                deploy_phase,
+                app_readiness_phase,
+                updated_at_unix
+            ) VALUES (1, 'DEPLOYMENT_ABSENT', 'DEPLOYMENT_ABSENT', 1);
+            ",
+        )
+        .unwrap();
+        drop(conn);
+
+        let state = EdgeState::open_or_create(&db_path).unwrap();
+        let controller_state = state.get_controller_state().unwrap().unwrap();
+        assert_eq!(controller_state.deploy_phase, DeployPhase::Unspecified);
+        assert_eq!(
+            controller_state.app_readiness_phase,
+            AppReadinessPhase::DeploymentAbsent
+        );
         let _ = std::fs::remove_file(db_path);
     }
 }

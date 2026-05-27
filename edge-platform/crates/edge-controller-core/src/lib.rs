@@ -88,6 +88,12 @@ pub const fn is_allowed_deploy_transition(from: DeployPhase, to: DeployPhase) ->
                 DeployPhase::LocalConfigSynced
             )
             | (DeployPhase::LocalConfigSynced, DeployPhase::Completed)
+            | (
+                DeployPhase::LocalRuntimeReadyVerified,
+                DeployPhase::Completed
+            )
+            | (DeployPhase::SelectorsVerified, DeployPhase::Completed)
+            | (DeployPhase::AppEgressVerified, DeployPhase::Completed)
             | (DeployPhase::Requested, DeployPhase::Failed)
             | (DeployPhase::InstanceCreateRequested, DeployPhase::Failed)
             | (DeployPhase::InstanceProvisioning, DeployPhase::Failed)
@@ -492,6 +498,7 @@ fn warp_tunnel_binding_from_state(tunnel: CurrentWarpTunnelState) -> Option<Tunn
 mod tests {
     use super::*;
     use edge_shared_types::FileCategory as ProtoFileCategory;
+    use proptest::prelude::*;
     use std::env;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -542,6 +549,22 @@ mod tests {
     #[test]
     fn rejects_transition_after_completed() {
         assert!(validate_deploy_transition(DeployPhase::Completed, DeployPhase::Failed).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn transition_validator_matches_allowlist(from in 0i32..=26, to in 0i32..=26) {
+            let Ok(from) = DeployPhase::try_from(from) else {
+                return Ok(());
+            };
+            let Ok(to) = DeployPhase::try_from(to) else {
+                return Ok(());
+            };
+            prop_assert_eq!(
+                validate_deploy_transition(from, to).is_ok(),
+                is_allowed_deploy_transition(from, to)
+            );
+        }
     }
 
     #[test]
