@@ -220,7 +220,8 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
         status_notes.push("required repository inputs are incomplete".to_owned());
     }
     if !deployment.live_state_present {
-        status_notes.push("active deployment is absent in authoritative controller state".to_owned());
+        status_notes
+            .push("active deployment is absent in authoritative controller state".to_owned());
     }
     if singbox.selector.degraded {
         status_notes.push("local selector config requires review".to_owned());
@@ -242,7 +243,7 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
         status_notes,
         app_readiness_phase: controller_state
             .as_ref()
-            .map(|state| app_readiness_phase_from_str(&state.app_readiness_phase) as i32)
+            .map(|state| state.app_readiness_phase as i32)
             .unwrap_or(AppReadinessPhase::DeploymentAbsent as i32),
     })
 }
@@ -279,7 +280,9 @@ fn collect_deployment_summary(
         let parsed = state
             .active_deployment_state_json
             .as_deref()
-            .map(|raw| parse_current_edge_state(raw, "controller_state.active_deployment_state_json"))
+            .map(|raw| {
+                parse_current_edge_state(raw, "controller_state.active_deployment_state_json")
+            })
             .transpose()?;
         let live_state_present = state.active_instance_id.is_some()
             || state.active_server_ip.is_some()
@@ -288,7 +291,9 @@ fn collect_deployment_summary(
         if live_state_present {
             return Ok(DeploymentSummary {
                 live_state_present: true,
-                source_state_path: Some(repo_root.join(DEFAULT_STATE_DB_PATH).display().to_string()),
+                source_state_path: Some(
+                    repo_root.join(DEFAULT_STATE_DB_PATH).display().to_string(),
+                ),
                 deployment_label: state
                     .active_deployment_label
                     .clone()
@@ -383,10 +388,7 @@ fn apply_selector_intents(repo_root: &Path, singbox: &mut LocalConfigObservation
     }
 }
 
-fn parse_current_edge_state(
-    raw: &str,
-    source: &str,
-) -> Result<CurrentEdgeState, PlatformError> {
+fn parse_current_edge_state(raw: &str, source: &str) -> Result<CurrentEdgeState, PlatformError> {
     serde_json::from_str(raw).map_err(|err| {
         PlatformError::new(
             "current_state_parse_failed",
@@ -396,18 +398,6 @@ fn parse_current_edge_state(
             ErrorSubsystem::State,
         )
     })
-}
-
-fn app_readiness_phase_from_str(value: &str) -> AppReadinessPhase {
-    match value {
-        "SERVER_RUNTIME_READY" => AppReadinessPhase::ServerRuntimeReady,
-        "LOCAL_RUNTIME_READY" => AppReadinessPhase::LocalRuntimeReady,
-        "SELECTORS_READY" => AppReadinessPhase::SelectorsReady,
-        "APP_EGRESS_READY" => AppReadinessPhase::AppEgressReady,
-        "APP_READY" => AppReadinessPhase::AppReady,
-        "APP_READINESS_FAILED" => AppReadinessPhase::AppReadinessFailed,
-        _ => AppReadinessPhase::DeploymentAbsent,
-    }
 }
 
 fn file_presence(repo_root: &Path, path: &str, category: FileCategory) -> FilePresence {
@@ -658,8 +648,8 @@ mod tests {
   }
 }"#,
                 ),
-                deploy_phase: "DEPLOYMENT_PUBLISHED",
-                app_readiness_phase: "APP_READY",
+                deploy_phase: DeployPhase::DeploymentPublished,
+                app_readiness_phase: AppReadinessPhase::AppReady,
                 last_error_code: None,
                 last_error_message: None,
             })
@@ -675,9 +665,17 @@ mod tests {
                 .as_deref(),
             Some("edge-authoritative")
         );
-        assert!(!status.local_singbox.as_ref().unwrap().warnings.iter().any(|warning| {
-            warning.contains("does not match expected direct tunnel parameters")
-        }));
+        assert!(
+            !status
+                .local_singbox
+                .as_ref()
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|warning| {
+                    warning.contains("does not match expected direct tunnel parameters")
+                })
+        );
     }
 
     #[test]

@@ -135,15 +135,19 @@ where
     Fut: std::future::Future<Output = Result<reqwest::Response, String>>,
 {
     let mut last_error = None;
-    for attempt in 0..SAFE_REQUEST_ATTEMPTS {
+    for (attempt, retry_delay_secs) in SAFE_REQUEST_RETRY_DELAYS_SECS
+        .iter()
+        .copied()
+        .enumerate()
+        .take(SAFE_REQUEST_ATTEMPTS)
+    {
         match action().await {
             Ok(response) => return Ok(response),
-            Err(err) if attempt + 1 < SAFE_REQUEST_ATTEMPTS && is_retryable_transport_error(&err) => {
+            Err(err)
+                if attempt + 1 < SAFE_REQUEST_ATTEMPTS && is_retryable_transport_error(&err) =>
+            {
                 last_error = Some(err);
-                sleep(Duration::from_secs(
-                    SAFE_REQUEST_RETRY_DELAYS_SECS[attempt],
-                ))
-                .await;
+                sleep(Duration::from_secs(retry_delay_secs)).await;
             }
             Err(err) => return Err(err),
         }

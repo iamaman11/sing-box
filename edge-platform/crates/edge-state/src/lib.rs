@@ -1,7 +1,10 @@
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use edge_shared_types::{AppReadinessPhase, DeployPhase};
+use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct EdgeState {
@@ -127,10 +130,15 @@ impl EdgeState {
                 app_readiness_phase,
                 updated_at_unix
             )
-            VALUES (1, 'DEPLOYMENT_ABSENT', 'DEPLOYMENT_ABSENT', ?1)
+            VALUES (?1, ?2, ?3, ?4)
             ON CONFLICT(singleton_key) DO NOTHING
             ",
-            params![unix_now()],
+            params![
+                1,
+                deploy_phase_storage_name(DeployPhase::Unspecified),
+                app_readiness_phase_storage_name(AppReadinessPhase::DeploymentAbsent),
+                unix_now()
+            ],
         )?;
         // `desired_state` was a legacy table from an older controller model.
         // Drop it so diagnostics cannot drift from the true SQLite state.
@@ -205,8 +213,8 @@ impl EdgeState {
                 state.active_server_ip,
                 state.active_tunnel_domain,
                 state.active_deployment_state_json,
-                state.deploy_phase,
-                state.app_readiness_phase,
+                deploy_phase_storage_name(state.deploy_phase),
+                app_readiness_phase_storage_name(state.app_readiness_phase),
                 state.last_error_code,
                 state.last_error_message,
                 updated_at,
@@ -242,8 +250,8 @@ impl EdgeState {
                         active_server_ip: row.get(2)?,
                         active_tunnel_domain: row.get(3)?,
                         active_deployment_state_json: row.get(4)?,
-                        deploy_phase: row.get(5)?,
-                        app_readiness_phase: row.get(6)?,
+                        deploy_phase: parse_deploy_phase_storage_value(row.get(5)?)?,
+                        app_readiness_phase: parse_app_readiness_phase_storage_value(row.get(6)?)?,
                         last_error_code: row.get(7)?,
                         last_error_message: row.get(8)?,
                         updated_at_unix: row.get(9)?,
@@ -263,14 +271,18 @@ impl EdgeState {
                 active_server_ip = NULL,
                 active_tunnel_domain = NULL,
                 active_deployment_state_json = NULL,
-                deploy_phase = 'DEPLOYMENT_ABSENT',
-                app_readiness_phase = 'DEPLOYMENT_ABSENT',
+                deploy_phase = ?2,
+                app_readiness_phase = ?3,
                 last_error_code = NULL,
                 last_error_message = NULL,
                 updated_at_unix = ?1
             WHERE singleton_key = 1
             ",
-            params![unix_now()],
+            params![
+                unix_now(),
+                deploy_phase_storage_name(DeployPhase::Unspecified),
+                app_readiness_phase_storage_name(AppReadinessPhase::DeploymentAbsent)
+            ],
         )?;
         Ok(())
     }
@@ -293,7 +305,10 @@ impl EdgeState {
         Ok(())
     }
 
-    pub fn get_selector_intent(&self, group_name: &str) -> rusqlite::Result<Option<StoredSelectorIntent>> {
+    pub fn get_selector_intent(
+        &self,
+        group_name: &str,
+    ) -> rusqlite::Result<Option<StoredSelectorIntent>> {
         self.conn
             .query_row(
                 "
@@ -533,7 +548,10 @@ impl EdgeState {
         Ok(None)
     }
 
-    pub fn latest_operation_by_kind(&self, kind: &str) -> rusqlite::Result<Option<StoredOperation>> {
+    pub fn latest_operation_by_kind(
+        &self,
+        kind: &str,
+    ) -> rusqlite::Result<Option<StoredOperation>> {
         let mut statement = self.conn.prepare(
             "
             SELECT id, kind, status, created_at_unix
@@ -869,8 +887,8 @@ pub struct NewControllerState<'a> {
     pub active_server_ip: Option<&'a str>,
     pub active_tunnel_domain: Option<&'a str>,
     pub active_deployment_state_json: Option<&'a str>,
-    pub deploy_phase: &'a str,
-    pub app_readiness_phase: &'a str,
+    pub deploy_phase: DeployPhase,
+    pub app_readiness_phase: AppReadinessPhase,
     pub last_error_code: Option<&'a str>,
     pub last_error_message: Option<&'a str>,
 }
@@ -882,11 +900,45 @@ pub struct StoredControllerState {
     pub active_server_ip: Option<String>,
     pub active_tunnel_domain: Option<String>,
     pub active_deployment_state_json: Option<String>,
-    pub deploy_phase: String,
-    pub app_readiness_phase: String,
+    pub deploy_phase: DeployPhase,
+    pub app_readiness_phase: AppReadinessPhase,
     pub last_error_code: Option<String>,
     pub last_error_message: Option<String>,
     pub updated_at_unix: i64,
+}
+
+fn deploy_phase_storage_name(value: DeployPhase) -> &'static str {
+    value.as_str_name()
+}
+
+fn app_readiness_phase_storage_name(value: AppReadinessPhase) -> &'static str {
+    value.as_str_name()
+}
+
+fn parse_deploy_phase_storage_value(value: String) -> rusqlite::Result<DeployPhase> {
+    match value.as_str() {
+        "DEPLOYMENT_ABSENT" => Ok(DeployPhase::Unspecified),
+        "FAILED" => Ok(DeployPhase::Failed),
+        "COMPLETED" => Ok(DeployPhase::Completed),
+        other => DeployPhase::from_str_name(other)
+            .ok_or_else(|| invalid_controller_state_enum("deploy_phase", other)),
+    }
+}
+
+fn parse_app_readiness_phase_storage_value(value: String) -> rusqlite::Result<AppReadinessPhase> {
+    AppReadinessPhase::from_str_name(&value)
+        .ok_or_else(|| invalid_controller_state_enum("app_readiness_phase", &value))
+}
+
+fn invalid_controller_state_enum(column: &str, value: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        Type::Text,
+        Box::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid controller state {column}: {value}"),
+        )),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1003,9 +1055,11 @@ mod tests {
                 active_instance_id: Some("instance-1"),
                 active_server_ip: Some("203.0.113.10"),
                 active_tunnel_domain: Some("edge.alegria.by"),
-                active_deployment_state_json: Some(r#"{"label":"deploy-1","instance_id":"instance-1"}"#),
-                deploy_phase: "APP_READY_COMPLETED",
-                app_readiness_phase: "APP_READY",
+                active_deployment_state_json: Some(
+                    r#"{"label":"deploy-1","instance_id":"instance-1"}"#,
+                ),
+                deploy_phase: DeployPhase::AppReadyCompleted,
+                app_readiness_phase: AppReadinessPhase::AppReady,
                 last_error_code: None,
                 last_error_message: None,
             })
@@ -1078,7 +1132,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .app_readiness_phase,
-            "DEPLOYMENT_ABSENT"
+            AppReadinessPhase::DeploymentAbsent
         );
         let _ = std::fs::remove_file(db_path);
     }

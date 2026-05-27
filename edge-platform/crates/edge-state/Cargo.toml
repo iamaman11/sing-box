@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+edge-shared-types = { path = "../edge-shared-types" }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 
 [lib]

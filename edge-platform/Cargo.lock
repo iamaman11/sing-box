@@ -378,6 +378,7 @@ dependencies = [
 name = "edge-state"
 version = "0.1.0"
 dependencies = [
+ "edge-shared-types",
  "rusqlite",
 ]
 
