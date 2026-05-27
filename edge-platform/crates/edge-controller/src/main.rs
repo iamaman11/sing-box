@@ -94,6 +94,8 @@ const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
 const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
 const SECRET_VULTR_SSH_KEY_ID: &str = "bootstrap.vultr.ssh_key_id";
 const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
+const DEPLOY_ENDPOINT_ARG_INDEX: usize = 10;
+const DESTROY_ENDPOINT_ARG_INDEX: usize = 6;
 const KNOWN_SECRET_NAMES: &[&str] = &[
     SECRET_VULTR_API_KEY,
     SECRET_CLOUDFLARE_API_TOKEN,
@@ -250,7 +252,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "deploy" => {
             let request = deploy_request_from_args()?;
-            let endpoint = controller_endpoint_from_args(10);
+            let endpoint = controller_endpoint_from_args(DEPLOY_ENDPOINT_ARG_INDEX);
             let response = deploy_via_controller(endpoint, request).await?;
             io::stdout().write_all(&response.encode_to_vec())?;
             if response.success {
@@ -261,7 +263,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "destroy" => {
             let request = destroy_request_from_args()?;
-            let endpoint = controller_endpoint_from_args(7);
+            let endpoint = controller_endpoint_from_args(DESTROY_ENDPOINT_ARG_INDEX);
             let response = destroy_via_controller(endpoint, request).await?;
             io::stdout().write_all(&response.encode_to_vec())?;
             if response.success {
@@ -4454,6 +4456,12 @@ mod tests {
             blank_option(Some("  edge.alegria.by  ".to_owned())),
             Some("edge.alegria.by".to_owned())
         );
+    }
+
+    #[test]
+    fn command_endpoint_indices_match_positional_contracts() {
+        assert_eq!(DEPLOY_ENDPOINT_ARG_INDEX, 10);
+        assert_eq!(DESTROY_ENDPOINT_ARG_INDEX, 6);
     }
 
     #[test]

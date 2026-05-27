@@ -28,6 +28,8 @@ const DEFAULT_ACME_EMAIL: &str = "admin@alegria.by";
 const DEFAULT_VULTR_SNAPSHOT_ID: &str = "61605612-d7a2-47b1-85ef-aef90f5083df";
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
+const DEPLOY_ENDPOINT_ARG_INDEX: usize = 10;
+const DESTROY_ENDPOINT_ARG_INDEX: usize = 6;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -183,13 +185,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "deploy" => {
             let request = deploy_request_from_args();
-            let response = deploy(controller_endpoint_from_args(10), request).await?;
+            let response = deploy(
+                controller_endpoint_from_args(DEPLOY_ENDPOINT_ARG_INDEX),
+                request,
+            )
+            .await?;
             print_deploy_result(&response);
             finish_deploy_result(response)
         }
         "destroy" => {
             let request = destroy_request_from_args();
-            let response = destroy(controller_endpoint_from_args(7), request).await?;
+            let response = destroy(
+                controller_endpoint_from_args(DESTROY_ENDPOINT_ARG_INDEX),
+                request,
+            )
+            .await?;
             print_destroy_result(&response);
             finish_destroy_result(response)
         }
@@ -1508,6 +1518,12 @@ mod tests {
         assert_eq!(normalize(Some("")), None);
         assert_eq!(normalize(Some("   ")), None);
         assert_eq!(normalize(Some("  edge  ")), Some("edge".to_owned()));
+    }
+
+    #[test]
+    fn command_endpoint_indices_match_positional_contracts() {
+        assert_eq!(DEPLOY_ENDPOINT_ARG_INDEX, 10);
+        assert_eq!(DESTROY_ENDPOINT_ARG_INDEX, 6);
     }
 
     #[test]
