@@ -2,7 +2,7 @@ param(
     [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
     [string]$ControllerExe = "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-controller.exe",
     [string]$BindAddress = "127.0.0.1:50051",
-    [int]$WaitSeconds = 15
+    [int]$WaitSeconds = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +21,21 @@ function Get-ExistingController {
     } | Select-Object -First 1
 }
 
+function Get-RuntimeSecret {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { throw "Runtime credential is absent: $Path" }
+    Add-Type -AssemblyName System.Security
+    $cipher = [IO.File]::ReadAllBytes($Path)
+    $plain = $null
+    try {
+        $plain = [Security.Cryptography.ProtectedData]::Unprotect($cipher, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [Text.Encoding]::UTF8.GetString($plain)
+    } finally {
+        if ($plain) { [Array]::Clear($plain, 0, $plain.Length) }
+        if ($cipher) { [Array]::Clear($cipher, 0, $cipher.Length) }
+    }
+}
+
 if (-not (Test-Path $RepoRoot)) {
     throw "Repo root not found: $RepoRoot"
 }
@@ -30,16 +45,25 @@ if (-not (Test-Path $ControllerExe)) {
 
 $port = [int]($BindAddress.Split(":")[-1])
 $existing = Get-ExistingController -ExecutablePath $ControllerExe -RepoRoot $RepoRoot -BindAddress $BindAddress
+$runtimeDir = Join-Path $RepoRoot "edge-platform\.runtime"
+$pidFile = Join-Path $runtimeDir "controller.pid"
 if ($existing -and (Test-ControllerPort -Port $port)) {
-    Write-Output "edge-controller already running (pid $($existing.ProcessId))"
-    exit 0
+    $managedPid = if (Test-Path $pidFile) { (Get-Content -Raw $pidFile).Trim() } else { "" }
+    if ($managedPid -eq [string]$existing.ProcessId) {
+        Write-Output "edge-controller already running (pid $($existing.ProcessId))"
+        exit 0
+    }
+    Write-Output "Restarting unmanaged edge-controller process (pid $($existing.ProcessId))"
+    Stop-Process -Id $existing.ProcessId -Force
+    Start-Sleep -Seconds 1
 }
 
-$runtimeDir = Join-Path $RepoRoot "edge-platform\.runtime"
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 $stdout = Join-Path $runtimeDir "controller-service-stdout.log"
 $stderr = Join-Path $runtimeDir "controller-service-stderr.log"
 
+$env:CF_API_TOKEN = Get-RuntimeSecret (Join-Path $runtimeDir "cloudflare-dns-token.dpapi")
+$env:VULTR_API_KEY = Get-RuntimeSecret (Join-Path $runtimeDir "vultr-lifecycle-token.dpapi")
 Start-Process -FilePath $ControllerExe `
     -ArgumentList @("serve", $RepoRoot, $BindAddress) `
     -WorkingDirectory $RepoRoot `
@@ -50,8 +74,12 @@ Start-Process -FilePath $ControllerExe `
 $deadline = (Get-Date).AddSeconds($WaitSeconds)
 while ((Get-Date) -lt $deadline) {
     if (Test-ControllerPort -Port $port) {
-        Write-Output "edge-controller started on $BindAddress"
-        exit 0
+        $started = Get-ExistingController -ExecutablePath $ControllerExe -RepoRoot $RepoRoot -BindAddress $BindAddress
+        if ($started) {
+            Set-Content -NoNewline -Path $pidFile -Value $started.ProcessId
+            Write-Output "edge-controller started with DPAPI credentials on $BindAddress (pid $($started.ProcessId))"
+            exit 0
+        }
     }
     Start-Sleep -Milliseconds 500
 }

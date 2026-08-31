@@ -400,6 +400,7 @@ message DestroyRequest {
   bool mock_provider = 5;
   bool delete_dns = 6;
   bool delete_instance = 7;
+  optional string lifecycle_reason = 8;
 }
 
 message DestroyResponse {

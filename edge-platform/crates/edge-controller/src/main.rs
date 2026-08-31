@@ -77,8 +77,6 @@ enum DestroyInstanceOutcome {
 const DEFAULT_PLAN: &str = "vc2-1c-1gb";
 const DEFAULT_VULTR_OS_ID: u32 = 2136;
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
-const DEFAULT_SINGBOX_BINARY_PATH: &str =
-    "C:\\Users\\Bose\\AppData\\Local\\sing-box-vultr-dual\\runtime\\sing-box.exe";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
@@ -587,6 +585,7 @@ fn destroy_request_from_args() -> Result<DestroyRequest, Box<dyn std::error::Err
         delete_instance: env::var("EDGE_DELETE_INSTANCE")
             .ok()
             .is_none_or(|value| value == "1"),
+        lifecycle_reason: env::var("EDGE_LIFECYCLE_REASON").ok(),
     })
 }
 
@@ -1425,6 +1424,7 @@ impl ControllerService for ControllerServerImpl {
         request.target_ip = blank_option(request.target_ip.take());
         request.dns_record_name = blank_option(request.dns_record_name.take());
         request.cloudflare_zone_name = blank_option(request.cloudflare_zone_name.take());
+        request.lifecycle_reason = blank_option(request.lifecycle_reason.take());
         let operation = self
             .state
             .lock()
@@ -1432,6 +1432,13 @@ impl ControllerService for ControllerServerImpl {
             .start_operation("destroy", "RUNNING")
             .map_err(|err| Status::internal(format!("failed to create operation: {err}")))?;
         append_operation_event(&self.state, operation.id, "destroy requested")?;
+        if let Some(reason) = request.lifecycle_reason.as_deref() {
+            append_operation_event(
+                &self.state,
+                operation.id,
+                &format!("lifecycle reason: {reason}"),
+            )?;
+        }
 
         let existing = read_live_deployment_summary(&self.repo_root)
             .map_err(|err| Status::internal(format!("failed to read current state: {err}")))?;
@@ -1446,6 +1453,53 @@ impl ControllerService for ControllerServerImpl {
             .or_else(|| existing.instance_id.clone())
             .unwrap_or_default();
         let mut warnings = Vec::new();
+
+        // Destruction is fail-closed: the authoritative provider object must
+        // still be exactly the deployment recorded by this controller.
+        if request.delete_instance && !request.mock_provider {
+            let expected_label = existing.deployment_label.clone().ok_or_else(|| {
+                Status::failed_precondition("refusing destroy: recorded deployment label is absent")
+            })?;
+            let expected_instance_id = existing.instance_id.clone().ok_or_else(|| {
+                Status::failed_precondition("refusing destroy: recorded instance id is absent")
+            })?;
+            if instance_id != expected_instance_id
+                || target_ip.trim().is_empty()
+                || !expected_label.starts_with("waw-edge-")
+            {
+                return Err(Status::failed_precondition(
+                    "refusing destroy: target does not match the recorded managed deployment",
+                ));
+            }
+            let api_key = resolve_text_secret(
+                &self.state,
+                SECRET_VULTR_API_KEY,
+                &default_env_ref("VULTR_API_KEY"),
+            )
+            .map_err(Status::internal)?;
+            let remote = get_instance(&api_key, &instance_id)
+                .await
+                .map_err(Status::internal)?;
+            if remote.id != expected_instance_id
+                || remote.label != expected_label
+                || !remote.label.starts_with("waw-edge-")
+                || remote.main_ip != target_ip
+            {
+                let note = format!(
+                    "destroy refused: expected id={expected_instance_id} label={expected_label} ip={target_ip}; provider returned id={} label={} ip={}",
+                    remote.id, remote.label, remote.main_ip
+                );
+                append_operation_event(&self.state, operation.id, &note)?;
+                return Err(Status::failed_precondition(note));
+            }
+            append_operation_event(
+                &self.state,
+                operation.id,
+                &format!(
+                    "destroy target verified: id={instance_id} label={expected_label} ip={target_ip}"
+                ),
+            )?;
+        }
 
         if request.delete_dns {
             let note = delete_dns_record(&self.state, &request)
@@ -1581,17 +1635,23 @@ fn default_singbox_binary_path() -> PathBuf {
         return PathBuf::from(explicit);
     }
 
-    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
-        let runtime_path = PathBuf::from(local_app_data)
+    let runtime_path = if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        PathBuf::from(local_app_data)
             .join("sing-box-vultr-dual")
             .join("runtime")
-            .join("sing-box.exe");
-        if runtime_path.is_file() {
-            return runtime_path;
-        }
+            .join("sing-box.exe")
+    } else {
+        PathBuf::from("edge-platform")
+            .join(".runtime")
+            .join("local-runtime")
+            .join("sing-box.exe")
+    };
+
+    if runtime_path.is_file() {
+        return runtime_path;
     }
 
-    PathBuf::from(DEFAULT_SINGBOX_BINARY_PATH)
+    runtime_path
 }
 
 fn local_runtime_paths_from_start(
@@ -4008,6 +4068,7 @@ async fn rollback_failed_deploy(
             mock_provider: request.mock_provider,
             delete_dns: true,
             delete_instance: false,
+            lifecycle_reason: Some("deploy_rollback".to_owned()),
         };
         match delete_dns_record(state, &destroy_request).await {
             Ok(note) => {

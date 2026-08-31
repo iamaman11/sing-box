@@ -56,7 +56,6 @@ Supported reference formats:
 - `env:`
 - `file:`
 - `path:`
-- `literal:`
 
 ## Operator model
 

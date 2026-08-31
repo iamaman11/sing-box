@@ -9,6 +9,7 @@ rust-version.workspace = true
 edge-shared-types = { path = "../edge-shared-types" }
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread"] }
 tonic = "0.14.5"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 
 [[bin]]
 name = "edge-console"

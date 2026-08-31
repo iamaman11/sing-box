@@ -7,7 +7,6 @@ pub enum SecretReference {
     Env(String),
     File(PathBuf),
     Path(PathBuf),
-    Literal(String),
 }
 
 pub fn default_env_ref(name: &str) -> String {
@@ -41,10 +40,6 @@ pub fn parse_secret_reference(raw: &str) -> Result<SecretReference, String> {
         }
         return Ok(SecretReference::Path(PathBuf::from(path)));
     }
-    if let Some(value) = trimmed.strip_prefix("literal:") {
-        return Ok(SecretReference::Literal(value.to_owned()));
-    }
-
     Err(format!("unsupported secret reference: {trimmed}"))
 }
 
@@ -56,7 +51,6 @@ pub fn resolve_secret_text(reference: &str) -> Result<String, String> {
         SecretReference::File(path) => fs::read_to_string(&path)
             .map_err(|err| format!("failed to read {}: {err}", path.display()))
             .and_then(normalize_secret_text),
-        SecretReference::Literal(value) => normalize_secret_text(value),
         SecretReference::Path(path) => Err(format!(
             "path secret reference cannot be resolved as text: {}",
             path.display()
@@ -72,9 +66,6 @@ pub fn resolve_secret_path(reference: &str) -> Result<PathBuf, String> {
             normalize_secret_path(PathBuf::from(value))
         }
         SecretReference::File(path) | SecretReference::Path(path) => normalize_secret_path(path),
-        SecretReference::Literal(_) => {
-            Err("literal secret reference cannot be resolved as a path".to_owned())
-        }
     }
 }
 
@@ -112,19 +103,10 @@ mod tests {
             parse_secret_reference("path:/tmp/id_rsa").unwrap(),
             SecretReference::Path(PathBuf::from("/tmp/id_rsa"))
         );
-        assert_eq!(
-            parse_secret_reference("literal:secret").unwrap(),
-            SecretReference::Literal("secret".to_owned())
-        );
     }
 
     #[test]
-    fn resolves_literal_and_file_text() {
-        assert_eq!(
-            resolve_secret_text("literal: secret-token ").unwrap(),
-            "secret-token"
-        );
-
+    fn resolves_file_text() {
         let path = temp_path("edge-secret");
         fs::write(&path, " token-from-file \n").unwrap();
         assert_eq!(
@@ -132,6 +114,12 @@ mod tests {
             "token-from-file"
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_literal_secret_references() {
+        assert!(parse_secret_reference("literal:secret").is_err());
+        assert!(resolve_secret_text("literal:secret").is_err());
     }
 
     #[test]

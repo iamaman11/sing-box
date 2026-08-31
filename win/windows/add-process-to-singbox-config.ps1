@@ -9,6 +9,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if ($ProcessName -eq 'ChatGPT.exe') {
+    Write-Warning 'ChatGPT Desktop now commonly runs as ChatGPT Classic.exe. Consider adding that name too.'
+}
+
 if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'edge-dns-clean-vultr-dual.json' }
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) {

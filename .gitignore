@@ -8,6 +8,7 @@ sing-box-wsl-setup/config.current.json
 win/**/config.live.json
 win/**/config.test.json
 win/windows/edge-dns-clean*.json
+win/windows/edge-dns-clean*.json.bak*
 win/vultr-waw/current-edge.json
 *.clixml
 *.pem

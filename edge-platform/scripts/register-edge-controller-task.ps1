@@ -7,15 +7,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$scriptPath = Join-Path $RepoRoot "edge-platform\scripts\ensure-edge-controller.ps1"
-$wrapperPath = Join-Path $RepoRoot "edge-platform\scripts\start-edge-controller.cmd"
-if (-not (Test-Path $scriptPath)) {
-    throw "Startup script not found: $scriptPath"
-}
-if (-not (Test-Path $wrapperPath)) {
-    throw "Startup wrapper not found: $wrapperPath"
-}
-
-$taskCommand = '"' + $wrapperPath + '"'
-schtasks /Create /F /SC ONLOGON /RL HIGHEST /TN $TaskName /TR $taskCommand | Out-Null
-Write-Output "Registered scheduled task: $TaskName"
+$automation = Join-Path $RepoRoot "edge-platform\scripts\register-edge-platform-automation.ps1"
+if (-not (Test-Path $automation)) { throw "Automation registration script not found: $automation" }
+& $automation -RepoRoot $RepoRoot -ControllerTaskName $TaskName

@@ -256,7 +256,6 @@ Supported secret reference formats:
 - `env:NAME`
 - `file:/abs/path`
 - `path:/abs/path`
-- `literal:value`
 
 ## Notes
 

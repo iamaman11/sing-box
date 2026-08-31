@@ -1,0 +1,37 @@
+param(
+    [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
+    [string]$ControllerTaskName = "EdgePlatformController",
+    [string]$ReconcileTaskName = "EdgePlatformReconcile",
+    [string]$ShutdownTaskName = "EdgePlatformShutdown"
+)
+
+$ErrorActionPreference = "Stop"
+$startScript = Join-Path $RepoRoot "edge-platform\scripts\start-edge-platform.ps1"
+$shutdownScript = Join-Path $RepoRoot "edge-platform\scripts\shutdown-edge-platform.ps1"
+foreach ($path in @($startScript, $shutdownScript)) {
+    if (-not (Test-Path $path)) { throw "Task wrapper not found: $path" }
+}
+
+$powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$startCommand = '"' + $powershell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $startScript + '"'
+$shutdownCommand = '"' + $powershell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $shutdownScript + '"'
+
+# Runs with Bose's DPAPI-protected local operational credentials.
+schtasks /Create /F /SC ONLOGON /DELAY 0001:30 /RL HIGHEST /IT /TN $ControllerTaskName /TR $startCommand | Out-Null
+schtasks /Create /F /SC MINUTE /MO 15 /RL HIGHEST /IT /TN $ReconcileTaskName /TR $startCommand | Out-Null
+
+# USER32/1074 is raised for a planned shutdown/restart. Sudden power loss is
+# recovered at the next logon by the persisted local intent.
+$shutdownSubscription = "*[System[Provider[@Name='USER32'] and (EventID=1074)]]"
+schtasks /Create /F /SC ONEVENT /EC System /MO $shutdownSubscription /RL HIGHEST /IT /TN $ShutdownTaskName /TR $shutdownCommand | Out-Null
+
+$startupSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+$shutdownSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+Set-ScheduledTask -TaskName $ControllerTaskName -Settings $startupSettings | Out-Null
+Set-ScheduledTask -TaskName $ReconcileTaskName -Settings $startupSettings | Out-Null
+Set-ScheduledTask -TaskName $ShutdownTaskName -Settings $shutdownSettings | Out-Null
+Enable-ScheduledTask -TaskName $ControllerTaskName | Out-Null
+Enable-ScheduledTask -TaskName $ReconcileTaskName | Out-Null
+Enable-ScheduledTask -TaskName $ShutdownTaskName | Out-Null
+
+Write-Output "Registered and enabled: $ControllerTaskName, $ReconcileTaskName, $ShutdownTaskName"

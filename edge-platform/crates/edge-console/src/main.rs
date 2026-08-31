@@ -1,3 +1,4 @@
+use rusqlite::Connection;
 use std::env;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -418,6 +419,13 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 print_bootstrap_result(&response);
             }
             "22" => {
+                if !confirm_exact(
+                    "Create a replacement VM from the snapshot? Type CREATE",
+                    "CREATE",
+                )? {
+                    println!("Create cancelled");
+                    continue;
+                }
                 let response = deploy(
                     controller_endpoint.clone(),
                     DeployRequest {
@@ -437,6 +445,13 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 print_deploy_result(&response);
             }
             "23" => {
+                if !confirm_exact(
+                    "Delete the current VM and its edge.alegria.by DNS record? Type DELETE",
+                    "DELETE",
+                )? {
+                    println!("Delete cancelled");
+                    continue;
+                }
                 let response = destroy(
                     controller_endpoint.clone(),
                     DestroyRequest {
@@ -447,6 +462,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                         mock_provider: false,
                         delete_dns: true,
                         delete_instance: true,
+                        lifecycle_reason: Some("manual".to_owned()),
                     },
                 )
                 .await?;
@@ -703,6 +719,7 @@ fn destroy_request_from_args() -> DestroyRequest {
         delete_instance: env::var("EDGE_DELETE_INSTANCE")
             .ok()
             .is_none_or(|value| value == "1"),
+        lifecycle_reason: env::var("EDGE_LIFECYCLE_REASON").ok(),
     }
 }
 
@@ -968,7 +985,12 @@ fn prompt(label: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(input.trim().to_owned())
 }
 
+fn confirm_exact(label: &str, expected: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(prompt(label)? == expected)
+}
+
 fn print_status(status: &ControllerStatus) {
+    print_lifecycle_status();
     println!();
     println!("Current status");
 
@@ -1101,6 +1123,69 @@ fn print_status(status: &ControllerStatus) {
 
     for note in &status.status_notes {
         println!("Status note            : {note}");
+    }
+}
+
+fn print_lifecycle_status() {
+    let root =
+        env::var("EDGE_REPO_ROOT").unwrap_or_else(|_| "C:\\Users\\Bose\\temp\\sing-box".to_owned());
+    let path = Path::new(&root)
+        .join("edge-platform")
+        .join(".runtime")
+        .join("controller-state.sqlite");
+    let Ok(conn) = Connection::open(path) else {
+        return;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT
+             kind,
+             status,
+             datetime(created_at_unix, 'unixepoch', 'localtime'),
+             datetime(completed_at_unix, 'unixepoch', 'localtime'),
+             completed_at_unix - created_at_unix
+         FROM operations
+         WHERE kind IN ('destroy','deploy')
+         ORDER BY id DESC
+         LIMIT 2",
+    ) else {
+        return;
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+        ))
+    });
+    let Ok(rows) = rows else { return };
+    let operations: Vec<_> = rows.filter_map(Result::ok).collect();
+    if operations.is_empty() {
+        return;
+    }
+    println!("\nLifecycle (SQLite)");
+    for (kind, status, started_at, completed_at, duration_seconds) in operations {
+        match (completed_at, duration_seconds) {
+            (Some(completed_at), Some(duration_seconds)) => println!(
+                "Last {kind:<7} : {status}; started {started_at} local; finished {completed_at} local; duration {duration_seconds}s"
+            ),
+            _ => println!(
+                "Last {kind:<7} : {status}; started {started_at} local; finished/duration unavailable (recorded before timing upgrade)"
+            ),
+        }
+    }
+    let details = conn
+        .prepare(
+            "SELECT e.message FROM operation_events e JOIN operations o ON o.id=e.operation_id WHERE o.kind='destroy' AND (e.message LIKE 'lifecycle reason:%' OR e.message LIKE 'destroy target verified:%' OR e.message LIKE 'destroy refused:%') ORDER BY e.id DESC LIMIT 2",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default();
+    for detail in details.into_iter().rev() {
+        println!("  {detail}");
     }
 }
 

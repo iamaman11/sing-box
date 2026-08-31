@@ -38,7 +38,8 @@ impl EdgeState {
                 id INTEGER PRIMARY KEY,
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
-                created_at_unix INTEGER NOT NULL
+                created_at_unix INTEGER NOT NULL,
+                completed_at_unix INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS operation_events (
@@ -124,6 +125,7 @@ impl EdgeState {
         self.ensure_column("trust_store", "client_cert_path", "TEXT")?;
         self.ensure_column("trust_store", "client_key_path", "TEXT")?;
         self.ensure_column("controller_state", "active_deployment_state_json", "TEXT")?;
+        self.ensure_column("operations", "completed_at_unix", "INTEGER")?;
         self.conn.execute_batch(
             "
             CREATE UNIQUE INDEX IF NOT EXISTS trust_store_identity_idx
@@ -657,6 +659,7 @@ impl EdgeState {
             kind: kind.to_owned(),
             status: status.to_owned(),
             created_at_unix: created_at,
+            completed_at_unix: None,
         })
     }
 
@@ -688,7 +691,9 @@ impl EdgeState {
     pub fn get_operation(&self, operation_id: i64) -> rusqlite::Result<Option<StoredOperation>> {
         let mut statement = self
             .conn
-            .prepare("SELECT id, kind, status, created_at_unix FROM operations WHERE id = ?1")?;
+            .prepare(
+                "SELECT id, kind, status, created_at_unix, completed_at_unix FROM operations WHERE id = ?1",
+            )?;
         let mut rows = statement.query(params![operation_id])?;
         if let Some(row) = rows.next()? {
             return Ok(Some(StoredOperation {
@@ -696,6 +701,7 @@ impl EdgeState {
                 kind: row.get(1)?,
                 status: row.get(2)?,
                 created_at_unix: row.get(3)?,
+                completed_at_unix: row.get(4)?,
             }));
         }
         Ok(None)
@@ -707,7 +713,7 @@ impl EdgeState {
     ) -> rusqlite::Result<Option<StoredOperation>> {
         let mut statement = self.conn.prepare(
             "
-            SELECT id, kind, status, created_at_unix
+            SELECT id, kind, status, created_at_unix, completed_at_unix
             FROM operations
             WHERE kind = ?1
             ORDER BY id DESC
@@ -721,6 +727,7 @@ impl EdgeState {
                 kind: row.get(1)?,
                 status: row.get(2)?,
                 created_at_unix: row.get(3)?,
+                completed_at_unix: row.get(4)?,
             }));
         }
         Ok(None)
@@ -756,7 +763,7 @@ impl EdgeState {
     ) -> rusqlite::Result<Vec<StoredOperation>> {
         let mut statement = self.conn.prepare(
             "
-            SELECT id, kind, status, created_at_unix
+            SELECT id, kind, status, created_at_unix, completed_at_unix
             FROM operations
             WHERE status = ?1
             ORDER BY id ASC
@@ -768,6 +775,7 @@ impl EdgeState {
                 kind: row.get(1)?,
                 status: row.get(2)?,
                 created_at_unix: row.get(3)?,
+                completed_at_unix: row.get(4)?,
             })
         })?;
         rows.collect()
@@ -1025,6 +1033,7 @@ pub struct StoredOperation {
     pub kind: String,
     pub status: String,
     pub created_at_unix: i64,
+    pub completed_at_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1246,9 +1255,13 @@ fn update_operation_status_in_conn(
     operation_id: i64,
     status: &str,
 ) -> rusqlite::Result<()> {
+    let completed_at_unix = (status != "RUNNING").then(unix_now);
     let updated = conn.execute(
-        "UPDATE operations SET status = ?2 WHERE id = ?1",
-        params![operation_id, status],
+        "UPDATE operations
+         SET status = ?2,
+             completed_at_unix = COALESCE(completed_at_unix, ?3)
+         WHERE id = ?1",
+        params![operation_id, status, completed_at_unix],
     )?;
     if updated == 0 {
         return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -1342,6 +1355,8 @@ mod tests {
             .unwrap();
         let stored = state.get_operation(operation.id).unwrap().unwrap();
         assert_eq!(stored.status, "SUCCEEDED");
+        assert!(stored.completed_at_unix.is_some());
+        assert!(stored.completed_at_unix.unwrap() >= stored.created_at_unix);
         let latest_operation = state
             .latest_operation_by_kind("start_local_runtime")
             .unwrap()
