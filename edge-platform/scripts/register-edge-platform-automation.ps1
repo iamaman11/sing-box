@@ -8,13 +8,14 @@ param(
 $ErrorActionPreference = "Stop"
 $startScript = Join-Path $RepoRoot "edge-platform\scripts\start-edge-platform.ps1"
 $shutdownScript = Join-Path $RepoRoot "edge-platform\scripts\shutdown-edge-platform.ps1"
-foreach ($path in @($startScript, $shutdownScript)) {
+$hiddenRunner = Join-Path $RepoRoot "edge-platform\scripts\run-hidden-powershell.vbs"
+foreach ($path in @($startScript, $shutdownScript, $hiddenRunner)) {
     if (-not (Test-Path $path)) { throw "Task wrapper not found: $path" }
 }
 
-$powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-$startCommand = '"' + $powershell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $startScript + '"'
-$shutdownCommand = '"' + $powershell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $shutdownScript + '"'
+$wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
+$startCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $startScript + '"'
+$shutdownCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $shutdownScript + '"'
 
 # Runs with Bose's DPAPI-protected local operational credentials.
 schtasks /Create /F /SC ONLOGON /DELAY 0001:30 /RL HIGHEST /IT /TN $ControllerTaskName /TR $startCommand | Out-Null
