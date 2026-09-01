@@ -277,6 +277,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = repo_root.join(DEFAULT_STATE_DB);
     let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path)?));
+    normalize_runtime_secret_refs(&state)?;
     interrupt_stale_running_operations(&state)?;
     reconcile_active_deployment_state(&repo_root, &state)?;
     ensure_selector_intents_seeded(&repo_root, &state).await?;
@@ -290,6 +291,39 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
         .add_service(ControllerServiceServer::new(service))
         .serve(addr)
         .await?;
+    Ok(())
+}
+
+fn normalize_runtime_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<(), String> {
+    let guard = state
+        .lock()
+        .map_err(|_| "controller state mutex poisoned".to_owned())?;
+
+    // Runtime credentials are supplied by the DPAPI launcher. Never retain a
+    // token value in SQLite, including values written by an older literal-ref
+    // implementation.
+    for (name, env_name) in [
+        (SECRET_VULTR_API_KEY, "VULTR_API_KEY"),
+        (SECRET_CLOUDFLARE_API_TOKEN, "CLOUDFLARE_API_TOKEN"),
+        (SECRET_VULTR_SSH_KEY_ID, "EDGE_VULTR_SSH_KEY_ID"),
+    ] {
+        guard
+            .upsert_secret_ref(name, &default_env_ref(env_name))
+            .map_err(|err| format!("failed to normalize runtime secret ref {name}: {err}"))?;
+    }
+
+    // The SSH private-key reference is a path, not key material. Convert a
+    // legacy literal path only when it resolves to an existing local file.
+    if let Some(stored) = guard
+        .get_secret_ref(SECRET_SSH_PRIVATE_KEY_PATH)
+        .map_err(|err| format!("failed to read SSH key path ref: {err}"))?
+        && let Some(path) = stored.secret_ref.strip_prefix("literal:")
+        && Path::new(path).is_file()
+    {
+        guard
+            .upsert_secret_ref(SECRET_SSH_PRIVATE_KEY_PATH, &format!("path:{path}"))
+            .map_err(|err| format!("failed to normalize SSH key path ref: {err}"))?;
+    }
     Ok(())
 }
 

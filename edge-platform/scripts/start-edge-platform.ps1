@@ -31,9 +31,10 @@ do {
 
 & (Join-Path $RepoRoot "edge-platform\scripts\ensure-edge-controller.ps1") -RepoRoot $RepoRoot
 if (Test-Path $intentPath) {
-    $recoveryMutex = New-Object System.Threading.Mutex($false, "Local\\EdgePlatformUnexpectedShutdownRecovery")
+    $recoveryMutex = $null
     $recoveryLockHeld = $false
     try {
+        $recoveryMutex = New-Object System.Threading.Mutex($false, "Local\EdgePlatformUnexpectedShutdownRecovery")
         $recoveryLockHeld = $recoveryMutex.WaitOne(0)
         if (-not $recoveryLockHeld) {
             "$(Get-Date -Format o) Recovery already owned by another task; skipped duplicate execution" | Add-Content -Path (Join-Path $runtimeDir "reconcile.log")
@@ -51,7 +52,7 @@ if (Test-Path $intentPath) {
     } finally {
         Remove-Item Env:EDGE_LIFECYCLE_REASON -ErrorAction SilentlyContinue
         if ($recoveryLockHeld) { $recoveryMutex.ReleaseMutex() }
-        $recoveryMutex.Dispose()
+        if ($recoveryMutex) { $recoveryMutex.Dispose() }
     }
     $recreateDeadline = (Get-Date).AddMinutes(3)
     do {

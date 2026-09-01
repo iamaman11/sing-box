@@ -62,8 +62,10 @@ New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 $stdout = Join-Path $runtimeDir "controller-service-stdout.log"
 $stderr = Join-Path $runtimeDir "controller-service-stderr.log"
 
-$env:CF_API_TOKEN = Get-RuntimeSecret (Join-Path $runtimeDir "cloudflare-dns-token.dpapi")
+$env:CLOUDFLARE_API_TOKEN = Get-RuntimeSecret (Join-Path $runtimeDir "cloudflare-dns-token.dpapi")
+$env:CF_API_TOKEN = $env:CLOUDFLARE_API_TOKEN
 $env:VULTR_API_KEY = Get-RuntimeSecret (Join-Path $runtimeDir "vultr-lifecycle-token.dpapi")
+$env:EDGE_VULTR_SSH_KEY_ID = "b379cde0-6ef3-46a0-8cf9-c4faa7cb6dd4"
 Start-Process -FilePath $ControllerExe `
     -ArgumentList @("serve", $RepoRoot, $BindAddress) `
     -WorkingDirectory $RepoRoot `
