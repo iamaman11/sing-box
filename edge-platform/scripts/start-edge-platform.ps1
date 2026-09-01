@@ -31,17 +31,27 @@ do {
 
 & (Join-Path $RepoRoot "edge-platform\scripts\ensure-edge-controller.ps1") -RepoRoot $RepoRoot
 if (Test-Path $intentPath) {
+    $recoveryMutex = New-Object System.Threading.Mutex($false, "Local\\EdgePlatformUnexpectedShutdownRecovery")
+    $recoveryLockHeld = $false
     try {
+        $recoveryLockHeld = $recoveryMutex.WaitOne(0)
+        if (-not $recoveryLockHeld) {
+            "$(Get-Date -Format o) Recovery already owned by another task; skipped duplicate execution" | Add-Content -Path (Join-Path $runtimeDir "reconcile.log")
+            exit 0
+        }
         $env:EDGE_LIFECYCLE_REASON = "unexpected_shutdown_recovery"
-        & "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" destroy | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Local stale VM deletion failed" }
-        & "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Replacement VM deployment failed" }
+        $destroyOutput = & "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" destroy 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "Local stale VM deletion failed: $destroyOutput" }
+        $deployOutput = & "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "Replacement VM deployment failed: $deployOutput" }
         Remove-Item -LiteralPath $intentPath -Force -ErrorAction SilentlyContinue
     } catch {
         "$(Get-Date -Format o) Local recovery failed: $($_.Exception.Message)" | Add-Content -Path (Join-Path $runtimeDir "reconcile.log")
+        exit 1
     } finally {
         Remove-Item Env:EDGE_LIFECYCLE_REASON -ErrorAction SilentlyContinue
+        if ($recoveryLockHeld) { $recoveryMutex.ReleaseMutex() }
+        $recoveryMutex.Dispose()
     }
     $recreateDeadline = (Get-Date).AddMinutes(3)
     do {

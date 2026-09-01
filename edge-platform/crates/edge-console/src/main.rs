@@ -1142,7 +1142,10 @@ fn print_lifecycle_status() {
              status,
              datetime(created_at_unix, 'unixepoch', 'localtime'),
              datetime(completed_at_unix, 'unixepoch', 'localtime'),
-             completed_at_unix - created_at_unix
+             completed_at_unix - created_at_unix,
+             target_label,
+             target_instance_id,
+             target_ip
          FROM operations
          WHERE kind IN ('destroy','deploy')
          ORDER BY id DESC
@@ -1157,6 +1160,9 @@ fn print_lifecycle_status() {
             row.get::<_, String>(2)?,
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
         ))
     });
     let Ok(rows) = rows else { return };
@@ -1165,14 +1171,19 @@ fn print_lifecycle_status() {
         return;
     }
     println!("\nLifecycle (SQLite)");
-    for (kind, status, started_at, completed_at, duration_seconds) in operations {
+    for (kind, status, started_at, completed_at, duration_seconds, label, instance_id, ip) in
+        operations
+    {
         match (completed_at, duration_seconds) {
             (Some(completed_at), Some(duration_seconds)) => println!(
                 "Last {kind:<7} : {status}; started {started_at} local; finished {completed_at} local; duration {duration_seconds}s"
             ),
-            _ => println!(
-                "Last {kind:<7} : {status}; started {started_at} local; finished/duration unavailable (recorded before timing upgrade)"
-            ),
+            _ => {
+                println!("Last {kind:<7} : {status}; started {started_at} local; not finished yet")
+            }
+        }
+        if let (Some(label), Some(instance_id), Some(ip)) = (label, instance_id, ip) {
+            println!("  target: {label}; instance {instance_id}; IP {ip}");
         }
     }
     let details = conn

@@ -39,7 +39,10 @@ impl EdgeState {
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at_unix INTEGER NOT NULL,
-                completed_at_unix INTEGER
+                completed_at_unix INTEGER,
+                target_label TEXT,
+                target_instance_id TEXT,
+                target_ip TEXT
             );
 
             CREATE TABLE IF NOT EXISTS operation_events (
@@ -126,6 +129,9 @@ impl EdgeState {
         self.ensure_column("trust_store", "client_key_path", "TEXT")?;
         self.ensure_column("controller_state", "active_deployment_state_json", "TEXT")?;
         self.ensure_column("operations", "completed_at_unix", "INTEGER")?;
+        self.ensure_column("operations", "target_label", "TEXT")?;
+        self.ensure_column("operations", "target_instance_id", "TEXT")?;
+        self.ensure_column("operations", "target_ip", "TEXT")?;
         self.conn.execute_batch(
             "
             CREATE UNIQUE INDEX IF NOT EXISTS trust_store_identity_idx
@@ -660,11 +666,35 @@ impl EdgeState {
             status: status.to_owned(),
             created_at_unix: created_at,
             completed_at_unix: None,
+            target_label: None,
+            target_instance_id: None,
+            target_ip: None,
         })
     }
 
     pub fn update_operation_status(&self, operation_id: i64, status: &str) -> rusqlite::Result<()> {
         update_operation_status_in_conn(&self.conn, operation_id, status)
+    }
+
+    pub fn set_operation_target(
+        &self,
+        operation_id: i64,
+        target_label: Option<&str>,
+        target_instance_id: Option<&str>,
+        target_ip: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let updated = self.conn.execute(
+            "UPDATE operations
+             SET target_label = ?2,
+                 target_instance_id = ?3,
+                 target_ip = ?4
+             WHERE id = ?1",
+            params![operation_id, target_label, target_instance_id, target_ip],
+        )?;
+        if updated == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
     }
 
     pub fn append_operation_event(
@@ -692,7 +722,7 @@ impl EdgeState {
         let mut statement = self
             .conn
             .prepare(
-                "SELECT id, kind, status, created_at_unix, completed_at_unix FROM operations WHERE id = ?1",
+                "SELECT id, kind, status, created_at_unix, completed_at_unix, target_label, target_instance_id, target_ip FROM operations WHERE id = ?1",
             )?;
         let mut rows = statement.query(params![operation_id])?;
         if let Some(row) = rows.next()? {
@@ -702,6 +732,9 @@ impl EdgeState {
                 status: row.get(2)?,
                 created_at_unix: row.get(3)?,
                 completed_at_unix: row.get(4)?,
+                target_label: row.get(5)?,
+                target_instance_id: row.get(6)?,
+                target_ip: row.get(7)?,
             }));
         }
         Ok(None)
@@ -713,7 +746,7 @@ impl EdgeState {
     ) -> rusqlite::Result<Option<StoredOperation>> {
         let mut statement = self.conn.prepare(
             "
-            SELECT id, kind, status, created_at_unix, completed_at_unix
+            SELECT id, kind, status, created_at_unix, completed_at_unix, target_label, target_instance_id, target_ip
             FROM operations
             WHERE kind = ?1
             ORDER BY id DESC
@@ -728,6 +761,9 @@ impl EdgeState {
                 status: row.get(2)?,
                 created_at_unix: row.get(3)?,
                 completed_at_unix: row.get(4)?,
+                target_label: row.get(5)?,
+                target_instance_id: row.get(6)?,
+                target_ip: row.get(7)?,
             }));
         }
         Ok(None)
@@ -763,7 +799,7 @@ impl EdgeState {
     ) -> rusqlite::Result<Vec<StoredOperation>> {
         let mut statement = self.conn.prepare(
             "
-            SELECT id, kind, status, created_at_unix, completed_at_unix
+            SELECT id, kind, status, created_at_unix, completed_at_unix, target_label, target_instance_id, target_ip
             FROM operations
             WHERE status = ?1
             ORDER BY id ASC
@@ -776,6 +812,9 @@ impl EdgeState {
                 status: row.get(2)?,
                 created_at_unix: row.get(3)?,
                 completed_at_unix: row.get(4)?,
+                target_label: row.get(5)?,
+                target_instance_id: row.get(6)?,
+                target_ip: row.get(7)?,
             })
         })?;
         rows.collect()
@@ -1034,6 +1073,9 @@ pub struct StoredOperation {
     pub status: String,
     pub created_at_unix: i64,
     pub completed_at_unix: Option<i64>,
+    pub target_label: Option<String>,
+    pub target_instance_id: Option<String>,
+    pub target_ip: Option<String>,
 }
 
 #[derive(Debug, Clone)]

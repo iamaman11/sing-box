@@ -1440,8 +1440,17 @@ impl ControllerService for ControllerServerImpl {
             )?;
         }
 
-        let existing = read_live_deployment_summary(&self.repo_root)
-            .map_err(|err| Status::internal(format!("failed to read current state: {err}")))?;
+        let existing = match read_live_deployment_summary(&self.repo_root) {
+            Ok(existing) => existing,
+            Err(err) => {
+                return Err(fail_destroy_operation(
+                    &self.state,
+                    operation.id,
+                    "read recorded deployment",
+                    Status::internal(format!("failed to read current state: {err}")),
+                ));
+            }
+        };
         let target_ip = request
             .target_ip
             .clone()
@@ -1452,34 +1461,101 @@ impl ControllerService for ControllerServerImpl {
             .clone()
             .or_else(|| existing.instance_id.clone())
             .unwrap_or_default();
+        if let Err(err) = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .set_operation_target(
+                operation.id,
+                existing.deployment_label.as_deref(),
+                (!instance_id.is_empty()).then_some(instance_id.as_str()),
+                (!target_ip.is_empty()).then_some(target_ip.as_str()),
+            )
+        {
+            return Err(fail_destroy_operation(
+                &self.state,
+                operation.id,
+                "store recorded target",
+                Status::internal(format!("failed to store destroy target: {err}")),
+            ));
+        }
+        if let Err(status) = append_operation_event(
+            &self.state,
+            operation.id,
+            &format!(
+                "destroy target recorded: id={instance_id} label={} ip={target_ip}",
+                existing.deployment_label.as_deref().unwrap_or("<missing>")
+            ),
+        ) {
+            return Err(fail_destroy_operation(
+                &self.state,
+                operation.id,
+                "record target event",
+                status,
+            ));
+        }
         let mut warnings = Vec::new();
 
         // Destruction is fail-closed: the authoritative provider object must
         // still be exactly the deployment recorded by this controller.
         if request.delete_instance && !request.mock_provider {
-            let expected_label = existing.deployment_label.clone().ok_or_else(|| {
-                Status::failed_precondition("refusing destroy: recorded deployment label is absent")
-            })?;
-            let expected_instance_id = existing.instance_id.clone().ok_or_else(|| {
-                Status::failed_precondition("refusing destroy: recorded instance id is absent")
-            })?;
+            let Some(expected_label) = existing.deployment_label.clone() else {
+                return Err(fail_destroy_operation(
+                    &self.state,
+                    operation.id,
+                    "read recorded label",
+                    Status::failed_precondition(
+                        "refusing destroy: recorded deployment label is absent",
+                    ),
+                ));
+            };
+            let Some(expected_instance_id) = existing.instance_id.clone() else {
+                return Err(fail_destroy_operation(
+                    &self.state,
+                    operation.id,
+                    "read recorded instance id",
+                    Status::failed_precondition("refusing destroy: recorded instance id is absent"),
+                ));
+            };
             if instance_id != expected_instance_id
                 || target_ip.trim().is_empty()
                 || !expected_label.starts_with("waw-edge-")
             {
-                return Err(Status::failed_precondition(
-                    "refusing destroy: target does not match the recorded managed deployment",
+                return Err(fail_destroy_operation(
+                    &self.state,
+                    operation.id,
+                    "target validation",
+                    Status::failed_precondition(
+                        "refusing destroy: target does not match the recorded managed deployment",
+                    ),
                 ));
             }
-            let api_key = resolve_text_secret(
+            let api_key = match resolve_text_secret(
                 &self.state,
                 SECRET_VULTR_API_KEY,
                 &default_env_ref("VULTR_API_KEY"),
-            )
-            .map_err(Status::internal)?;
-            let remote = get_instance(&api_key, &instance_id)
-                .await
-                .map_err(Status::internal)?;
+            ) {
+                Ok(api_key) => api_key,
+                Err(err) => {
+                    return Err(fail_destroy_operation(
+                        &self.state,
+                        operation.id,
+                        "resolve Vultr credential",
+                        Status::internal(err),
+                    ));
+                }
+            };
+            let remote = match get_instance(&api_key, &instance_id).await {
+                Ok(remote) => remote,
+                Err(err) => {
+                    return Err(fail_destroy_operation(
+                        &self.state,
+                        operation.id,
+                        "read VM from Vultr",
+                        Status::internal(err),
+                    ));
+                }
+            };
             if remote.id != expected_instance_id
                 || remote.label != expected_label
                 || !remote.label.starts_with("waw-edge-")
@@ -1490,7 +1566,12 @@ impl ControllerService for ControllerServerImpl {
                     remote.id, remote.label, remote.main_ip
                 );
                 append_operation_event(&self.state, operation.id, &note)?;
-                return Err(Status::failed_precondition(note));
+                return Err(fail_destroy_operation(
+                    &self.state,
+                    operation.id,
+                    "provider identity verification",
+                    Status::failed_precondition(note),
+                ));
             }
             append_operation_event(
                 &self.state,
@@ -1502,23 +1583,56 @@ impl ControllerService for ControllerServerImpl {
         }
 
         if request.delete_dns {
-            let note = delete_dns_record(&self.state, &request)
-                .await
-                .map_err(Status::internal)?;
-            append_operation_event(&self.state, operation.id, &note)?;
+            let note = match delete_dns_record(&self.state, &request).await {
+                Ok(note) => note,
+                Err(err) => {
+                    return Err(fail_destroy_operation(
+                        &self.state,
+                        operation.id,
+                        "delete DNS record",
+                        Status::internal(err),
+                    ));
+                }
+            };
+            if let Err(status) = append_operation_event(&self.state, operation.id, &note) {
+                return Err(fail_destroy_operation(
+                    &self.state,
+                    operation.id,
+                    "record DNS deletion",
+                    status,
+                ));
+            }
         }
-        if request.delete_instance
-            && !instance_id.trim().is_empty()
-            && !request.mock_provider
-            && let Ok(api_key) = resolve_text_secret(
+        if request.delete_instance && !instance_id.trim().is_empty() && !request.mock_provider {
+            let api_key = match resolve_text_secret(
                 &self.state,
                 SECRET_VULTR_API_KEY,
                 &default_env_ref("VULTR_API_KEY"),
-            )
-        {
-            match classify_destroy_instance_result(destroy_instance(&api_key, &instance_id).await)
-                .map_err(Status::internal)?
-            {
+            ) {
+                Ok(api_key) => api_key,
+                Err(err) => {
+                    return Err(fail_destroy_operation(
+                        &self.state,
+                        operation.id,
+                        "resolve Vultr credential for deletion",
+                        Status::internal(err),
+                    ));
+                }
+            };
+            let destroy_outcome = match classify_destroy_instance_result(
+                destroy_instance(&api_key, &instance_id).await,
+            ) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    return Err(fail_destroy_operation(
+                        &self.state,
+                        operation.id,
+                        "delete VM at Vultr",
+                        Status::internal(err),
+                    ));
+                }
+            };
+            match destroy_outcome {
                 DestroyInstanceOutcome::Requested => {
                     append_operation_event(
                         &self.state,
@@ -1536,17 +1650,35 @@ impl ControllerService for ControllerServerImpl {
             }
         }
 
-        stop_local_runtime_for_destroy(&self.repo_root, &self.state, operation.id, &mut warnings)?;
+        if let Err(status) = stop_local_runtime_for_destroy(
+            &self.repo_root,
+            &self.state,
+            operation.id,
+            &mut warnings,
+        ) {
+            return Err(fail_destroy_operation(
+                &self.state,
+                operation.id,
+                "stop local runtime",
+                status,
+            ));
+        }
 
-        clear_live_deployment_state(
+        if let Err(err) = clear_live_deployment_state(
             &self.repo_root,
             &self.state,
             existing.deployment_label.as_deref(),
             &instance_id,
             &target_ip,
             operation.id,
-        )
-        .map_err(|err| Status::internal(format!("failed to clear deployment state: {err}")))?;
+        ) {
+            return Err(fail_destroy_operation(
+                &self.state,
+                operation.id,
+                "clear local deployment state",
+                Status::internal(format!("failed to clear deployment state: {err}")),
+            ));
+        }
         let response = DestroyResponse {
             success: true,
             warnings: {
@@ -1842,6 +1974,18 @@ fn update_operation_status(
         .update_operation_status(operation_id, status)
         .map_err(|err| Status::internal(format!("failed to update operation: {err}")))?;
     Ok(())
+}
+
+fn fail_destroy_operation(
+    state: &Arc<Mutex<EdgeState>>,
+    operation_id: i64,
+    stage: &str,
+    status: Status,
+) -> Status {
+    let note = format!("destroy failed at {stage}: {}", status.message());
+    let _ = append_operation_event(state, operation_id, &note);
+    let _ = update_operation_status(state, operation_id, "FAILED");
+    status
 }
 
 fn store_local_response(
