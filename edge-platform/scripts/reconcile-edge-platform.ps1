@@ -18,6 +18,8 @@ if (-not (Test-Path $ConsoleExe)) { throw "edge-console binary not found: $Conso
 $status = & $ConsoleExe status 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { throw "Controller status query failed: $status" }
 $hasLiveState = $status -match 'Live deployment state\s+: present'
+$localSingboxRunning = $status -match 'Local sing-box\s+: running'
+$managedConfigActive = $status -match 'Local managed config\s+: yes'
 
 if ($hasLiveState) {
     $liveStatePath = Join-Path $RepoRoot "win\vultr-waw\current-edge.json"
@@ -34,6 +36,13 @@ if ($hasLiveState) {
 
     if ($PendingShutdownIntent) {
         Write-ReconcileLog "Shutdown intent is pending; existing VM was retained until local recovery handles it"
+        exit 0
+    }
+
+    # A healthy managed runtime must not be restarted on a timer: restarting it
+    # tears down the active Hysteria tunnel and briefly drops user traffic.
+    if ($localSingboxRunning -and $managedConfigActive) {
+        Write-ReconcileLog "Recorded deployment and local sing-box are already healthy; no restart was requested"
         exit 0
     }
 
