@@ -1,12 +1,10 @@
 param(
     [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
-    [string]$ConsoleExe = "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe",
-    [switch]$PendingShutdownIntent
+    [string]$ConsoleExe = "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe"
 )
 
 $ErrorActionPreference = "Stop"
 $runtimeDir = Join-Path $RepoRoot "edge-platform\.runtime"
-$intentPath = Join-Path $runtimeDir "shutdown-intent.flag"
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 $logPath = Join-Path $runtimeDir "reconcile.log"
 function Write-ReconcileLog([string]$Message) {
@@ -34,11 +32,6 @@ if ($hasLiveState) {
         exit 0
     }
 
-    if ($PendingShutdownIntent) {
-        Write-ReconcileLog "Shutdown intent is pending; existing VM was retained until local recovery handles it"
-        exit 0
-    }
-
     # A healthy managed runtime must not be restarted on a timer: restarting it
     # tears down the active Hysteria tunnel and briefly drops user traffic.
     if ($localSingboxRunning -and $managedConfigActive) {
@@ -55,5 +48,4 @@ if ($hasLiveState) {
 Write-ReconcileLog "No recorded deployment; creating one replacement VM from the configured snapshot"
 & $ConsoleExe deploy
 if ($LASTEXITCODE -ne 0) { throw "Replacement VM deployment failed" }
-if ($PendingShutdownIntent) { Remove-Item -LiteralPath $intentPath -Force -ErrorAction SilentlyContinue }
 Write-ReconcileLog "Replacement VM deployed"

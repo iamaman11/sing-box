@@ -7,19 +7,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 $startScript = Join-Path $RepoRoot "edge-platform\scripts\start-edge-platform.ps1"
+$reconcileScript = Join-Path $RepoRoot "edge-platform\scripts\reconcile-edge-platform.ps1"
 $shutdownScript = Join-Path $RepoRoot "edge-platform\scripts\shutdown-edge-platform.ps1"
 $hiddenRunner = Join-Path $RepoRoot "edge-platform\scripts\run-hidden-powershell.vbs"
-foreach ($path in @($startScript, $shutdownScript, $hiddenRunner)) {
+foreach ($path in @($startScript, $reconcileScript, $shutdownScript, $hiddenRunner)) {
     if (-not (Test-Path $path)) { throw "Task wrapper not found: $path" }
 }
 
 $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
 $startCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $startScript + '"'
+$reconcileCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $reconcileScript + '"'
 $shutdownCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $shutdownScript + '"'
 
 # Runs with Bose's DPAPI-protected local operational credentials.
 schtasks /Create /F /SC ONLOGON /DELAY 0001:30 /RL HIGHEST /IT /TN $ControllerTaskName /TR $startCommand | Out-Null
-schtasks /Create /F /SC MINUTE /MO 15 /RL HIGHEST /IT /TN $ReconcileTaskName /TR $startCommand | Out-Null
+# Reconcile never runs the boot/recovery script. This separation prevents a
+# historical recovery record from deleting a healthy VM every 15 minutes.
+schtasks /Create /F /SC MINUTE /MO 15 /RL HIGHEST /IT /TN $ReconcileTaskName /TR $reconcileCommand | Out-Null
 
 # USER32/1074 is raised for a planned shutdown/restart. Sudden power loss is
 # recovered at the next logon by the persisted local intent.
