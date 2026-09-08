@@ -53,9 +53,12 @@ if ($existing -and (Test-ControllerPort -Port $port)) {
         Write-Output "edge-controller already running (pid $($existing.ProcessId))"
         exit 0
     }
-    Write-Output "Restarting unmanaged edge-controller process (pid $($existing.ProcessId))"
-    Stop-Process -Id $existing.ProcessId -Force
-    Start-Sleep -Seconds 1
+    # A listening controller may be serving a long-running deploy or destroy.
+    # A stale/missing PID file is not evidence that the process is unsafe; adopt
+    # the verified process instead of interrupting the operation in progress.
+    Set-Content -NoNewline -Path $pidFile -Value $existing.ProcessId
+    Write-Output "Adopted existing edge-controller process (pid $($existing.ProcessId))"
+    exit 0
 }
 
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
