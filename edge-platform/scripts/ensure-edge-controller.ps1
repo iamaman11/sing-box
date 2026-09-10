@@ -36,6 +36,25 @@ function Get-RuntimeSecret {
     }
 }
 
+function Get-RuntimeProxyCredentials {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { throw "Proxy credential mirror is absent: $Path. Run sync-proxy-credentials.ps1." }
+    Add-Type -AssemblyName System.Security
+    $cipher = [IO.File]::ReadAllBytes($Path)
+    $plain = $null
+    try {
+        $plain = [Security.Cryptography.ProtectedData]::Unprotect($cipher, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $document = [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json -ErrorAction Stop
+        if ($document.schema_version -ne 1 -or [string]::IsNullOrWhiteSpace([string]$document.username) -or [string]::IsNullOrWhiteSpace([string]$document.password)) {
+            throw "Proxy credential mirror has invalid schema"
+        }
+        return $document
+    } finally {
+        if ($plain) { [Array]::Clear($plain, 0, $plain.Length) }
+        if ($cipher) { [Array]::Clear($cipher, 0, $cipher.Length) }
+    }
+}
+
 if (-not (Test-Path $RepoRoot)) {
     throw "Repo root not found: $RepoRoot"
 }
@@ -69,6 +88,9 @@ $env:CLOUDFLARE_API_TOKEN = Get-RuntimeSecret (Join-Path $runtimeDir "cloudflare
 $env:CF_API_TOKEN = $env:CLOUDFLARE_API_TOKEN
 $env:VULTR_API_KEY = Get-RuntimeSecret (Join-Path $runtimeDir "vultr-lifecycle-token.dpapi")
 $env:EDGE_VULTR_SSH_KEY_ID = "b379cde0-6ef3-46a0-8cf9-c4faa7cb6dd4"
+$proxyCredentials = Get-RuntimeProxyCredentials (Join-Path $runtimeDir "proxy-credentials-v1.dpapi")
+$env:EDGE_PROXY_USERNAME = [string]$proxyCredentials.username
+$env:EDGE_PROXY_PASSWORD = [string]$proxyCredentials.password
 Start-Process -FilePath $ControllerExe `
     -ArgumentList @("serve", $RepoRoot, $BindAddress) `
     -WorkingDirectory $RepoRoot `

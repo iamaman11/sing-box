@@ -18,13 +18,31 @@ USE_PREBUILT_IMAGES="${EDGE_USE_PREBUILT_IMAGES:-0}"
 
 mkdir -p certs rendered warp-state tunnel-state
 
-if [[ ! -f certs/proxy.crt || ! -f certs/proxy.key ]]; then
+prepare_proxy_certificate() {
+  # HTTPS proxy endpoints must present the same publicly trusted certificate
+  # as edge.alegria.by.  A self-signed fallback is retained only for stacks
+  # without a configured tunnel domain (local/dev use).
+  if [[ -n "${TUNNEL_DOMAIN:-}" ]]; then
+    local acme_cert_dir="tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory/${TUNNEL_DOMAIN}"
+    local acme_cert="${acme_cert_dir}/${TUNNEL_DOMAIN}.crt"
+    local acme_key="${acme_cert_dir}/${TUNNEL_DOMAIN}.key"
+    if [[ ! -s "$acme_cert" || ! -s "$acme_key" ]]; then
+      echo "Trusted proxy certificate is missing for ${TUNNEL_DOMAIN}" >&2
+      exit 1
+    fi
+    install -m 0644 "$acme_cert" certs/proxy.crt
+    install -m 0600 "$acme_key" certs/proxy.key
+    return
+  fi
+
+  if [[ ! -f certs/proxy.crt || ! -f certs/proxy.key ]]; then
   openssl req -x509 -nodes -newkey rsa:2048 \
     -keyout certs/proxy.key \
     -out certs/proxy.crt \
     -days 3650 \
     -subj "/CN=${PROXY_CERT_CN}"
-fi
+  fi
+}
 
 envsubst < edge-gateway/config.template.json > rendered/edge-gateway.json
 envsubst < edge-gateway/config.direct.template.json > rendered/edge-gateway-direct.json
@@ -45,6 +63,7 @@ compose_up() {
 }
 
 start_base() {
+  prepare_proxy_certificate
   compose_up warp-egress edge-gateway edge-gateway-direct
 }
 

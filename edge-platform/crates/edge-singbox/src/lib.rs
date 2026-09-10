@@ -13,6 +13,15 @@ const WSL_INBOUND_TAG: &str = "wsl-mixed-in";
 const DESKTOP_TRACE_INBOUND_TAG: &str = "mixed-in";
 const DEFAULT_WSL_PROXY_PORT: u32 = 17890;
 const WSL_INBOUND_BIND_HOST: &str = "0.0.0.0";
+const WARP_SERVICE_PROCESS: &str = "warp-svc.exe";
+const WARP_CONTROL_ENDPOINTS: &[&str] = &[
+    "162.159.197.2/32",
+    "162.159.197.3/32",
+    "162.159.197.4/32",
+    "162.159.137.105/32",
+    "162.159.138.105/32",
+];
+const LOOPBACK_CIDRS: &[&str] = &["127.0.0.0/8", "::1/128"];
 const EXPECTED_OUTBOUND_TAGS: &[&str] = &[
     "auto-direct-tunnel",
     "auto-warp-tunnel",
@@ -333,6 +342,7 @@ pub fn sync_local_config(
         TunnelKind::VlessReality,
     );
     sync_tun_route_excludes(&mut config, state.ip.as_deref());
+    sync_stable_bypass_rules(&mut config);
     sync_wsl_inbound(&mut config);
     sync_wsl_selector(&mut config);
     sync_wsl_route_rule(&mut config);
@@ -348,17 +358,17 @@ pub fn sync_local_config(
 }
 
 fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
-    let Some(server_ip) = server_ip else {
-        return;
-    };
-    if server_ip.trim().is_empty() {
-        return;
-    }
     let Some(inbounds) = config.get_mut("inbounds").and_then(Value::as_array_mut) else {
         return;
     };
 
-    let server_cidr = format!("{server_ip}/32");
+    let mut required = WARP_CONTROL_ENDPOINTS
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    if let Some(server_ip) = server_ip.filter(|value| !value.trim().is_empty()) {
+        required.push(format!("{server_ip}/32"));
+    }
     for inbound in inbounds {
         let Some(object) = inbound.as_object_mut() else {
             continue;
@@ -379,13 +389,82 @@ fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
             *excludes = Value::Array(Vec::new());
         }
         let excludes = excludes.as_array_mut().expect("array inserted above");
-        let exists = excludes
-            .iter()
-            .any(|value| value.as_str() == Some(server_cidr.as_str()));
-        if !exists {
-            excludes.push(Value::String(server_cidr.clone()));
+        for cidr in &required {
+            let exists = excludes
+                .iter()
+                .any(|value| value.as_str() == Some(cidr.as_str()));
+            if !exists {
+                excludes.push(Value::String(cidr.clone()));
+            }
         }
     }
+}
+
+fn sync_stable_bypass_rules(config: &mut Value) {
+    let Some(rules) = config
+        .get_mut("route")
+        .and_then(Value::as_object_mut)
+        .and_then(|route| route.get_mut("rules"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+
+    // Order is security- and correctness-relevant: these flows must bypass
+    // TUN before sniffing, inbound selectors, or generic process rules can
+    // send them back into sing-box.
+    rules.retain(|rule| !is_warp_service_bypass(rule) && !is_loopback_bypass(rule));
+    rules.insert(0, direct_process_rule(WARP_SERVICE_PROCESS));
+    rules.insert(1, direct_cidr_rule(LOOPBACK_CIDRS));
+}
+
+fn is_warp_service_bypass(rule: &Value) -> bool {
+    rule.get("outbound").and_then(Value::as_str) == Some("direct")
+        && rule
+            .get("process_name")
+            .and_then(Value::as_array)
+            .is_some_and(|names| {
+                names
+                    .iter()
+                    .any(|name| name.as_str() == Some(WARP_SERVICE_PROCESS))
+            })
+}
+
+fn is_loopback_bypass(rule: &Value) -> bool {
+    rule.get("outbound").and_then(Value::as_str) == Some("direct")
+        && rule
+            .get("ip_cidr")
+            .and_then(Value::as_array)
+            .is_some_and(|cidrs| {
+                LOOPBACK_CIDRS
+                    .iter()
+                    .all(|expected| cidrs.iter().any(|cidr| cidr.as_str() == Some(expected)))
+            })
+}
+
+fn direct_process_rule(process_name: &str) -> Value {
+    Value::Object(Map::from_iter([
+        (
+            "process_name".to_owned(),
+            Value::Array(vec![Value::String(process_name.to_owned())]),
+        ),
+        ("outbound".to_owned(), Value::String("direct".to_owned())),
+    ]))
+}
+
+fn direct_cidr_rule(cidrs: &[&str]) -> Value {
+    Value::Object(Map::from_iter([
+        (
+            "ip_cidr".to_owned(),
+            Value::Array(
+                cidrs
+                    .iter()
+                    .map(|cidr| Value::String((*cidr).to_owned()))
+                    .collect(),
+            ),
+        ),
+        ("outbound".to_owned(), Value::String("direct".to_owned())),
+    ]))
 }
 
 fn sync_wsl_inbound(config: &mut Value) {
@@ -1354,7 +1433,8 @@ mod tests {
     { "type": "hysteria2", "tag": "hysteria2-warp", "tls": {} },
     { "type": "vless", "tag": "vless-reality-warp", "tls": { "reality": {} } }
   ],
-  "inbounds": [],
+  "inbounds": [{ "type": "tun", "tag": "tun-in", "route_exclude_address": [] }],
+  "route": { "rules": [] },
   "experimental": {
     "cache_file": {},
     "clash_api": {}
@@ -1413,15 +1493,36 @@ mod tests {
         );
         assert_eq!(
             updated
-                .pointer("/inbounds/0/tag")
+                .pointer("/inbounds/1/tag")
                 .and_then(serde_json::Value::as_str),
             Some("wsl-mixed-in")
         );
         assert_eq!(
             updated
-                .pointer("/inbounds/0/listen")
+                .pointer("/inbounds/1/listen")
                 .and_then(serde_json::Value::as_str),
             Some("0.0.0.0")
+        );
+        assert_eq!(
+            updated
+                .pointer("/route/rules/0/process_name/0")
+                .and_then(serde_json::Value::as_str),
+            Some(WARP_SERVICE_PROCESS)
+        );
+        assert_eq!(
+            updated
+                .pointer("/route/rules/1/ip_cidr/0")
+                .and_then(serde_json::Value::as_str),
+            Some("127.0.0.0/8")
+        );
+        let excludes = updated
+            .pointer("/inbounds/0/route_exclude_address")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert!(
+            excludes
+                .iter()
+                .any(|value| { value.as_str() == Some("162.159.197.2/32") })
         );
 
         fs::remove_dir_all(repo_root).unwrap();

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -153,24 +154,32 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
         "REALITY_WARP_PUBLIC_KEY",
     )?;
 
-    let env_values = RuntimeEnvValues {
-        proxy_username: "v_user".to_owned(),
-        proxy_password: existing_or_random(&existing_env, "PROXY_PASSWORD", 24)?,
-        proxy_cert_cn,
-        vless_uuid: existing_or_uuid(&existing_env, "VLESS_UUID")?,
-        hy2_password: existing_or_random(&existing_env, "HY2_PASSWORD", 24)?,
-        reality_private_key: reality_direct.0,
-        reality_public_key: reality_direct.1.clone(),
-        reality_short_id: existing_or_hex(&existing_env, "REALITY_SHORT_ID", 8)?,
-        vless_warp_uuid: existing_or_uuid(&existing_env, "VLESS_WARP_UUID")?,
-        hy2_warp_password: existing_or_random(&existing_env, "HY2_WARP_PASSWORD", 24)?,
-        reality_warp_private_key: reality_warp.0,
-        reality_warp_public_key: reality_warp.1.clone(),
-        reality_warp_short_id: existing_or_hex(&existing_env, "REALITY_WARP_SHORT_ID", 8)?,
-        reality_server_name: REALITY_SERVER_NAME.to_owned(),
-        tunnel_domain: request.tunnel_domain.unwrap_or_default().to_owned(),
-        acme_email: request.acme_email.unwrap_or_default().to_owned(),
-    };
+    let env_values =
+        RuntimeEnvValues {
+            // The controller launcher supplies these values from the DPAPI mirror
+            // of the authoritative Vault record.  Retaining the legacy fallback
+            // keeps direct library users and historical deployments compatible,
+            // while production controller launches never create a replacement
+            // proxy credential just because a VM is being recreated.
+            proxy_username: runtime_proxy_value("EDGE_PROXY_USERNAME")
+                .unwrap_or_else(|| "v_user".to_owned()),
+            proxy_password: runtime_proxy_value("EDGE_PROXY_PASSWORD")
+                .unwrap_or(existing_or_random(&existing_env, "PROXY_PASSWORD", 24)?),
+            proxy_cert_cn,
+            vless_uuid: existing_or_uuid(&existing_env, "VLESS_UUID")?,
+            hy2_password: existing_or_random(&existing_env, "HY2_PASSWORD", 24)?,
+            reality_private_key: reality_direct.0,
+            reality_public_key: reality_direct.1.clone(),
+            reality_short_id: existing_or_hex(&existing_env, "REALITY_SHORT_ID", 8)?,
+            vless_warp_uuid: existing_or_uuid(&existing_env, "VLESS_WARP_UUID")?,
+            hy2_warp_password: existing_or_random(&existing_env, "HY2_WARP_PASSWORD", 24)?,
+            reality_warp_private_key: reality_warp.0,
+            reality_warp_public_key: reality_warp.1.clone(),
+            reality_warp_short_id: existing_or_hex(&existing_env, "REALITY_WARP_SHORT_ID", 8)?,
+            reality_server_name: REALITY_SERVER_NAME.to_owned(),
+            tunnel_domain: request.tunnel_domain.unwrap_or_default().to_owned(),
+            acme_email: request.acme_email.unwrap_or_default().to_owned(),
+        };
     let env_runtime_content = render_runtime_env(&env_values);
 
     let tls_material = issue_agent_tls_material(&AgentTlsIdentity {
@@ -634,6 +643,10 @@ fn existing_or_random(
         return Ok(value.clone());
     }
     random_base64url(bytes)
+}
+
+fn runtime_proxy_value(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
 
 fn existing_or_hex(
