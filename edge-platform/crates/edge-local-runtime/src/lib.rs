@@ -2,7 +2,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_shared_types::LocalSingboxState;
 use edge_singbox::sync_local_config;
@@ -32,6 +32,14 @@ pub struct RuntimeOperationResult {
     pub note: String,
     pub warnings: Vec<String>,
     pub local_singbox: LocalSingboxState,
+}
+
+/// A candidate configuration which has been rendered and validated while the
+/// currently running TUN is still serving traffic.  The active configuration
+/// is never changed until this candidate has passed `sing-box check`.
+struct StagedConfig {
+    candidate_path: PathBuf,
+    backup_path: PathBuf,
 }
 
 pub fn restore_windows_dns_if_owned() -> Vec<String> {
@@ -91,20 +99,53 @@ pub fn start_local_runtime(
         ));
     }
 
-    sync_local_config(&paths.config_path, &paths.state_path, &paths.runtime_root)?;
+    if !paths.singbox_binary_path.is_file() {
+        return Err(format!(
+            "sing-box binary was not found: {}",
+            paths.singbox_binary_path.display()
+        ));
+    }
 
-    if let Some(process) = runtime {
+    // Do all fallible configuration work before taking down the active TUN.
+    // This makes `restart-local` a guarded transition rather than a blind
+    // stop/start operation.
+    let staged = stage_and_validate_config(paths)?;
+
+    if let Some(process) = runtime.as_ref() {
         stop_process(process.pid);
     }
 
-    if !paths.singbox_binary_path.is_file() {
-        return Err(with_dns_guard_on_failure(format!(
-            "sing-box binary was not found: {}",
-            paths.singbox_binary_path.display()
-        )));
+    if let Err(err) = activate_staged_config(paths, &staged) {
+        return rollback_failed_transition(paths, runtime.as_ref(), &staged, err);
     }
 
-    let mut child = if visible_window && cfg!(windows) {
+    let mut child = match launch_singbox(paths, visible_window) {
+        Ok(child) => child,
+        Err(err) => {
+            return rollback_failed_transition(paths, runtime.as_ref(), &staged, err);
+        }
+    };
+
+    if let Err(err) = observe_startup(&mut child) {
+        return rollback_failed_transition(paths, runtime.as_ref(), &staged, err);
+    }
+
+    let _ = discard_staged_config(&staged);
+    let local_singbox = inspect_local_runtime(&paths.config_path);
+    Ok(RuntimeOperationResult {
+        pid: Some(child.pid()),
+        note: if visible_window {
+            "local sing-box started in a visible window (validated guarded transition)".to_owned()
+        } else {
+            "local sing-box started (validated guarded transition)".to_owned()
+        },
+        warnings: local_singbox.warnings.clone(),
+        local_singbox,
+    })
+}
+
+fn launch_singbox(paths: &LocalRuntimePaths, visible_window: bool) -> Result<SpawnedChild, String> {
+    if visible_window && cfg!(windows) {
         let config_parent = paths
             .config_path
             .parent()
@@ -140,7 +181,7 @@ pub fn start_local_runtime(
             .ok_or_else(|| {
                 "failed to capture sing-box pid from visible window launch".to_owned()
             })?;
-        SpawnedChild::ExternalPid(pid)
+        Ok(SpawnedChild::ExternalPid(pid))
     } else {
         let mut command = Command::new(&paths.singbox_binary_path);
         command.arg("run").arg("-c").arg(&paths.config_path);
@@ -151,22 +192,8 @@ pub fn start_local_runtime(
         let child = command
             .spawn()
             .map_err(|err| with_dns_guard_on_failure(format!("failed to start sing-box: {err}")))?;
-        SpawnedChild::Owned(child)
-    };
-
-    observe_startup(&mut child).map_err(with_dns_guard_on_failure)?;
-
-    let local_singbox = inspect_local_runtime(&paths.config_path);
-    Ok(RuntimeOperationResult {
-        pid: Some(child.pid()),
-        note: if visible_window {
-            "local sing-box started in a visible window".to_owned()
-        } else {
-            "local sing-box started".to_owned()
-        },
-        warnings: local_singbox.warnings.clone(),
-        local_singbox,
-    })
+        Ok(SpawnedChild::Owned(child))
+    }
 }
 
 pub fn stop_local_runtime(
@@ -209,15 +236,151 @@ pub fn stop_local_runtime(
 }
 
 pub fn restart_local_runtime(paths: &LocalRuntimePaths) -> Result<RuntimeOperationResult, String> {
-    let _ = stop_local_runtime(&paths.config_path, true)?;
     start_local_runtime(paths, false)
 }
 
 pub fn restart_local_runtime_visible(
     paths: &LocalRuntimePaths,
 ) -> Result<RuntimeOperationResult, String> {
-    let _ = stop_local_runtime(&paths.config_path, true)?;
     start_local_runtime(paths, true)
+}
+
+fn stage_and_validate_config(paths: &LocalRuntimePaths) -> Result<StagedConfig, String> {
+    let parent = paths.config_path.parent().ok_or_else(|| {
+        format!(
+            "managed config has no parent directory: {}",
+            paths.config_path.display()
+        )
+    })?;
+    let stem = paths
+        .config_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "managed config has no usable filename: {}",
+                paths.config_path.display()
+            )
+        })?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("system clock is before Unix epoch: {err}"))?
+        .as_nanos();
+    let candidate_path = parent.join(format!(".{stem}.next-{nonce}.json"));
+    fs::copy(&paths.config_path, &candidate_path).map_err(|err| {
+        format!(
+            "failed to create staged sing-box config from {}: {err}",
+            paths.config_path.display()
+        )
+    })?;
+
+    if let Err(err) = sync_local_config(&candidate_path, &paths.state_path, &paths.runtime_root) {
+        let _ = fs::remove_file(&candidate_path);
+        return Err(err);
+    }
+    if let Err(err) = validate_singbox_config(&paths.singbox_binary_path, &candidate_path) {
+        let _ = fs::remove_file(&candidate_path);
+        return Err(err);
+    }
+
+    fs::create_dir_all(&paths.runtime_root).map_err(|err| {
+        format!(
+            "failed to prepare local runtime directory {}: {err}",
+            paths.runtime_root.display()
+        )
+    })?;
+    Ok(StagedConfig {
+        candidate_path,
+        backup_path: paths.runtime_root.join("sing-box.last-known-good.json"),
+    })
+}
+
+fn validate_singbox_config(binary: &Path, config: &Path) -> Result<(), String> {
+    let output = Command::new(binary)
+        .args(["check", "-c"])
+        .arg(config)
+        .output()
+        .map_err(|err| format!("failed to run sing-box config preflight: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if detail.is_empty() {
+        format!(
+            "sing-box rejected staged configuration with status {}",
+            output.status
+        )
+    } else {
+        format!("sing-box rejected staged configuration: {detail}")
+    })
+}
+
+fn activate_staged_config(paths: &LocalRuntimePaths, staged: &StagedConfig) -> Result<(), String> {
+    fs::copy(&paths.config_path, &staged.backup_path).map_err(|err| {
+        format!(
+            "failed to preserve last-known-good sing-box config at {}: {err}",
+            staged.backup_path.display()
+        )
+    })?;
+    fs::copy(&staged.candidate_path, &paths.config_path).map_err(|err| {
+        format!(
+            "failed to activate staged sing-box config {}: {err}",
+            staged.candidate_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn rollback_failed_transition(
+    paths: &LocalRuntimePaths,
+    previous_runtime: Option<&ProcessObservation>,
+    staged: &StagedConfig,
+    startup_error: String,
+) -> Result<RuntimeOperationResult, String> {
+    let _ = restore_last_known_good_config(paths, staged);
+    let _ = discard_staged_config(staged);
+
+    // A restarted TUN necessarily has a short interruption on Windows.  If
+    // the replacement fails, immediately restore the previous known-good
+    // configuration instead of leaving the desktop without a local route.
+    let rollback = if previous_runtime.is_some() {
+        match launch_singbox(paths, false).and_then(|mut child| {
+            observe_startup(&mut child)?;
+            Ok(child.pid())
+        }) {
+            Ok(pid) => format!("previous local runtime restored (pid {pid})"),
+            Err(err) => format!("automatic rollback also failed: {err}"),
+        }
+    } else {
+        "no previous local runtime existed to restore".to_owned()
+    };
+    Err(format!(
+        "guarded local restart failed: {startup_error}; {rollback}"
+    ))
+}
+
+fn restore_last_known_good_config(
+    paths: &LocalRuntimePaths,
+    staged: &StagedConfig,
+) -> Result<(), String> {
+    fs::copy(&staged.backup_path, &paths.config_path).map_err(|err| {
+        format!(
+            "failed to restore last-known-good sing-box config from {}: {err}",
+            staged.backup_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn discard_staged_config(staged: &StagedConfig) -> Result<(), String> {
+    match fs::remove_file(&staged.candidate_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "failed to remove staged sing-box config {}: {err}",
+            staged.candidate_path.display()
+        )),
+    }
 }
 
 pub fn inspect_runtime_process(config_path: &Path) -> Option<ProcessObservation> {
@@ -432,5 +595,41 @@ mod tests {
     fn same_path_matches_identical_values() {
         let path = PathBuf::from("/tmp/config.json");
         assert!(same_path_string("/tmp/config.json", &path));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_transition_restores_last_known_good_config() {
+        let root = std::env::temp_dir().join(format!(
+            "edge-local-runtime-rollback-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("active.json");
+        let backup_path = root.join("last-known-good.json");
+        let candidate_path = root.join("candidate.json");
+        fs::write(&config_path, "bad replacement").unwrap();
+        fs::write(&backup_path, "known good").unwrap();
+        fs::write(&candidate_path, "candidate").unwrap();
+        let paths = LocalRuntimePaths {
+            singbox_binary_path: std::env::var_os("COMSPEC").map(PathBuf::from).unwrap(),
+            config_path: config_path.clone(),
+            state_path: root.join("unused-state.json"),
+            runtime_root: root.clone(),
+        };
+        let staged = StagedConfig {
+            candidate_path: candidate_path.clone(),
+            backup_path,
+        };
+
+        assert!(
+            rollback_failed_transition(&paths, None, &staged, "forced failure".to_owned()).is_err()
+        );
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), "known good");
+        assert!(!candidate_path.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
