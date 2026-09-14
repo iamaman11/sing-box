@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $runtimeDir = Join-Path $RepoRoot "edge-platform\.runtime"
+$logCleanupScript = Join-Path $RepoRoot "edge-platform\scripts\clear-singbox-log.ps1"
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 $logPath = Join-Path $runtimeDir "reconcile.log"
 function Write-ReconcileLog([string]$Message) {
@@ -35,6 +36,7 @@ if ($hasLiveState) {
     # A healthy managed runtime must not be restarted on a timer: restarting it
     # tears down the active Hysteria tunnel and briefly drops user traffic.
     if ($localSingboxRunning -and $managedConfigActive) {
+        & $logCleanupScript -IfDue
         Write-ReconcileLog "Recorded deployment and local sing-box are already healthy; no restart was requested"
         exit 0
     }
