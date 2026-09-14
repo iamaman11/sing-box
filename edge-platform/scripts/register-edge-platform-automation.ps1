@@ -2,15 +2,17 @@ param(
     [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
     [string]$ControllerTaskName = "EdgePlatformController",
     [string]$ReconcileTaskName = "EdgePlatformReconcile",
-    [string]$ShutdownTaskName = "EdgePlatformShutdown"
+    [string]$ShutdownTaskName = "EdgePlatformShutdown",
+    [string]$LogCleanupTaskName = "EdgePlatformSingboxLogCleanup"
 )
 
 $ErrorActionPreference = "Stop"
 $startScript = Join-Path $RepoRoot "edge-platform\scripts\start-edge-platform.ps1"
 $reconcileScript = Join-Path $RepoRoot "edge-platform\scripts\reconcile-edge-platform.ps1"
 $shutdownScript = Join-Path $RepoRoot "edge-platform\scripts\shutdown-edge-platform.ps1"
+$logCleanupScript = Join-Path $RepoRoot "edge-platform\scripts\clear-singbox-log.ps1"
 $hiddenRunner = Join-Path $RepoRoot "edge-platform\scripts\run-hidden-powershell.vbs"
-foreach ($path in @($startScript, $reconcileScript, $shutdownScript, $hiddenRunner)) {
+foreach ($path in @($startScript, $reconcileScript, $shutdownScript, $logCleanupScript, $hiddenRunner)) {
     if (-not (Test-Path $path)) { throw "Task wrapper not found: $path" }
 }
 
@@ -18,6 +20,7 @@ $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
 $startCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $startScript + '"'
 $reconcileCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $reconcileScript + '"'
 $shutdownCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $shutdownScript + '"'
+$logCleanupCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $logCleanupScript + '"'
 
 # Runs with Bose's DPAPI-protected local operational credentials.
 schtasks /Create /F /SC ONLOGON /DELAY 0001:30 /RL HIGHEST /IT /TN $ControllerTaskName /TR $startCommand | Out-Null
@@ -29,14 +32,18 @@ schtasks /Create /F /SC MINUTE /MO 15 /RL HIGHEST /IT /TN $ReconcileTaskName /TR
 # recovered at the next logon by the persisted local intent.
 $shutdownSubscription = "*[System[Provider[@Name='USER32'] and (EventID=1074)]]"
 schtasks /Create /F /SC ONEVENT /EC System /MO $shutdownSubscription /RL HIGHEST /IT /TN $ShutdownTaskName /TR $shutdownCommand | Out-Null
+# Clears only the configured local diagnostic log; it never restarts sing-box.
+schtasks /Create /F /SC DAILY /MO 2 /RL HIGHEST /IT /TN $LogCleanupTaskName /TR $logCleanupCommand | Out-Null
 
 $startupSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 $shutdownSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 Set-ScheduledTask -TaskName $ControllerTaskName -Settings $startupSettings | Out-Null
 Set-ScheduledTask -TaskName $ReconcileTaskName -Settings $startupSettings | Out-Null
 Set-ScheduledTask -TaskName $ShutdownTaskName -Settings $shutdownSettings | Out-Null
+Set-ScheduledTask -TaskName $LogCleanupTaskName -Settings $startupSettings | Out-Null
 Enable-ScheduledTask -TaskName $ControllerTaskName | Out-Null
 Enable-ScheduledTask -TaskName $ReconcileTaskName | Out-Null
 Enable-ScheduledTask -TaskName $ShutdownTaskName | Out-Null
+Enable-ScheduledTask -TaskName $LogCleanupTaskName | Out-Null
 
-Write-Output "Registered and enabled: $ControllerTaskName, $ReconcileTaskName, $ShutdownTaskName"
+Write-Output "Registered and enabled: $ControllerTaskName, $ReconcileTaskName, $ShutdownTaskName, $LogCleanupTaskName"
