@@ -20,17 +20,41 @@ jobs:
     timeout-minutes: 3
 
     steps:
+      - name: Check production-vultr secret availability
+        id: secret_check
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          failed=0
+
+          if [[ -n "${VULTR_API_KEY:-}" ]]; then
+            echo "secret.vultr_api_key=present"
+          else
+            echo "secret.vultr_api_key=missing"
+            failed=1
+          fi
+
+          if [[ -n "${VULTR_SSH_PRIVATE_KEY:-}" ]]; then
+            echo "secret.vultr_ssh_private_key=present"
+          else
+            echo "secret.vultr_ssh_private_key=missing"
+            failed=1
+          fi
+
+          if [[ "${failed}" -ne 0 ]]; then
+            exit 1
+          fi
+
       - name: Probe required Vultr read endpoints
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-
-          if [[ -z "${VULTR_API_KEY:-}" ]]; then
-            echo "VULTR_API_KEY is unavailable"
-            exit 1
-          fi
 
           endpoints=(
             "/v2/instances?per_page=1"
