@@ -1,0 +1,62 @@
+name: Vultr Research Probe
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  probe:
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research probe'
+    runs-on: ubuntu-latest
+    environment: production-vultr
+    timeout-minutes: 3
+
+    steps:
+      - name: Probe required Vultr read endpoints
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${VULTR_API_KEY:-}" ]]; then
+            echo "VULTR_API_KEY is unavailable"
+            exit 1
+          fi
+
+          endpoints=(
+            "/v2/instances?per_page=1"
+            "/v2/ssh-keys?per_page=1"
+            "/v2/firewalls?per_page=1"
+            "/v2/regions?per_page=1"
+            "/v2/plans?per_page=1"
+            "/v2/os?per_page=1"
+          )
+
+          failed=0
+          for endpoint in "${endpoints[@]}"; do
+            code="$(
+              curl                 --silent                 --show-error                 --connect-timeout 10                 --max-time 20                 --output /dev/null                 --write-out '%{http_code}'                 --header "Authorization: Bearer ${VULTR_API_KEY}"                 --header "Accept: application/json"                 "https://api.vultr.com${endpoint}"
+            )"
+
+            printf 'probe endpoint=%s status=%s\n' "${endpoint%%\?*}" "${code}"
+
+            if [[ "${code}" != "200" ]]; then
+              failed=1
+            fi
+          done
+
+          if [[ "${failed}" -ne 0 ]]; then
+            echo "vultr_read_probe=FAIL"
+            exit 1
+          fi
+
+          echo "vultr_read_probe=PASS"
