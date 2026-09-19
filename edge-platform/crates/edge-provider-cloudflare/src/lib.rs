@@ -126,8 +126,14 @@ pub async fn list_mesh_nodes(
             .map_err(|err| format!("failed to list Cloudflare Mesh nodes: {err}"))?;
         let payload: ApiEnvelope<Vec<MeshNodeRecord>> = parse_success_json(response).await?;
         let page_count = payload.result.len();
-        result.extend(payload.result.into_iter().map(mesh_node_from_record));
-        if page_is_complete(page, page_count, payload.result_info.as_ref()) {
+        result.extend(
+            payload
+                .result
+                .into_iter()
+                .map(mesh_node_from_record)
+                .filter(|node| exact_name.is_none_or(|name| node.name == name)),
+        );
+        if page_is_complete(page_count) {
             return Ok(result);
         }
     }
@@ -236,8 +242,17 @@ pub async fn list_mesh_routes(
             .map_err(|err| format!("failed to list Cloudflare Mesh routes: {err}"))?;
         let payload: ApiEnvelope<Vec<MeshRouteRecord>> = parse_success_json(response).await?;
         let page_count = payload.result.len();
-        result.extend(payload.result.into_iter().map(mesh_route_from_record));
-        if page_is_complete(page, page_count, payload.result_info.as_ref()) {
+        result.extend(
+            payload
+                .result
+                .into_iter()
+                .map(mesh_route_from_record)
+                .filter(|route| {
+                    route.tunnel_id == node_id
+                        && route.tunnel_type.as_deref() == Some("warp_connector")
+                }),
+        );
+        if page_is_complete(page_count) {
             return Ok(result);
         }
     }
@@ -256,11 +271,7 @@ pub async fn create_mesh_cidr_route(
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Mesh node ID", node_id)?;
     require_non_empty("Cloudflare Mesh CIDR route", network)?;
-    if let Some(comment) = comment {
-        if comment.len() > 100 {
-            return Err("Cloudflare Mesh route comment must be at most 100 characters".to_owned());
-        }
-    }
+    validate_mesh_route_comment(comment)?;
 
     let client = authorized_client(api_token)?;
     let response = client
@@ -333,14 +344,15 @@ fn mesh_route_list_query(node_id: &str, page: u32) -> Vec<(&'static str, String)
     ]
 }
 
-fn page_is_complete(page: u32, page_count: usize, result_info: Option<&ApiResultInfo>) -> bool {
-    if let Some(info) = result_info
-        && let Some(total_count) = info.total_count
-    {
-        return u64::from(page) * u64::from(info.per_page.unwrap_or(API_PAGE_SIZE))
-            >= u64::from(total_count);
-    }
+fn page_is_complete(page_count: usize) -> bool {
     page_count < API_PAGE_SIZE as usize
+}
+
+fn validate_mesh_route_comment(comment: Option<&str>) -> Result<(), String> {
+    if comment.is_some_and(|value| value.len() > 100) {
+        return Err("Cloudflare Mesh route comment must be at most 100 characters".to_owned());
+    }
+    Ok(())
 }
 
 fn require_non_empty(label: &str, value: &str) -> Result<(), String> {
@@ -441,19 +453,11 @@ struct ApiEnvelope<T> {
     result: T,
     #[serde(default)]
     errors: Vec<ApiResponseInfo>,
-    #[serde(default)]
-    result_info: Option<ApiResultInfo>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ApiResponseInfo {
     message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiResultInfo {
-    per_page: Option<u32>,
-    total_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -568,24 +572,71 @@ mod tests {
     }
 
     #[test]
-    fn pagination_uses_result_info_when_available() {
-        let info = ApiResultInfo {
-            per_page: Some(1000),
-            total_count: Some(1001),
-        };
-        assert!(!page_is_complete(1, 1000, Some(&info)));
-        assert!(page_is_complete(2, 1, Some(&info)));
-    }
-
-    #[test]
-    fn pagination_falls_back_to_short_page() {
-        assert!(!page_is_complete(1, 1000, None));
-        assert!(page_is_complete(2, 5, None));
+    fn pagination_continues_only_for_full_pages() {
+        assert!(!page_is_complete(API_PAGE_SIZE as usize));
+        assert!(page_is_complete((API_PAGE_SIZE - 1) as usize));
+        assert!(page_is_complete(0));
     }
 
     #[test]
     fn route_comment_is_bounded() {
-        let comment = "x".repeat(101);
-        assert_eq!(comment.len(), 101);
+        let valid = "x".repeat(100);
+        let invalid = "x".repeat(101);
+        assert!(validate_mesh_route_comment(Some(&valid)).is_ok());
+        assert!(validate_mesh_route_comment(None).is_ok());
+        assert_eq!(
+            validate_mesh_route_comment(Some(&invalid)).unwrap_err(),
+            "Cloudflare Mesh route comment must be at most 100 characters"
+        );
+    }
+
+    #[test]
+    fn exact_mesh_observation_filters_provider_overmatch() {
+        let exact = ["wanted", "other"]
+            .into_iter()
+            .map(|name| {
+                mesh_node_from_record(MeshNodeRecord {
+                    id: format!("id-{name}"),
+                    name: name.to_owned(),
+                    status: Some("healthy".to_owned()),
+                })
+            })
+            .filter(|node| node.name == "wanted")
+            .collect::<Vec<_>>();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].name, "wanted");
+
+        let routes = [
+            MeshRouteRecord {
+                id: "route-1".to_owned(),
+                network: "203.0.113.0/24".to_owned(),
+                tunnel_id: "node-1".to_owned(),
+                tun_type: Some("warp_connector".to_owned()),
+                comment: None,
+            },
+            MeshRouteRecord {
+                id: "route-2".to_owned(),
+                network: "198.51.100.0/24".to_owned(),
+                tunnel_id: "node-2".to_owned(),
+                tun_type: Some("warp_connector".to_owned()),
+                comment: None,
+            },
+            MeshRouteRecord {
+                id: "route-3".to_owned(),
+                network: "192.0.2.0/24".to_owned(),
+                tunnel_id: "node-1".to_owned(),
+                tun_type: Some("cfd_tunnel".to_owned()),
+                comment: None,
+            },
+        ]
+        .into_iter()
+        .map(mesh_route_from_record)
+        .filter(|route| {
+            route.tunnel_id == "node-1"
+                && route.tunnel_type.as_deref() == Some("warp_connector")
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "route-1");
     }
 }
