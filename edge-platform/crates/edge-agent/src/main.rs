@@ -930,7 +930,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let mut written = Vec::new();
 
-        for path in ["../escape", "/tmp/escape", "nested/../escape", r"nested\escape"] {
+        for path in [
+            "../escape",
+            "/tmp/escape",
+            "nested/../escape",
+            r"nested\escape",
+        ] {
             let error = write_bundle_file(
                 &root,
                 &BundleFile {
