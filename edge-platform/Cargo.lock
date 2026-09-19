@@ -319,6 +319,8 @@ dependencies = [
  "edge-trace",
  "edge-trust",
  "prost",
+ "ring",
+ "serde",
  "serde_json",
  "tokio",
  "tonic",
@@ -375,6 +377,7 @@ name = "edge-shared-types"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "ring",
  "prost-build",
  "prost-types",
  "protoc-bin-vendored",
