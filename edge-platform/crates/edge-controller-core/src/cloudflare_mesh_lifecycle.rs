@@ -628,11 +628,7 @@ mod tests {
             nodes: vec![node()],
             routes: vec![
                 route("route-1", "1.1.1.1/32", Some(&ownership)),
-                route(
-                    "route-2",
-                    "2606:4700:4700::1111/128",
-                    Some(&ownership),
-                ),
+                route("route-2", "2606:4700:4700::1111/128", Some(&ownership)),
                 route("route-3", "203.0.113.0/24", Some(&ownership)),
             ],
         };
