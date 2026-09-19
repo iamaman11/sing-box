@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: vultr-stack-ci-${{ github.ref }}
@@ -21,7 +22,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - name: Checkout exact revision
         shell: bash
@@ -36,23 +37,141 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
 
+      - name: Resolve content-addressed image identities
+        id: images
+        shell: bash
+        run: |
+          set -euo pipefail
+          gateway_tree="$(git rev-parse HEAD:win/vultr-waw/stack/edge-gateway)"
+          warp_tree="$(git rev-parse HEAD:win/vultr-waw/stack/warp-egress)"
+          [[ "${gateway_tree}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${warp_tree}" =~ ^[0-9a-f]{40}$ ]]
+          gateway_tag="ghcr.io/iamaman11/vultr-edge-gateway:tree-${gateway_tree}"
+          warp_tag="ghcr.io/iamaman11/vultr-warp-egress:tree-${warp_tree}"
+          {
+            echo "gateway_tree=${gateway_tree}"
+            echo "warp_tree=${warp_tree}"
+            echo "gateway_tag=${gateway_tag}"
+            echo "warp_tag=${warp_tag}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Validate bootstrap shell
         shell: bash
         run: bash -n win/vultr-waw/stack/bootstrap.sh
 
       - name: Validate default stack
         shell: bash
+        env:
+          EDGE_GATEWAY_IMAGE: ghcr.io/iamaman11/vultr-edge-gateway@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          EDGE_WARP_EGRESS_IMAGE: ghcr.io/iamaman11/vultr-warp-egress@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          CLOUDFLARE_MESH_IMAGE: cloudflare/mesh@sha256:0000000000000000000000000000000000000000000000000000000000000000
         run: docker compose -f win/vultr-waw/stack/docker-compose.yml config --quiet
 
       - name: Validate isolated Mesh profile
         shell: bash
         env:
+          EDGE_GATEWAY_IMAGE: ghcr.io/iamaman11/vultr-edge-gateway@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          EDGE_WARP_EGRESS_IMAGE: ghcr.io/iamaman11/vultr-warp-egress@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          CLOUDFLARE_MESH_IMAGE: cloudflare/mesh@sha256:0000000000000000000000000000000000000000000000000000000000000000
           MESH_NODE_TOKEN: ci-placeholder
         run: |
           set -euo pipefail
-          docker compose             -f win/vultr-waw/stack/docker-compose.yml             --profile mesh             config --quiet
-          docker compose             -f win/vultr-waw/stack/docker-compose.yml             --profile mesh             config --services | grep -Fxq cloudflare-mesh
-          if docker compose             -f win/vultr-waw/stack/docker-compose.yml             config --services | grep -Fxq cloudflare-mesh; then
+          docker compose -f win/vultr-waw/stack/docker-compose.yml --profile mesh config --quiet
+          docker compose -f win/vultr-waw/stack/docker-compose.yml --profile mesh config --services | grep -Fxq cloudflare-mesh
+          if docker compose -f win/vultr-waw/stack/docker-compose.yml config --services | grep -Fxq cloudflare-mesh; then
             echo "cloudflare-mesh must stay out of the default stack" >&2
             exit 1
           fi
+
+      - name: Build application images for pull-request validation
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t "${{ steps.images.outputs.gateway_tag }}" win/vultr-waw/stack/edge-gateway
+          docker build -t "${{ steps.images.outputs.warp_tag }}" win/vultr-waw/stack/warp-egress
+
+      - name: Login to GHCR for accepted main publication
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Publish edge-gateway only when content identity is absent
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          IMAGE: ${{ steps.images.outputs.gateway_tag }}
+        run: |
+          set -euo pipefail
+          if docker manifest inspect "${IMAGE}" >/dev/null 2>&1; then
+            echo "reusing existing immutable edge-gateway image ${IMAGE}"
+          else
+            docker build -t "${IMAGE}" win/vultr-waw/stack/edge-gateway
+            docker push "${IMAGE}"
+          fi
+
+      - name: Publish warp-egress only when content identity is absent
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          IMAGE: ${{ steps.images.outputs.warp_tag }}
+        run: |
+          set -euo pipefail
+          if docker manifest inspect "${IMAGE}" >/dev/null 2>&1; then
+            echo "reusing existing immutable warp-egress image ${IMAGE}"
+          else
+            docker build -t "${IMAGE}" win/vultr-waw/stack/warp-egress
+            docker push "${IMAGE}"
+          fi
+
+      - name: Resolve immutable published image digests
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: published
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolve_digest() {
+            local image="$1"
+            local digest
+            digest="$(docker buildx imagetools inspect "${image}" | awk '/^Digest:/ {print $2; exit}')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "failed to resolve immutable digest for ${image}" >&2
+              exit 1
+            }
+            printf '%s@%s' "${image%%:*}" "${digest}"
+          }
+          gateway_ref="$(resolve_digest "${{ steps.images.outputs.gateway_tag }}")"
+          warp_ref="$(resolve_digest "${{ steps.images.outputs.warp_tag }}")"
+          {
+            echo "gateway_ref=${gateway_ref}"
+            echo "warp_ref=${warp_ref}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Publish stack image manifest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/vultr-stack-images"
+          install -d -m 0755 "${out}"
+          jq -n \
+            --arg source_revision "${GITHUB_SHA}" \
+            --arg gateway_tree "${{ steps.images.outputs.gateway_tree }}" \
+            --arg warp_tree "${{ steps.images.outputs.warp_tree }}" \
+            --arg edge_gateway_image "${{ steps.published.outputs.gateway_ref }}" \
+            --arg edge_warp_egress_image "${{ steps.published.outputs.warp_ref }}" \
+            '{schema:1,source_revision:$source_revision,gateway_tree:$gateway_tree,warp_tree:$warp_tree,edge_gateway_image:$edge_gateway_image,edge_warp_egress_image:$edge_warp_egress_image}' \
+            > "${out}/manifest.json"
+
+      - name: Upload stack image manifest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vultr-stack-images-${{ github.sha }}
+          path: ${{ runner.temp }}/vultr-stack-images
+          if-no-files-found: error
+          retention-days: 90
