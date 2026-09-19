@@ -1076,6 +1076,12 @@ mod tests {
         firewall_rule_create_calls: usize,
         firewall_rule_delete_calls: usize,
         next_rule_id: u64,
+        firewall_rule_create_visibility_delay: usize,
+        firewall_rule_create_visibility_reads: usize,
+        pending_firewall_rule: Option<(String, VultrFirewallRule)>,
+        firewall_rule_delete_visibility_delay: usize,
+        firewall_rule_delete_visibility_reads: usize,
+        pending_firewall_rule_delete: Option<(String, u64)>,
     }
 
     impl SupportResourceProvider for FakeSupportProvider {
@@ -1154,6 +1160,40 @@ mod tests {
             &mut self,
             firewall_group_id: &str,
         ) -> Result<Vec<VultrFirewallRule>, VultrError> {
+            if self
+                .pending_firewall_rule
+                .as_ref()
+                .is_some_and(|(group_id, _)| group_id == firewall_group_id)
+            {
+                if self.firewall_rule_create_visibility_reads
+                    >= self.firewall_rule_create_visibility_delay
+                {
+                    if let Some((group_id, rule)) = self.pending_firewall_rule.take() {
+                        self.firewall_rules.entry(group_id).or_default().push(rule);
+                    }
+                } else {
+                    self.firewall_rule_create_visibility_reads += 1;
+                }
+            }
+
+            if self
+                .pending_firewall_rule_delete
+                .as_ref()
+                .is_some_and(|(group_id, _)| group_id == firewall_group_id)
+            {
+                if self.firewall_rule_delete_visibility_reads
+                    >= self.firewall_rule_delete_visibility_delay
+                {
+                    if let Some((group_id, rule_id)) = self.pending_firewall_rule_delete.take()
+                        && let Some(rules) = self.firewall_rules.get_mut(&group_id)
+                    {
+                        rules.retain(|rule| rule.id != rule_id);
+                    }
+                } else {
+                    self.firewall_rule_delete_visibility_reads += 1;
+                }
+            }
+
             Ok(self
                 .firewall_rules
                 .get(firewall_group_id)
@@ -1178,10 +1218,16 @@ mod tests {
                 source: rule.source.clone(),
                 notes: rule.notes.clone(),
             };
-            self.firewall_rules
-                .entry(firewall_group_id.to_owned())
-                .or_default()
-                .push(observed.clone());
+            if self.firewall_rule_create_visibility_delay == 0 {
+                self.firewall_rules
+                    .entry(firewall_group_id.to_owned())
+                    .or_default()
+                    .push(observed.clone());
+            } else {
+                self.firewall_rule_create_visibility_reads = 0;
+                self.pending_firewall_rule =
+                    Some((firewall_group_id.to_owned(), observed.clone()));
+            }
             Ok(observed)
         }
 
@@ -1191,8 +1237,14 @@ mod tests {
             firewall_rule_id: u64,
         ) -> Result<(), VultrError> {
             self.firewall_rule_delete_calls += 1;
-            if let Some(rules) = self.firewall_rules.get_mut(firewall_group_id) {
-                rules.retain(|rule| rule.id != firewall_rule_id);
+            if self.firewall_rule_delete_visibility_delay == 0 {
+                if let Some(rules) = self.firewall_rules.get_mut(firewall_group_id) {
+                    rules.retain(|rule| rule.id != firewall_rule_id);
+                }
+            } else {
+                self.firewall_rule_delete_visibility_reads = 0;
+                self.pending_firewall_rule_delete =
+                    Some((firewall_group_id.to_owned(), firewall_rule_id));
             }
             Ok(())
         }
@@ -1391,6 +1443,65 @@ mod tests {
 
         assert_eq!(resolved.id, "fw-1");
         assert_eq!(provider.firewall_group_create_calls, 1);
+        assert_eq!(provider.firewall_rule_create_calls, 1);
+        assert!(
+            firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn firewall_create_waits_for_visibility_without_duplicate_mutation() {
+        let profile_set = profiles();
+        let profile = profile_set.profile("ssh-only").unwrap();
+        let mut provider = FakeSupportProvider {
+            firewall_rule_create_visibility_delay: 1,
+            ..FakeSupportProvider::default()
+        };
+
+        ensure_firewall_profile(&mut provider, "production", profile, &policy())
+            .await
+            .unwrap();
+
+        assert_eq!(provider.firewall_rule_create_calls, 1);
+        assert!(
+            firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn firewall_delete_waits_for_absence_before_next_mutation() {
+        let profile_set = profiles();
+        let profile = profile_set.profile("ssh-only").unwrap();
+        let mut provider = FakeSupportProvider {
+            firewall_groups: vec![VultrFirewallGroup {
+                id: "fw-1".to_owned(),
+                description: "singbox-production-fw-ssh-only".to_owned(),
+                date_created: String::new(),
+                date_modified: String::new(),
+            }],
+            firewall_rules: BTreeMap::from([(
+                "fw-1".to_owned(),
+                vec![VultrFirewallRule {
+                    id: 1,
+                    ip_type: "v4".to_owned(),
+                    protocol: "tcp".to_owned(),
+                    subnet: "192.0.2.1".to_owned(),
+                    subnet_size: 32,
+                    port: "22".to_owned(),
+                    source: String::new(),
+                    notes: "wrong".to_owned(),
+                }],
+            )]),
+            next_rule_id: 1,
+            firewall_rule_delete_visibility_delay: 1,
+            ..FakeSupportProvider::default()
+        };
+
+        ensure_firewall_profile(&mut provider, "production", profile, &policy())
+            .await
+            .unwrap();
+
+        assert_eq!(provider.firewall_rule_delete_calls, 1);
         assert_eq!(provider.firewall_rule_create_calls, 1);
         assert!(
             firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
