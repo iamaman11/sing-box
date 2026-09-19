@@ -510,14 +510,14 @@ async fn wait_after_destroy_inventory(
     ))
 }
 
-fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
+pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read lifecycle spec {}: {err}", path.display()))?;
     DesiredState::parse_json(&raw)
         .map_err(|err| format!("failed to parse lifecycle spec {}: {err}", path.display()))
 }
 
-fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<FirewallProfileSet>, String> {
+pub(crate) fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<FirewallProfileSet>, String> {
     if desired
         .machines
         .iter()
@@ -542,7 +542,7 @@ fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<FirewallProfi
     Ok(Some(profiles))
 }
 
-async fn verified_firewall_bindings(
+pub(crate) async fn verified_firewall_bindings(
     provider: &mut VultrSupportApiProvider,
     desired: &DesiredState,
     profiles: Option<&FirewallProfileSet>,
@@ -553,11 +553,11 @@ async fn verified_firewall_bindings(
     }
 }
 
-fn lifecycle_provider_from_env() -> Result<VultrApiProvider, String> {
+pub(crate) fn lifecycle_provider_from_env() -> Result<VultrApiProvider, String> {
     VultrApiProvider::new(vultr_api_key_from_env()?)
 }
 
-fn support_provider_from_env() -> Result<VultrSupportApiProvider, String> {
+pub(crate) fn support_provider_from_env() -> Result<VultrSupportApiProvider, String> {
     VultrSupportApiProvider::new(vultr_api_key_from_env()?)
 }
 
@@ -565,7 +565,7 @@ fn operational_provider_from_env() -> Result<VultrOperationalApiProvider, String
     VultrOperationalApiProvider::new(vultr_api_key_from_env()?)
 }
 
-fn operator_private_key_path_from_env() -> Result<PathBuf, String> {
+pub(crate) fn operator_private_key_path_from_env() -> Result<PathBuf, String> {
     let path = env::var_os("EDGE_SSH_PRIVATE_KEY_PATH")
         .map(PathBuf::from)
         .ok_or_else(|| {
@@ -584,7 +584,7 @@ fn vultr_api_key_from_env() -> Result<String, String> {
     env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())
 }
 
-fn read_canonical_ssh_public_key() -> Result<String, String> {
+pub(crate) fn read_canonical_ssh_public_key() -> Result<String, String> {
     let path = Path::new(CANONICAL_SSH_PUBLIC_KEY_PATH);
     let public_key = fs::read_to_string(path).map_err(|err| {
         format!(
