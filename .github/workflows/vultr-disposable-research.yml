@@ -6,9 +6,6 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: vultr-disposable-research
-  queue: max
 
 jobs:
   catalog:
@@ -90,6 +87,9 @@ jobs:
 
 
   disposable:
+    concurrency:
+      group: vultr-disposable-research
+      queue: max
     if: >-
       github.repository_id == '1221750822' &&
       github.event.issue.number == 1 &&
@@ -122,6 +122,9 @@ jobs:
 
 
   uncertainty:
+    concurrency:
+      group: vultr-disposable-research
+      queue: max
     if: >-
       github.repository_id == '1221750822' &&
       github.event.issue.number == 1 &&
