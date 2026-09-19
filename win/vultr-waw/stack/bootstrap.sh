@@ -14,8 +14,6 @@ set -a
 source ./.env.runtime
 set +a
 
-USE_PREBUILT_IMAGES="${EDGE_USE_PREBUILT_IMAGES:-0}"
-
 mkdir -p certs rendered warp-state mesh-state tunnel-state
 
 prepare_proxy_certificate() {
@@ -47,6 +45,15 @@ prepare_proxy_certificate() {
 envsubst < edge-gateway/config.template.json > rendered/edge-gateway.json
 envsubst < edge-gateway/config.direct.template.json > rendered/edge-gateway-direct.json
 
+require_digest_image() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ ! "$value" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
+    echo "$name must be an immutable image reference ending in @sha256:<64 lowercase hex>" >&2
+    exit 1
+  fi
+}
+
 compose_up() {
   local profile_args=()
   if [[ $# -gt 0 && "$1" == "--profile" ]]; then
@@ -54,20 +61,19 @@ compose_up() {
     shift 2
   fi
 
-  if [[ "$USE_PREBUILT_IMAGES" == "1" ]]; then
-    docker compose "${profile_args[@]}" pull "$@" || true
-    docker compose "${profile_args[@]}" up -d --force-recreate "$@"
-  else
-    docker compose "${profile_args[@]}" up -d --build --force-recreate "$@"
-  fi
+  docker compose "${profile_args[@]}" pull "$@"
+  docker compose "${profile_args[@]}" up -d --force-recreate "$@"
 }
 
 start_base() {
+  require_digest_image EDGE_WARP_EGRESS_IMAGE
+  require_digest_image EDGE_GATEWAY_IMAGE
   prepare_proxy_certificate
   compose_up warp-egress edge-gateway edge-gateway-direct
 }
 
 start_mesh() {
+  require_digest_image CLOUDFLARE_MESH_IMAGE
   if [[ -z "${MESH_NODE_TOKEN:-}" ]]; then
     echo "MESH_NODE_TOKEN is required for mesh mode" >&2
     exit 1
@@ -95,6 +101,9 @@ start_tunnels() {
   if [[ -z "${TUNNEL_DOMAIN:-}" || -z "${ACME_EMAIL:-}" ]]; then
     return 0
   fi
+
+  require_digest_image EDGE_WARP_EGRESS_IMAGE
+  require_digest_image EDGE_GATEWAY_IMAGE
 
   local acme_cert_dir="tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory/${TUNNEL_DOMAIN}"
   local acme_cert="${acme_cert_dir}/${TUNNEL_DOMAIN}.crt"
