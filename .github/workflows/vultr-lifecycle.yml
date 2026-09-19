@@ -158,7 +158,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          run_id="$(gh api --method GET             -f branch=main             -f event=push             -f status=success             -f head_sha="${GITHUB_SHA}"             -f per_page=20             "repos/${GITHUB_REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs"             --jq '.workflow_runs | map(select(.head_sha == env.GITHUB_SHA and .conclusion == "success")) | sort_by(.created_at) | last | .id // empty')"
+          runs_json="$(gh api --method GET \
+            -f branch=main \
+            -f event=push \
+            -f status=success \
+            -f head_sha="${GITHUB_SHA}" \
+            -f per_page=20 \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs")"
+          run_id="$(jq -r --arg sha "${GITHUB_SHA}" \
+            '[.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty' \
+            <<<"${runs_json}")"
           [[ "${run_id}" =~ ^[0-9]+$ ]] || {
             echo "no successful Edge Platform CI build exists for exact revision ${GITHUB_SHA}" >&2
             exit 1
