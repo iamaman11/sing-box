@@ -194,7 +194,7 @@ pub async fn apply_machine<P: LifecycleProvider>(
             let create_request = create_request(desired, machine, prerequisites)?;
 
             let mutation_result = provider.create_instance(&create_request).await;
-            match mutation_result {
+            match &mutation_result {
                 Ok(_) => {}
                 Err(err) if err.requires_mutation_reobservation() => {}
                 Err(err) => return Err(err.to_string()),
@@ -284,7 +284,7 @@ pub async fn destroy_machine<P: LifecycleProvider>(
     .map_err(|err| err.to_string())?;
 
     let mutation_result = provider.destroy_instance(&provider_id).await;
-    match mutation_result {
+    match &mutation_result {
         Ok(()) => {}
         Err(err) if err.is_not_found() => {
             return Ok(DestroyApplyReport {
@@ -417,7 +417,7 @@ fn validate_create_prerequisites(
                 || prerequisites
                     .firewall_group_id
                     .as_deref()
-                    .is_none_or(str::is_empty)
+                    .is_none_or(|value| value.trim().is_empty())
             {
                 return Err(format!(
                     "CREATE for machine {} requires a provider-verified firewall binding for profile {}",
