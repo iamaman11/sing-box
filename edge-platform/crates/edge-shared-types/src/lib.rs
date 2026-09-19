@@ -6,8 +6,209 @@ pub mod edge {
     }
 }
 
+pub mod release {
+    pub mod v1 {
+        tonic::include_proto!("edge.release.v1");
+    }
+}
+
 pub use edge::platform::v1::*;
+pub use release::v1::{
+    CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
+    WindowsRuntime,
+};
 use prost::Message;
+
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 1;
+
+pub fn encode_release_set(release: &ReleaseSet) -> Result<Vec<u8>, String> {
+    validate_release_set(release)?;
+    Ok(release.encode_to_vec())
+}
+
+pub fn decode_release_set(bytes: &[u8]) -> Result<ReleaseSet, String> {
+    let release = ReleaseSet::decode(bytes)
+        .map_err(|err| format!("release-set protobuf decode failed: {err}"))?;
+    validate_release_set(&release)?;
+    let canonical = release.encode_to_vec();
+    if canonical != bytes {
+        return Err(
+            "release-set bytes are not canonical protobuf encoding; refusing ambiguous authority"
+                .to_owned(),
+        );
+    }
+    Ok(release)
+}
+
+pub fn release_set_sha256(bytes: &[u8]) -> Result<String, String> {
+    decode_release_set(bytes)?;
+    Ok(ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
+    if release.schema_version != RELEASE_SET_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported release-set schema_version {}; expected {}",
+            release.schema_version, RELEASE_SET_SCHEMA_VERSION
+        ));
+    }
+    validate_lower_hex("source_revision", &release.source_revision, 40)?;
+
+    let sing_box = release
+        .sing_box
+        .as_ref()
+        .ok_or_else(|| "release-set sing_box is required".to_owned())?;
+    validate_stable_semver("sing_box.version", &sing_box.version)?;
+    validate_sha256_bytes(
+        "sing_box.windows_amd64_sha256",
+        &sing_box.windows_amd64_sha256,
+    )?;
+    validate_sha256_bytes("sing_box.linux_amd64_sha256", &sing_box.linux_amd64_sha256)?;
+
+    let windows = release
+        .windows_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set windows_runtime is required".to_owned())?;
+    validate_sha256_bytes("windows_runtime.artifact_sha256", &windows.artifact_sha256)?;
+    validate_sha256_bytes(
+        "windows_runtime.controller_sha256",
+        &windows.controller_sha256,
+    )?;
+    validate_sha256_bytes("windows_runtime.console_sha256", &windows.console_sha256)?;
+    validate_sha256_bytes(
+        "windows_runtime.sing_box_sha256",
+        &windows.sing_box_sha256,
+    )?;
+    if windows.sing_box_sha256 != sing_box.windows_amd64_sha256 {
+        return Err(
+            "windows_runtime.sing_box_sha256 must equal sing_box.windows_amd64_sha256".to_owned(),
+        );
+    }
+
+    let vm = release
+        .vm_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set vm_runtime is required".to_owned())?;
+    validate_sha256_bytes("vm_runtime.edge_agent_sha256", &vm.edge_agent_sha256)?;
+    validate_oci_image(
+        "vm_runtime.sing_box_image",
+        vm.sing_box_image
+            .as_ref()
+            .ok_or_else(|| "vm_runtime.sing_box_image is required".to_owned())?,
+    )?;
+    validate_oci_image(
+        "vm_runtime.warp_egress_image",
+        vm.warp_egress_image
+            .as_ref()
+            .ok_or_else(|| "vm_runtime.warp_egress_image is required".to_owned())?,
+    )?;
+    validate_version_token("vm_runtime.docker_engine_version", &vm.docker_engine_version)?;
+    validate_version_token("vm_runtime.containerd_version", &vm.containerd_version)?;
+    validate_version_token("vm_runtime.compose_version", &vm.compose_version)?;
+
+    let cloudflare = release
+        .cloudflare
+        .as_ref()
+        .ok_or_else(|| "release-set cloudflare is required".to_owned())?;
+    validate_version_token("cloudflare.warp_version", &cloudflare.warp_version)?;
+    validate_oci_image(
+        "cloudflare.mesh_image",
+        cloudflare
+            .mesh_image
+            .as_ref()
+            .ok_or_else(|| "cloudflare.mesh_image is required".to_owned())?,
+    )?;
+
+    let schemas = release
+        .schemas
+        .as_ref()
+        .ok_or_else(|| "release-set schemas is required".to_owned())?;
+    if schemas.config_schema == 0 || schemas.db_schema == 0 {
+        return Err("config_schema and db_schema must be non-zero".to_owned());
+    }
+
+    Ok(())
+}
+
+fn validate_sha256_bytes(label: &str, value: &[u8]) -> Result<(), String> {
+    if value.len() != 32 {
+        return Err(format!("{label} must contain exactly 32 SHA-256 bytes"));
+    }
+    Ok(())
+}
+
+fn validate_lower_hex(label: &str, value: &str, expected_len: usize) -> Result<(), String> {
+    if value.len() != expected_len
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "{label} must be exactly {expected_len} lowercase hexadecimal characters"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stable_semver(label: &str, value: &str) -> Result<(), String> {
+    let parts = value.split('.').collect::<Vec<_>>();
+    if parts.len() != 3
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || !part.chars().all(|ch| ch.is_ascii_digit())
+                || (part.len() > 1 && part.starts_with('0'))
+        })
+    {
+        return Err(format!(
+            "{label} must be a stable normalized x.y.z version without prerelease/build metadata"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_version_token(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.eq_ignore_ascii_case("latest")
+        || value.chars().any(|ch| ch.is_ascii_whitespace())
+    {
+        return Err(format!(
+            "{label} must be an exact non-empty version token and must not be latest"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_oci_image(label: &str, image: &OciImage) -> Result<(), String> {
+    let repository = image.repository.as_str();
+    if repository.is_empty()
+        || repository.len() > 255
+        || repository.contains('@')
+        || repository.contains("//")
+        || repository.ends_with('/')
+        || repository.chars().any(|ch| ch.is_ascii_whitespace())
+        || repository != repository.to_ascii_lowercase()
+    {
+        return Err(format!(
+            "{label}.repository must be a normalized lowercase OCI repository without digest"
+        ));
+    }
+    if repository
+        .rsplit('/')
+        .next()
+        .is_some_and(|leaf| leaf.contains(':'))
+    {
+        return Err(format!(
+            "{label}.repository must not contain a mutable image tag"
+        ));
+    }
+    validate_sha256_bytes(&format!("{label}.sha256"), &image.sha256)
+}
+
 
 impl PlatformError {
     pub fn new(
@@ -288,6 +489,110 @@ pub fn canonical_apply_bundle_digest(request: &ApplyBundleRequest) -> Result<Str
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+#[cfg(test)]
+mod release_set_tests {
+    use super::*;
+
+    fn digest(byte: u8) -> Vec<u8> {
+        vec![byte; 32]
+    }
+
+    fn image(repository: &str, byte: u8) -> OciImage {
+        OciImage {
+            repository: repository.to_owned(),
+            sha256: digest(byte),
+        }
+    }
+
+    fn valid_release() -> ReleaseSet {
+        ReleaseSet {
+            schema_version: RELEASE_SET_SCHEMA_VERSION,
+            source_revision: "1".repeat(40),
+            sing_box: Some(SingBoxRelease {
+                version: "1.13.0".to_owned(),
+                windows_amd64_sha256: digest(2),
+                linux_amd64_sha256: digest(3),
+            }),
+            windows_runtime: Some(WindowsRuntime {
+                artifact_sha256: digest(4),
+                controller_sha256: digest(5),
+                console_sha256: digest(6),
+                sing_box_sha256: digest(2),
+            }),
+            vm_runtime: Some(VmRuntime {
+                edge_agent_sha256: digest(7),
+                sing_box_image: Some(image("ghcr.io/iamaman11/sing-box-runtime", 8)),
+                warp_egress_image: Some(image("ghcr.io/iamaman11/warp-egress", 9)),
+                docker_engine_version: "29.0.1".to_owned(),
+                containerd_version: "2.1.4".to_owned(),
+                compose_version: "2.39.2".to_owned(),
+            }),
+            cloudflare: Some(CloudflareRuntime {
+                warp_version: "2026.9.1".to_owned(),
+                mesh_image: Some(image("docker.io/cloudflare/mesh", 10)),
+            }),
+            schemas: Some(SchemaVersions {
+                config_schema: 1,
+                db_schema: 1,
+            }),
+        }
+    }
+
+    #[test]
+    fn release_set_round_trip_is_canonical_and_identity_is_stable() {
+        let release = valid_release();
+        let bytes = encode_release_set(&release).unwrap();
+        assert_eq!(decode_release_set(&bytes).unwrap(), release);
+        let first = release_set_sha256(&bytes).unwrap();
+        let second = release_set_sha256(&bytes).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn release_set_rejects_prerelease_sing_box_version() {
+        let mut release = valid_release();
+        release.sing_box.as_mut().unwrap().version = "1.14.0-rc.1".to_owned();
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_wrong_digest_length() {
+        let mut release = valid_release();
+        release.vm_runtime.as_mut().unwrap().edge_agent_sha256 = vec![0; 31];
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_windows_sing_box_hash_drift() {
+        let mut release = valid_release();
+        release.windows_runtime.as_mut().unwrap().sing_box_sha256 = digest(11);
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_mutable_oci_tag() {
+        let mut release = valid_release();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .sing_box_image
+            .as_mut()
+            .unwrap()
+            .repository = "ghcr.io/iamaman11/sing-box-runtime:latest".to_owned();
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_noncanonical_or_unknown_wire_fields() {
+        let release = valid_release();
+        let mut bytes = encode_release_set(&release).unwrap();
+        bytes.extend_from_slice(&[0xa0, 0x06, 0x01]);
+        assert!(decode_release_set(&bytes).is_err());
+    }
 }
 
 #[cfg(test)]
