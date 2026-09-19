@@ -677,12 +677,7 @@ async fn reconcile_firewall_rules<P: SupportResourceProvider>(
             let rule_id = *ids
                 .last()
                 .ok_or_else(|| format!("firewall rule map for {spec:?} is unexpectedly empty"))?;
-            let result = provider.destroy_firewall_rule(group_id, rule_id).await;
-            match result {
-                Ok(()) => {}
-                Err(err) if err.is_not_found() || err.requires_mutation_reobservation() => {}
-                Err(err) => return Err(err.to_string()),
-            }
+            delete_firewall_rule_and_observe(provider, group_id, rule_id, policy).await?;
             continue;
         }
 
@@ -690,19 +685,110 @@ async fn reconcile_firewall_rules<P: SupportResourceProvider>(
             .iter()
             .find(|spec| !current_by_spec.contains_key(*spec))
         {
-            let result = provider.create_firewall_rule(group_id, missing).await;
-            match result {
-                Ok(_) => {}
-                Err(err) if err.requires_mutation_reobservation() => {}
-                Err(err) => return Err(err.to_string()),
-            }
+            create_firewall_rule_and_observe(provider, group_id, missing, policy).await?;
             continue;
         }
     }
 
+    let observed = provider
+        .list_firewall_rules(group_id)
+        .await
+        .map_err(|err| err.to_string())?;
     Err(format!(
-        "firewall profile {} did not converge after bounded reconciliation",
-        profile.name
+        "firewall profile {} did not converge after bounded reconciliation; desired={:?} observed={:?}",
+        profile.name, profile.rules, observed
+    ))
+}
+
+async fn create_firewall_rule_and_observe<P: SupportResourceProvider>(
+    provider: &mut P,
+    group_id: &str,
+    desired: &FirewallRuleSpec,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<(), String> {
+    let mutation = provider.create_firewall_rule(group_id, desired).await;
+    let expected_id = match &mutation {
+        Ok(rule) => {
+            let returned = firewall_rule_spec(rule)?;
+            if returned != *desired {
+                return Err(format!(
+                    "Vultr normalized created firewall rule away from desired state; desired={desired:?} returned={returned:?}"
+                ));
+            }
+            Some(rule.id)
+        }
+        Err(err) if err.requires_mutation_reobservation() => None,
+        Err(err) => return Err(err.to_string()),
+    };
+
+    let mut last_observed = Vec::new();
+    for attempt in 0..policy.create_reobserve_attempts {
+        let observed = provider
+            .list_firewall_rules(group_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        let current = current_rule_map(&observed)?;
+        let matching = current.get(desired).cloned().unwrap_or_default();
+
+        match expected_id {
+            Some(id) if matching.contains(&id) => return Ok(()),
+            None if matching.len() == 1 => return Ok(()),
+            None if matching.len() > 1 => {
+                return Err(format!(
+                    "uncertain firewall-rule CREATE became ambiguous for {desired:?}: observed matching ids={matching:?}; mutation was not replayed"
+                ));
+            }
+            _ => {}
+        }
+
+        last_observed = observed;
+        if attempt + 1 < policy.create_reobserve_attempts {
+            sleep(policy.reobserve_delay).await;
+        }
+    }
+
+    match mutation {
+        Ok(rule) => Err(format!(
+            "firewall-rule CREATE returned id={} but that exact rule did not become observable after bounded re-observation; desired={desired:?} observed={last_observed:?}; mutation was not replayed",
+            rule.id
+        )),
+        Err(err) => Err(format!(
+            "{err}; firewall-rule CREATE outcome was not proven by bounded re-observation; desired={desired:?} observed={last_observed:?}; mutation was not replayed"
+        )),
+    }
+}
+
+async fn delete_firewall_rule_and_observe<P: SupportResourceProvider>(
+    provider: &mut P,
+    group_id: &str,
+    rule_id: u64,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<(), String> {
+    let mutation = provider.destroy_firewall_rule(group_id, rule_id).await;
+    match &mutation {
+        Ok(()) => {}
+        Err(err) if err.is_not_found() => return Ok(()),
+        Err(err) if err.requires_mutation_reobservation() => {}
+        Err(err) => return Err(err.to_string()),
+    }
+
+    let mut last_observed = Vec::new();
+    for attempt in 0..policy.destroy_reobserve_attempts {
+        let observed = provider
+            .list_firewall_rules(group_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        if !observed.iter().any(|rule| rule.id == rule_id) {
+            return Ok(());
+        }
+        last_observed = observed;
+        if attempt + 1 < policy.destroy_reobserve_attempts {
+            sleep(policy.reobserve_delay).await;
+        }
+    }
+
+    Err(format!(
+        "firewall-rule DELETE for id={rule_id} was not proven absent after bounded re-observation; observed={last_observed:?}; mutation was not replayed"
     ))
 }
 
@@ -782,22 +868,27 @@ fn current_rule_map(
 ) -> Result<BTreeMap<FirewallRuleSpec, Vec<u64>>, String> {
     let mut result: BTreeMap<FirewallRuleSpec, Vec<u64>> = BTreeMap::new();
     for rule in observed {
-        let spec = FirewallRuleSpec {
-            ip_type: rule.ip_type.trim().to_owned(),
-            protocol: rule.protocol.trim().to_owned(),
-            subnet: rule.subnet.trim().to_owned(),
-            subnet_size: rule.subnet_size,
-            port: rule.port.trim().to_owned(),
-            source: rule.source.trim().to_owned(),
-            notes: rule.notes.trim().to_owned(),
-        };
-        validate_rule(&spec)?;
+        let spec = firewall_rule_spec(rule)?;
         result.entry(spec).or_default().push(rule.id);
     }
     for ids in result.values_mut() {
         ids.sort_unstable();
     }
     Ok(result)
+}
+
+fn firewall_rule_spec(rule: &VultrFirewallRule) -> Result<FirewallRuleSpec, String> {
+    let spec = FirewallRuleSpec {
+        ip_type: rule.ip_type.trim().to_owned(),
+        protocol: rule.protocol.trim().to_owned(),
+        subnet: rule.subnet.trim().to_owned(),
+        subnet_size: rule.subnet_size,
+        port: rule.port.trim().to_owned(),
+        source: rule.source.trim().to_owned(),
+        notes: rule.notes.trim().to_owned(),
+    };
+    validate_rule(&spec)?;
+    Ok(spec)
 }
 
 fn firewall_group_description(environment: &str, profile_name: &str) -> String {
