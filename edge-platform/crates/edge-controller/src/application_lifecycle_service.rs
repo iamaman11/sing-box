@@ -5,7 +5,7 @@ use crate::vultr_host_bootstrap::{
 use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationAction, ApplicationBootstrapMode, ApplicationObservation,
     ApplicationPlan, ApplicationPlanClass, DesiredApplicationState, PublishedApplicationRelease,
-    RollbackPlan, authorize_rollback, build_rollback_plan, desired_release, desired_release_id,
+    RollbackPlan, authorize_rollback, build_rollback_plan, desired_bundle_id, desired_release,
     plan_application,
 };
 use edge_shared_types::agent_service_client::AgentServiceClient;
@@ -198,7 +198,7 @@ pub(crate) fn prepare_application_bundle(
         None => {}
     }
 
-    let bundle_id = desired_release_id(desired, artifact).map_err(|err| err.to_string())?;
+    let bundle_id = desired_bundle_id(desired, artifact).map_err(|err| err.to_string())?;
     let mut request = ApplyBundleRequest {
         stack_files,
         host_files: Vec::new(),
@@ -365,7 +365,11 @@ pub(crate) async fn rollback_plan_remote(
 ) -> Result<RollbackPlan, String> {
     let observation = observe_application(authority, desired).await?;
     let plan = build_rollback_plan(desired, &observation).map_err(|err| err.to_string())?;
-    verify_previous_release_material(authority, &plan.previous_release)?;
+    verify_previous_release_material(
+        authority,
+        &plan.current_release,
+        &plan.previous_release,
+    )?;
     Ok(plan)
 }
 
@@ -377,7 +381,11 @@ pub(crate) async fn execute_rollback(
     let observation = observe_application(authority, desired).await?;
     let plan = authorize_rollback(desired, &observation, authorized_digest)
         .map_err(|err| err.to_string())?;
-    verify_previous_release_material(authority, &plan.previous_release)?;
+    verify_previous_release_material(
+        authority,
+        &plan.current_release,
+        &plan.previous_release,
+    )?;
 
     rollback_bundle_once(authority, &plan).await?;
     if plan.current_release.agent_sha256 != plan.previous_release.agent_sha256 {
@@ -887,14 +895,17 @@ fn publish_control_state_once(
 
 fn verify_previous_release_material(
     authority: &ApplicationAuthority,
+    current: &PublishedApplicationRelease,
     previous: &PublishedApplicationRelease,
 ) -> Result<(), String> {
-    let previous_agent = remote_file_sha(authority, REMOTE_PREVIOUS_AGENT)?;
-    if previous_agent.as_deref() != Some(previous.agent_sha256.as_str()) {
-        return Err(
-            "rollback blocked: previous edge-agent artifact does not match published previous release"
-                .to_owned(),
-        );
+    if current.agent_sha256 != previous.agent_sha256 {
+        let previous_agent = remote_file_sha(authority, REMOTE_PREVIOUS_AGENT)?;
+        if previous_agent.as_deref() != Some(previous.agent_sha256.as_str()) {
+            return Err(
+                "rollback blocked: previous edge-agent artifact does not match published previous release"
+                    .to_owned(),
+            );
+        }
     }
     let previous_bundle = read_remote_bundle_release(authority, REMOTE_PREVIOUS_STACK_RELEASE)?;
     if previous_bundle
@@ -1015,6 +1026,31 @@ mod tests {
                 .unwrap()
                 .sensitive
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_only_upgrade_gets_distinct_exact_release_identity() {
+        let root = unique_temp_file("application-release-identity-test");
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+        fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
+        let env_a = root.join("env-a");
+        let env_b = root.join("env-b");
+        fs::write(&env_a, "TOKEN=one\n").unwrap();
+        fs::write(&env_b, "TOKEN=two\n").unwrap();
+
+        let desired = test_desired("stack");
+        let a =
+            prepare_application_bundle(&root, &desired, &test_artifact(), Some(&env_a)).unwrap();
+        let b =
+            prepare_application_bundle(&root, &desired, &test_artifact(), Some(&env_b)).unwrap();
+
+        assert_ne!(a.release.bundle_digest, b.release.bundle_digest);
+        assert_ne!(a.release.release_id, b.release.release_id);
+        assert_eq!(a.release.agent_sha256, b.release.agent_sha256);
 
         fs::remove_dir_all(root).unwrap();
     }
