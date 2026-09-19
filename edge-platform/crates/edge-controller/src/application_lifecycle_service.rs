@@ -365,11 +365,7 @@ pub(crate) async fn rollback_plan_remote(
 ) -> Result<RollbackPlan, String> {
     let observation = observe_application(authority, desired).await?;
     let plan = build_rollback_plan(desired, &observation).map_err(|err| err.to_string())?;
-    verify_previous_release_material(
-        authority,
-        &plan.current_release,
-        &plan.previous_release,
-    )?;
+    verify_previous_release_material(authority, &plan.current_release, &plan.previous_release)?;
     Ok(plan)
 }
 
@@ -381,11 +377,7 @@ pub(crate) async fn execute_rollback(
     let observation = observe_application(authority, desired).await?;
     let plan = authorize_rollback(desired, &observation, authorized_digest)
         .map_err(|err| err.to_string())?;
-    verify_previous_release_material(
-        authority,
-        &plan.current_release,
-        &plan.previous_release,
-    )?;
+    verify_previous_release_material(authority, &plan.current_release, &plan.previous_release)?;
 
     rollback_bundle_once(authority, &plan).await?;
     if plan.current_release.agent_sha256 != plan.previous_release.agent_sha256 {
