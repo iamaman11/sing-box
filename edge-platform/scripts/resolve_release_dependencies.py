@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 STABLE_SEMVER = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 NUMERIC_VERSION = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*)){2,5}$")
+DEBIAN_VERSION = re.compile(r"^[0-9A-Za-z.+:~_-]+$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -127,6 +129,70 @@ def resolve_warp_packages(raw: str) -> dict[str, str]:
     }
 
 
+def _debian_version_gt(left: str, right: str) -> bool:
+    result = subprocess.run(
+        ["dpkg", "--compare-versions", left, "gt", right],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode not in (0, 1):
+        raise ValueError(
+            f"dpkg rejected Debian version comparison {left!r} > {right!r}: "
+            f"{result.stderr.strip()}"
+        )
+    return result.returncode == 0
+
+
+def _docker_package(raw_packages: list[dict[str, str]], name: str) -> dict[str, str]:
+    candidates: list[dict[str, str]] = []
+    for package in raw_packages:
+        if package.get("Package") != name or package.get("Architecture") != "amd64":
+            continue
+        version = package.get("Version", "")
+        sha256 = package.get("SHA256", "")
+        filename = package.get("Filename", "")
+        path = PurePosixPath(filename)
+        if not DEBIAN_VERSION.fullmatch(version):
+            raise ValueError(f"{name} has invalid Debian version token {version!r}")
+        if not SHA256.fullmatch(sha256):
+            raise ValueError(f"{name} package SHA256 is missing or invalid")
+        if not filename.startswith("dists/") and not filename.startswith("pool/"):
+            raise ValueError(f"{name} package filename is outside the Docker repository")
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"{name} package filename is not repository-relative")
+        candidates.append(
+            {
+                "version": version,
+                "filename": filename,
+                "url": f"https://download.docker.com/linux/debian/{filename}",
+                "sha256": sha256,
+            }
+        )
+    if not candidates:
+        raise ValueError(f"no amd64 {name} package found")
+
+    latest = candidates[0]
+    for candidate in candidates[1:]:
+        if _debian_version_gt(candidate["version"], latest["version"]):
+            latest = candidate
+
+    same_version = [item for item in candidates if item["version"] == latest["version"]]
+    if len(same_version) != 1:
+        raise ValueError(f"expected exactly one {name} package at version {latest['version']}")
+    return latest
+
+
+def resolve_docker_packages(raw: str) -> dict[str, dict[str, str]]:
+    packages = _parse_debian_packages(raw)
+    return {
+        "docker_engine": _docker_package(packages, "docker-ce"),
+        "containerd": _docker_package(packages, "containerd.io"),
+        "compose": _docker_package(packages, "docker-compose-plugin"),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -137,14 +203,19 @@ def main() -> None:
     warp = subparsers.add_parser("warp")
     warp.add_argument("packages_file", type=Path)
 
+    docker = subparsers.add_parser("docker")
+    docker.add_argument("packages_file", type=Path)
+
     args = parser.parse_args()
     if args.command == "sing-box":
         releases = json.loads(args.releases_json.read_text(encoding="utf-8"))
         if not isinstance(releases, list):
             raise SystemExit("sing-box releases input must be a JSON array")
         result = resolve_sing_box(releases)
-    else:
+    elif args.command == "warp":
         result = resolve_warp_packages(args.packages_file.read_text(encoding="utf-8"))
+    else:
+        result = resolve_docker_packages(args.packages_file.read_text(encoding="utf-8"))
 
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 
