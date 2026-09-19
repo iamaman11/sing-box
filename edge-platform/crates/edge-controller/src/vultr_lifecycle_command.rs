@@ -1,3 +1,8 @@
+use crate::vultr_host_bootstrap::{
+    InstanceAction, VultrOperationalApiProvider, apply_instance_action,
+    ensure_host_certificate_rotated, prepare_strict_bootstrap, scrub_user_data, strict_ssh_accept,
+    wait_provider_ready,
+};
 use crate::vultr_lifecycle_service::{
     CreatePrerequisites, LifecycleExecutionPolicy, VultrApiProvider,
     apply_machine_with_firewall_profiles, build_destroy_plan_with_firewall_profiles,
@@ -22,6 +27,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
     match command {
         "plan" => run_plan(&args[1..]).await,
         "apply" => run_apply(&args[1..]).await,
+        "action" => run_action(&args[1..]).await,
         "destroy-plan" => run_destroy_plan(&args[1..]).await,
         "destroy-apply" => run_destroy_apply(&args[1..]).await,
         _ => Err(usage()),
@@ -69,6 +75,8 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
     let profiles = load_firewall_profiles(&desired)?;
     let policy = LifecycleExecutionPolicy::default();
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
     let mut verified_firewalls =
@@ -81,13 +89,13 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &verified_firewalls,
     )
     .await?;
+
     let prerequisites = if preflight
         .plans
         .first()
         .is_some_and(|plan| plan.class == PlanClass::Create)
     {
         validate_machine_catalog(&mut support_provider, machine).await?;
-        let canonical_public_key = read_canonical_ssh_public_key()?;
         let ssh_key = resolve_managed_ssh_key(
             &mut support_provider,
             &desired.environment,
@@ -117,14 +125,23 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
             None
         };
 
-        resolve_create_prerequisites(machine, &ssh_key.id, firewall.as_ref())?
+        let base_cloud_init = read_base_cloud_init(machine)?;
+        let strict_bootstrap = prepare_strict_bootstrap(
+            &base_cloud_init,
+            &machine.id,
+            &operator_private_key_path,
+            &canonical_public_key,
+        )?;
+        resolve_create_prerequisites(
+            machine,
+            &ssh_key.id,
+            firewall.as_ref(),
+            strict_bootstrap.cloud_init,
+        )?
     } else {
         empty_create_prerequisites(machine)
     };
 
-    // apply_machine re-observes immediately before any instance mutation. If
-    // provider state changed after preflight, stale prerequisites can only
-    // produce a safe refusal or NOOP; they cannot bypass lifecycle identity.
     let report = apply_machine_with_firewall_profiles(
         &mut lifecycle_provider,
         &desired,
@@ -134,11 +151,109 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &verified_firewalls,
     )
     .await?;
+
+    let mut operational_provider = operational_provider_from_env()?;
+    let ready = wait_provider_ready(
+        &mut operational_provider,
+        &report.provider_id,
+        60,
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+
+    strict_ssh_accept(
+        &ready.main_ip,
+        &machine.id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        60,
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+
+    let scrub_changed = scrub_user_data(
+        &mut operational_provider,
+        &report.provider_id,
+        30,
+        std::time::Duration::from_secs(2),
+    )
+    .await?;
+
+    let rotated = ensure_host_certificate_rotated(
+        &ready.main_ip,
+        &machine.id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        2,
+    )?;
+
     print_json_value(serde_json::json!({
         "action": report.action.as_str(),
         "machine_id": report.machine_id,
         "provider_id": report.provider_id,
+        "main_ip": ready.main_ip,
         "final_plan": report.final_plan,
+        "strict_ssh_acceptance": "PASS",
+        "user_data_scrubbed": true,
+        "user_data_scrub_changed": scrub_changed,
+        "host_certificate_rotated": rotated,
+    }))
+}
+
+async fn run_action(args: &[String]) -> Result<(), String> {
+    if args.len() != 3 {
+        return Err(
+            "usage: edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let action = InstanceAction::parse(&args[2])?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let plan = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        Some(&args[1]),
+        &verified_firewalls,
+    )
+    .await?;
+    let target = plan
+        .plans
+        .first()
+        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
+    if target.class != PlanClass::Noop {
+        return Err(format!(
+            "instance action requires exact NOOP provider identity; machine {} is {:?}: {}",
+            args[1],
+            target.class,
+            target.reasons.join("; ")
+        ));
+    }
+    let provider_id = target
+        .provider_id
+        .as_deref()
+        .ok_or_else(|| "NOOP plan is missing provider id".to_owned())?;
+    let mut operational_provider = operational_provider_from_env()?;
+    let observed = apply_instance_action(
+        &mut operational_provider,
+        provider_id,
+        action,
+        60,
+        std::time::Duration::from_secs(2),
+    )
+    .await?;
+
+    print_json_value(serde_json::json!({
+        "machine_id": args[1],
+        "provider_id": provider_id,
+        "action": action.as_str(),
+        "power_status": observed.power_status,
+        "status": observed.status,
+        "server_status": observed.server_status,
     }))
 }
 
@@ -247,6 +362,25 @@ fn support_provider_from_env() -> Result<VultrSupportApiProvider, String> {
     VultrSupportApiProvider::new(vultr_api_key_from_env()?)
 }
 
+fn operational_provider_from_env() -> Result<VultrOperationalApiProvider, String> {
+    VultrOperationalApiProvider::new(vultr_api_key_from_env()?)
+}
+
+fn operator_private_key_path_from_env() -> Result<PathBuf, String> {
+    let path = env::var_os("EDGE_SSH_PRIVATE_KEY_PATH")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            "EDGE_SSH_PRIVATE_KEY_PATH is required for strict SSH lifecycle apply".to_owned()
+        })?;
+    if !path.is_file() {
+        return Err(format!(
+            "EDGE_SSH_PRIVATE_KEY_PATH does not point to a readable file: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 fn vultr_api_key_from_env() -> Result<String, String> {
     env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())
 }
@@ -272,6 +406,7 @@ fn resolve_create_prerequisites(
     machine: &MachineSpec,
     ssh_key_id: &str,
     firewall: Option<&ResolvedFirewallProfile>,
+    cloud_init: String,
 ) -> Result<CreatePrerequisites, String> {
     if machine.bootstrap_profile != "singbox-host-v1" {
         return Err(format!(
@@ -310,21 +445,29 @@ fn resolve_create_prerequisites(
             }
         };
 
-    let cloud_init_path = PathBuf::from(DEFAULT_CLOUD_INIT_PATH);
-    let cloud_init = fs::read_to_string(&cloud_init_path).map_err(|err| {
-        format!(
-            "failed to read bootstrap profile {} from {}: {err}",
-            machine.bootstrap_profile,
-            cloud_init_path.display()
-        )
-    })?;
-
     Ok(CreatePrerequisites {
         bootstrap_profile: machine.bootstrap_profile.clone(),
         ssh_key_id: ssh_key_id.to_owned(),
         cloud_init,
         firewall_group_id,
         firewall_profile,
+    })
+}
+
+fn read_base_cloud_init(machine: &MachineSpec) -> Result<String, String> {
+    if machine.bootstrap_profile != "singbox-host-v1" {
+        return Err(format!(
+            "bootstrap profile {} is not implemented by the current application layer",
+            machine.bootstrap_profile
+        ));
+    }
+    let cloud_init_path = PathBuf::from(DEFAULT_CLOUD_INIT_PATH);
+    fs::read_to_string(&cloud_init_path).map_err(|err| {
+        format!(
+            "failed to read bootstrap profile {} from {}: {err}",
+            machine.bootstrap_profile,
+            cloud_init_path.display()
+        )
     })
 }
 
@@ -350,6 +493,7 @@ fn usage() -> String {
         "usage:",
         "  edge-controller vultr-lifecycle plan <spec-path> [machine-id]",
         "  edge-controller vultr-lifecycle apply <spec-path> <machine-id>",
+        "  edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot>",
         "  edge-controller vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>",
         "  edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest>",
     ]
@@ -388,8 +532,13 @@ mod tests {
             profile_name: "other".to_owned(),
         };
 
-        let error = resolve_create_prerequisites(&desired.machines[0], "ssh-1", Some(&resolved))
-            .unwrap_err();
+        let error = resolve_create_prerequisites(
+            &desired.machines[0],
+            "ssh-1",
+            Some(&resolved),
+            "#cloud-config\n".to_owned(),
+        )
+        .unwrap_err();
         assert!(error.contains("does not match desired profile"));
     }
 

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod deploy_orchestrator;
+mod vultr_host_bootstrap;
 mod vultr_lifecycle_adapter;
 mod vultr_lifecycle_command;
 mod vultr_lifecycle_service;
@@ -2770,70 +2771,12 @@ async fn resolve_deploy_target(
         });
     }
 
-    let api_key = resolve_text_secret(
-        state,
-        SECRET_VULTR_API_KEY,
-        &default_env_ref("VULTR_API_KEY"),
+    Err(
+        "fresh Vultr VM creation is disabled in the legacy deploy RPC; use the canonical \
+edge-controller vultr-lifecycle apply path so provider ownership, strict host certificates, \
+user-data scrub, and destructive authority remain in one lifecycle engine"
+            .to_owned(),
     )
-    .map_err(|_| {
-        "deploy requires target_ip, a resolvable instance_id, or a configured Vultr API key secret"
-            .to_owned()
-    })?;
-    let ssh_key_id = resolve_text_secret(
-        state,
-        SECRET_VULTR_SSH_KEY_ID,
-        &default_env_ref("EDGE_VULTR_SSH_KEY_ID"),
-    )
-    .map_err(|_| {
-        "deploy requires a configured Vultr SSH key id secret when creating a fresh host".to_owned()
-    })?;
-    let cloud_init = read_cloud_init_template(repo_root)?;
-    let region = env::var("EDGE_VULTR_REGION").unwrap_or_else(|_| DEFAULT_REGION.to_owned());
-    let plan = env::var("EDGE_VULTR_PLAN").unwrap_or_else(|_| DEFAULT_PLAN.to_owned());
-    let snapshot_id = request
-        .snapshot_id
-        .clone()
-        .filter(|value| !value.trim().is_empty());
-    let os_id = if snapshot_id.is_none() {
-        Some(
-            env::var("EDGE_VULTR_OS_ID")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(DEFAULT_VULTR_OS_ID),
-        )
-    } else {
-        None
-    };
-
-    let instance = create_or_adopt_vultr_instance(
-        &api_key,
-        &CreateInstanceRequest {
-            region: &region,
-            plan: &plan,
-            os_id,
-            snapshot_id: snapshot_id.as_deref(),
-            label: deployment_label,
-            ssh_key_id: &ssh_key_id,
-            cloud_init: &cloud_init,
-            firewall_group_id: None,
-            tags: vec!["managed-by-sing-box", deployment_label],
-            enable_ipv6: true,
-        },
-        deployment_label,
-    )
-    .await?;
-    let ready = wait_for_instance_ready(&api_key, &instance.id).await?;
-    if ready.main_ip.trim().is_empty() {
-        return Err(format!(
-            "created instance {} did not report a main IP after provisioning",
-            ready.id
-        ));
-    }
-    Ok(ResolvedDeployTarget {
-        instance_id: ready.id,
-        target_ip: ready.main_ip,
-        created_instance: true,
-    })
 }
 
 async fn wait_for_instance_ready(
@@ -3067,8 +3010,12 @@ async fn prepare_agent_transport(
         context.target.created_instance || !context.preexisting_agent_trust,
     )
     .await?;
-    append_operation_event(context.state, context.operation_id, "SSH host key pinned")
-        .map_err(|status| status.message().to_owned())?;
+    append_operation_event(
+        context.state,
+        context.operation_id,
+        "strict pre-existing SSH host trust verified",
+    )
+    .map_err(|status| status.message().to_owned())?;
     wait_for_docker_runtime(context.target, &config).await?;
     append_operation_event(
         context.state,
@@ -3386,13 +3333,8 @@ fn is_stale_known_host_error(message: &str) -> bool {
 async fn accept_ssh_host_key(
     target: &ResolvedDeployTarget,
     config: &BootstrapAccessConfig,
-    allow_host_key_refresh: bool,
+    _allow_host_key_refresh: bool,
 ) -> Result<(), String> {
-    if target.created_instance {
-        let _ = remove_known_host_entry(&target.target_ip, &config.known_hosts_path);
-    }
-
-    let mut refreshed_host_key = false;
     for _ in 0..60 {
         let result = run_command_capture(
             "ssh",
@@ -3402,7 +3344,7 @@ async fn accept_ssh_host_key(
                 "-o".to_owned(),
                 "BatchMode=yes".to_owned(),
                 "-o".to_owned(),
-                "StrictHostKeyChecking=accept-new".to_owned(),
+                "StrictHostKeyChecking=yes".to_owned(),
                 "-o".to_owned(),
                 format!("UserKnownHostsFile={}", config.known_hosts_path.display()),
                 "-o".to_owned(),
@@ -3413,23 +3355,15 @@ async fn accept_ssh_host_key(
                 "exit".to_owned(),
             ],
         );
-        match result {
-            Ok(_) => return Ok(()),
-            Err(err)
-                if allow_host_key_refresh
-                    && !refreshed_host_key
-                    && is_stale_known_host_error(&err) =>
-            {
-                remove_known_host_entry(&target.target_ip, &config.known_hosts_path)?;
-                refreshed_host_key = true;
-                sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-            Err(_) => {}
+        if result.is_ok() {
+            return Ok(());
         }
         sleep(Duration::from_secs(5)).await;
     }
-    Err(format!("timed out waiting for SSH on {}", target.target_ip))
+    Err(format!(
+        "timed out waiting for strictly trusted SSH on {}; legacy bootstrap never enrolls or refreshes host keys",
+        target.target_ip
+    ))
 }
 
 async fn wait_for_docker_runtime(
