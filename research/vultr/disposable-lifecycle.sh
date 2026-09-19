@@ -316,7 +316,7 @@ jq -n   --arg region "$REGION"   --arg plan "$PLAN"   --arg label "$LABEL"   --a
   }' > "${tmp}/instance.json"
 
 api_request POST "/v2/instances" "${tmp}/instance.json"
-expect_http 201 "instance_create" || exit 1
+expect_http 202 "instance_create" || exit 1
 instance_id="$(jq -r '.instance.id' "$HTTP_BODY")"
 [[ -n "$instance_id" && "$instance_id" != "null" ]] || exit 1
 log "instance_create=PASS id=${instance_id}"
