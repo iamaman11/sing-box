@@ -198,8 +198,8 @@ pub async fn cleanup_mesh_once<P: MeshProvider>(
 ) -> Result<MeshCleanupReport, String> {
     validate_policy(policy)?;
     let observed = observe_mesh(provider, desired).await?;
-    let plan =
-        verify_cleanup_digest(desired, &observed, expected_digest).map_err(|err| err.to_string())?;
+    let plan = verify_cleanup_digest(desired, &observed, expected_digest)
+        .map_err(|err| err.to_string())?;
     let action = plan.action.clone();
 
     let mutation = match &action {
@@ -433,9 +433,11 @@ mod tests {
             node_name: "singbox-line3-poc".to_owned(),
             routes: routes
                 .iter()
-                .map(|network| edge_controller_core::cloudflare_mesh_lifecycle::MeshRouteSpec {
-                    network: (*network).to_owned(),
-                })
+                .map(
+                    |network| edge_controller_core::cloudflare_mesh_lifecycle::MeshRouteSpec {
+                        network: (*network).to_owned(),
+                    },
+                )
                 .collect(),
         }
     }
