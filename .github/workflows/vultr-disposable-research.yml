@@ -1,0 +1,89 @@
+name: Vultr Disposable Research
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: vultr-disposable-research
+  queue: max
+
+jobs:
+  catalog:
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research catalog'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 5
+
+    steps:
+      - name: Select disposable candidates
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          api() {
+            curl --fail-with-body --silent --show-error               --connect-timeout 10 --max-time 30               --header "Authorization: Bearer ${VULTR_API_KEY}"               --header "Accept: application/json"               "https://api.vultr.com$1"
+          }
+
+          regions="$(api '/v2/regions?per_page=500')"
+          plans="$(api '/v2/plans?per_page=500')"
+          oses="$(api '/v2/os?per_page=500')"
+
+          echo 'candidate_os:'
+          jq -r '
+            .os
+            | map(select(.arch == "x64" and (.family == "debian" or .family == "ubuntu")))
+            | sort_by(.family, .name)
+            | .[]
+            | "  - id=\(.id) family=\(.family) name=\(.name)"
+          ' <<<"$oses" | head -n 20
+
+          echo 'candidate_regions:'
+          jq -r '
+            .regions
+            | map(select(.continent == "Europe"))
+            | sort_by(.country, .city)
+            | .[]
+            | "  - id=\(.id) city=\(.city) country=\(.country)"
+          ' <<<"$regions"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          jq -r '
+            .plans
+            | map(select(.type == "vc2" and .vcpu_count >= 1 and .ram >= 512))
+            | sort_by(.monthly_cost, .ram, .vcpu_count)
+            | .[]
+            | [.id, (.monthly_cost|tostring), (.ram|tostring), (.vcpu_count|tostring), (.disk|tostring), (.locations|join(","))]
+            | @tsv
+          ' <<<"$plans" > "$tmp/plans.tsv"
+
+          echo 'cheapest_europe_candidates:'
+          count=0
+          while IFS=$'\t' read -r plan cost ram vcpu disk locations; do
+            IFS=',' read -ra locs <<<"$locations"
+            for region in "${locs[@]}"; do
+              if jq -e --arg r "$region" '.regions[] | select(.id == $r and .continent == "Europe")' <<<"$regions" >/dev/null; then
+                city="$(jq -r --arg r "$region" '.regions[] | select(.id == $r) | .city' <<<"$regions")"
+                country="$(jq -r --arg r "$region" '.regions[] | select(.id == $r) | .country' <<<"$regions")"
+                printf '  - plan=%s cost=%s ram_mb=%s vcpu=%s disk_gb=%s region=%s city=%s country=%s\n'                   "$plan" "$cost" "$ram" "$vcpu" "$disk" "$region" "$city" "$country"
+                count=$((count+1))
+                if [[ "$count" -ge 20 ]]; then
+                  exit 0
+                fi
+              fi
+            done
+          done < "$tmp/plans.tsv"
