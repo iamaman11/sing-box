@@ -319,6 +319,7 @@ dependencies = [
  "edge-trace",
  "edge-trust",
  "prost",
+ "serde",
  "serde_json",
  "tokio",
  "tonic",
