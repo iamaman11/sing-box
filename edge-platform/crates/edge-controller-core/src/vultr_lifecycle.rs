@@ -1137,7 +1137,7 @@ mod tests {
         assert!(
             plan.reasons
                 .iter()
-                .any(|reason| reason == "firewall profile differs")
+                .any(|reason| reason == "firewall profile differs or is not provider-verified")
         );
     }
 
