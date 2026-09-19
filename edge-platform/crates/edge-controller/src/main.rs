@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 mod deploy_orchestrator;
 mod vultr_lifecycle_adapter;
+mod vultr_lifecycle_command;
+mod vultr_lifecycle_service;
 
 use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
@@ -162,6 +164,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let command = env::args().nth(1).unwrap_or_else(|| "serve".to_owned());
 
     match command.as_str() {
+        "vultr-lifecycle" => {
+            let args = env::args().skip(2).collect::<Vec<_>>();
+            vultr_lifecycle_command::run(args)
+                .await
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+        }
         "serve" => {
             let repo_root = repo_root_from_args(2)?;
             let addr = controller_addr_from_args(3)?;
