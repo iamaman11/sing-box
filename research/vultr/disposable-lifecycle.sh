@@ -59,6 +59,44 @@ api_request() {
   HTTP_BODY="$out"
 }
 
+raw_https_send_and_drop() {
+  local method="$1"
+  local path="$2"
+  local body_file="$3"
+
+  python3 - "$method" "$path" "$body_file" <<'PY'
+import http.client
+import os
+import sys
+import time
+
+method, path, body_path = sys.argv[1:4]
+with open(body_path, "rb") as f:
+    body = f.read()
+
+headers = {
+    "Authorization": "Bearer " + os.environ["VULTR_API_KEY"],
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "Content-Length": str(len(body)),
+    "Connection": "close",
+}
+
+conn = http.client.HTTPSConnection("api.vultr.com", timeout=15)
+conn.connect()
+conn.putrequest(method, path, skip_accept_encoding=True)
+for key, value in headers.items():
+    conn.putheader(key, value)
+conn.endheaders()
+conn.send(body)
+
+# Fault injection: the complete mutation request was transmitted, but the
+# client intentionally does not read status/body. Recovery must use observation.
+time.sleep(0.20)
+conn.close()
+PY
+}
+
 expect_http() {
   local expected="$1"
   local context="$2"
@@ -466,15 +504,12 @@ scrub_plain='#cloud-config
 '
 scrub_b64="$(printf '%s' "$scrub_plain" | base64 -w0)"
 jq -n --arg user_data "$scrub_b64" '{user_data:$user_data}' > "$tmp/user-data-scrub.json"
-api_request PATCH "/v2/instances/$instance_id" "$tmp/user-data-scrub.json"
-case "$HTTP_CODE" in
-  200|202)
-    log "user_data_scrub_request=PASS status=$HTTP_CODE"
-    ;;
-  *)
-    expect_http 200 "user_data_scrub_request" || exit 1
-    ;;
-esac
+
+# PATCH response-loss injection: send exactly one complete mutation request and
+# deliberately do not read its HTTP response. The controller must recover by
+# observing the desired state, never by parsing an unavailable response.
+raw_https_send_and_drop PATCH "/v2/instances/$instance_id" "$tmp/user-data-scrub.json"
+log "user_data_scrub_patch_response_loss_injected=PASS"
 
 scrubbed=0
 for _ in $(seq 1 30); do
@@ -493,6 +528,42 @@ if [[ "$scrubbed" -ne 1 ]]; then
   exit 1
 fi
 log "user_data_scrub_visibility=PASS"
+log "patch_uncertainty_recovery=PASS state=scrubbed"
+
+# Reissue the host certificate over the already trusted SSH channel. Only the
+# host public key leaves the guest; the host private key remains on the VM.
+remote_host_pub="$tmp/remote-host-ed25519.pub"
+"${ssh_base[@]}" 'sudo cat /etc/ssh/ssh_host_ed25519_key.pub' > "$remote_host_pub"
+
+original_host_material="$(awk '{print $1" "$2}' "$tmp/host-ed25519.pub")"
+remote_host_material="$(awk '{print $1" "$2}' "$remote_host_pub")"
+if [[ "$original_host_material" != "$remote_host_material" ]]; then
+  log "host_certificate_rotation_public_key=FAIL"
+  exit 1
+fi
+log "host_certificate_rotation_public_key=PASS"
+
+cp "$remote_host_pub" "$tmp/rotated-host.pub"
+ssh-keygen -q -s "$operator_key" -I "${LABEL}-rotated" -z 2 -h -n "$HOSTNAME" -V "-5m:+2h" "$tmp/rotated-host.pub"
+rotated_cert="$tmp/rotated-host-cert.pub"
+if [[ ! -s "$rotated_cert" ]]; then
+  log "host_certificate_rotation_sign=FAIL"
+  exit 1
+fi
+log "host_certificate_rotation_sign=PASS serial=2"
+
+rotated_cert_b64="$(base64 -w0 < "$rotated_cert")"
+"${ssh_base[@]}" "printf '%s' '$rotated_cert_b64' | base64 -d | sudo tee /etc/ssh/ssh_host_ed25519_key-cert.pub >/dev/null && sudo chmod 0644 /etc/ssh/ssh_host_ed25519_key-cert.pub && sudo sshd -t && sudo systemctl reload ssh"
+
+remote_cert_meta="$("${ssh_base[@]}" 'sudo ssh-keygen -L -f /etc/ssh/ssh_host_ed25519_key-cert.pub')"
+grep -Fq "Key ID: \"${LABEL}-rotated\"" <<<"$remote_cert_meta"
+grep -Eq 'Serial:[[:space:]]+2$' <<<"$remote_cert_meta"
+log "host_certificate_rotation_install=PASS serial=2"
+
+# A fresh client connection still has only the CA trust entry, so success after
+# reload proves that sshd is presenting a valid newly signed host certificate.
+"${ssh_base[@]}" 'test -f /var/lib/singbox-lifecycle/research-ready'
+log "host_certificate_rotation_strict_reconnect=PASS"
 
 # Firewall propagation experiment. A previous run showed that deleting the only
 # allow rule did not close new TCP/22 connections within 40 seconds. Avoid an
