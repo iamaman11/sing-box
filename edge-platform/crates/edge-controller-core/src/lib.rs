@@ -1,3 +1,4 @@
+pub mod cloudflare_mesh_lifecycle;
 pub mod vultr_lifecycle;
 
 use edge_state::EdgeState;
