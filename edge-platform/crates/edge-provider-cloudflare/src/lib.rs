@@ -375,10 +375,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(body["network"], "203.0.113.10/32");
-        assert_eq!(
-            body["tunnel_id"],
-            "11111111-1111-1111-1111-111111111111"
-        );
+        assert_eq!(body["tunnel_id"], "11111111-1111-1111-1111-111111111111");
         assert_eq!(body["comment"], "line-3-poc");
     }
 
