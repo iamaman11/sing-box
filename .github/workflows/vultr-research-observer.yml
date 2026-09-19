@@ -22,18 +22,35 @@ jobs:
     timeout-minutes: 3
 
     steps:
-      - name: Observe disposable instances
+      - name: Observe disposable resource leaks
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          body="$(
-            curl --fail --silent --show-error --max-time 30               --header "Authorization: Bearer ${VULTR_API_KEY}"               --header "Accept: application/json"               "https://api.vultr.com/v2/instances?tag=research-disposable&per_page=500"
-          )"
-          jq -r '
-            .instances
-            | sort_by(.date_created)
-            | .[]
-            | "instance id=\(.id) label=\(.label) region=\(.region) plan=\(.plan) status=\(.status) power=\(.power_status) server=\(.server_status) ip=\(.main_ip)"
-          ' <<<"$body"
+
+          api() {
+            curl --fail --silent --show-error --max-time 30 \
+              --header "Authorization: Bearer ${VULTR_API_KEY}" \
+              --header "Accept: application/json" \
+              "https://api.vultr.com$1"
+          }
+
+          instances="$(api '/v2/instances?tag=research-disposable&per_page=500')"
+          firewalls="$(api '/v2/firewalls?per_page=500')"
+          ssh_keys="$(api '/v2/ssh-keys?per_page=500')"
+
+          ni="$(jq '[.instances[] | select(((.tags // []) | index("research-disposable")) != null)] | length' <<<"$instances")"
+          nf="$(jq '[.firewall_groups[] | select((.description // "") | startswith("singbox-research-"))] | length' <<<"$firewalls")"
+          nk="$(jq '[.ssh_keys[] | select((.name // "") | startswith("singbox-research-"))] | length' <<<"$ssh_keys")"
+
+          echo "observer.instances=$ni"
+          echo "observer.firewalls=$nf"
+          echo "observer.ssh_keys=$nk"
+
+          if [[ "$ni" != 0 || "$nf" != 0 || "$nk" != 0 ]]; then
+            echo "observer.overall=FAIL"
+            exit 1
+          fi
+
+          echo "observer.overall=PASS"
