@@ -92,8 +92,11 @@ jobs:
     permissions:
       actions: read
       contents: read
+      packages: read
     outputs:
       build_run_id: ${{ steps.resolve_build.outputs.run_id }}
+      edge_gateway_image: ${{ steps.resolve_images.outputs.edge_gateway_image }}
+      edge_warp_egress_image: ${{ steps.resolve_images.outputs.edge_warp_egress_image }}
     steps:
       - name: Checkout exact canonical revision
         shell: bash
@@ -157,6 +160,56 @@ jobs:
           test "$(sha256sum "${controller}" | awk '{print $1}')" = "$(jq -er '.controller_sha256' "${manifest}")"
           test "$(sha256sum "${agent}" | awk '{print $1}')" = "$(jq -er '.agent_sha256' "${manifest}")"
 
+      - name: Resolve accepted content-addressed application images
+        id: resolve_images
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs_json="$(gh api --method GET \
+            -f branch=main \
+            -f event=push \
+            -f status=success \
+            -f per_page=20 \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/vultr-stack-ci.yml/runs")"
+          stack_sha="$(jq -r '.workflow_runs | sort_by(.created_at) | last | .head_sha // empty' <<<"${runs_json}")"
+          [[ "${stack_sha}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "no successful accepted Vultr Stack CI run was found" >&2
+            exit 1
+          }
+          git fetch --no-tags --depth=1 origin "${stack_sha}"
+          current_gateway_tree="$(git rev-parse HEAD:win/vultr-waw/stack/edge-gateway)"
+          current_warp_tree="$(git rev-parse HEAD:win/vultr-waw/stack/warp-egress)"
+          accepted_gateway_tree="$(git rev-parse "${stack_sha}:win/vultr-waw/stack/edge-gateway")"
+          accepted_warp_tree="$(git rev-parse "${stack_sha}:win/vultr-waw/stack/warp-egress")"
+          test "${current_gateway_tree}" = "${accepted_gateway_tree}"
+          test "${current_warp_tree}" = "${accepted_warp_tree}"
+
+          gateway_tag="ghcr.io/iamaman11/vultr-edge-gateway:tree-${current_gateway_tree}"
+          warp_tag="ghcr.io/iamaman11/vultr-warp-egress:tree-${current_warp_tree}"
+          printf '%s' "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin >/dev/null
+
+          resolve_ref() {
+            local image="$1"
+            local digest
+            digest="$(docker buildx imagetools inspect "${image}" | awk '/^Digest:/ {print $2; exit}')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "accepted prebuilt image is unavailable: ${image}" >&2
+              exit 1
+            }
+            printf '%s@%s' "${image%%:*}" "${digest}"
+          }
+
+          gateway_ref="$(resolve_ref "${gateway_tag}")"
+          warp_ref="$(resolve_ref "${warp_tag}")"
+          [[ "${gateway_ref}" =~ @sha256:[0-9a-f]{64}$ ]]
+          [[ "${warp_ref}" =~ @sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "edge_gateway_image=${gateway_ref}"
+            echo "edge_warp_egress_image=${warp_ref}"
+          } >> "${GITHUB_OUTPUT}"
+
   execute:
     needs: [authorize, verify]
     if: needs.authorize.outputs.operation != 'acceptance'
@@ -172,6 +225,8 @@ jobs:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
       SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
       ROLLBACK_DIGEST: ${{ needs.authorize.outputs.rollback_digest }}
+      EDGE_APPLICATION_GATEWAY_IMAGE: ${{ needs.verify.outputs.edge_gateway_image }}
+      EDGE_APPLICATION_WARP_EGRESS_IMAGE: ${{ needs.verify.outputs.edge_warp_egress_image }}
 
     steps:
       - name: Checkout exact canonical revision
@@ -337,6 +392,8 @@ jobs:
       contents: read
     env:
       SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+      EDGE_APPLICATION_GATEWAY_IMAGE: ${{ needs.verify.outputs.edge_gateway_image }}
+      EDGE_APPLICATION_WARP_EGRESS_IMAGE: ${{ needs.verify.outputs.edge_warp_egress_image }}
 
     steps:
       - name: Checkout exact canonical revision
@@ -441,7 +498,8 @@ jobs:
           PROXY_CERT_CN=application-acceptance.local
           TUNNEL_DOMAIN=
           ACME_EMAIL=
-          EDGE_USE_PREBUILT_IMAGES=0
+          EDGE_GATEWAY_IMAGE=${EDGE_APPLICATION_GATEWAY_IMAGE}
+          EDGE_WARP_EGRESS_IMAGE=${EDGE_APPLICATION_WARP_EGRESS_IMAGE}
           EOF
           cat > "${runtime_v2}" <<EOF
           PROXY_USERNAME=acceptance
@@ -449,7 +507,8 @@ jobs:
           PROXY_CERT_CN=application-acceptance.local
           TUNNEL_DOMAIN=
           ACME_EMAIL=
-          EDGE_USE_PREBUILT_IMAGES=0
+          EDGE_GATEWAY_IMAGE=${EDGE_APPLICATION_GATEWAY_IMAGE}
+          EDGE_WARP_EGRESS_IMAGE=${EDGE_APPLICATION_WARP_EGRESS_IMAGE}
           EOF
           chmod 600 "${runtime_v1}" "${runtime_v2}"
 
