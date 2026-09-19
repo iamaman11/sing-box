@@ -600,8 +600,7 @@ fn write_private_file(path: &Path, content: &[u8]) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
-    fs::write(path, content)
-        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     set_payload_permissions(path, false, true)
 }
 
@@ -621,7 +620,11 @@ fn set_payload_permissions(path: &Path, executable: bool, sensitive: bool) -> Re
 }
 
 #[cfg(not(unix))]
-fn set_payload_permissions(_path: &Path, _executable: bool, _sensitive: bool) -> Result<(), String> {
+fn set_payload_permissions(
+    _path: &Path,
+    _executable: bool,
+    _sensitive: bool,
+) -> Result<(), String> {
     Ok(())
 }
 
@@ -911,7 +914,12 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&root).unwrap();
-        for path in ["../escape", "/tmp/escape", "nested/../escape", r"nested\escape"] {
+        for path in [
+            "../escape",
+            "/tmp/escape",
+            "nested/../escape",
+            r"nested\escape",
+        ] {
             let error = write_payload_file(
                 &root,
                 &BundleFilePayload {
