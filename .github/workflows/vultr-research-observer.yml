@@ -40,9 +40,21 @@ jobs:
           firewalls="$(api '/v2/firewalls?per_page=500')"
           ssh_keys="$(api '/v2/ssh-keys?per_page=500')"
 
-          ni="$(jq '[.instances[] | select(((.tags // []) | index("research-disposable")) != null)] | length' <<<"$instances")"
-          nf="$(jq '[.firewall_groups[] | select((.description // "") | startswith("singbox-research-"))] | length' <<<"$firewalls")"
-          nk="$(jq '[.ssh_keys[] | select((.name // "") | startswith("singbox-research-"))] | length' <<<"$ssh_keys")"
+          ni="$(jq '[.instances[]
+            | select(
+                (((.tags // []) | index("research-disposable")) != null)
+                or (((.tags // []) | index("research-uncertain")) != null)
+              )] | length' <<<"$instances")"
+          nf="$(jq '[.firewall_groups[]
+            | select(
+                ((.description // "") | startswith("singbox-research-"))
+                or ((.description // "") | startswith("singbox-uncertain-"))
+              )] | length' <<<"$firewalls")"
+          nk="$(jq '[.ssh_keys[]
+            | select(
+                ((.name // "") | startswith("singbox-research-"))
+                or ((.name // "") | startswith("singbox-uncertain-"))
+              )] | length' <<<"$ssh_keys")"
 
           echo "observer.instances=$ni"
           echo "observer.firewalls=$nf"
