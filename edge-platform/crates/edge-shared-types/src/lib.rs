@@ -13,11 +13,11 @@ pub mod release {
 }
 
 pub use edge::platform::v1::*;
+use prost::Message;
 pub use release::v1::{
     CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
     WindowsRuntime,
 };
-use prost::Message;
 
 pub const RELEASE_SET_SCHEMA_VERSION: u32 = 1;
 
@@ -79,10 +79,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
         &windows.controller_sha256,
     )?;
     validate_sha256_bytes("windows_runtime.console_sha256", &windows.console_sha256)?;
-    validate_sha256_bytes(
-        "windows_runtime.sing_box_sha256",
-        &windows.sing_box_sha256,
-    )?;
+    validate_sha256_bytes("windows_runtime.sing_box_sha256", &windows.sing_box_sha256)?;
     if windows.sing_box_sha256 != sing_box.windows_amd64_sha256 {
         return Err(
             "windows_runtime.sing_box_sha256 must equal sing_box.windows_amd64_sha256".to_owned(),
@@ -106,7 +103,10 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
             .as_ref()
             .ok_or_else(|| "vm_runtime.warp_egress_image is required".to_owned())?,
     )?;
-    validate_version_token("vm_runtime.docker_engine_version", &vm.docker_engine_version)?;
+    validate_version_token(
+        "vm_runtime.docker_engine_version",
+        &vm.docker_engine_version,
+    )?;
     validate_version_token("vm_runtime.containerd_version", &vm.containerd_version)?;
     validate_version_token("vm_runtime.compose_version", &vm.compose_version)?;
 
@@ -208,7 +208,6 @@ fn validate_oci_image(label: &str, image: &OciImage) -> Result<(), String> {
     }
     validate_sha256_bytes(&format!("{label}.sha256"), &image.sha256)
 }
-
 
 impl PlatformError {
     pub fn new(
