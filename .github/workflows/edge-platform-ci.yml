@@ -4,7 +4,9 @@ on:
   push:
     paths:
       - "edge-platform/**"
+      - "infra/vultr/**"
       - ".github/workflows/edge-platform-ci.yml"
+      - ".github/workflows/vultr-lifecycle.yml"
   pull_request:
     paths:
       - "edge-platform/**"
