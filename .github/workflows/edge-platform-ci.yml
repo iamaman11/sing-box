@@ -65,6 +65,91 @@ jobs:
         shell: bash
         run: cargo test --workspace --locked
 
+  windows:
+    needs: verify
+    runs-on: windows-2025
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact revision
+        shell: pwsh
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          git init .
+          git remote add origin "https://github.com/$env:REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin $env:REVISION
+          git checkout --detach FETCH_HEAD
+          if ((git rev-parse HEAD).Trim() -ne $env:REVISION) { throw "exact revision checkout failed" }
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+
+      - name: Validate Windows operational scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $errors = @()
+          Get-ChildItem edge-platform/scripts,win/windows -Recurse -File -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) {
+              $errors += $parseErrors | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($errors.Count -gt 0) { throw ($errors -join [Environment]::NewLine) }
+
+          $legacy = git grep -n -E 'edge-platform-win-target|target\\debug\\edge-(controller|console)\.exe' -- edge-platform/scripts win/windows
+          if ($LASTEXITCODE -eq 0) { throw ("Local debug binary path is forbidden in Windows operational scripts:" + [Environment]::NewLine + $legacy) }
+          if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+
+      - name: Build exact Windows control binaries
+        working-directory: edge-platform
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build --locked --release -p edge-controller --bin edge-controller -p edge-console --bin edge-console
+
+      - name: Package exact Windows control artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:RUNNER_TEMP "edge-platform-windows"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "edge-platform\target\release\edge-controller.exe" (Join-Path $out "edge-controller.exe")
+          Copy-Item "edge-platform\target\release\edge-console.exe" (Join-Path $out "edge-console.exe")
+          $controllerSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-controller.exe")).Hash.ToLowerInvariant()
+          $consoleSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-console.exe")).Hash.ToLowerInvariant()
+          $manifest = [ordered]@{
+            schema = 1
+            source_revision = $env:GITHUB_SHA
+            controller_sha256 = $controllerSha
+            console_sha256 = $consoleSha
+          }
+          $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $out "manifest.json")
+
+      - name: Publish exact Windows control artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/edge-platform-windows
+          if-no-files-found: error
+          retention-days: 30
+
+
   release:
     needs: verify
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

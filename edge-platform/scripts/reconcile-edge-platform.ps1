@@ -1,6 +1,6 @@
 param(
     [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
-    [string]$ConsoleExe = "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe"
+    [string]$ConsoleExe = (Join-Path $env:LOCALAPPDATA "edge-platform\bin\edge-console.exe")
 )
 
 $ErrorActionPreference = "Stop"

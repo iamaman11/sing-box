@@ -1,6 +1,6 @@
 param(
     [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
-    [string]$ControllerExe = "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-controller.exe",
+    [string]$ControllerExe = "",
     [string]$BindAddress = "127.0.0.1:50051",
     [int]$WaitSeconds = 30
 )
@@ -10,6 +10,34 @@ $ErrorActionPreference = "Stop"
 function Test-ControllerPort {
     param([int]$Port)
     return [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+}
+
+function Resolve-ControllerExe {
+    param([string]$ExplicitPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        if (-not (Test-Path -LiteralPath $ExplicitPath)) { throw "Controller binary not found: $ExplicitPath" }
+        return (Resolve-Path -LiteralPath $ExplicitPath).Path
+    }
+
+    $currentPath = Join-Path $env:LOCALAPPDATA "edge-platform\current.json"
+    if (-not (Test-Path -LiteralPath $currentPath)) {
+        throw "Accepted Windows control release is not installed. Run edge-platform\scripts\install-windows-release.ps1."
+    }
+
+    $current = Get-Content -Raw $currentPath | ConvertFrom-Json
+    if ($current.schema -ne 1 -or [string]$current.source_revision -notmatch '^[0-9a-f]{40}$') {
+        throw "Installed Windows control pointer has invalid schema"
+    }
+
+    $path = [string]$current.controller_path
+    $expectedSha = ([string]$current.controller_sha256).ToLowerInvariant()
+    if (-not (Test-Path -LiteralPath $path)) { throw "Installed controller binary not found: $path" }
+    if ($expectedSha -notmatch '^[0-9a-f]{64}$') { throw "Installed controller digest is invalid" }
+
+    $actualSha = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+    if ($actualSha -ne $expectedSha) { throw "Installed controller binary failed SHA-256 verification" }
+    return (Resolve-Path -LiteralPath $path).Path
 }
 
 function Get-ExistingController {
@@ -43,26 +71,44 @@ function Get-RuntimeProxyCredentials {
 if (-not (Test-Path $RepoRoot)) {
     throw "Repo root not found: $RepoRoot"
 }
-if (-not (Test-Path $ControllerExe)) {
-    throw "Controller binary not found: $ControllerExe"
-}
+$ControllerExe = Resolve-ControllerExe -ExplicitPath $ControllerExe
 
 $port = [int]($BindAddress.Split(":")[-1])
-$existing = Get-ExistingController -ExecutablePath $ControllerExe -RepoRoot $RepoRoot -BindAddress $BindAddress
 $runtimeDir = Join-Path $RepoRoot "edge-platform\.runtime"
 $pidFile = Join-Path $runtimeDir "controller.pid"
+$existing = Get-ExistingController -ExecutablePath $ControllerExe -RepoRoot $RepoRoot -BindAddress $BindAddress
+
 if ($existing -and (Test-ControllerPort -Port $port)) {
     $managedPid = if (Test-Path $pidFile) { (Get-Content -Raw $pidFile).Trim() } else { "" }
-    if ($managedPid -eq [string]$existing.ProcessId) {
-        Write-Output "edge-controller already running (pid $($existing.ProcessId))"
-        exit 0
+    if ($managedPid -ne [string]$existing.ProcessId) {
+        Set-Content -NoNewline -Path $pidFile -Value $existing.ProcessId
     }
-    # A listening controller may be serving a long-running deploy or destroy.
-    # A stale/missing PID file is not evidence that the process is unsafe; adopt
-    # the verified process instead of interrupting the operation in progress.
-    Set-Content -NoNewline -Path $pidFile -Value $existing.ProcessId
-    Write-Output "Adopted existing edge-controller process (pid $($existing.ProcessId))"
+    Write-Output "edge-controller already running accepted release (pid $($existing.ProcessId))"
     exit 0
+}
+
+if (Test-ControllerPort -Port $port) {
+    $managedPid = if (Test-Path $pidFile) { (Get-Content -Raw $pidFile).Trim() } else { "" }
+    $managed = $null
+    if ($managedPid -match '^\d+$') {
+        $managed = Get-CimInstance Win32_Process -Filter "ProcessId=$managedPid" -ErrorAction SilentlyContinue
+    }
+    $managedIsOurs = $managed -and
+        $managed.Name -ieq "edge-controller.exe" -and
+        $managed.CommandLine -like "*serve $RepoRoot $BindAddress*"
+
+    if (-not $managedIsOurs) {
+        throw "Port $port is occupied by an unmanaged process; refusing to terminate it"
+    }
+
+    Stop-Process -Id ([int]$managedPid) -Force
+    $stopDeadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $stopDeadline -and (Test-ControllerPort -Port $port)) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Test-ControllerPort -Port $port) {
+        throw "Previous managed edge-controller did not release port $port"
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
@@ -72,12 +118,15 @@ $stderr = Join-Path $runtimeDir "controller-service-stderr.log"
 $proxyCredentials = Get-RuntimeProxyCredentials (Join-Path $runtimeDir "proxy-credentials-v1.dpapi")
 $env:EDGE_PROXY_USERNAME = [string]$proxyCredentials.username
 $env:EDGE_PROXY_PASSWORD = [string]$proxyCredentials.password
-Start-Process -FilePath $ControllerExe `
-    -ArgumentList @("serve", $RepoRoot, $BindAddress) `
-    -WorkingDirectory $RepoRoot `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $stdout `
-    -RedirectStandardError $stderr | Out-Null
+$startArgs = @{
+    FilePath = $ControllerExe
+    ArgumentList = @("serve", $RepoRoot, $BindAddress)
+    WorkingDirectory = $RepoRoot
+    WindowStyle = "Hidden"
+    RedirectStandardOutput = $stdout
+    RedirectStandardError = $stderr
+}
+Start-Process @startArgs | Out-Null
 
 $deadline = (Get-Date).AddSeconds($WaitSeconds)
 while ((Get-Date) -lt $deadline) {
@@ -85,7 +134,7 @@ while ((Get-Date) -lt $deadline) {
         $started = Get-ExistingController -ExecutablePath $ControllerExe -RepoRoot $RepoRoot -BindAddress $BindAddress
         if ($started) {
             Set-Content -NoNewline -Path $pidFile -Value $started.ProcessId
-            Write-Output "edge-controller started for Windows-local control on $BindAddress (pid $($started.ProcessId))"
+            Write-Output "edge-controller started from accepted Windows release on $BindAddress (pid $($started.ProcessId))"
             exit 0
         }
     }

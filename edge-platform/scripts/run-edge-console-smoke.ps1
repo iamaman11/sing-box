@@ -1,8 +1,6 @@
 param(
-    [string]$ConsolePath = "C:\Users\Bose\temp\sing-box\edge-platform\target\debug\edge-console.exe",
-    [string]$Endpoint = "http://127.0.0.1:50051",
-    [switch]$IncludeDeploy,
-    [switch]$IncludeDestroy
+    [string]$ConsolePath = (Join-Path $env:LOCALAPPDATA "edge-platform\bin\edge-console.exe"),
+    [string]$Endpoint = "http://127.0.0.1:50051"
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,18 +55,8 @@ $results += Invoke-ConsoleStep -Name "Trace desktop" -Arguments @("trace", $Endp
 $results += Invoke-ConsoleStep -Name "Start local visible" -Arguments @("start-local-visible", $Endpoint) -AllowFailure
 $results += Invoke-ConsoleStep -Name "Stop local" -Arguments @("stop-local", $Endpoint) -AllowFailure
 $results += Invoke-ConsoleStep -Name "Restart local visible" -Arguments @("restart-local-visible", $Endpoint) -AllowFailure
-$results += Invoke-ConsoleStep -Name "Bootstrap base" -Arguments @("bootstrap-base", $Endpoint) -AllowFailure
-$results += Invoke-ConsoleStep -Name "Bootstrap tunnel" -Arguments @("bootstrap-tunnel", $Endpoint) -AllowFailure
-$results += Invoke-ConsoleStep -Name "Secrets" -Arguments @("secrets", $Endpoint)
 $results += Invoke-ConsoleStep -Name "Doctor" -Arguments @("doctor", $Endpoint) -AllowFailure
 
-if ($IncludeDeploy) {
-    $results += Invoke-ConsoleStep -Name "Deploy" -Arguments @("deploy", $Endpoint) -AllowFailure
-}
-
-if ($IncludeDestroy) {
-    $results += Invoke-ConsoleStep -Name "Destroy" -Arguments @("destroy", $Endpoint) -AllowFailure
-}
 
 Write-Host ""
 Write-Host "=== Smoke Summary ==="

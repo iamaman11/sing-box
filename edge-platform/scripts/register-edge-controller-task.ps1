@@ -1,6 +1,6 @@
 param(
     [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
-    [string]$ControllerExe = "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-controller.exe",
+    [string]$ControllerExe = "",
     [string]$BindAddress = "127.0.0.1:50051",
     [string]$TaskName = "EdgePlatformController"
 )
