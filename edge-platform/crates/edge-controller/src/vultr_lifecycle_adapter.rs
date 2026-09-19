@@ -5,8 +5,12 @@ use edge_controller_core::vultr_lifecycle::{
 use edge_provider_vultr::VultrInstance;
 
 pub fn normalize_vultr_instance(instance: &VultrInstance) -> Result<ObservedMachine, String> {
-    let decoded = decode_provider_tags(&instance.tags)
-        .map_err(|err| format!("invalid lifecycle identity on Vultr instance {}: {err}", instance.id))?;
+    let decoded = decode_provider_tags(&instance.tags).map_err(|err| {
+        format!(
+            "invalid lifecycle identity on Vultr instance {}: {err}",
+            instance.id
+        )
+    })?;
 
     Ok(ObservedMachine {
         provider_id: instance.id.clone(),
@@ -53,9 +57,7 @@ pub fn managed_provider_tags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edge_controller_core::vultr_lifecycle::{
-        MANAGED_BY_IDENTITY, PlanClass, plan_machine,
-    };
+    use edge_controller_core::vultr_lifecycle::{MANAGED_BY_IDENTITY, PlanClass, plan_machine};
     use edge_provider_vultr::mock_instance;
 
     fn desired() -> DesiredState {
@@ -98,7 +100,10 @@ mod tests {
             observed.ownership.managed_by.as_deref(),
             Some(MANAGED_BY_IDENTITY)
         );
-        assert_eq!(observed.ownership.environment.as_deref(), Some("production"));
+        assert_eq!(
+            observed.ownership.environment.as_deref(),
+            Some("production")
+        );
         assert_eq!(observed.ownership.logical_id.as_deref(), Some("edge-1"));
         assert_eq!(observed.tags, vec!["primary".to_owned()]);
 
