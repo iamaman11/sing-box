@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "environment": "lifecycle-acceptance",
+  "vultr_spec_path": "infra/vultr/disposable-acceptance.json",
+  "machine_id": "lifecycle-acceptance-1",
+  "application_profile": "application-acceptance",
+  "bundle_root": "win/vultr-waw/stack",
+  "runtime_env_required": true,
+  "bootstrap_mode": "base"
+}
