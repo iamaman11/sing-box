@@ -352,21 +352,24 @@ jobs:
           retention-days: 30
 
 
-  release:
-    name: Publish accepted candidate
-    needs: [dependencies, windows]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  linux_candidate:
+    name: Build Linux and OCI candidate
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor_id == '44100369'
+    needs: dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
       contents: read
       packages: write
     steps:
-      - name: Checkout exact accepted revision
+      - name: Checkout exact candidate revision
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          REVISION: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           git init .
@@ -384,7 +387,7 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Build exact reusable release binaries
+      - name: Build exact reusable Linux binaries
         working-directory: edge-platform
         shell: bash
         run: |
@@ -392,25 +395,50 @@ jobs:
           cargo build --locked --release -p edge-controller --bin edge-controller
           cargo build --locked --release -p edge-agent --bin edge-agent
 
-      - name: Publish exact application images
+      - name: Build and publish exact candidate images
         id: images
         shell: bash
         env:
           GHCR_TOKEN: ${{ github.token }}
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
+          SING_BOX_URL: ${{ needs.dependencies.outputs.sing_box_linux_url }}
+          SING_BOX_SHA256: ${{ needs.dependencies.outputs.sing_box_linux_sha256 }}
+          WARP_VERSION: ${{ needs.dependencies.outputs.warp_version }}
+          WARP_URL: ${{ needs.dependencies.outputs.warp_url }}
+          WARP_SHA256: ${{ needs.dependencies.outputs.warp_sha256 }}
+          DEBIAN_BASE_IMAGE: ${{ needs.dependencies.outputs.debian_base_image }}
+          UBUNTU_BASE_IMAGE: ${{ needs.dependencies.outputs.ubuntu_base_image }}
         run: |
           set -euo pipefail
           registry="ghcr.io"
           owner="iamaman11"
-          build_tag="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_tag="candidate-${CANDIDATE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           gateway_tag="${registry}/${owner}/vultr-edge-gateway:${build_tag}"
           warp_tag="${registry}/${owner}/vultr-warp-egress:${build_tag}"
 
           printf '%s' "${GHCR_TOKEN}" | docker login "${registry}" -u "${GITHUB_ACTOR}" --password-stdin
 
-          docker build             --label "org.opencontainers.image.revision=${GITHUB_SHA}"             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"             -t "${gateway_tag}"             win/vultr-waw/stack/edge-gateway
+          docker build \
+            --label "org.opencontainers.image.revision=${CANDIDATE_REVISION}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-arg "BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+            --build-arg "SING_BOX_VERSION=${SING_BOX_VERSION}" \
+            --build-arg "SING_BOX_URL=${SING_BOX_URL}" \
+            --build-arg "SING_BOX_SHA256=${SING_BOX_SHA256}" \
+            -t "${gateway_tag}" \
+            win/vultr-waw/stack/edge-gateway
           docker push "${gateway_tag}"
 
-          docker build             --label "org.opencontainers.image.revision=${GITHUB_SHA}"             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"             -t "${warp_tag}"             win/vultr-waw/stack/warp-egress
+          docker build \
+            --label "org.opencontainers.image.revision=${CANDIDATE_REVISION}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-arg "BASE_IMAGE=${UBUNTU_BASE_IMAGE}" \
+            --build-arg "WARP_VERSION=${WARP_VERSION}" \
+            --build-arg "WARP_URL=${WARP_URL}" \
+            --build-arg "WARP_SHA256=${WARP_SHA256}" \
+            -t "${warp_tag}" \
+            win/vultr-waw/stack/warp-egress
           docker push "${warp_tag}"
 
           gateway_digest="$(docker buildx imagetools inspect "${gateway_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
@@ -418,50 +446,210 @@ jobs:
           [[ "${gateway_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "${warp_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
 
-          gateway_ref="${registry}/${owner}/vultr-edge-gateway@${gateway_digest}"
-          warp_ref="${registry}/${owner}/vultr-warp-egress@${warp_digest}"
+          printf 'gateway_ref=%s\n' "${registry}/${owner}/vultr-edge-gateway@${gateway_digest}" >> "${GITHUB_OUTPUT}"
+          printf 'warp_ref=%s\n' "${registry}/${owner}/vultr-warp-egress@${warp_digest}" >> "${GITHUB_OUTPUT}"
 
-          docker logout "${registry}" >/dev/null
-          docker pull "${gateway_ref}" >/dev/null
-          docker pull "${warp_ref}" >/dev/null
-
-          printf 'gateway_ref=%s\n' "${gateway_ref}" >> "${GITHUB_OUTPUT}"
-          printf 'warp_ref=%s\n' "${warp_ref}" >> "${GITHUB_OUTPUT}"
-
-      - name: Package exact reusable release artifact
+      - name: Package exact Linux candidate
         shell: bash
         env:
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
           EDGE_GATEWAY_IMAGE: ${{ steps.images.outputs.gateway_ref }}
           EDGE_WARP_EGRESS_IMAGE: ${{ steps.images.outputs.warp_ref }}
+          SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
+          SING_BOX_LINUX_SHA256: ${{ needs.dependencies.outputs.sing_box_linux_sha256 }}
+          WARP_VERSION: ${{ needs.dependencies.outputs.warp_version }}
+          WARP_SHA256: ${{ needs.dependencies.outputs.warp_sha256 }}
+          DEBIAN_BASE_IMAGE: ${{ needs.dependencies.outputs.debian_base_image }}
+          UBUNTU_BASE_IMAGE: ${{ needs.dependencies.outputs.ubuntu_base_image }}
+          MESH_IMAGE: ${{ needs.dependencies.outputs.mesh_image }}
         run: |
           set -euo pipefail
           out="${RUNNER_TEMP}/edge-platform-release"
           install -d -m 0755 "${out}"
           install -m 0755 edge-platform/target/release/edge-controller "${out}/edge-controller"
           install -m 0755 edge-platform/target/release/edge-agent "${out}/edge-agent"
+
           controller_sha="$(sha256sum "${out}/edge-controller" | awk '{print $1}')"
           agent_sha="$(sha256sum "${out}/edge-agent" | awk '{print $1}')"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+
           [[ "${EDGE_GATEWAY_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
           [[ "${EDGE_WARP_EGRESS_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
+
           jq -n \
-            --arg source_revision "${GITHUB_SHA}" \
+            --arg source_revision "${CANDIDATE_REVISION}" \
+            --arg source_tree "${source_tree}" \
             --arg controller_sha256 "${controller_sha}" \
             --arg agent_sha256 "${agent_sha}" \
             --arg edge_gateway_image "${EDGE_GATEWAY_IMAGE}" \
             --arg edge_warp_egress_image "${EDGE_WARP_EGRESS_IMAGE}" \
+            --arg sing_box_version "${SING_BOX_VERSION}" \
+            --arg sing_box_linux_sha256 "${SING_BOX_LINUX_SHA256}" \
+            --arg warp_version "${WARP_VERSION}" \
+            --arg warp_sha256 "${WARP_SHA256}" \
+            --arg debian_base_image "${DEBIAN_BASE_IMAGE}" \
+            --arg ubuntu_base_image "${UBUNTU_BASE_IMAGE}" \
+            --arg mesh_image "${MESH_IMAGE}" \
             '{
-              schema:1,
+              schema:2,
               source_revision:$source_revision,
+              source_tree:$source_tree,
               controller_sha256:$controller_sha256,
               agent_sha256:$agent_sha256,
               edge_gateway_image:$edge_gateway_image,
-              edge_warp_egress_image:$edge_warp_egress_image
+              edge_warp_egress_image:$edge_warp_egress_image,
+              sing_box_version:$sing_box_version,
+              sing_box_linux_sha256:$sing_box_linux_sha256,
+              warp_version:$warp_version,
+              warp_sha256:$warp_sha256,
+              debian_base_image:$debian_base_image,
+              ubuntu_base_image:$ubuntu_base_image,
+              mesh_image:$mesh_image
             }' > "${out}/manifest.json"
 
-      - name: Publish exact reusable release artifact
+      - name: Store exact Linux candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-release-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/edge-platform-release
+          if-no-files-found: error
+          retention-days: 30
+
+  candidate_complete:
+    name: Candidate complete
+    if: github.event_name == 'pull_request'
+    needs: [verify, dependencies, windows, linux_candidate]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record exact candidate evidence
+        shell: bash
+        env:
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          echo "candidate_revision=${CANDIDATE_REVISION}"
+          echo "All candidate build and verification jobs passed."
+
+  promote:
+    name: Promote accepted candidate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    steps:
+      - name: Locate exact successful candidate
+        id: locate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls")"
+          test "$(jq 'length' <<<"${prs}")" -eq 1
+          candidate_revision="$(jq -er '.[0] | select(.merged_at != null) | .head.sha' <<<"${prs}")"
+
+          accepted_tree="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}" --jq '.tree.sha')"
+          candidate_tree="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}" --jq '.tree.sha')"
+          test "${accepted_tree}" = "${candidate_tree}"
+
+          runs="$(gh api "repos/${REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs?event=pull_request&head_sha=${candidate_revision}&status=success&per_page=100")"
+          candidate_run_id="$(jq -er --arg head "${candidate_revision}" '
+            [.workflow_runs[]
+              | select(.head_sha == $head)
+              | select(.event == "pull_request")
+              | select(.conclusion == "success")]
+            | sort_by(.id)
+            | last
+            | .id
+          ' <<<"${runs}")"
+
+          printf 'candidate_revision=%s\n' "${candidate_revision}" >> "${GITHUB_OUTPUT}"
+          printf 'candidate_tree=%s\n' "${candidate_tree}" >> "${GITHUB_OUTPUT}"
+          printf 'candidate_run_id=%s\n' "${candidate_run_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download exact candidate artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CANDIDATE_REVISION: ${{ steps.locate.outputs.candidate_revision }}
+          CANDIDATE_RUN_ID: ${{ steps.locate.outputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          install -d "${RUNNER_TEMP}/accepted/windows" "${RUNNER_TEMP}/accepted/linux"
+          gh run download "${CANDIDATE_RUN_ID}" -R "${REPOSITORY}" \
+            -n "edge-platform-windows-${CANDIDATE_REVISION}" \
+            -D "${RUNNER_TEMP}/accepted/windows"
+          gh run download "${CANDIDATE_RUN_ID}" -R "${REPOSITORY}" \
+            -n "edge-platform-release-${CANDIDATE_REVISION}" \
+            -D "${RUNNER_TEMP}/accepted/linux"
+
+      - name: Verify exact candidate provenance
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          CANDIDATE_REVISION: ${{ steps.locate.outputs.candidate_revision }}
+          CANDIDATE_TREE: ${{ steps.locate.outputs.candidate_tree }}
+          CANDIDATE_RUN_ID: ${{ steps.locate.outputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          windows="${RUNNER_TEMP}/accepted/windows"
+          linux="${RUNNER_TEMP}/accepted/linux"
+
+          test "$(jq -er '.source_revision' "${windows}/manifest.json")" = "${CANDIDATE_REVISION}"
+          test "$(jq -er '.source_tree' "${windows}/manifest.json")" = "${CANDIDATE_TREE}"
+          test "$(jq -er '.source_revision' "${linux}/manifest.json")" = "${CANDIDATE_REVISION}"
+          test "$(jq -er '.source_tree' "${linux}/manifest.json")" = "${CANDIDATE_TREE}"
+
+          echo "$(jq -er '.controller_sha256' "${windows}/manifest.json")  ${windows}/edge-controller.exe" | sha256sum -c -
+          echo "$(jq -er '.console_sha256' "${windows}/manifest.json")  ${windows}/edge-console.exe" | sha256sum -c -
+          echo "$(jq -er '.sing_box_binary_sha256' "${windows}/manifest.json")  ${windows}/sing-box.exe" | sha256sum -c -
+          echo "$(jq -er '.controller_sha256' "${linux}/manifest.json")  ${linux}/edge-controller" | sha256sum -c -
+          echo "$(jq -er '.agent_sha256' "${linux}/manifest.json")  ${linux}/edge-agent" | sha256sum -c -
+
+          gateway_ref="$(jq -er '.edge_gateway_image' "${linux}/manifest.json")"
+          warp_ref="$(jq -er '.edge_warp_egress_image' "${linux}/manifest.json")"
+          [[ "${gateway_ref}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
+          [[ "${warp_ref}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
+
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker buildx imagetools inspect "${gateway_ref}" >/dev/null
+          docker buildx imagetools inspect "${warp_ref}" >/dev/null
+          docker logout ghcr.io >/dev/null
+
+          jq -n \
+            --arg accepted_revision "${ACCEPTED_REVISION}" \
+            --arg candidate_revision "${CANDIDATE_REVISION}" \
+            --arg source_tree "${CANDIDATE_TREE}" \
+            --arg candidate_run_id "${CANDIDATE_RUN_ID}" \
+            '{
+              schema:1,
+              accepted_revision:$accepted_revision,
+              candidate_revision:$candidate_revision,
+              source_tree:$source_tree,
+              candidate_run_id:$candidate_run_id
+            }' > "${windows}/acceptance.json"
+          cp "${windows}/acceptance.json" "${linux}/acceptance.json"
+
+      - name: Publish accepted Windows artifact without rebuild
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/accepted/windows
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish accepted Linux artifact without rebuild
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: edge-platform-release-${{ github.sha }}
-          path: ${{ runner.temp }}/edge-platform-release
+          path: ${{ runner.temp }}/accepted/linux
           if-no-files-found: error
           retention-days: 30
