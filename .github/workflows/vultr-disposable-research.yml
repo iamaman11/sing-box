@@ -119,3 +119,36 @@ jobs:
         run: |
           set -euo pipefail
           bash "${RUNNER_TEMP}/disposable-lifecycle.sh"
+
+
+  ambiguity:
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research ambiguity'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 8
+
+    steps:
+      - name: Fetch exact ambiguity probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 30 \
+            "https://raw.githubusercontent.com/iamaman11/sing-box/${GITHUB_SHA}/research/vultr/ambiguity.sh" \
+            --output "${RUNNER_TEMP}/ambiguity.sh"
+          test -s "${RUNNER_TEMP}/ambiguity.sh"
+
+      - name: Run exact identity ambiguity probe
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/ambiguity.sh"
