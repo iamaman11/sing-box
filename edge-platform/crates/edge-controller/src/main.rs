@@ -29,8 +29,7 @@ use edge_local_runtime::{
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
 use edge_provider_vultr::{
-    CreateInstanceRequest, create_instance_typed, destroy_instance_typed, get_instance_typed,
-    list_instances_typed, mock_instance,
+    destroy_instance_typed, get_instance_typed, list_instances_typed, mock_instance,
 };
 use edge_secrets::{default_env_ref, resolve_secret_path, resolve_secret_text};
 use edge_shared_types::agent_service_client::AgentServiceClient;
@@ -80,8 +79,6 @@ enum DestroyInstanceOutcome {
     AlreadyAbsent,
 }
 const DEFAULT_PLAN: &str = "vc2-1c-1gb";
-const DEFAULT_VULTR_OS_ID: u32 = 2625;
-const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
@@ -92,20 +89,16 @@ const BASE_BOOTSTRAP_TIMEOUT_SECS: u64 = 300;
 const TUNNEL_BOOTSTRAP_TIMEOUT_SECS: u64 = 900;
 const EGRESS_TRACE_TIMEOUT_SECS: u64 = 60;
 const BOOTSTRAP_RPC_ATTEMPTS: usize = 3;
-const VULTR_CREATE_ATTEMPTS: usize = 3;
-const VULTR_CREATE_REOBSERVATION_ATTEMPTS: usize = 30;
 const VULTR_DESTROY_REOBSERVATION_ATTEMPTS: usize = 180;
 const VULTR_MUTATION_REOBSERVATION_DELAY_SECS: u64 = 2;
 const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
 const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
-const SECRET_VULTR_SSH_KEY_ID: &str = "bootstrap.vultr.ssh_key_id";
 const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
 const DEPLOY_ENDPOINT_ARG_INDEX: usize = 10;
 const DESTROY_ENDPOINT_ARG_INDEX: usize = 6;
 const KNOWN_SECRET_NAMES: &[&str] = &[
     SECRET_VULTR_API_KEY,
     SECRET_CLOUDFLARE_API_TOKEN,
-    SECRET_VULTR_SSH_KEY_ID,
     SECRET_SSH_PRIVATE_KEY_PATH,
 ];
 
@@ -113,7 +106,6 @@ const KNOWN_SECRET_NAMES: &[&str] = &[
 struct ResolvedDeployTarget {
     instance_id: String,
     target_ip: String,
-    created_instance: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -319,7 +311,6 @@ fn normalize_runtime_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<(), St
     for (name, env_name) in [
         (SECRET_VULTR_API_KEY, "VULTR_API_KEY"),
         (SECRET_CLOUDFLARE_API_TOKEN, "CLOUDFLARE_API_TOKEN"),
-        (SECRET_VULTR_SSH_KEY_ID, "EDGE_VULTR_SSH_KEY_ID"),
     ] {
         guard
             .upsert_secret_ref(name, &default_env_ref(env_name))
@@ -712,6 +703,7 @@ fn list_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<Vec<SecretRefEntry>
 
     Ok(rows
         .into_iter()
+        .filter(|entry| KNOWN_SECRET_NAMES.contains(&entry.name.as_str()))
         .map(|entry| SecretRefEntry {
             name: entry.name,
             secret_ref: entry.secret_ref,
@@ -724,7 +716,6 @@ fn secret_name_to_env(name: &str) -> &'static str {
     match name {
         SECRET_VULTR_API_KEY => "VULTR_API_KEY",
         SECRET_CLOUDFLARE_API_TOKEN => "CLOUDFLARE_API_TOKEN",
-        SECRET_VULTR_SSH_KEY_ID => "EDGE_VULTR_SSH_KEY_ID",
         SECRET_SSH_PRIVATE_KEY_PATH => "EDGE_SSH_PRIVATE_KEY_PATH",
         _ => "",
     }
@@ -2715,10 +2706,8 @@ impl Drop for SshTunnelGuard {
 }
 
 async fn resolve_deploy_target(
-    repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
-    deployment_label: &str,
 ) -> Result<ResolvedDeployTarget, String> {
     if request.mock_provider {
         let label = request
@@ -2733,7 +2722,6 @@ async fn resolve_deploy_target(
         return Ok(ResolvedDeployTarget {
             instance_id: instance.id,
             target_ip: instance.main_ip,
-            created_instance: false,
         });
     }
 
@@ -2751,7 +2739,6 @@ async fn resolve_deploy_target(
             return Ok(ResolvedDeployTarget {
                 instance_id: instance.id,
                 target_ip: instance.main_ip,
-                created_instance: false,
             });
         }
     }
@@ -2767,7 +2754,6 @@ async fn resolve_deploy_target(
                 .clone()
                 .unwrap_or_else(|| format!("manual-{}", target_ip.replace('.', "-"))),
             target_ip,
-            created_instance: false,
         });
     }
 
@@ -2777,37 +2763,6 @@ edge-controller vultr-lifecycle apply path so provider ownership, strict host ce
 user-data scrub, and destructive authority remain in one lifecycle engine"
             .to_owned(),
     )
-}
-
-async fn wait_for_instance_ready(
-    api_key: &str,
-    instance_id: &str,
-) -> Result<edge_provider_vultr::VultrInstance, String> {
-    let mut last = None;
-    for _ in 0..60 {
-        let current = get_instance_typed(api_key, instance_id)
-            .await
-            .map_err(|err| err.to_string())?;
-        if current.status == "active"
-            && current.power_status == "running"
-            && current.server_status == "ok"
-            && !current.main_ip.trim().is_empty()
-        {
-            return Ok(current);
-        }
-        last = Some(current);
-        sleep(Duration::from_secs(5)).await;
-    }
-
-    let Some(last) = last else {
-        return Err(format!(
-            "instance {instance_id} never returned a readable provisioning status"
-        ));
-    };
-    Err(format!(
-        "instance {} did not become ready in time: status={}, server_status={}, main_ip={}",
-        last.id, last.status, last.server_status, last.main_ip
-    ))
 }
 
 fn status_for_target_resolution_error(message: String) -> Status {
@@ -2843,115 +2798,6 @@ fn select_unique_vultr_instance_by_label(
     Ok(first.cloned())
 }
 
-fn instance_matches_create_request(
-    instance: &edge_provider_vultr::VultrInstance,
-    request: &CreateInstanceRequest<'_>,
-) -> bool {
-    let image_matches = match (request.os_id, request.snapshot_id) {
-        (Some(expected_os_id), None) => {
-            instance.snapshot_id.is_none() && instance.os_id == expected_os_id
-        }
-        (None, Some(expected_snapshot_id)) => {
-            instance.snapshot_id.as_deref() == Some(expected_snapshot_id)
-        }
-        _ => false,
-    };
-
-    instance.label == request.label
-        && instance.region == request.region
-        && instance.plan == request.plan
-        && image_matches
-        && instance.enable_ipv6 == request.enable_ipv6
-        && request
-            .firewall_group_id
-            .is_none_or(|expected_firewall| instance.firewall_group_id == expected_firewall)
-        && request
-            .tags
-            .iter()
-            .all(|expected_tag| instance.tags.iter().any(|tag| tag == expected_tag))
-}
-
-async fn observe_vultr_create_identity(
-    api_key: &str,
-    request: &CreateInstanceRequest<'_>,
-) -> Result<Option<edge_provider_vultr::VultrInstance>, String> {
-    let instances = list_instances_typed(api_key)
-        .await
-        .map_err(|err| err.to_string())?;
-    let instance = select_unique_vultr_instance_by_label(&instances, request.label)?;
-    match instance {
-        Some(instance) if instance_matches_create_request(&instance, request) => Ok(Some(instance)),
-        Some(instance) => Err(format!(
-            "Vultr instance identity conflict for label {}: id={} region={} plan={} os_id={} firewall_group_id={}",
-            request.label,
-            instance.id,
-            instance.region,
-            instance.plan,
-            instance.os_id,
-            instance.firewall_group_id
-        )),
-        None => Ok(None),
-    }
-}
-
-async fn reobserve_uncertain_vultr_create(
-    api_key: &str,
-    request: &CreateInstanceRequest<'_>,
-) -> Result<Option<edge_provider_vultr::VultrInstance>, String> {
-    for attempt in 0..VULTR_CREATE_REOBSERVATION_ATTEMPTS {
-        if let Some(instance) = observe_vultr_create_identity(api_key, request).await? {
-            return Ok(Some(instance));
-        }
-        if attempt + 1 < VULTR_CREATE_REOBSERVATION_ATTEMPTS {
-            sleep(Duration::from_secs(VULTR_MUTATION_REOBSERVATION_DELAY_SECS)).await;
-        }
-    }
-    Ok(None)
-}
-
-async fn create_or_adopt_vultr_instance(
-    api_key: &str,
-    request: &CreateInstanceRequest<'_>,
-    deployment_label: &str,
-) -> Result<edge_provider_vultr::VultrInstance, String> {
-    if request.label != deployment_label {
-        return Err(format!(
-            "Vultr create identity mismatch: request label {} does not match deployment label {deployment_label}",
-            request.label
-        ));
-    }
-
-    if let Some(instance) = observe_vultr_create_identity(api_key, request).await? {
-        return Ok(instance);
-    }
-
-    let mut last_error = None;
-    for attempt in 1..=VULTR_CREATE_ATTEMPTS {
-        match create_instance_typed(api_key, request).await {
-            Ok(instance) => return Ok(instance),
-            Err(err) if err.requires_mutation_reobservation() => {
-                last_error = Some(err.to_string());
-                if let Some(instance) = reobserve_uncertain_vultr_create(api_key, request).await? {
-                    return Ok(instance);
-                }
-                if attempt < VULTR_CREATE_ATTEMPTS {
-                    continue;
-                }
-            }
-            Err(err) => return Err(err.to_string()),
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        format!("failed to create or adopt Vultr instance for {deployment_label}")
-    }))
-}
-
-fn read_cloud_init_template(repo_root: &Path) -> Result<String, String> {
-    let path = repo_root.join(DEFAULT_CLOUD_INIT_PATH);
-    fs::read_to_string(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))
-}
-
 struct PrepareAgentTransportContext<'a> {
     repo_root: &'a Path,
     direct_endpoint: &'a str,
@@ -2969,7 +2815,6 @@ async fn prepare_agent_transport(
     if !should_bootstrap_via_ssh(
         context.state,
         context.request,
-        context.target,
         context.preexisting_agent_trust,
     ) {
         let connection_target = context.preexisting_agent_target.clone().unwrap_or(
@@ -2979,7 +2824,7 @@ async fn prepare_agent_transport(
                 context.direct_endpoint,
             )?,
         );
-        if should_fallback_to_ssh_bootstrap(context.direct_endpoint, context.state, context.target)
+        if should_fallback_to_ssh_bootstrap(context.direct_endpoint, context.state)
             && connect_to_agent_target(&connection_target).await.is_err()
         {
             append_operation_event(
@@ -3004,12 +2849,7 @@ async fn prepare_agent_transport(
         "waiting for SSH reachability",
     )
     .map_err(|status| status.message().to_owned())?;
-    accept_ssh_host_key(
-        context.target,
-        &config,
-        context.target.created_instance || !context.preexisting_agent_trust,
-    )
-    .await?;
+    accept_ssh_host_key(context.target, &config).await?;
     append_operation_event(
         context.state,
         context.operation_id,
@@ -3054,14 +2894,9 @@ async fn prepare_agent_transport(
     })
 }
 
-fn should_fallback_to_ssh_bootstrap(
-    direct_endpoint: &str,
-    state: &Arc<Mutex<EdgeState>>,
-    target: &ResolvedDeployTarget,
-) -> bool {
+fn should_fallback_to_ssh_bootstrap(direct_endpoint: &str, state: &Arc<Mutex<EdgeState>>) -> bool {
     env::var_os("EDGE_AGENT_ENDPOINT").is_none()
         && direct_endpoint == DEFAULT_AGENT_ENDPOINT
-        && !target.created_instance
         && has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH)
 }
 
@@ -3092,16 +2927,14 @@ fn resolve_operation_agent_connection_target(
 fn should_bootstrap_via_ssh(
     state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
-    target: &ResolvedDeployTarget,
     preexisting_agent_trust: bool,
 ) -> bool {
     let ssh_available = has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH);
     let missing_persisted_trust = !preexisting_agent_trust;
 
-    target.created_instance
-        || env::var("EDGE_BOOTSTRAP_VIA_SSH")
-            .ok()
-            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    env::var("EDGE_BOOTSTRAP_VIA_SSH")
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         || (request
             .target_ip
             .as_deref()
@@ -3305,35 +3138,9 @@ fn ensure_known_hosts_file(repo_root: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn remove_known_host_entry(target_ip: &str, known_hosts_path: &Path) -> Result<(), String> {
-    let known_hosts = known_hosts_path.display().to_string();
-    let status = Command::new("ssh-keygen")
-        .args(["-R", target_ip, "-f", &known_hosts])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|err| format!("failed to start ssh-keygen for {target_ip}: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "ssh-keygen failed to prune known host entry for {target_ip} from {} with status {status}",
-            known_hosts_path.display()
-        ))
-    }
-}
-
-fn is_stale_known_host_error(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("remote host identification has changed")
-        || lower.contains("host key verification failed")
-        || lower.contains("offending")
-}
-
 async fn accept_ssh_host_key(
     target: &ResolvedDeployTarget,
     config: &BootstrapAccessConfig,
-    _allow_host_key_refresh: bool,
 ) -> Result<(), String> {
     for _ in 0..60 {
         let result = run_command_capture(
@@ -4313,37 +4120,6 @@ async fn rollback_failed_deploy(
         }
     }
 
-    if target.created_instance && !request.mock_provider {
-        match resolve_text_secret(
-            state,
-            SECRET_VULTR_API_KEY,
-            &default_env_ref("VULTR_API_KEY"),
-        ) {
-            Ok(api_key) => {
-                match destroy_vultr_instance_reconciled(&api_key, &target.instance_id).await {
-                    Ok(DestroyInstanceOutcome::Requested) => {
-                        let _ = append_operation_event(
-                            state,
-                            operation_id,
-                            "rollback requested instance destroy",
-                        );
-                    }
-                    Ok(DestroyInstanceOutcome::AlreadyAbsent) => {
-                        let _ = append_operation_event(
-                            state,
-                            operation_id,
-                            "rollback observed instance already absent; local state restore continues",
-                        );
-                    }
-                    Err(err) => warnings.push(format!("rollback instance destroy failed: {err}")),
-                }
-            }
-            Err(err) => warnings.push(format!(
-                "rollback could not resolve Vultr API key secret: {err}"
-            )),
-        }
-    }
-
     if let Err(err) = rollback_live_deployment_state(
         repo_root,
         state,
@@ -4746,32 +4522,6 @@ mod tests {
     }
 
     #[test]
-    fn matches_create_request_using_provider_identity_fields() {
-        let mut instance = mock_instance("edge-a", "waw", "vc2-1c-1gb", "203.0.113.10");
-        instance.os_id = 2625;
-        instance.firewall_group_id = "fw-1".to_owned();
-        instance.tags = vec!["managed-by-sing-box".to_owned(), "edge-a".to_owned()];
-        instance.enable_ipv6 = true;
-
-        let request = CreateInstanceRequest {
-            region: "waw",
-            plan: "vc2-1c-1gb",
-            os_id: Some(2625),
-            snapshot_id: None,
-            label: "edge-a",
-            ssh_key_id: "ssh-1",
-            cloud_init: "#cloud-config\n",
-            firewall_group_id: Some("fw-1"),
-            tags: vec!["managed-by-sing-box", "edge-a"],
-            enable_ipv6: true,
-        };
-        assert!(instance_matches_create_request(&instance, &request));
-
-        instance.plan = "vc2-1c-2gb".to_owned();
-        assert!(!instance_matches_create_request(&instance, &request));
-    }
-
-    #[test]
     fn blank_option_normalizes_empty_strings() {
         assert_eq!(blank_option(Some("".to_owned())), None);
         assert_eq!(blank_option(Some("   ".to_owned())), None);
@@ -4913,7 +4663,6 @@ mod tests {
         ));
         let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
         let target = resolve_deploy_target(
-            Path::new("/home/bose/projects/sing-box"),
             &state,
             &DeployRequest {
                 label_prefix: Some("mock-edge".to_owned()),
@@ -4927,7 +4676,6 @@ mod tests {
                 skip_dns: true,
                 snapshot_id: None,
             },
-            "mock-edge-1",
         )
         .await
         .unwrap();
@@ -4954,21 +4702,6 @@ mod tests {
         assert_eq!(summary.server_ip.as_deref(), Some("203.0.113.5"));
         assert_eq!(summary.tunnel_domain.as_deref(), Some("edge.example.com"));
 
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn reads_cloud_init_template_from_repo() {
-        let root = temp_repo_root();
-        std::fs::create_dir_all(root.join("win/vultr-waw")).unwrap();
-        std::fs::write(
-            root.join("win/vultr-waw/cloud-init.yaml"),
-            "edge-agent.service\ninstall-docker.sh\n",
-        )
-        .unwrap();
-        let template = read_cloud_init_template(&root).unwrap();
-        assert!(template.contains("edge-agent.service"));
-        assert!(template.contains("install-docker.sh"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -5153,7 +4886,6 @@ mod tests {
         let target = ResolvedDeployTarget {
             instance_id: "instance-missing".to_owned(),
             target_ip: "203.0.113.99".to_owned(),
-            created_instance: false,
         };
 
         let error =
@@ -5180,11 +4912,6 @@ mod tests {
                 .upsert_secret_ref(SECRET_SSH_PRIVATE_KEY_PATH, "path:/tmp/id_rsa")
                 .unwrap();
         }
-        let target = ResolvedDeployTarget {
-            instance_id: "instance-bootstrap".to_owned(),
-            target_ip: "203.0.113.120".to_owned(),
-            created_instance: false,
-        };
         let request = DeployRequest {
             label_prefix: Some("waw-edge".to_owned()),
             target_ip: None,
@@ -5198,7 +4925,7 @@ mod tests {
             snapshot_id: None,
         };
 
-        assert!(should_bootstrap_via_ssh(&state, &request, &target, false));
+        assert!(should_bootstrap_via_ssh(&state, &request, false));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -5503,6 +5230,12 @@ mod tests {
                 .as_nanos()
         ));
         let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        {
+            let guard = state.lock().unwrap();
+            guard
+                .upsert_secret_ref("bootstrap.vultr.ssh_key_id", "env:EDGE_VULTR_SSH_KEY_ID")
+                .unwrap();
+        }
         let secrets = list_secret_refs(&state).unwrap();
         assert!(secrets.iter().any(|entry| {
             entry.name == SECRET_VULTR_API_KEY && entry.secret_ref == "env:VULTR_API_KEY"
@@ -5511,6 +5244,12 @@ mod tests {
             entry.name == SECRET_SSH_PRIVATE_KEY_PATH
                 && entry.secret_ref == "env:EDGE_SSH_PRIVATE_KEY_PATH"
         }));
+        assert!(
+            secrets
+                .iter()
+                .all(|entry| entry.name != "bootstrap.vultr.ssh_key_id")
+        );
+        assert!(validate_secret_name("bootstrap.vultr.ssh_key_id").is_err());
         let _ = std::fs::remove_file(db_path);
     }
 

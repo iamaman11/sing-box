@@ -15,8 +15,6 @@ pub const SCRUBBED_USER_DATA: &str =
 
 pub struct StrictBootstrapBundle {
     pub cloud_init: String,
-    pub known_hosts_line: String,
-    pub ssh_user: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,7 +279,6 @@ pub fn prepare_strict_bootstrap(
             operator_private_key_path.display()
         ));
     }
-    let ca_material = public_key_material(canonical_operator_public_key)?;
     let temp = unique_temp_dir("singbox-host-cert")?;
     let result = (|| {
         let host_key = temp.join("ssh_host_ed25519_key");
@@ -335,11 +332,7 @@ pub fn prepare_strict_bootstrap(
             &public_key,
             &certificate,
         )?;
-        Ok(StrictBootstrapBundle {
-            cloud_init,
-            known_hosts_line: format!("@cert-authority {logical_hostname} {ca_material}\n"),
-            ssh_user: DEFAULT_OPS_USER.to_owned(),
-        })
+        Ok(StrictBootstrapBundle { cloud_init })
     })();
     let _ = fs::remove_dir_all(&temp);
     result

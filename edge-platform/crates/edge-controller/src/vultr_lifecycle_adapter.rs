@@ -5,10 +5,6 @@ use edge_controller_core::vultr_lifecycle::{
 use edge_provider_vultr::VultrInstance;
 use std::collections::BTreeMap;
 
-pub fn normalize_vultr_instance(instance: &VultrInstance) -> Result<ObservedMachine, String> {
-    normalize_vultr_instance_with_firewall_profiles(instance, &BTreeMap::new())
-}
-
 pub fn normalize_vultr_instance_with_firewall_profiles(
     instance: &VultrInstance,
     verified_firewall_profiles: &BTreeMap<String, String>,
