@@ -468,13 +468,13 @@ jobs:
             "${bin}" vultr-lifecycle cleanup "${vultr_spec}" >/dev/null 2>&1 || true
           }
 
-          trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
-
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}"             > "${RUNNER_TEMP}/acceptance-plan-before.json"
           jq -e '.plans[0].class == "CREATE"'             "${RUNNER_TEMP}/acceptance-plan-before.json" >/dev/null
 
+          trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
+
           "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}"             > "${RUNNER_TEMP}/acceptance-vm-apply.json"
-          jq -e '.action == "CREATED" or .action == "NOOP"'             "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
+          jq -e '.action == "CREATED"'             "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
 
           EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-app-apply.json"
           jq -e             '.initial_plan.class == "APPLY" and .final_plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-app-apply.json" >/dev/null
