@@ -878,7 +878,13 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/durable-release
         run: |
           set -euo pipefail
-          bash edge-platform/scripts/publish_durable_release.sh
+          publisher="${RUNNER_TEMP}/publish-durable-release.sh"
+          payload="$(gh api "repos/${REPOSITORY}/contents/edge-platform/scripts/publish_durable_release.sh?ref=${ACCEPTED_REVISION}")"
+          test "$(jq -er '.type' <<<"${payload}")" = "file"
+          test "$(jq -er '.encoding' <<<"${payload}")" = "base64"
+          jq -r '.content' <<<"${payload}" | tr -d '\n' | base64 --decode > "${publisher}"
+          bash -n "${publisher}"
+          bash "${publisher}"
 
       - name: Publish accepted Windows artifact without rebuild
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
