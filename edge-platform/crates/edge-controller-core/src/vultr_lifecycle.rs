@@ -693,16 +693,16 @@ mod tests {
     fn canonical_digest_preserves_application_profile_order() {
         let first = desired();
         let mut second = first.clone();
-        let machine = second
+        let index = second
             .machines
-            .iter_mut()
-            .find(|machine| machine.id == "edge-1")
+            .iter()
+            .position(|machine| machine.id == "edge-1")
             .unwrap();
-        machine.application_profiles = vec!["a".to_owned(), "b".to_owned()];
-        let digest_ab = second.machine_digest(machine).unwrap();
+        second.machines[index].application_profiles = vec!["a".to_owned(), "b".to_owned()];
+        let digest_ab = second.machine_digest(&second.machines[index]).unwrap();
 
-        machine.application_profiles.reverse();
-        let digest_ba = second.machine_digest(machine).unwrap();
+        second.machines[index].application_profiles.reverse();
+        let digest_ba = second.machine_digest(&second.machines[index]).unwrap();
         assert_ne!(digest_ab, digest_ba);
     }
 
