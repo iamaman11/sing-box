@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-: "\${VULTR_API_KEY:?VULTR_API_KEY is required}"
-: "\${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+: "${VULTR_API_KEY:?VULTR_API_KEY is required}"
+: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 
 API_BASE="https://api.vultr.com"
 REGION="waw"
 PLAN="vc2-1c-1gb"
 OS_ID=2625
-LABEL="singbox-ambiguous-\${GITHUB_RUN_ID}"
-RUN_TAG="ambiguous-run-\${GITHUB_RUN_ID}"
-FW_DESC="\${LABEL}-fw"
+LABEL="singbox-ambiguous-${GITHUB_RUN_ID}"
+RUN_TAG="ambiguous-run-${GITHUB_RUN_ID}"
+FW_DESC="${LABEL}-fw"
 
 tmp="$(mktemp -d)"
-response="\${tmp}/response.json"
-body="\${tmp}/body.json"
+response="${tmp}/response.json"
+body="${tmp}/body.json"
 firewall_id=""
 declare -a created_ids=()
 cleanup_started=0
@@ -24,7 +24,7 @@ HTTP_RC=""
 log() { printf '%s\n' "$*"; }
 
 api_request() {
-  local method="$1" path="$2" body_file="\${3:-}"
+  local method="$1" path="$2" body_file="${3:-}"
   local -a args=(
     --silent --show-error
     --connect-timeout 10 --max-time 30
@@ -32,21 +32,21 @@ api_request() {
     --output "$response"
     --write-out '%{http_code}'
     --request "$method"
-    --header "Authorization: Bearer \${VULTR_API_KEY}"
+    --header "Authorization: Bearer ${VULTR_API_KEY}"
     --header "Accept: application/json"
   )
   if [[ -n "$body_file" ]]; then
-    args+=(--header "Content-Type: application/json" --data-binary "@\${body_file}")
+    args+=(--header "Content-Type: application/json" --data-binary "@${body_file}")
   fi
   : > "$response"
   set +e
-  HTTP_CODE="$(curl "\${args[@]}" "\${API_BASE}\${path}")"
+  HTTP_CODE="$(curl "${args[@]}" "${API_BASE}${path}")"
   HTTP_RC=$?
   set -e
 }
 
 discover_ids() {
-  api_request GET "/v2/instances?label=\${LABEL}&per_page=500"
+  api_request GET "/v2/instances?label=${LABEL}&per_page=500"
   [[ "$HTTP_RC" -eq 0 && "$HTTP_CODE" == "200" ]] || return 1
   jq -r --arg label "$LABEL" --arg tag "$RUN_TAG" '
     .instances[]
@@ -75,15 +75,15 @@ cleanup() {
   log "cleanup=begin"
 
   mapfile -t discovered < <(discover_ids 2>/dev/null | sort -u)
-  ids=("\${created_ids[@]:-}" "\${discovered[@]:-}")
-  mapfile -t ids < <(printf '%s\n' "\${ids[@]}" | sed '/^$/d' | sort -u)
+  ids=("${created_ids[@]:-}" "${discovered[@]:-}")
+  mapfile -t ids < <(printf '%s\n' "${ids[@]}" | sed '/^$/d' | sort -u)
 
-  for id in "\${ids[@]:-}"; do
+  for id in "${ids[@]:-}"; do
     [[ -n "$id" ]] || continue
     api_request DELETE "/v2/instances/$id"
     log "cleanup.instance id=$id status=$HTTP_CODE rc=$HTTP_RC"
   done
-  for id in "\${ids[@]:-}"; do
+  for id in "${ids[@]:-}"; do
     [[ -n "$id" ]] || continue
     wait_absent "$id" || log "cleanup.instance_absence_unconfirmed id=$id"
   done
@@ -106,10 +106,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "ambiguity_research_run_id=\${GITHUB_RUN_ID}"
+log "ambiguity_research_run_id=${GITHUB_RUN_ID}"
 
 mapfile -t before < <(discover_ids)
-[[ "\${#before[@]}" -eq 0 ]]
+[[ "${#before[@]}" -eq 0 ]]
 log "precondition_exact_absence=PASS"
 
 jq -n --arg description "$FW_DESC" '{description:$description}' > "$body"
@@ -129,37 +129,37 @@ jq -n \
 for n in 1 2; do
   api_request POST /v2/instances "$body"
   if [[ "$HTTP_RC" -ne 0 || "$HTTP_CODE" != "202" ]]; then
-    log "instance_create_\${n}=FAIL status=$HTTP_CODE rc=$HTTP_RC"
+    log "instance_create_${n}=FAIL status=$HTTP_CODE rc=$HTTP_RC"
     exit 1
   fi
   id="$(jq -r '.instance.id // empty' "$response")"
   [[ -n "$id" ]]
   created_ids+=("$id")
-  log "instance_create_\${n}=PASS id=$id"
+  log "instance_create_${n}=PASS id=$id"
 done
 
 for _ in $(seq 1 60); do
   mapfile -t exact < <(discover_ids)
-  if [[ "\${#exact[@]}" -eq 2 ]]; then
+  if [[ "${#exact[@]}" -eq 2 ]]; then
     break
   fi
-  if [[ "\${#exact[@]}" -gt 2 ]]; then
-    log "exact_discovery_unexpected_count=\${#exact[@]}"
+  if [[ "${#exact[@]}" -gt 2 ]]; then
+    log "exact_discovery_unexpected_count=${#exact[@]}"
     exit 1
   fi
   sleep 2
 done
 
 mapfile -t exact < <(discover_ids)
-if [[ "\${#exact[@]}" -ne 2 ]]; then
-  log "ambiguous_identity_detection=FAIL count=\${#exact[@]}"
+if [[ "${#exact[@]}" -ne 2 ]]; then
+  log "ambiguous_identity_detection=FAIL count=${#exact[@]}"
   exit 1
 fi
 log "ambiguous_identity_detection=PASS count=2"
 
 selected_id=""
-if [[ "\${#exact[@]}" -eq 1 ]]; then
-  selected_id="\${exact[0]}"
+if [[ "${#exact[@]}" -eq 1 ]]; then
+  selected_id="${exact[0]}"
 fi
 if [[ -n "$selected_id" ]]; then
   log "ambiguous_fail_closed=FAIL selected=$selected_id"
@@ -167,12 +167,12 @@ if [[ -n "$selected_id" ]]; then
 fi
 log "ambiguous_fail_closed=PASS action=STOP"
 
-for id in "\${exact[@]}"; do
+for id in "${exact[@]}"; do
   api_request DELETE "/v2/instances/$id"
   [[ "$HTTP_RC" -eq 0 && "$HTTP_CODE" == "204" ]]
 done
 
-for id in "\${exact[@]}"; do
+for id in "${exact[@]}"; do
   wait_absent "$id"
 done
 created_ids=()
@@ -193,6 +193,6 @@ firewall_id=""
 log "firewall_delete=PASS"
 
 mapfile -t final < <(discover_ids)
-[[ "\${#final[@]}" -eq 0 ]]
+[[ "${#final[@]}" -eq 0 ]]
 log "final_exact_absence=PASS"
 log "ambiguity_research=PASS"
