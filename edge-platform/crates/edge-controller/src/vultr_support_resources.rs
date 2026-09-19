@@ -1,10 +1,13 @@
 use crate::vultr_lifecycle_service::LifecycleExecutionPolicy;
-use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec};
+use edge_controller_core::vultr_lifecycle::{
+    DesiredState, MANAGED_BY_IDENTITY, MachineSpec, decode_provider_tags,
+};
 use edge_provider_vultr::{
-    CreateFirewallRuleRequest, VultrError, VultrFirewallGroup, VultrFirewallRule,
+    CreateFirewallRuleRequest, VultrError, VultrFirewallGroup, VultrFirewallRule, VultrInstance,
     VultrOperatingSystem, VultrPlan, VultrRegionAvailability, VultrSnapshot, VultrSshKey,
     create_firewall_group_typed, create_firewall_rule_typed, create_ssh_key_typed,
-    destroy_firewall_rule_typed, get_region_availability_typed, list_firewall_groups_typed,
+    destroy_firewall_group_typed, destroy_firewall_rule_typed, destroy_ssh_key_typed,
+    get_region_availability_typed, list_firewall_groups_typed,
     list_firewall_rules_typed, list_operating_systems_typed, list_plans_typed,
     list_snapshots_typed, list_ssh_keys_typed,
 };
@@ -48,6 +51,13 @@ pub struct ResolvedFirewallProfile {
     pub profile_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportCleanupReport {
+    pub environment_in_use: bool,
+    pub ssh_key_removed: bool,
+    pub firewall_groups_removed: Vec<String>,
+}
+
 #[allow(async_fn_in_trait)]
 pub trait SupportResourceProvider {
     async fn list_ssh_keys(&mut self) -> Result<Vec<VultrSshKey>, VultrError>;
@@ -56,11 +66,16 @@ pub trait SupportResourceProvider {
         name: &str,
         public_key: &str,
     ) -> Result<VultrSshKey, VultrError>;
+    async fn destroy_ssh_key(&mut self, ssh_key_id: &str) -> Result<(), VultrError>;
     async fn list_firewall_groups(&mut self) -> Result<Vec<VultrFirewallGroup>, VultrError>;
     async fn create_firewall_group(
         &mut self,
         description: &str,
     ) -> Result<VultrFirewallGroup, VultrError>;
+    async fn destroy_firewall_group(
+        &mut self,
+        firewall_group_id: &str,
+    ) -> Result<(), VultrError>;
     async fn list_firewall_rules(
         &mut self,
         firewall_group_id: &str,
@@ -111,6 +126,10 @@ impl SupportResourceProvider for VultrSupportApiProvider {
         create_ssh_key_typed(&self.api_key, name, public_key).await
     }
 
+    async fn destroy_ssh_key(&mut self, ssh_key_id: &str) -> Result<(), VultrError> {
+        destroy_ssh_key_typed(&self.api_key, ssh_key_id).await
+    }
+
     async fn list_firewall_groups(&mut self) -> Result<Vec<VultrFirewallGroup>, VultrError> {
         list_firewall_groups_typed(&self.api_key).await
     }
@@ -120,6 +139,13 @@ impl SupportResourceProvider for VultrSupportApiProvider {
         description: &str,
     ) -> Result<VultrFirewallGroup, VultrError> {
         create_firewall_group_typed(&self.api_key, description).await
+    }
+
+    async fn destroy_firewall_group(
+        &mut self,
+        firewall_group_id: &str,
+    ) -> Result<(), VultrError> {
+        destroy_firewall_group_typed(&self.api_key, firewall_group_id).await
     }
 
     async fn list_firewall_rules(
@@ -211,6 +237,40 @@ impl FirewallProfileSet {
         self.profiles
             .get(name)
             .ok_or_else(|| format!("firewall profile {name} is not defined"))
+    }
+
+
+    pub fn resolve_controller_ipv4(&mut self, controller_ipv4: Option<&str>) -> Result<(), String> {
+        const PLACEHOLDER: &str = "@controller-ipv4";
+        let needs_controller_ip = self
+            .profiles
+            .values()
+            .flat_map(|profile| profile.rules.iter())
+            .any(|rule| rule.subnet == PLACEHOLDER);
+        if !needs_controller_ip {
+            return Ok(());
+        }
+        let raw = controller_ipv4
+            .ok_or_else(|| "firewall profiles require EDGE_CONTROLLER_IPV4".to_owned())?;
+        let ipv4 = raw
+            .parse::<std::net::Ipv4Addr>()
+            .map_err(|_| "EDGE_CONTROLLER_IPV4 must be a valid IPv4 address".to_owned())?
+            .to_string();
+        for profile in self.profiles.values_mut() {
+            for rule in &mut profile.rules {
+                if rule.subnet == PLACEHOLDER {
+                    if rule.ip_type != "v4" || rule.subnet_size != 32 {
+                        return Err(format!(
+                            "firewall profile {} uses {PLACEHOLDER} but is not an exact IPv4 /32",
+                            profile.name
+                        ));
+                    }
+                    rule.subnet = ipv4.clone();
+                }
+            }
+            profile.rules.sort();
+        }
+        Ok(())
     }
 }
 
@@ -434,6 +494,156 @@ pub async fn ensure_firewall_profile<P: SupportResourceProvider>(
         id: group.id,
         profile_name: profile.name.clone(),
     })
+}
+
+pub async fn cleanup_environment_support_resources<P: SupportResourceProvider>(
+    provider: &mut P,
+    desired: &DesiredState,
+    remaining_instances: &[VultrInstance],
+    canonical_public_key: &str,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<SupportCleanupReport, String> {
+    let mut environment_in_use = false;
+    for instance in remaining_instances {
+        let decoded = decode_provider_tags(&instance.tags).map_err(|err| {
+            format!(
+                "cannot prove support-resource cleanup safety because instance {} has invalid lifecycle tags: {err}",
+                instance.id
+            )
+        })?;
+        if decoded.ownership.managed_by.as_deref() == Some(MANAGED_BY_IDENTITY)
+            && decoded.ownership.environment.as_deref() == Some(desired.environment.as_str())
+        {
+            environment_in_use = true;
+        }
+    }
+    if environment_in_use {
+        return Ok(SupportCleanupReport {
+            environment_in_use: true,
+            ssh_key_removed: false,
+            firewall_groups_removed: Vec::new(),
+        });
+    }
+
+    let firewall_prefix = format!("singbox-{}-fw-", desired.environment);
+    let groups = provider
+        .list_firewall_groups()
+        .await
+        .map_err(|err| err.to_string())?;
+    let mut candidates = groups
+        .into_iter()
+        .filter(|group| group.description.starts_with(&firewall_prefix))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut seen_descriptions = BTreeSet::new();
+    for group in &candidates {
+        if !seen_descriptions.insert(group.description.clone()) {
+            return Err(format!(
+                "support-resource cleanup is ambiguous: duplicate managed firewall description {}",
+                group.description
+            ));
+        }
+        if remaining_instances
+            .iter()
+            .any(|instance| instance.firewall_group_id == group.id)
+        {
+            return Err(format!(
+                "support-resource cleanup refused: firewall group {} is still attached to provider instance",
+                group.id
+            ));
+        }
+    }
+
+    let desired_ssh_name = format!("singbox-{}-ops", desired.environment);
+    let desired_ssh_material = public_key_material(canonical_public_key)?;
+    let ssh_key = match observe_managed_ssh_key(
+        provider,
+        &desired_ssh_name,
+        &desired_ssh_material,
+    )
+    .await?
+    {
+        SshKeyObservation::Exact(key) => Some(key),
+        SshKeyObservation::Absent => None,
+        SshKeyObservation::Conflict(detail) => return Err(detail),
+    };
+
+    let mut firewall_groups_removed = Vec::new();
+    for group in candidates {
+        delete_firewall_group_and_observe(provider, &group, policy).await?;
+        firewall_groups_removed.push(group.id);
+    }
+
+    let ssh_key_removed = if let Some(key) = ssh_key {
+        delete_ssh_key_and_observe(provider, &key, policy).await?;
+        true
+    } else {
+        false
+    };
+
+    Ok(SupportCleanupReport {
+        environment_in_use: false,
+        ssh_key_removed,
+        firewall_groups_removed,
+    })
+}
+
+async fn delete_firewall_group_and_observe<P: SupportResourceProvider>(
+    provider: &mut P,
+    group: &VultrFirewallGroup,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<(), String> {
+    let mutation = provider.destroy_firewall_group(&group.id).await;
+    match &mutation {
+        Ok(()) => {}
+        Err(err) if err.is_not_found() => return Ok(()),
+        Err(err) if err.requires_mutation_reobservation() => {}
+        Err(err) => return Err(err.to_string()),
+    }
+    for attempt in 0..policy.destroy_reobserve_attempts {
+        let groups = provider
+            .list_firewall_groups()
+            .await
+            .map_err(|err| err.to_string())?;
+        if !groups.iter().any(|candidate| candidate.id == group.id) {
+            return Ok(());
+        }
+        if attempt + 1 < policy.destroy_reobserve_attempts {
+            sleep(policy.reobserve_delay).await;
+        }
+    }
+    Err(format!(
+        "firewall-group DELETE for {} was not proven absent and was not replayed",
+        group.id
+    ))
+}
+
+async fn delete_ssh_key_and_observe<P: SupportResourceProvider>(
+    provider: &mut P,
+    key: &ResolvedSshKey,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<(), String> {
+    let mutation = provider.destroy_ssh_key(&key.id).await;
+    match &mutation {
+        Ok(()) => {}
+        Err(err) if err.is_not_found() => return Ok(()),
+        Err(err) if err.requires_mutation_reobservation() => {}
+        Err(err) => return Err(err.to_string()),
+    }
+    for attempt in 0..policy.destroy_reobserve_attempts {
+        let keys = provider.list_ssh_keys().await.map_err(|err| err.to_string())?;
+        if !keys.iter().any(|candidate| candidate.id == key.id) {
+            return Ok(());
+        }
+        if attempt + 1 < policy.destroy_reobserve_attempts {
+            sleep(policy.reobserve_delay).await;
+        }
+    }
+    Err(format!(
+        "SSH-key DELETE for {} was not proven absent and was not replayed",
+        key.id
+    ))
 }
 
 async fn reconcile_firewall_rules<P: SupportResourceProvider>(
