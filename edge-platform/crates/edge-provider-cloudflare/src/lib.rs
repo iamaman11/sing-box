@@ -632,8 +632,7 @@ mod tests {
         .into_iter()
         .map(mesh_route_from_record)
         .filter(|route| {
-            route.tunnel_id == "node-1"
-                && route.tunnel_type.as_deref() == Some("warp_connector")
+            route.tunnel_id == "node-1" && route.tunnel_type.as_deref() == Some("warp_connector")
         })
         .collect::<Vec<_>>();
         assert_eq!(routes.len(), 1);
