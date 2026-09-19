@@ -106,6 +106,12 @@ pub struct VultrInstance {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrUserData {
+    /// Decoded UTF-8 user-data. Provider wire format is base64.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VultrSshKey {
     pub id: String,
     pub name: String,
@@ -224,6 +230,91 @@ pub async fn get_instance(api_key: &str, instance_id: &str) -> Result<VultrInsta
     get_instance_typed(api_key, instance_id)
         .await
         .map_err(|err| err.to_string())
+}
+
+pub async fn start_instance_typed(api_key: &str, instance_id: &str) -> Result<(), VultrError> {
+    instance_action_typed(api_key, instance_id, "start", "start Vultr instance").await
+}
+
+pub async fn halt_instance_typed(api_key: &str, instance_id: &str) -> Result<(), VultrError> {
+    instance_action_typed(api_key, instance_id, "halt", "halt Vultr instance").await
+}
+
+pub async fn reboot_instance_typed(api_key: &str, instance_id: &str) -> Result<(), VultrError> {
+    instance_action_typed(api_key, instance_id, "reboot", "reboot Vultr instance").await
+}
+
+async fn instance_action_typed(
+    api_key: &str,
+    instance_id: &str,
+    action: &str,
+    operation: &'static str,
+) -> Result<(), VultrError> {
+    if instance_id.trim().is_empty() {
+        return Err(configuration_error(operation, "instance id is required"));
+    }
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        operation,
+        client.post(format!("{API_ROOT}/instances/{instance_id}/{action}")),
+    )
+    .await
+}
+
+pub async fn get_user_data_typed(
+    api_key: &str,
+    instance_id: &str,
+) -> Result<VultrUserData, VultrError> {
+    if instance_id.trim().is_empty() {
+        return Err(configuration_error(
+            "read Vultr instance user-data",
+            "instance id is required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    let url = format!("{API_ROOT}/instances/{instance_id}/user-data");
+    let payload: UserDataEnvelope =
+        observation_json("read Vultr instance user-data", || client.get(&url)).await?;
+    let bytes = STANDARD
+        .decode(payload.user_data.data.as_bytes())
+        .map_err(|_| VultrError {
+            operation: "read Vultr instance user-data",
+            kind: VultrErrorKind::Decode,
+            status: Some(StatusCode::OK.as_u16()),
+            retry_after_secs: None,
+            detail: "provider returned invalid base64 user-data".to_owned(),
+        })?;
+    let data = String::from_utf8(bytes).map_err(|_| VultrError {
+        operation: "read Vultr instance user-data",
+        kind: VultrErrorKind::Decode,
+        status: Some(StatusCode::OK.as_u16()),
+        retry_after_secs: None,
+        detail: "provider returned non-UTF-8 user-data".to_owned(),
+    })?;
+    Ok(VultrUserData { data })
+}
+
+pub async fn update_user_data_typed(
+    api_key: &str,
+    instance_id: &str,
+    user_data: &str,
+) -> Result<(), VultrError> {
+    if instance_id.trim().is_empty() {
+        return Err(configuration_error(
+            "update Vultr instance user-data",
+            "instance id is required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        "update Vultr instance user-data",
+        client
+            .patch(format!("{API_ROOT}/instances/{instance_id}"))
+            .json(&UpdateUserDataPayload {
+                user_data: STANDARD.encode(user_data.as_bytes()),
+            }),
+    )
+    .await
 }
 
 pub async fn destroy_instance_typed(api_key: &str, instance_id: &str) -> Result<(), VultrError> {
@@ -1044,6 +1135,21 @@ struct CreateInstancePayload {
 }
 
 #[derive(Debug, Serialize)]
+struct UpdateUserDataPayload {
+    user_data: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserDataEnvelope {
+    user_data: UserDataPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserDataPayload {
+    data: String,
+}
+
+#[derive(Debug, Serialize)]
 struct CreateSshKeyPayload {
     name: String,
     ssh_key: String,
@@ -1347,6 +1453,34 @@ mod tests {
             tags: vec!["managed-by-sing-box", "logical-edge-1"],
             enable_ipv6: false,
         }
+    }
+
+    #[test]
+    fn user_data_wire_round_trip_decodes_base64_without_exposing_wire_material() {
+        let encoded = STANDARD.encode(b"#cloud-config\npackages: []\n");
+        let envelope: UserDataEnvelope = serde_json::from_value(serde_json::json!({
+            "user_data": {"data": encoded}
+        }))
+        .unwrap();
+        let decoded = STANDARD.decode(envelope.user_data.data.as_bytes()).unwrap();
+        assert_eq!(
+            String::from_utf8(decoded).unwrap(),
+            "#cloud-config\npackages: []\n"
+        );
+    }
+
+    #[test]
+    fn serializes_user_data_patch_as_base64() {
+        let payload = UpdateUserDataPayload {
+            user_data: STANDARD.encode(b"#cloud-config\n# scrubbed\n"),
+        };
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(
+            STANDARD
+                .decode(json["user_data"].as_str().unwrap())
+                .unwrap(),
+            b"#cloud-config\n# scrubbed\n"
+        );
     }
 
     #[test]
