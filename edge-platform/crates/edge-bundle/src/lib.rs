@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -28,6 +28,7 @@ pub struct BundleFilePayload {
     pub relative_path: String,
     pub content: Vec<u8>,
     pub executable: bool,
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -274,6 +275,7 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
         relative_path: ".env.runtime".to_owned(),
         content: env_runtime_content.as_bytes().to_vec(),
         executable: false,
+        sensitive: true,
     });
     write_bundle_files(&local_stack_dir, &stack_files)?;
 
@@ -282,23 +284,25 @@ pub fn build_bundle(request: &BuildBundleRequest<'_>) -> Result<PreparedDeployme
             relative_path: "tls/ca.pem".to_owned(),
             content: tls_material.ca_cert_pem.as_bytes().to_vec(),
             executable: false,
+            sensitive: false,
         },
         BundleFilePayload {
             relative_path: "tls/agent-server.pem".to_owned(),
             content: tls_material.server_cert_pem.as_bytes().to_vec(),
             executable: false,
+            sensitive: false,
         },
         BundleFilePayload {
             relative_path: "tls/agent-server.key".to_owned(),
             content: tls_material.server_key_pem.as_bytes().to_vec(),
             executable: false,
+            sensitive: true,
         },
     ];
     write_host_files(&generated_dir, &host_files)?;
 
     let summary_path = generated_dir.join("deployment-summary.json");
-    fs::write(&summary_path, deployment_summary_json.as_bytes())
-        .map_err(|err| format!("failed to write {}: {err}", summary_path.display()))?;
+    write_private_file(&summary_path, deployment_summary_json.as_bytes())?;
 
     Ok(PreparedDeploymentBundle {
         label,
@@ -479,6 +483,7 @@ fn collect_acme_cache_recursive(
             content: fs::read(&path)
                 .map_err(|err| format!("failed to read {}: {err}", path.display()))?,
             executable: false,
+            sensitive: true,
         });
     }
     Ok(())
@@ -516,6 +521,7 @@ fn collect_dir_recursive(
             relative_path,
             content,
             executable,
+            sensitive: false,
         });
     }
     Ok(())
@@ -531,27 +537,81 @@ fn read_template_file(path: &Path) -> Result<Vec<u8>, String> {
 
 fn write_bundle_files(root: &Path, files: &[BundleFilePayload]) -> Result<(), String> {
     for file in files {
-        let path = root.join(&file.relative_path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-        }
-        fs::write(&path, &file.content)
-            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        write_payload_file(root, file)?;
     }
     Ok(())
 }
 
 fn write_host_files(root: &Path, files: &[BundleFilePayload]) -> Result<(), String> {
     for file in files {
-        let path = root.join(&file.relative_path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-        }
-        fs::write(&path, &file.content)
-            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        write_payload_file(root, file)?;
     }
+    Ok(())
+}
+
+fn write_payload_file(root: &Path, file: &BundleFilePayload) -> Result<(), String> {
+    validate_relative_bundle_path(&file.relative_path)?;
+    if file.executable && file.sensitive {
+        return Err(format!(
+            "bundle file {} cannot be both executable and sensitive",
+            file.relative_path
+        ));
+    }
+    let path = root.join(&file.relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&path, &file.content)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    set_payload_permissions(&path, file.executable, file.sensitive)?;
+    Ok(())
+}
+
+fn validate_relative_bundle_path(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("bundle relative path must not be empty".to_owned());
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "bundle path must be a normalized relative path without traversal: {value}"
+        ));
+    }
+    Ok(())
+}
+
+fn write_private_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(path, content)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    set_payload_permissions(path, false, true)
+}
+
+#[cfg(unix)]
+fn set_payload_permissions(path: &Path, executable: bool, sensitive: bool) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = if sensitive {
+        0o600
+    } else if executable {
+        0o755
+    } else {
+        0o644
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|err| format!("failed to set {} mode {mode:o}: {err}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_payload_permissions(_path: &Path, _executable: bool, _sensitive: bool) -> Result<(), String> {
     Ok(())
 }
 
