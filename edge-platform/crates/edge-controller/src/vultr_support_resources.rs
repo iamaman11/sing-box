@@ -677,12 +677,7 @@ async fn reconcile_firewall_rules<P: SupportResourceProvider>(
             let rule_id = *ids
                 .last()
                 .ok_or_else(|| format!("firewall rule map for {spec:?} is unexpectedly empty"))?;
-            let result = provider.destroy_firewall_rule(group_id, rule_id).await;
-            match result {
-                Ok(()) => {}
-                Err(err) if err.is_not_found() || err.requires_mutation_reobservation() => {}
-                Err(err) => return Err(err.to_string()),
-            }
+            delete_firewall_rule_and_observe(provider, group_id, rule_id, policy).await?;
             continue;
         }
 
@@ -690,19 +685,110 @@ async fn reconcile_firewall_rules<P: SupportResourceProvider>(
             .iter()
             .find(|spec| !current_by_spec.contains_key(*spec))
         {
-            let result = provider.create_firewall_rule(group_id, missing).await;
-            match result {
-                Ok(_) => {}
-                Err(err) if err.requires_mutation_reobservation() => {}
-                Err(err) => return Err(err.to_string()),
-            }
+            create_firewall_rule_and_observe(provider, group_id, missing, policy).await?;
             continue;
         }
     }
 
+    let observed = provider
+        .list_firewall_rules(group_id)
+        .await
+        .map_err(|err| err.to_string())?;
     Err(format!(
-        "firewall profile {} did not converge after bounded reconciliation",
-        profile.name
+        "firewall profile {} did not converge after bounded reconciliation; desired={:?} observed={:?}",
+        profile.name, profile.rules, observed
+    ))
+}
+
+async fn create_firewall_rule_and_observe<P: SupportResourceProvider>(
+    provider: &mut P,
+    group_id: &str,
+    desired: &FirewallRuleSpec,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<(), String> {
+    let mutation = provider.create_firewall_rule(group_id, desired).await;
+    let expected_id = match &mutation {
+        Ok(rule) => {
+            let returned = firewall_rule_spec(rule)?;
+            if returned != *desired {
+                return Err(format!(
+                    "Vultr normalized created firewall rule away from desired state; desired={desired:?} returned={returned:?}"
+                ));
+            }
+            Some(rule.id)
+        }
+        Err(err) if err.requires_mutation_reobservation() => None,
+        Err(err) => return Err(err.to_string()),
+    };
+
+    let mut last_observed = Vec::new();
+    for attempt in 0..policy.create_reobserve_attempts {
+        let observed = provider
+            .list_firewall_rules(group_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        let current = current_rule_map(&observed)?;
+        let matching = current.get(desired).cloned().unwrap_or_default();
+
+        match expected_id {
+            Some(id) if matching.contains(&id) => return Ok(()),
+            None if matching.len() == 1 => return Ok(()),
+            None if matching.len() > 1 => {
+                return Err(format!(
+                    "uncertain firewall-rule CREATE became ambiguous for {desired:?}: observed matching ids={matching:?}; mutation was not replayed"
+                ));
+            }
+            _ => {}
+        }
+
+        last_observed = observed;
+        if attempt + 1 < policy.create_reobserve_attempts {
+            sleep(policy.reobserve_delay).await;
+        }
+    }
+
+    match mutation {
+        Ok(rule) => Err(format!(
+            "firewall-rule CREATE returned id={} but that exact rule did not become observable after bounded re-observation; desired={desired:?} observed={last_observed:?}; mutation was not replayed",
+            rule.id
+        )),
+        Err(err) => Err(format!(
+            "{err}; firewall-rule CREATE outcome was not proven by bounded re-observation; desired={desired:?} observed={last_observed:?}; mutation was not replayed"
+        )),
+    }
+}
+
+async fn delete_firewall_rule_and_observe<P: SupportResourceProvider>(
+    provider: &mut P,
+    group_id: &str,
+    rule_id: u64,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<(), String> {
+    let mutation = provider.destroy_firewall_rule(group_id, rule_id).await;
+    match &mutation {
+        Ok(()) => {}
+        Err(err) if err.is_not_found() => return Ok(()),
+        Err(err) if err.requires_mutation_reobservation() => {}
+        Err(err) => return Err(err.to_string()),
+    }
+
+    let mut last_observed = Vec::new();
+    for attempt in 0..policy.destroy_reobserve_attempts {
+        let observed = provider
+            .list_firewall_rules(group_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        if !observed.iter().any(|rule| rule.id == rule_id) {
+            return Ok(());
+        }
+        last_observed = observed;
+        if attempt + 1 < policy.destroy_reobserve_attempts {
+            sleep(policy.reobserve_delay).await;
+        }
+    }
+
+    Err(format!(
+        "firewall-rule DELETE for id={rule_id} was not proven absent after bounded re-observation; observed={last_observed:?}; mutation was not replayed"
     ))
 }
 
@@ -782,22 +868,27 @@ fn current_rule_map(
 ) -> Result<BTreeMap<FirewallRuleSpec, Vec<u64>>, String> {
     let mut result: BTreeMap<FirewallRuleSpec, Vec<u64>> = BTreeMap::new();
     for rule in observed {
-        let spec = FirewallRuleSpec {
-            ip_type: rule.ip_type.trim().to_owned(),
-            protocol: rule.protocol.trim().to_owned(),
-            subnet: rule.subnet.trim().to_owned(),
-            subnet_size: rule.subnet_size,
-            port: rule.port.trim().to_owned(),
-            source: rule.source.trim().to_owned(),
-            notes: rule.notes.trim().to_owned(),
-        };
-        validate_rule(&spec)?;
+        let spec = firewall_rule_spec(rule)?;
         result.entry(spec).or_default().push(rule.id);
     }
     for ids in result.values_mut() {
         ids.sort_unstable();
     }
     Ok(result)
+}
+
+fn firewall_rule_spec(rule: &VultrFirewallRule) -> Result<FirewallRuleSpec, String> {
+    let spec = FirewallRuleSpec {
+        ip_type: rule.ip_type.trim().to_owned(),
+        protocol: rule.protocol.trim().to_owned(),
+        subnet: rule.subnet.trim().to_owned(),
+        subnet_size: rule.subnet_size,
+        port: rule.port.trim().to_owned(),
+        source: rule.source.trim().to_owned(),
+        notes: rule.notes.trim().to_owned(),
+    };
+    validate_rule(&spec)?;
+    Ok(spec)
 }
 
 fn firewall_group_description(environment: &str, profile_name: &str) -> String {
@@ -985,6 +1076,12 @@ mod tests {
         firewall_rule_create_calls: usize,
         firewall_rule_delete_calls: usize,
         next_rule_id: u64,
+        firewall_rule_create_visibility_delay: usize,
+        firewall_rule_create_visibility_reads: usize,
+        pending_firewall_rule: Option<(String, VultrFirewallRule)>,
+        firewall_rule_delete_visibility_delay: usize,
+        firewall_rule_delete_visibility_reads: usize,
+        pending_firewall_rule_delete: Option<(String, u64)>,
     }
 
     impl SupportResourceProvider for FakeSupportProvider {
@@ -1063,6 +1160,40 @@ mod tests {
             &mut self,
             firewall_group_id: &str,
         ) -> Result<Vec<VultrFirewallRule>, VultrError> {
+            if self
+                .pending_firewall_rule
+                .as_ref()
+                .is_some_and(|(group_id, _)| group_id == firewall_group_id)
+            {
+                if self.firewall_rule_create_visibility_reads
+                    >= self.firewall_rule_create_visibility_delay
+                {
+                    if let Some((group_id, rule)) = self.pending_firewall_rule.take() {
+                        self.firewall_rules.entry(group_id).or_default().push(rule);
+                    }
+                } else {
+                    self.firewall_rule_create_visibility_reads += 1;
+                }
+            }
+
+            if self
+                .pending_firewall_rule_delete
+                .as_ref()
+                .is_some_and(|(group_id, _)| group_id == firewall_group_id)
+            {
+                if self.firewall_rule_delete_visibility_reads
+                    >= self.firewall_rule_delete_visibility_delay
+                {
+                    if let Some((group_id, rule_id)) = self.pending_firewall_rule_delete.take()
+                        && let Some(rules) = self.firewall_rules.get_mut(&group_id)
+                    {
+                        rules.retain(|rule| rule.id != rule_id);
+                    }
+                } else {
+                    self.firewall_rule_delete_visibility_reads += 1;
+                }
+            }
+
             Ok(self
                 .firewall_rules
                 .get(firewall_group_id)
@@ -1087,10 +1218,15 @@ mod tests {
                 source: rule.source.clone(),
                 notes: rule.notes.clone(),
             };
-            self.firewall_rules
-                .entry(firewall_group_id.to_owned())
-                .or_default()
-                .push(observed.clone());
+            if self.firewall_rule_create_visibility_delay == 0 {
+                self.firewall_rules
+                    .entry(firewall_group_id.to_owned())
+                    .or_default()
+                    .push(observed.clone());
+            } else {
+                self.firewall_rule_create_visibility_reads = 0;
+                self.pending_firewall_rule = Some((firewall_group_id.to_owned(), observed.clone()));
+            }
             Ok(observed)
         }
 
@@ -1100,8 +1236,14 @@ mod tests {
             firewall_rule_id: u64,
         ) -> Result<(), VultrError> {
             self.firewall_rule_delete_calls += 1;
-            if let Some(rules) = self.firewall_rules.get_mut(firewall_group_id) {
-                rules.retain(|rule| rule.id != firewall_rule_id);
+            if self.firewall_rule_delete_visibility_delay == 0 {
+                if let Some(rules) = self.firewall_rules.get_mut(firewall_group_id) {
+                    rules.retain(|rule| rule.id != firewall_rule_id);
+                }
+            } else {
+                self.firewall_rule_delete_visibility_reads = 0;
+                self.pending_firewall_rule_delete =
+                    Some((firewall_group_id.to_owned(), firewall_rule_id));
             }
             Ok(())
         }
@@ -1300,6 +1442,65 @@ mod tests {
 
         assert_eq!(resolved.id, "fw-1");
         assert_eq!(provider.firewall_group_create_calls, 1);
+        assert_eq!(provider.firewall_rule_create_calls, 1);
+        assert!(
+            firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn firewall_create_waits_for_visibility_without_duplicate_mutation() {
+        let profile_set = profiles();
+        let profile = profile_set.profile("ssh-only").unwrap();
+        let mut provider = FakeSupportProvider {
+            firewall_rule_create_visibility_delay: 1,
+            ..FakeSupportProvider::default()
+        };
+
+        ensure_firewall_profile(&mut provider, "production", profile, &policy())
+            .await
+            .unwrap();
+
+        assert_eq!(provider.firewall_rule_create_calls, 1);
+        assert!(
+            firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn firewall_delete_waits_for_absence_before_next_mutation() {
+        let profile_set = profiles();
+        let profile = profile_set.profile("ssh-only").unwrap();
+        let mut provider = FakeSupportProvider {
+            firewall_groups: vec![VultrFirewallGroup {
+                id: "fw-1".to_owned(),
+                description: "singbox-production-fw-ssh-only".to_owned(),
+                date_created: String::new(),
+                date_modified: String::new(),
+            }],
+            firewall_rules: BTreeMap::from([(
+                "fw-1".to_owned(),
+                vec![VultrFirewallRule {
+                    id: 1,
+                    ip_type: "v4".to_owned(),
+                    protocol: "tcp".to_owned(),
+                    subnet: "192.0.2.1".to_owned(),
+                    subnet_size: 32,
+                    port: "22".to_owned(),
+                    source: String::new(),
+                    notes: "wrong".to_owned(),
+                }],
+            )]),
+            next_rule_id: 1,
+            firewall_rule_delete_visibility_delay: 1,
+            ..FakeSupportProvider::default()
+        };
+
+        ensure_firewall_profile(&mut provider, "production", profile, &policy())
+            .await
+            .unwrap();
+
+        assert_eq!(provider.firewall_rule_delete_calls, 1);
         assert_eq!(provider.firewall_rule_create_calls, 1);
         assert!(
             firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
