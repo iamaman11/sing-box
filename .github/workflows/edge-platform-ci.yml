@@ -25,11 +25,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: edge-platform-ci-${{ github.ref }}
+  group: edge-platform-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
+    name: Source checks
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -70,6 +71,7 @@ jobs:
         run: python3 edge-platform/scripts/test_resolve_release_dependencies.py
 
   dependencies:
+    name: Resolve exact dependencies
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -129,10 +131,6 @@ jobs:
           warp_url="$(jq -er '.url' <<<"${warp_json}")"
           warp_sha="$(jq -er '.sha256' <<<"${warp_json}")"
 
-          curl --fail --silent --show-error --location "${sing_windows_url}" -o "${work}/sing-box-windows.zip"
-          echo "${sing_windows_sha}  ${work}/sing-box-windows.zip" | sha256sum -c -
-          unzip -tq "${work}/sing-box-windows.zip" >/dev/null
-
           curl --fail --silent --show-error --location "${sing_linux_url}" -o "${work}/sing-box-linux.tar.gz"
           echo "${sing_linux_sha}  ${work}/sing-box-linux.tar.gz" | sha256sum -c -
           mkdir -p "${work}/linux"
@@ -190,6 +188,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   windows:
+    name: Windows verification
     needs: [verify, dependencies]
     runs-on: windows-2025
     timeout-minutes: 35
@@ -309,6 +308,7 @@ jobs:
 
 
   release:
+    name: Publish accepted candidate
     needs: [verify, dependencies]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
