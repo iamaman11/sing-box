@@ -1,5 +1,5 @@
 param(
-    [string]$ConsolePath = "C:\Users\Bose\temp\sing-box\edge-platform\target\debug\edge-console.exe",
+    [string]$ConsolePath = (Join-Path $env:LOCALAPPDATA "edge-platform\bin\edge-console.exe"),
     [string]$Endpoint = "http://127.0.0.1:50051",
     [switch]$IncludeDeploy,
     [switch]$IncludeDestroy
