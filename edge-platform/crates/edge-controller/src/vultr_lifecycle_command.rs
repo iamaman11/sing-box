@@ -253,8 +253,12 @@ fn vultr_api_key_from_env() -> Result<String, String> {
 
 fn read_canonical_ssh_public_key() -> Result<String, String> {
     let path = Path::new(CANONICAL_SSH_PUBLIC_KEY_PATH);
-    let public_key = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read canonical SSH public key {}: {err}", path.display()))?;
+    let public_key = fs::read_to_string(path).map_err(|err| {
+        format!(
+            "failed to read canonical SSH public key {}: {err}",
+            path.display()
+        )
+    })?;
     if public_key.trim().is_empty() {
         return Err(format!(
             "canonical SSH public key {} is empty",
@@ -282,9 +286,10 @@ fn resolve_create_prerequisites(
     let (firewall_group_id, firewall_profile) =
         match (machine.provider.firewall_profile.as_deref(), firewall) {
             (None, None) => (None, None),
-            (Some(expected), Some(resolved)) if resolved.profile_name == expected => {
-                (Some(resolved.id.clone()), Some(resolved.profile_name.clone()))
-            }
+            (Some(expected), Some(resolved)) if resolved.profile_name == expected => (
+                Some(resolved.id.clone()),
+                Some(resolved.profile_name.clone()),
+            ),
             (Some(expected), Some(resolved)) => {
                 return Err(format!(
                     "resolved firewall profile {} does not match desired profile {expected}",
@@ -383,9 +388,8 @@ mod tests {
             profile_name: "other".to_owned(),
         };
 
-        let error =
-            resolve_create_prerequisites(&desired.machines[0], "ssh-1", Some(&resolved))
-                .unwrap_err();
+        let error = resolve_create_prerequisites(&desired.machines[0], "ssh-1", Some(&resolved))
+            .unwrap_err();
         assert!(error.contains("does not match desired profile"));
     }
 
