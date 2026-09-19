@@ -1,25 +1,25 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG WARP_VERSION
+ARG WARP_URL
+ARG WARP_SHA256
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    curl \
-    gpg \
-    lsb-release \
-    ca-certificates \
-    iproute2 \
-    iptables \
-    procps \
-    dbus \
-    socat \
-    && rm -rf /var/lib/apt/lists/*
+RUN test -n "$WARP_VERSION" &&     test -n "$WARP_URL" &&     test -n "$WARP_SHA256"
 
-RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
-        gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
-        > /etc/apt/sources.list.d/cloudflare-client.list && \
+RUN apt-get update && apt-get install -y     ca-certificates     curl     iproute2     iptables     procps     dbus     socat     && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "$WARP_URL" -o /tmp/cloudflare-warp.deb && \
+    echo "$WARP_SHA256  /tmp/cloudflare-warp.deb" | sha256sum -c - && \
+    test "$(dpkg-deb -f /tmp/cloudflare-warp.deb Package)" = "cloudflare-warp" && \
+    test "$(dpkg-deb -f /tmp/cloudflare-warp.deb Architecture)" = "amd64" && \
+    test "$(dpkg-deb -f /tmp/cloudflare-warp.deb Version)" = "$WARP_VERSION" && \
     apt-get update && \
-    apt-get install -y cloudflare-warp && \
+    apt-get install -y /tmp/cloudflare-warp.deb && \
+    test "$(dpkg-query -W -f='${Version}' cloudflare-warp)" = "$WARP_VERSION" && \
+    rm -f /tmp/cloudflare-warp.deb && \
     rm -rf /var/lib/apt/lists/*
 
 COPY entrypoint.sh /entrypoint.sh

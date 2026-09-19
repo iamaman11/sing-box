@@ -18,7 +18,7 @@ services:
   cloudflare-mesh:
     profiles:
       - mesh
-    image: ${CLOUDFLARE_MESH_IMAGE:-docker.io/cloudflare/mesh@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: ${CLOUDFLARE_MESH_IMAGE:?CLOUDFLARE_MESH_IMAGE is required}
     container_name: vultr-cloudflare-mesh
     restart: unless-stopped
     cap_add:
