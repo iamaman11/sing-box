@@ -442,8 +442,7 @@ async fn reobserve_created_machine<P: LifecycleProvider>(
     verified_firewall_profiles: &BTreeMap<String, String>,
 ) -> Result<MachinePlan, String> {
     for attempt in 0..policy.create_reobserve_attempts {
-        let inventory =
-            observe_inventory(provider, desired, verified_firewall_profiles).await?;
+        let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
         let plan = plan_machine(desired, machine, &inventory).map_err(|err| err.to_string())?;
         match plan.class {
             PlanClass::Noop
