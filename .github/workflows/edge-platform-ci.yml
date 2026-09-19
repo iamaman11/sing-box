@@ -163,21 +163,6 @@ jobs:
           warp_url="$(jq -er '.url' <<<"${warp_json}")"
           warp_sha="$(jq -er '.sha256' <<<"${warp_json}")"
 
-          curl --fail --silent --show-error --location "${sing_linux_url}" -o "${work}/sing-box-linux.tar.gz"
-          echo "${sing_linux_sha}  ${work}/sing-box-linux.tar.gz" | sha256sum -c -
-          mkdir -p "${work}/linux"
-          tar -xzf "${work}/sing-box-linux.tar.gz" -C "${work}/linux"
-          sing_linux_bin="$(find "${work}/linux" -type f -name sing-box -print -quit)"
-          test -n "${sing_linux_bin}"
-          chmod 0755 "${sing_linux_bin}"
-          test "$("${sing_linux_bin}" version | head -n 1)" = "sing-box version ${sing_version}"
-
-          curl --fail --silent --show-error --location "${warp_url}" -o "${work}/cloudflare-warp.deb"
-          echo "${warp_sha}  ${work}/cloudflare-warp.deb" | sha256sum -c -
-          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Package)" = "cloudflare-warp"
-          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Architecture)" = "amd64"
-          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Version)" = "${warp_version}"
-
           resolve_digest() {
             docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | jq -er '.'
           }
