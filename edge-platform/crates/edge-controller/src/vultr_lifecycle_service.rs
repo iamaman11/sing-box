@@ -154,6 +154,14 @@ pub struct DestroyApplyReport {
     pub absence_verified: bool,
 }
 
+pub async fn inventory_desired_state_with_firewall_profiles<P: LifecycleProvider>(
+    provider: &mut P,
+    desired: &DesiredState,
+    verified_firewall_profiles: &BTreeMap<String, String>,
+) -> Result<LifecycleInventory, String> {
+    observe_inventory(provider, desired, verified_firewall_profiles).await
+}
+
 pub async fn plan_desired_state<P: LifecycleProvider>(
     provider: &mut P,
     desired: &DesiredState,

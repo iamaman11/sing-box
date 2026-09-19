@@ -1,4 +1,18 @@
 {
   "schema": 1,
-  "profiles": []
+  "profiles": [
+    {
+      "name": "acceptance-ssh",
+      "rules": [
+        {
+          "ip_type": "v4",
+          "protocol": "tcp",
+          "subnet": "@controller-ipv4",
+          "subnet_size": 32,
+          "port": "22",
+          "notes": "lifecycle acceptance controller SSH"
+        }
+      ]
+    }
+  ]
 }
