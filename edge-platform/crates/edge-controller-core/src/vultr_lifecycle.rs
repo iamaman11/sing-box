@@ -98,7 +98,9 @@ impl DesiredState {
     pub fn canonical_json(&self) -> Result<String, LifecycleSpecError> {
         self.validate()?;
         let mut normalized = self.clone();
-        normalized.machines.sort_by(|left, right| left.id.cmp(&right.id));
+        normalized
+            .machines
+            .sort_by(|left, right| left.id.cmp(&right.id));
         for machine in &mut normalized.machines {
             machine.tags.sort();
         }
@@ -111,7 +113,11 @@ impl DesiredState {
 
     pub fn machine_digest(&self, machine: &MachineSpec) -> Result<String, LifecycleSpecError> {
         self.validate()?;
-        if !self.machines.iter().any(|candidate| candidate.id == machine.id) {
+        if !self
+            .machines
+            .iter()
+            .any(|candidate| candidate.id == machine.id)
+        {
             return Err(LifecycleSpecError::Validation(format!(
                 "machine {} is not part of desired state",
                 machine.id
@@ -168,10 +174,7 @@ impl ProviderSpec {
                 )));
             }
             (None, Some(snapshot_id)) => {
-                validate_identifier(
-                    &format!("machine {machine_id} snapshot_id"),
-                    snapshot_id,
-                )?;
+                validate_identifier(&format!("machine {machine_id} snapshot_id"), snapshot_id)?;
             }
             (Some(_), None) => {}
         }
@@ -237,8 +240,9 @@ fn canonical_json_value(value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
-        Value::String(value) => serde_json::to_string(value)
-            .expect("serializing a JSON string to a string cannot fail"),
+        Value::String(value) => {
+            serde_json::to_string(value).expect("serializing a JSON string to a string cannot fail")
+        }
         Value::Array(values) => {
             let body = values
                 .iter()
@@ -311,7 +315,10 @@ pub struct LifecycleInventory {
     pub orphaned_managed_provider_ids: Vec<String>,
 }
 
-pub fn build_inventory(desired: &DesiredState, mut resources: Vec<ObservedMachine>) -> LifecycleInventory {
+pub fn build_inventory(
+    desired: &DesiredState,
+    mut resources: Vec<ObservedMachine>,
+) -> LifecycleInventory {
     resources.sort_by(|left, right| left.provider_id.cmp(&right.provider_id));
     let desired_ids = desired
         .machines
@@ -685,7 +692,10 @@ mod tests {
             .tags
             .reverse();
 
-        assert_eq!(first.canonical_json().unwrap(), second.canonical_json().unwrap());
+        assert_eq!(
+            first.canonical_json().unwrap(),
+            second.canonical_json().unwrap()
+        );
         assert_eq!(first.digest().unwrap(), second.digest().unwrap());
     }
 
