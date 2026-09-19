@@ -11,7 +11,6 @@ pub const MANAGED_BY_TAG: &str = "managed-by-sing-box";
 pub const ENVIRONMENT_TAG_PREFIX: &str = "singbox-env-";
 pub const LOGICAL_ID_TAG_PREFIX: &str = "singbox-id-";
 pub const SPEC_DIGEST_TAG_PREFIX: &str = "singbox-spec-";
-pub const FIREWALL_PROFILE_TAG_PREFIX: &str = "singbox-fw-";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +44,6 @@ pub struct ProviderSpec {
     pub snapshot_id: Option<String>,
     pub enable_ipv6: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub firewall_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,15 +116,20 @@ impl DesiredState {
 
     pub fn machine_digest(&self, machine: &MachineSpec) -> Result<String, LifecycleSpecError> {
         self.validate()?;
-        if !self
-            .machines
-            .iter()
-            .any(|candidate| candidate.id == machine.id)
-        {
-            return Err(LifecycleSpecError::Validation(format!(
-                "machine {} is not part of desired state",
-                machine.id
-            )));
+        match self.machines.iter().find(|candidate| candidate.id == machine.id) {
+            Some(candidate) if candidate == machine => {}
+            Some(_) => {
+                return Err(LifecycleSpecError::Validation(format!(
+                    "machine {} does not exactly match desired state",
+                    machine.id
+                )));
+            }
+            None => {
+                return Err(LifecycleSpecError::Validation(format!(
+                    "machine {} is not part of desired state",
+                    machine.id
+                )));
+            }
         }
 
         let mut normalized = machine.clone();
@@ -241,7 +244,6 @@ fn validate_user_tags(machine_id: &str, tags: &[String]) -> Result<(), Lifecycle
             || tag.starts_with(ENVIRONMENT_TAG_PREFIX)
             || tag.starts_with(LOGICAL_ID_TAG_PREFIX)
             || tag.starts_with(SPEC_DIGEST_TAG_PREFIX)
-            || tag.starts_with(FIREWALL_PROFILE_TAG_PREFIX)
         {
             return Err(LifecycleSpecError::Validation(format!(
                 "machine {machine_id} tag {tag} uses the reserved lifecycle namespace"
@@ -547,8 +549,14 @@ pub fn plan_machine(
             machine.id, observed.label
         ));
     }
-    if observed.firewall_profile != machine.provider.firewall_profile {
-        update_reasons.push("firewall profile differs".to_owned());
+    match machine.provider.firewall_profile.as_deref() {
+        Some(expected_profile) if observed.firewall_profile.as_deref() != Some(expected_profile) => {
+            update_reasons.push("firewall profile differs or is not provider-verified".to_owned());
+        }
+        None if observed.firewall_group_id.is_some() => {
+            update_reasons.push("unexpected firewall group is attached".to_owned());
+        }
+        _ => {}
     }
 
     let mut desired_tags = machine.tags.clone();
@@ -648,9 +656,6 @@ pub fn provider_tags_for_machine(
         format!("{LOGICAL_ID_TAG_PREFIX}{}", machine.id),
         format!("{SPEC_DIGEST_TAG_PREFIX}{spec_digest}"),
     ];
-    if let Some(profile) = machine.provider.firewall_profile.as_deref() {
-        tags.push(format!("{FIREWALL_PROFILE_TAG_PREFIX}{profile}"));
-    }
     tags.extend(machine.tags.iter().cloned());
     tags.sort();
     Ok(tags)
@@ -661,7 +666,6 @@ pub fn decode_provider_tags(tags: &[String]) -> Result<DecodedProviderTags, Prov
     let mut environment = None;
     let mut logical_id = None;
     let mut spec_digest = None;
-    let mut firewall_profile = None;
     let mut user_tags = Vec::new();
 
     for tag in tags {
@@ -694,10 +698,6 @@ pub fn decode_provider_tags(tags: &[String]) -> Result<DecodedProviderTags, Prov
             spec_digest = Some(value.to_owned());
             continue;
         }
-        if let Some(value) = tag.strip_prefix(FIREWALL_PROFILE_TAG_PREFIX) {
-            set_lifecycle_value("firewall-profile", tag, value, &mut firewall_profile)?;
-            continue;
-        }
         user_tags.push(tag.clone());
     }
 
@@ -715,7 +715,6 @@ pub fn decode_provider_tags(tags: &[String]) -> Result<DecodedProviderTags, Prov
             logical_id,
         },
         spec_digest,
-        firewall_profile,
         user_tags,
     })
 }
@@ -773,7 +772,7 @@ pub enum DestroyAuthorityError {
 impl fmt::Display for DestroyAuthorityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Spec(err) => err.fmt(f),
+            Self::Spec(err) => write!(f, "{err}"),
             Self::InvalidSourceRevision => {
                 write!(
                     f,
@@ -1051,6 +1050,18 @@ mod tests {
     }
 
     #[test]
+    fn machine_digest_rejects_same_id_with_different_spec() {
+        let desired = desired();
+        let mut foreign = desired.machines[0].clone();
+        foreign.role = "different-role".to_owned();
+
+        assert!(matches!(
+            desired.machine_digest(&foreign),
+            Err(LifecycleSpecError::Validation(_))
+        ));
+    }
+
+    #[test]
     fn sha256_implementation_matches_known_vector() {
         assert_eq!(
             sha256_hex(b"abc"),
@@ -1191,7 +1202,6 @@ mod tests {
             decoded.spec_digest.as_deref(),
             Some(desired.machine_digest(machine).unwrap().as_str())
         );
-        assert_eq!(decoded.firewall_profile.as_deref(), Some("edge"));
         assert_eq!(
             decoded.user_tags,
             vec!["primary".to_owned(), "public-egress".to_owned()]
