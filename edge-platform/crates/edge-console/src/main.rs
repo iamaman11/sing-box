@@ -166,44 +166,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             print_trace_with_label("Ubuntu egress IP", &trace);
             Ok(())
         }
-        "bootstrap-base" => {
-            let response = bootstrap_runtime(
-                controller_endpoint_from_args(2),
-                BootstrapMode::BootstrapBase,
-            )
-            .await?;
-            print_bootstrap_result(&response);
-            finish_bootstrap_result(response)
-        }
-        "bootstrap-tunnel" => {
-            let response = bootstrap_runtime(
-                controller_endpoint_from_args(2),
-                BootstrapMode::BootstrapTunnel,
-            )
-            .await?;
-            print_bootstrap_result(&response);
-            finish_bootstrap_result(response)
-        }
-        "deploy" => {
-            let request = deploy_request_from_args();
-            let response = deploy(
-                controller_endpoint_from_args(DEPLOY_ENDPOINT_ARG_INDEX),
-                request,
-            )
-            .await?;
-            print_deploy_result(&response);
-            finish_deploy_result(response)
-        }
-        "destroy" => {
-            let request = destroy_request_from_args();
-            let response = destroy(
-                controller_endpoint_from_args(DESTROY_ENDPOINT_ARG_INDEX),
-                request,
-            )
-            .await?;
-            print_destroy_result(&response);
-            finish_destroy_result(response)
-        }
         "get-operation" => {
             let operation_id = env::args()
                 .nth(2)
@@ -248,14 +210,7 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
         println!("17. Start sing-box (visible window)");
         println!("18. Stop sing-box");
         println!("19. Restart sing-box (visible window)");
-        println!("20. Bootstrap base runtime (internal)");
-        println!("21. Bootstrap tunnel runtime (internal)");
-        println!("22. Create VM from snapshot");
-        println!("23. Delete current VM");
-        println!("24. List configured secrets");
-        println!("25. Show operation");
-        println!("26. Watch operation");
-        println!("27. Doctor");
+        println!("20. Doctor");
         println!("0. Exit");
         print!("Select: ");
         io::stdout().flush()?;
@@ -407,82 +362,6 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
                 print_local_runtime_result(&response);
             }
             "20" => {
-                let response =
-                    bootstrap_runtime(controller_endpoint.clone(), BootstrapMode::BootstrapBase)
-                        .await?;
-                print_bootstrap_result(&response);
-            }
-            "21" => {
-                let response =
-                    bootstrap_runtime(controller_endpoint.clone(), BootstrapMode::BootstrapTunnel)
-                        .await?;
-                print_bootstrap_result(&response);
-            }
-            "22" => {
-                if !confirm_exact(
-                    "Create a replacement VM from the snapshot? Type CREATE",
-                    "CREATE",
-                )? {
-                    println!("Create cancelled");
-                    continue;
-                }
-                let response = deploy(
-                    controller_endpoint.clone(),
-                    DeployRequest {
-                        label_prefix: Some("waw-edge".to_owned()),
-                        target_ip: None,
-                        instance_id: None,
-                        tunnel_domain: Some(DEFAULT_DNS_RECORD.to_owned()),
-                        acme_email: Some(DEFAULT_ACME_EMAIL.to_owned()),
-                        dns_record_name: Some(DEFAULT_DNS_RECORD.to_owned()),
-                        cloudflare_zone_name: Some(DEFAULT_CLOUDFLARE_ZONE.to_owned()),
-                        mock_provider: false,
-                        skip_dns: false,
-                        snapshot_id: Some(DEFAULT_VULTR_SNAPSHOT_ID.to_owned()),
-                    },
-                )
-                .await?;
-                print_deploy_result(&response);
-            }
-            "23" => {
-                if !confirm_exact(
-                    "Delete the current VM and its edge.alegria.by DNS record? Type DELETE",
-                    "DELETE",
-                )? {
-                    println!("Delete cancelled");
-                    continue;
-                }
-                let response = destroy(
-                    controller_endpoint.clone(),
-                    DestroyRequest {
-                        instance_id: None,
-                        target_ip: None,
-                        dns_record_name: Some(DEFAULT_DNS_RECORD.to_owned()),
-                        cloudflare_zone_name: Some(DEFAULT_CLOUDFLARE_ZONE.to_owned()),
-                        mock_provider: false,
-                        delete_dns: true,
-                        delete_instance: true,
-                        lifecycle_reason: Some("manual".to_owned()),
-                    },
-                )
-                .await?;
-                print_destroy_result(&response);
-            }
-            "24" => {
-                let secrets = list_secret_refs(controller_endpoint.clone()).await?;
-                print_secret_refs(&secrets);
-            }
-            "25" => {
-                let operation_id = prompt("Operation id")?;
-                let status =
-                    get_operation(controller_endpoint.clone(), operation_id.parse()?).await?;
-                print_operation_status(&status);
-            }
-            "26" => {
-                let operation_id = prompt("Operation id")?;
-                watch_operation(controller_endpoint.clone(), operation_id.parse()?).await?;
-            }
-            "27" => {
                 let doctor = fetch_doctor(controller_endpoint.clone()).await?;
                 print_doctor(&doctor);
             }
