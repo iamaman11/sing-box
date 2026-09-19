@@ -14,7 +14,9 @@ use crate::vultr_support_resources::{
     cleanup_environment_support_resources, ensure_firewall_profile,
     observe_verified_firewall_bindings, resolve_managed_ssh_key, validate_machine_catalog,
 };
-use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec, PlanClass};
+use edge_controller_core::vultr_lifecycle::{
+    DesiredState, MANAGED_BY_IDENTITY, MachineSpec, PlanClass, decode_provider_tags,
+};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -165,7 +167,10 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .map(|plan| plan.class)
         .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
 
-    if matches!(initial_class, PlanClass::BlockedAmbiguous | PlanClass::BlockedDrift | PlanClass::ReplaceRequired) {
+    if matches!(
+        initial_class,
+        PlanClass::BlockedAmbiguous | PlanClass::BlockedDrift | PlanClass::ReplaceRequired
+    ) {
         let plan = &initial.plans[0];
         return Err(format!(
             "machine {} is {:?}; apply refuses before support-resource mutation: {}",
@@ -406,10 +411,13 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    let remaining_instances = lifecycle_provider
-        .list_instances()
-        .await
-        .map_err(|err| err.to_string())?;
+    let remaining_instances = wait_after_destroy_inventory(
+        &mut lifecycle_provider,
+        &desired,
+        &args[1],
+        &policy,
+    )
+    .await?;
     let cleanup = cleanup_environment_support_resources(
         &mut support_provider,
         &desired,
@@ -461,6 +469,52 @@ async fn run_cleanup(args: &[String]) -> Result<(), String> {
     }))
 }
 
+async fn wait_after_destroy_inventory(
+    provider: &mut VultrApiProvider,
+    desired: &DesiredState,
+    destroyed_machine_id: &str,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<Vec<edge_provider_vultr::VultrInstance>, String> {
+    for attempt in 0..policy.destroy_reobserve_attempts {
+        let instances = provider
+            .list_instances()
+            .await
+            .map_err(|err| err.to_string())?;
+        let mut stale_destroyed_target_present = false;
+        let mut other_environment_instance_present = false;
+
+        for instance in &instances {
+            let decoded = decode_provider_tags(&instance.tags).map_err(|err| {
+                format!(
+                    "cannot reconcile post-destroy inventory because instance {} has invalid lifecycle tags: {err}",
+                    instance.id
+                )
+            })?;
+            if decoded.ownership.managed_by.as_deref() != Some(MANAGED_BY_IDENTITY)
+                || decoded.ownership.environment.as_deref() != Some(desired.environment.as_str())
+            {
+                continue;
+            }
+            if decoded.ownership.logical_id.as_deref() == Some(destroyed_machine_id) {
+                stale_destroyed_target_present = true;
+            } else {
+                other_environment_instance_present = true;
+            }
+        }
+
+        if other_environment_instance_present || !stale_destroyed_target_present {
+            return Ok(instances);
+        }
+        if attempt + 1 < policy.destroy_reobserve_attempts {
+            tokio::time::sleep(policy.reobserve_delay).await;
+        }
+    }
+
+    Err(format!(
+        "destroyed machine {destroyed_machine_id} remained visible in provider list inventory after exact UUID absence"
+    ))
+}
+
 fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read lifecycle spec {}: {err}", path.display()))?;
@@ -480,13 +534,14 @@ fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<FirewallProfi
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
     let mut profiles = FirewallProfileSet::parse_json(&raw)?;
-    let controller_ipv4 = env::var("EDGE_CONTROLLER_IPV4").ok();
-    profiles.resolve_controller_ipv4(controller_ipv4.as_deref())?;
-    for profile_name in desired
+    let profile_names = desired
         .machines
         .iter()
-        .filter_map(|machine| machine.provider.firewall_profile.as_deref())
-    {
+        .filter_map(|machine| machine.provider.firewall_profile.clone())
+        .collect::<Vec<_>>();
+    let controller_ipv4 = env::var("EDGE_CONTROLLER_IPV4").ok();
+    profiles.resolve_controller_ipv4_for_profiles(&profile_names, controller_ipv4.as_deref())?;
+    for profile_name in &profile_names {
         profiles.profile(profile_name)?;
     }
     Ok(Some(profiles))
