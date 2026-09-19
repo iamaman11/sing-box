@@ -247,8 +247,9 @@ impl FirewallProfileSet {
         if !needs_controller_ip {
             return Ok(());
         }
-        let raw = controller_ipv4
-            .ok_or_else(|| "referenced firewall profiles require EDGE_CONTROLLER_IPV4".to_owned())?;
+        let raw = controller_ipv4.ok_or_else(|| {
+            "referenced firewall profiles require EDGE_CONTROLLER_IPV4".to_owned()
+        })?;
         let ipv4 = raw
             .parse::<std::net::Ipv4Addr>()
             .map_err(|_| "EDGE_CONTROLLER_IPV4 must be a valid IPv4 address".to_owned())?
