@@ -1656,17 +1656,18 @@ impl ControllerService for ControllerServerImpl {
                     ));
                 }
             };
-            let destroy_outcome = match destroy_vultr_instance_reconciled(&api_key, &instance_id).await {
-                Ok(outcome) => outcome,
-                Err(err) => {
-                    return Err(fail_destroy_operation(
-                        &self.state,
-                        operation.id,
-                        "delete VM at Vultr",
-                        Status::internal(err),
-                    ));
-                }
-            };
+            let destroy_outcome =
+                match destroy_vultr_instance_reconciled(&api_key, &instance_id).await {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        return Err(fail_destroy_operation(
+                            &self.state,
+                            operation.id,
+                            "delete VM at Vultr",
+                            Status::internal(err),
+                        ));
+                    }
+                };
             match destroy_outcome {
                 DestroyInstanceOutcome::Requested => {
                     append_operation_event(
@@ -2940,10 +2941,7 @@ async fn reobserve_uncertain_vultr_create(
             return Ok(Some(instance));
         }
         if attempt + 1 < VULTR_CREATE_REOBSERVATION_ATTEMPTS {
-            sleep(Duration::from_secs(
-                VULTR_MUTATION_REOBSERVATION_DELAY_SECS,
-            ))
-            .await;
+            sleep(Duration::from_secs(VULTR_MUTATION_REOBSERVATION_DELAY_SECS)).await;
         }
     }
     Ok(None)
@@ -2983,9 +2981,7 @@ async fn create_or_adopt_vultr_instance(
     }
 
     Err(last_error.unwrap_or_else(|| {
-        format!(
-            "failed to create or adopt Vultr instance for {deployment_label}"
-        )
+        format!("failed to create or adopt Vultr instance for {deployment_label}")
     }))
 }
 
@@ -4157,10 +4153,7 @@ fn is_tombstoned_candidate(
         .map_err(|err| format!("failed to query destroy tombstones: {err}"))
 }
 
-async fn wait_for_vultr_instance_absence(
-    api_key: &str,
-    instance_id: &str,
-) -> Result<bool, String> {
+async fn wait_for_vultr_instance_absence(api_key: &str, instance_id: &str) -> Result<bool, String> {
     for attempt in 0..VULTR_DESTROY_REOBSERVATION_ATTEMPTS {
         match get_instance_typed(api_key, instance_id).await {
             Ok(_) => {}
@@ -4168,10 +4161,7 @@ async fn wait_for_vultr_instance_absence(
             Err(err) => return Err(err.to_string()),
         }
         if attempt + 1 < VULTR_DESTROY_REOBSERVATION_ATTEMPTS {
-            sleep(Duration::from_secs(
-                VULTR_MUTATION_REOBSERVATION_DELAY_SECS,
-            ))
-            .await;
+            sleep(Duration::from_secs(VULTR_MUTATION_REOBSERVATION_DELAY_SECS)).await;
         }
     }
     Ok(false)
@@ -4798,21 +4788,16 @@ mod tests {
                 .id,
             first.id
         );
-        let error =
-            select_unique_vultr_instance_by_label(&[first, second], "edge-a").unwrap_err();
+        let error = select_unique_vultr_instance_by_label(&[first, second], "edge-a").unwrap_err();
         assert!(error.contains("ambiguous Vultr instance identity"));
     }
 
     #[test]
     fn matches_create_request_using_provider_identity_fields() {
-        let mut instance =
-            mock_instance("edge-a", "waw", "vc2-1c-1gb", "203.0.113.10");
+        let mut instance = mock_instance("edge-a", "waw", "vc2-1c-1gb", "203.0.113.10");
         instance.os_id = 2625;
         instance.firewall_group_id = "fw-1".to_owned();
-        instance.tags = vec![
-            "managed-by-sing-box".to_owned(),
-            "edge-a".to_owned(),
-        ];
+        instance.tags = vec!["managed-by-sing-box".to_owned(), "edge-a".to_owned()];
 
         let request = CreateInstanceRequest {
             region: "waw",

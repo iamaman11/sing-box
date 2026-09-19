@@ -153,10 +153,7 @@ pub async fn get_instance(api_key: &str, instance_id: &str) -> Result<VultrInsta
         .map_err(|err| err.to_string())
 }
 
-pub async fn destroy_instance_typed(
-    api_key: &str,
-    instance_id: &str,
-) -> Result<(), VultrError> {
+pub async fn destroy_instance_typed(api_key: &str, instance_id: &str) -> Result<(), VultrError> {
     let client = authorized_client(api_key)?;
     let response = client
         .delete(format!("{API_ROOT}/instances/{instance_id}"))
@@ -253,9 +250,7 @@ where
     for attempt in 1..=SAFE_OBSERVATION_ATTEMPTS {
         match execute_json_once(operation, build_request(), false).await {
             Ok(value) => return Ok(value),
-            Err(err)
-                if attempt < SAFE_OBSERVATION_ATTEMPTS && err.is_observation_retryable() =>
-            {
+            Err(err) if attempt < SAFE_OBSERVATION_ATTEMPTS && err.is_observation_retryable() => {
                 let delay = err
                     .retry_after_secs
                     .unwrap_or(SAFE_OBSERVATION_RETRY_DELAYS_SECS[attempt - 1])
@@ -272,9 +267,7 @@ where
         kind: VultrErrorKind::ObservationTransport,
         status: None,
         retry_after_secs: None,
-        detail: format!(
-            "observation failed after {SAFE_OBSERVATION_ATTEMPTS} attempts"
-        ),
+        detail: format!("observation failed after {SAFE_OBSERVATION_ATTEMPTS} attempts"),
     }))
 }
 
@@ -419,13 +412,15 @@ fn authorized_client(api_key: &str) -> Result<Client, VultrError> {
         .default_headers(
             [(
                 reqwest::header::AUTHORIZATION,
-                format!("Bearer {api_key}").parse().map_err(|err| VultrError {
-                    operation: "build Vultr API client",
-                    kind: VultrErrorKind::Configuration,
-                    status: None,
-                    retry_after_secs: None,
-                    detail: format!("failed to build Vultr auth header: {err}"),
-                })?,
+                format!("Bearer {api_key}")
+                    .parse()
+                    .map_err(|err| VultrError {
+                        operation: "build Vultr API client",
+                        kind: VultrErrorKind::Configuration,
+                        status: None,
+                        retry_after_secs: None,
+                        detail: format!("failed to build Vultr auth header: {err}"),
+                    })?,
             )]
             .into_iter()
             .collect(),
@@ -464,7 +459,11 @@ fn build_create_instance_payload(
         sshkey_id: vec![request.ssh_key_id.to_owned()],
         user_data: STANDARD.encode(request.cloud_init.as_bytes()),
         firewall_group_id: request.firewall_group_id.map(ToOwned::to_owned),
-        tags: request.tags.iter().map(|value| (*value).to_owned()).collect(),
+        tags: request
+            .tags
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
     })
 }
 
@@ -599,10 +598,7 @@ mod tests {
         let payload = build_create_instance_payload(&request).unwrap();
         let json = serde_json::to_value(payload).unwrap();
         assert!(json.get("os_id").is_none());
-        assert_eq!(
-            json["snapshot_id"],
-            "61605612-d7a2-47b1-85ef-aef90f5083df"
-        );
+        assert_eq!(json["snapshot_id"], "61605612-d7a2-47b1-85ef-aef90f5083df");
     }
 
     #[test]
