@@ -96,8 +96,12 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
 }
 
 fn load_desired(path: &Path) -> Result<DesiredMeshState, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read Cloudflare Mesh spec {}: {err}", path.display()))?;
+    let raw = fs::read_to_string(path).map_err(|err| {
+        format!(
+            "failed to read Cloudflare Mesh spec {}: {err}",
+            path.display()
+        )
+    })?;
     DesiredMeshState::parse_json(&raw).map_err(|err| err.to_string())
 }
 
