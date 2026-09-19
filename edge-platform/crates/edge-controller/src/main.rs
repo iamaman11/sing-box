@@ -2972,8 +2972,8 @@ fn should_bootstrap_via_ssh(
     let missing_persisted_trust = !preexisting_agent_trust;
 
     env::var("EDGE_BOOTSTRAP_VIA_SSH")
-            .ok()
-            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .ok()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         || (request
             .target_ip
             .as_deref()
