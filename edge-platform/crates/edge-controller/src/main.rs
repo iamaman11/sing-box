@@ -32,9 +32,7 @@ use edge_local_runtime::{
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
-use edge_provider_vultr::{
-    destroy_instance_typed, get_instance_typed, list_instances_typed, mock_instance,
-};
+use edge_provider_vultr::{get_instance_typed, list_instances_typed, mock_instance};
 use edge_secrets::{default_env_ref, resolve_secret_path, resolve_secret_text};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
@@ -77,11 +75,6 @@ const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
 const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
 const DEFAULT_REGION: &str = "waw";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DestroyInstanceOutcome {
-    Requested,
-    AlreadyAbsent,
-}
 const DEFAULT_PLAN: &str = "vc2-1c-1gb";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
@@ -93,8 +86,6 @@ const BASE_BOOTSTRAP_TIMEOUT_SECS: u64 = 300;
 const TUNNEL_BOOTSTRAP_TIMEOUT_SECS: u64 = 900;
 const EGRESS_TRACE_TIMEOUT_SECS: u64 = 60;
 const BOOTSTRAP_RPC_ATTEMPTS: usize = 3;
-const VULTR_DESTROY_REOBSERVATION_ATTEMPTS: usize = 180;
-const VULTR_MUTATION_REOBSERVATION_DELAY_SECS: u64 = 2;
 const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
 const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
 const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
@@ -639,7 +630,7 @@ fn destroy_request_from_args() -> Result<DestroyRequest, Box<dyn std::error::Err
             .is_none_or(|value| value == "1"),
         delete_instance: env::var("EDGE_DELETE_INSTANCE")
             .ok()
-            .is_none_or(|value| value == "1"),
+            .is_some_and(|value| value == "1"),
         lifecycle_reason: env::var("EDGE_LIFECYCLE_REASON").ok(),
     })
 }
@@ -1459,11 +1450,15 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<DeployRequest>,
     ) -> Result<Response<DeployResponse>, Status> {
+        let request = request.into_inner();
+        if !request.mock_provider {
+            return Err(Status::failed_precondition(
+                "legacy Deploy RPC no longer owns server deployment; use the canonical GitHub VM Application Lifecycle",
+            ));
+        }
         let result = deploy_orchestrator::execute(
             self,
-            deploy_orchestrator::DeployCommand {
-                request: request.into_inner(),
-            },
+            deploy_orchestrator::DeployCommand { request },
             deploy_orchestrator::RollbackPolicy::STRICT,
         )
         .await?;
@@ -1480,6 +1475,11 @@ impl ControllerService for ControllerServerImpl {
         request.dns_record_name = blank_option(request.dns_record_name.take());
         request.cloudflare_zone_name = blank_option(request.cloudflare_zone_name.take());
         request.lifecycle_reason = blank_option(request.lifecycle_reason.take());
+        if request.delete_instance && !request.mock_provider {
+            return Err(Status::failed_precondition(
+                "legacy Destroy RPC no longer owns Vultr instance deletion; use canonical vultr-lifecycle destroy-plan/destroy-apply",
+            ));
+        }
         let operation = self
             .state
             .lock()
@@ -1551,92 +1551,6 @@ impl ControllerService for ControllerServerImpl {
         }
         let mut warnings = Vec::new();
 
-        // Destruction is fail-closed: the authoritative provider object must
-        // still be exactly the deployment recorded by this controller.
-        if request.delete_instance && !request.mock_provider {
-            let Some(expected_label) = existing.deployment_label.clone() else {
-                return Err(fail_destroy_operation(
-                    &self.state,
-                    operation.id,
-                    "read recorded label",
-                    Status::failed_precondition(
-                        "refusing destroy: recorded deployment label is absent",
-                    ),
-                ));
-            };
-            let Some(expected_instance_id) = existing.instance_id.clone() else {
-                return Err(fail_destroy_operation(
-                    &self.state,
-                    operation.id,
-                    "read recorded instance id",
-                    Status::failed_precondition("refusing destroy: recorded instance id is absent"),
-                ));
-            };
-            if instance_id != expected_instance_id
-                || target_ip.trim().is_empty()
-                || !expected_label.starts_with("waw-edge-")
-            {
-                return Err(fail_destroy_operation(
-                    &self.state,
-                    operation.id,
-                    "target validation",
-                    Status::failed_precondition(
-                        "refusing destroy: target does not match the recorded managed deployment",
-                    ),
-                ));
-            }
-            let api_key = match resolve_text_secret(
-                &self.state,
-                SECRET_VULTR_API_KEY,
-                &default_env_ref("VULTR_API_KEY"),
-            ) {
-                Ok(api_key) => api_key,
-                Err(err) => {
-                    return Err(fail_destroy_operation(
-                        &self.state,
-                        operation.id,
-                        "resolve Vultr credential",
-                        Status::internal(err),
-                    ));
-                }
-            };
-            let remote = match get_instance_typed(&api_key, &instance_id).await {
-                Ok(remote) => remote,
-                Err(err) => {
-                    return Err(fail_destroy_operation(
-                        &self.state,
-                        operation.id,
-                        "read VM from Vultr",
-                        Status::internal(err.to_string()),
-                    ));
-                }
-            };
-            if remote.id != expected_instance_id
-                || remote.label != expected_label
-                || !remote.label.starts_with("waw-edge-")
-                || remote.main_ip != target_ip
-            {
-                let note = format!(
-                    "destroy refused: expected id={expected_instance_id} label={expected_label} ip={target_ip}; provider returned id={} label={} ip={}",
-                    remote.id, remote.label, remote.main_ip
-                );
-                append_operation_event(&self.state, operation.id, &note)?;
-                return Err(fail_destroy_operation(
-                    &self.state,
-                    operation.id,
-                    "provider identity verification",
-                    Status::failed_precondition(note),
-                ));
-            }
-            append_operation_event(
-                &self.state,
-                operation.id,
-                &format!(
-                    "destroy target verified: id={instance_id} label={expected_label} ip={target_ip}"
-                ),
-            )?;
-        }
-
         if request.delete_dns {
             let note = match delete_dns_record(&self.state, &request).await {
                 Ok(note) => note,
@@ -1658,52 +1572,6 @@ impl ControllerService for ControllerServerImpl {
                 ));
             }
         }
-        if request.delete_instance && !instance_id.trim().is_empty() && !request.mock_provider {
-            let api_key = match resolve_text_secret(
-                &self.state,
-                SECRET_VULTR_API_KEY,
-                &default_env_ref("VULTR_API_KEY"),
-            ) {
-                Ok(api_key) => api_key,
-                Err(err) => {
-                    return Err(fail_destroy_operation(
-                        &self.state,
-                        operation.id,
-                        "resolve Vultr credential for deletion",
-                        Status::internal(err),
-                    ));
-                }
-            };
-            let destroy_outcome =
-                match destroy_vultr_instance_reconciled(&api_key, &instance_id).await {
-                    Ok(outcome) => outcome,
-                    Err(err) => {
-                        return Err(fail_destroy_operation(
-                            &self.state,
-                            operation.id,
-                            "delete VM at Vultr",
-                            Status::internal(err),
-                        ));
-                    }
-                };
-            match destroy_outcome {
-                DestroyInstanceOutcome::Requested => {
-                    append_operation_event(
-                        &self.state,
-                        operation.id,
-                        "Vultr instance destroy requested",
-                    )?;
-                }
-                DestroyInstanceOutcome::AlreadyAbsent => {
-                    let warning = format!(
-                        "Vultr instance {instance_id} was already absent; authoritative state was reconciled locally"
-                    );
-                    warnings.push(warning.clone());
-                    append_operation_event(&self.state, operation.id, &warning)?;
-                }
-            }
-        }
-
         if let Err(status) = stop_local_runtime_for_destroy(
             &self.repo_root,
             &self.state,
@@ -3946,55 +3814,6 @@ fn is_tombstoned_candidate(
         .find_destroy_tombstone(Some(deployment_label), Some(instance_id))
         .map(|value| value.is_some())
         .map_err(|err| format!("failed to query destroy tombstones: {err}"))
-}
-
-async fn wait_for_vultr_instance_absence(api_key: &str, instance_id: &str) -> Result<bool, String> {
-    for attempt in 0..VULTR_DESTROY_REOBSERVATION_ATTEMPTS {
-        match get_instance_typed(api_key, instance_id).await {
-            Ok(_) => {}
-            Err(err) if err.is_not_found() => return Ok(true),
-            Err(err) => return Err(err.to_string()),
-        }
-        if attempt + 1 < VULTR_DESTROY_REOBSERVATION_ATTEMPTS {
-            sleep(Duration::from_secs(VULTR_MUTATION_REOBSERVATION_DELAY_SECS)).await;
-        }
-    }
-    Ok(false)
-}
-
-async fn destroy_vultr_instance_reconciled(
-    api_key: &str,
-    instance_id: &str,
-) -> Result<DestroyInstanceOutcome, String> {
-    match get_instance_typed(api_key, instance_id).await {
-        Ok(_) => {}
-        Err(err) if err.is_not_found() => return Ok(DestroyInstanceOutcome::AlreadyAbsent),
-        Err(err) => return Err(err.to_string()),
-    }
-
-    match destroy_instance_typed(api_key, instance_id).await {
-        Ok(()) => {
-            if wait_for_vultr_instance_absence(api_key, instance_id).await? {
-                Ok(DestroyInstanceOutcome::Requested)
-            } else {
-                Err(format!(
-                    "Vultr instance {instance_id} remained present after a successful DELETE request; refusing to clear local authority"
-                ))
-            }
-        }
-        Err(err) if err.is_not_found() => Ok(DestroyInstanceOutcome::AlreadyAbsent),
-        Err(err) if err.requires_mutation_reobservation() => {
-            let original = err.to_string();
-            if wait_for_vultr_instance_absence(api_key, instance_id).await? {
-                Ok(DestroyInstanceOutcome::Requested)
-            } else {
-                Err(format!(
-                    "{original}; exact instance {instance_id} remained present after bounded re-observation, and DELETE was not replayed blindly"
-                ))
-            }
-        }
-        Err(err) => Err(err.to_string()),
-    }
 }
 
 fn blank_option(value: Option<String>) -> Option<String> {
