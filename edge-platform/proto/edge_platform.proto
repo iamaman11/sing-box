@@ -335,6 +335,7 @@ message BundleFile {
   string relative_path = 1;
   bytes content = 2;
   bool executable = 3;
+  bool sensitive = 4;
 }
 
 message ApplyBundleRequest {
