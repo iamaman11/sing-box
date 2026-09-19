@@ -87,3 +87,35 @@ jobs:
               fi
             done
           done < "$tmp/plans.tsv"
+
+
+  disposable:
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research disposable'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 20
+
+    steps:
+      - name: Fetch exact research script
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 30             "https://raw.githubusercontent.com/iamaman11/sing-box/${GITHUB_SHA}/research/vultr/disposable-lifecycle.sh"             --output "${RUNNER_TEMP}/disposable-lifecycle.sh"
+          test -s "${RUNNER_TEMP}/disposable-lifecycle.sh"
+
+      - name: Run disposable Vultr lifecycle
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/disposable-lifecycle.sh"
