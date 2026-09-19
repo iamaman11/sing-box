@@ -3448,6 +3448,8 @@ async fn apply_bundle_to_agent_target(
                 sensitive: false,
             }),
             prune_existing: true,
+            bundle_id: None,
+            bundle_digest: None,
         }))
         .await
         .map_err(|err| format!("edge-agent apply bundle RPC failed: {err}"))?;
@@ -3463,7 +3465,10 @@ async fn verify_agent_runtime_target(
         .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
     let mut client = AgentServiceClient::<Channel>::new(channel);
     let response = client
-        .verify_runtime(Request::new(VerifyRuntimeRequest { require_readiness }))
+        .verify_runtime(Request::new(VerifyRuntimeRequest {
+            require_readiness,
+            mode: BootstrapMode::Unspecified as i32,
+        }))
         .await
         .map_err(|err| format!("edge-agent verify runtime RPC failed: {err}"))?;
     Ok(response.into_inner())
