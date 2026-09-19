@@ -371,7 +371,9 @@ fn operational_provider_from_env() -> Result<VultrOperationalApiProvider, String
 fn operator_private_key_path_from_env() -> Result<PathBuf, String> {
     let path = env::var_os("EDGE_SSH_PRIVATE_KEY_PATH")
         .map(PathBuf::from)
-        .ok_or_else(|| "EDGE_SSH_PRIVATE_KEY_PATH is required for strict SSH lifecycle apply".to_owned())?;
+        .ok_or_else(|| {
+            "EDGE_SSH_PRIVATE_KEY_PATH is required for strict SSH lifecycle apply".to_owned()
+        })?;
     if !path.is_file() {
         return Err(format!(
             "EDGE_SSH_PRIVATE_KEY_PATH does not point to a readable file: {}",
@@ -538,7 +540,7 @@ mod tests {
             Some(&resolved),
             "#cloud-config\n".to_owned(),
         )
-            .unwrap_err();
+        .unwrap_err();
         assert!(error.contains("does not match desired profile"));
     }
 
