@@ -183,6 +183,21 @@ impl AgentArtifactManifest {
     }
 }
 
+pub fn desired_release_id(
+    desired: &DesiredApplicationState,
+    artifact: &AgentArtifactManifest,
+) -> Result<String, ApplicationSpecError> {
+    desired.validate()?;
+    artifact.validate()?;
+    let desired_digest = desired.digest()?;
+    Ok(format!(
+        "{}-{}-{}",
+        desired.machine_id,
+        &artifact.source_revision[..12],
+        &desired_digest[..12]
+    ))
+}
+
 pub fn desired_release(
     desired: &DesiredApplicationState,
     artifact: &AgentArtifactManifest,
@@ -191,14 +206,8 @@ pub fn desired_release(
     desired.validate()?;
     artifact.validate()?;
     validate_hex("bundle digest", bundle_digest, 64)?;
-    let desired_digest = desired.digest()?;
     Ok(PublishedApplicationRelease {
-        release_id: format!(
-            "{}-{}-{}",
-            desired.machine_id,
-            &artifact.source_revision[..12],
-            &desired_digest[..12]
-        ),
+        release_id: desired_release_id(desired, artifact)?,
         source_revision: artifact.source_revision.clone(),
         agent_sha256: artifact.sha256.clone(),
         bundle_digest: bundle_digest.to_owned(),
