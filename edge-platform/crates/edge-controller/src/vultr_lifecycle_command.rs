@@ -1,13 +1,21 @@
 use crate::vultr_lifecycle_service::{
-    CreatePrerequisites, LifecycleExecutionPolicy, VultrApiProvider, apply_machine,
-    build_destroy_plan, destroy_machine, plan_desired_state,
+    CreatePrerequisites, LifecycleExecutionPolicy, VultrApiProvider,
+    apply_machine_with_firewall_profiles, build_destroy_plan_with_firewall_profiles,
+    destroy_machine_with_firewall_profiles, plan_desired_state_with_firewall_profiles,
+};
+use crate::vultr_support_resources::{
+    FirewallProfileSet, ResolvedFirewallProfile, VultrSupportApiProvider, ensure_firewall_profile,
+    observe_verified_firewall_bindings, resolve_managed_ssh_key, validate_machine_catalog,
 };
 use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec, PlanClass};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
+const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
+const FIREWALL_PROFILES_PATH: &str = "infra/vultr/firewall-profiles.json";
 
 pub async fn run(args: Vec<String>) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
@@ -27,9 +35,18 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
-    let report =
-        plan_desired_state(&mut provider, &desired, args.get(1).map(String::as_str)).await?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        args.get(1).map(String::as_str),
+        &verified_firewalls,
+    )
+    .await?;
     print_json_value(serde_json::json!({
         "environment": report.environment,
         "desired_state_digest": report.desired_state_digest,
@@ -50,36 +67,71 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .iter()
         .find(|machine| machine.id == args[1])
         .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
-    let mut provider = provider_from_env()?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let policy = LifecycleExecutionPolicy::default();
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let mut verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
 
-    // Resolve CREATE-only prerequisites lazily. A converged NOOP must not
-    // depend on SSH/bootstrap material that will never be used.
-    let preflight = plan_desired_state(&mut provider, &desired, Some(&args[1])).await?;
+    let preflight = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        Some(&args[1]),
+        &verified_firewalls,
+    )
+    .await?;
     let prerequisites = if preflight
         .plans
         .first()
         .is_some_and(|plan| plan.class == PlanClass::Create)
     {
-        resolve_create_prerequisites(machine)?
+        validate_machine_catalog(&mut support_provider, machine).await?;
+        let canonical_public_key = read_canonical_ssh_public_key()?;
+        let ssh_key = resolve_managed_ssh_key(
+            &mut support_provider,
+            &desired.environment,
+            &canonical_public_key,
+            &policy,
+        )
+        .await?;
+
+        let firewall = if let Some(profile_name) = machine.provider.firewall_profile.as_deref() {
+            let profile_set = profiles.as_ref().ok_or_else(|| {
+                format!(
+                    "machine {} references firewall profile {profile_name}, but no profile registry is loaded",
+                    machine.id
+                )
+            })?;
+            let profile = profile_set.profile(profile_name)?;
+            let resolved = ensure_firewall_profile(
+                &mut support_provider,
+                &desired.environment,
+                profile,
+                &policy,
+            )
+            .await?;
+            verified_firewalls.insert(resolved.id.clone(), resolved.profile_name.clone());
+            Some(resolved)
+        } else {
+            None
+        };
+
+        resolve_create_prerequisites(machine, &ssh_key.id, firewall.as_ref())?
     } else {
-        CreatePrerequisites {
-            bootstrap_profile: machine.bootstrap_profile.clone(),
-            ssh_key_id: String::new(),
-            cloud_init: String::new(),
-            firewall_group_id: None,
-            firewall_profile: None,
-        }
+        empty_create_prerequisites(machine)
     };
 
-    // apply_machine always re-observes before mutation. If provider state
-    // changes after preflight, empty prerequisites can only cause a safe
-    // refusal before CREATE, never a mutation with stale assumptions.
-    let report = apply_machine(
-        &mut provider,
+    // apply_machine re-observes immediately before any instance mutation. If
+    // provider state changed after preflight, stale prerequisites can only
+    // produce a safe refusal or NOOP; they cannot bypass lifecycle identity.
+    let report = apply_machine_with_firewall_profiles(
+        &mut lifecycle_provider,
         &desired,
         &args[1],
         &prerequisites,
-        &LifecycleExecutionPolicy::default(),
+        &policy,
+        &verified_firewalls,
     )
     .await?;
     print_json_value(serde_json::json!({
@@ -98,8 +150,19 @@ async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
-    let plan = build_destroy_plan(&mut provider, &desired, &args[1], &args[2]).await?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let plan = build_destroy_plan_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        &args[1],
+        &args[2],
+        &verified_firewalls,
+    )
+    .await?;
     let value = serde_json::to_value(&plan)
         .map_err(|err| format!("failed to serialize destroy plan: {err}"))?;
     print_json_value(value)
@@ -113,14 +176,19 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
-    let report = destroy_machine(
-        &mut provider,
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let report = destroy_machine_with_firewall_profiles(
+        &mut lifecycle_provider,
         &desired,
         &args[1],
         &args[2],
         &args[3],
         &LifecycleExecutionPolicy::default(),
+        &verified_firewalls,
     )
     .await?;
     print_json_value(serde_json::json!({
@@ -138,37 +206,106 @@ fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
         .map_err(|err| format!("failed to parse lifecycle spec {}: {err}", path.display()))
 }
 
-fn provider_from_env() -> Result<VultrApiProvider, String> {
-    let api_key = env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())?;
-    VultrApiProvider::new(api_key)
+fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<FirewallProfileSet>, String> {
+    if desired
+        .machines
+        .iter()
+        .all(|machine| machine.provider.firewall_profile.is_none())
+    {
+        return Ok(None);
+    }
+    let path = Path::new(FIREWALL_PROFILES_PATH);
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
+    let profiles = FirewallProfileSet::parse_json(&raw)?;
+    for profile_name in desired
+        .machines
+        .iter()
+        .filter_map(|machine| machine.provider.firewall_profile.as_deref())
+    {
+        profiles.profile(profile_name)?;
+    }
+    Ok(Some(profiles))
 }
 
-fn resolve_create_prerequisites(machine: &MachineSpec) -> Result<CreatePrerequisites, String> {
-    if let Some(profile) = machine.provider.firewall_profile.as_deref() {
+async fn verified_firewall_bindings(
+    provider: &mut VultrSupportApiProvider,
+    desired: &DesiredState,
+    profiles: Option<&FirewallProfileSet>,
+) -> Result<BTreeMap<String, String>, String> {
+    match profiles {
+        Some(profiles) => observe_verified_firewall_bindings(provider, desired, profiles).await,
+        None => Ok(BTreeMap::new()),
+    }
+}
+
+fn lifecycle_provider_from_env() -> Result<VultrApiProvider, String> {
+    VultrApiProvider::new(vultr_api_key_from_env()?)
+}
+
+fn support_provider_from_env() -> Result<VultrSupportApiProvider, String> {
+    VultrSupportApiProvider::new(vultr_api_key_from_env()?)
+}
+
+fn vultr_api_key_from_env() -> Result<String, String> {
+    env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())
+}
+
+fn read_canonical_ssh_public_key() -> Result<String, String> {
+    let path = Path::new(CANONICAL_SSH_PUBLIC_KEY_PATH);
+    let public_key = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read canonical SSH public key {}: {err}", path.display()))?;
+    if public_key.trim().is_empty() {
         return Err(format!(
-            "CREATE for machine {} declares firewall profile {}; provider-verified firewall resolution is not wired yet, so apply refuses before mutation",
-            machine.id, profile
+            "canonical SSH public key {} is empty",
+            path.display()
         ));
     }
+    Ok(public_key)
+}
 
+fn resolve_create_prerequisites(
+    machine: &MachineSpec,
+    ssh_key_id: &str,
+    firewall: Option<&ResolvedFirewallProfile>,
+) -> Result<CreatePrerequisites, String> {
     if machine.bootstrap_profile != "singbox-host-v1" {
         return Err(format!(
             "bootstrap profile {} is not implemented by the current application layer",
             machine.bootstrap_profile
         ));
     }
-
-    let ssh_key_id = env::var("EDGE_VULTR_SSH_KEY_ID").map_err(|_| {
-        "EDGE_VULTR_SSH_KEY_ID is required temporarily for CREATE until owned SSH-key discovery is wired"
-            .to_owned()
-    })?;
     if ssh_key_id.trim().is_empty() {
-        return Err("EDGE_VULTR_SSH_KEY_ID must be non-empty".to_owned());
+        return Err("resolved Vultr SSH key id is empty".to_owned());
     }
 
-    let cloud_init_path = env::var_os("EDGE_VULTR_CLOUD_INIT_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CLOUD_INIT_PATH));
+    let (firewall_group_id, firewall_profile) =
+        match (machine.provider.firewall_profile.as_deref(), firewall) {
+            (None, None) => (None, None),
+            (Some(expected), Some(resolved)) if resolved.profile_name == expected => {
+                (Some(resolved.id.clone()), Some(resolved.profile_name.clone()))
+            }
+            (Some(expected), Some(resolved)) => {
+                return Err(format!(
+                    "resolved firewall profile {} does not match desired profile {expected}",
+                    resolved.profile_name
+                ));
+            }
+            (Some(expected), None) => {
+                return Err(format!(
+                    "machine {} requires resolved firewall profile {expected}",
+                    machine.id
+                ));
+            }
+            (None, Some(resolved)) => {
+                return Err(format!(
+                    "machine {} has no firewall profile but resolver supplied {}",
+                    machine.id, resolved.profile_name
+                ));
+            }
+        };
+
+    let cloud_init_path = PathBuf::from(DEFAULT_CLOUD_INIT_PATH);
     let cloud_init = fs::read_to_string(&cloud_init_path).map_err(|err| {
         format!(
             "failed to read bootstrap profile {} from {}: {err}",
@@ -179,11 +316,21 @@ fn resolve_create_prerequisites(machine: &MachineSpec) -> Result<CreatePrerequis
 
     Ok(CreatePrerequisites {
         bootstrap_profile: machine.bootstrap_profile.clone(),
-        ssh_key_id,
+        ssh_key_id: ssh_key_id.to_owned(),
         cloud_init,
+        firewall_group_id,
+        firewall_profile,
+    })
+}
+
+fn empty_create_prerequisites(machine: &MachineSpec) -> CreatePrerequisites {
+    CreatePrerequisites {
+        bootstrap_profile: machine.bootstrap_profile.clone(),
+        ssh_key_id: String::new(),
+        cloud_init: String::new(),
         firewall_group_id: None,
         firewall_profile: None,
-    })
+    }
 }
 
 fn print_json_value(value: serde_json::Value) -> Result<(), String> {
@@ -209,7 +356,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_firewall_backed_create_until_provider_binding_is_verified() {
+    fn firewall_binding_must_match_desired_profile() {
         let desired = DesiredState::parse_json(
             r#"{
   "schema": 1,
@@ -231,9 +378,15 @@ mod tests {
 }"#,
         )
         .unwrap();
+        let resolved = ResolvedFirewallProfile {
+            id: "fw-1".to_owned(),
+            profile_name: "other".to_owned(),
+        };
 
-        let error = resolve_create_prerequisites(&desired.machines[0]).unwrap_err();
-        assert!(error.contains("provider-verified firewall resolution is not wired yet"));
+        let error =
+            resolve_create_prerequisites(&desired.machines[0], "ssh-1", Some(&resolved))
+                .unwrap_err();
+        assert!(error.contains("does not match desired profile"));
     }
 
     #[test]
