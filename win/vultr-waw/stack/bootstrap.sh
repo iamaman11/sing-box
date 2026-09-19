@@ -56,9 +56,9 @@ compose_up() {
 
   if [[ "$USE_PREBUILT_IMAGES" == "1" ]]; then
     docker compose "${profile_args[@]}" pull "$@" || true
-    docker compose "${profile_args[@]}" up -d "$@"
+    docker compose "${profile_args[@]}" up -d --force-recreate "$@"
   else
-    docker compose "${profile_args[@]}" up -d --build "$@"
+    docker compose "${profile_args[@]}" up -d --build --force-recreate "$@"
   fi
 }
 
