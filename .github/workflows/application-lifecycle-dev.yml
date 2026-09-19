@@ -6,7 +6,7 @@ on:
       - application/github-vm-lifecycle
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: application-lifecycle-dev-${{ github.ref }}
@@ -41,6 +41,22 @@ jobs:
         working-directory: edge-platform
         shell: bash
         run: cargo fmt --all
+
+      - name: Commit rustfmt result to feature branch when needed
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- edge-platform; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add edge-platform
+          git commit -m "style: apply rustfmt to application lifecycle"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.git"             HEAD:application/github-vm-lifecycle
 
       - name: Test workspace
         working-directory: edge-platform
