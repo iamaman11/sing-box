@@ -68,13 +68,7 @@ pub(crate) async fn execute(
         dns_updated: false,
     };
 
-    let target = resolve_deploy_target(
-        &server.repo_root,
-        &server.state,
-        &request,
-        &deployment_label,
-    )
-    .await
+    let target = resolve_deploy_target(&server.state, &request).await
     .map_err(|err| {
         let _ = upsert_controller_phases_with_journal(
             &server.state,
@@ -101,16 +95,7 @@ pub(crate) async fn execute(
     append_operation_event(
         &server.state,
         operation.id,
-        &format!(
-            "target resolved: {} ({}){}",
-            target.instance_id,
-            target.target_ip,
-            if target.created_instance {
-                " [created]"
-            } else {
-                ""
-            }
-        ),
+        &format!("target resolved: {} ({})", target.instance_id, target.target_ip),
     )?;
 
     let bundle = build_bundle(&BuildBundleRequest {
