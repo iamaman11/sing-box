@@ -3622,8 +3622,7 @@ fn write_private_state_file(path: &Path, content: &[u8]) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
-    fs::write(path, content)
-        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
