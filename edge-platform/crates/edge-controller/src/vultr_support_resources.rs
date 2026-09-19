@@ -1225,8 +1225,7 @@ mod tests {
                     .push(observed.clone());
             } else {
                 self.firewall_rule_create_visibility_reads = 0;
-                self.pending_firewall_rule =
-                    Some((firewall_group_id.to_owned(), observed.clone()));
+                self.pending_firewall_rule = Some((firewall_group_id.to_owned(), observed.clone()));
             }
             Ok(observed)
         }
