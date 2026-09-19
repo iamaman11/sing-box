@@ -145,6 +145,14 @@ pub struct CreateFirewallRuleRequest<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrSnapshot {
+    pub id: String,
+    pub description: String,
+    pub status: String,
+    pub os_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VultrOperatingSystem {
     pub id: u32,
     pub name: String,
@@ -579,6 +587,39 @@ pub async fn get_region_availability_typed(
         client.get(&url).query(&[("type", plan_type)])
     })
     .await
+}
+
+pub async fn list_snapshots_typed(api_key: &str) -> Result<Vec<VultrSnapshot>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListSnapshotsEnvelope = observation_json("list Vultr snapshots", || {
+            let request = client
+                .get(format!("{API_ROOT}/snapshots"))
+                .query(&[("per_page", "500")]);
+            match current_cursor.as_deref() {
+                Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                _ => request,
+            }
+        })
+        .await?;
+        result.extend(page.snapshots.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr snapshots",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr snapshots"))
 }
 
 pub async fn list_operating_systems_typed(
@@ -1131,6 +1172,35 @@ impl From<VultrFirewallRulePayload> for VultrFirewallRule {
             port: value.port,
             source: value.source,
             notes: value.notes,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListSnapshotsEnvelope {
+    snapshots: Vec<VultrSnapshotPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrSnapshotPayload {
+    id: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    os_id: u32,
+}
+
+impl From<VultrSnapshotPayload> for VultrSnapshot {
+    fn from(value: VultrSnapshotPayload) -> Self {
+        Self {
+            id: value.id,
+            description: value.description,
+            status: value.status,
+            os_id: value.os_id,
         }
     }
 }
