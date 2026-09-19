@@ -492,7 +492,8 @@ pub fn rotate_host_certificate(
             ],
             None,
         )?;
-        let certificate = fs::read(PathBuf::from(format!("{}-cert.pub", remote_pub.display())))
+        let certificate_path = remote_pub.with_file_name("remote-host-cert.pub");
+        let certificate = fs::read(&certificate_path)
             .map_err(|err| format!("failed to read rotated host certificate: {err}"))?;
 
         run_checked(
