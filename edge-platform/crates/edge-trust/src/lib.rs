@@ -248,8 +248,7 @@ pub fn write_agent_server_env_file(
 }
 
 fn write_tls_file(path: &Path, content: &[u8], sensitive: bool) -> Result<(), String> {
-    fs::write(path, content)
-        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
