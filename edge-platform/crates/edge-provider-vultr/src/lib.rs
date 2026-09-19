@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use tokio::time::{Duration, sleep};
@@ -11,6 +12,8 @@ const API_ROOT: &str = "https://api.vultr.com/v2";
 const SAFE_OBSERVATION_ATTEMPTS: usize = 4;
 const SAFE_OBSERVATION_RETRY_DELAYS_SECS: [u64; SAFE_OBSERVATION_ATTEMPTS - 1] = [2, 4, 8];
 const MAX_PROVIDER_ERROR_CHARS: usize = 512;
+const MAX_PROVIDER_ERROR_BYTES: usize = 64 * 1024;
+const MAX_LIST_PAGES: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VultrErrorKind {
@@ -167,13 +170,10 @@ pub async fn destroy_instance_typed(api_key: &str, instance_id: &str) -> Result<
         return Ok(());
     }
 
-    let detail = provider_error_detail(
-        response
-            .bytes()
-            .await
-            .map_err(|err| mutation_transport_error("read Vultr destroy response", err))?
-            .as_ref(),
-    );
+    let (body, body_truncated) = read_bounded_error_body(response)
+        .await
+        .map_err(|err| mutation_transport_error("read Vultr destroy response", err))?;
+    let detail = provider_error_detail(&body, body_truncated);
 
     Err(VultrError {
         operation: "destroy Vultr instance",
@@ -201,8 +201,21 @@ pub async fn list_instances_typed(api_key: &str) -> Result<Vec<VultrInstance>, V
     let client = authorized_client(api_key)?;
     let mut result = Vec::new();
     let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+    let mut page_count = 0usize;
 
     loop {
+        page_count += 1;
+        if page_count > MAX_LIST_PAGES {
+            return Err(VultrError {
+                operation: "list Vultr instances",
+                kind: VultrErrorKind::Decode,
+                status: None,
+                retry_after_secs: None,
+                detail: format!("pagination exceeded {MAX_LIST_PAGES} pages"),
+            });
+        }
+
         let current_cursor = cursor.clone();
         let page: ListInstancesEnvelope = observation_json("list Vultr instances", || {
             let request = client
@@ -217,15 +230,25 @@ pub async fn list_instances_typed(api_key: &str) -> Result<Vec<VultrInstance>, V
 
         result.extend(page.instances.into_iter().map(Into::into));
 
-        cursor = page
+        let next_cursor = page
             .meta
             .and_then(|meta| meta.links)
             .and_then(|links| links.next)
             .filter(|value| !value.trim().is_empty());
 
-        if cursor.is_none() {
-            break;
-        }
+        cursor = match next_cursor {
+            Some(next) if seen_cursors.insert(next.clone()) => Some(next),
+            Some(next) => {
+                return Err(VultrError {
+                    operation: "list Vultr instances",
+                    kind: VultrErrorKind::Decode,
+                    status: None,
+                    retry_after_secs: None,
+                    detail: format!("pagination cursor cycle detected at {next}"),
+                });
+            }
+            None => break,
+        };
     }
 
     Ok(result)
@@ -286,6 +309,24 @@ async fn execute_json_once<T: DeserializeOwned>(
 
     let status = response.status();
     let retry_after_secs = retry_after_seconds(&response);
+
+    if !status.is_success() {
+        let (body, body_truncated) = read_bounded_error_body(response).await.map_err(|err| {
+            if mutation {
+                mutation_transport_error(operation, err)
+            } else {
+                observation_transport_error(operation, err)
+            }
+        })?;
+        return Err(VultrError {
+            operation,
+            kind: VultrErrorKind::Http,
+            status: Some(status.as_u16()),
+            retry_after_secs,
+            detail: provider_error_detail(&body, body_truncated),
+        });
+    }
+
     let bytes = response.bytes().await.map_err(|err| {
         if mutation {
             mutation_transport_error(operation, err)
@@ -293,16 +334,6 @@ async fn execute_json_once<T: DeserializeOwned>(
             observation_transport_error(operation, err)
         }
     })?;
-
-    if !status.is_success() {
-        return Err(VultrError {
-            operation,
-            kind: VultrErrorKind::Http,
-            status: Some(status.as_u16()),
-            retry_after_secs,
-            detail: provider_error_detail(&bytes),
-        });
-    }
 
     serde_json::from_slice(&bytes).map_err(|err| VultrError {
         operation,
@@ -357,7 +388,30 @@ fn retry_after_seconds(response: &reqwest::Response) -> Option<u64> {
         .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
-fn provider_error_detail(body: &[u8]) -> String {
+async fn read_bounded_error_body(
+    mut response: reqwest::Response,
+) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    let mut body = Vec::with_capacity(MAX_PROVIDER_ERROR_BYTES.min(8 * 1024));
+    let mut truncated = false;
+
+    while let Some(chunk) = response.chunk().await? {
+        let remaining = MAX_PROVIDER_ERROR_BYTES.saturating_sub(body.len());
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok((body, truncated))
+}
+
+fn provider_error_detail(body: &[u8], body_truncated: bool) -> String {
     let text = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
         value
             .get("error")
@@ -371,7 +425,7 @@ fn provider_error_detail(body: &[u8]) -> String {
 
     let mut chars = text.chars();
     let bounded: String = chars.by_ref().take(MAX_PROVIDER_ERROR_CHARS).collect();
-    if chars.next().is_some() {
+    if body_truncated || chars.next().is_some() {
         format!("{bounded}…")
     } else if bounded.trim().is_empty() {
         "provider returned no error detail".to_owned()
@@ -658,9 +712,22 @@ mod tests {
     }
 
     #[test]
+    fn detects_repeated_pagination_cursor() {
+        let mut seen = HashSet::new();
+        assert!(seen.insert("cursor-2".to_owned()));
+        assert!(!seen.insert("cursor-2".to_owned()));
+    }
+
+    #[test]
+    fn marks_byte_truncated_provider_error_detail() {
+        let detail = provider_error_detail(b"provider failure", true);
+        assert_eq!(detail, "provider failure…");
+    }
+
+    #[test]
     fn bounds_provider_error_detail() {
         let body = format!("{{\"error\":\"{}\"}}", "x".repeat(800));
-        let detail = provider_error_detail(body.as_bytes());
+        let detail = provider_error_detail(body.as_bytes(), false);
         assert!(detail.chars().count() <= MAX_PROVIDER_ERROR_CHARS + 1);
         assert!(detail.ends_with('…'));
     }
