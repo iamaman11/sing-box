@@ -457,31 +457,77 @@ if [[ "$observed_user_data" != "$user_data_b64" ]]; then
 fi
 log "user_data_retrievable=PASS content_redacted=true"
 
-# Firewall propagation: close SSH, prove a new TCP connection becomes blocked,
-# then reopen the exact runner /32 and regain strict SSH.
-api_request DELETE "/v2/firewalls/${firewall_id}/rules/${firewall_rule_id}"
+# Firewall propagation experiment. A previous run showed that deleting the only
+# allow rule did not close new TCP/22 connections within 40 seconds. Avoid an
+# ambiguous empty-group state here: replace it with an explicit non-matching
+# TCP/22 rule, confirm the provider rule-set, then observe propagation.
+api_request DELETE "/v2/firewalls/$firewall_id/rules/$firewall_rule_id"
 expect_http 204 "firewall_rule_delete" || exit 1
 firewall_rule_id=""
-closed=0
-for _ in $(seq 1 20); do
-  if ! timeout 3 bash -c "</dev/tcp/${main_ip}/22" 2>/dev/null; then
-    closed=1
-    break
+
+jq -n --arg subnet "192.0.2.1" --arg notes "$LABEL nonmatching-probe" \
+  '{ip_type:"v4", protocol:"tcp", subnet:$subnet, subnet_size:32, port:"22", notes:$notes}' \
+  > "$tmp/firewall-rule-nonmatching.json"
+api_request POST "/v2/firewalls/$firewall_id/rules" "$tmp/firewall-rule-nonmatching.json"
+expect_http 201 "firewall_nonmatching_rule_create" || exit 1
+firewall_rule_id="$(jq -r '.firewall_rule.id' "$HTTP_BODY")"
+[[ -n "$firewall_rule_id" && "$firewall_rule_id" != "null" ]] || exit 1
+
+rules_converged=0
+for _ in $(seq 1 30); do
+  api_request GET "/v2/firewalls/$firewall_id/rules?per_page=500"
+  if [[ "$HTTP_RC" -eq 0 && "$HTTP_CODE" == "200" ]]; then
+    runner_rules="$(jq --arg ip "$runner_ip" '[.firewall_rules[] | select(.protocol=="tcp" and .port=="22" and .subnet==$ip)] | length' "$HTTP_BODY")"
+    probe_rules="$(jq '[.firewall_rules[] | select(.protocol=="tcp" and .port=="22" and .subnet=="192.0.2.1" and .subnet_size==32)] | length' "$HTTP_BODY")"
+    if [[ "$runner_rules" == "0" && "$probe_rules" == "1" ]]; then
+      rules_converged=1
+      break
+    fi
   fi
   sleep 2
 done
-if [[ "$closed" -ne 1 ]]; then
-  log "firewall_close_propagation=FAIL"
+if [[ "$rules_converged" -ne 1 ]]; then
+  log "firewall_rule_api_convergence=FAIL"
   exit 1
 fi
-log "firewall_close_propagation=PASS"
+log "firewall_rule_api_convergence=PASS mode=nonmatching"
 
-api_request POST "/v2/firewalls/${firewall_id}/rules" "${tmp}/firewall-rule.json"
+closed=0
+started_at="$(date +%s)"
+for _ in $(seq 1 60); do
+  if ! timeout 2 bash -c "</dev/tcp/$main_ip/22" 2>/dev/null; then
+    closed=1
+    break
+  fi
+  sleep 1
+done
+elapsed="$(( $(date +%s) - started_at ))"
+if [[ "$closed" -ne 1 ]]; then
+  log "firewall_nonmatching_block=FAIL elapsed_s=$elapsed"
+  api_request GET "/v2/instances/$instance_id"
+  if [[ "$HTTP_RC" -eq 0 && "$HTTP_CODE" == "200" ]]; then
+    attached="$(jq -r '.instance.firewall_group_id // ""' "$HTTP_BODY")"
+    log "firewall_debug_attached_group=$attached expected=$firewall_id"
+  fi
+  api_request GET "/v2/firewalls/$firewall_id/rules?per_page=500"
+  if [[ "$HTTP_RC" -eq 0 && "$HTTP_CODE" == "200" ]]; then
+    jq -c '[.firewall_rules[] | {id,ip_type,protocol,port,subnet,subnet_size,source,notes}]' "$HTTP_BODY" || true
+  fi
+  exit 1
+fi
+log "firewall_nonmatching_block=PASS elapsed_s=$elapsed"
+
+api_request DELETE "/v2/firewalls/$firewall_id/rules/$firewall_rule_id"
+expect_http 204 "firewall_nonmatching_rule_delete" || exit 1
+firewall_rule_id=""
+
+api_request POST "/v2/firewalls/$firewall_id/rules" "$tmp/firewall-rule.json"
 expect_http 201 "firewall_rule_recreate" || exit 1
 firewall_rule_id="$(jq -r '.firewall_rule.id' "$HTTP_BODY")"
+[[ -n "$firewall_rule_id" && "$firewall_rule_id" != "null" ]] || exit 1
 
 ssh_reopened=0
-for _ in $(seq 1 30); do
+for _ in $(seq 1 60); do
   if "${ssh_base[@]}" 'true' >/dev/null 2>&1; then
     ssh_reopened=1
     break
@@ -493,7 +539,6 @@ if [[ "$ssh_reopened" -ne 1 ]]; then
   exit 1
 fi
 log "firewall_reopen_propagation=PASS"
-
 # Reboot must preserve strict host identity and change boot_id.
 boot_before="$("${ssh_base[@]}" 'cat /proc/sys/kernel/random/boot_id')"
 api_request POST "/v2/instances/${instance_id}/reboot"
