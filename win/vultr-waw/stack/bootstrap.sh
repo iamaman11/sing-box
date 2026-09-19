@@ -15,8 +15,8 @@ if [[ ! -f .env.runtime ]]; then
 fi
 
 set -a
-source ./.images.env
 source ./.env.runtime
+source ./.images.env
 set +a
 
 mkdir -p certs rendered warp-state mesh-state tunnel-state
