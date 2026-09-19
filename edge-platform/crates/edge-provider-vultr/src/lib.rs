@@ -39,6 +39,19 @@ impl VultrError {
         self.kind == VultrErrorKind::MutationUncertain
     }
 
+    pub fn requires_mutation_reobservation(&self) -> bool {
+        if self.kind == VultrErrorKind::MutationUncertain {
+            return true;
+        }
+        self.kind == VultrErrorKind::Http
+            && self
+                .status
+                .and_then(|status| StatusCode::from_u16(status).ok())
+                .is_some_and(|status| {
+                    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                })
+    }
+
     pub fn is_observation_retryable(&self) -> bool {
         match self.kind {
             VultrErrorKind::ObservationTransport => true,
