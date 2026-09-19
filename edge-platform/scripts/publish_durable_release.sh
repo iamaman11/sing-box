@@ -110,13 +110,12 @@ if ! release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}" 2
     cat "$release_error" >&2
     exit 1
   fi
-  gh release create "$release_tag"     --repo "$REPOSITORY"     --verify-tag     --draft     --title "$release_title"     --notes-file "$notes"
+  gh release create "$release_tag"     --repo "$REPOSITORY"     --verify-tag     --draft     --latest=false     --title "$release_title"     --notes-file "$notes"
   release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
 fi
 
 test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
 test "$(jq -er '.prerelease' <<<"$release_json")" = "false"
-release_id="$(jq -er '.id' <<<"$release_json")"
 draft="$(jq -er '.draft' <<<"$release_json")"
 
 is_expected_asset() {
@@ -163,7 +162,7 @@ else
     rm -f "${verify_dir}/${asset}"
   done
 
-  gh api --method PATCH "repos/${REPOSITORY}/releases/${release_id}"     -F draft=false     -F prerelease=false >/dev/null
+  gh release edit "$release_tag" --repo "$REPOSITORY" --draft=false >/dev/null
 fi
 
 release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
