@@ -236,18 +236,24 @@ pub fn plan_application(
     }
 
     if let Some(current) = observation.current_release.as_ref() {
-        if observation.observed_agent_sha256.as_deref() != Some(current.agent_sha256.as_str()) {
+        let observed_agent = observation.observed_agent_sha256.as_deref();
+        let observed_bundle = observation.observed_bundle_digest.as_deref();
+        let agent_is_known = observed_agent == Some(current.agent_sha256.as_str())
+            || observed_agent == Some(release.agent_sha256.as_str());
+        let bundle_is_known = observed_bundle == Some(current.bundle_digest.as_str())
+            || observed_bundle == Some(release.bundle_digest.as_str());
+        if !agent_is_known {
             return Ok(blocked_plan(
                 desired_state_digest,
                 release,
-                "published current release does not match observed edge-agent digest",
+                "observed edge-agent digest is neither published current nor exact desired",
             ));
         }
-        if observation.observed_bundle_digest.as_deref() != Some(current.bundle_digest.as_str()) {
+        if !bundle_is_known {
             return Ok(blocked_plan(
                 desired_state_digest,
                 release,
-                "published current release does not match observed application bundle digest",
+                "observed application bundle digest is neither published current nor exact desired",
             ));
         }
     }
