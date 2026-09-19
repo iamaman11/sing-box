@@ -112,6 +112,7 @@ jobs:
           $legacy = git grep -n -E 'edge-platform-win-target|target\\debug\\edge-(controller|console)\.exe' -- edge-platform/scripts win/windows
           if ($LASTEXITCODE -eq 0) { throw ("Local debug binary path is forbidden in Windows operational scripts:" + [Environment]::NewLine + $legacy) }
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
 
       - name: Build exact Windows control binaries
         working-directory: edge-platform
