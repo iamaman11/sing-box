@@ -411,13 +411,8 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    let remaining_instances = wait_after_destroy_inventory(
-        &mut lifecycle_provider,
-        &desired,
-        &args[1],
-        &policy,
-    )
-    .await?;
+    let remaining_instances =
+        wait_after_destroy_inventory(&mut lifecycle_provider, &desired, &args[1], &policy).await?;
     let cleanup = cleanup_environment_support_resources(
         &mut support_provider,
         &desired,
