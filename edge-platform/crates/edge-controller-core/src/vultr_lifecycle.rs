@@ -318,6 +318,14 @@ pub struct ObservedMachine {
     pub region: String,
     pub plan: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v6_main_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firewall_group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_created: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_id: Option<String>,
@@ -736,7 +744,16 @@ fn set_lifecycle_value(
 pub struct DestroyPlan {
     pub machine_id: String,
     pub provider_id: String,
+    pub label: String,
     pub source_revision: String,
+    pub region: String,
+    pub plan: String,
+    pub os_id: Option<u32>,
+    pub snapshot_id: Option<String>,
+    pub main_ip: Option<String>,
+    pub v6_main_ip: Option<String>,
+    pub firewall_group_id: Option<String>,
+    pub date_created: Option<String>,
     pub observed_spec_digest: Option<String>,
     pub destroy_digest: String,
 }
@@ -801,7 +818,16 @@ pub fn destroy_plan(
     Ok(DestroyPlan {
         machine_id: machine.id.clone(),
         provider_id: observed.provider_id.clone(),
+        label: observed.label.clone(),
         source_revision: source_revision.to_owned(),
+        region: observed.region.clone(),
+        plan: observed.plan.clone(),
+        os_id: observed.os_id,
+        snapshot_id: observed.snapshot_id.clone(),
+        main_ip: observed.main_ip.clone(),
+        v6_main_ip: observed.v6_main_ip.clone(),
+        firewall_group_id: observed.firewall_group_id.clone(),
+        date_created: observed.date_created.clone(),
         observed_spec_digest: observed.spec_digest.clone(),
         destroy_digest,
     })
@@ -845,6 +871,10 @@ fn destroy_digest(
             "plan": observed.plan,
             "os_id": observed.os_id,
             "snapshot_id": observed.snapshot_id,
+            "main_ip": observed.main_ip,
+            "v6_main_ip": observed.v6_main_ip,
+            "firewall_group_id": observed.firewall_group_id,
+            "date_created": observed.date_created,
             "enable_ipv6": observed.enable_ipv6,
             "firewall_profile": observed.firewall_profile,
             "tags": tags,
@@ -921,6 +951,10 @@ mod tests {
             },
             region: machine.provider.region.clone(),
             plan: machine.provider.plan.clone(),
+            main_ip: Some("203.0.113.10".to_owned()),
+            v6_main_ip: None,
+            firewall_group_id: Some("firewall-1".to_owned()),
+            date_created: Some("2026-09-19T00:00:00+00:00".to_owned()),
             os_id: machine.provider.os_id,
             snapshot_id: machine.provider.snapshot_id.clone(),
             enable_ipv6: machine.provider.enable_ipv6,
