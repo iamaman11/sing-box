@@ -1,0 +1,32 @@
+name: Vultr Research Run Cancel
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research cancel-35410993762'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Cancel exact queued research run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          code="$(
+            curl --silent --show-error               --request POST               --header "Authorization: Bearer ${GH_TOKEN}"               --header "Accept: application/vnd.github+json"               --header "X-GitHub-Api-Version: 2022-11-28"               --output /dev/null               --write-out '%{http_code}'               "https://api.github.com/repos/iamaman11/sing-box/actions/runs/35410993762/cancel"
+          )"
+          echo "cancel_status=$code"
+          [[ "$code" == "202" || "$code" == "409" ]]
