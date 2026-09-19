@@ -125,7 +125,7 @@ jobs:
             -f per_page=20 \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs")"
           run_id="$(jq -r --arg sha "${GITHUB_SHA}" \
-            '[.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty' \
+            '[.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success")] | sort_by(.created_at) | first | .id // empty' \
             <<<"${runs_json}")"
           [[ "${run_id}" =~ ^[0-9]+$ ]] || {
             echo "no successful Edge Platform CI build exists for exact revision ${GITHUB_SHA}" >&2
