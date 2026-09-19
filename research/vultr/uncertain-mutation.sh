@@ -162,7 +162,10 @@ PY
 
 wait_absent_id() {
   local id="$1"
-  for _ in $(seq 1 60); do
+  # Real-provider research showed that deletion visibility can lag well beyond
+  # the happy-path case. Bound the observation window at ~6 minutes without
+  # replaying DELETE.
+  for _ in $(seq 1 180); do
     api_request GET "/v2/instances/$id"
     if [[ "$HTTP_RC" -eq 0 && "$HTTP_CODE" == "404" ]]; then
       return 0
