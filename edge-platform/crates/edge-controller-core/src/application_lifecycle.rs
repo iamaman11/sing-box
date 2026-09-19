@@ -1,0 +1,618 @@
+use ring::digest::{SHA256, digest};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
+use std::path::{Component, Path};
+
+pub const SUPPORTED_APPLICATION_SCHEMA: u32 = 1;
+pub const SUPPORTED_ARTIFACT_SCHEMA: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesiredApplicationState {
+    pub schema: u32,
+    pub environment: String,
+    pub vultr_spec_path: String,
+    pub machine_id: String,
+    pub application_profile: String,
+    pub bundle_root: String,
+    #[serde(default)]
+    pub runtime_env_required: bool,
+    pub bootstrap_mode: ApplicationBootstrapMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationBootstrapMode {
+    Base,
+    Tunnel,
+    Full,
+}
+
+impl ApplicationBootstrapMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Base => "base",
+            Self::Tunnel => "tunnel",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentArtifactManifest {
+    pub schema: u32,
+    pub source_revision: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedApplicationRelease {
+    pub release_id: String,
+    pub source_revision: String,
+    pub agent_sha256: String,
+    pub bundle_digest: String,
+    pub bootstrap_mode: ApplicationBootstrapMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApplicationObservation {
+    pub observed_agent_sha256: Option<String>,
+    pub observed_bundle_digest: Option<String>,
+    pub runtime_ready: bool,
+    pub current_release: Option<PublishedApplicationRelease>,
+    pub previous_release: Option<PublishedApplicationRelease>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApplicationPlanClass {
+    Noop,
+    Apply,
+    Upgrade,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApplicationAction {
+    InstallAgent,
+    ApplyBundle,
+    Bootstrap,
+    Verify,
+    PublishRelease,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationPlan {
+    pub class: ApplicationPlanClass,
+    pub desired_state_digest: String,
+    pub desired_release: PublishedApplicationRelease,
+    pub actions: Vec<ApplicationAction>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RollbackPlan {
+    pub machine_id: String,
+    pub current_release: PublishedApplicationRelease,
+    pub previous_release: PublishedApplicationRelease,
+    pub rollback_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplicationSpecError {
+    Json(String),
+    UnsupportedSchema(u32),
+    Validation(String),
+    Serialization(String),
+}
+
+impl fmt::Display for ApplicationSpecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(detail) => write!(f, "invalid application desired-state JSON: {detail}"),
+            Self::UnsupportedSchema(schema) => {
+                write!(f, "unsupported application desired-state schema {schema}")
+            }
+            Self::Validation(detail) => write!(f, "invalid application desired state: {detail}"),
+            Self::Serialization(detail) => {
+                write!(f, "failed to serialize application desired state: {detail}")
+            }
+        }
+    }
+}
+
+impl Error for ApplicationSpecError {}
+
+impl DesiredApplicationState {
+    pub fn parse_json(raw: &str) -> Result<Self, ApplicationSpecError> {
+        let desired: Self =
+            serde_json::from_str(raw).map_err(|err| ApplicationSpecError::Json(err.to_string()))?;
+        desired.validate()?;
+        Ok(desired)
+    }
+
+    pub fn validate(&self) -> Result<(), ApplicationSpecError> {
+        if self.schema != SUPPORTED_APPLICATION_SCHEMA {
+            return Err(ApplicationSpecError::UnsupportedSchema(self.schema));
+        }
+        validate_identifier("environment", &self.environment)?;
+        validate_identifier("machine_id", &self.machine_id)?;
+        validate_identifier("application_profile", &self.application_profile)?;
+        validate_repo_path("vultr_spec_path", &self.vultr_spec_path)?;
+        validate_repo_path("bundle_root", &self.bundle_root)?;
+        if !self.vultr_spec_path.starts_with("infra/vultr/")
+            || !self.vultr_spec_path.ends_with(".json")
+        {
+            return Err(ApplicationSpecError::Validation(
+                "vultr_spec_path must be an infra/vultr/*.json path".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn canonical_json(&self) -> Result<String, ApplicationSpecError> {
+        self.validate()?;
+        serde_json::to_string(self)
+            .map_err(|err| ApplicationSpecError::Serialization(err.to_string()))
+    }
+
+    pub fn digest(&self) -> Result<String, ApplicationSpecError> {
+        Ok(sha256_hex(self.canonical_json()?.as_bytes()))
+    }
+}
+
+impl AgentArtifactManifest {
+    pub fn parse_json(raw: &str) -> Result<Self, ApplicationSpecError> {
+        let manifest: Self =
+            serde_json::from_str(raw).map_err(|err| ApplicationSpecError::Json(err.to_string()))?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub fn validate(&self) -> Result<(), ApplicationSpecError> {
+        if self.schema != SUPPORTED_ARTIFACT_SCHEMA {
+            return Err(ApplicationSpecError::Validation(format!(
+                "unsupported edge-agent artifact schema {}",
+                self.schema
+            )));
+        }
+        validate_hex("artifact source_revision", &self.source_revision, 40)?;
+        validate_hex("artifact sha256", &self.sha256, 64)
+    }
+}
+
+pub fn desired_bundle_id(
+    desired: &DesiredApplicationState,
+    artifact: &AgentArtifactManifest,
+) -> Result<String, ApplicationSpecError> {
+    desired.validate()?;
+    artifact.validate()?;
+    let desired_digest = desired.digest()?;
+    Ok(format!(
+        "{}-{}-{}",
+        desired.machine_id,
+        &artifact.source_revision[..12],
+        &desired_digest[..12]
+    ))
+}
+
+pub fn desired_release(
+    desired: &DesiredApplicationState,
+    artifact: &AgentArtifactManifest,
+    bundle_digest: &str,
+) -> Result<PublishedApplicationRelease, ApplicationSpecError> {
+    desired.validate()?;
+    artifact.validate()?;
+    validate_hex("bundle digest", bundle_digest, 64)?;
+    Ok(PublishedApplicationRelease {
+        release_id: format!(
+            "{}-{}-{}",
+            desired_bundle_id(desired, artifact)?,
+            &bundle_digest[..12],
+            desired.bootstrap_mode.as_str()
+        ),
+        source_revision: artifact.source_revision.clone(),
+        agent_sha256: artifact.sha256.clone(),
+        bundle_digest: bundle_digest.to_owned(),
+        bootstrap_mode: desired.bootstrap_mode,
+    })
+}
+
+pub fn plan_application(
+    desired: &DesiredApplicationState,
+    artifact: &AgentArtifactManifest,
+    bundle_digest: &str,
+    runtime_env_available: bool,
+    observation: &ApplicationObservation,
+) -> Result<ApplicationPlan, ApplicationSpecError> {
+    let release = desired_release(desired, artifact, bundle_digest)?;
+    let desired_state_digest = desired.digest()?;
+
+    if desired.runtime_env_required && !runtime_env_available {
+        return Ok(ApplicationPlan {
+            class: ApplicationPlanClass::Blocked,
+            desired_state_digest,
+            desired_release: release,
+            actions: Vec::new(),
+            reasons: vec!["runtime environment material is required but unavailable".to_owned()],
+        });
+    }
+
+    if let Some(current) = observation.current_release.as_ref() {
+        let observed_agent = observation.observed_agent_sha256.as_deref();
+        let observed_bundle = observation.observed_bundle_digest.as_deref();
+        let agent_is_known = observed_agent == Some(current.agent_sha256.as_str())
+            || observed_agent == Some(release.agent_sha256.as_str());
+        let bundle_is_known = observed_bundle == Some(current.bundle_digest.as_str())
+            || observed_bundle == Some(release.bundle_digest.as_str());
+        if !agent_is_known {
+            return Ok(blocked_plan(
+                desired_state_digest,
+                release,
+                "observed edge-agent digest is neither published current nor exact desired",
+            ));
+        }
+        if !bundle_is_known {
+            return Ok(blocked_plan(
+                desired_state_digest,
+                release,
+                "observed application bundle digest is neither published current nor exact desired",
+            ));
+        }
+    }
+
+    let agent_matches =
+        observation.observed_agent_sha256.as_deref() == Some(release.agent_sha256.as_str());
+    let bundle_matches =
+        observation.observed_bundle_digest.as_deref() == Some(release.bundle_digest.as_str());
+    let release_matches = observation.current_release.as_ref() == Some(&release);
+
+    if agent_matches && bundle_matches && release_matches && observation.runtime_ready {
+        return Ok(ApplicationPlan {
+            class: ApplicationPlanClass::Noop,
+            desired_state_digest,
+            desired_release: release,
+            actions: Vec::new(),
+            reasons: vec!["exact application release is already healthy".to_owned()],
+        });
+    }
+
+    let mut actions = Vec::new();
+    if !agent_matches {
+        actions.push(ApplicationAction::InstallAgent);
+    }
+    if !bundle_matches {
+        actions.push(ApplicationAction::ApplyBundle);
+    }
+    if !bundle_matches || !observation.runtime_ready {
+        actions.push(ApplicationAction::Bootstrap);
+    }
+    actions.push(ApplicationAction::Verify);
+    if !release_matches {
+        actions.push(ApplicationAction::PublishRelease);
+    }
+
+    Ok(ApplicationPlan {
+        class: if observation.current_release.is_some() {
+            ApplicationPlanClass::Upgrade
+        } else {
+            ApplicationPlanClass::Apply
+        },
+        desired_state_digest,
+        desired_release: release,
+        actions,
+        reasons: vec!["observed application state differs from exact desired release".to_owned()],
+    })
+}
+
+pub fn build_rollback_plan(
+    desired: &DesiredApplicationState,
+    observation: &ApplicationObservation,
+) -> Result<RollbackPlan, ApplicationSpecError> {
+    desired.validate()?;
+    let current = observation.current_release.clone().ok_or_else(|| {
+        ApplicationSpecError::Validation("rollback requires a published current release".to_owned())
+    })?;
+    let previous = observation.previous_release.clone().ok_or_else(|| {
+        ApplicationSpecError::Validation(
+            "rollback requires a published previous release".to_owned(),
+        )
+    })?;
+
+    validate_release("current", &current)?;
+    validate_release("previous", &previous)?;
+
+    if observation.observed_agent_sha256.as_deref() != Some(current.agent_sha256.as_str()) {
+        return Err(ApplicationSpecError::Validation(
+            "rollback is blocked because observed edge-agent digest does not match current release"
+                .to_owned(),
+        ));
+    }
+    if observation.observed_bundle_digest.as_deref() != Some(current.bundle_digest.as_str()) {
+        return Err(ApplicationSpecError::Validation(
+            "rollback is blocked because observed bundle digest does not match current release"
+                .to_owned(),
+        ));
+    }
+
+    let rollback_digest = rollback_digest(desired, &current, &previous)?;
+    Ok(RollbackPlan {
+        machine_id: desired.machine_id.clone(),
+        current_release: current,
+        previous_release: previous,
+        rollback_digest,
+    })
+}
+
+pub fn authorize_rollback(
+    desired: &DesiredApplicationState,
+    observation: &ApplicationObservation,
+    authorized_digest: &str,
+) -> Result<RollbackPlan, ApplicationSpecError> {
+    validate_hex("rollback authorization digest", authorized_digest, 64)?;
+    let plan = build_rollback_plan(desired, observation)?;
+    if plan.rollback_digest != authorized_digest {
+        return Err(ApplicationSpecError::Validation(
+            "rollback digest is stale; re-run rollback-plan against current observations"
+                .to_owned(),
+        ));
+    }
+    Ok(plan)
+}
+
+fn rollback_digest(
+    desired: &DesiredApplicationState,
+    current: &PublishedApplicationRelease,
+    previous: &PublishedApplicationRelease,
+) -> Result<String, ApplicationSpecError> {
+    let value = serde_json::json!({
+        "schema": 1,
+        "desired_state_digest": desired.digest()?,
+        "machine_id": desired.machine_id,
+        "current": current,
+        "previous": previous,
+    });
+    let canonical = serde_json::to_vec(&value)
+        .map_err(|err| ApplicationSpecError::Serialization(err.to_string()))?;
+    Ok(sha256_hex(&canonical))
+}
+
+fn blocked_plan(
+    desired_state_digest: String,
+    desired_release: PublishedApplicationRelease,
+    reason: &str,
+) -> ApplicationPlan {
+    ApplicationPlan {
+        class: ApplicationPlanClass::Blocked,
+        desired_state_digest,
+        desired_release,
+        actions: Vec::new(),
+        reasons: vec![reason.to_owned()],
+    }
+}
+
+fn validate_release(
+    label: &str,
+    release: &PublishedApplicationRelease,
+) -> Result<(), ApplicationSpecError> {
+    validate_identifier(&format!("{label} release_id"), &release.release_id)?;
+    validate_hex(
+        &format!("{label} source_revision"),
+        &release.source_revision,
+        40,
+    )?;
+    validate_hex(&format!("{label} agent_sha256"), &release.agent_sha256, 64)?;
+    validate_hex(
+        &format!("{label} bundle_digest"),
+        &release.bundle_digest,
+        64,
+    )
+}
+
+fn validate_identifier(label: &str, value: &str) -> Result<(), ApplicationSpecError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(ApplicationSpecError::Validation(format!(
+            "{label} must contain only ASCII letters, digits, '.', '_' or '-'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_repo_path(label: &str, value: &str) -> Result<(), ApplicationSpecError> {
+    if value.is_empty() || value.contains('\\') {
+        return Err(ApplicationSpecError::Validation(format!(
+            "{label} must be a normalized repository-relative path"
+        )));
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ApplicationSpecError::Validation(format!(
+            "{label} must be a normalized repository-relative path without traversal"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_hex(label: &str, value: &str, expected_len: usize) -> Result<(), ApplicationSpecError> {
+    if value.len() != expected_len
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+    {
+        return Err(ApplicationSpecError::Validation(format!(
+            "{label} must be exactly {expected_len} lowercase hexadecimal characters"
+        )));
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    digest(&SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desired() -> DesiredApplicationState {
+        DesiredApplicationState {
+            schema: 1,
+            environment: "production".to_owned(),
+            vultr_spec_path: "infra/vultr/production.json".to_owned(),
+            machine_id: "edge-1".to_owned(),
+            application_profile: "edge-stack".to_owned(),
+            bundle_root: "win/vultr-waw/stack".to_owned(),
+            runtime_env_required: true,
+            bootstrap_mode: ApplicationBootstrapMode::Base,
+        }
+    }
+
+    fn artifact() -> AgentArtifactManifest {
+        AgentArtifactManifest {
+            schema: 1,
+            source_revision: "1".repeat(40),
+            sha256: "2".repeat(64),
+        }
+    }
+
+    fn release() -> PublishedApplicationRelease {
+        desired_release(&desired(), &artifact(), &"3".repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn strict_schema_rejects_unknown_fields() {
+        let raw = r#"{
+            "schema":1,
+            "environment":"production",
+            "vultr_spec_path":"infra/vultr/production.json",
+            "machine_id":"edge-1",
+            "application_profile":"edge-stack",
+            "bundle_root":"win/vultr-waw/stack",
+            "runtime_env_required":true,
+            "bootstrap_mode":"base",
+            "surprise":true
+        }"#;
+        assert!(DesiredApplicationState::parse_json(raw).is_err());
+    }
+
+    #[test]
+    fn paths_reject_traversal_and_backslashes() {
+        let mut value = desired();
+        value.bundle_root = "../stack".to_owned();
+        assert!(value.validate().is_err());
+        value.bundle_root = "win\\stack".to_owned();
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn desired_digest_is_deterministic() {
+        assert_eq!(desired().digest().unwrap(), desired().digest().unwrap());
+    }
+
+    #[test]
+    fn missing_runtime_secret_blocks_mutation() {
+        let plan = plan_application(
+            &desired(),
+            &artifact(),
+            &"3".repeat(64),
+            false,
+            &ApplicationObservation::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.class, ApplicationPlanClass::Blocked);
+        assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn first_release_plans_apply() {
+        let plan = plan_application(
+            &desired(),
+            &artifact(),
+            &"3".repeat(64),
+            true,
+            &ApplicationObservation::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.class, ApplicationPlanClass::Apply);
+        assert_eq!(
+            plan.actions,
+            vec![
+                ApplicationAction::InstallAgent,
+                ApplicationAction::ApplyBundle,
+                ApplicationAction::Bootstrap,
+                ApplicationAction::Verify,
+                ApplicationAction::PublishRelease,
+            ]
+        );
+    }
+
+    #[test]
+    fn exact_healthy_release_is_noop() {
+        let release = release();
+        let observation = ApplicationObservation {
+            observed_agent_sha256: Some(release.agent_sha256.clone()),
+            observed_bundle_digest: Some(release.bundle_digest.clone()),
+            runtime_ready: true,
+            current_release: Some(release),
+            previous_release: None,
+        };
+        let plan =
+            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
+        assert_eq!(plan.class, ApplicationPlanClass::Noop);
+        assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn published_release_drift_blocks_instead_of_overwriting() {
+        let current = release();
+        let observation = ApplicationObservation {
+            observed_agent_sha256: Some("4".repeat(64)),
+            observed_bundle_digest: Some(current.bundle_digest.clone()),
+            runtime_ready: true,
+            current_release: Some(current),
+            previous_release: None,
+        };
+        let plan =
+            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
+        assert_eq!(plan.class, ApplicationPlanClass::Blocked);
+    }
+
+    #[test]
+    fn rollback_digest_is_stale_safe() {
+        let current = release();
+        let previous = PublishedApplicationRelease {
+            release_id: "edge-1-previous".to_owned(),
+            source_revision: "4".repeat(40),
+            agent_sha256: "5".repeat(64),
+            bundle_digest: "6".repeat(64),
+            bootstrap_mode: ApplicationBootstrapMode::Base,
+        };
+        let observation = ApplicationObservation {
+            observed_agent_sha256: Some(current.agent_sha256.clone()),
+            observed_bundle_digest: Some(current.bundle_digest.clone()),
+            runtime_ready: true,
+            current_release: Some(current),
+            previous_release: Some(previous),
+        };
+        let plan = build_rollback_plan(&desired(), &observation).unwrap();
+        assert!(authorize_rollback(&desired(), &observation, &plan.rollback_digest).is_ok());
+        assert!(authorize_rollback(&desired(), &observation, &"0".repeat(64)).is_err());
+    }
+}

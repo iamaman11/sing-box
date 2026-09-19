@@ -204,6 +204,92 @@ impl TraceObservation {
     }
 }
 
+pub fn canonical_apply_bundle_digest(request: &ApplyBundleRequest) -> Result<String, String> {
+    use ring::digest::{Context, SHA256};
+
+    let bundle_id = request
+        .bundle_id
+        .as_deref()
+        .ok_or_else(|| "digest-bound bundle requires bundle_id".to_owned())?;
+    if bundle_id.is_empty()
+        || bundle_id.len() > 160
+        || !bundle_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+    {
+        return Err("bundle_id contains unsupported characters".to_owned());
+    }
+
+    struct Entry<'a> {
+        scope: u8,
+        file: &'a BundleFile,
+    }
+
+    let mut entries = Vec::new();
+    entries.extend(
+        request
+            .stack_files
+            .iter()
+            .map(|file| Entry { scope: 1, file }),
+    );
+    entries.extend(
+        request
+            .host_files
+            .iter()
+            .map(|file| Entry { scope: 2, file }),
+    );
+    if let Some(file) = request.deployment_summary.as_ref() {
+        entries.push(Entry { scope: 3, file });
+    }
+    if let Some(file) = request.agent_env_file.as_ref() {
+        entries.push(Entry { scope: 4, file });
+    }
+
+    entries.sort_by(|left, right| {
+        left.scope
+            .cmp(&right.scope)
+            .then_with(|| left.file.relative_path.cmp(&right.file.relative_path))
+    });
+
+    for pair in entries.windows(2) {
+        if pair[0].scope == pair[1].scope
+            && pair[0].file.relative_path == pair[1].file.relative_path
+        {
+            return Err(format!(
+                "duplicate bundle path in scope {}: {}",
+                pair[0].scope, pair[0].file.relative_path
+            ));
+        }
+    }
+
+    fn feed_field(context: &mut Context, bytes: &[u8]) {
+        context.update(&(bytes.len() as u64).to_be_bytes());
+        context.update(bytes);
+    }
+
+    let mut context = Context::new(&SHA256);
+    context.update(b"sing-box-application-bundle-v1\0");
+    feed_field(&mut context, bundle_id.as_bytes());
+    context.update(&[u8::from(request.prune_existing)]);
+
+    for entry in entries {
+        context.update(&[entry.scope]);
+        feed_field(&mut context, entry.file.relative_path.as_bytes());
+        context.update(&[
+            u8::from(entry.file.executable),
+            u8::from(entry.file.sensitive),
+        ]);
+        feed_field(&mut context, &entry.file.content);
+    }
+
+    Ok(context
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

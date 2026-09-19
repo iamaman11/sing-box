@@ -57,6 +57,13 @@ pub struct SupportCleanupReport {
     pub firewall_groups_removed: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerAccessReleaseReport {
+    pub firewall_group_id: Option<String>,
+    pub removed_rule_ids: Vec<u64>,
+    pub verified_absent: bool,
+}
+
 #[allow(async_fn_in_trait)]
 pub trait SupportResourceProvider {
     async fn list_ssh_keys(&mut self) -> Result<Vec<VultrSshKey>, VultrError>;
@@ -496,6 +503,115 @@ pub async fn ensure_firewall_profile<P: SupportResourceProvider>(
         id: group.id,
         profile_name: profile.name.clone(),
     })
+}
+
+pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
+    provider: &mut P,
+    environment: &str,
+    unresolved_profile: &FirewallProfile,
+    controller_ipv4: &str,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<ControllerAccessReleaseReport, String> {
+    let target_specs = controller_ipv4_access_specs(unresolved_profile, controller_ipv4)?;
+    if target_specs.is_empty() {
+        return Err(format!(
+            "firewall profile {} has no @controller-ipv4 access rule",
+            unresolved_profile.name
+        ));
+    }
+
+    let description = firewall_group_description(environment, &unresolved_profile.name);
+    let Some(group) = observe_firewall_group(provider, &description).await? else {
+        return Ok(ControllerAccessReleaseReport {
+            firewall_group_id: None,
+            removed_rule_ids: Vec::new(),
+            verified_absent: true,
+        });
+    };
+
+    let observed = provider
+        .list_firewall_rules(&group.id)
+        .await
+        .map_err(|err| err.to_string())?;
+    let mut removed_rule_ids = Vec::new();
+
+    for rule in observed {
+        let spec = firewall_rule_spec(&rule)?;
+        if target_specs
+            .iter()
+            .any(|target| same_firewall_access_semantics(&spec, target))
+        {
+            delete_firewall_rule_and_observe(provider, &group.id, rule.id, policy).await?;
+            removed_rule_ids.push(rule.id);
+        }
+    }
+
+    let final_rules = provider
+        .list_firewall_rules(&group.id)
+        .await
+        .map_err(|err| err.to_string())?;
+    let remaining = final_rules
+        .iter()
+        .map(firewall_rule_spec)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|spec| {
+            target_specs
+                .iter()
+                .any(|target| same_firewall_access_semantics(spec, target))
+        })
+        .collect::<Vec<_>>();
+    if !remaining.is_empty() {
+        return Err(format!(
+            "controller SSH access cleanup did not prove exact /32 absence in firewall group {}: {:?}",
+            group.id, remaining
+        ));
+    }
+
+    removed_rule_ids.sort_unstable();
+    Ok(ControllerAccessReleaseReport {
+        firewall_group_id: Some(group.id),
+        removed_rule_ids,
+        verified_absent: true,
+    })
+}
+
+fn same_firewall_access_semantics(left: &FirewallRuleSpec, right: &FirewallRuleSpec) -> bool {
+    left.ip_type == right.ip_type
+        && left.protocol == right.protocol
+        && left.subnet == right.subnet
+        && left.subnet_size == right.subnet_size
+        && left.port == right.port
+        && left.source == right.source
+}
+
+fn controller_ipv4_access_specs(
+    unresolved_profile: &FirewallProfile,
+    controller_ipv4: &str,
+) -> Result<BTreeSet<FirewallRuleSpec>, String> {
+    const PLACEHOLDER: &str = "@controller-ipv4";
+    let ipv4 = controller_ipv4
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| "EDGE_CONTROLLER_IPV4 must be a valid IPv4 address".to_owned())?
+        .to_string();
+    let mut targets = BTreeSet::new();
+
+    for rule in &unresolved_profile.rules {
+        if rule.subnet != PLACEHOLDER {
+            continue;
+        }
+        if rule.ip_type != "v4" || rule.subnet_size != 32 {
+            return Err(format!(
+                "firewall profile {} uses {PLACEHOLDER} but is not an exact IPv4 /32",
+                unresolved_profile.name
+            ));
+        }
+        let mut resolved = rule.clone();
+        resolved.subnet = ipv4.clone();
+        targets.insert(resolved);
+    }
+
+    Ok(targets)
 }
 
 pub async fn cleanup_environment_support_resources<P: SupportResourceProvider>(
@@ -1586,6 +1702,89 @@ mod tests {
         assert!(
             firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn controller_access_release_removes_only_exact_dynamic_rule() {
+        let profile_set = FirewallProfileSet::parse_json(
+            r#"{
+              "schema":1,
+              "profiles":[{
+                "name":"edge-access",
+                "rules":[
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"@controller-ipv4",
+                    "subnet_size":32,
+                    "port":"22",
+                    "notes":"ephemeral controller SSH"
+                  },
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"0.0.0.0",
+                    "subnet_size":0,
+                    "port":"443",
+                    "notes":"public service"
+                  }
+                ]
+              }]
+            }"#,
+        )
+        .unwrap();
+        let profile = profile_set.profile("edge-access").unwrap();
+        let mut provider = FakeSupportProvider {
+            firewall_groups: vec![VultrFirewallGroup {
+                id: "fw-1".to_owned(),
+                description: "singbox-production-fw-edge-access".to_owned(),
+                date_created: String::new(),
+                date_modified: String::new(),
+            }],
+            firewall_rules: BTreeMap::from([(
+                "fw-1".to_owned(),
+                vec![
+                    VultrFirewallRule {
+                        id: 11,
+                        ip_type: "v4".to_owned(),
+                        protocol: "tcp".to_owned(),
+                        subnet: "203.0.113.25".to_owned(),
+                        subnet_size: 32,
+                        port: "22".to_owned(),
+                        source: String::new(),
+                        notes: "provider-side note drift must not keep SSH open".to_owned(),
+                    },
+                    VultrFirewallRule {
+                        id: 12,
+                        ip_type: "v4".to_owned(),
+                        protocol: "tcp".to_owned(),
+                        subnet: "0.0.0.0".to_owned(),
+                        subnet_size: 0,
+                        port: "443".to_owned(),
+                        source: String::new(),
+                        notes: "public service".to_owned(),
+                    },
+                ],
+            )]),
+            ..FakeSupportProvider::default()
+        };
+
+        let report = release_controller_ipv4_access(
+            &mut provider,
+            "production",
+            profile,
+            "203.0.113.25",
+            &policy(),
+        )
+        .await
+        .unwrap();
+
+        assert!(report.verified_absent);
+        assert_eq!(report.removed_rule_ids, vec![11]);
+        let remaining = provider.firewall_rules.get("fw-1").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, 12);
+        assert_eq!(provider.firewall_rule_delete_calls, 1);
     }
 
     #[test]

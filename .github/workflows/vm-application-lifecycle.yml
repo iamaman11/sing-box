@@ -1,0 +1,502 @@
+name: VM Application Lifecycle
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: vultr-control-plane-production
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  authorize:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.parse.outputs.operation }}
+      spec_path: ${{ steps.parse.outputs.spec_path }}
+      rollback_digest: ${{ steps.parse.outputs.rollback_digest }}
+
+    steps:
+      - name: Parse and authorize typed request
+        id: parse
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import re
+
+          spec_re = re.compile(r"^infra/application/[A-Za-z0-9._/-]+\.json$")
+          digest_re = re.compile(r"^[0-9a-f]{64}$")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+          operation = ""
+          spec_path = ""
+          rollback_digest = ""
+
+          if tokens == ["/application", "acceptance"]:
+              operation = "acceptance"
+              spec_path = "infra/application/disposable-acceptance.json"
+          elif len(tokens) == 3 and tokens[0] == "/application" and tokens[1] in {
+              "plan", "apply", "verify", "upgrade", "rollback-plan"
+          }:
+              operation = tokens[1]
+              spec_path = tokens[2]
+          elif (
+              len(tokens) == 4
+              and tokens[0] == "/application"
+              and tokens[1] == "rollback-apply"
+          ):
+              operation = "rollback-apply"
+              spec_path = tokens[2]
+              rollback_digest = tokens[3]
+          else:
+              fail("unsupported /application command grammar")
+
+          if not spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
+              fail("invalid application spec path")
+          if operation == "rollback-apply":
+              if not digest_re.fullmatch(rollback_digest):
+                  fail("rollback-apply requires a lowercase 64-character digest")
+          elif rollback_digest:
+              fail("rollback digest is only valid for rollback-apply")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"operation={operation}\n")
+              handle.write(f"spec_path={spec_path}\n")
+              handle.write(f"rollback_digest={rollback_digest}\n")
+          PY
+
+  verify:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Build exact controller and Linux edge-agent without production secrets
+        working-directory: edge-platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p edge-controller --bin edge-controller
+          cargo build --locked --release -p edge-agent --bin edge-agent
+
+  execute:
+    needs: [authorize, verify]
+    if: needs.authorize.outputs.operation != 'acceptance'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+      ROLLBACK_DIGEST: ${{ needs.authorize.outputs.rollback_digest }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Build exact application control binaries
+        working-directory: edge-platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p edge-controller --bin edge-controller
+          cargo build --locked --release -p edge-agent --bin edge-agent
+
+      - name: Bind exact edge-agent artifact to source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="edge-platform/target/release/edge-agent"
+          test -x "${artifact}"
+          sha="$(sha256sum "${artifact}" | awk '{print $1}')"
+          [[ "${sha}" =~ ^[0-9a-f]{64}$ ]]
+          manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
+          jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${sha}"             '{schema:1, source_revision:$source_revision, sha256:$sha256}' > "${manifest}"
+          chmod 600 "${manifest}"
+          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${artifact}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${manifest}" >> "${GITHUB_ENV}"
+
+      - name: Materialize strict SSH authority
+        shell: bash
+        env:
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
+          test -s "${key_path}"
+          chmod 600 "${key_path}"
+          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
+
+      - name: Discover controller egress IPv4
+        shell: bash
+        run: |
+          set -euo pipefail
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          python3 - "${ip}" <<'PY'
+          import ipaddress
+          import sys
+          value = ipaddress.ip_address(sys.argv[1].strip())
+          if value.version != 4 or not value.is_global:
+              raise SystemExit("controller egress is not a global IPv4 address")
+          print(value)
+          PY
+          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
+
+      - name: Execute typed application lifecycle operation
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          bin="edge-platform/target/release/edge-controller"
+          result="${RUNNER_TEMP}/application-result.json"
+          access_acquire="${RUNNER_TEMP}/application-access-acquire.json"
+          access_release="${RUNNER_TEMP}/application-access-release.json"
+          vultr_spec="$(jq -er '.vultr_spec_path' "${SPEC_PATH}")"
+          machine="$(jq -er '.machine_id' "${SPEC_PATH}")"
+          test -f "${vultr_spec}"
+
+          ACCESS_CLEANUP_ARMED=0
+
+          cleanup_access() {
+            if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
+              return 0
+            fi
+            "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}"               | tee "${access_release}"
+          }
+
+          finish() {
+            local operation_rc=$?
+            trap - EXIT
+            set +e
+            cleanup_access
+            local cleanup_rc=$?
+            set -e
+            if [[ ${cleanup_rc} -ne 0 ]]; then
+              echo "ephemeral SSH ingress cleanup failed with rc=${cleanup_rc}" >&2
+              if [[ ${operation_rc} -eq 0 ]]; then
+                operation_rc=${cleanup_rc}
+              fi
+            fi
+            exit "${operation_rc}"
+          }
+
+          trap finish EXIT
+          ACCESS_CLEANUP_ARMED=1
+
+          "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}"             | tee "${access_acquire}"
+
+          run_desired() {
+            "${bin}" application-lifecycle "${REQUESTED_OPERATION}"               "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}"
+          }
+
+          case "${REQUESTED_OPERATION}" in
+            plan|apply|verify|upgrade)
+              run_desired | tee "${result}"
+              ;;
+            rollback-plan)
+              "${bin}" application-lifecycle rollback-plan "${SPEC_PATH}" | tee "${result}"
+              ;;
+            rollback-apply)
+              "${bin}" application-lifecycle rollback-apply "${SPEC_PATH}" "${ROLLBACK_DIGEST}"                 | tee "${result}"
+              ;;
+            *)
+              echo "unsupported authorized application operation" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo '### VM application lifecycle result'
+            echo
+            echo 'Ephemeral SSH ingress was acquired through the Vultr support-resource authority.'
+            echo 'The EXIT trap releases the exact runner /32 and fails the job if absence is not verified.'
+            echo
+            echo '~~~json'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  acceptance:
+    needs: [authorize, verify]
+    if: needs.authorize.outputs.operation == 'acceptance'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Build exact application control binaries
+        working-directory: edge-platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p edge-controller --bin edge-controller
+          cargo build --locked --release -p edge-agent --bin edge-agent
+
+      - name: Bind exact edge-agent artifact to source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="edge-platform/target/release/edge-agent"
+          test -x "${artifact}"
+          sha="$(sha256sum "${artifact}" | awk '{print $1}')"
+          [[ "${sha}" =~ ^[0-9a-f]{64}$ ]]
+          manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
+          jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${sha}"             '{schema:1, source_revision:$source_revision, sha256:$sha256}' > "${manifest}"
+          chmod 600 "${manifest}"
+          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${artifact}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${manifest}" >> "${GITHUB_ENV}"
+
+      - name: Materialize strict SSH authority
+        shell: bash
+        env:
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
+          test -s "${key_path}"
+          chmod 600 "${key_path}"
+          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
+
+      - name: Discover controller egress IPv4
+        shell: bash
+        run: |
+          set -euo pipefail
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          python3 - "${ip}" <<'PY'
+          import ipaddress
+          import sys
+          value = ipaddress.ip_address(sys.argv[1].strip())
+          if value.version != 4 or not value.is_global:
+              raise SystemExit("controller egress is not a global IPv4 address")
+          print(value)
+          PY
+          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
+
+      - name: Run disposable application lifecycle acceptance
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          bin="edge-platform/target/release/edge-controller"
+          app_spec="${SPEC_PATH}"
+          vultr_spec="$(jq -er '.vultr_spec_path' "${app_spec}")"
+          machine="$(jq -er '.machine_id' "${app_spec}")"
+          source_revision="${GITHUB_SHA}"
+          artifact="${EDGE_APPLICATION_ARTIFACT}"
+          manifest="${EDGE_APPLICATION_ARTIFACT_MANIFEST}"
+          runtime_v1="${RUNNER_TEMP}/application-runtime-v1.env"
+          runtime_v2="${RUNNER_TEMP}/application-runtime-v2.env"
+          access_release="${RUNNER_TEMP}/acceptance-access-release.json"
+
+          test -f "${vultr_spec}"
+          umask 077
+          password_v1="$(openssl rand -hex 16)"
+          password_v2="$(openssl rand -hex 16)"
+          cat > "${runtime_v1}" <<EOF
+          PROXY_USERNAME=acceptance
+          PROXY_PASSWORD=${password_v1}
+          PROXY_CERT_CN=application-acceptance.local
+          TUNNEL_DOMAIN=
+          ACME_EMAIL=
+          EDGE_USE_PREBUILT_IMAGES=0
+          EOF
+          cat > "${runtime_v2}" <<EOF
+          PROXY_USERNAME=acceptance
+          PROXY_PASSWORD=${password_v2}
+          PROXY_CERT_CN=application-acceptance.local
+          TUNNEL_DOMAIN=
+          ACME_EMAIL=
+          EDGE_USE_PREBUILT_IMAGES=0
+          EOF
+          chmod 600 "${runtime_v1}" "${runtime_v2}"
+
+          cleanup_acceptance() {
+            set +e
+            "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}"               > "${RUNNER_TEMP}/acceptance-emergency-release.json" 2>&1 || true
+
+            local destroy_json="${RUNNER_TEMP}/acceptance-emergency-destroy.json"
+            if "${bin}" vultr-lifecycle destroy-plan                 "${vultr_spec}" "${machine}" "${source_revision}"                 > "${destroy_json}" 2>/dev/null; then
+              local digest
+              digest="$(jq -r '.destroy_digest // empty' "${destroy_json}")"
+              if [[ "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
+                "${bin}" vultr-lifecycle destroy-apply                   "${vultr_spec}" "${machine}" "${source_revision}" "${digest}"                   >/dev/null 2>&1 || true
+              fi
+            fi
+            "${bin}" vultr-lifecycle cleanup "${vultr_spec}" >/dev/null 2>&1 || true
+          }
+
+          trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
+
+          "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}"             > "${RUNNER_TEMP}/acceptance-plan-before.json"
+          jq -e '.plans[0].class == "CREATE"'             "${RUNNER_TEMP}/acceptance-plan-before.json" >/dev/null
+
+          "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}"             > "${RUNNER_TEMP}/acceptance-vm-apply.json"
+          jq -e '.action == "CREATED" or .action == "NOOP"'             "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
+
+          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-app-apply.json"
+          jq -e             '.initial_plan.class == "APPLY" and .final_plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-app-apply.json" >/dev/null
+
+          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-app-noop.json"
+          jq -e             '.initial_plan.class == "NOOP" and .final_plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-app-noop.json" >/dev/null
+
+          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-verify-v1.json"
+          jq -e '.status == "PASS" and .plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-verify-v1.json" >/dev/null
+
+          release_v1="$(jq -er '.final_plan.desired_release.release_id'             "${RUNNER_TEMP}/acceptance-app-noop.json")"
+          bundle_v1="$(jq -er '.final_plan.desired_release.bundle_digest'             "${RUNNER_TEMP}/acceptance-app-noop.json")"
+
+          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v2}"             "${bin}" application-lifecycle upgrade "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-upgrade.json"
+          jq -e             '.initial_plan.class == "UPGRADE" and .final_plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-upgrade.json" >/dev/null
+
+          release_v2="$(jq -er '.final_plan.desired_release.release_id'             "${RUNNER_TEMP}/acceptance-upgrade.json")"
+          bundle_v2="$(jq -er '.final_plan.desired_release.bundle_digest'             "${RUNNER_TEMP}/acceptance-upgrade.json")"
+          test "${release_v1}" != "${release_v2}"
+          test "${bundle_v1}" != "${bundle_v2}"
+
+          "${bin}" application-lifecycle rollback-plan "${app_spec}"             > "${RUNNER_TEMP}/acceptance-rollback-plan.json"
+          rollback_digest="$(jq -er '.rollback.rollback_digest'             "${RUNNER_TEMP}/acceptance-rollback-plan.json")"
+          [[ "${rollback_digest}" =~ ^[0-9a-f]{64}$ ]]
+          jq -e --arg current "${release_v2}" --arg previous "${release_v1}"             '.rollback.current_release.release_id == $current and
+             .rollback.previous_release.release_id == $previous'             "${RUNNER_TEMP}/acceptance-rollback-plan.json" >/dev/null
+
+          "${bin}" application-lifecycle rollback-apply "${app_spec}" "${rollback_digest}"             > "${RUNNER_TEMP}/acceptance-rollback-apply.json"
+          jq -e '.status == "ROLLED_BACK"'             "${RUNNER_TEMP}/acceptance-rollback-apply.json" >/dev/null
+
+          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-verify-rollback.json"
+          jq -e '.status == "PASS" and .plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-verify-rollback.json" >/dev/null
+
+          "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}"             | tee "${access_release}"
+          jq -e '.verified_absent == true' "${access_release}" >/dev/null
+
+          "${bin}" vultr-lifecycle destroy-plan             "${vultr_spec}" "${machine}" "${source_revision}"             > "${RUNNER_TEMP}/acceptance-destroy-plan.json"
+          destroy_digest="$(jq -er '.destroy_digest'             "${RUNNER_TEMP}/acceptance-destroy-plan.json")"
+          "${bin}" vultr-lifecycle destroy-apply             "${vultr_spec}" "${machine}" "${source_revision}" "${destroy_digest}"             > "${RUNNER_TEMP}/acceptance-destroy-apply.json"
+          jq -e '.absence_verified == true'             "${RUNNER_TEMP}/acceptance-destroy-apply.json" >/dev/null
+
+          "${bin}" vultr-lifecycle cleanup "${vultr_spec}"             > "${RUNNER_TEMP}/acceptance-support-cleanup.json"
+          "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}"             > "${RUNNER_TEMP}/acceptance-plan-after.json"
+          jq -e '.plans[0].class == "CREATE"'             "${RUNNER_TEMP}/acceptance-plan-after.json" >/dev/null
+
+          trap - EXIT
+
+          jq -n             --arg source_revision "${source_revision}"             --arg release_v1 "${release_v1}"             --arg release_v2 "${release_v2}"             --arg bundle_v1 "${bundle_v1}"             --arg bundle_v2 "${bundle_v2}"             '{
+              acceptance:"PASS",
+              source_revision:$source_revision,
+              first_apply:"APPLY_TO_NOOP",
+              repeat_apply:"NOOP",
+              verify:"PASS",
+              upgrade:"UPGRADE_TO_NOOP",
+              rollback:"PASS",
+              access_cleanup:"PASS",
+              destroy_absence:"PASS",
+              support_cleanup:"PASS",
+              release_v1:$release_v1,
+              release_v2:$release_v2,
+              bundle_v1:$bundle_v1,
+              bundle_v2:$bundle_v2
+            }' | tee "${RUNNER_TEMP}/application-acceptance-result.json"
+
+          {
+            echo '### Disposable VM application lifecycle acceptance'
+            echo '~~~json'
+            cat "${RUNNER_TEMP}/application-acceptance-result.json"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+

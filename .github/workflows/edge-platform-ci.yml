@@ -5,12 +5,18 @@ on:
     paths:
       - "edge-platform/**"
       - "infra/vultr/**"
+      - "infra/application/**"
+      - "win/vultr-waw/**"
       - ".github/workflows/edge-platform-ci.yml"
       - ".github/workflows/vultr-lifecycle.yml"
+      - ".github/workflows/vm-application-lifecycle.yml"
   pull_request:
     paths:
       - "edge-platform/**"
+      - "infra/application/**"
+      - "win/vultr-waw/**"
       - ".github/workflows/edge-platform-ci.yml"
+      - ".github/workflows/vm-application-lifecycle.yml"
 
 permissions:
   contents: read

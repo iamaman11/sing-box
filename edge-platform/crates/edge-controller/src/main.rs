@@ -7,6 +7,8 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod application_lifecycle_command;
+mod application_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
 mod deploy_orchestrator;
@@ -160,6 +162,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let command = env::args().nth(1).unwrap_or_else(|| "serve".to_owned());
 
     match command.as_str() {
+        "application-lifecycle" => {
+            let args = env::args().skip(2).collect::<Vec<_>>();
+            application_lifecycle_command::run(args)
+                .await
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+        }
         "line3-mesh" => {
             let args = env::args().skip(2).collect::<Vec<_>>();
             cloudflare_mesh_lifecycle_command::run(args)
@@ -3448,6 +3456,8 @@ async fn apply_bundle_to_agent_target(
                 sensitive: false,
             }),
             prune_existing: true,
+            bundle_id: None,
+            bundle_digest: None,
         }))
         .await
         .map_err(|err| format!("edge-agent apply bundle RPC failed: {err}"))?;
@@ -3463,7 +3473,10 @@ async fn verify_agent_runtime_target(
         .map_err(|err| format!("failed to connect to edge-agent: {err}"))?;
     let mut client = AgentServiceClient::<Channel>::new(channel);
     let response = client
-        .verify_runtime(Request::new(VerifyRuntimeRequest { require_readiness }))
+        .verify_runtime(Request::new(VerifyRuntimeRequest {
+            require_readiness,
+            mode: BootstrapMode::Unspecified as i32,
+        }))
         .await
         .map_err(|err| format!("edge-agent verify runtime RPC failed: {err}"))?;
     Ok(response.into_inner())

@@ -344,6 +344,8 @@ message ApplyBundleRequest {
   optional BundleFile deployment_summary = 3;
   optional BundleFile agent_env_file = 4;
   bool prune_existing = 5;
+  optional string bundle_id = 6;
+  optional string bundle_digest = 7;
 }
 
 message ApplyBundleResponse {
@@ -351,10 +353,28 @@ message ApplyBundleResponse {
   repeated string written_paths = 2;
   optional string stack_dir = 3;
   repeated string warnings = 4;
+  optional string active_bundle_id = 5;
+  optional string active_bundle_digest = 6;
+  optional string previous_bundle_id = 7;
+  optional string previous_bundle_digest = 8;
+}
+
+message RollbackBundleRequest {
+  string expected_current_bundle_digest = 1;
+}
+
+message RollbackBundleResponse {
+  bool success = 1;
+  optional string active_bundle_id = 2;
+  optional string active_bundle_digest = 3;
+  optional string previous_bundle_id = 4;
+  optional string previous_bundle_digest = 5;
+  repeated string warnings = 6;
 }
 
 message VerifyRuntimeRequest {
   bool require_readiness = 1;
+  BootstrapMode mode = 2;
 }
 
 message ReadBundleIdentityRequest {}
@@ -363,6 +383,9 @@ message ReadBundleIdentityResponse {
   optional string active_bundle_id = 1;
   optional string topology_version = 2;
   optional string deployment_summary_path = 3;
+  optional string active_bundle_digest = 4;
+  optional string previous_bundle_id = 5;
+  optional string previous_bundle_digest = 6;
 }
 
 message ReadRenderedArtifactsRequest {}
@@ -467,6 +490,7 @@ service AgentService {
   rpc GetRuntimeState(Empty) returns (AgentState);
   rpc GetVersion(Empty) returns (AgentVersion);
   rpc ApplyBundle(ApplyBundleRequest) returns (ApplyBundleResponse);
+  rpc RollbackBundle(RollbackBundleRequest) returns (RollbackBundleResponse);
   rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
   rpc VerifyRuntime(VerifyRuntimeRequest) returns (AgentState);
   rpc ReadBundleIdentity(ReadBundleIdentityRequest) returns (ReadBundleIdentityResponse);
