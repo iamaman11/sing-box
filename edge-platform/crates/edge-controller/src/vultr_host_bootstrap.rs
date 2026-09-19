@@ -407,6 +407,34 @@ fn cloud_init_file(path: &str, mode: &str, content: &str) -> String {
     )
 }
 
+pub fn verify_operator_key_matches(
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+) -> Result<(), String> {
+    if !operator_private_key_path.is_file() {
+        return Err(format!(
+            "SSH operator private key was not found at {}",
+            operator_private_key_path.display()
+        ));
+    }
+    let derived = run_capture(
+        "ssh-keygen",
+        &[
+            "-y".to_owned(),
+            "-f".to_owned(),
+            operator_private_key_path.display().to_string(),
+        ],
+    )?;
+    let derived = String::from_utf8(derived)
+        .map_err(|_| "derived SSH public key was not UTF-8".to_owned())?;
+    let expected = public_key_material(canonical_operator_public_key)?;
+    let actual = public_key_material(&derived)?;
+    if actual != expected {
+        return Err("SSH operator private key does not match canonical public key".to_owned());
+    }
+    Ok(())
+}
+
 pub async fn strict_ssh_accept(
     target_ip: &str,
     logical_hostname: &str,
