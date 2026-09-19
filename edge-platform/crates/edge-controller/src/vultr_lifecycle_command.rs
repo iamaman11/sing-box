@@ -12,7 +12,8 @@ use crate::vultr_lifecycle_service::{
 use crate::vultr_support_resources::{
     FirewallProfileSet, ResolvedFirewallProfile, VultrSupportApiProvider,
     cleanup_environment_support_resources, ensure_firewall_profile,
-    observe_verified_firewall_bindings, resolve_managed_ssh_key, validate_machine_catalog,
+    observe_verified_firewall_bindings, release_controller_ipv4_access, resolve_managed_ssh_key,
+    validate_machine_catalog,
 };
 use edge_controller_core::vultr_lifecycle::{
     DesiredState, MANAGED_BY_IDENTITY, MachineSpec, PlanClass, decode_provider_tags,
@@ -33,7 +34,8 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         "inventory" => run_inventory(&args[1..]).await,
         "plan" => run_plan(&args[1..]).await,
         "apply" => run_apply(&args[1..]).await,
-        "reconcile-access" => run_reconcile_access(&args[1..]).await,
+        "acquire-access" => run_acquire_access(&args[1..]).await,
+        "release-access" => run_release_access(&args[1..]).await,
         "action" => run_action(&args[1..]).await,
         "destroy-plan" => run_destroy_plan(&args[1..]).await,
         "destroy-apply" => run_destroy_apply(&args[1..]).await,
@@ -304,10 +306,10 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
 }
 
 
-async fn run_reconcile_access(args: &[String]) -> Result<(), String> {
+async fn run_acquire_access(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-lifecycle reconcile-access <spec-path> <machine-id>"
+            "usage: edge-controller vultr-lifecycle acquire-access <spec-path> <machine-id>"
                 .to_owned(),
         );
     }
@@ -360,7 +362,7 @@ async fn run_reconcile_access(args: &[String]) -> Result<(), String> {
         AccessReconcileClass::FirewallOnly => {}
         AccessReconcileClass::Blocked => {
             return Err(format!(
-                "reconcile-access refuses non-firewall lifecycle drift for machine {}: {:?}: {}",
+                "acquire-access refuses non-firewall lifecycle drift for machine {}: {:?}: {}",
                 machine.id,
                 initial_plan.class,
                 initial_plan.reasons.join("; ")
@@ -400,7 +402,7 @@ async fn run_reconcile_access(args: &[String]) -> Result<(), String> {
     }
 
     print_json_value(serde_json::json!({
-        "action": "RECONCILED",
+        "action": "ACQUIRED",
         "machine_id": machine.id,
         "provider_id": final_plan.provider_id,
         "firewall_group_id": resolved.id,
@@ -431,6 +433,58 @@ fn access_reconcile_class(plan: &edge_controller_core::vultr_lifecycle::MachineP
         }
         _ => AccessReconcileClass::Blocked,
     }
+}
+
+
+async fn run_release_access(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller vultr-lifecycle release-access <spec-path> <machine-id>"
+                .to_owned(),
+        );
+    }
+
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == args[1])
+        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+    let profile_name = machine.provider.firewall_profile.as_deref().ok_or_else(|| {
+        format!(
+            "machine {} has no firewall_profile; release-access requires provider-owned SSH ingress",
+            machine.id
+        )
+    })?;
+    let profiles = load_firewall_profiles_raw(&desired)?
+        .ok_or_else(|| format!("firewall profile registry is required for {profile_name}"))?;
+    let profile = profiles.profile(profile_name)?;
+    let controller_ipv4 = env::var("EDGE_CONTROLLER_IPV4")
+        .map_err(|_| "EDGE_CONTROLLER_IPV4 is required for release-access".to_owned())?;
+    let policy = LifecycleExecutionPolicy::default();
+    let mut support_provider = support_provider_from_env()?;
+    let report = release_controller_ipv4_access(
+        &mut support_provider,
+        &desired.environment,
+        profile,
+        &controller_ipv4,
+        &policy,
+    )
+    .await?;
+
+    if !report.verified_absent {
+        return Err("controller SSH access cleanup did not verify absence".to_owned());
+    }
+
+    print_json_value(serde_json::json!({
+        "action": "RELEASED",
+        "machine_id": machine.id,
+        "firewall_profile": profile_name,
+        "firewall_group_id": report.firewall_group_id,
+        "removed_rule_ids": report.removed_rule_ids,
+        "verified_absent": report.verified_absent,
+        "authority": "vultr-support-resource",
+    }))
 }
 
 async fn run_action(args: &[String]) -> Result<(), String> {
@@ -648,18 +702,12 @@ pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
         .map_err(|err| format!("failed to parse lifecycle spec {}: {err}", path.display()))
 }
 
-pub(crate) fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<FirewallProfileSet>, String> {
-    if desired
-        .machines
-        .iter()
-        .all(|machine| machine.provider.firewall_profile.is_none())
-    {
+pub(crate) fn load_firewall_profiles(
+    desired: &DesiredState,
+) -> Result<Option<FirewallProfileSet>, String> {
+    let Some(mut profiles) = load_firewall_profiles_raw(desired)? else {
         return Ok(None);
-    }
-    let path = Path::new(FIREWALL_PROFILES_PATH);
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
-    let mut profiles = FirewallProfileSet::parse_json(&raw)?;
+    };
     let profile_names = desired
         .machines
         .iter()
@@ -671,6 +719,22 @@ pub(crate) fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<Fi
         profiles.profile(profile_name)?;
     }
     Ok(Some(profiles))
+}
+
+fn load_firewall_profiles_raw(
+    desired: &DesiredState,
+) -> Result<Option<FirewallProfileSet>, String> {
+    if desired
+        .machines
+        .iter()
+        .all(|machine| machine.provider.firewall_profile.is_none())
+    {
+        return Ok(None);
+    }
+    let path = Path::new(FIREWALL_PROFILES_PATH);
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
+    FirewallProfileSet::parse_json(&raw).map(Some)
 }
 
 pub(crate) async fn verified_firewall_bindings(
@@ -825,7 +889,8 @@ fn usage() -> String {
         "  edge-controller vultr-lifecycle inventory <spec-path>",
         "  edge-controller vultr-lifecycle plan <spec-path> [machine-id]",
         "  edge-controller vultr-lifecycle apply <spec-path> <machine-id>",
-        "  edge-controller vultr-lifecycle reconcile-access <spec-path> <machine-id>",
+        "  edge-controller vultr-lifecycle acquire-access <spec-path> <machine-id>",
+        "  edge-controller vultr-lifecycle release-access <spec-path> <machine-id>",
         "  edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot>",
         "  edge-controller vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>",
         "  edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest>",
@@ -915,6 +980,8 @@ mod tests {
         let text = usage();
         assert!(text.contains("vultr-lifecycle plan"));
         assert!(text.contains("vultr-lifecycle destroy-apply"));
+        assert!(text.contains("vultr-lifecycle acquire-access"));
+        assert!(text.contains("vultr-lifecycle release-access"));
         assert!(!text.contains("exec"));
         assert!(!text.contains("shell"));
     }
