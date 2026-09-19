@@ -135,7 +135,7 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
 
-      - name: Resolve and verify exact upstream dependencies
+      - name: Resolve exact upstream dependencies
         id: resolve
         shell: bash
         env:
@@ -502,16 +502,24 @@ jobs:
 
   candidate_complete:
     name: Candidate complete
-    if: github.event_name == 'pull_request'
+    if: always() && github.event_name == 'pull_request'
     needs: [verify, dependencies, windows, linux_candidate]
     runs-on: ubuntu-24.04
     steps:
-      - name: Record exact candidate evidence
+      - name: Require complete exact candidate
         shell: bash
         env:
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          SOURCE_RESULT: ${{ needs.verify.result }}
+          DEPENDENCIES_RESULT: ${{ needs.dependencies.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          LINUX_RESULT: ${{ needs.linux_candidate.result }}
         run: |
           set -euo pipefail
+          test "${SOURCE_RESULT}" = "success"
+          test "${DEPENDENCIES_RESULT}" = "success"
+          test "${WINDOWS_RESULT}" = "success"
+          test "${LINUX_RESULT}" = "success"
           echo "candidate_revision=${CANDIDATE_REVISION}"
           echo "All candidate build and verification jobs passed."
 
