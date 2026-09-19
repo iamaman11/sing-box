@@ -144,7 +144,9 @@ impl DesiredApplicationState {
         validate_identifier("application_profile", &self.application_profile)?;
         validate_repo_path("vultr_spec_path", &self.vultr_spec_path)?;
         validate_repo_path("bundle_root", &self.bundle_root)?;
-        if !self.vultr_spec_path.starts_with("infra/vultr/") || !self.vultr_spec_path.ends_with(".json") {
+        if !self.vultr_spec_path.starts_with("infra/vultr/")
+            || !self.vultr_spec_path.ends_with(".json")
+        {
             return Err(ApplicationSpecError::Validation(
                 "vultr_spec_path must be an infra/vultr/*.json path".to_owned(),
             ));
@@ -311,7 +313,9 @@ pub fn build_rollback_plan(
         ApplicationSpecError::Validation("rollback requires a published current release".to_owned())
     })?;
     let previous = observation.previous_release.clone().ok_or_else(|| {
-        ApplicationSpecError::Validation("rollback requires a published previous release".to_owned())
+        ApplicationSpecError::Validation(
+            "rollback requires a published previous release".to_owned(),
+        )
     })?;
 
     validate_release("current", &current)?;
@@ -348,7 +352,8 @@ pub fn authorize_rollback(
     let plan = build_rollback_plan(desired, observation)?;
     if plan.rollback_digest != authorized_digest {
         return Err(ApplicationSpecError::Validation(
-            "rollback digest is stale; re-run rollback-plan against current observations".to_owned(),
+            "rollback digest is stale; re-run rollback-plan against current observations"
+                .to_owned(),
         ));
     }
     Ok(plan)
@@ -563,14 +568,8 @@ mod tests {
             current_release: Some(release),
             previous_release: None,
         };
-        let plan = plan_application(
-            &desired(),
-            &artifact(),
-            &"3".repeat(64),
-            true,
-            &observation,
-        )
-        .unwrap();
+        let plan =
+            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
         assert_eq!(plan.class, ApplicationPlanClass::Noop);
         assert!(plan.actions.is_empty());
     }
@@ -585,14 +584,8 @@ mod tests {
             current_release: Some(current),
             previous_release: None,
         };
-        let plan = plan_application(
-            &desired(),
-            &artifact(),
-            &"3".repeat(64),
-            true,
-            &observation,
-        )
-        .unwrap();
+        let plan =
+            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
         assert_eq!(plan.class, ApplicationPlanClass::Blocked);
     }
 

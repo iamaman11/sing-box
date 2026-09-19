@@ -27,17 +27,15 @@ use tonic::transport::Channel;
 const REMOTE_ROOT: &str = "/opt/vultr-edge-stack";
 const REMOTE_AGENT: &str = "/opt/vultr-edge-stack/bin/edge-agent";
 const REMOTE_PREVIOUS_AGENT: &str = "/opt/vultr-edge-stack/bin/edge-agent.previous";
-const REMOTE_STACK_RELEASE: &str =
-    "/opt/vultr-edge-stack/stack/.application-release.json";
+const REMOTE_STACK_RELEASE: &str = "/opt/vultr-edge-stack/stack/.application-release.json";
 const REMOTE_PREVIOUS_STACK_RELEASE: &str =
     "/opt/vultr-edge-stack/stack.previous/.application-release.json";
-const REMOTE_CONTROL_RELEASE: &str =
-    "/opt/vultr-edge-stack/application-release.json";
-const REMOTE_CONTROL_RELEASE_STAGING: &str =
-    "/tmp/singbox-application-release.json.tmp";
+const REMOTE_CONTROL_RELEASE: &str = "/opt/vultr-edge-stack/application-release.json";
+const REMOTE_CONTROL_RELEASE_STAGING: &str = "/tmp/singbox-application-release.json.tmp";
 const AGENT_DROPIN_PATH: &str =
     "/etc/systemd/system/edge-agent.service.d/90-application-control.conf";
-const AGENT_DROPIN_CONTENT: &str = "[Service]\nEnvironment=EDGE_AGENT_ADDR=127.0.0.1:50061\nEnvironmentFile=\n";
+const AGENT_DROPIN_CONTENT: &str =
+    "[Service]\nEnvironment=EDGE_AGENT_ADDR=127.0.0.1:50061\nEnvironmentFile=\n";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ApplicationAuthority {
@@ -175,8 +173,12 @@ pub(crate) fn prepare_application_bundle(
 
     match runtime_env_path {
         Some(path) => {
-            let content = fs::read(path)
-                .map_err(|err| format!("failed to read runtime environment {}: {err}", path.display()))?;
+            let content = fs::read(path).map_err(|err| {
+                format!(
+                    "failed to read runtime environment {}: {err}",
+                    path.display()
+                )
+            })?;
             if content.is_empty() {
                 return Err("runtime environment file must be non-empty".to_owned());
             }
@@ -208,7 +210,8 @@ pub(crate) fn prepare_application_bundle(
     };
     let bundle_digest = canonical_apply_bundle_digest(&request)?;
     request.bundle_digest = Some(bundle_digest.clone());
-    let release = desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
+    let release =
+        desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
 
     Ok(PreparedApplicationBundle { request, release })
 }
@@ -273,7 +276,9 @@ pub(crate) async fn execute_desired(
             });
         }
         ApplicationPlanClass::Apply if mode == DesiredMutationMode::Upgrade => {
-            return Err("upgrade requires an existing published application release; use apply".to_owned());
+            return Err(
+                "upgrade requires an existing published application release; use apply".to_owned(),
+            );
         }
         ApplicationPlanClass::Upgrade if mode == DesiredMutationMode::Apply => {
             return Err("apply refuses to overwrite an existing release; use upgrade".to_owned());
@@ -281,12 +286,18 @@ pub(crate) async fn execute_desired(
         ApplicationPlanClass::Apply | ApplicationPlanClass::Upgrade => {}
     }
 
-    if initial_plan.actions.contains(&ApplicationAction::InstallAgent) {
+    if initial_plan
+        .actions
+        .contains(&ApplicationAction::InstallAgent)
+    {
         install_exact_agent(authority, artifact, artifact_path)?;
     }
     ensure_private_agent_service(authority)?;
 
-    if initial_plan.actions.contains(&ApplicationAction::ApplyBundle) {
+    if initial_plan
+        .actions
+        .contains(&ApplicationAction::ApplyBundle)
+    {
         apply_bundle_once(authority, prepared).await?;
     }
 
@@ -298,7 +309,10 @@ pub(crate) async fn execute_desired(
         return Err("typed runtime verification did not reach readiness".to_owned());
     }
 
-    if initial_plan.actions.contains(&ApplicationAction::PublishRelease) {
+    if initial_plan
+        .actions
+        .contains(&ApplicationAction::PublishRelease)
+    {
         publish_release_once(authority, &prepared.release)?;
     }
 
@@ -361,8 +375,8 @@ pub(crate) async fn execute_rollback(
     authorized_digest: &str,
 ) -> Result<ApplicationObservationView, String> {
     let observation = observe_application(authority, desired).await?;
-    let plan =
-        authorize_rollback(desired, &observation, authorized_digest).map_err(|err| err.to_string())?;
+    let plan = authorize_rollback(desired, &observation, authorized_digest)
+        .map_err(|err| err.to_string())?;
     verify_previous_release_material(authority, &plan.previous_release)?;
 
     rollback_bundle_once(authority, &plan).await?;
@@ -403,7 +417,12 @@ fn collect_bundle_files(
     files: &mut Vec<BundleFile>,
 ) -> Result<(), String> {
     let mut entries = fs::read_dir(current)
-        .map_err(|err| format!("failed to read application bundle {}: {err}", current.display()))?
+        .map_err(|err| {
+            format!(
+                "failed to read application bundle {}: {err}",
+                current.display()
+            )
+        })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("failed to enumerate application bundle: {err}"))?;
     entries.sort_by_key(|entry| entry.file_name());
@@ -456,7 +475,10 @@ fn collect_bundle_files(
     Ok(())
 }
 
-fn remote_file_sha(authority: &ApplicationAuthority, remote_path: &str) -> Result<Option<String>, String> {
+fn remote_file_sha(
+    authority: &ApplicationAuthority,
+    remote_path: &str,
+) -> Result<Option<String>, String> {
     let command = format!(
         "if sudo test -f {remote_path}; then sudo sha256sum {remote_path} | cut -d ' ' -f1; fi"
     );
@@ -576,7 +598,10 @@ fn install_exact_agent(
 
     let observed = remote_file_sha(authority, REMOTE_AGENT)?;
     if observed.as_deref() != Some(artifact.sha256.as_str()) {
-        return Err("edge-agent install completed but remote digest did not match exact artifact".to_owned());
+        return Err(
+            "edge-agent install completed but remote digest did not match exact artifact"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -800,7 +825,10 @@ fn publish_release_once(
     release: &PublishedApplicationRelease,
 ) -> Result<(), String> {
     let existing = read_control_state(authority)?;
-    if existing.as_ref().is_some_and(|value| value.current == *release) {
+    if existing
+        .as_ref()
+        .is_some_and(|value| value.current == *release)
+    {
         return Ok(());
     }
     let state = ApplicationControlState {
@@ -850,7 +878,9 @@ fn publish_control_state_once(
         ));
     }
     if read_control_state(authority)?.as_ref() != Some(state) {
-        return Err("release publication completed but exact control state was not observed".to_owned());
+        return Err(
+            "release publication completed but exact control state was not observed".to_owned(),
+        );
     }
     Ok(())
 }
@@ -952,7 +982,8 @@ mod tests {
         fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
 
         let desired = test_desired("stack");
-        let error = prepare_application_bundle(&root, &desired, &test_artifact(), None).unwrap_err();
+        let error =
+            prepare_application_bundle(&root, &desired, &test_artifact(), None).unwrap_err();
         assert!(error.contains("runtime environment material is required"));
 
         fs::remove_dir_all(root).unwrap();
@@ -976,13 +1007,14 @@ mod tests {
         let b =
             prepare_application_bundle(&root, &desired, &test_artifact(), Some(&env_b)).unwrap();
         assert_ne!(a.release.bundle_digest, b.release.bundle_digest);
-        assert!(a
-            .request
-            .stack_files
-            .iter()
-            .find(|file| file.relative_path == ".env.runtime")
-            .unwrap()
-            .sensitive);
+        assert!(
+            a.request
+                .stack_files
+                .iter()
+                .find(|file| file.relative_path == ".env.runtime")
+                .unwrap()
+                .sensitive
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -996,9 +1028,13 @@ mod tests {
         let env_path = root.join("env");
         fs::write(&env_path, "TOKEN=runtime\n").unwrap();
 
-        let error =
-            prepare_application_bundle(&root, &test_desired("stack"), &test_artifact(), Some(&env_path))
-                .unwrap_err();
+        let error = prepare_application_bundle(
+            &root,
+            &test_desired("stack"),
+            &test_artifact(),
+            Some(&env_path),
+        )
+        .unwrap_err();
         assert!(error.contains("must not contain .env.runtime"));
 
         fs::remove_dir_all(root).unwrap();

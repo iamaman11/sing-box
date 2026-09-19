@@ -58,12 +58,8 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    let prepared = prepare_application_bundle(
-        Path::new("."),
-        &desired,
-        &artifact,
-        runtime_env.as_deref(),
-    )?;
+    let prepared =
+        prepare_application_bundle(Path::new("."), &desired, &artifact, runtime_env.as_deref())?;
     let observation = observe_application(&authority, &desired).await?;
     let plan = plan_application(
         &desired,
@@ -81,10 +77,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     }))
 }
 
-async fn run_mutation(
-    args: &[String],
-    mode: DesiredMutationMode,
-) -> Result<(), String> {
+async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), String> {
     let operation = match mode {
         DesiredMutationMode::Apply => "apply",
         DesiredMutationMode::Upgrade => "upgrade",
@@ -94,15 +87,18 @@ async fn run_mutation(
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
     let runtime_env = runtime_env_path();
-    let prepared = prepare_application_bundle(
-        Path::new("."),
+    let prepared =
+        prepare_application_bundle(Path::new("."), &desired, &artifact, runtime_env.as_deref())?;
+    let authority = resolve_application_authority(&desired).await?;
+    let report = execute_desired(
+        &authority,
         &desired,
         &artifact,
-        runtime_env.as_deref(),
-    )?;
-    let authority = resolve_application_authority(&desired).await?;
-    let report =
-        execute_desired(&authority, &desired, &artifact, &artifact_path, &prepared, mode).await?;
+        &artifact_path,
+        &prepared,
+        mode,
+    )
+    .await?;
     print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
 }
 
@@ -112,12 +108,8 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
     let runtime_env = runtime_env_path();
-    let prepared = prepare_application_bundle(
-        Path::new("."),
-        &desired,
-        &artifact,
-        runtime_env.as_deref(),
-    )?;
+    let prepared =
+        prepare_application_bundle(Path::new("."), &desired, &artifact, runtime_env.as_deref())?;
     let authority = resolve_application_authority(&desired).await?;
     let (plan, observation) = verify_desired(&authority, &desired, &artifact, &prepared).await?;
     let healthy = plan.class == ApplicationPlanClass::Noop;
@@ -136,7 +128,9 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
 
 async fn run_rollback_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller application-lifecycle rollback-plan <spec-path>".to_owned());
+        return Err(
+            "usage: edge-controller application-lifecycle rollback-plan <spec-path>".to_owned(),
+        );
     }
     let desired = load_application_desired(Path::new(&args[0]))?;
     let authority = resolve_application_authority(&desired).await?;
@@ -164,10 +158,7 @@ async fn run_rollback_apply(args: &[String]) -> Result<(), String> {
     }))
 }
 
-fn desired_args(
-    args: &[String],
-    operation: &str,
-) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     if args.len() != 3 {
         return Err(format!(
             "usage: edge-controller application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>"
@@ -190,8 +181,12 @@ fn load_application_desired(path: &Path) -> Result<DesiredApplicationState, Stri
 fn load_artifact_manifest(path: &Path) -> Result<AgentArtifactManifest, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read artifact manifest {}: {err}", path.display()))?;
-    AgentArtifactManifest::parse_json(&raw)
-        .map_err(|err| format!("failed to parse artifact manifest {}: {err}", path.display()))
+    AgentArtifactManifest::parse_json(&raw).map_err(|err| {
+        format!(
+            "failed to parse artifact manifest {}: {err}",
+            path.display()
+        )
+    })
 }
 
 async fn resolve_application_authority(
@@ -229,7 +224,8 @@ async fn resolve_application_authority(
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
     let verified_firewalls =
-        verified_firewall_bindings(&mut support_provider, &vultr_desired, profiles.as_ref()).await?;
+        verified_firewall_bindings(&mut support_provider, &vultr_desired, profiles.as_ref())
+            .await?;
     let lifecycle = plan_desired_state_with_firewall_profiles(
         &mut lifecycle_provider,
         &vultr_desired,
@@ -273,10 +269,7 @@ async fn resolve_application_authority(
 
     let operator_private_key_path = operator_private_key_path_from_env()?;
     let canonical_operator_public_key = read_canonical_ssh_public_key()?;
-    verify_operator_key_matches(
-        &operator_private_key_path,
-        &canonical_operator_public_key,
-    )?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_operator_public_key)?;
     strict_ssh_accept(
         &instance.main_ip,
         &desired.machine_id,
@@ -301,7 +294,9 @@ fn validate_digest(value: &str) -> Result<(), String> {
             .chars()
             .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
     {
-        return Err("rollback digest must be exactly 64 lowercase hexadecimal characters".to_owned());
+        return Err(
+            "rollback digest must be exactly 64 lowercase hexadecimal characters".to_owned(),
+        );
     }
     Ok(())
 }

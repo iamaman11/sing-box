@@ -305,7 +305,6 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     }))
 }
 
-
 async fn run_acquire_access(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
@@ -389,7 +388,12 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
     let final_plan = final_report
         .plans
         .first()
-        .ok_or_else(|| format!("no post-access lifecycle plan was produced for {}", machine.id))?
+        .ok_or_else(|| {
+            format!(
+                "no post-access lifecycle plan was produced for {}",
+                machine.id
+            )
+        })?
         .clone();
 
     if final_plan.class != PlanClass::Noop {
@@ -419,22 +423,22 @@ enum AccessReconcileClass {
     Blocked,
 }
 
-fn access_reconcile_class(plan: &edge_controller_core::vultr_lifecycle::MachinePlan) -> AccessReconcileClass {
+fn access_reconcile_class(
+    plan: &edge_controller_core::vultr_lifecycle::MachinePlan,
+) -> AccessReconcileClass {
     match plan.class {
         PlanClass::Noop => AccessReconcileClass::Noop,
         PlanClass::UpdateInPlace
             if !plan.reasons.is_empty()
-                && plan
-                    .reasons
-                    .iter()
-                    .all(|reason| reason == "firewall profile differs or is not provider-verified") =>
+                && plan.reasons.iter().all(|reason| {
+                    reason == "firewall profile differs or is not provider-verified"
+                }) =>
         {
             AccessReconcileClass::FirewallOnly
         }
         _ => AccessReconcileClass::Blocked,
     }
 }
-
 
 async fn run_release_access(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
@@ -950,9 +954,7 @@ mod tests {
             class: PlanClass::UpdateInPlace,
             provider_id: Some("provider-1".to_owned()),
             desired_spec_digest: "0".repeat(64),
-            reasons: vec![
-                "firewall profile differs or is not provider-verified".to_owned(),
-            ],
+            reasons: vec!["firewall profile differs or is not provider-verified".to_owned()],
         };
         assert_eq!(
             access_reconcile_class(&firewall_only),

@@ -153,8 +153,9 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<RollbackBundleRequest>,
     ) -> Result<Response<RollbackBundleResponse>, Status> {
-        let response = rollback_bundle(&self.stack_dir, request.into_inner())
-            .map_err(|err| Status::failed_precondition(format!("bundle rollback refused: {err}")))?;
+        let response = rollback_bundle(&self.stack_dir, request.into_inner()).map_err(|err| {
+            Status::failed_precondition(format!("bundle rollback refused: {err}"))
+        })?;
         Ok(Response::new(response))
     }
 
@@ -342,7 +343,6 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     state
 }
 
-
 fn apply_bundle(
     stack_dir: &Path,
     request: ApplyBundleRequest,
@@ -353,7 +353,9 @@ fn apply_bundle(
     ) {
         (Some(_), Some(_)) => apply_digest_bound_bundle(stack_dir, request),
         (None, None) => apply_legacy_bundle(stack_dir, request),
-        _ => Err("bundle_id and bundle_digest must either both be present or both be absent".to_owned()),
+        _ => Err(
+            "bundle_id and bundle_digest must either both be present or both be absent".to_owned(),
+        ),
     }
 }
 
@@ -464,8 +466,12 @@ fn apply_digest_bound_bundle(
             )
         })?;
     }
-    fs::create_dir_all(&staging)
-        .map_err(|err| format!("failed to create staging stack {}: {err}", staging.display()))?;
+    fs::create_dir_all(&staging).map_err(|err| {
+        format!(
+            "failed to create staging stack {}: {err}",
+            staging.display()
+        )
+    })?;
 
     let mut written_paths = Vec::new();
     for file in &request.stack_files {
@@ -608,9 +614,8 @@ fn previous_stack_dir(stack_dir: &Path) -> PathBuf {
 fn read_application_release(stack_dir: &Path) -> Option<ApplicationBundleRelease> {
     let raw = fs::read_to_string(stack_dir.join(APPLICATION_RELEASE_MARKER)).ok()?;
     let release: ApplicationBundleRelease = serde_json::from_str(&raw).ok()?;
-    (release.schema == 1
-        && validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_ok())
-    .then_some(release)
+    (release.schema == 1 && validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_ok())
+        .then_some(release)
 }
 
 fn write_application_release(
