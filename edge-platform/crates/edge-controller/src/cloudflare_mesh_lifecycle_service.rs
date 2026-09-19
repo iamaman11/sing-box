@@ -428,6 +428,7 @@ mod tests {
     fn desired(routes: &[&str]) -> DesiredMeshState {
         DesiredMeshState {
             schema: 1,
+            account_id: "0123456789abcdef0123456789abcdef".to_owned(),
             environment: "poc".to_owned(),
             node_name: "singbox-line3-poc".to_owned(),
             routes: routes
