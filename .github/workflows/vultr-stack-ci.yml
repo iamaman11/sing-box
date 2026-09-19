@@ -1,0 +1,57 @@
+name: Vultr Stack CI
+
+on:
+  push:
+    paths:
+      - "win/vultr-waw/stack/**"
+      - ".github/workflows/vultr-stack-ci.yml"
+  pull_request:
+    paths:
+      - "win/vultr-waw/stack/**"
+      - ".github/workflows/vultr-stack-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vultr-stack-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+
+      - name: Validate bootstrap shell
+        shell: bash
+        run: bash -n win/vultr-waw/stack/bootstrap.sh
+
+      - name: Validate default stack
+        shell: bash
+        run: docker compose -f win/vultr-waw/stack/docker-compose.yml config --quiet
+
+      - name: Validate isolated Mesh profile
+        shell: bash
+        env:
+          MESH_NODE_TOKEN: ci-placeholder
+        run: |
+          set -euo pipefail
+          docker compose             -f win/vultr-waw/stack/docker-compose.yml             --profile mesh             config --quiet
+          docker compose             -f win/vultr-waw/stack/docker-compose.yml             --profile mesh             config --services | grep -Fxq cloudflare-mesh
+          if docker compose             -f win/vultr-waw/stack/docker-compose.yml             config --services | grep -Fxq cloudflare-mesh; then
+            echo "cloudflare-mesh must stay out of the default stack" >&2
+            exit 1
+          fi
