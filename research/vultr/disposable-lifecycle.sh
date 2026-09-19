@@ -242,6 +242,8 @@ users:
       - ${canonical_pub}
 ssh_pwauth: false
 disable_root: true
+ssh_deletekeys: false
+ssh_genkeytypes: []
 write_files:
   - path: /etc/ssh/ssh_host_ed25519_key
     owner: root:root
