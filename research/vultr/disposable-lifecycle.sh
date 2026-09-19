@@ -457,6 +457,43 @@ if [[ "$observed_user_data" != "$user_data_b64" ]]; then
 fi
 log "user_data_retrievable=PASS content_redacted=true"
 
+# Immediately replace API-visible user-data after strict bootstrap. The current
+# value contains the per-instance host private key needed only for first boot.
+# This is defense-in-depth: it narrows the API-visible exposure window but does
+# not claim that the provider has no internal historical copies.
+scrub_plain='#cloud-config
+# sing-box bootstrap material scrubbed after strict SSH acceptance
+'
+scrub_b64="$(printf '%s' "$scrub_plain" | base64 -w0)"
+jq -n --arg user_data "$scrub_b64" '{user_data:$user_data}' > "$tmp/user-data-scrub.json"
+api_request PATCH "/v2/instances/$instance_id" "$tmp/user-data-scrub.json"
+case "$HTTP_CODE" in
+  200|202)
+    log "user_data_scrub_request=PASS status=$HTTP_CODE"
+    ;;
+  *)
+    expect_http 200 "user_data_scrub_request" || exit 1
+    ;;
+esac
+
+scrubbed=0
+for _ in $(seq 1 30); do
+  api_request GET "/v2/instances/$instance_id/user-data"
+  if [[ "$HTTP_RC" -eq 0 && "$HTTP_CODE" == "200" ]]; then
+    current_user_data="$(jq -r '.user_data.data // empty' "$HTTP_BODY")"
+    if [[ "$current_user_data" == "$scrub_b64" ]]; then
+      scrubbed=1
+      break
+    fi
+  fi
+  sleep 2
+done
+if [[ "$scrubbed" -ne 1 ]]; then
+  log "user_data_scrub_visibility=FAIL"
+  exit 1
+fi
+log "user_data_scrub_visibility=PASS"
+
 # Firewall propagation experiment. A previous run showed that deleting the only
 # allow rule did not close new TCP/22 connections within 40 seconds. Avoid an
 # ambiguous empty-group state here: replace it with an explicit non-matching
