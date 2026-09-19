@@ -145,8 +145,8 @@ jobs:
           work="${RUNNER_TEMP}/release-dependencies"
           mkdir -p "${work}"
 
-          gh api --paginate "repos/SagerNet/sing-box/releases?per_page=100" --slurp > "${work}/sing-box-release-pages.json"
-          jq -c 'add' "${work}/sing-box-release-pages.json" > "${work}/sing-box-releases.json"
+          gh api "repos/SagerNet/sing-box/releases/latest" > "${work}/sing-box-latest.json"
+          jq -c '[.]' "${work}/sing-box-latest.json" > "${work}/sing-box-releases.json"
           curl --fail --silent --show-error --location \
             https://pkg.cloudflareclient.com/dists/noble/main/binary-amd64/Packages \
             -o "${work}/warp-Packages"
