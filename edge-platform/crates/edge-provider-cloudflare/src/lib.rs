@@ -11,6 +11,20 @@ pub struct CloudflareDnsRecord {
     pub ip: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareMeshNode {
+    pub id: String,
+    pub name: String,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareMeshRoute {
+    pub id: String,
+    pub network: String,
+    pub tunnel_id: String,
+}
+
 pub async fn upsert_a_record(
     api_token: &str,
     zone_name: &str,
@@ -76,6 +90,127 @@ pub async fn delete_a_record(
         .await
         .map_err(|err| format!("failed to delete Cloudflare DNS record: {err}"))?;
     ensure_success(response).await?;
+    Ok(())
+}
+
+pub async fn create_mesh_node(
+    api_token: &str,
+    account_id: &str,
+    name: &str,
+) -> Result<CloudflareMeshNode, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Mesh node name", name)?;
+
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!("{API_ROOT}/accounts/{account_id}/warp_connector"))
+        .json(&MeshNodeWriteRequest {
+            name: name.to_owned(),
+        })
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare Mesh node: {err}"))?;
+    let payload: ApiEnvelope<MeshNodeRecord> = parse_success_json(response).await?;
+    Ok(CloudflareMeshNode {
+        id: payload.result.id,
+        name: payload.result.name,
+        status: payload.result.status,
+    })
+}
+
+pub async fn get_mesh_node_token(
+    api_token: &str,
+    account_id: &str,
+    node_id: &str,
+) -> Result<String, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Mesh node ID", node_id)?;
+
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/warp_connector/{node_id}/token"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to get Cloudflare Mesh node token: {err}"))?;
+    let payload: ApiEnvelope<String> = parse_success_json(response).await?;
+    require_non_empty("Cloudflare Mesh node token", &payload.result)?;
+    Ok(payload.result)
+}
+
+pub async fn delete_mesh_node(
+    api_token: &str,
+    account_id: &str,
+    node_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Mesh node ID", node_id)?;
+
+    let client = authorized_client(api_token)?;
+    let response = client
+        .delete(format!(
+            "{API_ROOT}/accounts/{account_id}/warp_connector/{node_id}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to delete Cloudflare Mesh node: {err}"))?;
+    ensure_success(response).await
+}
+
+pub async fn create_mesh_cidr_route(
+    api_token: &str,
+    account_id: &str,
+    node_id: &str,
+    network: &str,
+    comment: Option<&str>,
+) -> Result<CloudflareMeshRoute, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Mesh node ID", node_id)?;
+    require_non_empty("Cloudflare Mesh CIDR route", network)?;
+
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!("{API_ROOT}/accounts/{account_id}/teamnet/routes"))
+        .json(&MeshRouteWriteRequest {
+            network: network.to_owned(),
+            tunnel_id: node_id.to_owned(),
+            comment: comment.map(ToOwned::to_owned),
+        })
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare Mesh CIDR route: {err}"))?;
+    let payload: ApiEnvelope<MeshRouteRecord> = parse_success_json(response).await?;
+    Ok(CloudflareMeshRoute {
+        id: payload.result.id,
+        network: payload.result.network,
+        tunnel_id: payload.result.tunnel_id,
+    })
+}
+
+pub async fn delete_mesh_cidr_route(
+    api_token: &str,
+    account_id: &str,
+    route_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Mesh route ID", route_id)?;
+
+    let client = authorized_client(api_token)?;
+    let response = client
+        .delete(format!(
+            "{API_ROOT}/accounts/{account_id}/teamnet/routes/{route_id}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to delete Cloudflare Mesh CIDR route: {err}"))?;
+    ensure_success(response).await
+}
+
+fn require_non_empty(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{label} is required"));
+    }
     Ok(())
 }
 
@@ -174,6 +309,33 @@ struct DnsRecord {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct MeshNodeRecord {
+    id: String,
+    name: String,
+    status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MeshNodeWriteRequest {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeshRouteRecord {
+    id: String,
+    network: String,
+    tunnel_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MeshRouteWriteRequest {
+    network: String,
+    tunnel_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comment: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct DnsRecordWriteRequest {
     #[serde(rename = "type")]
@@ -193,6 +355,31 @@ mod tests {
         let record = mock_upsert_a_record("example.com", "edge.example.com", "203.0.113.10");
         assert_eq!(record.zone_id, "mock-zone-example-com");
         assert_eq!(record.record_name, "edge.example.com");
+    }
+
+    #[test]
+    fn serializes_mesh_node_request_body() {
+        let body = serde_json::to_value(MeshNodeWriteRequest {
+            name: "vultr-waw-exit".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(body["name"], "vultr-waw-exit");
+    }
+
+    #[test]
+    fn serializes_mesh_route_request_body() {
+        let body = serde_json::to_value(MeshRouteWriteRequest {
+            network: "203.0.113.10/32".to_owned(),
+            tunnel_id: "11111111-1111-1111-1111-111111111111".to_owned(),
+            comment: Some("line-3-poc".to_owned()),
+        })
+        .unwrap();
+        assert_eq!(body["network"], "203.0.113.10/32");
+        assert_eq!(
+            body["tunnel_id"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(body["comment"], "line-3-poc");
     }
 
     #[test]
