@@ -52,6 +52,10 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_resolve_release_dependencies.py
 
+      - name: Validate durable release publisher
+        shell: bash
+        run: bash -n edge-platform/scripts/publish_durable_release.sh
+
       - name: Validate VM stack
         shell: bash
         env:
@@ -735,9 +739,9 @@ jobs:
     name: Promote accepted candidate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write
       actions: read
       packages: read
     steps:
@@ -859,6 +863,22 @@ jobs:
             }' > "${windows}/acceptance.json"
           cp "${windows}/acceptance.json" "${linux}/acceptance.json"
           cp "${windows}/acceptance.json" "${authority}/acceptance.json"
+
+      - name: Publish durable immutable release without rebuild
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          CANDIDATE_REVISION: ${{ steps.locate.outputs.candidate_revision }}
+          CANDIDATE_RUN_ID: ${{ steps.locate.outputs.candidate_run_id }}
+          WINDOWS_DIR: ${{ runner.temp }}/accepted/windows
+          LINUX_DIR: ${{ runner.temp }}/accepted/linux
+          RELEASE_SET_DIR: ${{ runner.temp }}/accepted/release-set
+          OUTPUT_DIR: ${{ runner.temp }}/durable-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/publish_durable_release.sh
 
       - name: Publish accepted Windows artifact without rebuild
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
