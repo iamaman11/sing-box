@@ -216,7 +216,7 @@ jobs:
           set -euo pipefail
           key_path="${RUNNER_TEMP}/singbox-vultr-ops"
           umask 077
-          printf '%s' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
           test -s "${key_path}"
           chmod 600 "${key_path}"
           printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
