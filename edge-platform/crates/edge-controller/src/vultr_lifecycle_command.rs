@@ -1,6 +1,6 @@
 use crate::vultr_lifecycle_service::{
-    ApplyReport, CreatePrerequisites, LifecycleExecutionPolicy, LifecyclePlanReport,
-    VultrApiProvider, apply_machine, build_destroy_plan, destroy_machine, plan_desired_state,
+    CreatePrerequisites, LifecycleExecutionPolicy, VultrApiProvider, apply_machine,
+    build_destroy_plan, destroy_machine, plan_desired_state,
 };
 use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec};
 use std::env;
