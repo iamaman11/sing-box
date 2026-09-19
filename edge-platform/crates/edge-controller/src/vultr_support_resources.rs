@@ -181,8 +181,8 @@ impl SupportResourceProvider for VultrSupportApiProvider {
 
 impl FirewallProfileSet {
     pub fn parse_json(raw: &str) -> Result<Self, String> {
-        let value: Value =
-            serde_json::from_str(raw).map_err(|err| format!("invalid firewall profiles JSON: {err}"))?;
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|err| format!("invalid firewall profiles JSON: {err}"))?;
         let root = expect_object(&value, "firewall profiles")?;
         reject_unknown_keys(root, &["schema", "profiles"], "firewall profiles")?;
         let schema = root
@@ -507,7 +507,10 @@ async fn observe_managed_ssh_key<P: SupportResourceProvider>(
     desired_name: &str,
     desired_material: &str,
 ) -> Result<SshKeyObservation, String> {
-    let keys = provider.list_ssh_keys().await.map_err(|err| err.to_string())?;
+    let keys = provider
+        .list_ssh_keys()
+        .await
+        .map_err(|err| err.to_string())?;
     let named = keys
         .iter()
         .filter(|key| key.name == desired_name)
@@ -711,16 +714,14 @@ fn required_identifier(
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
     {
-        return Err(format!("{label} field {key} contains unsupported characters"));
+        return Err(format!(
+            "{label} field {key} contains unsupported characters"
+        ));
     }
     Ok(value)
 }
 
-fn required_string(
-    object: &Map<String, Value>,
-    key: &str,
-    label: &str,
-) -> Result<String, String> {
+fn required_string(object: &Map<String, Value>, key: &str, label: &str) -> Result<String, String> {
     let value = object
         .get(key)
         .and_then(Value::as_str)
@@ -880,7 +881,9 @@ mod tests {
             })
         }
 
-        async fn list_operating_systems(&mut self) -> Result<Vec<VultrOperatingSystem>, VultrError> {
+        async fn list_operating_systems(
+            &mut self,
+        ) -> Result<Vec<VultrOperatingSystem>, VultrError> {
             Ok(self.operating_systems.clone())
         }
 
@@ -972,10 +975,9 @@ mod tests {
             ..FakeSupportProvider::default()
         };
 
-        let resolved =
-            resolve_managed_ssh_key(&mut provider, "production", public_key, &policy())
-                .await
-                .unwrap();
+        let resolved = resolve_managed_ssh_key(&mut provider, "production", public_key, &policy())
+            .await
+            .unwrap();
 
         assert_eq!(resolved.id, "ssh-existing");
         assert_eq!(provider.ssh_create_calls, 0);
@@ -990,10 +992,9 @@ mod tests {
             ..FakeSupportProvider::default()
         };
 
-        let resolved =
-            resolve_managed_ssh_key(&mut provider, "production", public_key, &policy())
-                .await
-                .unwrap();
+        let resolved = resolve_managed_ssh_key(&mut provider, "production", public_key, &policy())
+            .await
+            .unwrap();
 
         assert_eq!(resolved.id, "ssh-1");
         assert_eq!(provider.ssh_create_calls, 1);
@@ -1025,19 +1026,16 @@ mod tests {
         let profile = profile_set.profile("ssh-only").unwrap();
         let mut provider = FakeSupportProvider::default();
 
-        let resolved =
-            ensure_firewall_profile(&mut provider, "production", profile, &policy())
-                .await
-                .unwrap();
+        let resolved = ensure_firewall_profile(&mut provider, "production", profile, &policy())
+            .await
+            .unwrap();
 
         assert_eq!(resolved.id, "fw-1");
         assert_eq!(provider.firewall_group_create_calls, 1);
         assert_eq!(provider.firewall_rule_create_calls, 1);
-        assert!(firewall_rules_match(
-            profile,
-            provider.firewall_rules.get("fw-1").unwrap()
-        )
-        .unwrap());
+        assert!(
+            firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1074,11 +1072,9 @@ mod tests {
 
         assert_eq!(provider.firewall_rule_delete_calls, 1);
         assert_eq!(provider.firewall_rule_create_calls, 1);
-        assert!(firewall_rules_match(
-            profile,
-            provider.firewall_rules.get("fw-1").unwrap()
-        )
-        .unwrap());
+        assert!(
+            firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
+        );
     }
 
     #[tokio::test]
