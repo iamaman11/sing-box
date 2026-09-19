@@ -113,8 +113,9 @@ jobs:
           set -euo pipefail
           registry="ghcr.io"
           owner="iamaman11"
-          gateway_tag="${registry}/${owner}/vultr-edge-gateway:${GITHUB_SHA}"
-          warp_tag="${registry}/${owner}/vultr-warp-egress:${GITHUB_SHA}"
+          build_tag="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gateway_tag="${registry}/${owner}/vultr-edge-gateway:${build_tag}"
+          warp_tag="${registry}/${owner}/vultr-warp-egress:${build_tag}"
 
           printf '%s' "${GHCR_TOKEN}" | docker login "${registry}" -u "${GITHUB_ACTOR}" --password-stdin
 
