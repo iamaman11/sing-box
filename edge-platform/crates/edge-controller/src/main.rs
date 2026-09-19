@@ -2925,10 +2925,7 @@ async fn prepare_agent_transport(
     })
 }
 
-fn should_fallback_to_ssh_bootstrap(
-    direct_endpoint: &str,
-    state: &Arc<Mutex<EdgeState>>,
-) -> bool {
+fn should_fallback_to_ssh_bootstrap(direct_endpoint: &str, state: &Arc<Mutex<EdgeState>>) -> bool {
     env::var_os("EDGE_AGENT_ENDPOINT").is_none()
         && direct_endpoint == DEFAULT_AGENT_ENDPOINT
         && has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH)
