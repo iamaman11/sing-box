@@ -1,15 +1,17 @@
 use crate::vultr_host_bootstrap::{
     InstanceAction, VultrOperationalApiProvider, apply_instance_action,
     ensure_host_certificate_rotated, prepare_strict_bootstrap, scrub_user_data, strict_ssh_accept,
-    wait_provider_ready,
+    verify_operator_key_matches, wait_provider_ready,
 };
 use crate::vultr_lifecycle_service::{
-    CreatePrerequisites, LifecycleExecutionPolicy, VultrApiProvider,
+    CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
     apply_machine_with_firewall_profiles, build_destroy_plan_with_firewall_profiles,
-    destroy_machine_with_firewall_profiles, plan_desired_state_with_firewall_profiles,
+    destroy_machine_with_firewall_profiles, inventory_desired_state_with_firewall_profiles,
+    plan_desired_state_with_firewall_profiles,
 };
 use crate::vultr_support_resources::{
-    FirewallProfileSet, ResolvedFirewallProfile, VultrSupportApiProvider, ensure_firewall_profile,
+    FirewallProfileSet, ResolvedFirewallProfile, VultrSupportApiProvider,
+    cleanup_environment_support_resources, ensure_firewall_profile,
     observe_verified_firewall_bindings, resolve_managed_ssh_key, validate_machine_catalog,
 };
 use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec, PlanClass};
@@ -25,13 +27,80 @@ const FIREWALL_PROFILES_PATH: &str = "infra/vultr/firewall-profiles.json";
 pub async fn run(args: Vec<String>) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     match command {
+        "doctor" => run_doctor(&args[1..]).await,
+        "inventory" => run_inventory(&args[1..]).await,
         "plan" => run_plan(&args[1..]).await,
         "apply" => run_apply(&args[1..]).await,
         "action" => run_action(&args[1..]).await,
         "destroy-plan" => run_destroy_plan(&args[1..]).await,
         "destroy-apply" => run_destroy_apply(&args[1..]).await,
+        "cleanup" => run_cleanup(&args[1..]).await,
         _ => Err(usage()),
     }
+}
+
+async fn run_doctor(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("usage: edge-controller vultr-lifecycle doctor <spec-path>".to_owned());
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    for machine in &desired.machines {
+        validate_machine_catalog(&mut support_provider, machine).await?;
+    }
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        None,
+        &verified_firewalls,
+    )
+    .await?;
+
+    print_json_value(serde_json::json!({
+        "status": "PASS",
+        "environment": desired.environment,
+        "desired_state_digest": report.desired_state_digest,
+        "machine_count": desired.machines.len(),
+        "catalog_validation": "PASS",
+        "operator_key_match": "PASS",
+        "plans": report.plans,
+        "orphaned_managed_provider_ids": report.orphaned_managed_provider_ids,
+        "verified_firewall_bindings": verified_firewalls,
+        "mutations_performed": 0,
+    }))
+}
+
+async fn run_inventory(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("usage: edge-controller vultr-lifecycle inventory <spec-path>".to_owned());
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let inventory = inventory_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        &verified_firewalls,
+    )
+    .await?;
+    let inventory = serde_json::to_value(inventory)
+        .map_err(|err| format!("failed to serialize lifecycle inventory: {err}"))?;
+    print_json_value(serde_json::json!({
+        "environment": desired.environment,
+        "inventory": inventory,
+        "verified_firewall_bindings": verified_firewalls,
+    }))
 }
 
 async fn run_plan(args: &[String]) -> Result<(), String> {
@@ -77,34 +146,37 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     let policy = LifecycleExecutionPolicy::default();
     let canonical_public_key = read_canonical_ssh_public_key()?;
     let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
     let mut verified_firewalls =
         verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
 
-    let preflight = plan_desired_state_with_firewall_profiles(
+    let initial = plan_desired_state_with_firewall_profiles(
         &mut lifecycle_provider,
         &desired,
         Some(&args[1]),
         &verified_firewalls,
     )
     .await?;
-
-    let prerequisites = if preflight
+    let initial_class = initial
         .plans
         .first()
-        .is_some_and(|plan| plan.class == PlanClass::Create)
-    {
-        validate_machine_catalog(&mut support_provider, machine).await?;
-        let ssh_key = resolve_managed_ssh_key(
-            &mut support_provider,
-            &desired.environment,
-            &canonical_public_key,
-            &policy,
-        )
-        .await?;
+        .map(|plan| plan.class)
+        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
 
-        let firewall = if let Some(profile_name) = machine.provider.firewall_profile.as_deref() {
+    if matches!(initial_class, PlanClass::BlockedAmbiguous | PlanClass::BlockedDrift | PlanClass::ReplaceRequired) {
+        let plan = &initial.plans[0];
+        return Err(format!(
+            "machine {} is {:?}; apply refuses before support-resource mutation: {}",
+            machine.id,
+            plan.class,
+            plan.reasons.join("; ")
+        ));
+    }
+
+    let firewall = if matches!(initial_class, PlanClass::Create | PlanClass::UpdateInPlace) {
+        if let Some(profile_name) = machine.provider.firewall_profile.as_deref() {
             let profile_set = profiles.as_ref().ok_or_else(|| {
                 format!(
                     "machine {} references firewall profile {profile_name}, but no profile registry is loaded",
@@ -123,8 +195,33 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
             Some(resolved)
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
+    let after_support = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        Some(&args[1]),
+        &verified_firewalls,
+    )
+    .await?;
+    let after_support_class = after_support
+        .plans
+        .first()
+        .map(|plan| plan.class)
+        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
+
+    let prerequisites = if after_support_class == PlanClass::Create {
+        validate_machine_catalog(&mut support_provider, machine).await?;
+        let ssh_key = resolve_managed_ssh_key(
+            &mut support_provider,
+            &desired.environment,
+            &canonical_public_key,
+            &policy,
+        )
+        .await?;
         let base_cloud_init = read_base_cloud_init(machine)?;
         let strict_bootstrap = prepare_strict_bootstrap(
             &base_cloud_init,
@@ -292,6 +389,8 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let profiles = load_firewall_profiles(&desired)?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let policy = LifecycleExecutionPolicy::default();
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
     let verified_firewalls =
@@ -302,15 +401,63 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
         &args[1],
         &args[2],
         &args[3],
-        &LifecycleExecutionPolicy::default(),
+        &policy,
         &verified_firewalls,
     )
     .await?;
+
+    let remaining_instances = lifecycle_provider
+        .list_instances()
+        .await
+        .map_err(|err| err.to_string())?;
+    let cleanup = cleanup_environment_support_resources(
+        &mut support_provider,
+        &desired,
+        &remaining_instances,
+        &canonical_public_key,
+        &policy,
+    )
+    .await?;
+
     print_json_value(serde_json::json!({
         "machine_id": report.machine_id,
         "provider_id": report.provider_id,
         "delete_requested": report.delete_requested,
         "absence_verified": report.absence_verified,
+        "support_cleanup": {
+            "environment_in_use": cleanup.environment_in_use,
+            "ssh_key_removed": cleanup.ssh_key_removed,
+            "firewall_groups_removed": cleanup.firewall_groups_removed,
+        }
+    }))
+}
+
+async fn run_cleanup(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("usage: edge-controller vultr-lifecycle cleanup <spec-path>".to_owned());
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let policy = LifecycleExecutionPolicy::default();
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let remaining_instances = lifecycle_provider
+        .list_instances()
+        .await
+        .map_err(|err| err.to_string())?;
+    let cleanup = cleanup_environment_support_resources(
+        &mut support_provider,
+        &desired,
+        &remaining_instances,
+        &canonical_public_key,
+        &policy,
+    )
+    .await?;
+    print_json_value(serde_json::json!({
+        "environment": desired.environment,
+        "environment_in_use": cleanup.environment_in_use,
+        "ssh_key_removed": cleanup.ssh_key_removed,
+        "firewall_groups_removed": cleanup.firewall_groups_removed,
     }))
 }
 
@@ -332,7 +479,9 @@ fn load_firewall_profiles(desired: &DesiredState) -> Result<Option<FirewallProfi
     let path = Path::new(FIREWALL_PROFILES_PATH);
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
-    let profiles = FirewallProfileSet::parse_json(&raw)?;
+    let mut profiles = FirewallProfileSet::parse_json(&raw)?;
+    let controller_ipv4 = env::var("EDGE_CONTROLLER_IPV4").ok();
+    profiles.resolve_controller_ipv4(controller_ipv4.as_deref())?;
     for profile_name in desired
         .machines
         .iter()
@@ -491,11 +640,14 @@ fn print_json_value(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
+        "  edge-controller vultr-lifecycle doctor <spec-path>",
+        "  edge-controller vultr-lifecycle inventory <spec-path>",
         "  edge-controller vultr-lifecycle plan <spec-path> [machine-id]",
         "  edge-controller vultr-lifecycle apply <spec-path> <machine-id>",
         "  edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot>",
         "  edge-controller vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>",
         "  edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest>",
+        "  edge-controller vultr-lifecycle cleanup <spec-path>",
     ]
     .join("\n")
 }
