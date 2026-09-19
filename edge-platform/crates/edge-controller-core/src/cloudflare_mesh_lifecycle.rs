@@ -66,13 +66,8 @@ pub struct ApplyPlan {
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CleanupAction {
     Noop,
-    DeleteRoute {
-        route_id: String,
-        network: String,
-    },
-    DeleteNode {
-        node_id: String,
-    },
+    DeleteRoute { route_id: String, network: String },
+    DeleteNode { node_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -445,11 +440,7 @@ fn validate_account_id(value: &str) -> Result<(), MeshLifecycleError> {
     Ok(())
 }
 
-fn validate_identifier(
-    label: &str,
-    value: &str,
-    max_len: usize,
-) -> Result<(), MeshLifecycleError> {
+fn validate_identifier(label: &str, value: &str, max_len: usize) -> Result<(), MeshLifecycleError> {
     if value.is_empty()
         || value.len() > max_len
         || !value
@@ -547,7 +538,11 @@ mod tests {
                 r#"{{"schema":1,"account_id":"0123456789abcdef0123456789abcdef","environment":"poc","node_name":"singbox-line3-poc","routes":[{{"network":"{network}"}}]}}"#
             );
             let error = DesiredMeshState::parse_json(&json).unwrap_err();
-            assert!(error.to_string().contains("explicit full-Internet PoC gate"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("explicit full-Internet PoC gate")
+            );
         }
     }
 
@@ -618,11 +613,7 @@ mod tests {
             nodes: vec![node()],
             routes: vec![
                 route("route-1", "1.1.1.1/32", Some(&ownership)),
-                route(
-                    "route-2",
-                    "2606:4700:4700::1111/128",
-                    Some(&ownership),
-                ),
+                route("route-2", "2606:4700:4700::1111/128", Some(&ownership)),
             ],
         };
         let plan = plan_apply(&desired, &observed).unwrap();
@@ -669,7 +660,10 @@ mod tests {
             }
         );
         let digest = first.destructive_digest.clone().unwrap();
-        assert_eq!(verify_cleanup_digest(&desired, &observed, &digest).unwrap(), first);
+        assert_eq!(
+            verify_cleanup_digest(&desired, &observed, &digest).unwrap(),
+            first
+        );
 
         let changed = MeshObservation {
             nodes: observed.nodes.clone(),
