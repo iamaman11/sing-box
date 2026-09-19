@@ -141,208 +141,20 @@ impl AgentService for AgentServerImpl {
     }
 
     async fn apply_bundle(
-        &self,
-        request: Request<ApplyBundleRequest>,
-    ) -> Result<Response<ApplyBundleResponse>, Status> {
-        let response = apply_bundle(&self.stack_dir, request.into_inner())
-            .map_err(|err| Status::internal(format!("failed to apply bundle: {err}")))?;
-        Ok(Response::new(response))
-    }
-
-    async fn rollback_bundle(
-        &self,
-        request: Request<RollbackBundleRequest>,
-    ) -> Result<Response<RollbackBundleResponse>, Status> {
-        let response = rollback_bundle(&self.stack_dir, request.into_inner())
-            .map_err(|err| Status::failed_precondition(format!("bundle rollback refused: {err}")))?;
-        Ok(Response::new(response))
-    }
-
-    async fn verify_runtime(
-        &self,
-        request: Request<VerifyRuntimeRequest>,
-    ) -> Result<Response<AgentState>, Status> {
-        let request = request.into_inner();
-        let inspection_mode = if request.require_readiness {
-            AgentMode::Readiness
-        } else {
-            AgentMode::Runtime
-        };
-        let mut state = inspect_runtime(&self.stack_dir, inspection_mode);
-        let bootstrap_mode = BootstrapMode::try_from(request.mode)
-            .map_err(|_| Status::invalid_argument("unknown bootstrap verification mode"))?;
-        if bootstrap_mode != BootstrapMode::Unspecified {
-            let verified = verify_bootstrap_post_state(&self.stack_dir, bootstrap_mode, &state);
-            if request.require_readiness {
-                state.ready = verified.success;
-            }
-            for warning in verified.warnings {
-                if !state.degraded_reasons.iter().any(|value| value == &warning) {
-                    state.degraded_reasons.push(warning);
-                }
-            }
-        }
-        Ok(Response::new(state))
-    }
-
-    async fn read_bundle_identity(
-        &self,
-        _request: Request<ReadBundleIdentityRequest>,
-    ) -> Result<Response<ReadBundleIdentityResponse>, Status> {
-        let summary_path = self
-            .stack_dir
-            .parent()
-            .map(|parent| parent.join("deployment-summary.json"));
-        let summary = summary_path
-            .as_ref()
-            .filter(|path| path.is_file())
-            .and_then(|path| read_bundle_summary(path));
-
-        let active_release = read_application_release(&self.stack_dir);
-        let previous_release = read_application_release(&previous_stack_dir(&self.stack_dir));
-
-        Ok(Response::new(ReadBundleIdentityResponse {
-            active_bundle_id: active_release
-                .as_ref()
-                .map(|release| release.bundle_id.clone())
-                .or_else(|| summary.as_ref().and_then(|summary| summary.label.clone())),
-            topology_version: summary
-                .as_ref()
-                .and_then(|summary| summary.instance_id.clone())
-                .map(|instance_id| format!("vultr-edge:{instance_id}")),
-            deployment_summary_path: summary_path.map(|path| path.display().to_string()),
-            active_bundle_digest: active_release
-                .as_ref()
-                .map(|release| release.bundle_digest.clone()),
-            previous_bundle_id: previous_release
-                .as_ref()
-                .map(|release| release.bundle_id.clone()),
-            previous_bundle_digest: previous_release
-                .as_ref()
-                .map(|release| release.bundle_digest.clone()),
-        }))
-    }
-
-    async fn read_rendered_artifacts(
-        &self,
-        _request: Request<ReadRenderedArtifactsRequest>,
-    ) -> Result<Response<ReadRenderedArtifactsResponse>, Status> {
-        Ok(Response::new(ReadRenderedArtifactsResponse {
-            files: collect_rendered_artifacts(&self.stack_dir),
-        }))
+    stack_dir: &Path,
+    request: ApplyBundleRequest,
+) -> Result<ApplyBundleResponse, String> {
+    match (
+        request.bundle_id.as_deref(),
+        request.bundle_digest.as_deref(),
+    ) {
+        (Some(_), Some(_)) => apply_digest_bound_bundle(stack_dir, request),
+        (None, None) => apply_legacy_bundle(stack_dir, request),
+        _ => Err("bundle_id and bundle_digest must either both be present or both be absent".to_owned()),
     }
 }
 
-#[derive(Clone, Copy)]
-enum AgentMode {
-    Health,
-    Readiness,
-    Runtime,
-}
-
-fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
-    let mut state = AgentState {
-        healthy: true,
-        ready: false,
-        topology_version: "vultr-edge".to_owned(),
-        active_bundle_id: stack_dir
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string()),
-        degraded_reasons: Vec::new(),
-        docker_reachable: false,
-        compose_file_present: false,
-        observed_stack_path: Some(stack_dir.display().to_string()),
-        running_containers: Vec::new(),
-        missing_containers: Vec::new(),
-        listening_tcp_ports: Vec::new(),
-        listening_udp_ports: Vec::new(),
-    };
-
-    inspect_bundle_artifacts(stack_dir, &mut state);
-
-    let compose_path = stack_dir.join("docker-compose.yml");
-    let Some(compose) = inspect_compose(&compose_path, &mut state) else {
-        state.healthy = false;
-        return state;
-    };
-
-    let docker = inspect_docker();
-    state.docker_reachable = docker.reachable;
-    state.running_containers = docker.running_containers.clone();
-    state.listening_tcp_ports = docker.listening_tcp_ports.clone();
-    state.listening_udp_ports = docker.listening_udp_ports.clone();
-
-    state.missing_containers = compose
-        .expected_containers
-        .iter()
-        .filter(|name| {
-            !docker
-                .running_containers
-                .iter()
-                .any(|running| running == *name)
-        })
-        .cloned()
-        .collect();
-
-    if !docker.reachable {
-        state
-            .degraded_reasons
-            .push("docker runtime is not reachable from edge-agent".to_owned());
-    }
-    if !state.missing_containers.is_empty() {
-        state.degraded_reasons.push(format!(
-            "expected containers are not running: {}",
-            state.missing_containers.join(", ")
-        ));
-    }
-
-    let expected_tcp = compose.expected_tcp_ports;
-    let expected_udp = compose.expected_udp_ports;
-    let missing_tcp = expected_tcp
-        .iter()
-        .filter(|port| !state.listening_tcp_ports.iter().any(|value| value == *port))
-        .copied()
-        .collect::<Vec<_>>();
-    let missing_udp = expected_udp
-        .iter()
-        .filter(|port| !state.listening_udp_ports.iter().any(|value| value == *port))
-        .copied()
-        .collect::<Vec<_>>();
-
-    if !missing_tcp.is_empty() {
-        state.degraded_reasons.push(format!(
-            "expected TCP ports are not listening: {}",
-            join_ports(&missing_tcp)
-        ));
-    }
-    if !missing_udp.is_empty() {
-        state.degraded_reasons.push(format!(
-            "expected UDP ports are not listening: {}",
-            join_ports(&missing_udp)
-        ));
-    }
-
-    state.ready = state.compose_file_present
-        && !state
-            .degraded_reasons
-            .iter()
-            .any(|reason| reason.contains("bundle artifact"))
-        && state.docker_reachable
-        && state.missing_containers.is_empty()
-        && missing_tcp.is_empty()
-        && missing_udp.is_empty();
-
-    if matches!(mode, AgentMode::Health) {
-        state.ready = false;
-    }
-    if matches!(mode, AgentMode::Readiness) {
-        state.healthy = state.compose_file_present && state.docker_reachable;
-    }
-
-    state
-}
-
-fn apply_bundle(
+fn apply_legacy_bundle(
     stack_dir: &Path,
     request: ApplyBundleRequest,
 ) -> Result<ApplyBundleResponse, String> {
@@ -387,6 +199,246 @@ fn apply_bundle(
         previous_bundle_id: None,
         previous_bundle_digest: None,
     })
+}
+
+fn apply_digest_bound_bundle(
+    stack_dir: &Path,
+    request: ApplyBundleRequest,
+) -> Result<ApplyBundleResponse, String> {
+    if !request.prune_existing {
+        return Err("digest-bound application bundles require prune_existing=true".to_owned());
+    }
+    if !request.host_files.is_empty()
+        || request.deployment_summary.is_some()
+        || request.agent_env_file.is_some()
+    {
+        return Err(
+            "digest-bound application bundles may contain only stack_files; host mutation remains a separate typed operation"
+                .to_owned(),
+        );
+    }
+
+    let bundle_id = request
+        .bundle_id
+        .clone()
+        .ok_or_else(|| "bundle_id is required".to_owned())?;
+    let expected_digest = request
+        .bundle_digest
+        .clone()
+        .ok_or_else(|| "bundle_digest is required".to_owned())?;
+    validate_lower_hex("bundle_digest", &expected_digest, 64)?;
+    let computed_digest = canonical_apply_bundle_digest(&request)?;
+    if computed_digest != expected_digest {
+        return Err(format!(
+            "bundle digest mismatch: expected {expected_digest}, computed {computed_digest}"
+        ));
+    }
+
+    if let Some(current) = read_application_release(stack_dir)
+        && current.bundle_id == bundle_id
+        && current.bundle_digest == expected_digest
+    {
+        let previous = read_application_release(&previous_stack_dir(stack_dir));
+        return Ok(bundle_apply_response(
+            stack_dir,
+            Vec::new(),
+            Vec::new(),
+            &current,
+            previous.as_ref(),
+        ));
+    }
+
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    let staging = parent.join(STAGING_STACK_DIR);
+    let previous = parent.join(PREVIOUS_STACK_DIR);
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|err| {
+            format!(
+                "failed to clear stale staging stack {}: {err}",
+                staging.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&staging)
+        .map_err(|err| format!("failed to create staging stack {}: {err}", staging.display()))?;
+
+    let mut written_paths = Vec::new();
+    for file in &request.stack_files {
+        write_bundle_file(&staging, file, &mut written_paths)?;
+    }
+    let release = ApplicationBundleRelease {
+        schema: 1,
+        bundle_id,
+        bundle_digest: expected_digest,
+    };
+    write_application_release(&staging, &release)?;
+
+    let old_release = read_application_release(stack_dir);
+    if stack_dir.exists() {
+        if previous.exists() {
+            fs::remove_dir_all(&previous).map_err(|err| {
+                format!(
+                    "failed to remove previous application stack {}: {err}",
+                    previous.display()
+                )
+            })?;
+        }
+        fs::rename(stack_dir, &previous).map_err(|err| {
+            format!(
+                "failed to rotate active stack {} to {}: {err}",
+                stack_dir.display(),
+                previous.display()
+            )
+        })?;
+    }
+
+    if let Err(err) = fs::rename(&staging, stack_dir) {
+        if previous.exists() && !stack_dir.exists() {
+            let _ = fs::rename(&previous, stack_dir);
+        }
+        return Err(format!(
+            "failed to atomically activate staged stack {}: {err}",
+            staging.display()
+        ));
+    }
+
+    Ok(bundle_apply_response(
+        stack_dir,
+        written_paths,
+        Vec::new(),
+        &release,
+        old_release.as_ref(),
+    ))
+}
+
+fn rollback_bundle(
+    stack_dir: &Path,
+    request: RollbackBundleRequest,
+) -> Result<RollbackBundleResponse, String> {
+    validate_lower_hex(
+        "expected_current_bundle_digest",
+        &request.expected_current_bundle_digest,
+        64,
+    )?;
+    let current = read_application_release(stack_dir)
+        .ok_or_else(|| "active application release marker is missing".to_owned())?;
+    if current.bundle_digest != request.expected_current_bundle_digest {
+        return Err(
+            "current bundle digest changed since rollback authorization; refusing stale rollback"
+                .to_owned(),
+        );
+    }
+
+    let previous = previous_stack_dir(stack_dir);
+    let previous_release = read_application_release(&previous)
+        .ok_or_else(|| "previous application release is unavailable".to_owned())?;
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    let rollback = parent.join(ROLLBACK_STACK_DIR);
+    if rollback.exists() {
+        return Err(format!(
+            "rollback scratch path already exists: {}; refusing to guess recovery state",
+            rollback.display()
+        ));
+    }
+
+    fs::rename(stack_dir, &rollback).map_err(|err| {
+        format!(
+            "failed to stage current stack for rollback {}: {err}",
+            stack_dir.display()
+        )
+    })?;
+    if let Err(err) = fs::rename(&previous, stack_dir) {
+        let _ = fs::rename(&rollback, stack_dir);
+        return Err(format!(
+            "failed to activate previous stack {}: {err}",
+            previous.display()
+        ));
+    }
+    if let Err(err) = fs::rename(&rollback, &previous) {
+        let _ = fs::rename(stack_dir, &previous);
+        let _ = fs::rename(&rollback, stack_dir);
+        return Err(format!(
+            "failed to complete rollback stack swap; attempted restoration: {err}"
+        ));
+    }
+
+    Ok(RollbackBundleResponse {
+        success: true,
+        active_bundle_id: Some(previous_release.bundle_id.clone()),
+        active_bundle_digest: Some(previous_release.bundle_digest.clone()),
+        previous_bundle_id: Some(current.bundle_id),
+        previous_bundle_digest: Some(current.bundle_digest),
+        warnings: Vec::new(),
+    })
+}
+
+fn bundle_apply_response(
+    stack_dir: &Path,
+    written_paths: Vec<String>,
+    warnings: Vec<String>,
+    active: &ApplicationBundleRelease,
+    previous: Option<&ApplicationBundleRelease>,
+) -> ApplyBundleResponse {
+    ApplyBundleResponse {
+        success: true,
+        written_paths,
+        stack_dir: Some(stack_dir.display().to_string()),
+        warnings,
+        active_bundle_id: Some(active.bundle_id.clone()),
+        active_bundle_digest: Some(active.bundle_digest.clone()),
+        previous_bundle_id: previous.map(|release| release.bundle_id.clone()),
+        previous_bundle_digest: previous.map(|release| release.bundle_digest.clone()),
+    }
+}
+
+fn previous_stack_dir(stack_dir: &Path) -> PathBuf {
+    stack_dir
+        .parent()
+        .map(|parent| parent.join(PREVIOUS_STACK_DIR))
+        .unwrap_or_else(|| PathBuf::from(PREVIOUS_STACK_DIR))
+}
+
+fn read_application_release(stack_dir: &Path) -> Option<ApplicationBundleRelease> {
+    let raw = fs::read_to_string(stack_dir.join(APPLICATION_RELEASE_MARKER)).ok()?;
+    let release: ApplicationBundleRelease = serde_json::from_str(&raw).ok()?;
+    (release.schema == 1
+        && validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_ok())
+    .then_some(release)
+}
+
+fn write_application_release(
+    stack_dir: &Path,
+    release: &ApplicationBundleRelease,
+) -> Result<(), String> {
+    let raw = serde_json::to_vec(release)
+        .map_err(|err| format!("failed to encode application release marker: {err}"))?;
+    fs::write(stack_dir.join(APPLICATION_RELEASE_MARKER), raw)
+        .map_err(|err| format!("failed to write application release marker: {err}"))
+}
+
+fn validate_lower_hex(label: &str, value: &str, expected_len: usize) -> Result<(), String> {
+    if value.len() != expected_len
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "{label} must be exactly {expected_len} lowercase hexadecimal characters"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationBundleRelease {
+    schema: u32,
+    bundle_id: String,
+    bundle_digest: String,
 }
 
 fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
