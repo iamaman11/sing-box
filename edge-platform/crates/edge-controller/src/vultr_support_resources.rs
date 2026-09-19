@@ -2,11 +2,11 @@ use crate::vultr_lifecycle_service::LifecycleExecutionPolicy;
 use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec};
 use edge_provider_vultr::{
     CreateFirewallRuleRequest, VultrError, VultrFirewallGroup, VultrFirewallRule,
-    VultrOperatingSystem, VultrPlan, VultrRegionAvailability, VultrSshKey,
+    VultrOperatingSystem, VultrPlan, VultrRegionAvailability, VultrSnapshot, VultrSshKey,
     create_firewall_group_typed, create_firewall_rule_typed, create_ssh_key_typed,
     destroy_firewall_rule_typed, get_region_availability_typed, list_firewall_groups_typed,
     list_firewall_rules_typed, list_operating_systems_typed, list_plans_typed,
-    list_ssh_keys_typed,
+    list_snapshots_typed, list_ssh_keys_typed,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,6 +82,7 @@ pub trait SupportResourceProvider {
         plan_type: &str,
     ) -> Result<VultrRegionAvailability, VultrError>;
     async fn list_operating_systems(&mut self) -> Result<Vec<VultrOperatingSystem>, VultrError>;
+    async fn list_snapshots(&mut self) -> Result<Vec<VultrSnapshot>, VultrError>;
 }
 
 pub struct VultrSupportApiProvider {
@@ -171,6 +172,10 @@ impl SupportResourceProvider for VultrSupportApiProvider {
 
     async fn list_operating_systems(&mut self) -> Result<Vec<VultrOperatingSystem>, VultrError> {
         list_operating_systems_typed(&self.api_key).await
+    }
+
+    async fn list_snapshots(&mut self) -> Result<Vec<VultrSnapshot>, VultrError> {
+        list_snapshots_typed(&self.api_key).await
     }
 }
 
@@ -264,6 +269,35 @@ pub async fn validate_machine_catalog<P: SupportResourceProvider>(
             return Err(format!(
                 "Vultr OS id {os_id} is absent from the live OS catalog"
             ));
+        }
+    }
+    if let Some(snapshot_id) = machine.provider.snapshot_id.as_deref() {
+        let snapshots = provider
+            .list_snapshots()
+            .await
+            .map_err(|err| err.to_string())?;
+        let matches = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.id == snapshot_id)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => {
+                return Err(format!(
+                    "Vultr snapshot {snapshot_id} is absent from the live snapshot catalog"
+                ));
+            }
+            [snapshot] if snapshot.status.eq_ignore_ascii_case("complete") => {}
+            [snapshot] => {
+                return Err(format!(
+                    "Vultr snapshot {snapshot_id} is not ready: status={}",
+                    snapshot.status
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "Vultr snapshot {snapshot_id} is ambiguous in the live snapshot catalog"
+                ));
+            }
         }
     }
     Ok(())
@@ -725,6 +759,7 @@ mod tests {
         firewall_rules: BTreeMap<String, Vec<VultrFirewallRule>>,
         plans: Vec<VultrPlan>,
         operating_systems: Vec<VultrOperatingSystem>,
+        snapshots: Vec<VultrSnapshot>,
         availability: BTreeMap<(String, String), Vec<String>>,
         ssh_create_error: Option<VultrError>,
         ssh_create_commits: bool,
@@ -847,6 +882,10 @@ mod tests {
 
         async fn list_operating_systems(&mut self) -> Result<Vec<VultrOperatingSystem>, VultrError> {
             Ok(self.operating_systems.clone())
+        }
+
+        async fn list_snapshots(&mut self) -> Result<Vec<VultrSnapshot>, VultrError> {
+            Ok(self.snapshots.clone())
         }
     }
 
