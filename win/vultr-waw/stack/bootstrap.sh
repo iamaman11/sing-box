@@ -16,7 +16,7 @@ set +a
 
 USE_PREBUILT_IMAGES="${EDGE_USE_PREBUILT_IMAGES:-0}"
 
-mkdir -p certs rendered warp-state tunnel-state
+mkdir -p certs rendered warp-state mesh-state tunnel-state
 
 prepare_proxy_certificate() {
   # HTTPS proxy endpoints must present the same publicly trusted certificate
@@ -67,6 +67,30 @@ start_base() {
   compose_up warp-egress edge-gateway edge-gateway-direct
 }
 
+start_mesh() {
+  if [[ -z "${MESH_NODE_TOKEN:-}" ]]; then
+    echo "MESH_NODE_TOKEN is required for mesh mode" >&2
+    exit 1
+  fi
+
+  compose_up --profile mesh cloudflare-mesh
+
+  local mesh_ready=0
+  for _ in $(seq 1 60); do
+    if docker exec vultr-cloudflare-mesh warp-cli status 2>/dev/null | grep -qi "Connected"; then
+      mesh_ready=1
+      break
+    fi
+    sleep 2
+  done
+
+  if [[ "$mesh_ready" != "1" ]]; then
+    docker compose --profile mesh logs --tail=80 cloudflare-mesh >&2 || true
+    echo "cloudflare-mesh did not reach Connected state within 120s" >&2
+    exit 1
+  fi
+}
+
 start_tunnels() {
   if [[ -z "${TUNNEL_DOMAIN:-}" || -z "${ACME_EMAIL:-}" ]]; then
     return 0
@@ -106,6 +130,9 @@ case "$MODE" in
     ;;
   tunnel)
     start_tunnels
+    ;;
+  mesh)
+    start_mesh
     ;;
   full)
     start_base
