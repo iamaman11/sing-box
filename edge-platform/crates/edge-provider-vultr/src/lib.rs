@@ -363,10 +363,7 @@ pub async fn list_ssh_keys_typed(api_key: &str) -> Result<Vec<VultrSshKey>, Vult
     Err(pagination_limit_error("list Vultr SSH keys"))
 }
 
-pub async fn get_ssh_key_typed(
-    api_key: &str,
-    ssh_key_id: &str,
-) -> Result<VultrSshKey, VultrError> {
+pub async fn get_ssh_key_typed(api_key: &str, ssh_key_id: &str) -> Result<VultrSshKey, VultrError> {
     let client = authorized_client(api_key)?;
     let url = format!("{API_ROOT}/ssh-keys/{ssh_key_id}");
     observation_json("read Vultr SSH key", || client.get(&url))
@@ -388,10 +385,12 @@ pub async fn create_ssh_key_typed(
     let client = authorized_client(api_key)?;
     execute_json_once(
         "create Vultr SSH key",
-        client.post(format!("{API_ROOT}/ssh-keys")).json(&CreateSshKeyPayload {
-            name: name.to_owned(),
-            ssh_key: ssh_key.to_owned(),
-        }),
+        client
+            .post(format!("{API_ROOT}/ssh-keys"))
+            .json(&CreateSshKeyPayload {
+                name: name.to_owned(),
+                ssh_key: ssh_key.to_owned(),
+            }),
         true,
     )
     .await
@@ -501,17 +500,16 @@ pub async fn list_firewall_rules_typed(
 
     for page_count in 1..=MAX_LIST_PAGES {
         let current_cursor = cursor.clone();
-        let page: ListFirewallRulesEnvelope =
-            observation_json("list Vultr firewall rules", || {
-                let request = client
-                    .get(format!("{API_ROOT}/firewalls/{firewall_group_id}/rules"))
-                    .query(&[("per_page", "500")]);
-                match current_cursor.as_deref() {
-                    Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
-                    _ => request,
-                }
-            })
-            .await?;
+        let page: ListFirewallRulesEnvelope = observation_json("list Vultr firewall rules", || {
+            let request = client
+                .get(format!("{API_ROOT}/firewalls/{firewall_group_id}/rules"))
+                .query(&[("per_page", "500")]);
+            match current_cursor.as_deref() {
+                Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                _ => request,
+            }
+        })
+        .await?;
         result.extend(page.firewall_rules.into_iter().map(Into::into));
         cursor = next_cursor(
             "list Vultr firewall rules",
