@@ -569,8 +569,10 @@ fn write_payload_file(root: &Path, file: &BundleFilePayload) -> Result<(), Strin
 }
 
 fn validate_relative_bundle_path(value: &str) -> Result<(), String> {
-    if value.is_empty() {
-        return Err("bundle relative path must not be empty".to_owned());
+    if value.is_empty() || value.contains('\\') {
+        return Err(format!(
+            "bundle path must be a normalized relative path without traversal: {value}"
+        ));
     }
     let path = Path::new(value);
     if path.is_absolute()
@@ -851,18 +853,26 @@ mod tests {
                 .iter()
                 .any(|file| file.relative_path == "docker-compose.yml")
         );
-        assert!(
-            bundle
-                .stack_files
-                .iter()
-                .any(|file| file.relative_path == ".env.runtime")
-        );
-        assert!(
-            bundle
-                .host_files
-                .iter()
-                .any(|file| file.relative_path == "tls/agent-server.key")
-        );
+        let runtime_env = bundle
+            .stack_files
+            .iter()
+            .find(|file| file.relative_path == ".env.runtime")
+            .expect(".env.runtime should exist");
+        assert!(runtime_env.sensitive);
+        assert!(!runtime_env.executable);
+        let server_key = bundle
+            .host_files
+            .iter()
+            .find(|file| file.relative_path == "tls/agent-server.key")
+            .expect("agent server key should exist");
+        assert!(server_key.sensitive);
+        assert!(!server_key.executable);
+        let ca = bundle
+            .host_files
+            .iter()
+            .find(|file| file.relative_path == "tls/ca.pem")
+            .expect("CA certificate should exist");
+        assert!(!ca.sensitive);
         assert!(
             bundle
                 .deployment_summary_json
@@ -880,6 +890,69 @@ mod tests {
             !bootstrap_text.contains("\r\n"),
             "bootstrap.sh should use LF line endings"
         );
+        let _ = fs::remove_dir_all(bundle.generated_dir);
+    }
+
+    #[test]
+    fn rejects_unsafe_payload_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "edge-bundle-path-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        for path in ["../escape", "/tmp/escape", "nested/../escape", r"nested\escape"] {
+            let error = write_payload_file(
+                &root,
+                &BundleFilePayload {
+                    relative_path: path.to_owned(),
+                    content: b"x".to_vec(),
+                    executable: false,
+                    sensitive: true,
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("normalized relative path"));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn generated_secret_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let request = BuildBundleRequest {
+            repo_root: &repo_root,
+            target_ip: "203.0.113.25",
+            instance_id: "instance-secret-mode",
+            tunnel_domain: None,
+            acme_email: None,
+            cloudflare_zone_name: None,
+            dns_record_name: None,
+            label_prefix: Some("test-secret-mode"),
+            deployment_label: Some("test-secret-mode"),
+        };
+
+        let bundle = build_bundle(&request).unwrap();
+        for path in [
+            bundle.local_stack_dir.join(".env.runtime"),
+            bundle.generated_dir.join("deployment-summary.json"),
+            bundle.generated_dir.join("tls/agent-server.key"),
+        ] {
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", path.display());
+        }
         let _ = fs::remove_dir_all(bundle.generated_dir);
     }
 
