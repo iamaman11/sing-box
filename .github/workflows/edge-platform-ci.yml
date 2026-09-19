@@ -227,10 +227,18 @@ jobs:
           Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
           $exe = Get-ChildItem -LiteralPath $extract -Recurse -File -Filter sing-box.exe | Select-Object -First 1
           if (-not $exe) { throw "sing-box.exe not found in accepted Windows upstream archive" }
-          $versionOutput = & $exe.FullName version
-          $versionExitCode = $LASTEXITCODE
-          if ($versionExitCode -ne 0) { throw "sing-box.exe version failed with exit code $versionExitCode" }
-          $versionLine = ($versionOutput | Select-Object -First 1).Trim()
+          $stdoutPath = Join-Path $env:RUNNER_TEMP "sing-box-version.stdout"
+          $stderrPath = Join-Path $env:RUNNER_TEMP "sing-box-version.stderr"
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList @("version") -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+          $versionOutput = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+          $versionError = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
+          if ($process.ExitCode -ne 0) {
+            $detail = (($versionError + $versionOutput) | Select-Object -First 20) -join " | "
+            throw "sing-box.exe version failed with exit code $($process.ExitCode): $detail"
+          }
+          if ($versionOutput.Count -lt 1) { throw "sing-box.exe version returned no stdout" }
+          $versionLine = ([string]$versionOutput[0]).Trim()
           if ($versionLine -ne "sing-box version $env:SING_BOX_VERSION") {
             throw "Windows sing-box version mismatch: $versionLine"
           }
