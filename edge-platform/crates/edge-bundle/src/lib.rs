@@ -551,7 +551,8 @@ fn write_host_files(root: &Path, files: &[BundleFilePayload]) -> Result<(), Stri
 
 fn write_payload_file(root: &Path, file: &BundleFilePayload) -> Result<(), String> {
     validate_relative_bundle_path(&file.relative_path)?;
-    if file.executable && file.sensitive {
+    let sensitive = file.sensitive || intrinsically_sensitive_bundle_path(&file.relative_path);
+    if file.executable && sensitive {
         return Err(format!(
             "bundle file {} cannot be both executable and sensitive",
             file.relative_path
@@ -564,8 +565,15 @@ fn write_payload_file(root: &Path, file: &BundleFilePayload) -> Result<(), Strin
     }
     fs::write(&path, &file.content)
         .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
-    set_payload_permissions(&path, file.executable, file.sensitive)?;
+    set_payload_permissions(&path, file.executable, sensitive)?;
     Ok(())
+}
+
+fn intrinsically_sensitive_bundle_path(value: &str) -> bool {
+    value == ".env.runtime"
+        || value == "deployment-summary.json"
+        || value.ends_with(".key")
+        || value.starts_with("tunnel-state/acme/")
 }
 
 fn validate_relative_bundle_path(value: &str) -> Result<(), String> {
