@@ -175,8 +175,7 @@ pub async fn plan_desired_state_with_firewall_profiles<P: LifecycleProvider>(
     machine_id: Option<&str>,
     verified_firewall_profiles: &BTreeMap<String, String>,
 ) -> Result<LifecyclePlanReport, String> {
-    let inventory =
-        observe_inventory(provider, desired, verified_firewall_profiles).await?;
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     let plans = match machine_id {
         Some(machine_id) => {
             let machine = machine_by_id(desired, machine_id)?;
@@ -221,8 +220,7 @@ pub async fn apply_machine_with_firewall_profiles<P: LifecycleProvider>(
 ) -> Result<ApplyReport, String> {
     validate_policy(policy)?;
     let machine = machine_by_id(desired, machine_id)?;
-    let inventory =
-        observe_inventory(provider, desired, verified_firewall_profiles).await?;
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     let initial_plan = plan_machine(desired, machine, &inventory).map_err(|err| err.to_string())?;
 
     match initial_plan.class {
@@ -334,8 +332,7 @@ pub async fn build_destroy_plan_with_firewall_profiles<P: LifecycleProvider>(
     verified_firewall_profiles: &BTreeMap<String, String>,
 ) -> Result<DestroyPlan, String> {
     let machine = machine_by_id(desired, machine_id)?;
-    let inventory =
-        observe_inventory(provider, desired, verified_firewall_profiles).await?;
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     destroy_plan(desired, machine, &inventory, source_revision).map_err(|err| err.to_string())
 }
 
@@ -371,8 +368,7 @@ pub async fn destroy_machine_with_firewall_profiles<P: LifecycleProvider>(
 ) -> Result<DestroyApplyReport, String> {
     validate_policy(policy)?;
     let machine = machine_by_id(desired, machine_id)?;
-    let inventory =
-        observe_inventory(provider, desired, verified_firewall_profiles).await?;
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     let provider_id = authorize_destroy(
         desired,
         machine,
