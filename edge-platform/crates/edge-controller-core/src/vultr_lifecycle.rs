@@ -117,7 +117,11 @@ impl DesiredState {
 
     pub fn machine_digest(&self, machine: &MachineSpec) -> Result<String, LifecycleSpecError> {
         self.validate()?;
-        match self.machines.iter().find(|candidate| candidate.id == machine.id) {
+        match self
+            .machines
+            .iter()
+            .find(|candidate| candidate.id == machine.id)
+        {
             Some(candidate) if candidate == machine => {}
             Some(_) => {
                 return Err(LifecycleSpecError::Validation(format!(
@@ -551,7 +555,9 @@ pub fn plan_machine(
         ));
     }
     match machine.provider.firewall_profile.as_deref() {
-        Some(expected_profile) if observed.firewall_profile.as_deref() != Some(expected_profile) => {
+        Some(expected_profile)
+            if observed.firewall_profile.as_deref() != Some(expected_profile) =>
+        {
             update_reasons.push("firewall profile differs or is not provider-verified".to_owned());
         }
         None if observed.firewall_group_id.is_some() => {
