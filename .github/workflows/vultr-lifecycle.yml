@@ -1,47 +1,6 @@
 name: Vultr Lifecycle
 
 on:
-  workflow_dispatch:
-    inputs:
-      operation:
-        description: Typed lifecycle operation
-        required: true
-        type: choice
-        default: doctor
-        options:
-          - doctor
-          - inventory
-          - plan
-          - apply
-          - action
-          - destroy-plan
-          - destroy-apply
-          - cleanup
-          - acceptance
-      spec_path:
-        description: Canonical desired-state path under infra/vultr/
-        required: true
-        type: string
-        default: infra/vultr/disposable-acceptance.json
-      machine_id:
-        description: Logical machine id when the operation targets one machine
-        required: false
-        type: string
-        default: lifecycle-acceptance-1
-      action:
-        description: Instance action
-        required: false
-        type: choice
-        default: reboot
-        options:
-          - start
-          - halt
-          - reboot
-      destroy_digest:
-        description: 64-character digest returned by destroy-plan
-        required: false
-        type: string
-        default: ""
   issue_comment:
     types: [created]
 
@@ -50,26 +9,18 @@ permissions: {}
 concurrency:
   group: vultr-lifecycle-production
   cancel-in-progress: false
+  queue: max
 
 jobs:
   authorize:
     if: >-
-      (
-        github.event_name == 'workflow_dispatch' &&
-        github.repository == 'iamaman11/sing-box' &&
-        github.repository_id == '1221750822' &&
-        github.ref == 'refs/heads/main' &&
-        github.run_attempt == 1
-      ) ||
-      (
-        github.event_name == 'issue_comment' &&
-        github.repository == 'iamaman11/sing-box' &&
-        github.repository_id == '1221750822' &&
-        github.event.issue.number == 1 &&
-        !github.event.issue.pull_request &&
-        github.actor_id == '44100369' &&
-        github.run_attempt == 1
-      )
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -84,20 +35,13 @@ jobs:
         id: parse
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           COMMENT_BODY: ${{ github.event.comment.body }}
-          INPUT_OPERATION: ${{ inputs.operation }}
-          INPUT_SPEC_PATH: ${{ inputs.spec_path }}
-          INPUT_MACHINE_ID: ${{ inputs.machine_id }}
-          INPUT_ACTION: ${{ inputs.action }}
-          INPUT_DESTROY_DIGEST: ${{ inputs.destroy_digest }}
         run: |
           set -euo pipefail
           python3 <<'PY'
           import os
           import re
 
-          event = os.environ["EVENT_NAME"]
           spec_re = re.compile(r"^infra/vultr/[A-Za-z0-9._/-]+\.json$")
           machine_re = re.compile(r"^[A-Za-z0-9._-]+$")
           digest_re = re.compile(r"^[0-9a-f]{64}$")
@@ -111,45 +55,36 @@ jobs:
           action = ""
           destroy_digest = ""
 
-          if event == "issue_comment":
-              tokens = os.environ.get("COMMENT_BODY", "").strip().split()
-              if tokens == ["/vultr", "acceptance"]:
-                  operation = "acceptance"
-                  spec_path = "infra/vultr/disposable-acceptance.json"
-                  machine_id = "lifecycle-acceptance-1"
-              elif len(tokens) >= 3 and tokens[0] == "/vultr":
-                  verb = tokens[1]
-                  if verb in {"doctor", "inventory", "cleanup"} and len(tokens) == 3:
-                      operation, spec_path = verb, tokens[2]
-                  elif verb == "plan" and len(tokens) in {3, 4}:
-                      operation, spec_path = "plan", tokens[2]
-                      if len(tokens) == 4:
-                          machine_id = tokens[3]
-                  elif verb == "apply" and len(tokens) == 4:
-                      operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
-                  elif verb in {"start", "halt", "reboot"} and len(tokens) == 4:
-                      operation, action, spec_path, machine_id = "action", verb, tokens[2], tokens[3]
-                  elif verb == "destroy-plan" and len(tokens) == 4:
-                      operation, spec_path, machine_id = "destroy-plan", tokens[2], tokens[3]
-                  elif verb == "destroy-apply" and len(tokens) == 5:
-                      operation, spec_path, machine_id, destroy_digest = (
-                          "destroy-apply",
-                          tokens[2],
-                          tokens[3],
-                          tokens[4],
-                      )
-                  else:
-                      fail("unsupported /vultr command grammar")
+          tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+          if tokens == ["/vultr", "acceptance"]:
+              operation = "acceptance"
+              spec_path = "infra/vultr/disposable-acceptance.json"
+              machine_id = "lifecycle-acceptance-1"
+          elif len(tokens) >= 3 and tokens[0] == "/vultr":
+              verb = tokens[1]
+              if verb in {"doctor", "inventory", "cleanup"} and len(tokens) == 3:
+                  operation, spec_path = verb, tokens[2]
+              elif verb == "plan" and len(tokens) in {3, 4}:
+                  operation, spec_path = "plan", tokens[2]
+                  if len(tokens) == 4:
+                      machine_id = tokens[3]
+              elif verb == "apply" and len(tokens) == 4:
+                  operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
+              elif verb in {"start", "halt", "reboot"} and len(tokens) == 4:
+                  operation, action, spec_path, machine_id = "action", verb, tokens[2], tokens[3]
+              elif verb == "destroy-plan" and len(tokens) == 4:
+                  operation, spec_path, machine_id = "destroy-plan", tokens[2], tokens[3]
+              elif verb == "destroy-apply" and len(tokens) == 5:
+                  operation, spec_path, machine_id, destroy_digest = (
+                      "destroy-apply",
+                      tokens[2],
+                      tokens[3],
+                      tokens[4],
+                  )
               else:
-                  fail("comment is not an authorized /vultr command")
-          elif event == "workflow_dispatch":
-              operation = os.environ.get("INPUT_OPERATION", "")
-              spec_path = os.environ.get("INPUT_SPEC_PATH", "")
-              machine_id = os.environ.get("INPUT_MACHINE_ID", "")
-              action = os.environ.get("INPUT_ACTION", "")
-              destroy_digest = os.environ.get("INPUT_DESTROY_DIGEST", "")
+                  fail("unsupported /vultr command grammar")
           else:
-              fail("unsupported event")
+              fail("comment is not an authorized /vultr command")
 
           if operation not in {
               "doctor", "inventory", "plan", "apply", "action",
