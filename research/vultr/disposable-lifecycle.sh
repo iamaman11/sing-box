@@ -385,7 +385,7 @@ log "tcp_22_reachable=PASS"
 
 # Strict SSH acceptance via host certificate.
 ssh_ready=0
-for _ in $(seq 1 30); do
+for _ in $(seq 1 5); do
   if "${ssh_base[@]}" 'test -f /var/lib/singbox-lifecycle/research-ready' >/dev/null 2>&1; then
     ssh_ready=1
     break
@@ -394,6 +394,13 @@ for _ in $(seq 1 30); do
 done
 if [[ "$ssh_ready" -ne 1 ]]; then
   log "strict_ssh_acceptance=FAIL"
+
+  set +e
+  "${ssh_base[@]}" 'true' >/dev/null 2>"${tmp}/strict-ssh.err"
+  strict_diag_rc=$?
+  set -e
+  log "strict_ssh_diagnostic_rc=${strict_diag_rc}"
+  grep -Ei 'host certificate|certificate|principal|cert-authority|known.host|host key|verification failed|no matching|permission denied|connection' "${tmp}/strict-ssh.err" | tail -n 40 || true
 
   # Research-only control: bypass host verification once to distinguish
   # host-certificate failure from guest-user/client-auth failure.
@@ -416,12 +423,15 @@ if [[ "$ssh_ready" -ne 1 ]]; then
 
   if [[ "$diagnostic_rc" -eq 0 ]]; then
     log "diagnostic_non_strict_ssh=PASS research_only=true"
-    "${diagnostic_ssh[@]}" "sudo ssh-keygen -L -f /etc/ssh/ssh_host_ed25519_key-cert.pub 2>/dev/null | grep -E 'Type:|Public key:|Signing CA:|Key ID:|Principals:|Valid:' || true"
+    "${diagnostic_ssh[@]}" "sudo test -s /etc/ssh/ssh_host_ed25519_key-cert.pub && echo host_cert_file=present || echo host_cert_file=missing"
+    "${diagnostic_ssh[@]}" "sudo awk 'NR==1 {print \"host_cert_algorithm=\" \$1}' /etc/ssh/ssh_host_ed25519_key-cert.pub 2>/dev/null || true"
+    "${diagnostic_ssh[@]}" "sudo ssh-keygen -L -f /etc/ssh/ssh_host_ed25519_key-cert.pub 2>&1 | head -n 30 || true"
     "${diagnostic_ssh[@]}" "sudo sshd -T 2>/dev/null | grep -E '^(hostkey|hostcertificate|passwordauthentication|permitrootlogin) ' || true"
+    "${diagnostic_ssh[@]}" "sudo journalctl -u ssh --no-pager -n 100 2>/dev/null | grep -Ei 'certificate|host key|error|fail' | tail -n 30 || true"
     "${diagnostic_ssh[@]}" "sudo cloud-init status --long 2>/dev/null | grep -E '^(status|extended_status|boot_status_code|detail):' || true"
   else
     log "diagnostic_non_strict_ssh=FAIL rc=${diagnostic_rc}"
-    grep -E 'Permission denied|Connection refused|Connection timed out|No route to host|Connection closed|Host key verification failed|certificate|principal|REMOTE HOST IDENTIFICATION' "${tmp}/diagnostic-ssh.err" | tail -n 20 || true
+    grep -Ei 'Permission denied|Connection refused|Connection timed out|No route to host|Connection closed|Host key verification failed|certificate|principal|REMOTE HOST IDENTIFICATION' "${tmp}/diagnostic-ssh.err" | tail -n 20 || true
   fi
   exit 1
 fi
