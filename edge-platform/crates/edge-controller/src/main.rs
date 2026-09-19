@@ -24,8 +24,8 @@ use edge_local_runtime::{
 };
 use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
 use edge_provider_vultr::{
-    CreateInstanceRequest, create_instance, destroy_instance, get_instance, is_not_found_error,
-    list_instances, mock_instance,
+    CreateInstanceRequest, create_instance_typed, destroy_instance_typed, get_instance_typed,
+    list_instances_typed, mock_instance,
 };
 use edge_secrets::{default_env_ref, resolve_secret_path, resolve_secret_text};
 use edge_shared_types::agent_service_client::AgentServiceClient;
@@ -75,7 +75,7 @@ enum DestroyInstanceOutcome {
     AlreadyAbsent,
 }
 const DEFAULT_PLAN: &str = "vc2-1c-1gb";
-const DEFAULT_VULTR_OS_ID: u32 = 2136;
+const DEFAULT_VULTR_OS_ID: u32 = 2625;
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const DEFAULT_TRACE_PROXY_URL: &str = "http://127.0.0.1:7890";
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
@@ -88,6 +88,9 @@ const TUNNEL_BOOTSTRAP_TIMEOUT_SECS: u64 = 900;
 const EGRESS_TRACE_TIMEOUT_SECS: u64 = 60;
 const BOOTSTRAP_RPC_ATTEMPTS: usize = 3;
 const VULTR_CREATE_ATTEMPTS: usize = 3;
+const VULTR_CREATE_REOBSERVATION_ATTEMPTS: usize = 30;
+const VULTR_DESTROY_REOBSERVATION_ATTEMPTS: usize = 180;
+const VULTR_MUTATION_REOBSERVATION_DELAY_SECS: u64 = 2;
 const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
 const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
 const SECRET_VULTR_SSH_KEY_ID: &str = "bootstrap.vultr.ssh_key_id";
@@ -1579,14 +1582,14 @@ impl ControllerService for ControllerServerImpl {
                     ));
                 }
             };
-            let remote = match get_instance(&api_key, &instance_id).await {
+            let remote = match get_instance_typed(&api_key, &instance_id).await {
                 Ok(remote) => remote,
                 Err(err) => {
                     return Err(fail_destroy_operation(
                         &self.state,
                         operation.id,
                         "read VM from Vultr",
-                        Status::internal(err),
+                        Status::internal(err.to_string()),
                     ));
                 }
             };
@@ -1653,9 +1656,7 @@ impl ControllerService for ControllerServerImpl {
                     ));
                 }
             };
-            let destroy_outcome = match classify_destroy_instance_result(
-                destroy_instance(&api_key, &instance_id).await,
-            ) {
+            let destroy_outcome = match destroy_vultr_instance_reconciled(&api_key, &instance_id).await {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     return Err(fail_destroy_operation(
@@ -2126,7 +2127,9 @@ async fn reconcile_provider_active_deployment_state(
         Ok(value) => value,
         Err(_) => return Ok(()),
     };
-    let instances = list_instances(&api_key).await?;
+    let instances = list_instances_typed(&api_key)
+        .await
+        .map_err(|err| err.to_string())?;
     if instances.is_empty() {
         return Ok(());
     }
@@ -2142,16 +2145,13 @@ async fn reconcile_provider_active_deployment_state(
         .and_then(|value| value.active_instance_id.as_deref());
     let current_exists = current_instance_id
         .is_some_and(|instance_id| instances.iter().any(|instance| instance.id == instance_id));
-    let candidate = latest_requested_label
-        .as_deref()
-        .and_then(|label| instances.iter().find(|instance| instance.label == label))
-        .or_else(|| {
-            if current_exists {
-                None
-            } else {
-                choose_single_reconcilable_instance(&instances)
-            }
-        });
+    let candidate = if let Some(label) = latest_requested_label.as_deref() {
+        select_unique_vultr_instance_by_label(&instances, label)?
+    } else if current_exists {
+        None
+    } else {
+        choose_single_reconcilable_instance(&instances).cloned()
+    };
     let Some(candidate) = candidate else {
         return Ok(());
     };
@@ -2732,7 +2732,9 @@ async fn resolve_deploy_target(
             &default_env_ref("VULTR_API_KEY"),
         )
     {
-        let instance = get_instance(&api_key, instance_id).await?;
+        let instance = get_instance_typed(&api_key, instance_id)
+            .await
+            .map_err(|err| err.to_string())?;
         if !instance.main_ip.trim().is_empty() {
             return Ok(ResolvedDeployTarget {
                 instance_id: instance.id,
@@ -2802,6 +2804,9 @@ async fn resolve_deploy_target(
             label: deployment_label,
             ssh_key_id: &ssh_key_id,
             cloud_init: &cloud_init,
+            firewall_group_id: None,
+            tags: vec!["managed-by-sing-box", deployment_label],
+            enable_ipv6: true,
         },
         deployment_label,
     )
@@ -2826,8 +2831,11 @@ async fn wait_for_instance_ready(
 ) -> Result<edge_provider_vultr::VultrInstance, String> {
     let mut last = None;
     for _ in 0..60 {
-        let current = get_instance(api_key, instance_id).await?;
+        let current = get_instance_typed(api_key, instance_id)
+            .await
+            .map_err(|err| err.to_string())?;
         if current.status == "active"
+            && current.power_status == "running"
             && current.server_status == "ok"
             && !current.main_ip.trim().is_empty()
         {
@@ -2848,31 +2856,12 @@ async fn wait_for_instance_ready(
     ))
 }
 
-fn is_retryable_vultr_transport_error(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    normalized.contains("client error (connect)")
-        || normalized.contains("dns error")
-        || normalized.contains("tcp connect error")
-        || normalized.contains("connection reset")
-        || normalized.contains("connection aborted")
-        || normalized.contains("broken pipe")
-        || normalized.contains("connection refused")
-        || normalized.contains("unexpected eof")
-        || normalized.contains("timed out")
-        || normalized.contains("timeout")
-        || normalized.contains("os error 10053")
-        || normalized.contains("os error 10054")
-        || normalized.contains("os error 10060")
-        || normalized.contains("os error 104")
-        || normalized.contains("os error 110")
-        || normalized.contains("os error 111")
-}
-
 fn status_for_target_resolution_error(message: String) -> Status {
-    if is_retryable_vultr_transport_error(&message)
-        || message.contains("failed to read Vultr instance")
-        || message.contains("failed to create Vultr instance")
-        || message.contains("failed to list Vultr instances")
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("transport")
+        || normalized.contains("timeout")
+        || normalized.contains("http 429")
+        || normalized.contains("http 5")
     {
         Status::unavailable(message)
     } else {
@@ -2880,14 +2869,84 @@ fn status_for_target_resolution_error(message: String) -> Status {
     }
 }
 
-async fn find_vultr_instance_by_label(
-    api_key: &str,
+fn select_unique_vultr_instance_by_label(
+    instances: &[edge_provider_vultr::VultrInstance],
     deployment_label: &str,
 ) -> Result<Option<edge_provider_vultr::VultrInstance>, String> {
-    let instances = list_instances(api_key).await?;
-    Ok(instances
-        .into_iter()
-        .find(|instance| instance.label == deployment_label))
+    let mut matches = instances
+        .iter()
+        .filter(|instance| instance.label == deployment_label);
+    let first = matches.next();
+    if let Some(second) = matches.next() {
+        let first_id = first
+            .map(|instance| instance.id.as_str())
+            .unwrap_or("<missing>");
+        return Err(format!(
+            "ambiguous Vultr instance identity for label {deployment_label}: at least {first_id} and {}",
+            second.id
+        ));
+    }
+    Ok(first.cloned())
+}
+
+fn instance_matches_create_request(
+    instance: &edge_provider_vultr::VultrInstance,
+    request: &CreateInstanceRequest<'_>,
+) -> bool {
+    instance.label == request.label
+        && instance.region == request.region
+        && instance.plan == request.plan
+        && request
+            .os_id
+            .is_none_or(|expected_os_id| instance.os_id == expected_os_id)
+        && request
+            .firewall_group_id
+            .is_none_or(|expected_firewall| instance.firewall_group_id == expected_firewall)
+        && request
+            .tags
+            .iter()
+            .all(|expected_tag| instance.tags.iter().any(|tag| tag == expected_tag))
+}
+
+async fn observe_vultr_create_identity(
+    api_key: &str,
+    request: &CreateInstanceRequest<'_>,
+) -> Result<Option<edge_provider_vultr::VultrInstance>, String> {
+    let instances = list_instances_typed(api_key)
+        .await
+        .map_err(|err| err.to_string())?;
+    let instance = select_unique_vultr_instance_by_label(&instances, request.label)?;
+    match instance {
+        Some(instance) if instance_matches_create_request(&instance, request) => Ok(Some(instance)),
+        Some(instance) => Err(format!(
+            "Vultr instance identity conflict for label {}: id={} region={} plan={} os_id={} firewall_group_id={}",
+            request.label,
+            instance.id,
+            instance.region,
+            instance.plan,
+            instance.os_id,
+            instance.firewall_group_id
+        )),
+        None => Ok(None),
+    }
+}
+
+async fn reobserve_uncertain_vultr_create(
+    api_key: &str,
+    request: &CreateInstanceRequest<'_>,
+) -> Result<Option<edge_provider_vultr::VultrInstance>, String> {
+    for attempt in 0..VULTR_CREATE_REOBSERVATION_ATTEMPTS {
+        if let Some(instance) = observe_vultr_create_identity(api_key, request).await? {
+            return Ok(Some(instance));
+        }
+        if attempt + 1 < VULTR_CREATE_REOBSERVATION_ATTEMPTS {
+            sleep(Duration::from_secs(
+                VULTR_MUTATION_REOBSERVATION_DELAY_SECS,
+            ))
+            .await;
+        }
+    }
+    Ok(None)
 }
 
 async fn create_or_adopt_vultr_instance(
@@ -2895,29 +2954,37 @@ async fn create_or_adopt_vultr_instance(
     request: &CreateInstanceRequest<'_>,
     deployment_label: &str,
 ) -> Result<edge_provider_vultr::VultrInstance, String> {
+    if request.label != deployment_label {
+        return Err(format!(
+            "Vultr create identity mismatch: request label {} does not match deployment label {deployment_label}",
+            request.label
+        ));
+    }
+
+    if let Some(instance) = observe_vultr_create_identity(api_key, request).await? {
+        return Ok(instance);
+    }
+
     let mut last_error = None;
     for attempt in 1..=VULTR_CREATE_ATTEMPTS {
-        match create_instance(api_key, request).await {
+        match create_instance_typed(api_key, request).await {
             Ok(instance) => return Ok(instance),
-            Err(err) if is_retryable_vultr_transport_error(&err) => {
-                if let Some(instance) =
-                    find_vultr_instance_by_label(api_key, deployment_label).await?
-                {
+            Err(err) if err.requires_mutation_reobservation() => {
+                last_error = Some(err.to_string());
+                if let Some(instance) = reobserve_uncertain_vultr_create(api_key, request).await? {
                     return Ok(instance);
                 }
-                last_error = Some(err);
                 if attempt < VULTR_CREATE_ATTEMPTS {
-                    sleep(Duration::from_secs((attempt as u64) * 3)).await;
                     continue;
                 }
             }
-            Err(err) => return Err(err),
+            Err(err) => return Err(err.to_string()),
         }
     }
+
     Err(last_error.unwrap_or_else(|| {
         format!(
-            "failed to create or adopt Vultr instance for {}",
-            deployment_label
+            "failed to create or adopt Vultr instance for {deployment_label}"
         )
     }))
 }
@@ -4090,13 +4157,58 @@ fn is_tombstoned_candidate(
         .map_err(|err| format!("failed to query destroy tombstones: {err}"))
 }
 
-fn classify_destroy_instance_result(
-    result: Result<(), String>,
+async fn wait_for_vultr_instance_absence(
+    api_key: &str,
+    instance_id: &str,
+) -> Result<bool, String> {
+    for attempt in 0..VULTR_DESTROY_REOBSERVATION_ATTEMPTS {
+        match get_instance_typed(api_key, instance_id).await {
+            Ok(_) => {}
+            Err(err) if err.is_not_found() => return Ok(true),
+            Err(err) => return Err(err.to_string()),
+        }
+        if attempt + 1 < VULTR_DESTROY_REOBSERVATION_ATTEMPTS {
+            sleep(Duration::from_secs(
+                VULTR_MUTATION_REOBSERVATION_DELAY_SECS,
+            ))
+            .await;
+        }
+    }
+    Ok(false)
+}
+
+async fn destroy_vultr_instance_reconciled(
+    api_key: &str,
+    instance_id: &str,
 ) -> Result<DestroyInstanceOutcome, String> {
-    match result {
-        Ok(()) => Ok(DestroyInstanceOutcome::Requested),
-        Err(err) if is_not_found_error(&err) => Ok(DestroyInstanceOutcome::AlreadyAbsent),
-        Err(err) => Err(err),
+    match get_instance_typed(api_key, instance_id).await {
+        Ok(_) => {}
+        Err(err) if err.is_not_found() => return Ok(DestroyInstanceOutcome::AlreadyAbsent),
+        Err(err) => return Err(err.to_string()),
+    }
+
+    match destroy_instance_typed(api_key, instance_id).await {
+        Ok(()) => {
+            if wait_for_vultr_instance_absence(api_key, instance_id).await? {
+                Ok(DestroyInstanceOutcome::Requested)
+            } else {
+                Err(format!(
+                    "Vultr instance {instance_id} remained present after a successful DELETE request; refusing to clear local authority"
+                ))
+            }
+        }
+        Err(err) if err.is_not_found() => Ok(DestroyInstanceOutcome::AlreadyAbsent),
+        Err(err) if err.requires_mutation_reobservation() => {
+            let original = err.to_string();
+            if wait_for_vultr_instance_absence(api_key, instance_id).await? {
+                Ok(DestroyInstanceOutcome::Requested)
+            } else {
+                Err(format!(
+                    "{original}; exact instance {instance_id} remained present after bounded re-observation, and DELETE was not replayed blindly"
+                ))
+            }
+        }
+        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -4265,9 +4377,7 @@ async fn rollback_failed_deploy(
             &default_env_ref("VULTR_API_KEY"),
         ) {
             Ok(api_key) => {
-                match classify_destroy_instance_result(
-                    destroy_instance(&api_key, &target.instance_id).await,
-                ) {
+                match destroy_vultr_instance_reconciled(&api_key, &target.instance_id).await {
                     Ok(DestroyInstanceOutcome::Requested) => {
                         let _ = append_operation_event(
                             state,
@@ -4669,22 +4779,57 @@ mod tests {
     }
 
     #[test]
-    fn classify_destroy_instance_result_treats_not_found_as_already_absent() {
-        let outcome = classify_destroy_instance_result(Err(
-            "Vultr API returned 404 Not Found: {\"error\":\"Not found.\",\"status\":404}"
-                .to_owned(),
-        ))
-        .unwrap();
-        assert_eq!(outcome, DestroyInstanceOutcome::AlreadyAbsent);
+    fn selects_unique_vultr_instance_and_fails_closed_on_ambiguity() {
+        let first = mock_instance("edge-a", "waw", "vc2-1c-1gb", "203.0.113.10");
+        let second = edge_provider_vultr::VultrInstance {
+            id: "mock-second".to_owned(),
+            ..first.clone()
+        };
+
+        assert!(
+            select_unique_vultr_instance_by_label(&[], "edge-a")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            select_unique_vultr_instance_by_label(&[first.clone()], "edge-a")
+                .unwrap()
+                .unwrap()
+                .id,
+            first.id
+        );
+        let error =
+            select_unique_vultr_instance_by_label(&[first, second], "edge-a").unwrap_err();
+        assert!(error.contains("ambiguous Vultr instance identity"));
     }
 
     #[test]
-    fn classify_destroy_instance_result_preserves_real_errors() {
-        let error = classify_destroy_instance_result(Err(
-            "Vultr API returned 500 Internal Server Error".to_owned(),
-        ))
-        .unwrap_err();
-        assert!(error.contains("500 Internal Server Error"));
+    fn matches_create_request_using_provider_identity_fields() {
+        let mut instance =
+            mock_instance("edge-a", "waw", "vc2-1c-1gb", "203.0.113.10");
+        instance.os_id = 2625;
+        instance.firewall_group_id = "fw-1".to_owned();
+        instance.tags = vec![
+            "managed-by-sing-box".to_owned(),
+            "edge-a".to_owned(),
+        ];
+
+        let request = CreateInstanceRequest {
+            region: "waw",
+            plan: "vc2-1c-1gb",
+            os_id: Some(2625),
+            snapshot_id: None,
+            label: "edge-a",
+            ssh_key_id: "ssh-1",
+            cloud_init: "#cloud-config\n",
+            firewall_group_id: Some("fw-1"),
+            tags: vec!["managed-by-sing-box", "edge-a"],
+            enable_ipv6: true,
+        };
+        assert!(instance_matches_create_request(&instance, &request));
+
+        instance.plan = "vc2-1c-2gb".to_owned();
+        assert!(!instance_matches_create_request(&instance, &request));
     }
 
     #[test]

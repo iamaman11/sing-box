@@ -1,0 +1,54 @@
+name: Edge Platform CI
+
+on:
+  push:
+    paths:
+      - "edge-platform/**"
+      - ".github/workflows/edge-platform-ci.yml"
+  pull_request:
+    paths:
+      - "edge-platform/**"
+      - ".github/workflows/edge-platform-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edge-platform-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+
+      - name: Check formatting
+        working-directory: edge-platform
+        shell: bash
+        run: cargo fmt --all -- --check
+
+      - name: Test workspace
+        working-directory: edge-platform
+        shell: bash
+        run: cargo test --workspace --locked
