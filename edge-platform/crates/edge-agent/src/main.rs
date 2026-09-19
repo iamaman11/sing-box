@@ -10,15 +10,20 @@ use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
     FilePresence, ReadBundleIdentityRequest, ReadBundleIdentityResponse,
-    ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse, VerifyRuntimeRequest,
+    ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse, RollbackBundleRequest,
+    RollbackBundleResponse, VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 const DEFAULT_AGENT_ADDR: &str = "127.0.0.1:50061";
 const DEFAULT_STACK_DIR: &str = "/opt/vultr-edge-stack/stack";
+const APPLICATION_RELEASE_MARKER: &str = ".application-release.json";
+const PREVIOUS_STACK_DIR: &str = "stack.previous";
+const STAGING_STACK_DIR: &str = "stack.next";
+const ROLLBACK_STACK_DIR: &str = "stack.rollback";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -144,16 +149,40 @@ impl AgentService for AgentServerImpl {
         Ok(Response::new(response))
     }
 
+    async fn rollback_bundle(
+        &self,
+        request: Request<RollbackBundleRequest>,
+    ) -> Result<Response<RollbackBundleResponse>, Status> {
+        let response = rollback_bundle(&self.stack_dir, request.into_inner())
+            .map_err(|err| Status::failed_precondition(format!("bundle rollback refused: {err}")))?;
+        Ok(Response::new(response))
+    }
+
     async fn verify_runtime(
         &self,
         request: Request<VerifyRuntimeRequest>,
     ) -> Result<Response<AgentState>, Status> {
-        let mode = if request.into_inner().require_readiness {
+        let request = request.into_inner();
+        let inspection_mode = if request.require_readiness {
             AgentMode::Readiness
         } else {
             AgentMode::Runtime
         };
-        Ok(Response::new(inspect_runtime(&self.stack_dir, mode)))
+        let mut state = inspect_runtime(&self.stack_dir, inspection_mode);
+        let bootstrap_mode = BootstrapMode::try_from(request.mode)
+            .map_err(|_| Status::invalid_argument("unknown bootstrap verification mode"))?;
+        if bootstrap_mode != BootstrapMode::Unspecified {
+            let verified = verify_bootstrap_post_state(&self.stack_dir, bootstrap_mode, &state);
+            if request.require_readiness {
+                state.ready = verified.success;
+            }
+            for warning in verified.warnings {
+                if !state.degraded_reasons.iter().any(|value| value == &warning) {
+                    state.degraded_reasons.push(warning);
+                }
+            }
+        }
+        Ok(Response::new(state))
     }
 
     async fn read_bundle_identity(
@@ -169,13 +198,28 @@ impl AgentService for AgentServerImpl {
             .filter(|path| path.is_file())
             .and_then(|path| read_bundle_summary(path));
 
+        let active_release = read_application_release(&self.stack_dir);
+        let previous_release = read_application_release(&previous_stack_dir(&self.stack_dir));
+
         Ok(Response::new(ReadBundleIdentityResponse {
-            active_bundle_id: summary.as_ref().and_then(|summary| summary.label.clone()),
+            active_bundle_id: active_release
+                .as_ref()
+                .map(|release| release.bundle_id.clone())
+                .or_else(|| summary.as_ref().and_then(|summary| summary.label.clone())),
             topology_version: summary
                 .as_ref()
                 .and_then(|summary| summary.instance_id.clone())
                 .map(|instance_id| format!("vultr-edge:{instance_id}")),
             deployment_summary_path: summary_path.map(|path| path.display().to_string()),
+            active_bundle_digest: active_release
+                .as_ref()
+                .map(|release| release.bundle_digest.clone()),
+            previous_bundle_id: previous_release
+                .as_ref()
+                .map(|release| release.bundle_id.clone()),
+            previous_bundle_digest: previous_release
+                .as_ref()
+                .map(|release| release.bundle_digest.clone()),
         }))
     }
 
@@ -338,6 +382,10 @@ fn apply_bundle(
         written_paths,
         stack_dir: Some(stack_dir.display().to_string()),
         warnings,
+        active_bundle_id: None,
+        active_bundle_digest: None,
+        previous_bundle_id: None,
+        previous_bundle_digest: None,
     })
 }
 
@@ -911,6 +959,8 @@ mod tests {
                     sensitive: false,
                 }),
                 prune_existing: true,
+                bundle_id: None,
+                bundle_digest: None,
             },
         )
         .unwrap();
