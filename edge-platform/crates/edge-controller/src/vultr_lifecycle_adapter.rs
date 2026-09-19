@@ -14,6 +14,10 @@ pub fn normalize_vultr_instance(instance: &VultrInstance) -> Result<ObservedMach
         ownership: decoded.ownership,
         region: instance.region.clone(),
         plan: instance.plan.clone(),
+        main_ip: nonempty(&instance.main_ip),
+        v6_main_ip: nonempty(&instance.v6_main_ip),
+        firewall_group_id: nonempty(&instance.firewall_group_id),
+        date_created: nonempty(&instance.date_created),
         os_id: (instance.os_id != 0).then_some(instance.os_id),
         snapshot_id: instance.snapshot_id.clone(),
         enable_ipv6: instance.enable_ipv6,
@@ -21,6 +25,11 @@ pub fn normalize_vultr_instance(instance: &VultrInstance) -> Result<ObservedMach
         tags: decoded.user_tags,
         spec_digest: decoded.spec_digest,
     })
+}
+
+fn nonempty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 pub fn normalize_vultr_inventory(
