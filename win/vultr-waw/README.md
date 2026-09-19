@@ -2,47 +2,60 @@
 
 ## Current role
 
-This directory now provides the server bundle templates and legacy reference
-material for the Warsaw edge deployment.
+This directory contains only canonical Linux host/bootstrap and application
+bundle inputs for the Warsaw edge VM.
 
-Primary orchestration is Rust-first:
+Server lifecycle authority is intentionally outside Windows:
 
-- `edge-controller serve`
-- `edge-console deploy`
-- `edge-console destroy`
+- `.github/workflows/vultr-lifecycle.yml` owns VM create, observe, actions,
+  destroy-plan, destroy-apply, and support-resource cleanup.
+- `.github/workflows/vm-application-lifecycle.yml` owns exact edge-agent and
+  application bundle apply, verify, upgrade, and rollback.
+- `edge-provider-vultr` is the only Vultr HTTP/provider adapter.
+- Windows automation owns only the Windows-local controller, configuration,
+  selectors, and local sing-box runtime.
 
-## What stays here
+There is no supported direct PowerShell VM create/delete/SSH deployment path.
 
-- `cloud-init.yaml`
-- `stack/`
-  - compose file
-  - bootstrap script
-  - config templates
-  - Dockerfiles for the current dataplane
+## Inputs kept here
 
-These files remain inputs to the Rust bundle/render/apply pipeline.
+- `cloud-init.yaml` — minimal host preparation used by the typed Vultr
+  lifecycle.
+- `stack/` — application bundle source:
+  - Compose definition;
+  - typed bootstrap script;
+  - sing-box configuration templates;
+  - Dockerfiles used only by accepted-main CI to build immutable images.
 
-## Current deployment model
+Production VM bootstrap never builds application images. Accepted-main CI
+publishes exact image digests; application lifecycle injects those non-secret
+digest references as `.images.env`; the VM only pulls and runs those exact
+digests.
 
-The Rust controller:
+## Control flow
 
-1. resolves or creates the Vultr instance
-2. waits for host readiness
-3. installs `edge-agent`
-4. renders the full bundle locally
-5. sends the bundle to the host through `AgentService.ApplyBundle`
-6. drives `base` and `tunnel` bootstrap through `AgentService.BootstrapRuntime`
+```text
+accepted main
+  -> Edge Platform CI verify
+  -> one immutable release set
+       edge-controller SHA-256
+       edge-agent SHA-256
+       edge-gateway image digest
+       warp-egress image digest
+  -> GitHub Vultr/Application lifecycle
+  -> strict SSH transport
+  -> edge-agent typed apply/bootstrap
+  -> observed readiness
+```
 
-Steady-state status/readiness comes from `edge-agent` gRPC.
+VM destruction is only:
 
-## Legacy reference only
+```text
+vultr-lifecycle destroy-plan
+  -> exact digest authority
+  -> vultr-lifecycle destroy-apply
+  -> observed ABSENT
+```
 
-The old PowerShell scripts in this directory are preserved only for migration
-review:
-
-- `deploy-waw.ps1`
-- `destroy-edge.ps1`
-- `status-edge.ps1`
-- `verify-edge.ps1`
-
-They are not the primary deployment entrypoint anymore.
+Do not reintroduce direct Windows Vultr API mutation, TOFU SSH enrollment,
+runtime Docker builds, mutable image tags, or an external VM reaper.

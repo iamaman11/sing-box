@@ -21,21 +21,6 @@ function Get-ExistingController {
     } | Select-Object -First 1
 }
 
-function Get-RuntimeSecret {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) { throw "Runtime credential is absent: $Path" }
-    Add-Type -AssemblyName System.Security
-    $cipher = [IO.File]::ReadAllBytes($Path)
-    $plain = $null
-    try {
-        $plain = [Security.Cryptography.ProtectedData]::Unprotect($cipher, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-        return [Text.Encoding]::UTF8.GetString($plain)
-    } finally {
-        if ($plain) { [Array]::Clear($plain, 0, $plain.Length) }
-        if ($cipher) { [Array]::Clear($cipher, 0, $cipher.Length) }
-    }
-}
-
 function Get-RuntimeProxyCredentials {
     param([string]$Path)
     if (-not (Test-Path $Path)) { throw "Proxy credential mirror is absent: $Path. Run sync-proxy-credentials.ps1." }
@@ -84,10 +69,6 @@ New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 $stdout = Join-Path $runtimeDir "controller-service-stdout.log"
 $stderr = Join-Path $runtimeDir "controller-service-stderr.log"
 
-$env:CLOUDFLARE_API_TOKEN = Get-RuntimeSecret (Join-Path $runtimeDir "cloudflare-dns-token.dpapi")
-$env:CF_API_TOKEN = $env:CLOUDFLARE_API_TOKEN
-$env:VULTR_API_KEY = Get-RuntimeSecret (Join-Path $runtimeDir "vultr-lifecycle-token.dpapi")
-$env:EDGE_VULTR_SSH_KEY_ID = "b379cde0-6ef3-46a0-8cf9-c4faa7cb6dd4"
 $proxyCredentials = Get-RuntimeProxyCredentials (Join-Path $runtimeDir "proxy-credentials-v1.dpapi")
 $env:EDGE_PROXY_USERNAME = [string]$proxyCredentials.username
 $env:EDGE_PROXY_PASSWORD = [string]$proxyCredentials.password
@@ -104,7 +85,7 @@ while ((Get-Date) -lt $deadline) {
         $started = Get-ExistingController -ExecutablePath $ControllerExe -RepoRoot $RepoRoot -BindAddress $BindAddress
         if ($started) {
             Set-Content -NoNewline -Path $pidFile -Value $started.ProcessId
-            Write-Output "edge-controller started with DPAPI credentials on $BindAddress (pid $($started.ProcessId))"
+            Write-Output "edge-controller started for Windows-local control on $BindAddress (pid $($started.ProcessId))"
             exit 0
         }
     }

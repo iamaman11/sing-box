@@ -31,9 +31,9 @@ use edge_local_runtime::{
     restart_local_runtime_visible as restart_runtime_process_visible, restore_windows_dns_if_owned,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
-use edge_provider_cloudflare::{delete_a_record, mock_upsert_a_record, upsert_a_record};
-use edge_provider_vultr::{get_instance_typed, list_instances_typed, mock_instance};
-use edge_secrets::{default_env_ref, resolve_secret_path, resolve_secret_text};
+use edge_provider_cloudflare::mock_upsert_a_record;
+use edge_provider_vultr::mock_instance;
+use edge_secrets::{default_env_ref, resolve_secret_path};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
@@ -86,16 +86,10 @@ const BASE_BOOTSTRAP_TIMEOUT_SECS: u64 = 300;
 const TUNNEL_BOOTSTRAP_TIMEOUT_SECS: u64 = 900;
 const EGRESS_TRACE_TIMEOUT_SECS: u64 = 60;
 const BOOTSTRAP_RPC_ATTEMPTS: usize = 3;
-const SECRET_VULTR_API_KEY: &str = "provider.vultr.api_key";
-const SECRET_CLOUDFLARE_API_TOKEN: &str = "provider.cloudflare.api_token";
 const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
 const DEPLOY_ENDPOINT_ARG_INDEX: usize = 10;
 const DESTROY_ENDPOINT_ARG_INDEX: usize = 6;
-const KNOWN_SECRET_NAMES: &[&str] = &[
-    SECRET_VULTR_API_KEY,
-    SECRET_CLOUDFLARE_API_TOKEN,
-    SECRET_SSH_PRIVATE_KEY_PATH,
-];
+const KNOWN_SECRET_NAMES: &[&str] = &[SECRET_SSH_PRIVATE_KEY_PATH];
 
 #[derive(Debug, Clone)]
 struct ResolvedDeployTarget {
@@ -311,18 +305,6 @@ fn normalize_runtime_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<(), St
     let guard = state
         .lock()
         .map_err(|_| "controller state mutex poisoned".to_owned())?;
-
-    // Runtime credentials are supplied by the DPAPI launcher. Never retain a
-    // token value in SQLite, including values written by an older literal-ref
-    // implementation.
-    for (name, env_name) in [
-        (SECRET_VULTR_API_KEY, "VULTR_API_KEY"),
-        (SECRET_CLOUDFLARE_API_TOKEN, "CLOUDFLARE_API_TOKEN"),
-    ] {
-        guard
-            .upsert_secret_ref(name, &default_env_ref(env_name))
-            .map_err(|err| format!("failed to normalize runtime secret ref {name}: {err}"))?;
-    }
 
     // The SSH private-key reference is a path, not key material. Convert a
     // legacy literal path only when it resolves to an existing local file.
@@ -635,16 +617,6 @@ fn destroy_request_from_args() -> Result<DestroyRequest, Box<dyn std::error::Err
     })
 }
 
-fn resolve_text_secret(
-    state: &Arc<Mutex<EdgeState>>,
-    name: &str,
-    default_reference: &str,
-) -> Result<String, String> {
-    let reference = get_or_seed_secret_ref(state, name, default_reference)?;
-    resolve_secret_text(&reference)
-        .map_err(|err| format!("failed to resolve secret {name} via {reference}: {err}"))
-}
-
 fn resolve_path_secret(
     state: &Arc<Mutex<EdgeState>>,
     name: &str,
@@ -721,8 +693,6 @@ fn list_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<Vec<SecretRefEntry>
 
 fn secret_name_to_env(name: &str) -> &'static str {
     match name {
-        SECRET_VULTR_API_KEY => "VULTR_API_KEY",
-        SECRET_CLOUDFLARE_API_TOKEN => "CLOUDFLARE_API_TOKEN",
         SECRET_SSH_PRIVATE_KEY_PATH => "EDGE_SSH_PRIVATE_KEY_PATH",
         _ => "",
     }
@@ -763,13 +733,9 @@ impl ControllerService for ControllerServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ControllerStatus>, Status> {
-        let reconcile_warning =
-            match reconcile_authoritative_deployment_state(&self.repo_root, &self.state).await {
-                Ok(()) => None,
-                Err(err) => Some(format!(
-                    "authoritative provider reconciliation unavailable: {err}"
-                )),
-            };
+        let reconcile_warning = reconcile_active_deployment_state(&self.repo_root, &self.state)
+            .err()
+            .map(|err| format!("local deployment-state reconciliation unavailable: {err}"));
         ensure_selector_intents_seeded(&self.repo_root, &self.state)
             .await
             .map_err(Status::internal)?;
@@ -1475,9 +1441,9 @@ impl ControllerService for ControllerServerImpl {
         request.dns_record_name = blank_option(request.dns_record_name.take());
         request.cloudflare_zone_name = blank_option(request.cloudflare_zone_name.take());
         request.lifecycle_reason = blank_option(request.lifecycle_reason.take());
-        if request.delete_instance && !request.mock_provider {
+        if !request.mock_provider {
             return Err(Status::failed_precondition(
-                "legacy Destroy RPC no longer owns Vultr instance deletion; use canonical vultr-lifecycle destroy-plan/destroy-apply",
+                "legacy Destroy RPC no longer owns server or DNS mutation; use the canonical GitHub lifecycle",
             ));
         }
         let operation = self
@@ -1944,14 +1910,6 @@ fn interrupt_stale_running_operations(state: &Arc<Mutex<EdgeState>>) -> Result<(
     Ok(())
 }
 
-async fn reconcile_authoritative_deployment_state(
-    repo_root: &Path,
-    state: &Arc<Mutex<EdgeState>>,
-) -> Result<(), String> {
-    reconcile_active_deployment_state(repo_root, state)?;
-    reconcile_provider_active_deployment_state(state).await
-}
-
 fn reconcile_active_deployment_state(
     repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
@@ -2001,151 +1959,6 @@ fn reconcile_active_deployment_state(
         })
         .map_err(|err| format!("failed to reconcile controller state: {err}"))?;
     Ok(())
-}
-
-async fn reconcile_provider_active_deployment_state(
-    state: &Arc<Mutex<EdgeState>>,
-) -> Result<(), String> {
-    let api_key = match resolve_text_secret(
-        state,
-        SECRET_VULTR_API_KEY,
-        &default_env_ref("VULTR_API_KEY"),
-    ) {
-        Ok(value) => value,
-        Err(_) => return Ok(()),
-    };
-    let instances = list_instances_typed(&api_key)
-        .await
-        .map_err(|err| err.to_string())?;
-    if instances.is_empty() {
-        return Ok(());
-    }
-
-    let current_state = state
-        .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?
-        .get_controller_state()
-        .map_err(|err| format!("failed to read controller state: {err}"))?;
-    let latest_requested_label = latest_deploy_attempt_label(state)?;
-    let current_instance_id = current_state
-        .as_ref()
-        .and_then(|value| value.active_instance_id.as_deref());
-    let current_exists = current_instance_id
-        .is_some_and(|instance_id| instances.iter().any(|instance| instance.id == instance_id));
-    let candidate = if let Some(label) = latest_requested_label.as_deref() {
-        select_unique_vultr_instance_by_label(&instances, label)?
-    } else if current_exists {
-        None
-    } else {
-        choose_single_reconcilable_instance(&instances).cloned()
-    };
-    let Some(candidate) = candidate else {
-        return Ok(());
-    };
-    let tombstoned = {
-        let guard = state
-            .lock()
-            .map_err(|_| "controller state mutex poisoned".to_owned())?;
-        is_tombstoned_candidate(&guard, &candidate.label, &candidate.id)?
-    };
-    if tombstoned {
-        return Ok(());
-    }
-    if current_state.as_ref().is_some_and(|value| {
-        value.active_instance_id.as_deref() == Some(candidate.id.as_str())
-            && value.active_server_ip.as_deref() == Some(candidate.main_ip.as_str())
-            && value.active_deployment_label.as_deref() == Some(candidate.label.as_str())
-    }) {
-        return Ok(());
-    }
-
-    let guard = state
-        .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?;
-    if guard
-        .find_deployment_by_instance(&candidate.id)
-        .map_err(|err| format!("failed to query deployment rows: {err}"))?
-        .is_none()
-    {
-        guard
-            .record_deployment(&candidate.label, &candidate.id, &candidate.main_ip)
-            .map_err(|err| format!("failed to record provider-reconciled deployment: {err}"))?;
-    }
-    let active_state_json = current_state
-        .as_ref()
-        .and_then(|value| value.active_deployment_state_json.as_deref())
-        .filter(|_| {
-            current_state
-                .as_ref()
-                .and_then(|value| value.active_instance_id.as_deref())
-                == Some(candidate.id.as_str())
-        });
-    let active_tunnel_domain = current_state
-        .as_ref()
-        .and_then(|value| value.active_tunnel_domain.as_deref())
-        .or(Some(DEFAULT_DNS_RECORD));
-    guard
-        .upsert_controller_state(NewControllerState {
-            active_deployment_label: Some(&candidate.label),
-            active_instance_id: Some(&candidate.id),
-            active_server_ip: Some(&candidate.main_ip),
-            active_tunnel_domain,
-            active_deployment_state_json: active_state_json,
-            deploy_phase: if active_state_json.is_some() {
-                DeployPhase::DeploymentPublished
-            } else {
-                DeployPhase::InstanceAddressAssigned
-            },
-            app_readiness_phase: if active_state_json.is_some() {
-                current_state
-                    .as_ref()
-                    .map(|value| value.app_readiness_phase)
-                    .unwrap_or(AppReadinessPhase::ServerRuntimeReady)
-            } else {
-                AppReadinessPhase::DeploymentAbsent
-            },
-            last_error_code: None,
-            last_error_message: None,
-        })
-        .map_err(|err| format!("failed to persist provider-reconciled controller state: {err}"))?;
-    Ok(())
-}
-
-fn latest_deploy_attempt_label(state: &Arc<Mutex<EdgeState>>) -> Result<Option<String>, String> {
-    let guard = state
-        .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?;
-    let Some(operation) = guard
-        .latest_operation_by_kind("deploy")
-        .map_err(|err| format!("failed to read latest deploy operation: {err}"))?
-    else {
-        return Ok(None);
-    };
-    let events = guard
-        .list_operation_events(operation.id)
-        .map_err(|err| format!("failed to read latest deploy events: {err}"))?;
-    Ok(events.into_iter().find_map(|event| {
-        event
-            .message
-            .strip_prefix("deployment label reserved: ")
-            .map(ToOwned::to_owned)
-    }))
-}
-
-fn choose_single_reconcilable_instance(
-    instances: &[edge_provider_vultr::VultrInstance],
-) -> Option<&edge_provider_vultr::VultrInstance> {
-    let mut reconcilable = instances.iter().filter(|instance| {
-        instance.status == "active"
-            && instance.server_status == "ok"
-            && !instance.main_ip.trim().is_empty()
-            && instance.label.contains("edge")
-    });
-    let first = reconcilable.next()?;
-    if reconcilable.next().is_some() {
-        return None;
-    }
-    Some(first)
 }
 
 fn upsert_selector_intent(
@@ -2590,63 +2403,29 @@ impl Drop for SshTunnelGuard {
 }
 
 async fn resolve_deploy_target(
-    state: &Arc<Mutex<EdgeState>>,
+    _state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
 ) -> Result<ResolvedDeployTarget, String> {
-    if request.mock_provider {
-        let label = request
-            .label_prefix
-            .clone()
-            .unwrap_or_else(|| "mock-edge".to_owned());
-        let target_ip = request
-            .target_ip
-            .clone()
-            .unwrap_or_else(|| "203.0.113.10".to_owned());
-        let instance = mock_instance(&label, DEFAULT_REGION, DEFAULT_PLAN, &target_ip);
-        return Ok(ResolvedDeployTarget {
-            instance_id: instance.id,
-            target_ip: instance.main_ip,
-        });
+    if !request.mock_provider {
+        return Err(
+            "legacy deploy target resolution is test-only; real server deployment is owned by the canonical GitHub VM Application Lifecycle"
+                .to_owned(),
+        );
     }
 
-    if let Some(instance_id) = request.instance_id.as_deref()
-        && let Ok(api_key) = resolve_text_secret(
-            state,
-            SECRET_VULTR_API_KEY,
-            &default_env_ref("VULTR_API_KEY"),
-        )
-    {
-        let instance = get_instance_typed(&api_key, instance_id)
-            .await
-            .map_err(|err| err.to_string())?;
-        if !instance.main_ip.trim().is_empty() {
-            return Ok(ResolvedDeployTarget {
-                instance_id: instance.id,
-                target_ip: instance.main_ip,
-            });
-        }
-    }
-
-    if let Some(target_ip) = request
+    let label = request
+        .label_prefix
+        .clone()
+        .unwrap_or_else(|| "mock-edge".to_owned());
+    let target_ip = request
         .target_ip
         .clone()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return Ok(ResolvedDeployTarget {
-            instance_id: request
-                .instance_id
-                .clone()
-                .unwrap_or_else(|| format!("manual-{}", target_ip.replace('.', "-"))),
-            target_ip,
-        });
-    }
-
-    Err(
-        "fresh Vultr VM creation is disabled in the legacy deploy RPC; use the canonical \
-edge-controller vultr-lifecycle apply path so provider ownership, strict host certificates, \
-user-data scrub, and destructive authority remain in one lifecycle engine"
-            .to_owned(),
-    )
+        .unwrap_or_else(|| "203.0.113.10".to_owned());
+    let instance = mock_instance(&label, DEFAULT_REGION, DEFAULT_PLAN, &target_ip);
+    Ok(ResolvedDeployTarget {
+        instance_id: instance.id,
+        target_ip: instance.main_ip,
+    })
 }
 
 fn status_for_target_resolution_error(message: String) -> Status {
@@ -3433,10 +3212,13 @@ fn should_update_dns(request: &DeployRequest) -> bool {
 }
 
 async fn apply_dns_update(
-    state: &Arc<Mutex<EdgeState>>,
+    _state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
     target_ip: &str,
 ) -> Result<String, String> {
+    if !request.mock_provider {
+        return Err("legacy controller DNS mutation is retired; use canonical GitHub-owned application control".to_owned());
+    }
     let zone_name = request
         .cloudflare_zone_name
         .clone()
@@ -3445,57 +3227,25 @@ async fn apply_dns_update(
         .dns_record_name
         .clone()
         .unwrap_or_else(|| DEFAULT_DNS_RECORD.to_owned());
-
-    if request.mock_provider {
-        let record = mock_upsert_a_record(&zone_name, &record_name, target_ip);
-        return Ok(format!(
-            "mock DNS updated: {} -> {} ({})",
-            record.record_name, record.ip, record.zone_id
-        ));
-    }
-
-    let api_token = resolve_text_secret(
-        state,
-        SECRET_CLOUDFLARE_API_TOKEN,
-        &default_env_ref("CLOUDFLARE_API_TOKEN"),
-    )
-    .map_err(|_| {
-        "a configured Cloudflare API token secret is required for DNS cutover".to_owned()
-    })?;
-    let record = upsert_a_record(&api_token, &zone_name, &record_name, target_ip).await?;
+    let record = mock_upsert_a_record(&zone_name, &record_name, target_ip);
     Ok(format!(
-        "DNS updated: {} -> {} ({})",
+        "mock DNS updated: {} -> {} ({})",
         record.record_name, record.ip, record.zone_id
     ))
 }
 
 async fn delete_dns_record(
-    state: &Arc<Mutex<EdgeState>>,
+    _state: &Arc<Mutex<EdgeState>>,
     request: &DestroyRequest,
 ) -> Result<String, String> {
-    let zone_name = request
-        .cloudflare_zone_name
-        .clone()
-        .unwrap_or_else(|| DEFAULT_CLOUDFLARE_ZONE.to_owned());
+    if !request.mock_provider {
+        return Err("legacy controller DNS deletion is retired; use canonical GitHub-owned application control".to_owned());
+    }
     let record_name = request
         .dns_record_name
         .clone()
         .unwrap_or_else(|| DEFAULT_DNS_RECORD.to_owned());
-
-    if request.mock_provider {
-        return Ok(format!("mock DNS delete requested for {}", record_name));
-    }
-
-    let api_token = resolve_text_secret(
-        state,
-        SECRET_CLOUDFLARE_API_TOKEN,
-        &default_env_ref("CLOUDFLARE_API_TOKEN"),
-    )
-    .map_err(|_| {
-        "a configured Cloudflare API token secret is required to delete DNS record".to_owned()
-    })?;
-    delete_a_record(&api_token, &zone_name, &record_name).await?;
-    Ok(format!("DNS delete requested for {}", record_name))
+    Ok(format!("mock DNS delete requested for {}", record_name))
 }
 
 fn write_private_state_file(path: &Path, content: &[u8]) -> Result<(), String> {
@@ -5087,9 +4837,6 @@ mod tests {
                 .unwrap();
         }
         let secrets = list_secret_refs(&state).unwrap();
-        assert!(secrets.iter().any(|entry| {
-            entry.name == SECRET_VULTR_API_KEY && entry.secret_ref == "env:VULTR_API_KEY"
-        }));
         assert!(secrets.iter().any(|entry| {
             entry.name == SECRET_SSH_PRIVATE_KEY_PATH
                 && entry.secret_ref == "env:EDGE_SSH_PRIVATE_KEY_PATH"

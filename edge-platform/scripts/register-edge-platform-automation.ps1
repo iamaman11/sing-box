@@ -19,14 +19,13 @@ $startCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $startScript + 
 $reconcileCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $reconcileScript + '"'
 $shutdownCommand = '"' + $wscript + '" "' + $hiddenRunner + '" "' + $shutdownScript + '"'
 
-# Runs with Bose's DPAPI-protected local operational credentials.
+# Windows automation is local-only. Server lifecycle credentials and mutations
+# belong exclusively to the canonical GitHub lifecycle.
 schtasks /Create /F /SC ONLOGON /DELAY 0001:30 /RL HIGHEST /IT /TN $ControllerTaskName /TR $startCommand | Out-Null
-# Reconcile never runs the boot/recovery script. This separation prevents a
-# historical recovery record from deleting a healthy VM every 15 minutes.
+# Periodic reconcile may only inspect/restart the Windows-local runtime.
 schtasks /Create /F /SC MINUTE /MO 15 /RL HIGHEST /IT /TN $ReconcileTaskName /TR $reconcileCommand | Out-Null
 
-# USER32/1074 is raised for a planned shutdown/restart. Sudden power loss is
-# recovered at the next logon by the persisted local intent.
+# USER32/1074 stops only the Windows-local runtime; it never changes VM state.
 $shutdownSubscription = "*[System[Provider[@Name='USER32'] and (EventID=1074)]]"
 schtasks /Create /F /SC ONEVENT /EC System /MO $shutdownSubscription /RL HIGHEST /IT /TN $ShutdownTaskName /TR $shutdownCommand | Out-Null
 Unregister-ScheduledTask -TaskName "EdgePlatformSingboxLogCleanup" -Confirm:$false -ErrorAction SilentlyContinue
