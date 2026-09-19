@@ -25,7 +25,7 @@ pub fn normalize_vultr_instance(instance: &VultrInstance) -> Result<ObservedMach
         os_id: (instance.os_id != 0).then_some(instance.os_id),
         snapshot_id: instance.snapshot_id.clone(),
         enable_ipv6: instance.enable_ipv6,
-        firewall_profile: decoded.firewall_profile,
+        firewall_profile: None,
         tags: decoded.user_tags,
         spec_digest: decoded.spec_digest,
     })
@@ -73,8 +73,7 @@ mod tests {
         "region": "waw",
         "plan": "vc2-1c-1gb",
         "os_id": 2625,
-        "enable_ipv6": false,
-        "firewall_profile": "edge"
+        "enable_ipv6": false
       },
       "bootstrap_profile": "singbox-host-v1",
       "application_profiles": ["singbox-edge"],
