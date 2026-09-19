@@ -323,7 +323,10 @@ async fn observe_inventory<P: LifecycleProvider>(
     provider: &mut P,
     desired: &DesiredState,
 ) -> Result<LifecycleInventory, String> {
-    let instances = provider.list_instances().await.map_err(|err| err.to_string())?;
+    let instances = provider
+        .list_instances()
+        .await
+        .map_err(|err| err.to_string())?;
     normalize_vultr_inventory(desired, &instances)
 }
 
@@ -654,7 +657,12 @@ mod tests {
         assert_eq!(report.plans.len(), 2);
         assert_eq!(report.plans[0].machine_id, "edge-1");
         assert_eq!(report.plans[1].machine_id, "proxy-1");
-        assert!(report.plans.iter().all(|plan| plan.class == PlanClass::Create));
+        assert!(
+            report
+                .plans
+                .iter()
+                .all(|plan| plan.class == PlanClass::Create)
+        );
     }
 
     #[tokio::test]
