@@ -533,15 +533,16 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
         .list_firewall_rules(&group.id)
         .await
         .map_err(|err| err.to_string())?;
-    let current = current_rule_map(&observed)?;
     let mut removed_rule_ids = Vec::new();
 
-    for target in &target_specs {
-        if let Some(ids) = current.get(target) {
-            for rule_id in ids {
-                delete_firewall_rule_and_observe(provider, &group.id, *rule_id, policy).await?;
-                removed_rule_ids.push(*rule_id);
-            }
+    for rule in observed {
+        let spec = firewall_rule_spec(&rule)?;
+        if target_specs
+            .iter()
+            .any(|target| same_firewall_access_semantics(&spec, target))
+        {
+            delete_firewall_rule_and_observe(provider, &group.id, rule.id, policy).await?;
+            removed_rule_ids.push(rule.id);
         }
     }
 
@@ -549,11 +550,16 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
         .list_firewall_rules(&group.id)
         .await
         .map_err(|err| err.to_string())?;
-    let final_map = current_rule_map(&final_rules)?;
-    let remaining = target_specs
+    let remaining = final_rules
         .iter()
-        .filter(|spec| final_map.contains_key(*spec))
-        .cloned()
+        .map(firewall_rule_spec)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|spec| {
+            target_specs
+                .iter()
+                .any(|target| same_firewall_access_semantics(spec, target))
+        })
         .collect::<Vec<_>>();
     if !remaining.is_empty() {
         return Err(format!(
@@ -568,6 +574,18 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
         removed_rule_ids,
         verified_absent: true,
     })
+}
+
+fn same_firewall_access_semantics(
+    left: &FirewallRuleSpec,
+    right: &FirewallRuleSpec,
+) -> bool {
+    left.ip_type == right.ip_type
+        && left.protocol == right.protocol
+        && left.subnet == right.subnet
+        && left.subnet_size == right.subnet_size
+        && left.port == right.port
+        && left.source == right.source
 }
 
 fn controller_ipv4_access_specs(
@@ -1737,7 +1755,7 @@ mod tests {
                         subnet_size: 32,
                         port: "22".to_owned(),
                         source: String::new(),
-                        notes: "ephemeral controller SSH".to_owned(),
+                        notes: "provider-side note drift must not keep SSH open".to_owned(),
                     },
                     VultrFirewallRule {
                         id: 12,
