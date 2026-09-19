@@ -6,6 +6,7 @@ on:
       - "edge-platform/**"
       - "infra/vultr/**"
       - "infra/application/**"
+      - "win/vultr-waw/**"
       - ".github/workflows/edge-platform-ci.yml"
       - ".github/workflows/vultr-lifecycle.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "edge-platform/**"
       - "infra/application/**"
+      - "win/vultr-waw/**"
       - ".github/workflows/edge-platform-ci.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
 
