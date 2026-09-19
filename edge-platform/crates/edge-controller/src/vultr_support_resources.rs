@@ -975,7 +975,13 @@ mod tests {
         ssh_create_error: Option<VultrError>,
         ssh_create_commits: bool,
         ssh_create_calls: usize,
+        ssh_delete_error: Option<VultrError>,
+        ssh_delete_commits: bool,
+        ssh_delete_calls: usize,
         firewall_group_create_calls: usize,
+        firewall_group_delete_error: Option<VultrError>,
+        firewall_group_delete_commits: bool,
+        firewall_group_delete_calls: usize,
         firewall_rule_create_calls: usize,
         firewall_rule_delete_calls: usize,
         next_rule_id: u64,
@@ -1007,6 +1013,17 @@ mod tests {
             }
         }
 
+        async fn destroy_ssh_key(&mut self, ssh_key_id: &str) -> Result<(), VultrError> {
+            self.ssh_delete_calls += 1;
+            if self.ssh_delete_error.is_none() || self.ssh_delete_commits {
+                self.ssh_keys.retain(|key| key.id != ssh_key_id);
+            }
+            match self.ssh_delete_error.clone() {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
+        }
+
         async fn list_firewall_groups(&mut self) -> Result<Vec<VultrFirewallGroup>, VultrError> {
             Ok(self.firewall_groups.clone())
         }
@@ -1024,6 +1041,22 @@ mod tests {
             };
             self.firewall_groups.push(group.clone());
             Ok(group)
+        }
+
+        async fn destroy_firewall_group(
+            &mut self,
+            firewall_group_id: &str,
+        ) -> Result<(), VultrError> {
+            self.firewall_group_delete_calls += 1;
+            if self.firewall_group_delete_error.is_none() || self.firewall_group_delete_commits {
+                self.firewall_groups
+                    .retain(|group| group.id != firewall_group_id);
+                self.firewall_rules.remove(firewall_group_id);
+            }
+            match self.firewall_group_delete_error.clone() {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
         }
 
         async fn list_firewall_rules(
@@ -1107,6 +1140,31 @@ mod tests {
             create_reobserve_attempts: 2,
             destroy_reobserve_attempts: 2,
             reobserve_delay: std::time::Duration::ZERO,
+        }
+    }
+
+    fn managed_instance(environment: &str, firewall_group_id: &str) -> VultrInstance {
+        VultrInstance {
+            id: "instance-1".to_owned(),
+            label: "edge-1".to_owned(),
+            region: "waw".to_owned(),
+            plan: "vc2-1c-1gb".to_owned(),
+            status: "active".to_owned(),
+            server_status: "ok".to_owned(),
+            power_status: "running".to_owned(),
+            main_ip: "203.0.113.10".to_owned(),
+            v6_main_ip: String::new(),
+            firewall_group_id: firewall_group_id.to_owned(),
+            date_created: String::new(),
+            tags: vec![
+                "managed-by-sing-box".to_owned(),
+                format!("singbox-env-{environment}"),
+                "singbox-id-edge-1".to_owned(),
+                format!("singbox-spec-{}", "0".repeat(64)),
+            ],
+            os_id: 2625,
+            snapshot_id: None,
+            enable_ipv6: false,
         }
     }
 
@@ -1285,6 +1343,165 @@ mod tests {
         assert!(
             firewall_rules_match(profile, provider.firewall_rules.get("fw-1").unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn resolves_controller_ipv4_placeholder_exactly() {
+        let mut profile_set = FirewallProfileSet::parse_json(
+            r#"{
+              "schema":1,
+              "profiles":[{
+                "name":"acceptance-ssh",
+                "rules":[{
+                  "ip_type":"v4",
+                  "protocol":"tcp",
+                  "subnet":"@controller-ipv4",
+                  "subnet_size":32,
+                  "port":"22"
+                }]
+              }]
+            }"#,
+        )
+        .unwrap();
+        profile_set
+            .resolve_controller_ipv4(Some("203.0.113.25"))
+            .unwrap();
+        assert_eq!(
+            profile_set.profile("acceptance-ssh").unwrap().rules[0].subnet,
+            "203.0.113.25"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_refuses_shared_resources_while_environment_is_in_use() {
+        let public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPSsamKBL5VmXVJM4R1WXVXl3yvvExG5u9SAlZyItrRr canonical";
+        let desired = DesiredState::parse_json(
+            r#"{
+              "schema":1,
+              "environment":"production",
+              "machines":[{
+                "id":"edge-1",
+                "role":"edge",
+                "provider":{"region":"waw","plan":"vc2-1c-1gb","os_id":2625,"enable_ipv6":false},
+                "bootstrap_profile":"singbox-host-v1"
+              }]
+            }"#,
+        )
+        .unwrap();
+        let mut provider = FakeSupportProvider {
+            ssh_keys: vec![VultrSshKey {
+                id: "ssh-1".to_owned(),
+                name: "singbox-production-ops".to_owned(),
+                ssh_key: public_key.to_owned(),
+                date_created: String::new(),
+            }],
+            ..FakeSupportProvider::default()
+        };
+
+        let report = cleanup_environment_support_resources(
+            &mut provider,
+            &desired,
+            &[managed_instance("production", "")],
+            public_key,
+            &policy(),
+        )
+        .await
+        .unwrap();
+
+        assert!(report.environment_in_use);
+        assert_eq!(provider.ssh_delete_calls, 0);
+        assert_eq!(provider.firewall_group_delete_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_owned_resources_once_after_environment_is_absent() {
+        let public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPSsamKBL5VmXVJM4R1WXVXl3yvvExG5u9SAlZyItrRr canonical";
+        let desired = DesiredState::parse_json(
+            r#"{
+              "schema":1,
+              "environment":"acceptance",
+              "machines":[{
+                "id":"edge-1",
+                "role":"edge",
+                "provider":{"region":"waw","plan":"vc2-1c-1gb","os_id":2625,"enable_ipv6":false},
+                "bootstrap_profile":"singbox-host-v1"
+              }]
+            }"#,
+        )
+        .unwrap();
+        let mut provider = FakeSupportProvider {
+            ssh_keys: vec![VultrSshKey {
+                id: "ssh-1".to_owned(),
+                name: "singbox-acceptance-ops".to_owned(),
+                ssh_key: public_key.to_owned(),
+                date_created: String::new(),
+            }],
+            firewall_groups: vec![VultrFirewallGroup {
+                id: "fw-1".to_owned(),
+                description: "singbox-acceptance-fw-ssh-only".to_owned(),
+                date_created: String::new(),
+                date_modified: String::new(),
+            }],
+            ..FakeSupportProvider::default()
+        };
+
+        let report = cleanup_environment_support_resources(
+            &mut provider,
+            &desired,
+            &[],
+            public_key,
+            &policy(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!report.environment_in_use);
+        assert!(report.ssh_key_removed);
+        assert_eq!(report.firewall_groups_removed, vec!["fw-1".to_owned()]);
+        assert_eq!(provider.ssh_delete_calls, 1);
+        assert_eq!(provider.firewall_group_delete_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn uncertain_cleanup_delete_reobserves_without_replay() {
+        let public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPSsamKBL5VmXVJM4R1WXVXl3yvvExG5u9SAlZyItrRr canonical";
+        let desired = DesiredState::parse_json(
+            r#"{
+              "schema":1,
+              "environment":"acceptance",
+              "machines":[{
+                "id":"edge-1",
+                "role":"edge",
+                "provider":{"region":"waw","plan":"vc2-1c-1gb","os_id":2625,"enable_ipv6":false},
+                "bootstrap_profile":"singbox-host-v1"
+              }]
+            }"#,
+        )
+        .unwrap();
+        let mut provider = FakeSupportProvider {
+            ssh_keys: vec![VultrSshKey {
+                id: "ssh-1".to_owned(),
+                name: "singbox-acceptance-ops".to_owned(),
+                ssh_key: public_key.to_owned(),
+                date_created: String::new(),
+            }],
+            ssh_delete_error: Some(uncertain("destroy Vultr SSH key")),
+            ssh_delete_commits: true,
+            ..FakeSupportProvider::default()
+        };
+
+        cleanup_environment_support_resources(
+            &mut provider,
+            &desired,
+            &[],
+            public_key,
+            &policy(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.ssh_delete_calls, 1);
+        assert!(provider.ssh_keys.is_empty());
     }
 
     #[tokio::test]
