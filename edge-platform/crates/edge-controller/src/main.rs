@@ -2706,10 +2706,8 @@ impl Drop for SshTunnelGuard {
 }
 
 async fn resolve_deploy_target(
-    repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
-    deployment_label: &str,
 ) -> Result<ResolvedDeployTarget, String> {
     if request.mock_provider {
         let label = request
@@ -2848,7 +2846,6 @@ async fn prepare_agent_transport(
     if !should_bootstrap_via_ssh(
         context.state,
         context.request,
-        context.target,
         context.preexisting_agent_trust,
     ) {
         let connection_target = context.preexisting_agent_target.clone().unwrap_or(
@@ -2858,7 +2855,7 @@ async fn prepare_agent_transport(
                 context.direct_endpoint,
             )?,
         );
-        if should_fallback_to_ssh_bootstrap(context.direct_endpoint, context.state, context.target)
+        if should_fallback_to_ssh_bootstrap(context.direct_endpoint, context.state)
             && connect_to_agent_target(&connection_target).await.is_err()
         {
             append_operation_event(
@@ -2931,7 +2928,6 @@ async fn prepare_agent_transport(
 fn should_fallback_to_ssh_bootstrap(
     direct_endpoint: &str,
     state: &Arc<Mutex<EdgeState>>,
-    target: &ResolvedDeployTarget,
 ) -> bool {
     env::var_os("EDGE_AGENT_ENDPOINT").is_none()
         && direct_endpoint == DEFAULT_AGENT_ENDPOINT
@@ -2965,7 +2961,6 @@ fn resolve_operation_agent_connection_target(
 fn should_bootstrap_via_ssh(
     state: &Arc<Mutex<EdgeState>>,
     request: &DeployRequest,
-    target: &ResolvedDeployTarget,
     preexisting_agent_trust: bool,
 ) -> bool {
     let ssh_available = has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH);
@@ -4702,7 +4697,6 @@ mod tests {
         ));
         let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
         let target = resolve_deploy_target(
-            Path::new("/home/bose/projects/sing-box"),
             &state,
             &DeployRequest {
                 label_prefix: Some("mock-edge".to_owned()),
@@ -4716,7 +4710,6 @@ mod tests {
                 skip_dns: true,
                 snapshot_id: None,
             },
-            "mock-edge-1",
         )
         .await
         .unwrap();
@@ -4953,10 +4946,6 @@ mod tests {
                 .upsert_secret_ref(SECRET_SSH_PRIVATE_KEY_PATH, "path:/tmp/id_rsa")
                 .unwrap();
         }
-        let target = ResolvedDeployTarget {
-            instance_id: "instance-bootstrap".to_owned(),
-            target_ip: "203.0.113.120".to_owned(),
-        };
         let request = DeployRequest {
             label_prefix: Some("waw-edge".to_owned()),
             target_ip: None,
@@ -4970,7 +4959,7 @@ mod tests {
             snapshot_id: None,
         };
 
-        assert!(should_bootstrap_via_ssh(&state, &request, &target, false));
+        assert!(should_bootstrap_via_ssh(&state, &request, false));
 
         let _ = std::fs::remove_file(db_path);
     }
