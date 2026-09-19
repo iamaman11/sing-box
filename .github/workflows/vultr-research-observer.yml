@@ -49,11 +49,13 @@ jobs:
             | select(
                 ((.description // "") | startswith("singbox-research-"))
                 or ((.description // "") | startswith("singbox-uncertain-"))
+                or ((.description // "") | startswith("singbox-ambiguous-"))
               )] | length' <<<"$firewalls")"
           nk="$(jq '[.ssh_keys[]
             | select(
                 ((.name // "") | startswith("singbox-research-"))
                 or ((.name // "") | startswith("singbox-uncertain-"))
+                or ((.name // "") | startswith("singbox-ambiguous-"))
               )] | length' <<<"$ssh_keys")"
 
           echo "observer.instances=$ni"
