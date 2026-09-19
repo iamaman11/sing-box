@@ -11,14 +11,92 @@ concurrency:
   queue: max
 
 jobs:
-  basic:
+  catalog:
     if: >-
       github.repository_id == '1221750822' &&
       github.event.issue.number == 1 &&
       !github.event.issue.pull_request &&
       github.actor_id == '44100369' &&
       github.run_attempt == '1' &&
-      github.event.comment.body == '/vultr-research basic'
+      github.event.comment.body == '/vultr-research catalog'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 5
+
+    steps:
+      - name: Select disposable candidates
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          api() {
+            curl --fail-with-body --silent --show-error               --connect-timeout 10 --max-time 30               --header "Authorization: Bearer ${VULTR_API_KEY}"               --header "Accept: application/json"               "https://api.vultr.com$1"
+          }
+
+          regions="$(api '/v2/regions?per_page=500')"
+          plans="$(api '/v2/plans?per_page=500')"
+          oses="$(api '/v2/os?per_page=500')"
+
+          echo 'candidate_os:'
+          jq -r '
+            .os
+            | map(select(.arch == "x64" and (.family == "debian" or .family == "ubuntu")))
+            | sort_by(.family, .name)
+            | .[]
+            | "  - id=\(.id) family=\(.family) name=\(.name)"
+          ' <<<"$oses" | head -n 20
+
+          echo 'candidate_regions:'
+          jq -r '
+            .regions
+            | map(select(.continent == "Europe"))
+            | sort_by(.country, .city)
+            | .[]
+            | "  - id=\(.id) city=\(.city) country=\(.country)"
+          ' <<<"$regions"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          jq -r '
+            .plans
+            | map(select(.type == "vc2" and .vcpu_count >= 1 and .ram >= 512))
+            | sort_by(.monthly_cost, .ram, .vcpu_count)
+            | .[]
+            | [.id, (.monthly_cost|tostring), (.ram|tostring), (.vcpu_count|tostring), (.disk|tostring), (.locations|join(","))]
+            | @tsv
+          ' <<<"$plans" > "$tmp/plans.tsv"
+
+          echo 'cheapest_europe_candidates:'
+          count=0
+          while IFS=$'\t' read -r plan cost ram vcpu disk locations; do
+            IFS=',' read -ra locs <<<"$locations"
+            for region in "${locs[@]}"; do
+              if jq -e --arg r "$region" '.regions[] | select(.id == $r and .continent == "Europe")' <<<"$regions" >/dev/null; then
+                city="$(jq -r --arg r "$region" '.regions[] | select(.id == $r) | .city' <<<"$regions")"
+                country="$(jq -r --arg r "$region" '.regions[] | select(.id == $r) | .country' <<<"$regions")"
+                printf '  - plan=%s cost=%s ram_mb=%s vcpu=%s disk_gb=%s region=%s city=%s country=%s\n'                   "$plan" "$cost" "$ram" "$vcpu" "$disk" "$region" "$city" "$country"
+                count=$((count+1))
+                if [[ "$count" -ge 20 ]]; then
+                  exit 0
+                fi
+              fi
+            done
+          done < "$tmp/plans.tsv"
+
+
+  disposable:
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research disposable'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -26,317 +104,18 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Disposable create/bootstrap/cleanup
+      - name: Fetch exact research script
         shell: bash
-        env:
-          VULTR_API_KEY: \${{ secrets.VULTR_API_KEY }}
-          VULTR_SSH_PRIVATE_KEY: \${{ secrets.VULTR_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
+          curl --fail --silent --show-error --max-time 30             "https://raw.githubusercontent.com/iamaman11/sing-box/${GITHUB_SHA}/research/vultr/disposable-lifecycle.sh"             --output "${RUNNER_TEMP}/disposable-lifecycle.sh"
+          test -s "${RUNNER_TEMP}/disposable-lifecycle.sh"
 
-          API=https://api.vultr.com
-          REGION=waw
-          PLAN=vc2-1c-1gb
-          OS_ID=2625
-          LABEL="singbox-research-$GITHUB_RUN_ID"
-          RUN_TAG="singbox-research-run-$GITHUB_RUN_ID"
-          EXPECTED_FP='SHA256:+VuX2jqSDnuR6Thchzb3Xf6cSVgeioGu6k+9+oKbztA'
-          TMP="$(mktemp -d)"
-          OPKEY="$TMP/ops"
-          PUB="$TMP/ops.pub"
-          HOSTKEY="$TMP/host"
-          KNOWN="$TMP/known_hosts"
-          VM_ID=
-          VM_IP=
-          SSH_ID=
-          FW_ID=
-          RULE_ID=
-          CLEANUP_FAIL=0
-
-          api() {
-            method="$1"; path="$2"; data="\${3:-}"; out="$4"
-            args=(--silent --show-error --connect-timeout 10 --max-time 40
-                  --request "$method" --output "$out" --write-out '%{http_code}'
-                  --header "Authorization: Bearer $VULTR_API_KEY"
-                  --header 'Accept: application/json')
-            if [[ -n "$data" ]]; then
-              args+=(--header 'Content-Type: application/json' --data-binary "@$data")
-            fi
-            curl "\${args[@]}" "$API$path"
-          }
-
-          delete_vm() {
-            id="$1"
-            code="$(api DELETE "/v2/instances/$id" '' "$TMP/delete-vm.json" || true)"
-            [[ "$code" == 204 || "$code" == 404 ]] || return 1
-            for _ in $(seq 1 60); do
-              code="$(api GET "/v2/instances/$id" '' "$TMP/get-deleted.json" || true)"
-              [[ "$code" == 404 ]] && return 0
-              sleep 5
-            done
-            return 1
-          }
-
-          cleanup() {
-            rc=$?
-            trap - EXIT
-            set +e
-            echo cleanup.begin
-
-            if [[ -n "$VM_ID" ]]; then
-              delete_vm "$VM_ID" || CLEANUP_FAIL=1
-            fi
-
-            # Recover a VM whose create response may have been lost.
-            code="$(api GET "/v2/instances?label=$LABEL&per_page=100" '' "$TMP/find-vm.json" || true)"
-            if [[ "$code" == 200 ]]; then
-              while read -r id; do
-                [[ -n "$id" ]] && delete_vm "$id"
-              done < <(jq -r --arg l "$LABEL" --arg t "$RUN_TAG" '
-                .instances[] | select(.label==$l) |
-                select((.tags // []) | index($t)) | .id
-              ' "$TMP/find-vm.json")
-            else
-              CLEANUP_FAIL=1
-            fi
-
-            if [[ -n "$RULE_ID" && -n "$FW_ID" ]]; then
-              code="$(api DELETE "/v2/firewalls/$FW_ID/rules/$RULE_ID" '' "$TMP/delete-rule.json" || true)"
-              [[ "$code" == 204 || "$code" == 404 ]] || CLEANUP_FAIL=1
-            fi
-            if [[ -n "$FW_ID" ]]; then
-              code="$(api DELETE "/v2/firewalls/$FW_ID" '' "$TMP/delete-fw.json" || true)"
-              [[ "$code" == 204 || "$code" == 404 ]] || CLEANUP_FAIL=1
-            fi
-            if [[ -n "$SSH_ID" ]]; then
-              code="$(api DELETE "/v2/ssh-keys/$SSH_ID" '' "$TMP/delete-ssh.json" || true)"
-              [[ "$code" == 204 || "$code" == 404 ]] || CLEANUP_FAIL=1
-            fi
-
-            # Recover support resources by the run-unique label.
-            code="$(api GET '/v2/firewalls?per_page=500' '' "$TMP/fws.json" || true)"
-            if [[ "$code" == 200 ]]; then
-              while read -r id; do
-                [[ -z "$id" ]] && continue
-                c="$(api DELETE "/v2/firewalls/$id" '' "$TMP/delete-fw-found.json" || true)"
-                [[ "$c" == 204 || "$c" == 404 ]] || CLEANUP_FAIL=1
-              done < <(jq -r --arg l "$LABEL" '.firewall_groups[] | select(.description==$l) | .id' "$TMP/fws.json")
-            else
-              CLEANUP_FAIL=1
-            fi
-
-            code="$(api GET '/v2/ssh-keys?per_page=500' '' "$TMP/keys.json" || true)"
-            if [[ "$code" == 200 ]]; then
-              while read -r id; do
-                [[ -z "$id" ]] && continue
-                c="$(api DELETE "/v2/ssh-keys/$id" '' "$TMP/delete-key-found.json" || true)"
-                [[ "$c" == 204 || "$c" == 404 ]] || CLEANUP_FAIL=1
-              done < <(jq -r --arg l "$LABEL" '.ssh_keys[] | select(.name==$l) | .id' "$TMP/keys.json")
-            else
-              CLEANUP_FAIL=1
-            fi
-
-            code="$(api GET "/v2/instances?label=$LABEL&per_page=100" '' "$TMP/final-vm.json" || true)"
-            nvm=999
-            [[ "$code" == 200 ]] && nvm="$(jq --arg l "$LABEL" --arg t "$RUN_TAG" '[.instances[]|select(.label==$l)|select((.tags//[])|index($t))]|length' "$TMP/final-vm.json")"
-            code="$(api GET '/v2/firewalls?per_page=500' '' "$TMP/final-fw.json" || true)"
-            nfw=999
-            [[ "$code" == 200 ]] && nfw="$(jq --arg l "$LABEL" '[.firewall_groups[]|select(.description==$l)]|length' "$TMP/final-fw.json")"
-            code="$(api GET '/v2/ssh-keys?per_page=500' '' "$TMP/final-key.json" || true)"
-            nkey=999
-            [[ "$code" == 200 ]] && nkey="$(jq --arg l "$LABEL" '[.ssh_keys[]|select(.name==$l)]|length' "$TMP/final-key.json")"
-
-            echo "cleanup.instances=$nvm"
-            echo "cleanup.firewalls=$nfw"
-            echo "cleanup.ssh_keys=$nkey"
-            [[ "$nvm" == 0 && "$nfw" == 0 && "$nkey" == 0 ]] || CLEANUP_FAIL=1
-
-            rm -rf "$TMP"
-            if [[ "$CLEANUP_FAIL" -ne 0 ]]; then
-              echo cleanup.overall=FAIL
-              exit 90
-            fi
-            echo cleanup.overall=PASS
-            exit "$rc"
-          }
-          trap cleanup EXIT
-
-          echo "research.region=$REGION"
-          echo "research.plan=$PLAN"
-          echo "research.os_id=$OS_ID"
-
-          curl --fail --silent --show-error \
-            "https://raw.githubusercontent.com/iamaman11/sing-box/$GITHUB_SHA/infra/vultr/singbox-ops.pub" \
-            -o "$PUB"
-          fp="$(ssh-keygen -lf "$PUB" -E sha256 | awk '{print $2}')"
-          [[ "$fp" == "$EXPECTED_FP" ]]
-          echo ssh.canonical_fingerprint=PASS
-
-          printf '%s\n' "$VULTR_SSH_PRIVATE_KEY" > "$OPKEY"
-          chmod 600 "$OPKEY"
-          ssh-keygen -y -f "$OPKEY" > "$TMP/derived.pub"
-          [[ "$(awk '{print $1" "$2}' "$PUB")" == "$(awk '{print $1" "$2}' "$TMP/derived.pub")" ]]
-          echo ssh.private_matches_canonical=PASS
-
-          RUNNER_IP="$(curl --fail --silent --show-error https://api.ipify.org)"
-          [[ "$RUNNER_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
-          echo runner.ipv4_resolved=PASS
-
-          jq -n --arg n "$LABEL" --arg k "$(cat "$PUB")" '{name:$n,ssh_key:$k}' > "$TMP/ssh.json"
-          code="$(api POST /v2/ssh-keys "$TMP/ssh.json" "$TMP/ssh-response.json")"
-          [[ "$code" == 201 ]]
-          SSH_ID="$(jq -r '.ssh_key.id // empty' "$TMP/ssh-response.json")"
-          [[ -n "$SSH_ID" ]]
-          echo ssh_key.create=PASS
-
-          jq -n --arg d "$LABEL" '{description:$d}' > "$TMP/fw.json"
-          code="$(api POST /v2/firewalls "$TMP/fw.json" "$TMP/fw-response.json")"
-          [[ "$code" == 201 ]]
-          FW_ID="$(jq -r '.firewall_group.id // empty' "$TMP/fw-response.json")"
-          [[ -n "$FW_ID" ]]
-          echo firewall.create=PASS
-
-          jq -n --arg ip "$RUNNER_IP" --arg n "$LABEL" \
-            '{ip_type:"v4",protocol:"tcp",subnet:$ip,subnet_size:32,port:"22",notes:$n}' > "$TMP/rule.json"
-          code="$(api POST "/v2/firewalls/$FW_ID/rules" "$TMP/rule.json" "$TMP/rule-response.json")"
-          [[ "$code" == 201 ]]
-          RULE_ID="$(jq -r '.firewall_rule.id // empty' "$TMP/rule-response.json")"
-          [[ -n "$RULE_ID" ]]
-          echo firewall.ssh_rule.create=PASS
-
-          ssh-keygen -q -t ed25519 -N '' -f "$HOSTKEY"
-          ssh-keygen -q -s "$OPKEY" -I "$LABEL" -h -n "$LABEL" -V -5m:+2h "$HOSTKEY.pub"
-          read -r CA_TYPE CA_BLOB _ < "$PUB"
-          printf '@cert-authority %s %s %s\n' "$LABEL" "$CA_TYPE" "$CA_BLOB" > "$KNOWN"
-
-          HOST_PRIV_B64="$(base64 -w0 "$HOSTKEY")"
-          HOST_CERT_B64="$(base64 -w0 "$HOSTKEY-cert.pub")"
-          SSHD_B64="$(printf '%s\n' \
-            'PasswordAuthentication no' \
-            'KbdInteractiveAuthentication no' \
-            'PermitRootLogin no' \
-            'PubkeyAuthentication yes' \
-            'HostKey /etc/ssh/ssh_host_ed25519_key' \
-            'HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub' | base64 -w0)"
-
-          cat > "$TMP/cloud.yaml" <<EOF
-          #cloud-config
-          package_update: true
-          packages: [sudo]
-          users:
-            - default
-            - name: singbox-ops
-              groups: [sudo]
-              shell: /bin/bash
-              lock_passwd: true
-              sudo: ['ALL=(ALL) NOPASSWD:ALL']
-              ssh_authorized_keys:
-                - $(cat "$PUB")
-          ssh_pwauth: false
-          disable_root: true
-          write_files:
-            - path: /etc/ssh/ssh_host_ed25519_key
-              owner: root:root
-              permissions: '0600'
-              encoding: b64
-              content: $HOST_PRIV_B64
-            - path: /etc/ssh/ssh_host_ed25519_key-cert.pub
-              owner: root:root
-              permissions: '0644'
-              encoding: b64
-              content: $HOST_CERT_B64
-            - path: /etc/ssh/sshd_config.d/99-singbox-lifecycle.conf
-              owner: root:root
-              permissions: '0644'
-              encoding: b64
-              content: $SSHD_B64
-          runcmd:
-            - [mkdir, -p, /var/lib/singbox-lifecycle]
-            - [sh, -c, "printf '%s\n' '$LABEL' > /var/lib/singbox-lifecycle/research-id"]
-            - [sshd, -t]
-            - [systemctl, restart, ssh]
-            - [touch, /var/lib/singbox-lifecycle/research-ready]
-          EOF
-
-          USERDATA="$(base64 -w0 "$TMP/cloud.yaml")"
-          jq -n \
-            --arg region "$REGION" --arg plan "$PLAN" --arg label "$LABEL" \
-            --arg fw "$FW_ID" --arg ssh "$SSH_ID" --arg ud "$USERDATA" --arg tag "$RUN_TAG" \
-            --argjson os "$OS_ID" \
-            '{region:$region,plan:$plan,os_id:$os,label:$label,hostname:$label,
-              firewall_group_id:$fw,sshkey_id:[$ssh],user_data:$ud,
-              backups:"disabled",activation_email:false,enable_ipv6:false,
-              tags:["managed-by-sing-box","research-disposable",$tag]}' > "$TMP/vm.json"
-
-          code="$(api POST /v2/instances "$TMP/vm.json" "$TMP/vm-response.json")"
-          if [[ "$code" != 201 ]]; then
-            echo "instance.create=FAIL status=$code"
-            exit 40
-          fi
-          VM_ID="$(jq -r '.instance.id // empty' "$TMP/vm-response.json")"
-          [[ -n "$VM_ID" ]]
-          echo instance.create=PASS
-
-          READY=0
-          for _ in $(seq 1 90); do
-            code="$(api GET "/v2/instances/$VM_ID" '' "$TMP/vm-get.json" || true)"
-            if [[ "$code" == 200 ]]; then
-              status="$(jq -r '.instance.status // ""' "$TMP/vm-get.json")"
-              power="$(jq -r '.instance.power_status // ""' "$TMP/vm-get.json")"
-              server="$(jq -r '.instance.server_status // ""' "$TMP/vm-get.json")"
-              ip="$(jq -r '.instance.main_ip // ""' "$TMP/vm-get.json")"
-              if [[ "$status" == active && "$power" == running && "$server" == ok && -n "$ip" && "$ip" != 0.0.0.0 ]]; then
-                VM_IP="$ip"; READY=1; break
-              fi
-            fi
-            sleep 5
-          done
-          [[ "$READY" -eq 1 ]]
-          echo instance.provider_ready=PASS
-
-          jq -e --arg r "$REGION" --arg p "$PLAN" --arg l "$LABEL" --arg f "$FW_ID" --arg t "$RUN_TAG" --argjson o "$OS_ID" \
-            '.instance|.region==$r and .plan==$p and .label==$l and .os_id==$o and .firewall_group_id==$f and ((.tags//[])|index($t)!=null)' \
-            "$TMP/vm-get.json" >/dev/null
-          echo instance.identity=PASS
-
-          code="$(api GET "/v2/instances/$VM_ID/user-data" '' "$TMP/userdata-get.json")"
-          [[ "$code" == 200 ]]
-          [[ "$(jq -r '.user_data.data // empty' "$TMP/userdata-get.json")" == "$USERDATA" ]]
-          echo instance.user_data_integrity=PASS
-
-          ssh_ok() {
-            ssh -i "$OPKEY" -o BatchMode=yes -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN" \
-              -o GlobalKnownHostsFile=/dev/null -o HostKeyAlias="$LABEL" \
-              -o ConnectTimeout=5 -o ConnectionAttempts=1 -o LogLevel=ERROR \
-              "singbox-ops@$VM_IP" \
-              'test -f /var/lib/singbox-lifecycle/research-ready && sudo -n true && systemctl is-active --quiet ssh' \
-              </dev/null >/dev/null 2>&1
-          }
-
-          SSH_READY=0
-          for _ in $(seq 1 90); do
-            if ssh_ok; then SSH_READY=1; break; fi
-            sleep 5
-          done
-          [[ "$SSH_READY" -eq 1 ]]
-          echo ssh.strict_host_certificate=PASS
-
-          UNIT="$(printf '%s\n' \
-            '[Unit]' 'Description=sing-box disposable research' \
-            '[Service]' 'Type=oneshot' \
-            'ExecStart=/usr/bin/touch /var/lib/singbox-lifecycle/research-service-ok' \
-            'RemainAfterExit=yes' \
-            '[Install]' 'WantedBy=multi-user.target' | base64 -w0)"
-          ssh -i "$OPKEY" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN" \
-            -o GlobalKnownHostsFile=/dev/null -o HostKeyAlias="$LABEL" \
-            -o ConnectTimeout=5 -o LogLevel=ERROR "singbox-ops@$VM_IP" \
-            "printf '%s' '$UNIT' | base64 -d | sudo tee /etc/systemd/system/singbox-research.service >/dev/null &&
-             sudo systemctl daemon-reload &&
-             sudo systemctl enable --now singbox-research.service >/dev/null &&
-             sudo systemctl is-active --quiet singbox-research.service &&
-             test -f /var/lib/singbox-lifecycle/research-service-ok" \
-            </dev/null >/dev/null
-          echo host.systemd_deploy=PASS
-          echo research.basic_acceptance=PASS
+      - name: Run disposable Vultr lifecycle
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/disposable-lifecycle.sh"
