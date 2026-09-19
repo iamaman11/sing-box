@@ -189,7 +189,7 @@ jobs:
 
   windows:
     name: Windows verification
-    needs: [verify, dependencies]
+    needs: dependencies
     runs-on: windows-2025
     timeout-minutes: 35
     permissions:
@@ -309,7 +309,7 @@ jobs:
 
   release:
     name: Publish accepted candidate
-    needs: [verify, dependencies]
+    needs: [dependencies, windows]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
