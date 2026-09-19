@@ -313,7 +313,7 @@ pub fn prepare_strict_bootstrap(
                 "-n".to_owned(),
                 logical_hostname.to_owned(),
                 "-V".to_owned(),
-                "-5m:+24h".to_owned(),
+                "-5m:+8760h".to_owned(),
                 host_pub.display().to_string(),
             ],
             None,
@@ -446,6 +446,78 @@ pub async fn strict_ssh_accept(
     ))
 }
 
+pub fn ensure_host_certificate_rotated(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    minimum_serial: u64,
+) -> Result<bool, String> {
+    if minimum_serial == 0 {
+        return Err("minimum host certificate serial must be greater than zero".to_owned());
+    }
+    let current = read_host_certificate_serial(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        canonical_operator_public_key,
+    )?;
+    if current >= minimum_serial {
+        return Ok(false);
+    }
+    rotate_host_certificate(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        canonical_operator_public_key,
+        minimum_serial,
+    )?;
+    let observed = read_host_certificate_serial(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        canonical_operator_public_key,
+    )?;
+    if observed < minimum_serial {
+        return Err(format!(
+            "host certificate rotation did not reach required serial {minimum_serial}: observed {observed}"
+        ));
+    }
+    Ok(true)
+}
+
+fn read_host_certificate_serial(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+) -> Result<u64, String> {
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let result = (|| {
+        let output = run_capture(
+            "ssh",
+            &strict_ssh_args(
+                target_ip,
+                logical_hostname,
+                operator_private_key_path,
+                &trust,
+                "sudo ssh-keygen -L -f /etc/ssh/ssh_host_ed25519_key-cert.pub",
+            ),
+        )?;
+        let text = String::from_utf8(output)
+            .map_err(|_| "host certificate metadata was not UTF-8".to_owned())?;
+        text.lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix("Serial:"))
+            .map(str::trim)
+            .ok_or_else(|| "host certificate metadata did not contain Serial".to_owned())?
+            .parse::<u64>()
+            .map_err(|err| format!("invalid host certificate serial: {err}"))
+    })();
+    let _ = fs::remove_file(&trust);
+    result
+}
+
 pub fn rotate_host_certificate(
     target_ip: &str,
     logical_hostname: &str,
@@ -487,7 +559,7 @@ pub fn rotate_host_certificate(
                 "-n".to_owned(),
                 logical_hostname.to_owned(),
                 "-V".to_owned(),
-                "-5m:+24h".to_owned(),
+                "-5m:+8760h".to_owned(),
                 remote_pub.display().to_string(),
             ],
             None,
