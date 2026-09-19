@@ -185,7 +185,7 @@ impl AgentArtifactManifest {
     }
 }
 
-pub fn desired_release_id(
+pub fn desired_bundle_id(
     desired: &DesiredApplicationState,
     artifact: &AgentArtifactManifest,
 ) -> Result<String, ApplicationSpecError> {
@@ -209,7 +209,12 @@ pub fn desired_release(
     artifact.validate()?;
     validate_hex("bundle digest", bundle_digest, 64)?;
     Ok(PublishedApplicationRelease {
-        release_id: desired_release_id(desired, artifact)?,
+        release_id: format!(
+            "{}-{}-{}",
+            desired_bundle_id(desired, artifact)?,
+            &bundle_digest[..12],
+            desired.bootstrap_mode.as_str()
+        ),
         source_revision: artifact.source_revision.clone(),
         agent_sha256: artifact.sha256.clone(),
         bundle_digest: bundle_digest.to_owned(),
