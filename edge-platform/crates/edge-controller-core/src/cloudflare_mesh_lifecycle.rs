@@ -13,6 +13,7 @@ const OWNERSHIP_COMMENT_PREFIX: &str = "managed-by-sing-box:line3:";
 #[serde(deny_unknown_fields)]
 pub struct DesiredMeshState {
     pub schema: u32,
+    pub account_id: String,
     pub environment: String,
     pub node_name: String,
     #[serde(default)]
@@ -119,6 +120,7 @@ impl DesiredMeshState {
         if self.schema != CURRENT_SCHEMA {
             return Err(MeshLifecycleError::UnsupportedSchema(self.schema));
         }
+        validate_account_id(&self.account_id)?;
         validate_identifier("environment", &self.environment, 64)?;
         validate_identifier("node_name", &self.node_name, 128)?;
         if !self.node_name.starts_with(NODE_NAME_PREFIX) {
@@ -372,6 +374,7 @@ fn cleanup_digest(
 
     let value = json!({
         "schema": desired.schema,
+        "account_id": desired.account_id,
         "environment": desired.environment,
         "node_name": desired.node_name,
         "nodes": nodes,
@@ -429,6 +432,19 @@ fn canonical_network(value: &str) -> Result<String, MeshLifecycleError> {
     }
 }
 
+fn validate_account_id(value: &str) -> Result<(), MeshLifecycleError> {
+    if value.len() != 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(MeshLifecycleError::Validation(
+            "Cloudflare account_id must be exactly 32 lowercase hexadecimal characters".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_identifier(
     label: &str,
     value: &str,
@@ -470,6 +486,7 @@ mod tests {
         DesiredMeshState::parse_json(
             r#"{
   "schema": 1,
+  "account_id": "0123456789abcdef0123456789abcdef",
   "environment": "poc",
   "node_name": "singbox-line3-poc",
   "routes": [
@@ -504,6 +521,7 @@ mod tests {
         let error = DesiredMeshState::parse_json(
             r#"{
   "schema": 1,
+  "account_id": "0123456789abcdef0123456789abcdef",
   "environment": "poc",
   "node_name": "singbox-line3-poc",
   "routes": [],
@@ -515,10 +533,18 @@ mod tests {
     }
 
     #[test]
+    fn account_id_is_explicit_git_authority_not_runtime_secret() {
+        let mut desired = desired();
+        desired.account_id = "not-an-account".to_owned();
+        let error = desired.validate().unwrap_err();
+        assert!(error.to_string().contains("32 lowercase hexadecimal"));
+    }
+
+    #[test]
     fn default_routes_are_explicitly_blocked() {
         for network in ["0.0.0.0/0", "::/0"] {
             let json = format!(
-                r#"{{"schema":1,"environment":"poc","node_name":"singbox-line3-poc","routes":[{{"network":"{network}"}}]}}"#
+                r#"{{"schema":1,"account_id":"0123456789abcdef0123456789abcdef","environment":"poc","node_name":"singbox-line3-poc","routes":[{{"network":"{network}"}}]}}"#
             );
             let error = DesiredMeshState::parse_json(&json).unwrap_err();
             assert!(error.to_string().contains("explicit full-Internet PoC gate"));
@@ -528,7 +554,7 @@ mod tests {
     #[test]
     fn noncanonical_networks_are_rejected() {
         let error = DesiredMeshState::parse_json(
-            r#"{"schema":1,"environment":"poc","node_name":"singbox-line3-poc","routes":[{"network":"203.0.113.7/24"}]}"#,
+            r#"{"schema":1,"account_id":"0123456789abcdef0123456789abcdef","environment":"poc","node_name":"singbox-line3-poc","routes":[{"network":"203.0.113.7/24"}]}"#,
         )
         .unwrap_err();
         assert!(error.to_string().contains("use 203.0.113.0/24"));
