@@ -5,7 +5,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from resolve_release_dependencies import resolve_sing_box, resolve_warp_packages
+from resolve_release_dependencies import (
+    resolve_docker_packages,
+    resolve_sing_box,
+    resolve_warp_packages,
+)
 
 
 def asset(name: str, version: str, digest: str = "1" * 64) -> dict:
@@ -84,6 +88,55 @@ SHA256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 """
         with self.assertRaises(ValueError):
             resolve_warp_packages(raw)
+
+    def test_resolves_exact_docker_substrate_versions(self) -> None:
+        raw = """Package: docker-ce
+Version: 5:28.5.1-1~debian.13~trixie
+Architecture: amd64
+Filename: dists/trixie/pool/stable/amd64/docker-ce_28.5.1.deb
+SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+Package: docker-ce
+Version: 5:29.0.1-1~debian.13~trixie
+Architecture: amd64
+Filename: dists/trixie/pool/stable/amd64/docker-ce_29.0.1.deb
+SHA256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+Package: containerd.io
+Version: 1.7.28-1~debian.13~trixie
+Architecture: amd64
+Filename: dists/trixie/pool/stable/amd64/containerd.io_1.7.28.deb
+SHA256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+Package: docker-compose-plugin
+Version: 2.39.2-1~debian.13~trixie
+Architecture: amd64
+Filename: dists/trixie/pool/stable/amd64/docker-compose-plugin_2.39.2.deb
+SHA256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+"""
+        result = resolve_docker_packages(raw)
+        self.assertEqual(
+            result["docker_engine"]["version"],
+            "5:29.0.1-1~debian.13~trixie",
+        )
+        self.assertEqual(
+            result["containerd"]["version"],
+            "1.7.28-1~debian.13~trixie",
+        )
+        self.assertEqual(
+            result["compose"]["version"],
+            "2.39.2-1~debian.13~trixie",
+        )
+
+    def test_rejects_docker_substrate_missing_required_package(self) -> None:
+        raw = """Package: docker-ce
+Version: 5:29.0.1-1~debian.13~trixie
+Architecture: amd64
+Filename: dists/trixie/pool/stable/amd64/docker-ce_29.0.1.deb
+SHA256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+"""
+        with self.assertRaises(ValueError):
+            resolve_docker_packages(raw)
 
 
 if __name__ == "__main__":

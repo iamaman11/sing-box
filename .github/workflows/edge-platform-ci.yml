@@ -121,6 +121,9 @@ jobs:
       debian_base_image: ${{ steps.resolve.outputs.debian_base_image }}
       ubuntu_base_image: ${{ steps.resolve.outputs.ubuntu_base_image }}
       mesh_image: ${{ steps.resolve.outputs.mesh_image }}
+      docker_engine_version: ${{ steps.resolve.outputs.docker_engine_version }}
+      containerd_version: ${{ steps.resolve.outputs.containerd_version }}
+      compose_version: ${{ steps.resolve.outputs.compose_version }}
     steps:
       - name: Checkout exact revision
         shell: bash
@@ -151,8 +154,17 @@ jobs:
             https://pkg.cloudflareclient.com/dists/noble/main/binary-amd64/Packages \
             -o "${work}/warp-Packages"
 
+          # Current canonical disposable host input uses Vultr OS 2625 (Debian 13/trixie).
+          # Fail closed if that source-controlled host input changes before this resolver is updated.
+          test "$(jq -er '.machines | length' infra/vultr/disposable-acceptance.json)" -eq 1
+          test "$(jq -er '.machines[0].provider.os_id' infra/vultr/disposable-acceptance.json)" = "2625"
+          curl --fail --silent --show-error --location \
+            https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages \
+            -o "${work}/docker-Packages"
+
           sing_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py sing-box "${work}/sing-box-releases.json")"
           warp_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py warp "${work}/warp-Packages")"
+          docker_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py docker "${work}/docker-Packages")"
 
           sing_version="$(jq -er '.version' <<<"${sing_json}")"
           sing_windows_url="$(jq -er '.windows.url' <<<"${sing_json}")"
@@ -162,6 +174,9 @@ jobs:
           warp_version="$(jq -er '.version' <<<"${warp_json}")"
           warp_url="$(jq -er '.url' <<<"${warp_json}")"
           warp_sha="$(jq -er '.sha256' <<<"${warp_json}")"
+          docker_engine_version="$(jq -er '.docker_engine.version' <<<"${docker_json}")"
+          containerd_version="$(jq -er '.containerd.version' <<<"${docker_json}")"
+          compose_version="$(jq -er '.compose.version' <<<"${docker_json}")"
 
           resolve_digest() {
             docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | jq -er '.'
@@ -190,6 +205,9 @@ jobs:
             printf 'debian_base_image=%s\n' "${debian_ref}"
             printf 'ubuntu_base_image=%s\n' "${ubuntu_ref}"
             printf 'mesh_image=%s\n' "${mesh_ref}"
+            printf 'docker_engine_version=%s\n' "${docker_engine_version}"
+            printf 'containerd_version=%s\n' "${containerd_version}"
+            printf 'compose_version=%s\n' "${compose_version}"
           } >> "${GITHUB_OUTPUT}"
 
           {
@@ -202,6 +220,9 @@ jobs:
             echo "- Debian base: \`${debian_ref}\`"
             echo "- Ubuntu base: \`${ubuntu_ref}\`"
             echo "- Cloudflare Mesh: \`${mesh_ref}\`"
+            echo "- Docker Engine package: \`${docker_engine_version}\`"
+            echo "- containerd package: \`${containerd_version}\`"
+            echo "- Compose package: \`${compose_version}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   windows:
@@ -212,6 +233,11 @@ jobs:
     timeout-minutes: 35
     permissions:
       contents: read
+    outputs:
+      artifact_sha256: ${{ steps.package.outputs.artifact_sha256 }}
+      controller_sha256: ${{ steps.package.outputs.controller_sha256 }}
+      console_sha256: ${{ steps.package.outputs.console_sha256 }}
+      sing_box_binary_sha256: ${{ steps.package.outputs.sing_box_binary_sha256 }}
     steps:
       - name: Checkout exact revision
         shell: pwsh
@@ -297,6 +323,7 @@ jobs:
           cargo build --locked --release -p edge-controller --bin edge-controller -p edge-console --bin edge-console
 
       - name: Package exact Windows candidate
+        id: package
         shell: pwsh
         env:
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
@@ -312,6 +339,16 @@ jobs:
           if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
           Copy-Item $resolvedSingBox.FullName (Join-Path $out "sing-box.exe")
 
+          $packageRoot = Join-Path $env:RUNNER_TEMP "edge-platform-windows-package"
+          $packageBin = Join-Path $packageRoot "bin"
+          New-Item -ItemType Directory -Force -Path $packageBin | Out-Null
+          Copy-Item (Join-Path $out "edge-controller.exe") (Join-Path $packageBin "edge-controller.exe")
+          Copy-Item (Join-Path $out "edge-console.exe") (Join-Path $packageBin "edge-console.exe")
+          Copy-Item (Join-Path $out "sing-box.exe") (Join-Path $packageBin "sing-box.exe")
+          $packagePath = Join-Path $out "edge-platform-windows.zip"
+          Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $packagePath -CompressionLevel Optimal
+
+          $artifactSha = (Get-FileHash -Algorithm SHA256 $packagePath).Hash.ToLowerInvariant()
           $controllerSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-controller.exe")).Hash.ToLowerInvariant()
           $consoleSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-console.exe")).Hash.ToLowerInvariant()
           $singBoxSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "sing-box.exe")).Hash.ToLowerInvariant()
@@ -323,10 +360,15 @@ jobs:
             sing_box_version = $env:SING_BOX_VERSION
             sing_box_archive_sha256 = $env:SING_BOX_WINDOWS_SHA256
             sing_box_binary_sha256 = $singBoxSha
+            artifact_sha256 = $artifactSha
             controller_sha256 = $controllerSha
             console_sha256 = $consoleSha
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $out "manifest.json")
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "artifact_sha256=$artifactSha"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "controller_sha256=$controllerSha"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "console_sha256=$consoleSha"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sing_box_binary_sha256=$singBoxSha"
 
       - name: Store exact Windows candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -349,6 +391,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      gateway_ref: ${{ steps.images.outputs.gateway_ref }}
+      warp_ref: ${{ steps.images.outputs.warp_ref }}
+      sing_box_binary_sha256: ${{ steps.images.outputs.sing_box_binary_sha256 }}
+      edge_agent_sha256: ${{ steps.package.outputs.edge_agent_sha256 }}
     steps:
       - name: Checkout exact candidate revision
         shell: bash
@@ -379,6 +426,7 @@ jobs:
           set -euo pipefail
           cargo build --locked --release -p edge-controller --bin edge-controller
           cargo build --locked --release -p edge-agent --bin edge-agent
+          cargo build --locked --release -p edge-shared-types --bin edge-release-set
 
       - name: Build and publish exact candidate images
         id: images
@@ -413,6 +461,14 @@ jobs:
             --build-arg "SING_BOX_SHA256=${SING_BOX_SHA256}" \
             -t "${gateway_tag}" \
             win/vultr-waw/stack/edge-gateway
+
+          sing_box_evidence="${RUNNER_TEMP}/sing-box-linux"
+          gateway_container="$(docker create "${gateway_tag}")"
+          docker cp "${gateway_container}:/usr/local/bin/sing-box" "${sing_box_evidence}"
+          docker rm "${gateway_container}" >/dev/null
+          chmod 0755 "${sing_box_evidence}"
+          sing_box_binary_sha="$(sha256sum "${sing_box_evidence}" | awk '{print $1}')"
+
           docker push "${gateway_tag}"
 
           docker build \
@@ -433,8 +489,10 @@ jobs:
 
           printf 'gateway_ref=%s\n' "${registry}/${owner}/vultr-edge-gateway@${gateway_digest}" >> "${GITHUB_OUTPUT}"
           printf 'warp_ref=%s\n' "${registry}/${owner}/vultr-warp-egress@${warp_digest}" >> "${GITHUB_OUTPUT}"
+          printf 'sing_box_binary_sha256=%s\n' "${sing_box_binary_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Package exact Linux candidate
+        id: package
         shell: bash
         env:
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
@@ -442,6 +500,10 @@ jobs:
           EDGE_WARP_EGRESS_IMAGE: ${{ steps.images.outputs.warp_ref }}
           SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
           SING_BOX_LINUX_SHA256: ${{ needs.dependencies.outputs.sing_box_linux_sha256 }}
+          SING_BOX_BINARY_SHA256: ${{ steps.images.outputs.sing_box_binary_sha256 }}
+          DOCKER_ENGINE_VERSION: ${{ needs.dependencies.outputs.docker_engine_version }}
+          CONTAINERD_VERSION: ${{ needs.dependencies.outputs.containerd_version }}
+          COMPOSE_VERSION: ${{ needs.dependencies.outputs.compose_version }}
           WARP_VERSION: ${{ needs.dependencies.outputs.warp_version }}
           WARP_SHA256: ${{ needs.dependencies.outputs.warp_sha256 }}
           DEBIAN_BASE_IMAGE: ${{ needs.dependencies.outputs.debian_base_image }}
@@ -453,9 +515,13 @@ jobs:
           install -d -m 0755 "${out}"
           install -m 0755 edge-platform/target/release/edge-controller "${out}/edge-controller"
           install -m 0755 edge-platform/target/release/edge-agent "${out}/edge-agent"
+          install -m 0755 edge-platform/target/release/edge-release-set "${out}/edge-release-set"
+          install -m 0755 "${RUNNER_TEMP}/sing-box-linux" "${out}/sing-box-linux"
 
           controller_sha="$(sha256sum "${out}/edge-controller" | awk '{print $1}')"
           agent_sha="$(sha256sum "${out}/edge-agent" | awk '{print $1}')"
+          sing_box_binary_sha="$(sha256sum "${out}/sing-box-linux" | awk '{print $1}')"
+          test "${sing_box_binary_sha}" = "${SING_BOX_BINARY_SHA256}"
           source_tree="$(git rev-parse 'HEAD^{tree}')"
 
           [[ "${EDGE_GATEWAY_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
@@ -470,6 +536,10 @@ jobs:
             --arg edge_warp_egress_image "${EDGE_WARP_EGRESS_IMAGE}" \
             --arg sing_box_version "${SING_BOX_VERSION}" \
             --arg sing_box_linux_sha256 "${SING_BOX_LINUX_SHA256}" \
+            --arg sing_box_binary_sha256 "${sing_box_binary_sha}" \
+            --arg docker_engine_version "${DOCKER_ENGINE_VERSION}" \
+            --arg containerd_version "${CONTAINERD_VERSION}" \
+            --arg compose_version "${COMPOSE_VERSION}" \
             --arg warp_version "${WARP_VERSION}" \
             --arg warp_sha256 "${WARP_SHA256}" \
             --arg debian_base_image "${DEBIAN_BASE_IMAGE}" \
@@ -485,12 +555,17 @@ jobs:
               edge_warp_egress_image:$edge_warp_egress_image,
               sing_box_version:$sing_box_version,
               sing_box_linux_sha256:$sing_box_linux_sha256,
+              sing_box_binary_sha256:$sing_box_binary_sha256,
+              docker_engine_version:$docker_engine_version,
+              containerd_version:$containerd_version,
+              compose_version:$compose_version,
               warp_version:$warp_version,
               warp_sha256:$warp_sha256,
               debian_base_image:$debian_base_image,
               ubuntu_base_image:$ubuntu_base_image,
               mesh_image:$mesh_image
             }' > "${out}/manifest.json"
+          printf 'edge_agent_sha256=%s\n' "${agent_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Store exact Linux candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -500,10 +575,138 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+
+  release_authority:
+    name: Create canonical ReleaseSet candidate
+    if: github.event_name == 'pull_request'
+    needs: [dependencies, windows, linux_candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    outputs:
+      release_set_sha256: ${{ steps.authority.outputs.release_set_sha256 }}
+    steps:
+      - name: Download exact platform candidates
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          install -d "${RUNNER_TEMP}/candidate/windows" "${RUNNER_TEMP}/candidate/linux"
+          gh run download "${GITHUB_RUN_ID}" -R "${REPOSITORY}" \
+            -n "edge-platform-windows-${CANDIDATE_REVISION}" \
+            -D "${RUNNER_TEMP}/candidate/windows"
+          gh run download "${GITHUB_RUN_ID}" -R "${REPOSITORY}" \
+            -n "edge-platform-release-${CANDIDATE_REVISION}" \
+            -D "${RUNNER_TEMP}/candidate/linux"
+
+      - name: Create and verify canonical ReleaseSet
+        id: authority
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
+          WINDOWS_ARTIFACT_SHA256: ${{ needs.windows.outputs.artifact_sha256 }}
+          WINDOWS_CONTROLLER_SHA256: ${{ needs.windows.outputs.controller_sha256 }}
+          WINDOWS_CONSOLE_SHA256: ${{ needs.windows.outputs.console_sha256 }}
+          WINDOWS_SING_BOX_SHA256: ${{ needs.windows.outputs.sing_box_binary_sha256 }}
+          LINUX_SING_BOX_SHA256: ${{ needs.linux_candidate.outputs.sing_box_binary_sha256 }}
+          EDGE_AGENT_SHA256: ${{ needs.linux_candidate.outputs.edge_agent_sha256 }}
+          EDGE_GATEWAY_IMAGE: ${{ needs.linux_candidate.outputs.gateway_ref }}
+          EDGE_WARP_EGRESS_IMAGE: ${{ needs.linux_candidate.outputs.warp_ref }}
+          DOCKER_ENGINE_VERSION: ${{ needs.dependencies.outputs.docker_engine_version }}
+          CONTAINERD_VERSION: ${{ needs.dependencies.outputs.containerd_version }}
+          COMPOSE_VERSION: ${{ needs.dependencies.outputs.compose_version }}
+          WARP_VERSION: ${{ needs.dependencies.outputs.warp_version }}
+          MESH_IMAGE: ${{ needs.dependencies.outputs.mesh_image }}
+        run: |
+          set -euo pipefail
+          windows="${RUNNER_TEMP}/candidate/windows"
+          linux="${RUNNER_TEMP}/candidate/linux"
+          unpacked="${RUNNER_TEMP}/candidate/windows-package"
+          authority="${RUNNER_TEMP}/candidate/release-set"
+          tool="${linux}/edge-release-set"
+          install -d "${unpacked}" "${authority}"
+          chmod 0755 "${tool}"
+          unzip -q "${windows}/edge-platform-windows.zip" -d "${unpacked}"
+
+          test "$(sha256sum "${windows}/edge-platform-windows.zip" | awk '{print $1}')" = "${WINDOWS_ARTIFACT_SHA256}"
+          test "$(sha256sum "${unpacked}/bin/edge-controller.exe" | awk '{print $1}')" = "${WINDOWS_CONTROLLER_SHA256}"
+          test "$(sha256sum "${unpacked}/bin/edge-console.exe" | awk '{print $1}')" = "${WINDOWS_CONSOLE_SHA256}"
+          test "$(sha256sum "${unpacked}/bin/sing-box.exe" | awk '{print $1}')" = "${WINDOWS_SING_BOX_SHA256}"
+          test "$(sha256sum "${linux}/sing-box-linux" | awk '{print $1}')" = "${LINUX_SING_BOX_SHA256}"
+          test "$(sha256sum "${linux}/edge-agent" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+
+          "${tool}" create \
+            --output "${authority}/release-set.pb" \
+            --sha256-output "${authority}/release-set.pb.sha256" \
+            --source-revision "${CANDIDATE_REVISION}" \
+            --sing-box-version "${SING_BOX_VERSION}" \
+            --windows-sing-box-sha256 "${WINDOWS_SING_BOX_SHA256}" \
+            --linux-sing-box-sha256 "${LINUX_SING_BOX_SHA256}" \
+            --windows-artifact-sha256 "${WINDOWS_ARTIFACT_SHA256}" \
+            --windows-controller-sha256 "${WINDOWS_CONTROLLER_SHA256}" \
+            --windows-console-sha256 "${WINDOWS_CONSOLE_SHA256}" \
+            --edge-agent-sha256 "${EDGE_AGENT_SHA256}" \
+            --sing-box-image "${EDGE_GATEWAY_IMAGE}" \
+            --warp-egress-image "${EDGE_WARP_EGRESS_IMAGE}" \
+            --docker-engine-version "${DOCKER_ENGINE_VERSION}" \
+            --containerd-version "${CONTAINERD_VERSION}" \
+            --compose-version "${COMPOSE_VERSION}" \
+            --warp-version "${WARP_VERSION}" \
+            --mesh-image "${MESH_IMAGE}"
+
+          verify_output="$("${tool}" verify \
+            --input "${authority}/release-set.pb" \
+            --sha256-file "${authority}/release-set.pb.sha256" \
+            --source-revision "${CANDIDATE_REVISION}" \
+            --windows-artifact "${windows}/edge-platform-windows.zip" \
+            --windows-controller "${unpacked}/bin/edge-controller.exe" \
+            --windows-console "${unpacked}/bin/edge-console.exe" \
+            --windows-sing-box "${unpacked}/bin/sing-box.exe" \
+            --linux-sing-box "${linux}/sing-box-linux" \
+            --edge-agent "${linux}/edge-agent")"
+          printf '%s\n' "${verify_output}"
+
+          release_set_sha="$(sed -n 's/^release_set_sha256=//p' <<<"${verify_output}")"
+          test "$(wc -l <<<"${release_set_sha}")" -eq 1
+          [[ "${release_set_sha}" =~ ^[0-9a-f]{64}$ ]]
+          printf 'release_set_sha256=%s\n' "${release_set_sha}" >> "${GITHUB_OUTPUT}"
+
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker buildx imagetools inspect "${EDGE_GATEWAY_IMAGE}" >/dev/null
+          docker buildx imagetools inspect "${EDGE_WARP_EGRESS_IMAGE}" >/dev/null
+          docker logout ghcr.io >/dev/null
+          docker buildx imagetools inspect "${MESH_IMAGE}" >/dev/null
+
+          {
+            echo '### Canonical ReleaseSet candidate'
+            echo
+            echo "- source: \`${CANDIDATE_REVISION}\`"
+            echo "- release-set SHA-256: \`${release_set_sha}\`"
+            echo "- Docker Engine package: \`${DOCKER_ENGINE_VERSION}\`"
+            echo "- containerd package: \`${CONTAINERD_VERSION}\`"
+            echo "- Compose package: \`${COMPOSE_VERSION}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Store canonical ReleaseSet candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-release-set-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/candidate/release-set
+          if-no-files-found: error
+          retention-days: 30
+
   candidate_complete:
     name: Candidate complete
     if: always() && github.event_name == 'pull_request'
-    needs: [verify, dependencies, windows, linux_candidate]
+    needs: [verify, dependencies, windows, linux_candidate, release_authority]
     runs-on: ubuntu-24.04
     steps:
       - name: Require complete exact candidate
@@ -514,13 +717,18 @@ jobs:
           DEPENDENCIES_RESULT: ${{ needs.dependencies.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
           LINUX_RESULT: ${{ needs.linux_candidate.result }}
+          RELEASE_AUTHORITY_RESULT: ${{ needs.release_authority.result }}
+          RELEASE_SET_SHA256: ${{ needs.release_authority.outputs.release_set_sha256 }}
         run: |
           set -euo pipefail
           test "${SOURCE_RESULT}" = "success"
           test "${DEPENDENCIES_RESULT}" = "success"
           test "${WINDOWS_RESULT}" = "success"
           test "${LINUX_RESULT}" = "success"
+          test "${RELEASE_AUTHORITY_RESULT}" = "success"
+          [[ "${RELEASE_SET_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           echo "candidate_revision=${CANDIDATE_REVISION}"
+          echo "release_set_sha256=${RELEASE_SET_SHA256}"
           echo "All candidate build and verification jobs passed."
 
   promote:
@@ -576,13 +784,16 @@ jobs:
           CANDIDATE_RUN_ID: ${{ steps.locate.outputs.candidate_run_id }}
         run: |
           set -euo pipefail
-          install -d "${RUNNER_TEMP}/accepted/windows" "${RUNNER_TEMP}/accepted/linux"
+          install -d "${RUNNER_TEMP}/accepted/windows" "${RUNNER_TEMP}/accepted/linux" "${RUNNER_TEMP}/accepted/release-set"
           gh run download "${CANDIDATE_RUN_ID}" -R "${REPOSITORY}" \
             -n "edge-platform-windows-${CANDIDATE_REVISION}" \
             -D "${RUNNER_TEMP}/accepted/windows"
           gh run download "${CANDIDATE_RUN_ID}" -R "${REPOSITORY}" \
             -n "edge-platform-release-${CANDIDATE_REVISION}" \
             -D "${RUNNER_TEMP}/accepted/linux"
+          gh run download "${CANDIDATE_RUN_ID}" -R "${REPOSITORY}" \
+            -n "edge-platform-release-set-${CANDIDATE_REVISION}" \
+            -D "${RUNNER_TEMP}/accepted/release-set"
 
       - name: Verify exact candidate provenance
         shell: bash
@@ -602,21 +813,37 @@ jobs:
           test "$(jq -er '.source_revision' "${linux}/manifest.json")" = "${CANDIDATE_REVISION}"
           test "$(jq -er '.source_tree' "${linux}/manifest.json")" = "${CANDIDATE_TREE}"
 
-          echo "$(jq -er '.controller_sha256' "${windows}/manifest.json")  ${windows}/edge-controller.exe" | sha256sum -c -
-          echo "$(jq -er '.console_sha256' "${windows}/manifest.json")  ${windows}/edge-console.exe" | sha256sum -c -
-          echo "$(jq -er '.sing_box_binary_sha256' "${windows}/manifest.json")  ${windows}/sing-box.exe" | sha256sum -c -
-          echo "$(jq -er '.controller_sha256' "${linux}/manifest.json")  ${linux}/edge-controller" | sha256sum -c -
-          echo "$(jq -er '.agent_sha256' "${linux}/manifest.json")  ${linux}/edge-agent" | sha256sum -c -
+          authority="${RUNNER_TEMP}/accepted/release-set"
+          unpacked="${RUNNER_TEMP}/accepted/windows-package"
+          tool="${linux}/edge-release-set"
+          install -d "${unpacked}"
+          chmod 0755 "${tool}"
+          unzip -q "${windows}/edge-platform-windows.zip" -d "${unpacked}"
 
-          gateway_ref="$(jq -er '.edge_gateway_image' "${linux}/manifest.json")"
-          warp_ref="$(jq -er '.edge_warp_egress_image' "${linux}/manifest.json")"
+          verify_output="$("${tool}" verify \
+            --input "${authority}/release-set.pb" \
+            --sha256-file "${authority}/release-set.pb.sha256" \
+            --source-revision "${CANDIDATE_REVISION}" \
+            --windows-artifact "${windows}/edge-platform-windows.zip" \
+            --windows-controller "${unpacked}/bin/edge-controller.exe" \
+            --windows-console "${unpacked}/bin/edge-console.exe" \
+            --windows-sing-box "${unpacked}/bin/sing-box.exe" \
+            --linux-sing-box "${linux}/sing-box-linux" \
+            --edge-agent "${linux}/edge-agent")"
+          printf '%s\n' "${verify_output}"
+
+          gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"
+          warp_ref="$(sed -n 's/^warp_egress_image=//p' <<<"${verify_output}")"
+          mesh_ref="$(sed -n 's/^mesh_image=//p' <<<"${verify_output}")"
           [[ "${gateway_ref}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
           [[ "${warp_ref}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
+          [[ "${mesh_ref}" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
 
           printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           docker buildx imagetools inspect "${gateway_ref}" >/dev/null
           docker buildx imagetools inspect "${warp_ref}" >/dev/null
           docker logout ghcr.io >/dev/null
+          docker buildx imagetools inspect "${mesh_ref}" >/dev/null
 
           jq -n \
             --arg accepted_revision "${ACCEPTED_REVISION}" \
@@ -631,6 +858,7 @@ jobs:
               candidate_run_id:$candidate_run_id
             }' > "${windows}/acceptance.json"
           cp "${windows}/acceptance.json" "${linux}/acceptance.json"
+          cp "${windows}/acceptance.json" "${authority}/acceptance.json"
 
       - name: Publish accepted Windows artifact without rebuild
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -645,5 +873,13 @@ jobs:
         with:
           name: edge-platform-release-${{ github.sha }}
           path: ${{ runner.temp }}/accepted/linux
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish accepted ReleaseSet without rebuild
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-release-set-${{ github.sha }}
+          path: ${{ runner.temp }}/accepted/release-set
           if-no-files-found: error
           retention-days: 30

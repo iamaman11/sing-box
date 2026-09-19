@@ -20,6 +20,8 @@ pub use release::v1::{
 };
 
 pub const RELEASE_SET_SCHEMA_VERSION: u32 = 1;
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+pub const DB_SCHEMA_VERSION: u32 = 1;
 
 pub fn encode_release_set(release: &ReleaseSet) -> Result<Vec<u8>, String> {
     validate_release_set(release)?;
