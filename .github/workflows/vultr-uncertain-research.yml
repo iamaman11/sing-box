@@ -1,0 +1,41 @@
+name: Vultr Uncertain Mutation Research
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  uncertain:
+    concurrency:
+      group: vultr-disposable-research
+      queue: max
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research uncertain'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 12
+
+    steps:
+      - name: Fetch exact uncertainty probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 30             "https://raw.githubusercontent.com/iamaman11/sing-box/${GITHUB_SHA}/research/vultr/uncertain-mutation.sh"             --output "${RUNNER_TEMP}/uncertain-mutation.sh"
+          test -s "${RUNNER_TEMP}/uncertain-mutation.sh"
+
+      - name: Run real uncertain mutation recovery probe
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/uncertain-mutation.sh"
