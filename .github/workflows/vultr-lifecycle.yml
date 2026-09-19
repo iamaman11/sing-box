@@ -45,38 +45,160 @@ on:
   issue_comment:
     types: [created]
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: vultr-lifecycle-production
+  cancel-in-progress: false
 
 jobs:
-  lifecycle:
+  authorize:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
       (
+        github.event_name == 'workflow_dispatch' &&
+        github.repository == 'iamaman11/sing-box' &&
+        github.repository_id == '1221750822' &&
+        github.ref == 'refs/heads/main' &&
+        github.run_attempt == 1
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.repository == 'iamaman11/sing-box' &&
         github.repository_id == '1221750822' &&
         github.event.issue.number == 1 &&
         !github.event.issue.pull_request &&
         github.actor_id == '44100369' &&
-        github.event.comment.body == '/vultr-lifecycle acceptance'
+        github.run_attempt == 1
       )
-    concurrency:
-      group: vultr-lifecycle-production
-      cancel-in-progress: false
     runs-on: ubuntu-24.04
-    environment:
-      name: production-vultr
-      deployment: false
-    timeout-minutes: 45
-    env:
-      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
-      REQUESTED_OPERATION: ${{ github.event_name == 'issue_comment' && 'acceptance' || inputs.operation }}
-      SPEC_PATH: ${{ github.event_name == 'issue_comment' && 'infra/vultr/disposable-acceptance.json' || inputs.spec_path }}
-      MACHINE_ID: ${{ github.event_name == 'issue_comment' && 'lifecycle-acceptance-1' || inputs.machine_id }}
-      INSTANCE_ACTION: ${{ inputs.action }}
-      DESTROY_DIGEST: ${{ inputs.destroy_digest }}
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.parse.outputs.operation }}
+      spec_path: ${{ steps.parse.outputs.spec_path }}
+      machine_id: ${{ steps.parse.outputs.machine_id }}
+      instance_action: ${{ steps.parse.outputs.instance_action }}
+      destroy_digest: ${{ steps.parse.outputs.destroy_digest }}
 
     steps:
-      - name: Checkout exact revision
+      - name: Parse and authorize typed request
+        id: parse
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_SPEC_PATH: ${{ inputs.spec_path }}
+          INPUT_MACHINE_ID: ${{ inputs.machine_id }}
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_DESTROY_DIGEST: ${{ inputs.destroy_digest }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import re
+
+          event = os.environ["EVENT_NAME"]
+          spec_re = re.compile(r"^infra/vultr/[A-Za-z0-9._/-]+\.json$")
+          machine_re = re.compile(r"^[A-Za-z0-9._-]+$")
+          digest_re = re.compile(r"^[0-9a-f]{64}$")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          operation = ""
+          spec_path = ""
+          machine_id = ""
+          action = ""
+          destroy_digest = ""
+
+          if event == "issue_comment":
+              tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+              if tokens == ["/vultr", "acceptance"]:
+                  operation = "acceptance"
+                  spec_path = "infra/vultr/disposable-acceptance.json"
+                  machine_id = "lifecycle-acceptance-1"
+              elif len(tokens) >= 3 and tokens[0] == "/vultr":
+                  verb = tokens[1]
+                  if verb in {"doctor", "inventory", "cleanup"} and len(tokens) == 3:
+                      operation, spec_path = verb, tokens[2]
+                  elif verb == "plan" and len(tokens) in {3, 4}:
+                      operation, spec_path = "plan", tokens[2]
+                      if len(tokens) == 4:
+                          machine_id = tokens[3]
+                  elif verb == "apply" and len(tokens) == 4:
+                      operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
+                  elif verb in {"start", "halt", "reboot"} and len(tokens) == 4:
+                      operation, action, spec_path, machine_id = "action", verb, tokens[2], tokens[3]
+                  elif verb == "destroy-plan" and len(tokens) == 4:
+                      operation, spec_path, machine_id = "destroy-plan", tokens[2], tokens[3]
+                  elif verb == "destroy-apply" and len(tokens) == 5:
+                      operation, spec_path, machine_id, destroy_digest = (
+                          "destroy-apply",
+                          tokens[2],
+                          tokens[3],
+                          tokens[4],
+                      )
+                  else:
+                      fail("unsupported /vultr command grammar")
+              else:
+                  fail("comment is not an authorized /vultr command")
+          elif event == "workflow_dispatch":
+              operation = os.environ.get("INPUT_OPERATION", "")
+              spec_path = os.environ.get("INPUT_SPEC_PATH", "")
+              machine_id = os.environ.get("INPUT_MACHINE_ID", "")
+              action = os.environ.get("INPUT_ACTION", "")
+              destroy_digest = os.environ.get("INPUT_DESTROY_DIGEST", "")
+          else:
+              fail("unsupported event")
+
+          if operation not in {
+              "doctor", "inventory", "plan", "apply", "action",
+              "destroy-plan", "destroy-apply", "cleanup", "acceptance",
+          }:
+              fail("unsupported lifecycle operation")
+
+          if not spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
+              fail("invalid spec_path")
+
+          if machine_id and not machine_re.fullmatch(machine_id):
+              fail("invalid machine_id")
+
+          if operation in {"apply", "action", "destroy-plan", "destroy-apply"} and not machine_id:
+              fail("machine_id is required for targeted operation")
+
+          if operation == "action" and action not in {"start", "halt", "reboot"}:
+              fail("invalid instance action")
+
+          if operation == "destroy-apply" and not digest_re.fullmatch(destroy_digest):
+              fail("destroy-apply requires a lowercase 64-character digest")
+          if operation != "destroy-apply" and destroy_digest:
+              fail("destroy_digest is only valid for destroy-apply")
+
+          if operation == "acceptance":
+              if spec_path != "infra/vultr/disposable-acceptance.json":
+                  fail("acceptance uses only the canonical disposable spec")
+              if machine_id != "lifecycle-acceptance-1":
+                  fail("acceptance uses only the canonical disposable machine")
+              action = ""
+              destroy_digest = ""
+
+          output = os.environ["GITHUB_OUTPUT"]
+          with open(output, "a", encoding="utf-8") as handle:
+              handle.write(f"operation={operation}\n")
+              handle.write(f"spec_path={spec_path}\n")
+              handle.write(f"machine_id={machine_id}\n")
+              handle.write(f"instance_action={action}\n")
+              handle.write(f"destroy_digest={destroy_digest}\n")
+          PY
+
+  verify:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact canonical revision
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
@@ -88,45 +210,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "${REVISION}"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
-
-      - name: Validate closed request grammar
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${REQUESTED_OPERATION}" in
-            doctor|inventory|plan|apply|action|destroy-plan|destroy-apply|cleanup|acceptance) ;;
-            *) echo "unsupported lifecycle operation" >&2; exit 2 ;;
-          esac
-
-          [[ "${SPEC_PATH}" == infra/vultr/*.json ]]
-          [[ "${SPEC_PATH}" != *".."* ]]
-          [[ -f "${SPEC_PATH}" ]]
-
-          if [[ -n "${MACHINE_ID}" ]]; then
-            [[ "${MACHINE_ID}" =~ ^[A-Za-z0-9._-]+$ ]]
-          fi
-
-          case "${REQUESTED_OPERATION}" in
-            apply|action|destroy-plan|destroy-apply)
-              [[ -n "${MACHINE_ID}" ]]
-              ;;
-          esac
-
-          if [[ "${REQUESTED_OPERATION}" == "action" ]]; then
-            case "${INSTANCE_ACTION}" in
-              start|halt|reboot) ;;
-              *) echo "invalid instance action" >&2; exit 2 ;;
-            esac
-          fi
-
-          if [[ "${REQUESTED_OPERATION}" == "destroy-apply" ]]; then
-            [[ "${DESTROY_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
-          fi
-
-          if [[ "${REQUESTED_OPERATION}" == "acceptance" ]]; then
-            test "${SPEC_PATH}" = "infra/vultr/disposable-acceptance.json"
-            test "${MACHINE_ID}" = "lifecycle-acceptance-1"
-          fi
+          test -f "${{ needs.authorize.outputs.spec_path }}"
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -137,7 +221,52 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Build exact lifecycle controller
+      - name: Build exact lifecycle controller without production secrets
+        working-directory: edge-platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p edge-controller --bin edge-controller
+
+  execute:
+    needs: [authorize, verify]
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+      MACHINE_ID: ${{ needs.authorize.outputs.machine_id }}
+      INSTANCE_ACTION: ${{ needs.authorize.outputs.instance_action }}
+      DESTROY_DIGEST: ${{ needs.authorize.outputs.destroy_digest }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Build verified lifecycle controller
         working-directory: edge-platform
         shell: bash
         run: |
@@ -166,14 +295,16 @@ jobs:
           import ipaddress
           import sys
           value = ipaddress.ip_address(sys.argv[1].strip())
-          if value.version != 4:
-              raise SystemExit("controller egress is not IPv4")
+          if value.version != 4 or not value.is_global:
+              raise SystemExit("controller egress is not a global IPv4 address")
           print(value)
           PY
           printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
 
       - name: Execute typed lifecycle operation
         shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
           bin="edge-platform/target/debug/edge-controller"
@@ -253,11 +384,11 @@ jobs:
               run_lifecycle action "${spec}" "${machine}" start > "${RUNNER_TEMP}/start.json"
               jq -e '.power_status == "running"' "${RUNNER_TEMP}/start.json" >/dev/null
               run_lifecycle apply "${spec}" "${machine}" > "${RUNNER_TEMP}/post-start-apply.json"
-              jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"' "${RUNNER_TEMP}/post-start-apply.json" >/dev/null
+              jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"'                 "${RUNNER_TEMP}/post-start-apply.json" >/dev/null
 
               run_lifecycle action "${spec}" "${machine}" reboot > "${RUNNER_TEMP}/reboot.json"
               run_lifecycle apply "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-apply.json"
-              jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"' "${RUNNER_TEMP}/post-reboot-apply.json" >/dev/null
+              jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"'                 "${RUNNER_TEMP}/post-reboot-apply.json" >/dev/null
 
               run_lifecycle destroy-plan "${spec}" "${machine}" "${source_revision}" > "${RUNNER_TEMP}/destroy-plan.json"
               digest="$(jq -r '.destroy_digest' "${RUNNER_TEMP}/destroy-plan.json")"
@@ -267,7 +398,7 @@ jobs:
               if [[ "${stale_digest}" == "${digest}" ]]; then
                 stale_digest="$(printf '1%.0s' {1..64})"
               fi
-              if run_lifecycle destroy-apply "${spec}" "${machine}" "${source_revision}" "${stale_digest}" > "${RUNNER_TEMP}/stale-unexpected.json" 2> "${RUNNER_TEMP}/stale-error.txt"; then
+              if run_lifecycle destroy-apply "${spec}" "${machine}" "${source_revision}" "${stale_digest}"                 > "${RUNNER_TEMP}/stale-unexpected.json" 2> "${RUNNER_TEMP}/stale-error.txt"; then
                 echo "stale destroy digest was incorrectly accepted" >&2
                 exit 1
               fi
@@ -279,7 +410,7 @@ jobs:
               run_lifecycle destroy-plan "${spec}" "${machine}" "${source_revision}" > "${RUNNER_TEMP}/destroy-plan-final.json"
               digest="$(jq -r '.destroy_digest' "${RUNNER_TEMP}/destroy-plan-final.json")"
               run_lifecycle destroy-apply "${spec}" "${machine}" "${source_revision}" "${digest}" > "${RUNNER_TEMP}/destroy-apply.json"
-              jq -e '.absence_verified == true' "${RUNNER_TEMP}/destroy-apply.json" >/dev/null
+              jq -e '.absence_verified == true and .support_cleanup.environment_in_use == false'                 "${RUNNER_TEMP}/destroy-apply.json" >/dev/null
 
               run_lifecycle cleanup "${spec}" > "${RUNNER_TEMP}/cleanup-idempotent.json"
               jq -e '.environment_in_use == false and .ssh_key_removed == false and (.firewall_groups_removed | length) == 0'                 "${RUNNER_TEMP}/cleanup-idempotent.json" >/dev/null
