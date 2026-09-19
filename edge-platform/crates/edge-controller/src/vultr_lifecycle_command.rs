@@ -30,7 +30,12 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let mut provider = provider_from_env()?;
     let report =
         plan_desired_state(&mut provider, &desired, args.get(1).map(String::as_str)).await?;
-    print_json(&report)
+    print_json_value(serde_json::json!({
+        "environment": report.environment,
+        "desired_state_digest": report.desired_state_digest,
+        "plans": report.plans,
+        "orphaned_managed_provider_ids": report.orphaned_managed_provider_ids,
+    }))
 }
 
 async fn run_apply(args: &[String]) -> Result<(), String> {
@@ -77,7 +82,12 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &LifecycleExecutionPolicy::default(),
     )
     .await?;
-    print_json(&report)
+    print_json_value(serde_json::json!({
+        "action": report.action.as_str(),
+        "machine_id": report.machine_id,
+        "provider_id": report.provider_id,
+        "final_plan": report.final_plan,
+    }))
 }
 
 async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
@@ -90,7 +100,9 @@ async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired_state(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
     let plan = build_destroy_plan(&mut provider, &desired, &args[1], &args[2]).await?;
-    print_json(&plan)
+    let value = serde_json::to_value(&plan)
+        .map_err(|err| format!("failed to serialize destroy plan: {err}"))?;
+    print_json_value(value)
 }
 
 async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
@@ -111,7 +123,12 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
         &LifecycleExecutionPolicy::default(),
     )
     .await?;
-    print_json(&report)
+    print_json_value(serde_json::json!({
+        "machine_id": report.machine_id,
+        "provider_id": report.provider_id,
+        "delete_requested": report.delete_requested,
+        "absence_verified": report.absence_verified,
+    }))
 }
 
 fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
@@ -169,8 +186,8 @@ fn resolve_create_prerequisites(machine: &MachineSpec) -> Result<CreatePrerequis
     })
 }
 
-fn print_json<T: serde::Serialize>(value: &T) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(value)
+fn print_json_value(value: serde_json::Value) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&value)
         .map_err(|err| format!("failed to serialize lifecycle result: {err}"))?;
     println!("{json}");
     Ok(())
