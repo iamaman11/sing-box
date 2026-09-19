@@ -13,7 +13,9 @@
         "firewall_profile": "acceptance-ssh"
       },
       "bootstrap_profile": "singbox-host-v1",
-      "application_profiles": [],
+      "application_profiles": [
+        "application-acceptance"
+      ],
       "tags": [
         "disposable-acceptance"
       ]
