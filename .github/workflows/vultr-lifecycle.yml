@@ -20,7 +20,8 @@ jobs:
       github.event.issue.number == 1 &&
       !github.event.issue.pull_request &&
       github.actor_id == '44100369' &&
-      github.run_attempt == 1
+      github.run_attempt == 1 &&
+      startsWith(github.event.comment.body, '/vultr ')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -129,9 +130,12 @@ jobs:
   verify:
     needs: authorize
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
+    outputs:
+      build_run_id: ${{ steps.resolve_build.outputs.run_id }}
     steps:
       - name: Checkout exact canonical revision
         shell: bash
@@ -147,21 +151,52 @@ jobs:
           test "$(git rev-parse HEAD)" = "${REVISION}"
           test -f "${{ needs.authorize.outputs.spec_path }}"
 
-      - name: Install pinned Rust toolchain
+      - name: Resolve exact accepted Edge Platform build
+        id: resolve_build
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
-          rustc --version
-          cargo --version
+          runs_json="$(gh api --method GET \
+            -f branch=main \
+            -f event=push \
+            -f status=success \
+            -f head_sha="${GITHUB_SHA}" \
+            -f per_page=20 \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs")"
+          run_id="$(jq -r --arg sha "${GITHUB_SHA}" \
+            '[.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty' \
+            <<<"${runs_json}")"
+          [[ "${run_id}" =~ ^[0-9]+$ ]] || {
+            echo "no successful Edge Platform CI build exists for exact revision ${GITHUB_SHA}" >&2
+            exit 1
+          }
+          printf 'run_id=%s\n' "${run_id}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build exact lifecycle controller without production secrets
-        working-directory: edge-platform
+      - name: Download exact accepted Edge Platform build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: edge-platform-release-${{ github.sha }}
+          path: ${{ runner.temp }}/edge-platform-release
+          run-id: ${{ steps.resolve_build.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify exact accepted Edge Platform build
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked -p edge-controller --bin edge-controller
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          manifest="${dir}/manifest.json"
+          controller="${dir}/edge-controller"
+          agent="${dir}/edge-agent"
+          test -f "${manifest}"
+          test -f "${controller}"
+          test -f "${agent}"
+          test "$(jq -er '.schema' "${manifest}")" = "1"
+          test "$(jq -er '.source_revision' "${manifest}")" = "${GITHUB_SHA}"
+          test "$(sha256sum "${controller}" | awk '{print $1}')" = "$(jq -er '.controller_sha256' "${manifest}")"
+          test "$(sha256sum "${agent}" | awk '{print $1}')" = "$(jq -er '.agent_sha256' "${manifest}")"
 
   execute:
     needs: [authorize, verify]
@@ -171,6 +206,7 @@ jobs:
       deployment: false
     timeout-minutes: 45
     permissions:
+      actions: read
       contents: read
     env:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
@@ -194,19 +230,26 @@ jobs:
           test "$(git rev-parse HEAD)" = "${REVISION}"
           test -f "${SPEC_PATH}"
 
-      - name: Install pinned Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
+      - name: Download exact accepted Edge Platform build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: edge-platform-release-${{ github.sha }}
+          path: ${{ runner.temp }}/edge-platform-release
+          run-id: ${{ needs.verify.outputs.build_run_id }}
+          github-token: ${{ github.token }}
 
-      - name: Build verified lifecycle controller
-        working-directory: edge-platform
+      - name: Verify exact lifecycle controller artifact
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked -p edge-controller --bin edge-controller
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          manifest="${dir}/manifest.json"
+          controller="${dir}/edge-controller"
+          test "$(jq -er '.schema' "${manifest}")" = "1"
+          test "$(jq -er '.source_revision' "${manifest}")" = "${GITHUB_SHA}"
+          test "$(sha256sum "${controller}" | awk '{print $1}')" = "$(jq -er '.controller_sha256' "${manifest}")"
+          chmod 0755 "${controller}"
+          printf 'EDGE_LIFECYCLE_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
 
       - name: Materialize SSH authority
         shell: bash
@@ -242,7 +285,7 @@ jobs:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          bin="edge-platform/target/debug/edge-controller"
+          bin="${EDGE_LIFECYCLE_CONTROLLER}"
           spec="${SPEC_PATH}"
           machine="${MACHINE_ID}"
           source_revision="${GITHUB_SHA}"
