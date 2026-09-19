@@ -5,12 +5,17 @@ STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$STACK_DIR"
 MODE="${1:-full}"
 
+if [[ ! -f .images.env ]]; then
+  echo ".images.env not found" >&2
+  exit 1
+fi
 if [[ ! -f .env.runtime ]]; then
   echo ".env.runtime not found" >&2
   exit 1
 fi
 
 set -a
+source ./.images.env
 source ./.env.runtime
 set +a
 
