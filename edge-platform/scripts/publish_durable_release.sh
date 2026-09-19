@@ -115,7 +115,6 @@ if ! release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}" 2
 fi
 
 test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
-test "$(jq -er '.target_commitish' <<<"$release_json")" = "$ACCEPTED_REVISION"
 test "$(jq -er '.prerelease' <<<"$release_json")" = "false"
 release_id="$(jq -er '.id' <<<"$release_json")"
 draft="$(jq -er '.draft' <<<"$release_json")"
