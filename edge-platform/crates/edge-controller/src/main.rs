@@ -7,6 +7,8 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod cloudflare_mesh_lifecycle_command;
+mod cloudflare_mesh_lifecycle_service;
 mod deploy_orchestrator;
 mod vultr_host_bootstrap;
 mod vultr_lifecycle_adapter;
@@ -158,6 +160,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let command = env::args().nth(1).unwrap_or_else(|| "serve".to_owned());
 
     match command.as_str() {
+        "line3-mesh" => {
+            let args = env::args().skip(2).collect::<Vec<_>>();
+            cloudflare_mesh_lifecycle_command::run(args)
+                .await
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+        }
         "vultr-lifecycle" => {
             let args = env::args().skip(2).collect::<Vec<_>>();
             vultr_lifecycle_command::run(args)
