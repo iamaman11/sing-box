@@ -141,6 +141,209 @@ impl AgentService for AgentServerImpl {
     }
 
     async fn apply_bundle(
+        &self,
+        request: Request<ApplyBundleRequest>,
+    ) -> Result<Response<ApplyBundleResponse>, Status> {
+        let response = apply_bundle(&self.stack_dir, request.into_inner())
+            .map_err(|err| Status::internal(format!("failed to apply bundle: {err}")))?;
+        Ok(Response::new(response))
+    }
+
+    async fn rollback_bundle(
+        &self,
+        request: Request<RollbackBundleRequest>,
+    ) -> Result<Response<RollbackBundleResponse>, Status> {
+        let response = rollback_bundle(&self.stack_dir, request.into_inner())
+            .map_err(|err| Status::failed_precondition(format!("bundle rollback refused: {err}")))?;
+        Ok(Response::new(response))
+    }
+
+    async fn verify_runtime(
+        &self,
+        request: Request<VerifyRuntimeRequest>,
+    ) -> Result<Response<AgentState>, Status> {
+        let request = request.into_inner();
+        let inspection_mode = if request.require_readiness {
+            AgentMode::Readiness
+        } else {
+            AgentMode::Runtime
+        };
+        let mut state = inspect_runtime(&self.stack_dir, inspection_mode);
+        let bootstrap_mode = BootstrapMode::try_from(request.mode)
+            .map_err(|_| Status::invalid_argument("unknown bootstrap verification mode"))?;
+        if bootstrap_mode != BootstrapMode::Unspecified {
+            let verified = verify_bootstrap_post_state(&self.stack_dir, bootstrap_mode, &state);
+            if request.require_readiness {
+                state.ready = verified.success;
+            }
+            for warning in verified.warnings {
+                if !state.degraded_reasons.iter().any(|value| value == &warning) {
+                    state.degraded_reasons.push(warning);
+                }
+            }
+        }
+        Ok(Response::new(state))
+    }
+
+    async fn read_bundle_identity(
+        &self,
+        _request: Request<ReadBundleIdentityRequest>,
+    ) -> Result<Response<ReadBundleIdentityResponse>, Status> {
+        let summary_path = self
+            .stack_dir
+            .parent()
+            .map(|parent| parent.join("deployment-summary.json"));
+        let summary = summary_path
+            .as_ref()
+            .filter(|path| path.is_file())
+            .and_then(|path| read_bundle_summary(path));
+
+        let active_release = read_application_release(&self.stack_dir);
+        let previous_release = read_application_release(&previous_stack_dir(&self.stack_dir));
+
+        Ok(Response::new(ReadBundleIdentityResponse {
+            active_bundle_id: active_release
+                .as_ref()
+                .map(|release| release.bundle_id.clone())
+                .or_else(|| summary.as_ref().and_then(|summary| summary.label.clone())),
+            topology_version: summary
+                .as_ref()
+                .and_then(|summary| summary.instance_id.clone())
+                .map(|instance_id| format!("vultr-edge:{instance_id}")),
+            deployment_summary_path: summary_path.map(|path| path.display().to_string()),
+            active_bundle_digest: active_release
+                .as_ref()
+                .map(|release| release.bundle_digest.clone()),
+            previous_bundle_id: previous_release
+                .as_ref()
+                .map(|release| release.bundle_id.clone()),
+            previous_bundle_digest: previous_release
+                .as_ref()
+                .map(|release| release.bundle_digest.clone()),
+        }))
+    }
+
+    async fn read_rendered_artifacts(
+        &self,
+        _request: Request<ReadRenderedArtifactsRequest>,
+    ) -> Result<Response<ReadRenderedArtifactsResponse>, Status> {
+        Ok(Response::new(ReadRenderedArtifactsResponse {
+            files: collect_rendered_artifacts(&self.stack_dir),
+        }))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AgentMode {
+    Health,
+    Readiness,
+    Runtime,
+}
+
+fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
+    let mut state = AgentState {
+        healthy: true,
+        ready: false,
+        topology_version: "vultr-edge".to_owned(),
+        active_bundle_id: stack_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string()),
+        degraded_reasons: Vec::new(),
+        docker_reachable: false,
+        compose_file_present: false,
+        observed_stack_path: Some(stack_dir.display().to_string()),
+        running_containers: Vec::new(),
+        missing_containers: Vec::new(),
+        listening_tcp_ports: Vec::new(),
+        listening_udp_ports: Vec::new(),
+    };
+
+    inspect_bundle_artifacts(stack_dir, &mut state);
+
+    let compose_path = stack_dir.join("docker-compose.yml");
+    let Some(compose) = inspect_compose(&compose_path, &mut state) else {
+        state.healthy = false;
+        return state;
+    };
+
+    let docker = inspect_docker();
+    state.docker_reachable = docker.reachable;
+    state.running_containers = docker.running_containers.clone();
+    state.listening_tcp_ports = docker.listening_tcp_ports.clone();
+    state.listening_udp_ports = docker.listening_udp_ports.clone();
+
+    state.missing_containers = compose
+        .expected_containers
+        .iter()
+        .filter(|name| {
+            !docker
+                .running_containers
+                .iter()
+                .any(|running| running == *name)
+        })
+        .cloned()
+        .collect();
+
+    if !docker.reachable {
+        state
+            .degraded_reasons
+            .push("docker runtime is not reachable from edge-agent".to_owned());
+    }
+    if !state.missing_containers.is_empty() {
+        state.degraded_reasons.push(format!(
+            "expected containers are not running: {}",
+            state.missing_containers.join(", ")
+        ));
+    }
+
+    let expected_tcp = compose.expected_tcp_ports;
+    let expected_udp = compose.expected_udp_ports;
+    let missing_tcp = expected_tcp
+        .iter()
+        .filter(|port| !state.listening_tcp_ports.iter().any(|value| value == *port))
+        .copied()
+        .collect::<Vec<_>>();
+    let missing_udp = expected_udp
+        .iter()
+        .filter(|port| !state.listening_udp_ports.iter().any(|value| value == *port))
+        .copied()
+        .collect::<Vec<_>>();
+
+    if !missing_tcp.is_empty() {
+        state.degraded_reasons.push(format!(
+            "expected TCP ports are not listening: {}",
+            join_ports(&missing_tcp)
+        ));
+    }
+    if !missing_udp.is_empty() {
+        state.degraded_reasons.push(format!(
+            "expected UDP ports are not listening: {}",
+            join_ports(&missing_udp)
+        ));
+    }
+
+    state.ready = state.compose_file_present
+        && !state
+            .degraded_reasons
+            .iter()
+            .any(|reason| reason.contains("bundle artifact"))
+        && state.docker_reachable
+        && state.missing_containers.is_empty()
+        && missing_tcp.is_empty()
+        && missing_udp.is_empty();
+
+    if matches!(mode, AgentMode::Health) {
+        state.ready = false;
+    }
+    if matches!(mode, AgentMode::Readiness) {
+        state.healthy = state.compose_file_present && state.docker_reachable;
+    }
+
+    state
+}
+
+
+fn apply_bundle(
     stack_dir: &Path,
     request: ApplyBundleRequest,
 ) -> Result<ApplyBundleResponse, String> {
