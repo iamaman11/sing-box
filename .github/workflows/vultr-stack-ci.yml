@@ -42,11 +42,31 @@ jobs:
 
       - name: Validate default stack
         shell: bash
-        run: docker compose -f win/vultr-waw/stack/docker-compose.yml config --quiet
+        env:
+          EDGE_GATEWAY_IMAGE: ghcr.io/iamaman11/vultr-edge-gateway@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          EDGE_WARP_EGRESS_IMAGE: ghcr.io/iamaman11/vultr-warp-egress@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        run: |
+          set -euo pipefail
+          docker compose -f win/vultr-waw/stack/docker-compose.yml config --quiet
+          if grep -R --line-number --fixed-strings ':latest' win/vultr-waw/stack; then
+            echo "latest tags are forbidden in the production stack" >&2
+            exit 1
+          fi
+          if grep -R --line-number --fixed-strings -- '--build' win/vultr-waw/stack; then
+            echo "runtime image builds are forbidden in the production stack" >&2
+            exit 1
+          fi
+          if grep -nE '^[[:space:]]+build:' win/vultr-waw/stack/docker-compose.yml; then
+            echo "Compose build directives are forbidden in the production stack" >&2
+            exit 1
+          fi
 
       - name: Validate isolated Mesh profile
         shell: bash
         env:
+          EDGE_GATEWAY_IMAGE: ghcr.io/iamaman11/vultr-edge-gateway@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          EDGE_WARP_EGRESS_IMAGE: ghcr.io/iamaman11/vultr-warp-egress@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          CLOUDFLARE_MESH_IMAGE: docker.io/cloudflare/mesh@sha256:0000000000000000000000000000000000000000000000000000000000000000
           MESH_NODE_TOKEN: ci-placeholder
         run: |
           set -euo pipefail
