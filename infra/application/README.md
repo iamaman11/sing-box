@@ -61,6 +61,23 @@ secret-requiring spec is observable/plannable there but cannot be mutated there 
 narrow orchestration authority. Line-specific orchestration (for example Line 3) must inject its
 runtime secret only for the job that actually requires it.
 
+GitHub-hosted runners have ephemeral egress IPs. SSH transport is therefore a temporary
+provider-lifecycle lease, not application authority. The workflow discovers its runner IPv4 and
+invokes the existing Vultr support-resource boundary:
+
+```text
+vultr-lifecycle acquire-access
+application-lifecycle <operation>
+vultr-lifecycle release-access   # guaranteed EXIT/finally path
+```
+
+`acquire-access` is allowed to reconcile only firewall-only `UPDATE_IN_PLACE` drift. It cannot
+create, replace, destroy, resize, or retag a VM. `release-access` removes only the exact dynamic
+`@controller-ipv4` rule for the current runner, preserves permanent service rules, uses one-shot
+DELETE plus exact re-observation, and must prove the /32 absent. A cleanup failure fails the GitHub
+job. Application `plan`/verification remain free of application-state mutation; the transport
+lease is separately reported as provider support-resource authority.
+
 ## Operations
 
 ```text
