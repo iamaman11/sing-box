@@ -98,6 +98,7 @@ pub struct VultrInstance {
     pub main_ip: String,
     pub v6_main_ip: String,
     pub firewall_group_id: String,
+    pub date_created: String,
     pub tags: Vec<String>,
     pub os_id: u32,
     pub snapshot_id: Option<String>,
@@ -449,6 +450,7 @@ pub fn mock_instance(label: &str, region: &str, plan: &str, ip: &str) -> VultrIn
         main_ip: ip.to_owned(),
         v6_main_ip: String::new(),
         firewall_group_id: String::new(),
+        date_created: String::new(),
         tags: Vec::new(),
         os_id: 0,
         snapshot_id: None,
@@ -587,6 +589,8 @@ struct VultrInstancePayload {
     #[serde(default)]
     firewall_group_id: String,
     #[serde(default)]
+    date_created: String,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     os_id: u32,
@@ -609,6 +613,7 @@ impl From<VultrInstancePayload> for VultrInstance {
             main_ip: value.main_ip,
             v6_main_ip: value.v6_main_ip,
             firewall_group_id: value.firewall_group_id,
+            date_created: value.date_created,
             tags: value.tags,
             os_id: value.os_id,
             snapshot_id: value
@@ -704,6 +709,7 @@ mod tests {
             "main_ip": "203.0.113.10",
             "v6_main_ip": "2001:db8::10",
             "firewall_group_id": "firewall-1",
+            "date_created": "2026-09-19T00:00:00+00:00",
             "tags": ["managed-by-sing-box"],
             "os_id": 2625,
             "snapshot_id": "snapshot-1",
@@ -715,6 +721,7 @@ mod tests {
         assert_eq!(instance.snapshot_id.as_deref(), Some("snapshot-1"));
         assert!(instance.enable_ipv6);
         assert_eq!(instance.v6_main_ip, "2001:db8::10");
+        assert_eq!(instance.date_created, "2026-09-19T00:00:00+00:00");
         assert_eq!(instance.os_id, 2625);
     }
 
