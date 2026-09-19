@@ -24,7 +24,7 @@ async fn run_inventory(args: &[String]) -> Result<(), String> {
         return Err("usage: edge-controller line3-mesh inventory <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
+    let mut provider = provider_from_env(&desired)?;
     let observed = observe_mesh(&mut provider, &desired).await?;
     print_json(serde_json::json!({
         "desired": desired,
@@ -37,7 +37,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         return Err("usage: edge-controller line3-mesh plan <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
+    let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
     print_json(serde_json::json!({
         "observation": observed,
@@ -50,7 +50,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         return Err("usage: edge-controller line3-mesh apply <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
+    let mut provider = provider_from_env(&desired)?;
     let report = apply_mesh_once(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
     print_json(serde_json::json!({
         "performed": report.performed,
@@ -64,7 +64,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
         return Err("usage: edge-controller line3-mesh cleanup-plan <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
+    let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_cleanup(&mut provider, &desired).await?;
     print_json(serde_json::json!({
         "observation": observed,
@@ -80,7 +80,7 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
         );
     }
     let desired = load_desired(Path::new(&args[0]))?;
-    let mut provider = provider_from_env()?;
+    let mut provider = provider_from_env(&desired)?;
     let report = cleanup_mesh_once(
         &mut provider,
         &desired,
@@ -101,12 +101,10 @@ fn load_desired(path: &Path) -> Result<DesiredMeshState, String> {
     DesiredMeshState::parse_json(&raw).map_err(|err| err.to_string())
 }
 
-fn provider_from_env() -> Result<CloudflareMeshApiProvider, String> {
+fn provider_from_env(desired: &DesiredMeshState) -> Result<CloudflareMeshApiProvider, String> {
     let api_token = env::var("CLOUDFLARE_API_TOKEN")
         .map_err(|_| "CLOUDFLARE_API_TOKEN is required".to_owned())?;
-    let account_id = env::var("CLOUDFLARE_ACCOUNT_ID")
-        .map_err(|_| "CLOUDFLARE_ACCOUNT_ID is required".to_owned())?;
-    CloudflareMeshApiProvider::new(api_token, account_id)
+    CloudflareMeshApiProvider::new(api_token, desired.account_id.clone())
 }
 
 fn print_json(value: serde_json::Value) -> Result<(), String> {
@@ -140,6 +138,7 @@ mod tests {
         assert!(!text.contains("node-id"));
         assert!(!text.contains("route-id"));
         assert!(!text.contains("token"));
+        assert!(!text.contains("account-id"));
         assert!(!text.contains("exec"));
         assert!(!text.contains("shell"));
     }
