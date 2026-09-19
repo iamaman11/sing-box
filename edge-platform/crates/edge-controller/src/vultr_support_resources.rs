@@ -232,7 +232,6 @@ impl FirewallProfileSet {
             .ok_or_else(|| format!("firewall profile {name} is not defined"))
     }
 
-
     pub fn resolve_controller_ipv4_for_profiles(
         &mut self,
         profile_names: &[String],
