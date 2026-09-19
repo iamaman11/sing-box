@@ -121,6 +121,26 @@ jobs:
           cargo build --locked --release -p edge-controller --bin edge-controller
           cargo build --locked --release -p edge-agent --bin edge-agent
 
+      - name: Package exact immutable application binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/application-control-artifact"
+          install -d -m 0755 "${out}"
+          install -m 0755 edge-platform/target/release/edge-controller "${out}/edge-controller"
+          install -m 0755 edge-platform/target/release/edge-agent "${out}/edge-agent"
+          controller_sha="$(sha256sum "${out}/edge-controller" | awk '{print $1}')"
+          agent_sha="$(sha256sum "${out}/edge-agent" | awk '{print $1}')"
+          jq -n             --arg source_revision "${GITHUB_SHA}"             --arg controller_sha256 "${controller_sha}"             --arg agent_sha256 "${agent_sha}"             '{schema:1,source_revision:$source_revision,controller_sha256:$controller_sha256,agent_sha256:$agent_sha256}'             > "${out}/manifest.json"
+
+      - name: Upload exact immutable application binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: application-control-${{ github.sha }}
+          path: ${{ runner.temp }}/application-control-artifact
+          if-no-files-found: error
+          retention-days: 1
+
   execute:
     needs: [authorize, verify]
     if: needs.authorize.outputs.operation != 'acceptance'
@@ -151,34 +171,36 @@ jobs:
           test "$(git rev-parse HEAD)" = "${REVISION}"
           test -f "${SPEC_PATH}"
 
-      - name: Install pinned Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
+      - name: Download exact immutable application binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: application-control-${{ github.sha }}
+          path: ${{ runner.temp }}/application-control-artifact
 
-      - name: Build exact application control binaries
-        working-directory: edge-platform
+      - name: Verify exact application binary provenance
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release -p edge-controller --bin edge-controller
-          cargo build --locked --release -p edge-agent --bin edge-agent
-
-      - name: Bind exact edge-agent artifact to source revision
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact="edge-platform/target/release/edge-agent"
-          test -x "${artifact}"
-          sha="$(sha256sum "${artifact}" | awk '{print $1}')"
-          [[ "${sha}" =~ ^[0-9a-f]{64}$ ]]
-          manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
-          jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${sha}"             '{schema:1, source_revision:$source_revision, sha256:$sha256}' > "${manifest}"
-          chmod 600 "${manifest}"
-          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${artifact}" >> "${GITHUB_ENV}"
-          printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${manifest}" >> "${GITHUB_ENV}"
+          dir="${RUNNER_TEMP}/application-control-artifact"
+          manifest="${dir}/manifest.json"
+          controller="${dir}/edge-controller"
+          agent="${dir}/edge-agent"
+          test -f "${manifest}"
+          test -f "${controller}"
+          test -f "${agent}"
+          test "$(jq -er '.schema' "${manifest}")" = "1"
+          test "$(jq -er '.source_revision' "${manifest}")" = "${GITHUB_SHA}"
+          controller_sha="$(sha256sum "${controller}" | awk '{print $1}')"
+          agent_sha="$(sha256sum "${agent}" | awk '{print $1}')"
+          test "${controller_sha}" = "$(jq -er '.controller_sha256' "${manifest}")"
+          test "${agent_sha}" = "$(jq -er '.agent_sha256' "${manifest}")"
+          chmod 0755 "${controller}" "${agent}"
+          agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
+          jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${agent_sha}"             '{schema:1,source_revision:$source_revision,sha256:$sha256}'             > "${agent_manifest}"
+          chmod 600 "${agent_manifest}"
+          printf 'EDGE_APPLICATION_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
 
       - name: Materialize strict SSH authority
         shell: bash
@@ -214,7 +236,7 @@ jobs:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          bin="edge-platform/target/release/edge-controller"
+          bin="${EDGE_APPLICATION_CONTROLLER}"
           result="${RUNNER_TEMP}/application-result.json"
           access_acquire="${RUNNER_TEMP}/application-access-acquire.json"
           access_release="${RUNNER_TEMP}/application-access-release.json"
@@ -311,34 +333,36 @@ jobs:
           test "$(git rev-parse HEAD)" = "${REVISION}"
           test -f "${SPEC_PATH}"
 
-      - name: Install pinned Rust toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup default 1.95.0
+      - name: Download exact immutable application binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: application-control-${{ github.sha }}
+          path: ${{ runner.temp }}/application-control-artifact
 
-      - name: Build exact application control binaries
-        working-directory: edge-platform
+      - name: Verify exact application binary provenance
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release -p edge-controller --bin edge-controller
-          cargo build --locked --release -p edge-agent --bin edge-agent
-
-      - name: Bind exact edge-agent artifact to source revision
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact="edge-platform/target/release/edge-agent"
-          test -x "${artifact}"
-          sha="$(sha256sum "${artifact}" | awk '{print $1}')"
-          [[ "${sha}" =~ ^[0-9a-f]{64}$ ]]
-          manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
-          jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${sha}"             '{schema:1, source_revision:$source_revision, sha256:$sha256}' > "${manifest}"
-          chmod 600 "${manifest}"
-          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${artifact}" >> "${GITHUB_ENV}"
-          printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${manifest}" >> "${GITHUB_ENV}"
+          dir="${RUNNER_TEMP}/application-control-artifact"
+          manifest="${dir}/manifest.json"
+          controller="${dir}/edge-controller"
+          agent="${dir}/edge-agent"
+          test -f "${manifest}"
+          test -f "${controller}"
+          test -f "${agent}"
+          test "$(jq -er '.schema' "${manifest}")" = "1"
+          test "$(jq -er '.source_revision' "${manifest}")" = "${GITHUB_SHA}"
+          controller_sha="$(sha256sum "${controller}" | awk '{print $1}')"
+          agent_sha="$(sha256sum "${agent}" | awk '{print $1}')"
+          test "${controller_sha}" = "$(jq -er '.controller_sha256' "${manifest}")"
+          test "${agent_sha}" = "$(jq -er '.agent_sha256' "${manifest}")"
+          chmod 0755 "${controller}" "${agent}"
+          agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
+          jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${agent_sha}"             '{schema:1,source_revision:$source_revision,sha256:$sha256}'             > "${agent_manifest}"
+          chmod 600 "${agent_manifest}"
+          printf 'EDGE_APPLICATION_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
 
       - name: Materialize strict SSH authority
         shell: bash
@@ -374,7 +398,7 @@ jobs:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          bin="edge-platform/target/release/edge-controller"
+          bin="${EDGE_APPLICATION_CONTROLLER}"
           app_spec="${SPEC_PATH}"
           vultr_spec="$(jq -er '.vultr_spec_path' "${app_spec}")"
           machine="$(jq -er '.machine_id' "${app_spec}")"
