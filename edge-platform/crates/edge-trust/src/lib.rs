@@ -210,16 +210,19 @@ pub fn write_agent_tls_material(
     let client_cert_path = output_dir.join(CLIENT_CERT_FILE_NAME);
     let client_key_path = output_dir.join(CLIENT_KEY_FILE_NAME);
 
-    fs::write(&ca_cert_path, material.ca_cert_pem.as_bytes())
-        .map_err(|err| format!("failed to write {}: {err}", ca_cert_path.display()))?;
-    fs::write(&server_cert_path, material.server_cert_pem.as_bytes())
-        .map_err(|err| format!("failed to write {}: {err}", server_cert_path.display()))?;
-    fs::write(&server_key_path, material.server_key_pem.as_bytes())
-        .map_err(|err| format!("failed to write {}: {err}", server_key_path.display()))?;
-    fs::write(&client_cert_path, material.client_cert_pem.as_bytes())
-        .map_err(|err| format!("failed to write {}: {err}", client_cert_path.display()))?;
-    fs::write(&client_key_path, material.client_key_pem.as_bytes())
-        .map_err(|err| format!("failed to write {}: {err}", client_key_path.display()))?;
+    write_tls_file(&ca_cert_path, material.ca_cert_pem.as_bytes(), false)?;
+    write_tls_file(
+        &server_cert_path,
+        material.server_cert_pem.as_bytes(),
+        false,
+    )?;
+    write_tls_file(&server_key_path, material.server_key_pem.as_bytes(), true)?;
+    write_tls_file(
+        &client_cert_path,
+        material.client_cert_pem.as_bytes(),
+        false,
+    )?;
+    write_tls_file(&client_key_path, material.client_key_pem.as_bytes(), true)?;
 
     Ok(WrittenAgentTlsMaterial {
         ca_cert_path,
@@ -241,8 +244,19 @@ pub fn write_agent_server_env_file(
         material.server_key_path.display(),
         material.ca_cert_path.display(),
     );
-    fs::write(env_file_path, content)
-        .map_err(|err| format!("failed to write {}: {err}", env_file_path.display()))
+    write_tls_file(env_file_path, content.as_bytes(), false)
+}
+
+fn write_tls_file(path: &Path, content: &[u8], sensitive: bool) -> Result<(), String> {
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if sensitive { 0o600 } else { 0o644 };
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .map_err(|err| format!("failed to set {} mode {mode:o}: {err}", path.display()))?;
+    }
+    Ok(())
 }
 
 impl WrittenAgentTlsMaterial {
@@ -330,8 +344,33 @@ mod tests {
         let client_tls = agent_client_tls_from_paths(&written.agent_client_paths());
         assert!(client_tls.is_ok());
 
-        let env_content = fs::read_to_string(env_file).unwrap();
+        let env_content = fs::read_to_string(&env_file).unwrap();
         assert!(env_content.contains("EDGE_AGENT_TLS_SERVER_CERT_PATH="));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&written.server_key_path, &written.client_key_path] {
+                assert_eq!(
+                    fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600,
+                    "{}",
+                    path.display()
+                );
+            }
+            for path in [
+                &written.ca_cert_path,
+                &written.server_cert_path,
+                &written.client_cert_path,
+                &env_file,
+            ] {
+                assert_eq!(
+                    fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o644,
+                    "{}",
+                    path.display()
+                );
+            }
+        }
         assert!(env_content.contains("EDGE_AGENT_TLS_SERVER_KEY_PATH="));
         assert!(env_content.contains("EDGE_AGENT_TLS_CA_CERT_PATH="));
 

@@ -3439,11 +3439,13 @@ async fn apply_bundle_to_agent_target(
                 relative_path: "deployment-summary.json".to_owned(),
                 content: bundle.deployment_summary_json.as_bytes().to_vec(),
                 executable: false,
+                sensitive: true,
             }),
             agent_env_file: Some(BundleFile {
                 relative_path: "edge-agent.env".to_owned(),
                 content: bundle.agent_env_content.as_bytes().to_vec(),
                 executable: false,
+                sensitive: false,
             }),
             prune_existing: true,
         }))
@@ -3497,6 +3499,7 @@ fn bundle_file_payload_to_proto(file: &edge_bundle::BundleFilePayload) -> Bundle
         relative_path: file.relative_path.clone(),
         content: file.content.clone(),
         executable: file.executable,
+        sensitive: file.sensitive,
     }
 }
 
@@ -3614,6 +3617,21 @@ async fn delete_dns_record(
     Ok(format!("DNS delete requested for {}", record_name))
 }
 
+fn write_private_state_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("failed to set {} mode 600: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn persist_bundle_locally(
     repo_root: &Path,
     state: &Arc<Mutex<EdgeState>>,
@@ -3621,11 +3639,7 @@ fn persist_bundle_locally(
     target: &ResolvedDeployTarget,
 ) -> Result<(), String> {
     let live_state_path = default_live_state_path(repo_root);
-    if let Some(parent) = live_state_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    fs::write(&live_state_path, bundle.current_state_json.as_bytes())
-        .map_err(|err| format!("failed to write {}: {err}", live_state_path.display()))?;
+    write_private_state_file(&live_state_path, bundle.current_state_json.as_bytes())?;
 
     let guard = state
         .lock()
@@ -3991,15 +4005,11 @@ fn rollback_live_deployment_state(
     previous_controller_state: Option<&edge_state::StoredControllerState>,
 ) -> Result<(), String> {
     let live_state_path = default_live_state_path(repo_root);
-    if let Some(parent) = live_state_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
     let previous_state_json = previous_live_state.or_else(|| {
         previous_controller_state.and_then(|value| value.active_deployment_state_json.as_deref())
     });
     match previous_state_json {
-        Some(raw) => fs::write(&live_state_path, raw.as_bytes())
-            .map_err(|err| format!("failed to restore {}: {err}", live_state_path.display()))?,
+        Some(raw) => write_private_state_file(&live_state_path, raw.as_bytes())?,
         None if live_state_path.is_file() => fs::remove_file(&live_state_path)
             .map_err(|err| format!("failed to remove {}: {err}", live_state_path.display()))?,
         None => {}
