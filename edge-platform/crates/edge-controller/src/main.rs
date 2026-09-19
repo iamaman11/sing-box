@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod deploy_orchestrator;
+mod vultr_host_bootstrap;
 mod vultr_lifecycle_adapter;
 mod vultr_lifecycle_command;
 mod vultr_lifecycle_service;
