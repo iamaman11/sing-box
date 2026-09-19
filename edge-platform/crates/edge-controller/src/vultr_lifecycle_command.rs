@@ -2,7 +2,7 @@ use crate::vultr_lifecycle_service::{
     CreatePrerequisites, LifecycleExecutionPolicy, VultrApiProvider, apply_machine,
     build_destroy_plan, destroy_machine, plan_desired_state,
 };
-use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec};
+use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec, PlanClass};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,22 +22,22 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
 
 async fn run_plan(args: &[String]) -> Result<(), String> {
     if !(args.len() == 1 || args.len() == 2) {
-        return Err("usage: edge-controller vultr-lifecycle plan <spec-path> [machine-id]".to_owned());
+        return Err(
+            "usage: edge-controller vultr-lifecycle plan <spec-path> [machine-id]".to_owned(),
+        );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
-    let report = plan_desired_state(
-        &mut provider,
-        &desired,
-        args.get(1).map(String::as_str),
-    )
-    .await?;
+    let report =
+        plan_desired_state(&mut provider, &desired, args.get(1).map(String::as_str)).await?;
     print_json(&report)
 }
 
 async fn run_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
-        return Err("usage: edge-controller vultr-lifecycle apply <spec-path> <machine-id>".to_owned());
+        return Err(
+            "usage: edge-controller vultr-lifecycle apply <spec-path> <machine-id>".to_owned(),
+        );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let machine = desired
@@ -45,8 +45,30 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .iter()
         .find(|machine| machine.id == args[1])
         .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
-    let prerequisites = resolve_create_prerequisites(machine)?;
     let mut provider = provider_from_env()?;
+
+    // Resolve CREATE-only prerequisites lazily. A converged NOOP must not
+    // depend on SSH/bootstrap material that will never be used.
+    let preflight = plan_desired_state(&mut provider, &desired, Some(&args[1])).await?;
+    let prerequisites = if preflight
+        .plans
+        .first()
+        .is_some_and(|plan| plan.class == PlanClass::Create)
+    {
+        resolve_create_prerequisites(machine)?
+    } else {
+        CreatePrerequisites {
+            bootstrap_profile: machine.bootstrap_profile.clone(),
+            ssh_key_id: String::new(),
+            cloud_init: String::new(),
+            firewall_group_id: None,
+            firewall_profile: None,
+        }
+    };
+
+    // apply_machine always re-observes before mutation. If provider state
+    // changes after preflight, empty prerequisites can only cause a safe
+    // refusal before CREATE, never a mutation with stale assumptions.
     let report = apply_machine(
         &mut provider,
         &desired,
@@ -100,8 +122,7 @@ fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
 }
 
 fn provider_from_env() -> Result<VultrApiProvider, String> {
-    let api_key =
-        env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())?;
+    let api_key = env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())?;
     VultrApiProvider::new(api_key)
 }
 
