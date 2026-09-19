@@ -105,6 +105,72 @@ pub struct VultrInstance {
     pub enable_ipv6: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrSshKey {
+    pub id: String,
+    pub name: String,
+    pub ssh_key: String,
+    pub date_created: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrFirewallGroup {
+    pub id: String,
+    pub description: String,
+    pub date_created: String,
+    pub date_modified: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrFirewallRule {
+    pub id: u64,
+    pub ip_type: String,
+    pub protocol: String,
+    pub subnet: String,
+    pub subnet_size: u32,
+    pub port: String,
+    pub source: String,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateFirewallRuleRequest<'a> {
+    pub ip_type: &'a str,
+    pub protocol: &'a str,
+    pub subnet: &'a str,
+    pub subnet_size: u32,
+    pub port: &'a str,
+    pub source: Option<&'a str>,
+    pub notes: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrSnapshot {
+    pub id: String,
+    pub description: String,
+    pub status: String,
+    pub os_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrOperatingSystem {
+    pub id: u32,
+    pub name: String,
+    pub arch: String,
+    pub family: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrPlan {
+    pub id: String,
+    pub plan_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrRegionAvailability {
+    pub available_plans: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateInstanceRequest<'a> {
     pub region: &'a str,
@@ -262,6 +328,435 @@ pub async fn list_instances(api_key: &str) -> Result<Vec<VultrInstance>, String>
     list_instances_typed(api_key)
         .await
         .map_err(|err| err.to_string())
+}
+
+pub async fn list_ssh_keys_typed(api_key: &str) -> Result<Vec<VultrSshKey>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListSshKeysEnvelope = observation_json("list Vultr SSH keys", || {
+            let request = client
+                .get(format!("{API_ROOT}/ssh-keys"))
+                .query(&[("per_page", "500")]);
+            match current_cursor.as_deref() {
+                Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                _ => request,
+            }
+        })
+        .await?;
+        result.extend(page.ssh_keys.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr SSH keys",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr SSH keys"))
+}
+
+pub async fn get_ssh_key_typed(api_key: &str, ssh_key_id: &str) -> Result<VultrSshKey, VultrError> {
+    let client = authorized_client(api_key)?;
+    let url = format!("{API_ROOT}/ssh-keys/{ssh_key_id}");
+    observation_json("read Vultr SSH key", || client.get(&url))
+        .await
+        .map(|payload: SshKeyEnvelope| payload.ssh_key.into())
+}
+
+pub async fn create_ssh_key_typed(
+    api_key: &str,
+    name: &str,
+    ssh_key: &str,
+) -> Result<VultrSshKey, VultrError> {
+    if name.trim().is_empty() || ssh_key.trim().is_empty() {
+        return Err(configuration_error(
+            "create Vultr SSH key",
+            "SSH key name and public key material are required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    execute_json_once(
+        "create Vultr SSH key",
+        client
+            .post(format!("{API_ROOT}/ssh-keys"))
+            .json(&CreateSshKeyPayload {
+                name: name.to_owned(),
+                ssh_key: ssh_key.to_owned(),
+            }),
+        true,
+    )
+    .await
+    .map(|payload: SshKeyEnvelope| payload.ssh_key.into())
+}
+
+pub async fn destroy_ssh_key_typed(api_key: &str, ssh_key_id: &str) -> Result<(), VultrError> {
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        "destroy Vultr SSH key",
+        client.delete(format!("{API_ROOT}/ssh-keys/{ssh_key_id}")),
+    )
+    .await
+}
+
+pub async fn list_firewall_groups_typed(
+    api_key: &str,
+) -> Result<Vec<VultrFirewallGroup>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListFirewallGroupsEnvelope =
+            observation_json("list Vultr firewall groups", || {
+                let request = client
+                    .get(format!("{API_ROOT}/firewalls"))
+                    .query(&[("per_page", "500")]);
+                match current_cursor.as_deref() {
+                    Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                    _ => request,
+                }
+            })
+            .await?;
+        result.extend(page.firewall_groups.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr firewall groups",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr firewall groups"))
+}
+
+pub async fn get_firewall_group_typed(
+    api_key: &str,
+    firewall_group_id: &str,
+) -> Result<VultrFirewallGroup, VultrError> {
+    let client = authorized_client(api_key)?;
+    let url = format!("{API_ROOT}/firewalls/{firewall_group_id}");
+    observation_json("read Vultr firewall group", || client.get(&url))
+        .await
+        .map(|payload: FirewallGroupEnvelope| payload.firewall_group.into())
+}
+
+pub async fn create_firewall_group_typed(
+    api_key: &str,
+    description: &str,
+) -> Result<VultrFirewallGroup, VultrError> {
+    if description.trim().is_empty() {
+        return Err(configuration_error(
+            "create Vultr firewall group",
+            "firewall description is required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    execute_json_once(
+        "create Vultr firewall group",
+        client
+            .post(format!("{API_ROOT}/firewalls"))
+            .json(&CreateFirewallGroupPayload {
+                description: description.to_owned(),
+            }),
+        true,
+    )
+    .await
+    .map(|payload: FirewallGroupEnvelope| payload.firewall_group.into())
+}
+
+pub async fn destroy_firewall_group_typed(
+    api_key: &str,
+    firewall_group_id: &str,
+) -> Result<(), VultrError> {
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        "destroy Vultr firewall group",
+        client.delete(format!("{API_ROOT}/firewalls/{firewall_group_id}")),
+    )
+    .await
+}
+
+pub async fn list_firewall_rules_typed(
+    api_key: &str,
+    firewall_group_id: &str,
+) -> Result<Vec<VultrFirewallRule>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListFirewallRulesEnvelope = observation_json("list Vultr firewall rules", || {
+            let request = client
+                .get(format!("{API_ROOT}/firewalls/{firewall_group_id}/rules"))
+                .query(&[("per_page", "500")]);
+            match current_cursor.as_deref() {
+                Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                _ => request,
+            }
+        })
+        .await?;
+        result.extend(page.firewall_rules.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr firewall rules",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr firewall rules"))
+}
+
+pub async fn create_firewall_rule_typed(
+    api_key: &str,
+    firewall_group_id: &str,
+    request: &CreateFirewallRuleRequest<'_>,
+) -> Result<VultrFirewallRule, VultrError> {
+    if request.ip_type.trim().is_empty()
+        || request.protocol.trim().is_empty()
+        || request.subnet.trim().is_empty()
+    {
+        return Err(configuration_error(
+            "create Vultr firewall rule",
+            "ip_type, protocol, and subnet are required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    execute_json_once(
+        "create Vultr firewall rule",
+        client
+            .post(format!("{API_ROOT}/firewalls/{firewall_group_id}/rules"))
+            .json(&CreateFirewallRulePayload {
+                ip_type: request.ip_type.to_owned(),
+                protocol: request.protocol.to_owned(),
+                subnet: request.subnet.to_owned(),
+                subnet_size: request.subnet_size,
+                port: request.port.to_owned(),
+                source: request.source.map(ToOwned::to_owned),
+                notes: request.notes.map(ToOwned::to_owned),
+            }),
+        true,
+    )
+    .await
+    .map(|payload: FirewallRuleEnvelope| payload.firewall_rule.into())
+}
+
+pub async fn destroy_firewall_rule_typed(
+    api_key: &str,
+    firewall_group_id: &str,
+    firewall_rule_id: u64,
+) -> Result<(), VultrError> {
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        "destroy Vultr firewall rule",
+        client.delete(format!(
+            "{API_ROOT}/firewalls/{firewall_group_id}/rules/{firewall_rule_id}"
+        )),
+    )
+    .await
+}
+
+pub async fn get_region_availability_typed(
+    api_key: &str,
+    region: &str,
+    plan_type: &str,
+) -> Result<VultrRegionAvailability, VultrError> {
+    let client = authorized_client(api_key)?;
+    let url = format!("{API_ROOT}/regions/{region}/availability");
+    observation_json("read Vultr region availability", || {
+        client.get(&url).query(&[("type", plan_type)])
+    })
+    .await
+}
+
+pub async fn list_snapshots_typed(api_key: &str) -> Result<Vec<VultrSnapshot>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListSnapshotsEnvelope = observation_json("list Vultr snapshots", || {
+            let request = client
+                .get(format!("{API_ROOT}/snapshots"))
+                .query(&[("per_page", "500")]);
+            match current_cursor.as_deref() {
+                Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                _ => request,
+            }
+        })
+        .await?;
+        result.extend(page.snapshots.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr snapshots",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr snapshots"))
+}
+
+pub async fn list_operating_systems_typed(
+    api_key: &str,
+) -> Result<Vec<VultrOperatingSystem>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListOperatingSystemsEnvelope =
+            observation_json("list Vultr operating systems", || {
+                let request = client
+                    .get(format!("{API_ROOT}/os"))
+                    .query(&[("per_page", "500")]);
+                match current_cursor.as_deref() {
+                    Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                    _ => request,
+                }
+            })
+            .await?;
+        result.extend(page.os.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr operating systems",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr operating systems"))
+}
+
+pub async fn list_plans_typed(
+    api_key: &str,
+    plan_type: Option<&str>,
+) -> Result<Vec<VultrPlan>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListPlansEnvelope = observation_json("list Vultr plans", || {
+            let mut request = client
+                .get(format!("{API_ROOT}/plans"))
+                .query(&[("per_page", "500")]);
+            if let Some(plan_type) = plan_type {
+                request = request.query(&[("type", plan_type)]);
+            }
+            if let Some(cursor) = current_cursor.as_deref().filter(|value| !value.is_empty()) {
+                request = request.query(&[("cursor", cursor)]);
+            }
+            request
+        })
+        .await?;
+        result.extend(page.plans.into_iter().map(Into::into));
+        cursor = next_cursor("list Vultr plans", page_count, page.meta, &mut seen_cursors)?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr plans"))
+}
+
+fn next_cursor(
+    operation: &'static str,
+    page_count: usize,
+    meta: Option<ListMeta>,
+    seen_cursors: &mut HashSet<String>,
+) -> Result<Option<String>, VultrError> {
+    let next = meta
+        .and_then(|meta| meta.links)
+        .and_then(|links| links.next)
+        .filter(|value| !value.trim().is_empty());
+    match next {
+        Some(next) if seen_cursors.insert(next.clone()) => Ok(Some(next)),
+        Some(next) => Err(VultrError {
+            operation,
+            kind: VultrErrorKind::Decode,
+            status: None,
+            retry_after_secs: None,
+            detail: format!("pagination cursor cycle detected at {next}"),
+        }),
+        None if page_count <= MAX_LIST_PAGES => Ok(None),
+        None => Err(pagination_limit_error(operation)),
+    }
+}
+
+fn pagination_limit_error(operation: &'static str) -> VultrError {
+    VultrError {
+        operation,
+        kind: VultrErrorKind::Decode,
+        status: None,
+        retry_after_secs: None,
+        detail: format!("pagination exceeded {MAX_LIST_PAGES} pages"),
+    }
+}
+
+fn configuration_error(operation: &'static str, detail: &str) -> VultrError {
+    VultrError {
+        operation,
+        kind: VultrErrorKind::Configuration,
+        status: None,
+        retry_after_secs: None,
+        detail: detail.to_owned(),
+    }
+}
+
+async fn execute_empty_mutation_once(
+    operation: &'static str,
+    request: RequestBuilder,
+) -> Result<(), VultrError> {
+    let response = request
+        .send()
+        .await
+        .map_err(|err| mutation_transport_error(operation, err))?;
+    let status = response.status();
+    let retry_after_secs = retry_after_seconds(&response);
+    if status.is_success() {
+        return Ok(());
+    }
+    let (body, body_truncated) = read_bounded_error_body(response)
+        .await
+        .map_err(|err| mutation_transport_error(operation, err))?;
+    Err(VultrError {
+        operation,
+        kind: VultrErrorKind::Http,
+        status: Some(status.as_u16()),
+        retry_after_secs,
+        detail: provider_error_detail(&body, body_truncated),
+    })
 }
 
 async fn observation_json<T, F>(
@@ -546,6 +1041,217 @@ struct CreateInstancePayload {
     firewall_group_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateSshKeyPayload {
+    name: String,
+    ssh_key: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateFirewallGroupPayload {
+    description: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateFirewallRulePayload {
+    ip_type: String,
+    protocol: String,
+    subnet: String,
+    subnet_size: u32,
+    port: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SshKeyEnvelope {
+    ssh_key: VultrSshKeyPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListSshKeysEnvelope {
+    ssh_keys: Vec<VultrSshKeyPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrSshKeyPayload {
+    id: String,
+    name: String,
+    ssh_key: String,
+    #[serde(default)]
+    date_created: String,
+}
+
+impl From<VultrSshKeyPayload> for VultrSshKey {
+    fn from(value: VultrSshKeyPayload) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            ssh_key: value.ssh_key,
+            date_created: value.date_created,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct FirewallGroupEnvelope {
+    firewall_group: VultrFirewallGroupPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListFirewallGroupsEnvelope {
+    firewall_groups: Vec<VultrFirewallGroupPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrFirewallGroupPayload {
+    id: String,
+    description: String,
+    #[serde(default)]
+    date_created: String,
+    #[serde(default)]
+    date_modified: String,
+}
+
+impl From<VultrFirewallGroupPayload> for VultrFirewallGroup {
+    fn from(value: VultrFirewallGroupPayload) -> Self {
+        Self {
+            id: value.id,
+            description: value.description,
+            date_created: value.date_created,
+            date_modified: value.date_modified,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct FirewallRuleEnvelope {
+    firewall_rule: VultrFirewallRulePayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListFirewallRulesEnvelope {
+    firewall_rules: Vec<VultrFirewallRulePayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrFirewallRulePayload {
+    id: u64,
+    ip_type: String,
+    protocol: String,
+    subnet: String,
+    subnet_size: u32,
+    #[serde(default)]
+    port: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    notes: String,
+}
+
+impl From<VultrFirewallRulePayload> for VultrFirewallRule {
+    fn from(value: VultrFirewallRulePayload) -> Self {
+        Self {
+            id: value.id,
+            ip_type: value.ip_type,
+            protocol: value.protocol,
+            subnet: value.subnet,
+            subnet_size: value.subnet_size,
+            port: value.port,
+            source: value.source,
+            notes: value.notes,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListSnapshotsEnvelope {
+    snapshots: Vec<VultrSnapshotPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrSnapshotPayload {
+    id: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    os_id: u32,
+}
+
+impl From<VultrSnapshotPayload> for VultrSnapshot {
+    fn from(value: VultrSnapshotPayload) -> Self {
+        Self {
+            id: value.id,
+            description: value.description,
+            status: value.status,
+            os_id: value.os_id,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListOperatingSystemsEnvelope {
+    os: Vec<VultrOperatingSystemPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrOperatingSystemPayload {
+    id: u32,
+    name: String,
+    #[serde(default)]
+    arch: String,
+    #[serde(default)]
+    family: String,
+}
+
+impl From<VultrOperatingSystemPayload> for VultrOperatingSystem {
+    fn from(value: VultrOperatingSystemPayload) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            arch: value.arch,
+            family: value.family,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListPlansEnvelope {
+    plans: Vec<VultrPlanPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrPlanPayload {
+    id: String,
+    #[serde(rename = "type", default)]
+    plan_type: String,
+}
+
+impl From<VultrPlanPayload> for VultrPlan {
+    fn from(value: VultrPlanPayload) -> Self {
+        Self {
+            id: value.id,
+            plan_type: value.plan_type,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

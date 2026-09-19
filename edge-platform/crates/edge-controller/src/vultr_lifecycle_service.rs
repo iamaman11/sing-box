@@ -1,4 +1,7 @@
-use crate::vultr_lifecycle_adapter::{managed_provider_tags, normalize_vultr_inventory};
+use crate::vultr_lifecycle_adapter::{
+    managed_provider_tags, normalize_vultr_inventory,
+    normalize_vultr_inventory_with_firewall_profiles,
+};
 use edge_controller_core::vultr_lifecycle::{
     DesiredState, DestroyPlan, LifecycleInventory, MachinePlan, MachineSpec, PlanClass,
     authorize_destroy, destroy_plan, plan_all, plan_machine,
@@ -7,6 +10,7 @@ use edge_provider_vultr::{
     CreateInstanceRequest, VultrError, VultrErrorKind, VultrInstance, create_instance_typed,
     destroy_instance_typed, get_instance_typed, list_instances_typed,
 };
+use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -155,7 +159,23 @@ pub async fn plan_desired_state<P: LifecycleProvider>(
     desired: &DesiredState,
     machine_id: Option<&str>,
 ) -> Result<LifecyclePlanReport, String> {
-    let inventory = observe_inventory(provider, desired).await?;
+    let verified_firewall_profiles = BTreeMap::new();
+    plan_desired_state_with_firewall_profiles(
+        provider,
+        desired,
+        machine_id,
+        &verified_firewall_profiles,
+    )
+    .await
+}
+
+pub async fn plan_desired_state_with_firewall_profiles<P: LifecycleProvider>(
+    provider: &mut P,
+    desired: &DesiredState,
+    machine_id: Option<&str>,
+    verified_firewall_profiles: &BTreeMap<String, String>,
+) -> Result<LifecyclePlanReport, String> {
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     let plans = match machine_id {
         Some(machine_id) => {
             let machine = machine_by_id(desired, machine_id)?;
@@ -178,9 +198,29 @@ pub async fn apply_machine<P: LifecycleProvider>(
     prerequisites: &CreatePrerequisites,
     policy: &LifecycleExecutionPolicy,
 ) -> Result<ApplyReport, String> {
+    let verified_firewall_profiles = BTreeMap::new();
+    apply_machine_with_firewall_profiles(
+        provider,
+        desired,
+        machine_id,
+        prerequisites,
+        policy,
+        &verified_firewall_profiles,
+    )
+    .await
+}
+
+pub async fn apply_machine_with_firewall_profiles<P: LifecycleProvider>(
+    provider: &mut P,
+    desired: &DesiredState,
+    machine_id: &str,
+    prerequisites: &CreatePrerequisites,
+    policy: &LifecycleExecutionPolicy,
+    verified_firewall_profiles: &BTreeMap<String, String>,
+) -> Result<ApplyReport, String> {
     validate_policy(policy)?;
     let machine = machine_by_id(desired, machine_id)?;
-    let inventory = observe_inventory(provider, desired).await?;
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     let initial_plan = plan_machine(desired, machine, &inventory).map_err(|err| err.to_string())?;
 
     match initial_plan.class {
@@ -208,7 +248,15 @@ pub async fn apply_machine<P: LifecycleProvider>(
             }
 
             let final_plan =
-                reobserve_created_machine(provider, desired, machine, policy).await.map_err(
+                reobserve_created_machine(
+                    provider,
+                    desired,
+                    machine,
+                    policy,
+                    verified_firewall_profiles,
+                )
+                .await
+                .map_err(
                     |detail| match mutation_result {
                         Ok(_) => format!(
                             "CREATE was accepted but machine {} did not converge: {detail}",
@@ -265,8 +313,26 @@ pub async fn build_destroy_plan<P: LifecycleProvider>(
     machine_id: &str,
     source_revision: &str,
 ) -> Result<DestroyPlan, String> {
+    let verified_firewall_profiles = BTreeMap::new();
+    build_destroy_plan_with_firewall_profiles(
+        provider,
+        desired,
+        machine_id,
+        source_revision,
+        &verified_firewall_profiles,
+    )
+    .await
+}
+
+pub async fn build_destroy_plan_with_firewall_profiles<P: LifecycleProvider>(
+    provider: &mut P,
+    desired: &DesiredState,
+    machine_id: &str,
+    source_revision: &str,
+    verified_firewall_profiles: &BTreeMap<String, String>,
+) -> Result<DestroyPlan, String> {
     let machine = machine_by_id(desired, machine_id)?;
-    let inventory = observe_inventory(provider, desired).await?;
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     destroy_plan(desired, machine, &inventory, source_revision).map_err(|err| err.to_string())
 }
 
@@ -278,9 +344,31 @@ pub async fn destroy_machine<P: LifecycleProvider>(
     authorized_digest: &str,
     policy: &LifecycleExecutionPolicy,
 ) -> Result<DestroyApplyReport, String> {
+    let verified_firewall_profiles = BTreeMap::new();
+    destroy_machine_with_firewall_profiles(
+        provider,
+        desired,
+        machine_id,
+        source_revision,
+        authorized_digest,
+        policy,
+        &verified_firewall_profiles,
+    )
+    .await
+}
+
+pub async fn destroy_machine_with_firewall_profiles<P: LifecycleProvider>(
+    provider: &mut P,
+    desired: &DesiredState,
+    machine_id: &str,
+    source_revision: &str,
+    authorized_digest: &str,
+    policy: &LifecycleExecutionPolicy,
+    verified_firewall_profiles: &BTreeMap<String, String>,
+) -> Result<DestroyApplyReport, String> {
     validate_policy(policy)?;
     let machine = machine_by_id(desired, machine_id)?;
-    let inventory = observe_inventory(provider, desired).await?;
+    let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     let provider_id = authorize_destroy(
         desired,
         machine,
@@ -329,12 +417,21 @@ pub async fn destroy_machine<P: LifecycleProvider>(
 async fn observe_inventory<P: LifecycleProvider>(
     provider: &mut P,
     desired: &DesiredState,
+    verified_firewall_profiles: &BTreeMap<String, String>,
 ) -> Result<LifecycleInventory, String> {
     let instances = provider
         .list_instances()
         .await
         .map_err(|err| err.to_string())?;
-    normalize_vultr_inventory(desired, &instances)
+    if verified_firewall_profiles.is_empty() {
+        normalize_vultr_inventory(desired, &instances)
+    } else {
+        normalize_vultr_inventory_with_firewall_profiles(
+            desired,
+            &instances,
+            verified_firewall_profiles,
+        )
+    }
 }
 
 async fn reobserve_created_machine<P: LifecycleProvider>(
@@ -342,9 +439,10 @@ async fn reobserve_created_machine<P: LifecycleProvider>(
     desired: &DesiredState,
     machine: &MachineSpec,
     policy: &LifecycleExecutionPolicy,
+    verified_firewall_profiles: &BTreeMap<String, String>,
 ) -> Result<MachinePlan, String> {
     for attempt in 0..policy.create_reobserve_attempts {
-        let inventory = observe_inventory(provider, desired).await?;
+        let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
         let plan = plan_machine(desired, machine, &inventory).map_err(|err| err.to_string())?;
         match plan.class {
             PlanClass::Noop

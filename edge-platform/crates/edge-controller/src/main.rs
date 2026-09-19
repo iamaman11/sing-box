@@ -11,6 +11,7 @@ mod deploy_orchestrator;
 mod vultr_lifecycle_adapter;
 mod vultr_lifecycle_command;
 mod vultr_lifecycle_service;
+mod vultr_support_resources;
 
 use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
