@@ -110,6 +110,7 @@ jobs:
           set -euo pipefail
           curl --fail --silent --show-error --max-time 30             "https://raw.githubusercontent.com/iamaman11/sing-box/${GITHUB_SHA}/research/vultr/disposable-lifecycle.sh"             --output "${RUNNER_TEMP}/disposable-lifecycle.sh"
           test -s "${RUNNER_TEMP}/disposable-lifecycle.sh"
+          bash -n "${RUNNER_TEMP}/disposable-lifecycle.sh"
 
       - name: Run disposable Vultr lifecycle
         shell: bash
