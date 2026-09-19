@@ -125,7 +125,7 @@ jobs:
             -f per_page=20 \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs")"
           run_id="$(jq -r --arg sha "${GITHUB_SHA}" \
-            '[.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty' \
+            '[.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success")] | sort_by(.created_at) | first | .id // empty' \
             <<<"${runs_json}")"
           [[ "${run_id}" =~ ^[0-9]+$ ]] || {
             echo "no successful Edge Platform CI build exists for exact revision ${GITHUB_SHA}" >&2
@@ -156,6 +156,10 @@ jobs:
           test "$(jq -er '.source_revision' "${manifest}")" = "${GITHUB_SHA}"
           test "$(sha256sum "${controller}" | awk '{print $1}')" = "$(jq -er '.controller_sha256' "${manifest}")"
           test "$(sha256sum "${agent}" | awk '{print $1}')" = "$(jq -er '.agent_sha256' "${manifest}")"
+          gateway_image="$(jq -er '.edge_gateway_image' "${manifest}")"
+          warp_image="$(jq -er '.edge_warp_egress_image' "${manifest}")"
+          [[ "${gateway_image}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
+          [[ "${warp_image}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
 
   execute:
     needs: [authorize, verify]
@@ -213,6 +217,14 @@ jobs:
           agent_sha="$(sha256sum "${agent}" | awk '{print $1}')"
           test "${controller_sha}" = "$(jq -er '.controller_sha256' "${manifest}")"
           test "${agent_sha}" = "$(jq -er '.agent_sha256' "${manifest}")"
+          gateway_image="$(jq -er '.edge_gateway_image' "${manifest}")"
+          warp_image="$(jq -er '.edge_warp_egress_image' "${manifest}")"
+          [[ "${gateway_image}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
+          [[ "${warp_image}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
+          bundle_root="$(jq -er '.bundle_root' "${SPEC_PATH}")"
+          test -d "${bundle_root}"
+          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\n'             "${gateway_image}" "${warp_image}" > "${bundle_root}/.images.env"
+          chmod 0644 "${bundle_root}/.images.env"
           chmod 0755 "${controller}" "${agent}"
           agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${agent_sha}"             '{schema:1,source_revision:$source_revision,sha256:$sha256}'             > "${agent_manifest}"
@@ -378,6 +390,14 @@ jobs:
           agent_sha="$(sha256sum "${agent}" | awk '{print $1}')"
           test "${controller_sha}" = "$(jq -er '.controller_sha256' "${manifest}")"
           test "${agent_sha}" = "$(jq -er '.agent_sha256' "${manifest}")"
+          gateway_image="$(jq -er '.edge_gateway_image' "${manifest}")"
+          warp_image="$(jq -er '.edge_warp_egress_image' "${manifest}")"
+          [[ "${gateway_image}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
+          [[ "${warp_image}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
+          bundle_root="$(jq -er '.bundle_root' "${SPEC_PATH}")"
+          test -d "${bundle_root}"
+          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\n'             "${gateway_image}" "${warp_image}" > "${bundle_root}/.images.env"
+          chmod 0644 "${bundle_root}/.images.env"
           chmod 0755 "${controller}" "${agent}"
           agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           jq -n             --arg source_revision "${GITHUB_SHA}"             --arg sha256 "${agent_sha}"             '{schema:1,source_revision:$source_revision,sha256:$sha256}'             > "${agent_manifest}"
@@ -441,7 +461,6 @@ jobs:
           PROXY_CERT_CN=application-acceptance.local
           TUNNEL_DOMAIN=
           ACME_EMAIL=
-          EDGE_USE_PREBUILT_IMAGES=0
           EOF
           cat > "${runtime_v2}" <<EOF
           PROXY_USERNAME=acceptance
@@ -449,7 +468,6 @@ jobs:
           PROXY_CERT_CN=application-acceptance.local
           TUNNEL_DOMAIN=
           ACME_EMAIL=
-          EDGE_USE_PREBUILT_IMAGES=0
           EOF
           chmod 600 "${runtime_v1}" "${runtime_v2}"
 

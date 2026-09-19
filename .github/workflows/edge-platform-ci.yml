@@ -29,7 +29,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
+  verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -44,6 +44,7 @@ jobs:
           git remote add origin "https://github.com/${REPOSITORY}.git"
           git fetch --no-tags --depth=1 origin "${REVISION}"
           git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -64,6 +65,37 @@ jobs:
         shell: bash
         run: cargo test --workspace --locked
 
+  release:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout exact accepted revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+
       - name: Build exact reusable release binaries
         working-directory: edge-platform
         shell: bash
@@ -72,9 +104,47 @@ jobs:
           cargo build --locked --release -p edge-controller --bin edge-controller
           cargo build --locked --release -p edge-agent --bin edge-agent
 
-      - name: Package exact reusable release artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Publish exact application images
+        id: images
         shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          registry="ghcr.io"
+          owner="iamaman11"
+          build_tag="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gateway_tag="${registry}/${owner}/vultr-edge-gateway:${build_tag}"
+          warp_tag="${registry}/${owner}/vultr-warp-egress:${build_tag}"
+
+          printf '%s' "${GHCR_TOKEN}" | docker login "${registry}" -u "${GITHUB_ACTOR}" --password-stdin
+
+          docker build             --label "org.opencontainers.image.revision=${GITHUB_SHA}"             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"             -t "${gateway_tag}"             win/vultr-waw/stack/edge-gateway
+          docker push "${gateway_tag}"
+
+          docker build             --label "org.opencontainers.image.revision=${GITHUB_SHA}"             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"             -t "${warp_tag}"             win/vultr-waw/stack/warp-egress
+          docker push "${warp_tag}"
+
+          gateway_digest="$(docker buildx imagetools inspect "${gateway_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
+          warp_digest="$(docker buildx imagetools inspect "${warp_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
+          [[ "${gateway_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${warp_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          gateway_ref="${registry}/${owner}/vultr-edge-gateway@${gateway_digest}"
+          warp_ref="${registry}/${owner}/vultr-warp-egress@${warp_digest}"
+
+          docker logout "${registry}" >/dev/null
+          docker pull "${gateway_ref}" >/dev/null
+          docker pull "${warp_ref}" >/dev/null
+
+          printf 'gateway_ref=%s\n' "${gateway_ref}" >> "${GITHUB_OUTPUT}"
+          printf 'warp_ref=%s\n' "${warp_ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Package exact reusable release artifact
+        shell: bash
+        env:
+          EDGE_GATEWAY_IMAGE: ${{ steps.images.outputs.gateway_ref }}
+          EDGE_WARP_EGRESS_IMAGE: ${{ steps.images.outputs.warp_ref }}
         run: |
           set -euo pipefail
           out="${RUNNER_TEMP}/edge-platform-release"
@@ -83,15 +153,24 @@ jobs:
           install -m 0755 edge-platform/target/release/edge-agent "${out}/edge-agent"
           controller_sha="$(sha256sum "${out}/edge-controller" | awk '{print $1}')"
           agent_sha="$(sha256sum "${out}/edge-agent" | awk '{print $1}')"
+          [[ "${EDGE_GATEWAY_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
+          [[ "${EDGE_WARP_EGRESS_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
           jq -n \
             --arg source_revision "${GITHUB_SHA}" \
             --arg controller_sha256 "${controller_sha}" \
             --arg agent_sha256 "${agent_sha}" \
-            '{schema:1,source_revision:$source_revision,controller_sha256:$controller_sha256,agent_sha256:$agent_sha256}' \
-            > "${out}/manifest.json"
+            --arg edge_gateway_image "${EDGE_GATEWAY_IMAGE}" \
+            --arg edge_warp_egress_image "${EDGE_WARP_EGRESS_IMAGE}" \
+            '{
+              schema:1,
+              source_revision:$source_revision,
+              controller_sha256:$controller_sha256,
+              agent_sha256:$agent_sha256,
+              edge_gateway_image:$edge_gateway_image,
+              edge_warp_egress_image:$edge_warp_egress_image
+            }' > "${out}/manifest.json"
 
       - name: Publish exact reusable release artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: edge-platform-release-${{ github.sha }}
