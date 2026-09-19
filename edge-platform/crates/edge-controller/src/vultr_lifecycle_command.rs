@@ -1,6 +1,7 @@
 use crate::vultr_host_bootstrap::{
-    InstanceAction, VultrOperationalApiProvider, apply_instance_action, prepare_strict_bootstrap,
-    rotate_host_certificate, scrub_user_data, strict_ssh_accept, wait_provider_ready,
+    InstanceAction, VultrOperationalApiProvider, apply_instance_action,
+    ensure_host_certificate_rotated, prepare_strict_bootstrap, scrub_user_data, strict_ssh_accept,
+    wait_provider_ready,
 };
 use crate::vultr_lifecycle_service::{
     CreatePrerequisites, LifecycleExecutionPolicy, VultrApiProvider,
@@ -178,16 +179,13 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    let rotated = report.action.as_str() == "CREATED";
-    if rotated {
-        rotate_host_certificate(
-            &ready.main_ip,
-            &machine.id,
-            &operator_private_key_path,
-            &canonical_public_key,
-            2,
-        )?;
-    }
+    let rotated = ensure_host_certificate_rotated(
+        &ready.main_ip,
+        &machine.id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        2,
+    )?;
 
     print_json_value(serde_json::json!({
         "action": report.action.as_str(),
