@@ -25,11 +25,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: edge-platform-ci-${{ github.ref }}
+  group: edge-platform-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
+    name: Source checks
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -65,8 +66,130 @@ jobs:
         shell: bash
         run: cargo test --workspace --locked
 
-  windows:
+      - name: Test exact dependency resolver
+        shell: bash
+        run: python3 edge-platform/scripts/test_resolve_release_dependencies.py
+
+  dependencies:
+    name: Resolve exact dependencies
     needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      sing_box_version: ${{ steps.resolve.outputs.sing_box_version }}
+      sing_box_windows_url: ${{ steps.resolve.outputs.sing_box_windows_url }}
+      sing_box_windows_sha256: ${{ steps.resolve.outputs.sing_box_windows_sha256 }}
+      sing_box_linux_url: ${{ steps.resolve.outputs.sing_box_linux_url }}
+      sing_box_linux_sha256: ${{ steps.resolve.outputs.sing_box_linux_sha256 }}
+      warp_version: ${{ steps.resolve.outputs.warp_version }}
+      warp_url: ${{ steps.resolve.outputs.warp_url }}
+      warp_sha256: ${{ steps.resolve.outputs.warp_sha256 }}
+      debian_base_image: ${{ steps.resolve.outputs.debian_base_image }}
+      ubuntu_base_image: ${{ steps.resolve.outputs.ubuntu_base_image }}
+      mesh_image: ${{ steps.resolve.outputs.mesh_image }}
+    steps:
+      - name: Checkout exact revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+
+      - name: Resolve and verify exact upstream dependencies
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/release-dependencies"
+          mkdir -p "${work}"
+
+          gh api --paginate "repos/SagerNet/sing-box/releases?per_page=100" --slurp > "${work}/sing-box-release-pages.json"
+          jq -c 'add' "${work}/sing-box-release-pages.json" > "${work}/sing-box-releases.json"
+          curl --fail --silent --show-error --location \
+            https://pkg.cloudflareclient.com/dists/noble/main/binary-amd64/Packages \
+            -o "${work}/warp-Packages"
+
+          sing_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py sing-box "${work}/sing-box-releases.json")"
+          warp_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py warp "${work}/warp-Packages")"
+
+          sing_version="$(jq -er '.version' <<<"${sing_json}")"
+          sing_windows_url="$(jq -er '.windows.url' <<<"${sing_json}")"
+          sing_windows_sha="$(jq -er '.windows.sha256' <<<"${sing_json}")"
+          sing_linux_url="$(jq -er '.linux.url' <<<"${sing_json}")"
+          sing_linux_sha="$(jq -er '.linux.sha256' <<<"${sing_json}")"
+          warp_version="$(jq -er '.version' <<<"${warp_json}")"
+          warp_url="$(jq -er '.url' <<<"${warp_json}")"
+          warp_sha="$(jq -er '.sha256' <<<"${warp_json}")"
+
+          curl --fail --silent --show-error --location "${sing_linux_url}" -o "${work}/sing-box-linux.tar.gz"
+          echo "${sing_linux_sha}  ${work}/sing-box-linux.tar.gz" | sha256sum -c -
+          mkdir -p "${work}/linux"
+          tar -xzf "${work}/sing-box-linux.tar.gz" -C "${work}/linux"
+          sing_linux_bin="$(find "${work}/linux" -type f -name sing-box -print -quit)"
+          test -n "${sing_linux_bin}"
+          chmod 0755 "${sing_linux_bin}"
+          test "$("${sing_linux_bin}" version | head -n 1)" = "sing-box version ${sing_version}"
+
+          curl --fail --silent --show-error --location "${warp_url}" -o "${work}/cloudflare-warp.deb"
+          echo "${warp_sha}  ${work}/cloudflare-warp.deb" | sha256sum -c -
+          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Package)" = "cloudflare-warp"
+          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Architecture)" = "amd64"
+          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Version)" = "${warp_version}"
+
+          resolve_digest() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | jq -er '.'
+          }
+
+          debian_digest="$(resolve_digest docker.io/library/debian:bookworm-slim)"
+          ubuntu_digest="$(resolve_digest docker.io/library/ubuntu:24.04)"
+          mesh_digest="$(resolve_digest docker.io/cloudflare/mesh:latest)"
+          [[ "${debian_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${ubuntu_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${mesh_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          debian_ref="docker.io/library/debian@${debian_digest}"
+          ubuntu_ref="docker.io/library/ubuntu@${ubuntu_digest}"
+          mesh_ref="docker.io/cloudflare/mesh@${mesh_digest}"
+
+          {
+            printf 'sing_box_version=%s\n' "${sing_version}"
+            printf 'sing_box_windows_url=%s\n' "${sing_windows_url}"
+            printf 'sing_box_windows_sha256=%s\n' "${sing_windows_sha}"
+            printf 'sing_box_linux_url=%s\n' "${sing_linux_url}"
+            printf 'sing_box_linux_sha256=%s\n' "${sing_linux_sha}"
+            printf 'warp_version=%s\n' "${warp_version}"
+            printf 'warp_url=%s\n' "${warp_url}"
+            printf 'warp_sha256=%s\n' "${warp_sha}"
+            printf 'debian_base_image=%s\n' "${debian_ref}"
+            printf 'ubuntu_base_image=%s\n' "${ubuntu_ref}"
+            printf 'mesh_image=%s\n' "${mesh_ref}"
+          } >> "${GITHUB_OUTPUT}"
+
+          {
+            echo '### Exact dependency candidate'
+            echo
+            echo "- sing-box: \`${sing_version}\`"
+            echo "- sing-box Windows SHA-256: \`${sing_windows_sha}\`"
+            echo "- sing-box Linux SHA-256: \`${sing_linux_sha}\`"
+            echo "- Cloudflare WARP: \`${warp_version}\` / \`${warp_sha}\`"
+            echo "- Debian base: \`${debian_ref}\`"
+            echo "- Ubuntu base: \`${ubuntu_ref}\`"
+            echo "- Cloudflare Mesh: \`${mesh_ref}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  windows:
+    name: Windows verification
+    needs: dependencies
     runs-on: windows-2025
     timeout-minutes: 35
     permissions:
@@ -84,6 +207,40 @@ jobs:
           git fetch --no-tags --depth=1 origin $env:REVISION
           git checkout --detach FETCH_HEAD
           if ((git rev-parse HEAD).Trim() -ne $env:REVISION) { throw "exact revision checkout failed" }
+
+      - name: Verify exact upstream Windows sing-box candidate
+        shell: pwsh
+        env:
+          SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
+          SING_BOX_WINDOWS_URL: ${{ needs.dependencies.outputs.sing_box_windows_url }}
+          SING_BOX_WINDOWS_SHA256: ${{ needs.dependencies.outputs.sing_box_windows_sha256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "sing-box-windows.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "sing-box-windows"
+          Invoke-WebRequest -UseBasicParsing -Uri $env:SING_BOX_WINDOWS_URL -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:SING_BOX_WINDOWS_SHA256) {
+            throw "Windows sing-box SHA-256 mismatch"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          $exe = Get-ChildItem -LiteralPath $extract -Recurse -File -Filter sing-box.exe | Select-Object -First 1
+          if (-not $exe) { throw "sing-box.exe not found in accepted Windows upstream archive" }
+          $stdoutPath = Join-Path $env:RUNNER_TEMP "sing-box-version.stdout"
+          $stderrPath = Join-Path $env:RUNNER_TEMP "sing-box-version.stderr"
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList @("version") -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+          $versionOutput = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+          $versionError = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
+          if ($process.ExitCode -ne 0) {
+            $detail = (($versionError + $versionOutput) | Select-Object -First 20) -join " | "
+            throw "sing-box.exe version failed with exit code $($process.ExitCode): $detail"
+          }
+          if ($versionOutput.Count -lt 1) { throw "sing-box.exe version returned no stdout" }
+          $versionLine = ([string]$versionOutput[0]).Trim()
+          if ($versionLine -ne "sing-box version $env:SING_BOX_VERSION") {
+            throw "Windows sing-box version mismatch: $versionLine"
+          }
 
       - name: Install pinned Rust toolchain
         shell: pwsh
@@ -151,7 +308,8 @@ jobs:
 
 
   release:
-    needs: verify
+    name: Publish accepted candidate
+    needs: [dependencies, windows]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
