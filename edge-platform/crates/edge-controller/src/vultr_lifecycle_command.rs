@@ -325,6 +325,19 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
             machine.id
         )
     })?;
+    let raw_profiles = load_firewall_profiles_raw(&desired)?
+        .ok_or_else(|| format!("firewall profile registry is required for {profile_name}"))?;
+    let raw_profile = raw_profiles.profile(profile_name)?;
+    if !raw_profile
+        .rules
+        .iter()
+        .any(|rule| rule.subnet == "@controller-ipv4")
+    {
+        return Err(format!(
+            "firewall profile {profile_name} has no @controller-ipv4 rule; acquire-access cannot establish an ephemeral runner lease"
+        ));
+    }
+
     let profiles = load_firewall_profiles(&desired)?
         .ok_or_else(|| format!("firewall profile registry is required for {profile_name}"))?;
     let profile = profiles.profile(profile_name)?;
