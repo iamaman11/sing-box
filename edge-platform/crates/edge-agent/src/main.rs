@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
@@ -664,6 +664,14 @@ fn write_bundle_file(
     file: &BundleFile,
     written_paths: &mut Vec<String>,
 ) -> Result<(), String> {
+    validate_bundle_relative_path(&file.relative_path)?;
+    if file.executable && file.sensitive {
+        return Err(format!(
+            "bundle file {} cannot be both executable and sensitive",
+            file.relative_path
+        ));
+    }
+
     let path = root.join(&file.relative_path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -671,17 +679,55 @@ fn write_bundle_file(
     }
     fs::write(&path, &file.content)
         .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
-    #[cfg(unix)]
-    if file.executable {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(&path)
-            .map_err(|err| format!("failed to read {} metadata: {err}", path.display()))?
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions)
-            .map_err(|err| format!("failed to set {} executable bit: {err}", path.display()))?;
-    }
+    set_bundle_file_permissions(&path, file.executable, file.sensitive)?;
     written_paths.push(path.display().to_string());
+    Ok(())
+}
+
+fn validate_bundle_relative_path(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.contains('\\') {
+        return Err(format!(
+            "bundle path must be a normalized relative path without traversal: {value}"
+        ));
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "bundle path must be a normalized relative path without traversal: {value}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_bundle_file_permissions(
+    path: &Path,
+    executable: bool,
+    sensitive: bool,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = if sensitive {
+        0o600
+    } else if executable {
+        0o755
+    } else {
+        0o644
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|err| format!("failed to set {} mode {mode:o}: {err}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_bundle_file_permissions(
+    _path: &Path,
+    _executable: bool,
+    _sensitive: bool,
+) -> Result<(), String> {
     Ok(())
 }
 
@@ -835,22 +881,26 @@ mod tests {
                     relative_path: "docker-compose.yml".to_owned(),
                     content: b"services: {}\n".to_vec(),
                     executable: false,
+                    sensitive: false,
                 }],
                 host_files: vec![BundleFile {
                     relative_path: "tls/ca.pem".to_owned(),
                     content: b"ca".to_vec(),
                     executable: false,
+                    sensitive: false,
                 }],
                 deployment_summary: Some(BundleFile {
                     relative_path: "deployment-summary.json".to_owned(),
                     content: br#"{"label":"bundle-a","instance_id":"instance-1"}"#.to_vec(),
                     executable: false,
+                    sensitive: false,
                 }),
                 agent_env_file: Some(BundleFile {
                     relative_path: "edge-agent.env".to_owned(),
                     content: b"EDGE_AGENT_TLS_CA_CERT_PATH=/opt/vultr-edge-stack/tls/ca.pem\n"
                         .to_vec(),
                     executable: false,
+                    sensitive: false,
                 }),
                 prune_existing: true,
             },
@@ -863,6 +913,81 @@ mod tests {
         assert!(root.join("deployment-summary.json").is_file());
         assert!(root.join("edge-agent.env").is_file());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_bundle_path_traversal() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let mut written = Vec::new();
+
+        for path in ["../escape", "/tmp/escape", "nested/../escape", r"nested\escape"] {
+            let error = write_bundle_file(
+                &root,
+                &BundleFile {
+                    relative_path: path.to_owned(),
+                    content: b"secret".to_vec(),
+                    executable: false,
+                    sensitive: true,
+                },
+                &mut written,
+            )
+            .unwrap_err();
+            assert!(error.contains("normalized relative path"));
+        }
+        assert!(written.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_executable_sensitive_bundle_files() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let mut written = Vec::new();
+        let error = write_bundle_file(
+            &root,
+            &BundleFile {
+                relative_path: "secret.sh".to_owned(),
+                content: b"#!/bin/sh\n".to_vec(),
+                executable: true,
+                sensitive: true,
+            },
+            &mut written,
+        )
+        .unwrap_err();
+        assert!(error.contains("both executable and sensitive"));
+        assert!(!root.join("secret.sh").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn applies_explicit_bundle_file_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let mut written = Vec::new();
+        for (name, executable, sensitive, expected) in [
+            ("regular.txt", false, false, 0o644),
+            ("bootstrap.sh", true, false, 0o755),
+            (".env.runtime", false, true, 0o600),
+        ] {
+            write_bundle_file(
+                &root,
+                &BundleFile {
+                    relative_path: name.to_owned(),
+                    content: b"x".to_vec(),
+                    executable,
+                    sensitive,
+                },
+                &mut written,
+            )
+            .unwrap();
+            let mode = fs::metadata(root.join(name)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, expected, "{name}");
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
