@@ -332,6 +332,7 @@ dependencies = [
  "edge-singbox",
  "edge-state",
  "proptest",
+ "ring",
  "serde",
  "serde_json",
 ]
