@@ -1,7 +1,7 @@
 use edge_shared_types::{
-    CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
-    WindowsRuntime, CONFIG_SCHEMA_VERSION, DB_SCHEMA_VERSION, RELEASE_SET_SCHEMA_VERSION,
-    decode_release_set, encode_release_set, release_set_sha256,
+    CONFIG_SCHEMA_VERSION, CloudflareRuntime, DB_SCHEMA_VERSION, OciImage,
+    RELEASE_SET_SCHEMA_VERSION, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
+    WindowsRuntime, decode_release_set, encode_release_set, release_set_sha256,
 };
 use ring::digest::{Context, SHA256};
 use std::collections::BTreeMap;
