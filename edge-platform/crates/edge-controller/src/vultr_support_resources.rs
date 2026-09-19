@@ -878,13 +878,21 @@ fn current_rule_map(
 }
 
 fn firewall_rule_spec(rule: &VultrFirewallRule) -> Result<FirewallRuleSpec, String> {
+    let subnet = rule.subnet.trim().to_owned();
+    let raw_source = rule.source.trim();
+    let provider_derived_source = format!("{subnet}/{}", rule.subnet_size);
+    let source = if raw_source == provider_derived_source {
+        String::new()
+    } else {
+        raw_source.to_owned()
+    };
     let spec = FirewallRuleSpec {
         ip_type: rule.ip_type.trim().to_owned(),
         protocol: rule.protocol.trim().to_owned(),
-        subnet: rule.subnet.trim().to_owned(),
+        subnet,
         subnet_size: rule.subnet_size,
         port: rule.port.trim().to_owned(),
-        source: rule.source.trim().to_owned(),
+        source,
         notes: rule.notes.trim().to_owned(),
     };
     validate_rule(&spec)?;
@@ -1342,6 +1350,40 @@ mod tests {
 }"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn provider_derived_cidr_source_is_not_independent_rule_identity() {
+        let rule = VultrFirewallRule {
+            id: 1,
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "203.0.113.10".to_owned(),
+            subnet_size: 32,
+            port: "22".to_owned(),
+            source: "203.0.113.10/32".to_owned(),
+            notes: "managed ssh".to_owned(),
+        };
+        let normalized = firewall_rule_spec(&rule).unwrap();
+        assert_eq!(normalized.source, "");
+        assert_eq!(normalized.subnet, "203.0.113.10");
+        assert_eq!(normalized.subnet_size, 32);
+    }
+
+    #[test]
+    fn special_firewall_source_remains_significant_identity() {
+        let rule = VultrFirewallRule {
+            id: 1,
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "0.0.0.0".to_owned(),
+            subnet_size: 0,
+            port: "443".to_owned(),
+            source: "cloudflare".to_owned(),
+            notes: String::new(),
+        };
+        let normalized = firewall_rule_spec(&rule).unwrap();
+        assert_eq!(normalized.source, "cloudflare");
     }
 
     #[test]
