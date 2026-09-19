@@ -2765,37 +2765,6 @@ user-data scrub, and destructive authority remain in one lifecycle engine"
     )
 }
 
-async fn wait_for_instance_ready(
-    api_key: &str,
-    instance_id: &str,
-) -> Result<edge_provider_vultr::VultrInstance, String> {
-    let mut last = None;
-    for _ in 0..60 {
-        let current = get_instance_typed(api_key, instance_id)
-            .await
-            .map_err(|err| err.to_string())?;
-        if current.status == "active"
-            && current.power_status == "running"
-            && current.server_status == "ok"
-            && !current.main_ip.trim().is_empty()
-        {
-            return Ok(current);
-        }
-        last = Some(current);
-        sleep(Duration::from_secs(5)).await;
-    }
-
-    let Some(last) = last else {
-        return Err(format!(
-            "instance {instance_id} never returned a readable provisioning status"
-        ));
-    };
-    Err(format!(
-        "instance {} did not become ready in time: status={}, server_status={}, main_ip={}",
-        last.id, last.status, last.server_status, last.main_ip
-    ))
-}
-
 fn status_for_target_resolution_error(message: String) -> Status {
     let normalized = message.to_ascii_lowercase();
     if normalized.contains("transport")
