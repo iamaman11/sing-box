@@ -7,9 +7,8 @@ use edge_provider_vultr::{
     VultrOperatingSystem, VultrPlan, VultrRegionAvailability, VultrSnapshot, VultrSshKey,
     create_firewall_group_typed, create_firewall_rule_typed, create_ssh_key_typed,
     destroy_firewall_group_typed, destroy_firewall_rule_typed, destroy_ssh_key_typed,
-    get_region_availability_typed, list_firewall_groups_typed,
-    list_firewall_rules_typed, list_operating_systems_typed, list_plans_typed,
-    list_snapshots_typed, list_ssh_keys_typed,
+    get_region_availability_typed, list_firewall_groups_typed, list_firewall_rules_typed,
+    list_operating_systems_typed, list_plans_typed, list_snapshots_typed, list_ssh_keys_typed,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -72,10 +71,7 @@ pub trait SupportResourceProvider {
         &mut self,
         description: &str,
     ) -> Result<VultrFirewallGroup, VultrError>;
-    async fn destroy_firewall_group(
-        &mut self,
-        firewall_group_id: &str,
-    ) -> Result<(), VultrError>;
+    async fn destroy_firewall_group(&mut self, firewall_group_id: &str) -> Result<(), VultrError>;
     async fn list_firewall_rules(
         &mut self,
         firewall_group_id: &str,
@@ -141,10 +137,7 @@ impl SupportResourceProvider for VultrSupportApiProvider {
         create_firewall_group_typed(&self.api_key, description).await
     }
 
-    async fn destroy_firewall_group(
-        &mut self,
-        firewall_group_id: &str,
-    ) -> Result<(), VultrError> {
+    async fn destroy_firewall_group(&mut self, firewall_group_id: &str) -> Result<(), VultrError> {
         destroy_firewall_group_typed(&self.api_key, firewall_group_id).await
     }
 
@@ -240,23 +233,32 @@ impl FirewallProfileSet {
     }
 
 
-    pub fn resolve_controller_ipv4(&mut self, controller_ipv4: Option<&str>) -> Result<(), String> {
+    pub fn resolve_controller_ipv4_for_profiles(
+        &mut self,
+        profile_names: &[String],
+        controller_ipv4: Option<&str>,
+    ) -> Result<(), String> {
         const PLACEHOLDER: &str = "@controller-ipv4";
-        let needs_controller_ip = self
-            .profiles
-            .values()
-            .flat_map(|profile| profile.rules.iter())
-            .any(|rule| rule.subnet == PLACEHOLDER);
+        let needs_controller_ip = profile_names.iter().any(|name| {
+            self.profiles
+                .get(name)
+                .is_some_and(|profile| profile.rules.iter().any(|rule| rule.subnet == PLACEHOLDER))
+        });
         if !needs_controller_ip {
             return Ok(());
         }
         let raw = controller_ipv4
-            .ok_or_else(|| "firewall profiles require EDGE_CONTROLLER_IPV4".to_owned())?;
+            .ok_or_else(|| "referenced firewall profiles require EDGE_CONTROLLER_IPV4".to_owned())?;
         let ipv4 = raw
             .parse::<std::net::Ipv4Addr>()
             .map_err(|_| "EDGE_CONTROLLER_IPV4 must be a valid IPv4 address".to_owned())?
             .to_string();
-        for profile in self.profiles.values_mut() {
+
+        for name in profile_names {
+            let profile = self
+                .profiles
+                .get_mut(name)
+                .ok_or_else(|| format!("firewall profile {name} is not defined"))?;
             for rule in &mut profile.rules {
                 if rule.subnet == PLACEHOLDER {
                     if rule.ip_type != "v4" || rule.subnet_size != 32 {
@@ -557,17 +559,12 @@ pub async fn cleanup_environment_support_resources<P: SupportResourceProvider>(
 
     let desired_ssh_name = format!("singbox-{}-ops", desired.environment);
     let desired_ssh_material = public_key_material(canonical_public_key)?;
-    let ssh_key = match observe_managed_ssh_key(
-        provider,
-        &desired_ssh_name,
-        &desired_ssh_material,
-    )
-    .await?
-    {
-        SshKeyObservation::Exact(key) => Some(key),
-        SshKeyObservation::Absent => None,
-        SshKeyObservation::Conflict(detail) => return Err(detail),
-    };
+    let ssh_key =
+        match observe_managed_ssh_key(provider, &desired_ssh_name, &desired_ssh_material).await? {
+            SshKeyObservation::Exact(key) => Some(key),
+            SshKeyObservation::Absent => None,
+            SshKeyObservation::Conflict(detail) => return Err(detail),
+        };
 
     let mut firewall_groups_removed = Vec::new();
     for group in candidates {
@@ -632,7 +629,10 @@ async fn delete_ssh_key_and_observe<P: SupportResourceProvider>(
         Err(err) => return Err(err.to_string()),
     }
     for attempt in 0..policy.destroy_reobserve_attempts {
-        let keys = provider.list_ssh_keys().await.map_err(|err| err.to_string())?;
+        let keys = provider
+            .list_ssh_keys()
+            .await
+            .map_err(|err| err.to_string())?;
         if !keys.iter().any(|candidate| candidate.id == key.id) {
             return Ok(());
         }
@@ -1364,7 +1364,10 @@ mod tests {
         )
         .unwrap();
         profile_set
-            .resolve_controller_ipv4(Some("203.0.113.25"))
+            .resolve_controller_ipv4_for_profiles(
+                &["acceptance-ssh".to_owned()],
+                Some("203.0.113.25"),
+            )
             .unwrap();
         assert_eq!(
             profile_set.profile("acceptance-ssh").unwrap().rules[0].subnet,
@@ -1490,15 +1493,9 @@ mod tests {
             ..FakeSupportProvider::default()
         };
 
-        cleanup_environment_support_resources(
-            &mut provider,
-            &desired,
-            &[],
-            public_key,
-            &policy(),
-        )
-        .await
-        .unwrap();
+        cleanup_environment_support_resources(&mut provider, &desired, &[], public_key, &policy())
+            .await
+            .unwrap();
 
         assert_eq!(provider.ssh_delete_calls, 1);
         assert!(provider.ssh_keys.is_empty());
