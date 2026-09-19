@@ -13,9 +13,11 @@ on:
   pull_request:
     paths:
       - "edge-platform/**"
+      - "infra/vultr/**"
       - "infra/application/**"
       - "win/vultr-waw/**"
       - ".github/workflows/edge-platform-ci.yml"
+      - ".github/workflows/vultr-lifecycle.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
 
 permissions:
@@ -60,3 +62,39 @@ jobs:
         working-directory: edge-platform
         shell: bash
         run: cargo test --workspace --locked
+
+      - name: Build exact reusable release binaries
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: edge-platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p edge-controller --bin edge-controller
+          cargo build --locked --release -p edge-agent --bin edge-agent
+
+      - name: Package exact reusable release artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/edge-platform-release"
+          install -d -m 0755 "${out}"
+          install -m 0755 edge-platform/target/release/edge-controller "${out}/edge-controller"
+          install -m 0755 edge-platform/target/release/edge-agent "${out}/edge-agent"
+          controller_sha="$(sha256sum "${out}/edge-controller" | awk '{print $1}')"
+          agent_sha="$(sha256sum "${out}/edge-agent" | awk '{print $1}')"
+          jq -n \
+            --arg source_revision "${GITHUB_SHA}" \
+            --arg controller_sha256 "${controller_sha}" \
+            --arg agent_sha256 "${agent_sha}" \
+            '{schema:1,source_revision:$source_revision,controller_sha256:$controller_sha256,agent_sha256:$agent_sha256}' \
+            > "${out}/manifest.json"
+
+      - name: Publish exact reusable release artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-release-${{ github.sha }}
+          path: ${{ runner.temp }}/edge-platform-release
+          if-no-files-found: error
+          retention-days: 30
