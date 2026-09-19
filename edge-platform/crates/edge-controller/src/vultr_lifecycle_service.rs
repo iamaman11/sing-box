@@ -7,7 +7,6 @@ use edge_provider_vultr::{
     CreateInstanceRequest, VultrError, VultrErrorKind, VultrInstance, create_instance_typed,
     destroy_instance_typed, get_instance_typed, list_instances_typed,
 };
-use serde::Serialize;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -112,7 +111,7 @@ impl LifecycleProvider for VultrApiProvider {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecyclePlanReport {
     pub environment: String,
     pub desired_state_digest: String,
@@ -120,14 +119,22 @@ pub struct LifecyclePlanReport {
     pub orphaned_managed_provider_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyAction {
     Noop,
     Created,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+impl ApplyAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Noop => "NOOP",
+            Self::Created => "CREATED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyReport {
     pub action: ApplyAction,
     pub machine_id: String,
@@ -135,7 +142,7 @@ pub struct ApplyReport {
     pub final_plan: MachinePlan,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DestroyApplyReport {
     pub machine_id: String,
     pub provider_id: String,
