@@ -665,7 +665,8 @@ fn write_bundle_file(
     written_paths: &mut Vec<String>,
 ) -> Result<(), String> {
     validate_bundle_relative_path(&file.relative_path)?;
-    if file.executable && file.sensitive {
+    let sensitive = file.sensitive || intrinsically_sensitive_bundle_path(&file.relative_path);
+    if file.executable && sensitive {
         return Err(format!(
             "bundle file {} cannot be both executable and sensitive",
             file.relative_path
@@ -679,9 +680,16 @@ fn write_bundle_file(
     }
     fs::write(&path, &file.content)
         .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
-    set_bundle_file_permissions(&path, file.executable, file.sensitive)?;
+    set_bundle_file_permissions(&path, file.executable, sensitive)?;
     written_paths.push(path.display().to_string());
     Ok(())
+}
+
+fn intrinsically_sensitive_bundle_path(value: &str) -> bool {
+    value == ".env.runtime"
+        || value == "deployment-summary.json"
+        || value.ends_with(".key")
+        || value.starts_with("tunnel-state/acme/")
 }
 
 fn validate_bundle_relative_path(value: &str) -> Result<(), String> {
@@ -937,6 +945,34 @@ mod tests {
             assert!(error.contains("normalized relative path"));
         }
         assert!(written.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn known_secret_paths_are_private_even_without_sensitive_flag() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let mut written = Vec::new();
+        write_bundle_file(
+            &root,
+            &BundleFile {
+                relative_path: ".env.runtime".to_owned(),
+                content: b"MESH_NODE_TOKEN=secret\n".to_vec(),
+                executable: false,
+                sensitive: false,
+            },
+            &mut written,
+        )
+        .unwrap();
+        let mode = fs::metadata(root.join(".env.runtime"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
         fs::remove_dir_all(root).unwrap();
     }
 
