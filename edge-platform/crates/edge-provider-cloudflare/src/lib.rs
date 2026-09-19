@@ -227,13 +227,7 @@ pub async fn list_mesh_routes(
     let client = authorized_client(api_token)?;
     let mut result = Vec::new();
     for page in 1..=MAX_API_PAGES {
-        let query = [
-            ("is_deleted", "false".to_owned()),
-            ("tun_types", "warp_connector".to_owned()),
-            ("tunnel_id", node_id.to_owned()),
-            ("page", page.to_string()),
-            ("per_page", API_PAGE_SIZE.to_string()),
-        ];
+        let query = mesh_route_list_query(node_id, page);
         let response = client
             .get(format!("{API_ROOT}/accounts/{account_id}/teamnet/routes"))
             .query(&query)
@@ -327,6 +321,16 @@ fn mesh_route_from_record(record: MeshRouteRecord) -> CloudflareMeshRoute {
         tunnel_type: record.tun_type,
         comment: record.comment,
     }
+}
+
+fn mesh_route_list_query(node_id: &str, page: u32) -> Vec<(&'static str, String)> {
+    vec![
+        ("is_deleted", "false".to_owned()),
+        ("tun_type", "warp_connector".to_owned()),
+        ("tunnel_id", node_id.to_owned()),
+        ("page", page.to_string()),
+        ("per_page", API_PAGE_SIZE.to_string()),
+    ]
 }
 
 fn page_is_complete(page: u32, page_count: usize, result_info: Option<&ApiResultInfo>) -> bool {
@@ -548,6 +552,19 @@ mod tests {
         assert_eq!(body["network"], "203.0.113.0/24");
         assert_eq!(body["tunnel_id"], "11111111-1111-1111-1111-111111111111");
         assert_eq!(body["comment"], "line-3-poc");
+    }
+
+    #[test]
+    fn mesh_route_list_query_uses_current_tun_type_contract() {
+        let query = mesh_route_list_query("11111111-1111-1111-1111-111111111111", 7);
+        assert!(query.contains(&("tun_type", "warp_connector".to_owned())));
+        assert!(!query.iter().any(|(key, _)| *key == "tun_types"));
+        assert!(query.contains(&(
+            "tunnel_id",
+            "11111111-1111-1111-1111-111111111111".to_owned()
+        )));
+        assert!(query.contains(&("page", "7".to_owned())));
+        assert!(query.contains(&("per_page", "1000".to_owned())));
     }
 
     #[test]
