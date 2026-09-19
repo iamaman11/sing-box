@@ -2,6 +2,7 @@ name: Vultr Stack CI
 
 on:
   push:
+    branches: [main]
     paths:
       - "win/vultr-waw/stack/**"
       - ".github/workflows/vultr-stack-ci.yml"
