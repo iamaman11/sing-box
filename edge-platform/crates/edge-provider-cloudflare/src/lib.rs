@@ -329,11 +329,7 @@ fn mesh_route_from_record(record: MeshRouteRecord) -> CloudflareMeshRoute {
     }
 }
 
-fn page_is_complete(
-    page: u32,
-    page_count: usize,
-    result_info: Option<&ApiResultInfo>,
-) -> bool {
+fn page_is_complete(page: u32, page_count: usize, result_info: Option<&ApiResultInfo>) -> bool {
     if let Some(info) = result_info
         && let Some(total_count) = info.total_count
     {
@@ -416,8 +412,8 @@ async fn parse_success_json<T: for<'de> Deserialize<'de>>(
     if !status.is_success() {
         return Err(format!("Cloudflare API returned {status}: {body}"));
     }
-    let payload: ApiEnvelope<T> =
-        serde_json::from_str(&body).map_err(|err| format!("invalid Cloudflare JSON payload: {err}"))?;
+    let payload: ApiEnvelope<T> = serde_json::from_str(&body)
+        .map_err(|err| format!("invalid Cloudflare JSON payload: {err}"))?;
     if !payload.success {
         let errors = payload
             .errors
@@ -550,10 +546,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(body["network"], "203.0.113.0/24");
-        assert_eq!(
-            body["tunnel_id"],
-            "11111111-1111-1111-1111-111111111111"
-        );
+        assert_eq!(body["tunnel_id"], "11111111-1111-1111-1111-111111111111");
         assert_eq!(body["comment"], "line-3-poc");
     }
 
