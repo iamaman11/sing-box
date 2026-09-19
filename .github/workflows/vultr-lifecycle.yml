@@ -7,7 +7,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: vultr-lifecycle-production
+  group: vultr-control-plane-production
   cancel-in-progress: false
   queue: max
 
