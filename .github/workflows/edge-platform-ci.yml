@@ -111,7 +111,8 @@ jobs:
           work="${RUNNER_TEMP}/release-dependencies"
           mkdir -p "${work}"
 
-          gh api "repos/SagerNet/sing-box/releases?per_page=50" > "${work}/sing-box-releases.json"
+          gh api --paginate "repos/SagerNet/sing-box/releases?per_page=100" --slurp > "${work}/sing-box-release-pages.json"
+          jq -c 'add' "${work}/sing-box-release-pages.json" > "${work}/sing-box-releases.json"
           curl --fail --silent --show-error --location \
             https://pkg.cloudflareclient.com/dists/noble/main/binary-amd64/Packages \
             -o "${work}/warp-Packages"
@@ -143,7 +144,9 @@ jobs:
 
           curl --fail --silent --show-error --location "${warp_url}" -o "${work}/cloudflare-warp.deb"
           echo "${warp_sha}  ${work}/cloudflare-warp.deb" | sha256sum -c -
-          dpkg-deb --info "${work}/cloudflare-warp.deb" >/dev/null
+          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Package)" = "cloudflare-warp"
+          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Architecture)" = "amd64"
+          test "$(dpkg-deb -f "${work}/cloudflare-warp.deb" Version)" = "${warp_version}"
 
           resolve_digest() {
             docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | jq -er '.'
@@ -224,8 +227,10 @@ jobs:
           Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
           $exe = Get-ChildItem -LiteralPath $extract -Recurse -File -Filter sing-box.exe | Select-Object -First 1
           if (-not $exe) { throw "sing-box.exe not found in accepted Windows upstream archive" }
-          $versionLine = (& $exe.FullName version | Select-Object -First 1).Trim()
-          if ($LASTEXITCODE -ne 0) { throw "sing-box.exe version failed" }
+          $versionOutput = & $exe.FullName version
+          $versionExitCode = $LASTEXITCODE
+          if ($versionExitCode -ne 0) { throw "sing-box.exe version failed with exit code $versionExitCode" }
+          $versionLine = ($versionOutput | Select-Object -First 1).Trim()
           if ($versionLine -ne "sing-box version $env:SING_BOX_VERSION") {
             throw "Windows sing-box version mismatch: $versionLine"
           }
