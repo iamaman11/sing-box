@@ -1230,6 +1230,72 @@ mod tests {
     }
 
     #[test]
+    fn digest_bound_bundle_is_idempotent_and_rollback_swaps_exact_release() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+
+        let make_request = |bundle_id: &str, body: &[u8]| {
+            let mut request = ApplyBundleRequest {
+                stack_files: vec![BundleFile {
+                    relative_path: "docker-compose.yml".to_owned(),
+                    content: body.to_vec(),
+                    executable: false,
+                    sensitive: false,
+                }],
+                host_files: Vec::new(),
+                deployment_summary: None,
+                agent_env_file: None,
+                prune_existing: true,
+                bundle_id: Some(bundle_id.to_owned()),
+                bundle_digest: None,
+            };
+            let digest = canonical_apply_bundle_digest(&request).unwrap();
+            request.bundle_digest = Some(digest.clone());
+            (request, digest)
+        };
+
+        let (first, first_digest) = make_request("release-a", b"services: {a: {}}\n");
+        let first_response = apply_bundle(&stack, first.clone()).unwrap();
+        assert_eq!(
+            first_response.active_bundle_digest.as_deref(),
+            Some(first_digest.as_str())
+        );
+
+        let noop_response = apply_bundle(&stack, first).unwrap();
+        assert!(noop_response.written_paths.is_empty());
+
+        let (second, second_digest) = make_request("release-b", b"services: {b: {}}\n");
+        let second_response = apply_bundle(&stack, second).unwrap();
+        assert_eq!(
+            second_response.previous_bundle_digest.as_deref(),
+            Some(first_digest.as_str())
+        );
+
+        let rolled_back = rollback_bundle(
+            &stack,
+            RollbackBundleRequest {
+                expected_current_bundle_digest: second_digest.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            rolled_back.active_bundle_digest.as_deref(),
+            Some(first_digest.as_str())
+        );
+        assert_eq!(
+            rolled_back.previous_bundle_digest.as_deref(),
+            Some(second_digest.as_str())
+        );
+        assert_eq!(
+            fs::read_to_string(stack.join("docker-compose.yml")).unwrap(),
+            "services: {a: {}}\n"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_bundle_path_traversal() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
