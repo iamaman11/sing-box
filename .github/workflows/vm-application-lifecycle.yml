@@ -212,6 +212,41 @@ jobs:
           set -euo pipefail
           bin="edge-platform/target/release/edge-controller"
           result="${RUNNER_TEMP}/application-result.json"
+          access_acquire="${RUNNER_TEMP}/application-access-acquire.json"
+          access_release="${RUNNER_TEMP}/application-access-release.json"
+          vultr_spec="$(jq -er '.vultr_spec_path' "${SPEC_PATH}")"
+          machine="$(jq -er '.machine_id' "${SPEC_PATH}")"
+          test -f "${vultr_spec}"
+
+          ACCESS_CLEANUP_ARMED=0
+
+          cleanup_access() {
+            if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
+              return 0
+            fi
+            "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}"               | tee "${access_release}"
+          }
+
+          finish() {
+            local operation_rc=$?
+            trap - EXIT
+            set +e
+            cleanup_access
+            local cleanup_rc=$?
+            set -e
+            if [[ ${cleanup_rc} -ne 0 ]]; then
+              echo "ephemeral SSH ingress cleanup failed with rc=${cleanup_rc}" >&2
+              if [[ ${operation_rc} -eq 0 ]]; then
+                operation_rc=${cleanup_rc}
+              fi
+            fi
+            exit "${operation_rc}"
+          }
+
+          trap finish EXIT
+          ACCESS_CLEANUP_ARMED=1
+
+          "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}"             | tee "${access_acquire}"
 
           run_desired() {
             "${bin}" application-lifecycle "${REQUESTED_OPERATION}"               "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}"
@@ -225,7 +260,7 @@ jobs:
               "${bin}" application-lifecycle rollback-plan "${SPEC_PATH}" | tee "${result}"
               ;;
             rollback-apply)
-              "${bin}" application-lifecycle rollback-apply "${SPEC_PATH}" "${ROLLBACK_DIGEST}" | tee "${result}"
+              "${bin}" application-lifecycle rollback-apply "${SPEC_PATH}" "${ROLLBACK_DIGEST}"                 | tee "${result}"
               ;;
             *)
               echo "unsupported authorized application operation" >&2
@@ -235,6 +270,10 @@ jobs:
 
           {
             echo '### VM application lifecycle result'
+            echo
+            echo 'Ephemeral SSH ingress was acquired through the Vultr support-resource authority.'
+            echo 'The EXIT trap releases the exact runner /32 and fails the job if absence is not verified.'
+            echo
             echo '~~~json'
             cat "${result}"
             echo '~~~'
