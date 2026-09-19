@@ -96,9 +96,13 @@ pub struct VultrInstance {
     pub server_status: String,
     pub power_status: String,
     pub main_ip: String,
+    pub v6_main_ip: String,
     pub firewall_group_id: String,
+    pub date_created: String,
     pub tags: Vec<String>,
     pub os_id: u32,
+    pub snapshot_id: Option<String>,
+    pub enable_ipv6: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -444,9 +448,13 @@ pub fn mock_instance(label: &str, region: &str, plan: &str, ip: &str) -> VultrIn
         server_status: "ok".to_owned(),
         power_status: "running".to_owned(),
         main_ip: ip.to_owned(),
+        v6_main_ip: String::new(),
         firewall_group_id: String::new(),
+        date_created: String::new(),
         tags: Vec::new(),
         os_id: 0,
+        snapshot_id: None,
+        enable_ipv6: false,
     }
 }
 
@@ -492,13 +500,13 @@ fn authorized_client(api_key: &str) -> Result<Client, VultrError> {
 fn build_create_instance_payload(
     request: &CreateInstanceRequest<'_>,
 ) -> Result<CreateInstancePayload, VultrError> {
-    if request.os_id.is_none() && request.snapshot_id.is_none() {
+    if request.os_id.is_some() == request.snapshot_id.is_some() {
         return Err(VultrError {
             operation: "build Vultr create request",
             kind: VultrErrorKind::Configuration,
             status: None,
             retry_after_secs: None,
-            detail: "either os_id or snapshot_id is required".to_owned(),
+            detail: "exactly one of os_id or snapshot_id is required".to_owned(),
         });
     }
 
@@ -577,11 +585,19 @@ struct VultrInstancePayload {
     #[serde(default)]
     main_ip: String,
     #[serde(default)]
+    v6_main_ip: String,
+    #[serde(default)]
     firewall_group_id: String,
+    #[serde(default)]
+    date_created: String,
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     os_id: u32,
+    #[serde(default)]
+    snapshot_id: Option<String>,
+    #[serde(default)]
+    enable_ipv6: bool,
 }
 
 impl From<VultrInstancePayload> for VultrInstance {
@@ -595,9 +611,15 @@ impl From<VultrInstancePayload> for VultrInstance {
             server_status: value.server_status,
             power_status: value.power_status,
             main_ip: value.main_ip,
+            v6_main_ip: value.v6_main_ip,
             firewall_group_id: value.firewall_group_id,
+            date_created: value.date_created,
             tags: value.tags,
             os_id: value.os_id,
+            snapshot_id: value
+                .snapshot_id
+                .filter(|snapshot_id| !snapshot_id.trim().is_empty()),
+            enable_ipv6: value.enable_ipv6,
         }
     }
 }
@@ -653,6 +675,54 @@ mod tests {
         let json = serde_json::to_value(payload).unwrap();
         assert!(json.get("os_id").is_none());
         assert_eq!(json["snapshot_id"], "61605612-d7a2-47b1-85ef-aef90f5083df");
+    }
+
+    #[test]
+    fn rejects_create_payload_with_both_image_authorities() {
+        let request = CreateInstanceRequest {
+            region: "waw",
+            plan: "vc2-1c-1gb",
+            os_id: Some(2625),
+            snapshot_id: Some("snapshot-1"),
+            label: "edge-1",
+            ssh_key_id: "ssh-key-1",
+            cloud_init: "#cloud-config\n",
+            firewall_group_id: None,
+            tags: Vec::new(),
+            enable_ipv6: false,
+        };
+        let error = build_create_instance_payload(&request).unwrap_err();
+        assert_eq!(error.kind, VultrErrorKind::Configuration);
+        assert!(error.detail.contains("exactly one"));
+    }
+
+    #[test]
+    fn decodes_snapshot_and_ipv6_instance_observation() {
+        let payload: VultrInstancePayload = serde_json::from_value(serde_json::json!({
+            "id": "instance-1",
+            "label": "proxy-1",
+            "region": "waw",
+            "plan": "vc2-1c-1gb",
+            "status": "active",
+            "server_status": "ok",
+            "power_status": "running",
+            "main_ip": "203.0.113.10",
+            "v6_main_ip": "2001:db8::10",
+            "firewall_group_id": "firewall-1",
+            "date_created": "2026-09-19T00:00:00+00:00",
+            "tags": ["managed-by-sing-box"],
+            "os_id": 2625,
+            "snapshot_id": "snapshot-1",
+            "enable_ipv6": true
+        }))
+        .unwrap();
+        let instance: VultrInstance = payload.into();
+
+        assert_eq!(instance.snapshot_id.as_deref(), Some("snapshot-1"));
+        assert!(instance.enable_ipv6);
+        assert_eq!(instance.v6_main_ip, "2001:db8::10");
+        assert_eq!(instance.date_created, "2026-09-19T00:00:00+00:00");
+        assert_eq!(instance.os_id, 2625);
     }
 
     #[test]

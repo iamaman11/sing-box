@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod deploy_orchestrator;
+mod vultr_lifecycle_adapter;
 
 use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
@@ -2894,12 +2895,21 @@ fn instance_matches_create_request(
     instance: &edge_provider_vultr::VultrInstance,
     request: &CreateInstanceRequest<'_>,
 ) -> bool {
+    let image_matches = match (request.os_id, request.snapshot_id) {
+        (Some(expected_os_id), None) => {
+            instance.snapshot_id.is_none() && instance.os_id == expected_os_id
+        }
+        (None, Some(expected_snapshot_id)) => {
+            instance.snapshot_id.as_deref() == Some(expected_snapshot_id)
+        }
+        _ => false,
+    };
+
     instance.label == request.label
         && instance.region == request.region
         && instance.plan == request.plan
-        && request
-            .os_id
-            .is_none_or(|expected_os_id| instance.os_id == expected_os_id)
+        && image_matches
+        && instance.enable_ipv6 == request.enable_ipv6
         && request
             .firewall_group_id
             .is_none_or(|expected_firewall| instance.firewall_group_id == expected_firewall)
@@ -4798,6 +4808,7 @@ mod tests {
         instance.os_id = 2625;
         instance.firewall_group_id = "fw-1".to_owned();
         instance.tags = vec!["managed-by-sing-box".to_owned(), "edge-a".to_owned()];
+        instance.enable_ipv6 = true;
 
         let request = CreateInstanceRequest {
             region: "waw",

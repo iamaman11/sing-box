@@ -7,6 +7,10 @@ use std::fmt;
 
 pub const SUPPORTED_SCHEMA: u32 = 1;
 pub const MANAGED_BY_IDENTITY: &str = "sing-box";
+pub const MANAGED_BY_TAG: &str = "managed-by-sing-box";
+pub const ENVIRONMENT_TAG_PREFIX: &str = "singbox-env-";
+pub const LOGICAL_ID_TAG_PREFIX: &str = "singbox-id-";
+pub const SPEC_DIGEST_TAG_PREFIX: &str = "singbox-spec-";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,15 +117,24 @@ impl DesiredState {
 
     pub fn machine_digest(&self, machine: &MachineSpec) -> Result<String, LifecycleSpecError> {
         self.validate()?;
-        if !self
+        match self
             .machines
             .iter()
-            .any(|candidate| candidate.id == machine.id)
+            .find(|candidate| candidate.id == machine.id)
         {
-            return Err(LifecycleSpecError::Validation(format!(
-                "machine {} is not part of desired state",
-                machine.id
-            )));
+            Some(candidate) if candidate == machine => {}
+            Some(_) => {
+                return Err(LifecycleSpecError::Validation(format!(
+                    "machine {} does not exactly match desired state",
+                    machine.id
+                )));
+            }
+            None => {
+                return Err(LifecycleSpecError::Validation(format!(
+                    "machine {} is not part of desired state",
+                    machine.id
+                )));
+            }
         }
 
         let mut normalized = machine.clone();
@@ -147,7 +160,7 @@ impl MachineSpec {
             &self.application_profiles,
             true,
         )?;
-        validate_unique_strings(&format!("machine {} tags", self.id), &self.tags, false)?;
+        validate_user_tags(&self.id, &self.tags)?;
         Ok(())
     }
 }
@@ -229,6 +242,22 @@ fn validate_unique_strings(
     Ok(())
 }
 
+fn validate_user_tags(machine_id: &str, tags: &[String]) -> Result<(), LifecycleSpecError> {
+    validate_unique_strings(&format!("machine {machine_id} tags"), tags, true)?;
+    for tag in tags {
+        if tag == MANAGED_BY_TAG
+            || tag.starts_with(ENVIRONMENT_TAG_PREFIX)
+            || tag.starts_with(LOGICAL_ID_TAG_PREFIX)
+            || tag.starts_with(SPEC_DIGEST_TAG_PREFIX)
+        {
+            return Err(LifecycleSpecError::Validation(format!(
+                "machine {machine_id} tag {tag} uses the reserved lifecycle namespace"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn canonical_json<T: Serialize>(value: &T) -> Result<String, LifecycleSpecError> {
     let value = serde_json::to_value(value)
         .map_err(|err| LifecycleSpecError::Serialization(err.to_string()))?;
@@ -295,6 +324,14 @@ pub struct ObservedMachine {
     pub ownership: ObservedOwnership,
     pub region: String,
     pub plan: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v6_main_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firewall_group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_created: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -455,18 +492,13 @@ pub fn plan_machine(
         });
     }
 
-    if (observed.os_id.is_some() && observed.snapshot_id.is_some())
-        || (observed.os_id.is_none() && observed.snapshot_id.is_none())
-    {
+    if observed.os_id.is_none() && observed.snapshot_id.is_none() {
         return Ok(MachinePlan {
             machine_id: machine.id.clone(),
             class: PlanClass::BlockedDrift,
             provider_id: Some(observed.provider_id.clone()),
             desired_spec_digest: desired_digest,
-            reasons: vec![
-                "observed provider image identity is not exactly one of os_id or snapshot_id"
-                    .to_owned(),
-            ],
+            reasons: vec!["observed provider image identity is missing".to_owned()],
         });
     }
 
@@ -483,9 +515,19 @@ pub fn plan_machine(
             machine.provider.plan, observed.plan
         ));
     }
-    if observed.os_id != machine.provider.os_id
-        || observed.snapshot_id != machine.provider.snapshot_id
-    {
+    let image_matches = match (
+        machine.provider.os_id,
+        machine.provider.snapshot_id.as_deref(),
+    ) {
+        (Some(expected_os_id), None) => {
+            observed.snapshot_id.is_none() && observed.os_id == Some(expected_os_id)
+        }
+        (None, Some(expected_snapshot_id)) => {
+            observed.snapshot_id.as_deref() == Some(expected_snapshot_id)
+        }
+        _ => false,
+    };
+    if !image_matches {
         replacement_reasons.push("provider image identity differs".to_owned());
     }
     if observed.enable_ipv6 != machine.provider.enable_ipv6 {
@@ -512,8 +554,16 @@ pub fn plan_machine(
             machine.id, observed.label
         ));
     }
-    if observed.firewall_profile != machine.provider.firewall_profile {
-        update_reasons.push("firewall profile differs".to_owned());
+    match machine.provider.firewall_profile.as_deref() {
+        Some(expected_profile)
+            if observed.firewall_profile.as_deref() != Some(expected_profile) =>
+        {
+            update_reasons.push("firewall profile differs or is not provider-verified".to_owned());
+        }
+        None if observed.firewall_group_id.is_some() => {
+            update_reasons.push("unexpected firewall group is attached".to_owned());
+        }
+        _ => {}
     }
 
     let mut desired_tags = machine.tags.clone();
@@ -565,6 +615,291 @@ fn identity_conflicts(
     resource.ownership.managed_by.as_deref() == Some(MANAGED_BY_IDENTITY)
         && resource.ownership.environment.as_deref() == Some(desired.environment.as_str())
         && resource.label == machine.id
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderIdentityError {
+    DuplicateLifecycleTag(&'static str),
+    InvalidLifecycleTag(String),
+    IncompleteManagedIdentity,
+}
+
+impl fmt::Display for ProviderIdentityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateLifecycleTag(kind) => {
+                write!(f, "provider instance has multiple {kind} lifecycle tags")
+            }
+            Self::InvalidLifecycleTag(tag) => write!(f, "invalid lifecycle tag {tag}"),
+            Self::IncompleteManagedIdentity => {
+                write!(
+                    f,
+                    "provider instance has incomplete managed lifecycle identity"
+                )
+            }
+        }
+    }
+}
+
+impl Error for ProviderIdentityError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedProviderTags {
+    pub ownership: ObservedOwnership,
+    pub spec_digest: Option<String>,
+    pub user_tags: Vec<String>,
+}
+
+pub fn provider_tags_for_machine(
+    desired: &DesiredState,
+    machine: &MachineSpec,
+) -> Result<Vec<String>, LifecycleSpecError> {
+    desired.validate()?;
+    let spec_digest = desired.machine_digest(machine)?;
+    let mut tags = vec![
+        MANAGED_BY_TAG.to_owned(),
+        format!("{ENVIRONMENT_TAG_PREFIX}{}", desired.environment),
+        format!("{LOGICAL_ID_TAG_PREFIX}{}", machine.id),
+        format!("{SPEC_DIGEST_TAG_PREFIX}{spec_digest}"),
+    ];
+    tags.extend(machine.tags.iter().cloned());
+    tags.sort();
+    Ok(tags)
+}
+
+pub fn decode_provider_tags(tags: &[String]) -> Result<DecodedProviderTags, ProviderIdentityError> {
+    let mut managed = false;
+    let mut environment = None;
+    let mut logical_id = None;
+    let mut spec_digest = None;
+    let mut user_tags = Vec::new();
+
+    for tag in tags {
+        if tag == MANAGED_BY_TAG {
+            if managed {
+                return Err(ProviderIdentityError::DuplicateLifecycleTag("managed-by"));
+            }
+            managed = true;
+            continue;
+        }
+        if let Some(value) = tag.strip_prefix(ENVIRONMENT_TAG_PREFIX) {
+            set_lifecycle_value("environment", tag, value, &mut environment)?;
+            continue;
+        }
+        if let Some(value) = tag.strip_prefix(LOGICAL_ID_TAG_PREFIX) {
+            set_lifecycle_value("logical-id", tag, value, &mut logical_id)?;
+            continue;
+        }
+        if let Some(value) = tag.strip_prefix(SPEC_DIGEST_TAG_PREFIX) {
+            if spec_digest.is_some() {
+                return Err(ProviderIdentityError::DuplicateLifecycleTag("spec-digest"));
+            }
+            if value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(ProviderIdentityError::InvalidLifecycleTag(tag.clone()));
+            }
+            spec_digest = Some(value.to_owned());
+            continue;
+        }
+        user_tags.push(tag.clone());
+    }
+
+    let any_lifecycle_identity =
+        managed || environment.is_some() || logical_id.is_some() || spec_digest.is_some();
+    if any_lifecycle_identity && !(managed && environment.is_some() && logical_id.is_some()) {
+        return Err(ProviderIdentityError::IncompleteManagedIdentity);
+    }
+
+    user_tags.sort();
+    Ok(DecodedProviderTags {
+        ownership: ObservedOwnership {
+            managed_by: managed.then(|| MANAGED_BY_IDENTITY.to_owned()),
+            environment,
+            logical_id,
+        },
+        spec_digest,
+        user_tags,
+    })
+}
+
+fn set_lifecycle_value(
+    kind: &'static str,
+    raw_tag: &str,
+    value: &str,
+    slot: &mut Option<String>,
+) -> Result<(), ProviderIdentityError> {
+    if slot.is_some() {
+        return Err(ProviderIdentityError::DuplicateLifecycleTag(kind));
+    }
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(ProviderIdentityError::InvalidLifecycleTag(
+            raw_tag.to_owned(),
+        ));
+    }
+    *slot = Some(value.to_owned());
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DestroyPlan {
+    pub machine_id: String,
+    pub provider_id: String,
+    pub label: String,
+    pub source_revision: String,
+    pub region: String,
+    pub plan: String,
+    pub os_id: Option<u32>,
+    pub snapshot_id: Option<String>,
+    pub main_ip: Option<String>,
+    pub v6_main_ip: Option<String>,
+    pub firewall_group_id: Option<String>,
+    pub date_created: Option<String>,
+    pub observed_spec_digest: Option<String>,
+    pub destroy_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DestroyAuthorityError {
+    Spec(LifecycleSpecError),
+    InvalidSourceRevision,
+    Absent,
+    Ambiguous,
+    StaleDigest { expected: String, actual: String },
+}
+
+impl fmt::Display for DestroyAuthorityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spec(err) => write!(f, "{err}"),
+            Self::InvalidSourceRevision => {
+                write!(
+                    f,
+                    "source revision must be a 40 or 64 character lowercase hex digest"
+                )
+            }
+            Self::Absent => write!(f, "exact owned provider resource is absent"),
+            Self::Ambiguous => write!(f, "multiple exact owned provider resources exist"),
+            Self::StaleDigest { expected, actual } => write!(
+                f,
+                "destroy digest is stale: authorized={expected} current={actual}"
+            ),
+        }
+    }
+}
+
+impl Error for DestroyAuthorityError {}
+
+impl From<LifecycleSpecError> for DestroyAuthorityError {
+    fn from(value: LifecycleSpecError) -> Self {
+        Self::Spec(value)
+    }
+}
+
+pub fn destroy_plan(
+    desired: &DesiredState,
+    machine: &MachineSpec,
+    inventory: &LifecycleInventory,
+    source_revision: &str,
+) -> Result<DestroyPlan, DestroyAuthorityError> {
+    desired.validate()?;
+    if !is_source_revision(source_revision) {
+        return Err(DestroyAuthorityError::InvalidSourceRevision);
+    }
+
+    let exact_owned = inventory
+        .resources
+        .iter()
+        .filter(|resource| ownership_matches(desired, machine, resource))
+        .collect::<Vec<_>>();
+    let observed = match exact_owned.as_slice() {
+        [] => return Err(DestroyAuthorityError::Absent),
+        [observed] => *observed,
+        _ => return Err(DestroyAuthorityError::Ambiguous),
+    };
+
+    let destroy_digest = destroy_digest(desired, machine, observed, source_revision)?;
+    Ok(DestroyPlan {
+        machine_id: machine.id.clone(),
+        provider_id: observed.provider_id.clone(),
+        label: observed.label.clone(),
+        source_revision: source_revision.to_owned(),
+        region: observed.region.clone(),
+        plan: observed.plan.clone(),
+        os_id: observed.os_id,
+        snapshot_id: observed.snapshot_id.clone(),
+        main_ip: observed.main_ip.clone(),
+        v6_main_ip: observed.v6_main_ip.clone(),
+        firewall_group_id: observed.firewall_group_id.clone(),
+        date_created: observed.date_created.clone(),
+        observed_spec_digest: observed.spec_digest.clone(),
+        destroy_digest,
+    })
+}
+
+pub fn authorize_destroy(
+    desired: &DesiredState,
+    machine: &MachineSpec,
+    inventory: &LifecycleInventory,
+    source_revision: &str,
+    authorized_digest: &str,
+) -> Result<String, DestroyAuthorityError> {
+    let current = destroy_plan(desired, machine, inventory, source_revision)?;
+    if current.destroy_digest != authorized_digest {
+        return Err(DestroyAuthorityError::StaleDigest {
+            expected: authorized_digest.to_owned(),
+            actual: current.destroy_digest,
+        });
+    }
+    Ok(current.provider_id)
+}
+
+fn destroy_digest(
+    desired: &DesiredState,
+    machine: &MachineSpec,
+    observed: &ObservedMachine,
+    source_revision: &str,
+) -> Result<String, LifecycleSpecError> {
+    let mut tags = observed.tags.clone();
+    tags.sort();
+    let value = serde_json::json!({
+        "schema": SUPPORTED_SCHEMA,
+        "environment": desired.environment,
+        "logical_id": machine.id,
+        "source_revision": source_revision,
+        "provider": {
+            "id": observed.provider_id,
+            "label": observed.label,
+            "ownership": observed.ownership,
+            "region": observed.region,
+            "plan": observed.plan,
+            "os_id": observed.os_id,
+            "snapshot_id": observed.snapshot_id,
+            "main_ip": observed.main_ip,
+            "v6_main_ip": observed.v6_main_ip,
+            "firewall_group_id": observed.firewall_group_id,
+            "date_created": observed.date_created,
+            "enable_ipv6": observed.enable_ipv6,
+            "firewall_profile": observed.firewall_profile,
+            "tags": tags,
+            "spec_digest": observed.spec_digest,
+        }
+    });
+    Ok(sha256_hex(canonical_json_value(&value).as_bytes()))
+}
+
+fn is_source_revision(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -627,6 +962,10 @@ mod tests {
             },
             region: machine.provider.region.clone(),
             plan: machine.provider.plan.clone(),
+            main_ip: Some("203.0.113.10".to_owned()),
+            v6_main_ip: None,
+            firewall_group_id: Some("firewall-1".to_owned()),
+            date_created: Some("2026-09-19T00:00:00+00:00".to_owned()),
             os_id: machine.provider.os_id,
             snapshot_id: machine.provider.snapshot_id.clone(),
             enable_ipv6: machine.provider.enable_ipv6,
@@ -717,6 +1056,18 @@ mod tests {
     }
 
     #[test]
+    fn machine_digest_rejects_same_id_with_different_spec() {
+        let desired = desired();
+        let mut foreign = desired.machines[0].clone();
+        foreign.role = "different-role".to_owned();
+
+        assert!(matches!(
+            desired.machine_digest(&foreign),
+            Err(LifecycleSpecError::Validation(_))
+        ));
+    }
+
+    #[test]
     fn sha256_implementation_matches_known_vector() {
         assert_eq!(
             sha256_hex(b"abc"),
@@ -786,7 +1137,7 @@ mod tests {
         assert!(
             plan.reasons
                 .iter()
-                .any(|reason| reason == "firewall profile differs")
+                .any(|reason| reason == "firewall profile differs or is not provider-verified")
         );
     }
 
@@ -825,6 +1176,143 @@ mod tests {
         let plan = plan_machine(&desired, machine, &inventory).unwrap();
         assert_eq!(plan.class, PlanClass::BlockedAmbiguous);
         assert!(plan.provider_id.is_none());
+    }
+
+    #[test]
+    fn plan_snapshot_accepts_observed_os_id_alongside_snapshot_origin() {
+        let desired = desired();
+        let machine = &desired.machines[1];
+        let mut observed = observed_for(&desired, machine, "instance-snapshot");
+        observed.os_id = Some(2625);
+
+        let inventory = build_inventory(&desired, vec![observed]);
+        let plan = plan_machine(&desired, machine, &inventory).unwrap();
+        assert_eq!(plan.class, PlanClass::Noop);
+    }
+
+    #[test]
+    fn provider_tag_codec_round_trips_lifecycle_and_user_tags() {
+        let desired = desired();
+        let machine = &desired.machines[0];
+
+        let tags = provider_tags_for_machine(&desired, machine).unwrap();
+        let decoded = decode_provider_tags(&tags).unwrap();
+
+        assert_eq!(
+            decoded.ownership.managed_by.as_deref(),
+            Some(MANAGED_BY_IDENTITY)
+        );
+        assert_eq!(decoded.ownership.environment.as_deref(), Some("production"));
+        assert_eq!(decoded.ownership.logical_id.as_deref(), Some("edge-1"));
+        assert_eq!(
+            decoded.spec_digest.as_deref(),
+            Some(desired.machine_digest(machine).unwrap().as_str())
+        );
+        assert_eq!(
+            decoded.user_tags,
+            vec!["primary".to_owned(), "public-egress".to_owned()]
+        );
+    }
+
+    #[test]
+    fn provider_tag_codec_rejects_incomplete_or_duplicate_identity() {
+        let incomplete = vec![MANAGED_BY_TAG.to_owned()];
+        assert_eq!(
+            decode_provider_tags(&incomplete).unwrap_err(),
+            ProviderIdentityError::IncompleteManagedIdentity
+        );
+
+        let duplicate = vec![
+            MANAGED_BY_TAG.to_owned(),
+            format!("{ENVIRONMENT_TAG_PREFIX}production"),
+            format!("{ENVIRONMENT_TAG_PREFIX}staging"),
+            format!("{LOGICAL_ID_TAG_PREFIX}edge-1"),
+        ];
+        assert_eq!(
+            decode_provider_tags(&duplicate).unwrap_err(),
+            ProviderIdentityError::DuplicateLifecycleTag("environment")
+        );
+    }
+
+    #[test]
+    fn desired_state_rejects_user_tags_in_reserved_namespace() {
+        let raw = desired_json().replace(
+            r#""tags": ["proxy"]"#,
+            r#""tags": ["singbox-env-production"]"#,
+        );
+        assert!(matches!(
+            DesiredState::parse_json(&raw),
+            Err(LifecycleSpecError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn destroy_authority_is_stable_and_returns_exact_provider_id() {
+        let desired = desired();
+        let machine = &desired.machines[0];
+        let observed = observed_for(&desired, machine, "instance-1");
+        let inventory = build_inventory(&desired, vec![observed]);
+        let source_revision = "8af5e7e34747208019b0e630dd7962752ac46a95";
+
+        let plan = destroy_plan(&desired, machine, &inventory, source_revision).unwrap();
+        let authorized = authorize_destroy(
+            &desired,
+            machine,
+            &inventory,
+            source_revision,
+            &plan.destroy_digest,
+        )
+        .unwrap();
+
+        assert_eq!(authorized, "instance-1");
+    }
+
+    #[test]
+    fn destroy_authority_rejects_stale_digest_after_observed_change() {
+        let desired = desired();
+        let machine = &desired.machines[0];
+        let source_revision = "8af5e7e34747208019b0e630dd7962752ac46a95";
+        let observed = observed_for(&desired, machine, "instance-1");
+        let initial_inventory = build_inventory(&desired, vec![observed.clone()]);
+        let plan = destroy_plan(&desired, machine, &initial_inventory, source_revision).unwrap();
+
+        let mut changed = observed;
+        changed.plan = "vc2-2c-4gb".to_owned();
+        let changed_inventory = build_inventory(&desired, vec![changed]);
+        let error = authorize_destroy(
+            &desired,
+            machine,
+            &changed_inventory,
+            source_revision,
+            &plan.destroy_digest,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DestroyAuthorityError::StaleDigest { .. }));
+    }
+
+    #[test]
+    fn destroy_authority_fails_closed_on_ambiguity() {
+        let desired = desired();
+        let machine = &desired.machines[0];
+        let inventory = build_inventory(
+            &desired,
+            vec![
+                observed_for(&desired, machine, "instance-1"),
+                observed_for(&desired, machine, "instance-2"),
+            ],
+        );
+
+        assert_eq!(
+            destroy_plan(
+                &desired,
+                machine,
+                &inventory,
+                "8af5e7e34747208019b0e630dd7962752ac46a95",
+            )
+            .unwrap_err(),
+            DestroyAuthorityError::Ambiguous
+        );
     }
 
     #[test]
