@@ -617,7 +617,10 @@ impl fmt::Display for ProviderIdentityError {
             }
             Self::InvalidLifecycleTag(tag) => write!(f, "invalid lifecycle tag {tag}"),
             Self::IncompleteManagedIdentity => {
-                write!(f, "provider instance has incomplete managed lifecycle identity")
+                write!(
+                    f,
+                    "provider instance has incomplete managed lifecycle identity"
+                )
             }
         }
     }
@@ -772,7 +775,10 @@ impl fmt::Display for DestroyAuthorityError {
         match self {
             Self::Spec(err) => err.fmt(f),
             Self::InvalidSourceRevision => {
-                write!(f, "source revision must be a 40 or 64 character lowercase hex digest")
+                write!(
+                    f,
+                    "source revision must be a 40 or 64 character lowercase hex digest"
+                )
             }
             Self::Absent => write!(f, "exact owned provider resource is absent"),
             Self::Ambiguous => write!(f, "multiple exact owned provider resources exist"),
@@ -1252,8 +1258,7 @@ mod tests {
         let source_revision = "8af5e7e34747208019b0e630dd7962752ac46a95";
         let observed = observed_for(&desired, machine, "instance-1");
         let initial_inventory = build_inventory(&desired, vec![observed.clone()]);
-        let plan =
-            destroy_plan(&desired, machine, &initial_inventory, source_revision).unwrap();
+        let plan = destroy_plan(&desired, machine, &initial_inventory, source_revision).unwrap();
 
         let mut changed = observed;
         changed.plan = "vc2-2c-4gb".to_owned();
@@ -1267,10 +1272,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(
-            error,
-            DestroyAuthorityError::StaleDigest { .. }
-        ));
+        assert!(matches!(error, DestroyAuthorityError::StaleDigest { .. }));
     }
 
     #[test]
