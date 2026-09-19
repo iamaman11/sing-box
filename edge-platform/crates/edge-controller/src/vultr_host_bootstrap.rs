@@ -374,16 +374,8 @@ fn render_strict_cloud_init(
 
     let files = format!(
         "write_files:\n{}{}{}{}",
-        cloud_init_file(
-            "/etc/ssh/ssh_host_ed25519_key",
-            "0600",
-            host_private_key
-        ),
-        cloud_init_file(
-            "/etc/ssh/ssh_host_ed25519_key.pub",
-            "0644",
-            host_public_key
-        ),
+        cloud_init_file("/etc/ssh/ssh_host_ed25519_key", "0600", host_private_key),
+        cloud_init_file("/etc/ssh/ssh_host_ed25519_key.pub", "0644", host_public_key),
         cloud_init_file(
             "/etc/ssh/ssh_host_ed25519_key-cert.pub",
             "0644",
@@ -609,8 +601,12 @@ fn validate_hostname(value: &str) -> Result<(), String> {
 
 fn unique_temp_dir(prefix: &str) -> Result<PathBuf, String> {
     let path = unique_temp_file(prefix);
-    fs::create_dir(&path)
-        .map_err(|err| format!("failed to create temporary directory {}: {err}", path.display()))?;
+    fs::create_dir(&path).map_err(|err| {
+        format!(
+            "failed to create temporary directory {}: {err}",
+            path.display()
+        )
+    })?;
     Ok(path)
 }
 
@@ -624,7 +620,10 @@ fn unique_temp_file(prefix: &str) -> PathBuf {
 
 fn run_checked(program: &str, args: &[String], stdin: Option<&[u8]>) -> Result<(), String> {
     let mut command = Command::new(program);
-    command.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+    command
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
     if stdin.is_some() {
         command.stdin(Stdio::piped());
     }
@@ -689,15 +688,13 @@ mod tests {
 
     impl OperationalProvider for FakeOperationalProvider {
         async fn get_instance(&mut self, _instance_id: &str) -> Result<VultrInstance, VultrError> {
-            self.instance
-                .clone()
-                .ok_or_else(|| VultrError {
-                    operation: "read Vultr instance",
-                    kind: VultrErrorKind::Http,
-                    status: Some(404),
-                    retry_after_secs: None,
-                    detail: "not found".to_owned(),
-                })
+            self.instance.clone().ok_or_else(|| VultrError {
+                operation: "read Vultr instance",
+                kind: VultrErrorKind::Http,
+                status: Some(404),
+                retry_after_secs: None,
+                detail: "not found".to_owned(),
+            })
         }
 
         async fn start_instance(&mut self, _instance_id: &str) -> Result<(), VultrError> {
