@@ -4,8 +4,9 @@ use edge_provider_vultr::{
 };
 use std::fs;
 use std::io::Write;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
@@ -616,6 +617,187 @@ pub fn rotate_host_certificate(
     let _ = fs::remove_file(&trust);
     let _ = fs::remove_dir_all(&temp);
     result
+}
+
+pub(crate) struct StrictSshTunnelGuard {
+    child: Child,
+    known_hosts_path: PathBuf,
+}
+
+impl Drop for StrictSshTunnelGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_file(&self.known_hosts_path);
+    }
+}
+
+pub(crate) fn strict_ssh_run(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    remote_command: &str,
+) -> Result<(), String> {
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let result = run_checked(
+        "ssh",
+        &strict_ssh_args(
+            target_ip,
+            logical_hostname,
+            operator_private_key_path,
+            &trust,
+            remote_command,
+        ),
+        None,
+    );
+    let _ = fs::remove_file(&trust);
+    result
+}
+
+pub(crate) fn strict_ssh_capture(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    remote_command: &str,
+) -> Result<String, String> {
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let result = (|| {
+        let output = run_capture(
+            "ssh",
+            &strict_ssh_args(
+                target_ip,
+                logical_hostname,
+                operator_private_key_path,
+                &trust,
+                remote_command,
+            ),
+        )?;
+        String::from_utf8(output).map_err(|_| "strict SSH output was not UTF-8".to_owned())
+    })();
+    let _ = fs::remove_file(&trust);
+    result.map(|value| value.trim().to_owned())
+}
+
+pub(crate) fn strict_scp_upload(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    source_path: &Path,
+    remote_path: &str,
+) -> Result<(), String> {
+    if !source_path.is_file() {
+        return Err(format!(
+            "strict SCP source file was not found: {}",
+            source_path.display()
+        ));
+    }
+    if !remote_path.starts_with("/tmp/singbox-")
+        || remote_path.contains(char::is_whitespace)
+        || remote_path.contains("..")
+    {
+        return Err(format!(
+            "strict SCP target must be a fixed /tmp/singbox-* staging path: {remote_path}"
+        ));
+    }
+
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let args = vec![
+        "-i".to_owned(),
+        operator_private_key_path.display().to_string(),
+        "-o".to_owned(),
+        "IdentitiesOnly=yes".to_owned(),
+        "-o".to_owned(),
+        "BatchMode=yes".to_owned(),
+        "-o".to_owned(),
+        "StrictHostKeyChecking=yes".to_owned(),
+        "-o".to_owned(),
+        format!("UserKnownHostsFile={}", trust.display()),
+        "-o".to_owned(),
+        format!("HostKeyAlias={logical_hostname}"),
+        source_path.display().to_string(),
+        format!("{DEFAULT_OPS_USER}@{target_ip}:{remote_path}"),
+    ];
+    let result = run_checked("scp", &args, None);
+    let _ = fs::remove_file(&trust);
+    result
+}
+
+pub(crate) fn start_strict_agent_tunnel(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+) -> Result<(u16, StrictSshTunnelGuard), String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|err| format!("failed to reserve local edge-agent tunnel port: {err}"))?;
+    let local_port = listener
+        .local_addr()
+        .map_err(|err| format!("failed to inspect local edge-agent tunnel port: {err}"))?
+        .port();
+    drop(listener);
+
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let mut child = Command::new("ssh")
+        .args([
+            "-i",
+            &operator_private_key_path.display().to_string(),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            &format!("UserKnownHostsFile={}", trust.display()),
+            "-o",
+            &format!("HostKeyAlias={logical_hostname}"),
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-N",
+            "-L",
+            &format!("127.0.0.1:{local_port}:127.0.0.1:50061"),
+            &format!("{DEFAULT_OPS_USER}@{target_ip}"),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| {
+            let _ = fs::remove_file(&trust);
+            format!("failed to start strict edge-agent SSH tunnel: {err}")
+        })?;
+
+    let probe = SocketAddr::from(([127, 0, 0, 1], local_port));
+    for _ in 0..40 {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to read strict SSH tunnel status: {err}"))?
+        {
+            let _ = fs::remove_file(&trust);
+            return Err(format!(
+                "strict edge-agent SSH tunnel exited early with status {status}"
+            ));
+        }
+        if TcpStream::connect_timeout(&probe, Duration::from_millis(250)).is_ok() {
+            return Ok((
+                local_port,
+                StrictSshTunnelGuard {
+                    child,
+                    known_hosts_path: trust,
+                },
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_file(&trust);
+    Err(format!(
+        "timed out waiting for strict edge-agent SSH tunnel on 127.0.0.1:{local_port}"
+    ))
 }
 
 fn strict_ssh_args(
