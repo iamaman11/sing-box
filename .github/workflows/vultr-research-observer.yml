@@ -1,0 +1,39 @@
+name: Vultr Research Observer
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  observe:
+    if: >-
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == '1' &&
+      github.event.comment.body == '/vultr-research observe'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 3
+
+    steps:
+      - name: Observe disposable instances
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          body="$(
+            curl --fail --silent --show-error --max-time 30               --header "Authorization: Bearer ${VULTR_API_KEY}"               --header "Accept: application/json"               "https://api.vultr.com/v2/instances?tag=research-disposable&per_page=500"
+          )"
+          jq -r '
+            .instances
+            | sort_by(.date_created)
+            | .[]
+            | "instance id=\(.id) label=\(.label) region=\(.region) plan=\(.plan) status=\(.status) power=\(.power_status) server=\(.server_status) ip=\(.main_ip)"
+          ' <<<"$body"
