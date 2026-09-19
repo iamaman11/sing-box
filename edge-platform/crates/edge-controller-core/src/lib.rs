@@ -1,3 +1,5 @@
+pub mod vultr_lifecycle;
+
 use edge_state::EdgeState;
 use std::fs;
 use std::path::{Path, PathBuf};
