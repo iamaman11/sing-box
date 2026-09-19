@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package edge.release.v1;
+
+// Immutable production release authority. The SHA-256 of the exact canonical
+// release-set.pb bytes is the release identity. Do not use maps in this schema.
+message ReleaseSet {
+  uint32 schema_version = 1;
+  string source_revision = 2;
+  SingBoxRelease sing_box = 3;
+  WindowsRuntime windows_runtime = 4;
+  VmRuntime vm_runtime = 5;
+  CloudflareRuntime cloudflare = 6;
+  SchemaVersions schemas = 7;
+}
+
+message SingBoxRelease {
+  // Normalized stable version without a leading "v", prerelease, or build metadata.
+  string version = 1;
+  bytes windows_amd64_sha256 = 2;
+  bytes linux_amd64_sha256 = 3;
+}
+
+message WindowsRuntime {
+  bytes artifact_sha256 = 1;
+  bytes controller_sha256 = 2;
+  bytes console_sha256 = 3;
+  bytes sing_box_sha256 = 4;
+}
+
+message VmRuntime {
+  bytes edge_agent_sha256 = 1;
+  OciImage sing_box_image = 2;
+  OciImage warp_egress_image = 3;
+  string docker_engine_version = 4;
+  string containerd_version = 5;
+  string compose_version = 6;
+}
+
+message CloudflareRuntime {
+  string warp_version = 1;
+  OciImage mesh_image = 2;
+}
+
+message SchemaVersions {
+  uint32 config_schema = 1;
+  uint32 db_schema = 2;
+}
+
+// Repository is tag-free and digest-free. The immutable digest is stored as
+// exactly 32 raw SHA-256 bytes to prevent mutable-tag deployment identity.
+message OciImage {
+  string repository = 1;
+  bytes sha256 = 2;
+}
