@@ -99,3 +99,19 @@ a second desired-state database.
 
 No canonical production application JSON is committed here until the production VM desired-state
 composition is explicitly accepted.
+
+## Disposable acceptance
+
+The permanent workflow exposes one fixed acceptance command:
+
+```text
+/application acceptance
+```
+
+It is not a general parameterized deployment entry point. It creates only the canonical
+`lifecycle-acceptance-1` disposable VM, proves first application apply, repeated NOOP, exact
+verification, configuration-only upgrade, digest-authorized rollback, verified release of the
+ephemeral runner SSH `/32`, exact VM destruction, support-resource cleanup, and final
+`CREATE` plan. Acceptance uses generated non-account runtime material and no Cloudflare account
+secret. Account-backed Line-specific acceptance remains a later, narrower orchestration layer.
+
