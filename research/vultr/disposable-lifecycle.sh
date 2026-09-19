@@ -357,9 +357,35 @@ ssh_base=(
   "${OPS_USER}@${main_ip}"
 )
 
+# Separate network reachability from SSH/authentication readiness.
+tcp_ready=0
+for _ in $(seq 1 30); do
+  if timeout 3 bash -c "</dev/tcp/${main_ip}/22" 2>/dev/null; then
+    tcp_ready=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$tcp_ready" -ne 1 ]]; then
+  log "tcp_22_reachable=FAIL"
+  for source in aws ipify; do
+    case "$source" in
+      aws) observed="$(curl -4 --fail --silent --show-error --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')" ;;
+      ipify) observed="$(curl -4 --fail --silent --show-error --max-time 10 https://api.ipify.org | tr -d '[:space:]')" ;;
+    esac
+    if [[ "$observed" == "$runner_ip" ]]; then
+      log "runner_ipv4_crosscheck_${source}=MATCH"
+    else
+      log "runner_ipv4_crosscheck_${source}=MISMATCH"
+    fi
+  done
+  exit 1
+fi
+log "tcp_22_reachable=PASS"
+
 # Strict SSH acceptance via host certificate.
 ssh_ready=0
-for _ in $(seq 1 90); do
+for _ in $(seq 1 30); do
   if "${ssh_base[@]}" 'test -f /var/lib/singbox-lifecycle/research-ready' >/dev/null 2>&1; then
     ssh_ready=1
     break
@@ -368,6 +394,35 @@ for _ in $(seq 1 90); do
 done
 if [[ "$ssh_ready" -ne 1 ]]; then
   log "strict_ssh_acceptance=FAIL"
+
+  # Research-only control: bypass host verification once to distinguish
+  # host-certificate failure from guest-user/client-auth failure.
+  diagnostic_ssh=(
+    ssh
+    -i "$operator_key"
+    -o IdentitiesOnly=yes
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+    -o ConnectionAttempts=1
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    "${OPS_USER}@${main_ip}"
+  )
+
+  set +e
+  "${diagnostic_ssh[@]}" 'test -f /var/lib/singbox-lifecycle/research-ready' >/dev/null 2>"${tmp}/diagnostic-ssh.err"
+  diagnostic_rc=$?
+  set -e
+
+  if [[ "$diagnostic_rc" -eq 0 ]]; then
+    log "diagnostic_non_strict_ssh=PASS research_only=true"
+    "${diagnostic_ssh[@]}" "sudo ssh-keygen -L -f /etc/ssh/ssh_host_ed25519_key-cert.pub 2>/dev/null | grep -E 'Type:|Public key:|Signing CA:|Key ID:|Principals:|Valid:' || true"
+    "${diagnostic_ssh[@]}" "sudo sshd -T 2>/dev/null | grep -E '^(hostkey|hostcertificate|passwordauthentication|permitrootlogin) ' || true"
+    "${diagnostic_ssh[@]}" "sudo cloud-init status --long 2>/dev/null | grep -E '^(status|extended_status|boot_status_code|detail):' || true"
+  else
+    log "diagnostic_non_strict_ssh=FAIL rc=${diagnostic_rc}"
+    grep -E 'Permission denied|Connection refused|Connection timed out|No route to host|Connection closed|Host key verification failed|certificate|principal|REMOTE HOST IDENTIFICATION' "${tmp}/diagnostic-ssh.err" | tail -n 20 || true
+  fi
   exit 1
 fi
 log "strict_ssh_acceptance=PASS host_ca=operator-ed25519"
