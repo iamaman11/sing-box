@@ -3015,7 +3015,7 @@ async fn prepare_agent_transport(
         context.operation_id,
         "strict pre-existing SSH host trust verified",
     )
-        .map_err(|status| status.message().to_owned())?;
+    .map_err(|status| status.message().to_owned())?;
     wait_for_docker_runtime(context.target, &config).await?;
     append_operation_event(
         context.state,
