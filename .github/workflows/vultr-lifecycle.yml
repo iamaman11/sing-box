@@ -345,14 +345,15 @@ jobs:
               run_lifecycle cleanup "${spec}" | tee "${RUNNER_TEMP}/result.json"
               ;;
             acceptance)
-              trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
-
               run_lifecycle doctor "${spec}" > "${RUNNER_TEMP}/doctor.json"
               run_lifecycle inventory "${spec}" > "${RUNNER_TEMP}/inventory-before.json"
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/plan-before.json"
+              jq -e '.plans[0].class == "CREATE"' "${RUNNER_TEMP}/plan-before.json" >/dev/null
+
+              trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
 
               run_lifecycle apply "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-first.json"
-              jq -e '.action == "CREATED" or .action == "NOOP"' "${RUNNER_TEMP}/apply-first.json" >/dev/null
+              jq -e '.action == "CREATED"' "${RUNNER_TEMP}/apply-first.json" >/dev/null
 
               run_lifecycle apply "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop.json"
               jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS" and .user_data_scrubbed == true'                 "${RUNNER_TEMP}/apply-noop.json" >/dev/null
