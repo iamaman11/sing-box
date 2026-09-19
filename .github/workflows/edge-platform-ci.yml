@@ -313,17 +313,31 @@ jobs:
 
       - name: Package exact Windows candidate
         shell: pwsh
+        env:
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
+          SING_BOX_WINDOWS_SHA256: ${{ needs.dependencies.outputs.sing_box_windows_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
           $out = Join-Path $env:RUNNER_TEMP "edge-platform-windows"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item "edge-platform\target\release\edge-controller.exe" (Join-Path $out "edge-controller.exe")
           Copy-Item "edge-platform\target\release\edge-console.exe" (Join-Path $out "edge-console.exe")
+          $resolvedSingBox = Get-ChildItem (Join-Path $env:RUNNER_TEMP "sing-box-windows") -Recurse -File -Filter sing-box.exe | Select-Object -First 1
+          if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
+          Copy-Item $resolvedSingBox.FullName (Join-Path $out "sing-box.exe")
+
           $controllerSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-controller.exe")).Hash.ToLowerInvariant()
           $consoleSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-console.exe")).Hash.ToLowerInvariant()
+          $singBoxSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "sing-box.exe")).Hash.ToLowerInvariant()
+          $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
           $manifest = [ordered]@{
-            schema = 1
-            source_revision = $env:GITHUB_SHA
+            schema = 2
+            source_revision = $env:CANDIDATE_REVISION
+            source_tree = $sourceTree
+            sing_box_version = $env:SING_BOX_VERSION
+            sing_box_archive_sha256 = $env:SING_BOX_WINDOWS_SHA256
+            sing_box_binary_sha256 = $singBoxSha
             controller_sha256 = $controllerSha
             console_sha256 = $consoleSha
           }
