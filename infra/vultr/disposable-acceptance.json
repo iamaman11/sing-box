@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "environment": "lifecycle-acceptance",
+  "machines": [
+    {
+      "id": "lifecycle-acceptance-1",
+      "role": "lifecycle-acceptance",
+      "provider": {
+        "region": "waw",
+        "plan": "vc2-1c-1gb",
+        "os_id": 2625,
+        "enable_ipv6": false,
+        "firewall_profile": "acceptance-ssh"
+      },
+      "bootstrap_profile": "singbox-host-v1",
+      "application_profiles": [],
+      "tags": [
+        "disposable-acceptance"
+      ]
+    }
+  ]
+}
