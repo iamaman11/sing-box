@@ -68,34 +68,38 @@ pub(crate) async fn execute(
         dns_updated: false,
     };
 
-    let target = resolve_deploy_target(&server.state, &request).await
-    .map_err(|err| {
-        let _ = upsert_controller_phases_with_journal(
-            &server.state,
-            DeployPhase::Failed,
-            AppReadinessPhase::AppReadinessFailed,
-            Some("target_resolution_failed"),
-            Some(err.as_str()),
-            Some(phase_journal(
-                operation.id,
-                Some("FAILED"),
-                DeployPhase::Failed,
-            )),
-        );
-        if rollback_policy.restore_controller_snapshot {
-            let _ = restore_controller_state_snapshot(
+    let target = resolve_deploy_target(&server.state, &request)
+        .await
+        .map_err(|err| {
+            let _ = upsert_controller_phases_with_journal(
                 &server.state,
-                rollback.previous_controller_state.as_ref(),
+                DeployPhase::Failed,
+                AppReadinessPhase::AppReadinessFailed,
+                Some("target_resolution_failed"),
+                Some(err.as_str()),
+                Some(phase_journal(
+                    operation.id,
+                    Some("FAILED"),
+                    DeployPhase::Failed,
+                )),
             );
-        }
-        let _ = append_operation_event(&server.state, operation.id, &err);
-        let _ = update_operation_status(&server.state, operation.id, "FAILED");
-        status_for_target_resolution_error(err)
-    })?;
+            if rollback_policy.restore_controller_snapshot {
+                let _ = restore_controller_state_snapshot(
+                    &server.state,
+                    rollback.previous_controller_state.as_ref(),
+                );
+            }
+            let _ = append_operation_event(&server.state, operation.id, &err);
+            let _ = update_operation_status(&server.state, operation.id, "FAILED");
+            status_for_target_resolution_error(err)
+        })?;
     append_operation_event(
         &server.state,
         operation.id,
-        &format!("target resolved: {} ({})", target.instance_id, target.target_ip),
+        &format!(
+            "target resolved: {} ({})",
+            target.instance_id, target.target_ip
+        ),
     )?;
 
     let bundle = build_bundle(&BuildBundleRequest {
