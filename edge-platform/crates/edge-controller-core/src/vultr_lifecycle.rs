@@ -44,6 +44,7 @@ pub struct ProviderSpec {
     pub snapshot_id: Option<String>,
     pub enable_ipv6: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firewall_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -640,7 +641,6 @@ impl Error for ProviderIdentityError {}
 pub struct DecodedProviderTags {
     pub ownership: ObservedOwnership,
     pub spec_digest: Option<String>,
-    pub firewall_profile: Option<String>,
     pub user_tags: Vec<String>,
 }
 
