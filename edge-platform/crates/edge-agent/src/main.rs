@@ -1286,8 +1286,9 @@ fn valid_certificate_domain(value: &str) -> bool {
 }
 
 fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], String> {
-    let runtime = read_runtime_env(&stack_dir.join(".env.runtime"))
-        .ok_or_else(|| "runtime environment is unavailable for certificate observation".to_owned())?;
+    let runtime = read_runtime_env(&stack_dir.join(".env.runtime")).ok_or_else(|| {
+        "runtime environment is unavailable for certificate observation".to_owned()
+    })?;
     if env_flag_present(&runtime, "TUNNEL_DOMAIN") {
         let domain = runtime
             .get("TUNNEL_DOMAIN")
