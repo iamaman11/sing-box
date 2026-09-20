@@ -1,6 +1,6 @@
 use crate::cloudflare_dns_lifecycle_service::{
-    CloudflareDnsApiProvider, DnsExecutionPolicy, apply_dns_once, cleanup_dns_once,
-    observe_dns, plan_dns_apply, plan_dns_cleanup,
+    CloudflareDnsApiProvider, DnsExecutionPolicy, apply_dns_once, cleanup_dns_once, observe_dns,
+    plan_dns_apply, plan_dns_cleanup,
 };
 use edge_controller_core::cloudflare_dns_lifecycle::DesiredDnsState;
 use std::env;
@@ -57,8 +57,13 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
-    let report =
-        apply_dns_once(&mut provider, &desired, &args[1], DnsExecutionPolicy::default()).await?;
+    let report = apply_dns_once(
+        &mut provider,
+        &desired,
+        &args[1],
+        DnsExecutionPolicy::default(),
+    )
+    .await?;
     print_json(serde_json::json!({
         "performed": report.performed,
         "observation": report.observation,
