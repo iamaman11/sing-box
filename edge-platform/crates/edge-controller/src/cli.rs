@@ -467,13 +467,16 @@ pub(crate) enum VultrLifecycleCommand {
     Inventory(SpecArgs),
     Plan(VultrPlanArgs),
     Apply(VultrAuthorizedMachineArgs),
-    AcquireAccess(VultrMachineArgs),
-    ReleaseAccess(VultrMachineArgs),
+    AcquireAccessPlan(VultrMachineArgs),
+    AcquireAccess(VultrAuthorizedMachineArgs),
+    ReleaseAccessPlan(VultrMachineArgs),
+    ReleaseAccess(VultrAuthorizedMachineArgs),
     ActionPlan(VultrActionArgs),
     Action(VultrAuthorizedActionArgs),
     DestroyPlan(VultrDestroyPlanArgs),
     DestroyApply(VultrDestroyApplyArgs),
-    Cleanup(SpecArgs),
+    CleanupPlan(SpecArgs),
+    Cleanup(AuthorizedSpecArgs),
 }
 
 impl VultrLifecycleCommand {
@@ -494,8 +497,20 @@ impl VultrLifecycleCommand {
                 args.machine_id,
                 args.authorized_plan_sha256,
             ],
-            Self::AcquireAccess(args) => machine("acquire-access", args),
-            Self::ReleaseAccess(args) => machine("release-access", args),
+            Self::AcquireAccessPlan(args) => machine("acquire-access-plan", args),
+            Self::AcquireAccess(args) => vec![
+                "acquire-access".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.authorized_plan_sha256,
+            ],
+            Self::ReleaseAccessPlan(args) => machine("release-access-plan", args),
+            Self::ReleaseAccess(args) => vec![
+                "release-access".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.authorized_plan_sha256,
+            ],
             Self::ActionPlan(args) => vec![
                 "action-plan".to_owned(),
                 path(args.spec_path),
@@ -523,7 +538,8 @@ impl VultrLifecycleCommand {
                 args.destroy_digest,
                 args.authorized_plan_sha256,
             ],
-            Self::Cleanup(args) => one("cleanup", args),
+            Self::CleanupPlan(args) => one("cleanup-plan", args),
+            Self::Cleanup(args) => authorized_spec("cleanup", args),
         }
     }
 }
@@ -643,9 +659,54 @@ mod tests {
             "infra/vultr/production.json",
             "primary",
             "reboot",
+            &"a".repeat(64),
         ])
         .unwrap();
         assert_eq!(cli.command_name(), "vultr-lifecycle");
+
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "vultr-lifecycle",
+                "action-plan",
+                "infra/vultr/production.json",
+                "primary",
+                "reboot",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "vultr-lifecycle",
+                "acquire-access-plan",
+                "infra/vultr/production.json",
+                "primary",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "vultr-lifecycle",
+                "acquire-access",
+                "infra/vultr/production.json",
+                "primary",
+                &"b".repeat(64),
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "cloudflare-dns",
+                "cleanup-apply",
+                "infra/cloudflare/dns.json",
+                &"c".repeat(64),
+                &"d".repeat(64),
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
