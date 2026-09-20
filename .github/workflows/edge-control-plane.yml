@@ -1,0 +1,38 @@
+name: Edge Control Plane
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  application:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1 &&
+      startsWith(github.event.comment.body, '/application ')
+    uses: ./.github/workflows/vm-application-lifecycle.yml
+    with:
+      command_body: ${{ github.event.comment.body }}
+    secrets: inherit
+
+  vultr:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1 &&
+      startsWith(github.event.comment.body, '/vultr ')
+    uses: ./.github/workflows/vultr-lifecycle.yml
+    with:
+      command_body: ${{ github.event.comment.body }}
+    secrets: inherit
