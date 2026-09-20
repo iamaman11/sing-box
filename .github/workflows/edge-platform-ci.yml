@@ -339,6 +339,25 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Bootstrap Cargo lock for typed Docker dependency
+        working-directory: edge-platform
+        shell: bash
+        run: cargo check -p edge-agent
+
+      - name: Store bootstrapped Cargo lock
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-cargo-lock-${{ github.event.pull_request.head.sha }}
+          path: edge-platform/Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Stop temporary lock bootstrap candidate
+        shell: bash
+        run: |
+          echo "temporary Cargo.lock bootstrap head; final code must remove this step" >&2
+          exit 1
+
       - name: Check formatting
         working-directory: edge-platform
         shell: bash
