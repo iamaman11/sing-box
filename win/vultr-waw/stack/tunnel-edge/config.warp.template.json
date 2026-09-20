@@ -81,7 +81,7 @@
     {
       "type": "socks",
       "tag": "warp-local",
-      "server": "172.22.10.2",
+      "server": "warp-egress",
       "server_port": 11080,
       "version": "5",
       "network": "tcp"
