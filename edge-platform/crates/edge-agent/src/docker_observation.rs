@@ -162,7 +162,9 @@ pub(crate) async fn observe_container_runtime(
         .try_collect::<Vec<_>>()
         .await
     {
-        Ok(outputs) => bounded_redacted_log_tail(outputs.into_iter().map(|output| output.to_string())),
+        Ok(outputs) => {
+            bounded_redacted_log_tail(outputs.into_iter().map(|output| output.to_string()))
+        }
         Err(err) => vec![format!("[docker log observation unavailable: {err}]")],
     };
 
