@@ -1022,8 +1022,12 @@ mod tests {
 
         let a_desired = test_desired("stack");
         let mut b_desired = a_desired.clone();
-        b_desired.runtime_policy.line2.as_mut().unwrap().proxy_username =
-            "acceptance-v2".to_owned();
+        b_desired
+            .runtime_policy
+            .line2
+            .as_mut()
+            .unwrap()
+            .proxy_username = "acceptance-v2".to_owned();
 
         let a = prepare_application_bundle(&root, &a_desired, &test_artifact()).unwrap();
         let b = prepare_application_bundle(&root, &b_desired, &test_artifact()).unwrap();
@@ -1042,8 +1046,8 @@ mod tests {
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join(".env.runtime"), "TOKEN=committed\n").unwrap();
 
-        let error =
-            prepare_application_bundle(&root, &test_desired("stack"), &test_artifact()).unwrap_err();
+        let error = prepare_application_bundle(&root, &test_desired("stack"), &test_artifact())
+            .unwrap_err();
         assert!(error.contains("must not contain .env.runtime"));
 
         fs::remove_dir_all(root).unwrap();
