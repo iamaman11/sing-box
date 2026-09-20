@@ -679,6 +679,10 @@ jobs:
           reboot_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-vpc-reboot-plan.json")"
           "${bin}" vultr-lifecycle action "${vultr_spec}" "${machine}" reboot "${reboot_authority}" \
             > "${RUNNER_TEMP}/acceptance-vpc-reboot.json"
+          jq -e '.action == "reboot" and
+                 .reboot_observation.boot_id_changed == true and
+                 .reboot_observation.boot_id_before != .reboot_observation.boot_id_after' \
+            "${RUNNER_TEMP}/acceptance-vpc-reboot.json" >/dev/null
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-vpc-post-reboot-plan.json"
           post_reboot_vm_authority="$(machine_authority "${RUNNER_TEMP}/acceptance-vpc-post-reboot-plan.json")"
@@ -810,6 +814,10 @@ jobs:
           reboot_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-reboot-plan.json")"
           "${bin}" vultr-lifecycle action "${vultr_spec}" "${machine}" reboot "${reboot_authority}" \
             > "${RUNNER_TEMP}/acceptance-reboot.json"
+          jq -e '.action == "reboot" and
+                 .reboot_observation.boot_id_changed == true and
+                 .reboot_observation.boot_id_before != .reboot_observation.boot_id_after' \
+            "${RUNNER_TEMP}/acceptance-reboot.json" >/dev/null
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-post-reboot-plan.json"
           post_reboot_authority="$(machine_authority "${RUNNER_TEMP}/acceptance-post-reboot-plan.json")"
