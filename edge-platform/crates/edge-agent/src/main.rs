@@ -35,6 +35,11 @@ const IMAGE_ENV_FILE: &str = ".images.env";
 const EDGE_GATEWAY_IMAGE_KEY: &str = "EDGE_GATEWAY_IMAGE";
 const EDGE_WARP_EGRESS_IMAGE_KEY: &str = "EDGE_WARP_EGRESS_IMAGE";
 const EDGE_MESH_IMAGE_KEY: &str = "CLOUDFLARE_MESH_IMAGE";
+const WARP_CONTAINER: &str = "vultr-warp-egress";
+const LINE1_CONTAINER: &str = "vultr-line1-gateway";
+const LINE2_CONTAINER: &str = "vultr-line2-proxy";
+const MESH_CONTAINER: &str = "vultr-cloudflare-mesh";
+const CLOUDFLARE_TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -268,6 +273,9 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         missing_containers: Vec::new(),
         listening_tcp_ports: Vec::new(),
         listening_udp_ports: Vec::new(),
+        direct_egress_ready: None,
+        warp_egress_ready: None,
+        mesh_runtime_ready: None,
     };
 
     inspect_bundle_artifacts(stack_dir, &mut state);
@@ -338,6 +346,12 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         ));
     }
 
+    let datapaths_ready = if matches!(mode, AgentMode::Health) {
+        true
+    } else {
+        inspect_datapath_readiness(&mut state)
+    };
+
     state.ready = state.compose_file_present
         && !state
             .degraded_reasons
@@ -346,7 +360,8 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         && state.docker_reachable
         && state.missing_containers.is_empty()
         && missing_tcp.is_empty()
-        && missing_udp.is_empty();
+        && missing_udp.is_empty()
+        && datapaths_ready;
 
     if matches!(mode, AgentMode::Health) {
         state.ready = false;
@@ -849,6 +864,7 @@ fn execute_typed_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> Result<(), 
     let images = read_exact_image_environment(stack_dir)?;
     prepare_runtime_directories(stack_dir)?;
     start_warp_egress(stack_dir, &images)?;
+    wait_for_warp_datapath()?;
 
     match mode {
         BootstrapMode::BootstrapBase => {
@@ -1444,6 +1460,15 @@ fn verify_bootstrap_post_state(
                 .to_owned(),
         );
     }
+    if post_state.direct_egress_ready != Some(true) {
+        warnings.push("direct egress datapath is not ready after bootstrap".to_owned());
+    }
+    if post_state.warp_egress_ready != Some(true) {
+        warnings.push("WARP egress datapath is not ready after bootstrap".to_owned());
+    }
+    if post_state.mesh_runtime_ready == Some(false) {
+        warnings.push("enabled Mesh runtime is not ready after bootstrap".to_owned());
+    }
 
     BootstrapVerification {
         success: warnings.is_empty(),
@@ -1630,6 +1655,277 @@ fn inspect_docker() -> DockerObservation {
         listening_tcp_ports: listening_tcp_ports.into_iter().collect(),
         listening_udp_ports: listening_udp_ports.into_iter().collect(),
     }
+}
+
+fn inspect_datapath_readiness(state: &mut AgentState) -> bool {
+    let direct_ready = probe_direct_egress(&state.running_containers);
+    state.direct_egress_ready = Some(direct_ready);
+    if !direct_ready {
+        state
+            .degraded_reasons
+            .push("direct egress datapath probe failed".to_owned());
+    }
+
+    let warp_ready = probe_warp_egress(&state.running_containers);
+    state.warp_egress_ready = Some(warp_ready);
+    if !warp_ready {
+        state
+            .degraded_reasons
+            .push("WARP egress datapath probe failed".to_owned());
+    }
+
+    let mesh_ready = match mesh_container_present() {
+        Ok(false) => None,
+        Ok(true) => {
+            let ready = probe_mesh_runtime(&state.running_containers);
+            if !ready {
+                state
+                    .degraded_reasons
+                    .push("enabled Mesh runtime datapath probe failed".to_owned());
+            }
+            Some(ready)
+        }
+        Err(_) => {
+            state
+                .degraded_reasons
+                .push("Mesh runtime enablement could not be observed".to_owned());
+            Some(false)
+        }
+    };
+    state.mesh_runtime_ready = mesh_ready;
+
+    direct_ready && warp_ready && mesh_ready != Some(false)
+}
+
+fn wait_for_warp_datapath() -> Result<(), String> {
+    for _ in 0..45 {
+        if probe_warp_service_local() {
+            return Ok(());
+        }
+        sleep(Duration::from_secs(2));
+    }
+    Err("WARP egress datapath did not become ready within 90 seconds".to_owned())
+}
+
+fn runtime_probe_consumer(running_containers: &[String]) -> Option<&'static str> {
+    if running_containers
+        .iter()
+        .any(|name| name == LINE2_CONTAINER)
+    {
+        return Some(LINE2_CONTAINER);
+    }
+    if running_containers
+        .iter()
+        .any(|name| name == LINE1_CONTAINER)
+    {
+        return Some(LINE1_CONTAINER);
+    }
+    None
+}
+
+fn probe_direct_egress(running_containers: &[String]) -> bool {
+    let Some(consumer) = runtime_probe_consumer(running_containers) else {
+        return false;
+    };
+    bounded_command_output(
+        "docker",
+        &[
+            "exec",
+            consumer,
+            "curl",
+            "-4",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            "8",
+            CLOUDFLARE_TRACE_URL,
+        ],
+        12,
+    )
+    .is_some_and(|output| cloudflare_trace_has_warp_mode(&output, "off"))
+}
+
+fn warp_client_connected() -> bool {
+    bounded_command_output(
+        "docker",
+        &["exec", WARP_CONTAINER, "warp-cli", "--accept-tos", "status"],
+        8,
+    )
+    .is_some_and(|output| output.lines().any(|line| line.contains("Connected")))
+}
+
+fn probe_warp_service_local() -> bool {
+    if !warp_client_connected() {
+        return false;
+    }
+    bounded_command_output(
+        "docker",
+        &[
+            "exec",
+            WARP_CONTAINER,
+            "curl",
+            "-4",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            "8",
+            "--socks5-hostname",
+            "127.0.0.1:11080",
+            CLOUDFLARE_TRACE_URL,
+        ],
+        12,
+    )
+    .is_some_and(|output| {
+        cloudflare_trace_has_warp_mode(&output, "on")
+            || cloudflare_trace_has_warp_mode(&output, "plus")
+    })
+}
+
+fn probe_warp_egress(running_containers: &[String]) -> bool {
+    if !warp_client_connected() {
+        return false;
+    }
+    let Some(consumer) = runtime_probe_consumer(running_containers) else {
+        return false;
+    };
+    bounded_command_output(
+        "docker",
+        &[
+            "exec",
+            consumer,
+            "curl",
+            "-4",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            "8",
+            "--socks5-hostname",
+            "warp-egress:11080",
+            CLOUDFLARE_TRACE_URL,
+        ],
+        12,
+    )
+    .is_some_and(|output| {
+        cloudflare_trace_has_warp_mode(&output, "on")
+            || cloudflare_trace_has_warp_mode(&output, "plus")
+    })
+}
+
+fn mesh_container_present() -> Result<bool, String> {
+    let output = Command::new("timeout")
+        .args([
+            "6s",
+            "docker",
+            "inspect",
+            "--type",
+            "container",
+            MESH_CONTAINER,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("fixed Mesh container inspection could not start: {err}"))?;
+    match output.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        Some(code) => Err(format!(
+            "fixed Mesh container inspection failed with exit_code={code}"
+        )),
+        None => Err("fixed Mesh container inspection terminated without exit code".to_owned()),
+    }
+}
+
+fn probe_mesh_runtime(running_containers: &[String]) -> bool {
+    if !running_containers.iter().any(|name| name == MESH_CONTAINER) {
+        return false;
+    }
+
+    let connected =
+        bounded_command_output("docker", &["exec", MESH_CONTAINER, "warp-cli", "status"], 8)
+            .is_some_and(|output| output.lines().any(|line| line.contains("Connected")));
+    if !connected {
+        return false;
+    }
+
+    let forwarding = bounded_command_output(
+        "docker",
+        &[
+            "exec",
+            MESH_CONTAINER,
+            "cat",
+            "/proc/sys/net/ipv4/ip_forward",
+        ],
+        6,
+    )
+    .is_some_and(|output| output.trim() == "1");
+    if !forwarding {
+        return false;
+    }
+
+    bounded_command_output(
+        "docker",
+        &[
+            "inspect",
+            "--format",
+            "{{json .NetworkSettings.Networks}}",
+            MESH_CONTAINER,
+        ],
+        6,
+    )
+    .is_some_and(|output| mesh_network_membership_ready(&output))
+}
+
+fn bounded_command_output(program: &str, args: &[&str], timeout_seconds: u64) -> Option<String> {
+    let timeout = format!("{timeout_seconds}s");
+    let output = Command::new("timeout")
+        .arg(timeout)
+        .arg(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.len() > 16 * 1024 {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn cloudflare_trace_has_warp_mode(raw: &str, expected: &str) -> bool {
+    let mut warp = None;
+    let mut ip_present = false;
+    for line in raw.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "warp" if warp.is_none() => warp = Some(value),
+            "warp" => return false,
+            "ip" if !value.trim().is_empty() => ip_present = true,
+            _ => {}
+        }
+    }
+    ip_present && warp == Some(expected)
+}
+
+fn mesh_network_membership_ready(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|networks| {
+            networks
+                .keys()
+                .any(|name| name == "mesh_net" || name.ends_with("_mesh_net"))
+        })
 }
 
 fn parse_compose_port(value: &str) -> Option<PortMapping> {
@@ -2652,6 +2948,55 @@ mod tests {
     }
 
     #[test]
+    fn datapath_probe_uses_an_enabled_gateway_consumer() {
+        assert_eq!(
+            runtime_probe_consumer(&["vultr-line1-gateway".to_owned()]),
+            Some(LINE1_CONTAINER)
+        );
+        assert_eq!(
+            runtime_probe_consumer(&[
+                "vultr-line1-gateway".to_owned(),
+                "vultr-line2-proxy".to_owned(),
+            ]),
+            Some(LINE2_CONTAINER)
+        );
+        assert_eq!(
+            runtime_probe_consumer(&["vultr-warp-egress".to_owned()]),
+            None
+        );
+    }
+
+    #[test]
+    fn classifies_cloudflare_trace_without_exposing_addresses() {
+        let direct = "fl=123\nip=203.0.113.10\nwarp=off\ncolo=WAW\n";
+        let warp = "fl=123\nip=198.51.100.20\nwarp=on\ncolo=WAW\n";
+        let plus = "fl=123\nip=198.51.100.21\nwarp=plus\ncolo=WAW\n";
+        assert!(cloudflare_trace_has_warp_mode(direct, "off"));
+        assert!(cloudflare_trace_has_warp_mode(warp, "on"));
+        assert!(cloudflare_trace_has_warp_mode(plus, "plus"));
+        assert!(!cloudflare_trace_has_warp_mode(warp, "off"));
+        assert!(!cloudflare_trace_has_warp_mode("warp=on\n", "on"));
+        assert!(!cloudflare_trace_has_warp_mode(
+            "ip=203.0.113.10\nwarp=on\nwarp=off\n",
+            "on"
+        ));
+    }
+
+    #[test]
+    fn mesh_network_evidence_requires_mesh_network() {
+        assert!(mesh_network_membership_ready(
+            r#"{"vultr-edge_mesh_net":{"IPAddress":"172.20.0.2"}}"#
+        ));
+        assert!(mesh_network_membership_ready(
+            r#"{"mesh_net":{"IPAddress":"172.20.0.2"}}"#
+        ));
+        assert!(!mesh_network_membership_ready(
+            r#"{"vultr-edge_edge_net":{"IPAddress":"172.21.0.2"}}"#
+        ));
+        assert!(!mesh_network_membership_ready("not-json"));
+    }
+
+    #[test]
     fn verifies_base_bootstrap_from_running_container_state() {
         let state = AgentState {
             healthy: true,
@@ -2669,6 +3014,9 @@ mod tests {
             missing_containers: Vec::new(),
             listening_tcp_ports: Vec::new(),
             listening_udp_ports: Vec::new(),
+            direct_egress_ready: Some(true),
+            warp_egress_ready: Some(true),
+            mesh_runtime_ready: None,
         };
 
         let root = unique_test_dir();
@@ -2703,6 +3051,9 @@ mod tests {
             missing_containers: Vec::new(),
             listening_tcp_ports: Vec::new(),
             listening_udp_ports: Vec::new(),
+            direct_egress_ready: Some(true),
+            warp_egress_ready: Some(true),
+            mesh_runtime_ready: None,
         };
 
         let root = unique_test_dir();

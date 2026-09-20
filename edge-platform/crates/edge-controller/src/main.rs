@@ -3780,6 +3780,9 @@ async fn observe_agent(
                 missing_containers: Vec::new(),
                 listening_tcp_ports: Vec::new(),
                 listening_udp_ports: Vec::new(),
+                direct_egress_ready: None,
+                warp_egress_ready: None,
+                mesh_runtime_ready: None,
             };
             return (agent_state, RuntimeObservation::agent_unreachable(err));
         }
@@ -3800,6 +3803,9 @@ async fn observe_agent(
             missing_containers: Vec::new(),
             listening_tcp_ports: Vec::new(),
             listening_udp_ports: Vec::new(),
+            direct_egress_ready: None,
+            warp_egress_ready: None,
+            mesh_runtime_ready: None,
         };
         return (agent_state, RuntimeObservation::agent_unreachable(reason));
     };
@@ -3825,6 +3831,9 @@ async fn observe_agent(
             missing_containers: Vec::new(),
             listening_tcp_ports: Vec::new(),
             listening_udp_ports: Vec::new(),
+            direct_egress_ready: None,
+            warp_egress_ready: None,
+            mesh_runtime_ready: None,
         };
         return (agent_state, RuntimeObservation::agent_unreachable(reason));
     };

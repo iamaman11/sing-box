@@ -102,6 +102,9 @@ message AgentState {
   repeated string missing_containers = 10;
   repeated uint32 listening_tcp_ports = 11;
   repeated uint32 listening_udp_ports = 12;
+  optional bool direct_egress_ready = 13;
+  optional bool warp_egress_ready = 14;
+  optional bool mesh_runtime_ready = 15;
 }
 
 message FilePresence {

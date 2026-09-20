@@ -27,15 +27,19 @@ warp-cli --accept-tos connect >/var/log/warp/warp-connect.log 2>&1 || true
 socat TCP-LISTEN:11080,fork,bind=0.0.0.0,reuseaddr TCP:127.0.0.1:1080 \
     >/var/log/warp/warp-socat.log 2>&1 &
 
+warp_ready=0
 for i in $(seq 1 45); do
     if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
+        warp_ready=1
         break
     fi
     sleep 1
 done
 
-echo "warp-egress ready"
-warp-cli --accept-tos status || true
-curl -4 -s --max-time 15 https://cloudflare.com/cdn-cgi/trace || true
+if [ "$warp_ready" != "1" ]; then
+    echo "warp-egress failed to reach Connected state within 45s" >&2
+    exit 1
+fi
 
+echo "warp-egress ready"
 exec tail -f /var/log/warp/warp-svc.log /var/log/warp/warp-connect.log /var/log/warp/warp-proxy-port.log /var/log/warp/warp-socat.log

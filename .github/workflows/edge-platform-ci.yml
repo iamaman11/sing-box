@@ -123,6 +123,15 @@ jobs:
           fi
           grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/line1-gateway/config.template.json
           grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/line2-proxy/config.template.json
+          grep -Fq '"warp-egress:11080"' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'direct egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'WARP egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'enabled Mesh runtime datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'warp-egress failed to reach Connected state within 45s' win/vultr-waw/stack/warp-egress/entrypoint.sh
+          if grep -Fq 'cdn-cgi/trace' win/vultr-waw/stack/warp-egress/entrypoint.sh; then
+            echo "WARP entrypoint must not emit raw datapath trace output" >&2
+            exit 1
+          fi
           python3 - <<'PY'
           import json
           from pathlib import Path
