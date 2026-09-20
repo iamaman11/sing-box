@@ -251,7 +251,7 @@ fn validate_runtime_public_value(label: &str, value: &str) -> Result<(), Applica
             byte.is_ascii_alphanumeric()
                 || matches!(
                     byte,
-                    b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
+                    b'.' | b'_' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
                 )
         })
     {
