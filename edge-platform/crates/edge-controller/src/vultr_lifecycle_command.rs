@@ -1145,8 +1145,6 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    wait_after_destroy_inventory(&mut lifecycle_provider, &desired, &args[1], &policy).await?;
-
     print_json_value(serde_json::json!({
         "machine_id": report.machine_id,
         "provider_id": report.provider_id,
