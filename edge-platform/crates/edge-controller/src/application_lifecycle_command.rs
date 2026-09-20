@@ -147,6 +147,13 @@ fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, P
     ))
 }
 
+pub(crate) async fn resolve_application_authority_from_spec(
+    path: &Path,
+) -> Result<ApplicationAuthority, String> {
+    let desired = load_application_desired(path)?;
+    resolve_application_authority(&desired).await
+}
+
 fn load_application_desired(path: &Path) -> Result<DesiredApplicationState, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read application spec {}: {err}", path.display()))?;
