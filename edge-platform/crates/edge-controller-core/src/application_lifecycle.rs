@@ -692,7 +692,7 @@ mod tests {
             previous_release: None,
         };
         let plan =
-            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
+            plan_application(&desired(), &artifact(), &"3".repeat(64), &observation).unwrap();
         assert_eq!(plan.class, ApplicationPlanClass::Blocked);
     }
 
