@@ -632,8 +632,7 @@ mod tests {
                 private_ipv4: String::new(),
             }],
         };
-        let error =
-            plan_attachment(&desired(), &observed, &attachments, "instance-1").unwrap_err();
+        let error = plan_attachment(&desired(), &observed, &attachments, "instance-1").unwrap_err();
         assert!(matches!(error, VpcLifecycleError::Conflict(_)));
         assert!(error.to_string().contains("unresolved attachment"));
     }
