@@ -606,9 +606,15 @@ fn bounded_ssh_evidence(stderr: &[u8]) -> String {
         .filter(|line| !line.is_empty())
         .map(|line| {
             let lowered = line.to_ascii_lowercase();
-            if ["password", "private_key", "private key", "authorization", "token="]
-                .iter()
-                .any(|marker| lowered.contains(marker))
+            if [
+                "password",
+                "private_key",
+                "private key",
+                "authorization",
+                "token=",
+            ]
+            .iter()
+            .any(|marker| lowered.contains(marker))
             {
                 "[redacted sensitive SSH evidence]".to_owned()
             } else {
@@ -625,10 +631,7 @@ fn bounded_ssh_evidence(stderr: &[u8]) -> String {
     }
 }
 
-fn classify_strict_ssh_failure(
-    exit_code: Option<i32>,
-    stderr: &[u8],
-) -> StrictSshAttemptEvidence {
+fn classify_strict_ssh_failure(exit_code: Option<i32>, stderr: &[u8]) -> StrictSshAttemptEvidence {
     let detail = bounded_ssh_evidence(stderr);
     let lowered = detail.to_ascii_lowercase();
     let class = if lowered.contains("edge_substrate_fail:") {
@@ -643,9 +646,13 @@ fn classify_strict_ssh_failure(
     .any(|marker| lowered.contains(marker))
     {
         StrictSshFailureClass::HostTrust
-    } else if ["permission denied", "authentication failed", "too many authentication failures"]
-        .iter()
-        .any(|marker| lowered.contains(marker))
+    } else if [
+        "permission denied",
+        "authentication failed",
+        "too many authentication failures",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
     {
         StrictSshFailureClass::Authentication
     } else if [
@@ -1506,7 +1513,11 @@ mod tests {
     #[test]
     fn strict_ssh_failure_classification_is_typed_and_bounded() {
         assert_eq!(
-            classify_strict_ssh_failure(Some(255), b"ssh: connect to host x port 22: Connection refused").class,
+            classify_strict_ssh_failure(
+                Some(255),
+                b"ssh: connect to host x port 22: Connection refused"
+            )
+            .class,
             StrictSshFailureClass::Transport
         );
         assert_eq!(
@@ -1518,10 +1529,7 @@ mod tests {
             StrictSshFailureClass::Authentication
         );
 
-        let remote = classify_strict_ssh_failure(
-            Some(42),
-            b"EDGE_SUBSTRATE_FAIL:docker-service",
-        );
+        let remote = classify_strict_ssh_failure(Some(42), b"EDGE_SUBSTRATE_FAIL:docker-service");
         assert_eq!(remote.class, StrictSshFailureClass::RemoteAcceptance);
         assert!(remote.detail.contains("docker-service"));
 
@@ -1532,9 +1540,8 @@ mod tests {
         );
         assert_eq!(unmarked_remote.detail, "no-stderr");
 
-        let sensitive = bounded_ssh_evidence(
-            b"password=secret\nline-2\nline-3\nline-4\nline-5\n",
-        );
+        let sensitive =
+            bounded_ssh_evidence(b"password=secret\nline-2\nline-3\nline-4\nline-5\n");
         assert!(sensitive.contains("[redacted sensitive SSH evidence]"));
         assert!(!sensitive.contains("secret"));
         assert!(!sensitive.contains("line-5"));
