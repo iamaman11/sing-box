@@ -103,6 +103,16 @@ jobs:
             echo "runtime image builds are forbidden in the production stack" >&2
             exit 1
           fi
+          if grep -R --line-number --fixed-strings 'ipv4_address:' win/vultr-waw/stack; then
+            echo "static Docker container IP authority is forbidden" >&2
+            exit 1
+          fi
+          if grep -R --line-number --fixed-strings '172.22.10.' win/vultr-waw/stack; then
+            echo "legacy static WARP/container subnet authority is forbidden" >&2
+            exit 1
+          fi
+          grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/edge-gateway/config.template.json
+          grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/tunnel-edge/config.warp.template.json
           if grep -nE '^[[:space:]]+build:' win/vultr-waw/stack/docker-compose.yml; then
             echo "Compose build directives are forbidden in the production stack" >&2
             exit 1
