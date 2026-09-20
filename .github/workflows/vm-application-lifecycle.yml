@@ -215,6 +215,27 @@ jobs:
           chmod 600 "${key_path}"
           printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
 
+
+      - name: Materialize disposable Cloudflare authority
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_API_TOKEN}"
+          [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9a-f]{32}$ ]]
+          template="infra/cloudflare/application-acceptance-mesh.template.json"
+          test -f "${template}"
+          test "$(jq -r '.account_id' "${template}")" = "__CLOUDFLARE_ACCOUNT_ID__"
+          mesh_spec="${RUNNER_TEMP}/application-acceptance-mesh.json"
+          jq --arg account_id "${CLOUDFLARE_ACCOUNT_ID}" \
+            '.account_id = $account_id' "${template}" > "${mesh_spec}"
+          chmod 600 "${mesh_spec}"
+          printf 'EDGE_ACCEPTANCE_MESH_SPEC=%s\n' "${mesh_spec}" >> "${GITHUB_ENV}"
+          printf 'EDGE_ACCEPTANCE_DNS_SPEC=%s\n' \
+            "infra/cloudflare/application-acceptance-dns.json" >> "${GITHUB_ENV}"
+
       - name: Discover controller egress IPv4
         shell: bash
         run: |
@@ -234,6 +255,7 @@ jobs:
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
           bin="${EDGE_APPLICATION_CONTROLLER}"
@@ -312,7 +334,7 @@ jobs:
     environment:
       name: production-vultr
       deployment: false
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
