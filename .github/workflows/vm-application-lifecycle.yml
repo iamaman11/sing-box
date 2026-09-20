@@ -611,6 +611,11 @@ jobs:
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
             "${RUNNER_TEMP}/acceptance-mesh-before.json" >/dev/null
 
+          # Recover only exact-owned disposable VPC residue from an interrupted prior
+          # acceptance. The following cleanup-plan assertion still proves clean-room
+          # absence before any new create mutation.
+          cleanup_vpc_provider
+
           "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" \
             > "${RUNNER_TEMP}/acceptance-vpc-before.json"
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
