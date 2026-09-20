@@ -4,12 +4,36 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use std::mem::size_of;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use std::ptr::null_mut;
+
 use edge_shared_types::LocalSingboxState;
 use edge_singbox::sync_local_config;
 use sysinfo::{Pid, Signal, System};
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+#[cfg(windows)]
+use windows_sys::Win32::NetworkManagement::IpHelper::{
+    ConvertInterfaceLuidToIndex, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
+    GAA_FLAG_SKIP_UNICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+
 const STARTUP_OBSERVATION_SECS: u64 = 10;
 const STARTUP_OBSERVATION_INTERVAL_MS: u64 = 500;
+const WINDOWS_OWNED_DNS_IPV4: [[u8; 4]; 2] = [[127, 0, 2, 2], [127, 0, 2, 3]];
+
+fn is_owned_windows_dns_ipv4(address: [u8; 4]) -> bool {
+    WINDOWS_OWNED_DNS_IPV4.contains(&address)
+}
 
 #[derive(Debug, Clone)]
 pub struct LocalRuntimePaths {
@@ -133,7 +157,7 @@ pub fn start_local_runtime(
     let _ = discard_staged_config(&staged);
     let local_singbox = inspect_local_runtime(&paths.config_path);
     Ok(RuntimeOperationResult {
-        pid: Some(child.pid()),
+        pid: Some(child.id()),
         note: if visible_window {
             "local sing-box started in a visible window (validated guarded transition)".to_owned()
         } else {
@@ -144,56 +168,29 @@ pub fn start_local_runtime(
     })
 }
 
-fn launch_singbox(paths: &LocalRuntimePaths, visible_window: bool) -> Result<SpawnedChild, String> {
-    if visible_window && cfg!(windows) {
-        let config_parent = paths
-            .config_path
-            .parent()
-            .map(|value| value.display().to_string())
-            .unwrap_or_else(|| ".".to_owned());
-        let command = format!(
-            "Set-Location -LiteralPath '{}'; (Start-Process -FilePath '{}' -ArgumentList @('run','-c','{}') -WorkingDirectory '{}' -PassThru).Id",
-            escape_ps_single(&config_parent),
-            escape_ps_single(&paths.singbox_binary_path.display().to_string()),
-            escape_ps_single(&paths.config_path.display().to_string()),
-            escape_ps_single(&config_parent),
-        );
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", &command])
-            .output()
-            .map_err(|err| format!("failed to start visible sing-box window: {err}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(if stderr.is_empty() {
-                format!(
-                    "failed to start visible sing-box window with status {}",
-                    output.status
-                )
-            } else {
-                format!("failed to start visible sing-box window: {stderr}")
-            });
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let pid = stdout
-            .lines()
-            .filter_map(|line| line.trim().parse::<u32>().ok())
-            .next()
-            .ok_or_else(|| {
-                "failed to capture sing-box pid from visible window launch".to_owned()
-            })?;
-        Ok(SpawnedChild::ExternalPid(pid))
-    } else {
-        let mut command = Command::new(&paths.singbox_binary_path);
-        command.arg("run").arg("-c").arg(&paths.config_path);
-        if let Some(parent) = paths.config_path.parent() {
-            command.current_dir(parent);
-        }
-        attach_runtime_logs(&mut command, &paths.runtime_root);
-        let child = command
-            .spawn()
-            .map_err(|err| with_dns_guard_on_failure(format!("failed to start sing-box: {err}")))?;
-        Ok(SpawnedChild::Owned(child))
+fn launch_singbox(
+    paths: &LocalRuntimePaths,
+    visible_window: bool,
+) -> Result<std::process::Child, String> {
+    let mut command = Command::new(&paths.singbox_binary_path);
+    command.arg("run").arg("-c").arg(&paths.config_path);
+    if let Some(parent) = paths.config_path.parent() {
+        command.current_dir(parent);
     }
+
+    #[cfg(windows)]
+    if visible_window {
+        command.creation_flags(CREATE_NEW_CONSOLE);
+    } else {
+        attach_runtime_logs(&mut command, &paths.runtime_root);
+    }
+
+    #[cfg(not(windows))]
+    attach_runtime_logs(&mut command, &paths.runtime_root);
+
+    command
+        .spawn()
+        .map_err(|err| with_dns_guard_on_failure(format!("failed to start sing-box: {err}")))
 }
 
 pub fn stop_local_runtime(
@@ -346,7 +343,7 @@ fn rollback_failed_transition(
     let rollback = if previous_runtime.is_some() {
         match launch_singbox(paths, false).and_then(|mut child| {
             observe_startup(&mut child)?;
-            Ok(child.pid())
+            Ok(child.id())
         }) {
             Ok(pid) => format!("previous local runtime restored (pid {pid})"),
             Err(err) => format!("automatic rollback also failed: {err}"),
@@ -396,28 +393,17 @@ fn stop_process(pid: u32) {
     }
 }
 
-fn observe_startup(child: &mut SpawnedChild) -> Result<(), String> {
+fn observe_startup(child: &mut std::process::Child) -> Result<(), String> {
     let attempts = (STARTUP_OBSERVATION_SECS * 1000) / STARTUP_OBSERVATION_INTERVAL_MS;
     for _ in 0..attempts {
         thread::sleep(Duration::from_millis(STARTUP_OBSERVATION_INTERVAL_MS));
-        match child {
-            SpawnedChild::Owned(process) => {
-                if let Some(status) = process
-                    .try_wait()
-                    .map_err(|err| format!("failed to observe sing-box startup: {err}"))?
-                {
-                    return Err(format!(
-                        "sing-box exited during startup observation with status {status}"
-                    ));
-                }
-            }
-            SpawnedChild::ExternalPid(pid) => {
-                if !process_exists(*pid) {
-                    return Err(
-                        "sing-box exited during visible window startup observation".to_owned()
-                    );
-                }
-            }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to observe sing-box startup: {err}"))?
+        {
+            return Err(format!(
+                "sing-box exited during startup observation with status {status}"
+            ));
         }
     }
     Ok(())
@@ -446,48 +432,156 @@ fn with_dns_guard_on_failure(message: String) -> String {
 
 #[cfg(windows)]
 fn restore_windows_dns_if_owned_windows() -> Vec<String> {
-    let script = r#"
-$owned = @('127.0.2.2', '127.0.2.3')
-$adapters = @(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object {
-    $addresses = @($_.ServerAddresses)
-    @($owned | Where-Object { $addresses -contains $_ }).Count -gt 0
-})
-foreach ($adapter in $adapters) {
-    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses
-    "reset Windows DNS on $($adapter.InterfaceAlias) [$($adapter.InterfaceIndex)]"
-}
-if ($adapters.Count -gt 0) {
-    Clear-DnsClientCache
-    "cleared Windows DNS client cache"
-}
-"#;
+    let owned_indices = match observe_owned_windows_dns_adapter_indices() {
+        Ok(indices) => indices,
+        Err(err) => {
+            return vec![format!(
+                "windows DNS guard observation failed closed before mutation: {err}"
+            )];
+        }
+    };
+    if owned_indices.is_empty() {
+        return Vec::new();
+    }
 
-    match Command::new("powershell.exe")
+    let index_list = owned_indices
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$indices = @({index_list})
+foreach ($index in $indices) {{
+    Set-DnsClientServerAddress -InterfaceIndex ([uint32]$index) -ResetServerAddresses
+}}
+Clear-DnsClientCache
+"#
+    );
+
+    let status = Command::new("powershell.exe")
         .args([
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            script,
+            &script,
         ])
-        .output()
-    {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(|line| format!("windows DNS guard: {line}"))
-            .collect(),
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            vec![if stderr.is_empty() {
-                format!("windows DNS guard failed with status {}", output.status)
-            } else {
-                format!("windows DNS guard failed: {stderr}")
-            }]
+        .status();
+
+    let mut warnings = match status {
+        Ok(status) if status.success() => vec![format!(
+            "windows DNS guard: reset exact owned DNS on interface index(es) {}; cleared Windows DNS client cache",
+            owned_indices
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )],
+        Ok(status) => {
+            return vec![format!(
+                "windows DNS guard reset failed with status {status}"
+            )];
         }
-        Err(err) => vec![format!("windows DNS guard failed to run: {err}")],
+        Err(err) => {
+            return vec![format!("windows DNS guard reset failed to run: {err}")];
+        }
+    };
+
+    match observe_owned_windows_dns_adapter_indices() {
+        Ok(indices) if indices.is_empty() => {}
+        Ok(indices) => warnings.push(format!(
+            "windows DNS guard post-reset verification still observes owned DNS on interface index(es): {}",
+            indices
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        Err(err) => warnings.push(format!(
+            "windows DNS guard post-reset verification failed: {err}"
+        )),
     }
+
+    warnings
+}
+
+#[cfg(windows)]
+fn observe_owned_windows_dns_adapter_indices() -> Result<Vec<u32>, String> {
+    const WORKING_BUFFER_BYTES: usize = 15 * 1024;
+    const MAX_TRIES: usize = 3;
+
+    let flags = GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
+    let mut required_bytes = WORKING_BUFFER_BYTES as u32;
+
+    for _ in 0..MAX_TRIES {
+        let word_bytes = size_of::<usize>();
+        let words = (required_bytes as usize).div_ceil(word_bytes).max(1);
+        let mut buffer = vec![0usize; words];
+        let adapters = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+
+        let result = unsafe {
+            GetAdaptersAddresses(
+                AF_UNSPEC as u32,
+                flags,
+                null_mut(),
+                adapters,
+                &mut required_bytes,
+            )
+        };
+        if result == ERROR_BUFFER_OVERFLOW {
+            continue;
+        }
+        if result != 0 {
+            return Err(format!("GetAdaptersAddresses failed with Win32 error {result}"));
+        }
+
+        let mut owned_indices = Vec::new();
+        let mut adapter = adapters;
+        while !adapter.is_null() {
+            let mut dns_server = unsafe { (*adapter).FirstDnsServerAddress };
+            let mut owned = false;
+            while !dns_server.is_null() {
+                let socket = unsafe { (*dns_server).Address.lpSockaddr };
+                if !socket.is_null() && unsafe { (*socket).sa_family } == AF_INET {
+                    let ipv4 = unsafe { &*socket.cast::<SOCKADDR_IN>() };
+                    let octets = unsafe { ipv4.sin_addr.S_un.S_addr.to_ne_bytes() };
+                    if is_owned_windows_dns_ipv4(octets) {
+                        owned = true;
+                        break;
+                    }
+                }
+                dns_server = unsafe { (*dns_server).Next };
+            }
+
+            if owned {
+                let mut interface_index = 0u32;
+                let status =
+                    unsafe { ConvertInterfaceLuidToIndex(&(*adapter).Luid, &mut interface_index) };
+                if status != 0 {
+                    return Err(format!(
+                        "ConvertInterfaceLuidToIndex failed with Win32 error {status}"
+                    ));
+                }
+                if interface_index == 0 {
+                    return Err("owned DNS adapter resolved to interface index 0".to_owned());
+                }
+                owned_indices.push(interface_index);
+            }
+
+            adapter = unsafe { (*adapter).Next };
+        }
+
+        owned_indices.sort_unstable();
+        owned_indices.dedup();
+        return Ok(owned_indices);
+    }
+
+    Err(format!(
+        "GetAdaptersAddresses exceeded {MAX_TRIES} bounded buffer attempts"
+    ))
 }
 
 fn detect_process(expected_config_path: &Path) -> Option<ProcessObservation> {
@@ -552,30 +646,6 @@ fn same_path_string(candidate: &str, expected: &Path) -> bool {
     }
 }
 
-fn escape_ps_single(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
-fn process_exists(pid: u32) -> bool {
-    let mut system = System::new_all();
-    system.refresh_all();
-    system.process(Pid::from_u32(pid)).is_some()
-}
-
-enum SpawnedChild {
-    Owned(std::process::Child),
-    ExternalPid(u32),
-}
-
-impl SpawnedChild {
-    fn pid(&self) -> u32 {
-        match self {
-            SpawnedChild::Owned(child) => child.id(),
-            SpawnedChild::ExternalPid(pid) => *pid,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,6 +665,14 @@ mod tests {
     fn same_path_matches_identical_values() {
         let path = PathBuf::from("/tmp/config.json");
         assert!(same_path_string("/tmp/config.json", &path));
+    }
+
+    #[test]
+    fn windows_dns_ownership_is_exact() {
+        assert!(is_owned_windows_dns_ipv4([127, 0, 2, 2]));
+        assert!(is_owned_windows_dns_ipv4([127, 0, 2, 3]));
+        assert!(!is_owned_windows_dns_ipv4([127, 0, 2, 4]));
+        assert!(!is_owned_windows_dns_ipv4([8, 8, 8, 8]));
     }
 
     #[cfg(windows)]
