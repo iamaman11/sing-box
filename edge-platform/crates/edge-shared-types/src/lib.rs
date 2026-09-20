@@ -265,6 +265,9 @@ impl AgentState {
             missing_containers: Vec::new(),
             listening_tcp_ports: Vec::new(),
             listening_udp_ports: Vec::new(),
+            direct_egress_ready: None,
+            warp_egress_ready: None,
+            mesh_runtime_ready: None,
         }
     }
 
