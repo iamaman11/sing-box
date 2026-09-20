@@ -684,14 +684,19 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
         if line.is_empty() {
             continue;
         }
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| format!("runtime policy line {} must use KEY=VALUE syntax", index + 1))?;
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            format!(
+                "runtime policy line {} must use KEY=VALUE syntax",
+                index + 1
+            )
+        })?;
         if !allowed.contains(key) {
             return Err(format!("unsupported runtime policy key: {key}"));
         }
         if value.is_empty() || value.contains(['\n', '\r']) {
-            return Err(format!("runtime policy {key} must be a non-empty single-line value"));
+            return Err(format!(
+                "runtime policy {key} must be a non-empty single-line value"
+            ));
         }
         if !observed.insert(key) {
             return Err(format!("runtime policy key is duplicated: {key}"));
@@ -703,9 +708,7 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_vm_runtime_secret_store(
-    stack_dir: &Path,
-) -> Result<ApplicationRuntimeSecrets, String> {
+fn ensure_vm_runtime_secret_store(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {
     let parent = stack_dir
         .parent()
         .ok_or_else(|| "application stack path has no parent".to_owned())?;
@@ -713,15 +716,26 @@ fn ensure_vm_runtime_secret_store(
     let path = dir.join(RUNTIME_SECRET_FILE);
 
     if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .map_err(|err| format!("failed to read VM runtime secret store {}: {err}", path.display()))?;
+        let raw = fs::read_to_string(&path).map_err(|err| {
+            format!(
+                "failed to read VM runtime secret store {}: {err}",
+                path.display()
+            )
+        })?;
         return ApplicationRuntimeSecrets::parse_env(&raw).map_err(|err| {
-            format!("VM runtime secret store {} is invalid: {err}", path.display())
+            format!(
+                "VM runtime secret store {} is invalid: {err}",
+                path.display()
+            )
         });
     }
 
-    fs::create_dir_all(&dir)
-        .map_err(|err| format!("failed to create runtime secret directory {}: {err}", dir.display()))?;
+    fs::create_dir_all(&dir).map_err(|err| {
+        format!(
+            "failed to create runtime secret directory {}: {err}",
+            dir.display()
+        )
+    })?;
     set_private_directory_permissions(&dir)?;
 
     let generated = ApplicationRuntimeSecrets::generate();
@@ -741,8 +755,12 @@ fn ensure_vm_runtime_secret_store(
         )
     })?;
 
-    let observed = fs::read_to_string(&path)
-        .map_err(|err| format!("failed to re-read VM runtime secret store {}: {err}", path.display()))?;
+    let observed = fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "failed to re-read VM runtime secret store {}: {err}",
+            path.display()
+        )
+    })?;
     ApplicationRuntimeSecrets::parse_env(&observed).map_err(|err| {
         format!(
             "published VM runtime secret store {} failed validation: {err}",
@@ -1464,10 +1482,8 @@ mod tests {
 
         materialize_vm_owned_runtime_environment(&stack).unwrap();
         let first = fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap();
-        let store = fs::read_to_string(
-            root.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE),
-        )
-        .unwrap();
+        let store =
+            fs::read_to_string(root.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE)).unwrap();
 
         fs::remove_file(stack.join(RUNTIME_ENV_FILE)).unwrap();
         materialize_vm_owned_runtime_environment(&stack).unwrap();
@@ -1477,7 +1493,9 @@ mod tests {
         assert!(first.contains("PROXY_USERNAME=acceptance\n"));
         assert!(first.contains("PROXY_PASSWORD="));
         assert_eq!(
-            ApplicationRuntimeSecrets::parse_env(&store).unwrap().render_env(),
+            ApplicationRuntimeSecrets::parse_env(&store)
+                .unwrap()
+                .render_env(),
             store
         );
 
