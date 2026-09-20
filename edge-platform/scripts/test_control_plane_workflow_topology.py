@@ -45,6 +45,15 @@ def main() -> None:
         "router and skipped comments must never occupy production concurrency",
     )
 
+    require(
+        "permissions:\n  contents: read\n" in router,
+        "router must grant only read-only contents permission required by reusable backends",
+    )
+    require(
+        "contents: write" not in router and "actions: write" not in router,
+        "router must not gain write permissions",
+    )
+
     for name, backend in [("application", application), ("vultr", vultr)]:
         require(
             "COMMENT_BODY: ${{ inputs.command_body }}" in backend,
