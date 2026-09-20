@@ -883,7 +883,10 @@ fn verify_bootstrap_post_state(
     let line2_expected = line2_runtime_enabled(stack_dir);
 
     let mut expected = vec!["vultr-warp-egress"];
-    if matches!(mode, BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull) && line2_expected
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull
+    ) && line2_expected
     {
         expected.push("vultr-line2-proxy");
     }
@@ -916,8 +919,10 @@ fn verify_bootstrap_post_state(
             "tunnel bootstrap requested but TUNNEL_DOMAIN/ACME_EMAIL are not configured".to_owned(),
         );
     }
-    if matches!(mode, BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull)
-        && !line2_expected
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull
+    ) && !line2_expected
     {
         warnings.push(
             "Line 2 bootstrap requested but PROXY_USERNAME/PROXY_CERT_CN are not configured"
@@ -1927,10 +1932,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(
-            tunnel_only.expected_containers,
-            vec!["vultr-line1-gateway"]
-        );
+        assert_eq!(tunnel_only.expected_containers, vec!["vultr-line1-gateway"]);
         assert!(tunnel_only.expected_tcp_ports.is_empty());
         assert_eq!(tunnel_only.expected_udp_ports, vec![8443]);
 
