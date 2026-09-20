@@ -75,13 +75,8 @@ pub struct AttachmentPlan {
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CleanupAction {
     Noop,
-    DetachInstance {
-        vpc_id: String,
-        instance_id: String,
-    },
-    DeleteVpc {
-        vpc_id: String,
-    },
+    DetachInstance { vpc_id: String, instance_id: String },
+    DeleteVpc { vpc_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,7 +192,9 @@ pub fn plan_attachment(
         ));
     }
     let vpc = select_exact_vpc(desired, observed)?.ok_or_else(|| {
-        VpcLifecycleError::Conflict("owned Vultr VPC is absent; create it before attachment".to_owned())
+        VpcLifecycleError::Conflict(
+            "owned Vultr VPC is absent; create it before attachment".to_owned(),
+        )
     })?;
     if vpc.region != desired.region {
         return Err(VpcLifecycleError::Conflict(format!(
@@ -383,10 +380,7 @@ fn observed_cidr(vpc: &ObservedVpc) -> Result<String, VpcLifecycleError> {
     Ok(format!("{subnet}/{}", vpc.v4_subnet_mask))
 }
 
-fn validate_private_ip_in_cidr(
-    value: &str,
-    vpc: &ObservedVpc,
-) -> Result<(), VpcLifecycleError> {
+fn validate_private_ip_in_cidr(value: &str, vpc: &ObservedVpc) -> Result<(), VpcLifecycleError> {
     let ip = value.parse::<Ipv4Addr>().map_err(|err| {
         VpcLifecycleError::Conflict(format!(
             "Vultr VPC attachment returned invalid private IPv4 {value}: {err}"
@@ -417,14 +411,10 @@ fn reject_foreign_attachments(
     attachments: &VpcAttachmentObservation,
     target_instance_id: &str,
 ) -> Result<(), VpcLifecycleError> {
-    if let Some(foreign) = attachments
-        .attachments
-        .iter()
-        .find(|attachment| {
-            attachment.subscription_type != "instance"
-                || attachment.subscription_id != target_instance_id
-        })
-    {
+    if let Some(foreign) = attachments.attachments.iter().find(|attachment| {
+        attachment.subscription_type != "instance"
+            || attachment.subscription_id != target_instance_id
+    }) {
         return Err(VpcLifecycleError::Conflict(format!(
             "owned disposable Vultr VPC has foreign attachment {}",
             foreign.attachment_id
@@ -469,11 +459,7 @@ fn cleanup_digest(
     Ok(sha256_hex(&bytes))
 }
 
-fn validate_identifier(
-    label: &str,
-    value: &str,
-    max_len: usize,
-) -> Result<(), VpcLifecycleError> {
+fn validate_identifier(label: &str, value: &str, max_len: usize) -> Result<(), VpcLifecycleError> {
     if value.is_empty()
         || value.len() > max_len
         || !value
@@ -519,7 +505,8 @@ mod tests {
         ObservedVpc {
             provider_id: "vpc-1".to_owned(),
             region: "waw".to_owned(),
-            description: "managed-by-sing-box:vpc:application-acceptance:application-acceptance-1".to_owned(),
+            description: "managed-by-sing-box:vpc:application-acceptance:application-acceptance-1"
+                .to_owned(),
             v4_subnet: "10.0.4.0".to_owned(),
             v4_subnet_mask: 24,
         }
@@ -567,7 +554,13 @@ mod tests {
     #[test]
     fn vpc_apply_fails_closed_on_ambiguity_or_wrong_region() {
         let observed = VpcObservation {
-            vpcs: vec![vpc(), ObservedVpc { provider_id: "vpc-2".to_owned(), ..vpc() }],
+            vpcs: vec![
+                vpc(),
+                ObservedVpc {
+                    provider_id: "vpc-2".to_owned(),
+                    ..vpc()
+                },
+            ],
         };
         assert!(matches!(
             plan_vpc_apply(&desired(), &observed),
@@ -641,8 +634,7 @@ mod tests {
         let attachments = VpcAttachmentObservation {
             attachments: vec![attachment("instance-1", "10.0.4.2")],
         };
-        let detach =
-            plan_cleanup(&desired(), &observed, &attachments, Some("instance-1")).unwrap();
+        let detach = plan_cleanup(&desired(), &observed, &attachments, Some("instance-1")).unwrap();
         assert!(matches!(
             detach.action,
             CleanupAction::DetachInstance { .. }
@@ -658,16 +650,23 @@ mod tests {
         .unwrap();
 
         let absent_attachment = VpcAttachmentObservation::default();
-        let delete =
-            plan_cleanup(&desired(), &observed, &absent_attachment, Some("instance-1")).unwrap();
-        assert!(matches!(delete.action, CleanupAction::DeleteVpc { .. }));
-        assert!(verify_cleanup_digest(
+        let delete = plan_cleanup(
             &desired(),
             &observed,
             &absent_attachment,
             Some("instance-1"),
-            &digest
         )
-        .is_err());
+        .unwrap();
+        assert!(matches!(delete.action, CleanupAction::DeleteVpc { .. }));
+        assert!(
+            verify_cleanup_digest(
+                &desired(),
+                &observed,
+                &absent_attachment,
+                Some("instance-1"),
+                &digest
+            )
+            .is_err()
+        );
     }
 }
