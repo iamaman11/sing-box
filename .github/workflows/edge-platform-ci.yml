@@ -119,6 +119,19 @@ jobs:
           grep -Fq 'direct egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'WARP egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'enabled Mesh runtime datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env"' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'run_mesh_compose(' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'runtime-apply <mesh-spec-path> <application-spec-path>' edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq 'runtime-cleanup <application-spec-path>' edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq '../mesh-state:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml
+          if grep -Fq './mesh-state:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml; then
+            echo "Mesh runtime state must not live inside release-swapped application stack" >&2
+            exit 1
+          fi
+          if grep -Fq 'CLOUDFLARE_API_TOKEN' edge-platform/crates/edge-agent/src/main.rs; then
+            echo "edge-agent must never receive Cloudflare provider API credentials" >&2
+            exit 1
+          fi
           grep -Fq 'warp-egress failed to reach Connected state within 45s' win/vultr-waw/stack/warp-egress/entrypoint.sh
           if grep -Fq 'cdn-cgi/trace' win/vultr-waw/stack/warp-egress/entrypoint.sh; then
             echo "WARP entrypoint must not emit raw datapath trace output" >&2
