@@ -19,6 +19,8 @@ mod vultr_lifecycle_adapter;
 mod vultr_lifecycle_command;
 mod vultr_lifecycle_service;
 mod vultr_support_resources;
+mod vultr_vpc_lifecycle_command;
+mod vultr_vpc_lifecycle_service;
 
 use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
@@ -170,6 +172,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "vultr-lifecycle" => {
             let args = env::args().skip(2).collect::<Vec<_>>();
             vultr_lifecycle_command::run(args)
+                .await
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+        }
+        "vultr-vpc" => {
+            let args = env::args().skip(2).collect::<Vec<_>>();
+            vultr_vpc_lifecycle_command::run(args)
                 .await
                 .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
         }

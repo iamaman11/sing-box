@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "environment": "application-acceptance",
+  "region": "waw",
+  "machine_id": "application-acceptance-1"
+}
