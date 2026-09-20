@@ -89,12 +89,11 @@ jobs:
           set -euo pipefail
           bash -n win/vultr-waw/stack/bootstrap.sh
           docker compose -f win/vultr-waw/stack/docker-compose.yml config --quiet
-          docker compose -f win/vultr-waw/stack/docker-compose.yml --profile mesh config --quiet
-          docker compose -f win/vultr-waw/stack/docker-compose.yml --profile mesh config --services | grep -Fxq cloudflare-mesh
-          if docker compose -f win/vultr-waw/stack/docker-compose.yml config --services | grep -Fxq cloudflare-mesh; then
-            echo "cloudflare-mesh must stay out of the default stack" >&2
-            exit 1
-          fi
+          docker compose -f win/vultr-waw/stack/docker-compose.yml --profile tunnel --profile mesh config --quiet
+          mapfile -t default_services < <(docker compose -f win/vultr-waw/stack/docker-compose.yml config --services | sort)
+          mapfile -t all_services < <(docker compose -f win/vultr-waw/stack/docker-compose.yml --profile tunnel --profile mesh config --services | sort)
+          test "${default_services[*]}" = "line2-proxy warp-egress"
+          test "${all_services[*]}" = "cloudflare-mesh line1-gateway line2-proxy warp-egress"
           if grep -R --line-number --fixed-strings ':latest' win/vultr-waw/stack; then
             echo "latest tags are forbidden in the production stack" >&2
             exit 1
@@ -111,8 +110,13 @@ jobs:
             echo "legacy static WARP/container subnet authority is forbidden" >&2
             exit 1
           fi
-          grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/edge-gateway/config.template.json
-          grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/tunnel-edge/config.warp.template.json
+          grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/line1-gateway/config.template.json
+          grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/line2-proxy/config.template.json
+          if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-edge-gateway|vultr-tunnel-edge' \
+            win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
+            echo "legacy six-service topology identifiers are forbidden" >&2
+            exit 1
+          fi
           if grep -nE '^[[:space:]]+build:' win/vultr-waw/stack/docker-compose.yml; then
             echo "Compose build directives are forbidden in the production stack" >&2
             exit 1
@@ -505,6 +509,55 @@ jobs:
           docker rm "${gateway_container}" >/dev/null
           chmod 0755 "${sing_box_evidence}"
           sing_box_binary_sha="$(sha256sum "${sing_box_evidence}" | awk '{print $1}')"
+
+          config_check="${RUNNER_TEMP}/sing-box-config-check"
+          install -d -m 0755 "${config_check}"
+          export PROXY_USERNAME="ci-user"
+          export PROXY_PASSWORD="ci-password"
+          export PROXY_CERT_CN="edge.example.com"
+          export VLESS_UUID="11111111-1111-4111-8111-111111111111"
+          export HY2_PASSWORD="ci-hy2-direct"
+          export REALITY_PRIVATE_KEY="UuMBgl7MXTPx9inmQp2UC7Jcnwc6XYbwDNebonM-FCc"
+          export REALITY_PUBLIC_KEY="jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0"
+          export REALITY_SHORT_ID="0123456789abcdef"
+          export VLESS_WARP_UUID="22222222-2222-4222-8222-222222222222"
+          export HY2_WARP_PASSWORD="ci-hy2-warp"
+          export REALITY_WARP_PRIVATE_KEY="UuMBgl7MXTPx9inmQp2UC7Jcnwc6XYbwDNebonM-FCc"
+          export REALITY_WARP_PUBLIC_KEY="jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0"
+          export REALITY_WARP_SHORT_ID="abcdef0123456789"
+          export REALITY_SERVER_NAME="www.microsoft.com"
+          export TUNNEL_DOMAIN="edge.example.com"
+          export ACME_EMAIL="admin@example.com"
+          export CONFIG_CHECK_DIR="${config_check}"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("win/vultr-waw/stack")
+          out = Path(os.environ["CONFIG_CHECK_DIR"])
+          for source, target in [
+              (root / "line1-gateway/config.template.json", out / "line1-gateway.json"),
+              (root / "line2-proxy/config.template.json", out / "line2-proxy.json"),
+          ]:
+              payload = json.loads(os.path.expandvars(source.read_text()))
+              for inbound in payload.get("inbounds", []):
+                  tls = inbound.get("tls")
+                  if not isinstance(tls, dict):
+                      continue
+                  if tls.get("certificate_path") == "/certs/proxy.crt":
+                      tls["certificate_path"] = str(out / "proxy.crt")
+                  if tls.get("key_path") == "/certs/proxy.key":
+                      tls["key_path"] = str(out / "proxy.key")
+              target.write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+          openssl req -x509 -nodes -newkey rsa:2048 \
+            -keyout "${config_check}/proxy.key" \
+            -out "${config_check}/proxy.crt" \
+            -days 1 \
+            -subj "/CN=edge.example.com" >/dev/null 2>&1
+          "${sing_box_evidence}" check -c "${config_check}/line1-gateway.json"
+          "${sing_box_evidence}" check -c "${config_check}/line2-proxy.json"
 
           docker push "${gateway_tag}"
 
