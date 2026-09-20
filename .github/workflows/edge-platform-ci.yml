@@ -256,7 +256,7 @@ jobs:
 
           workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           assert "CLOUDFLARE_ACCOUNT_ID" not in workflow
-          assert 'vpc_cidr="$(jq -er '.cidr'' in workflow
+          assert "vpc_cidr=\"$(jq -er '.cidr'" in workflow
           assert "vultr-vpc attachment-apply" in workflow
           assert "vultr-vpc verify" in workflow
           assert "vultr-vpc cleanup-apply" in workflow
