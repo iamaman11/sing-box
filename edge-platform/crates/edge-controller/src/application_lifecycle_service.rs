@@ -275,6 +275,7 @@ fn render_runtime_policy_environment(desired: &DesiredApplicationState) -> Strin
         values.push(("REALITY_SERVER_NAME", line1.reality_server_name.as_str()));
         values.push(("TUNNEL_DOMAIN", line1.tunnel_domain.as_str()));
         values.push(("ACME_EMAIL", line1.acme_email.as_str()));
+        values.push(("ACME_PROVIDER", line1.acme_provider.as_str()));
     }
 
     values
