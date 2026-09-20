@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+import "edge/platform/v1/common.proto";
+import "edge/platform/v1/diagnostics.proto";
+import "edge/platform/v1/operation.proto";
+import "edge/platform/v1/runtime.proto";
+import "edge/platform/v1/secrets.proto";
+
+message DeployRequest {
+  optional string label_prefix = 1;
+  optional string target_ip = 2;
+  optional string instance_id = 3;
+  optional string tunnel_domain = 4;
+  optional string acme_email = 5;
+  optional string dns_record_name = 6;
+  optional string cloudflare_zone_name = 7;
+  bool mock_provider = 8;
+  bool skip_dns = 9;
+  optional string snapshot_id = 10;
+}
+
+message DeployResponse {
+  bool success = 1;
+  DeploymentSummary deployment = 2;
+  ProviderObservation provider = 3;
+  RuntimeObservation runtime = 4;
+  repeated string warnings = 5;
+  optional Operation operation = 6;
+}
+
+message DestroyRequest {
+  optional string instance_id = 1;
+  optional string target_ip = 2;
+  optional string dns_record_name = 3;
+  optional string cloudflare_zone_name = 4;
+  bool mock_provider = 5;
+  bool delete_dns = 6;
+  bool delete_instance = 7;
+  optional string lifecycle_reason = 8;
+}
+
+message DestroyResponse {
+  bool success = 1;
+  repeated string warnings = 2;
+  optional Operation operation = 3;
+  optional DeploymentSummary deployment = 4;
+}
+
+service ControllerService {
+  rpc GetStatus(Empty) returns (ControllerStatus);
+  rpc Doctor(DoctorRequest) returns (DoctorResponse);
+  rpc GetSecretRef(GetSecretRefRequest) returns (SecretRefEntry);
+  rpc SetSecretRef(SetSecretRefRequest) returns (SecretRefEntry);
+  rpc ListSecretRefs(ListSecretRefsRequest) returns (ListSecretRefsResponse);
+  rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
+  rpc StartLocalRuntime(StartLocalRuntimeRequest) returns (LocalRuntimeResponse);
+  rpc StopLocalRuntime(StopLocalRuntimeRequest) returns (LocalRuntimeResponse);
+  rpc RestartLocalRuntime(RestartLocalRuntimeRequest) returns (LocalRuntimeResponse);
+  rpc GetSelectorState(GetSelectorStateRequest) returns (SelectorState);
+  rpc SetSelector(SetSelectorRequest) returns (SetSelectorResponse);
+  rpc GetTrace(GetTraceRequest) returns (TraceObservation);
+  rpc Deploy(DeployRequest) returns (DeployResponse);
+  rpc Destroy(DestroyRequest) returns (DestroyResponse);
+  rpc GetOperation(GetOperationRequest) returns (OperationStatus);
+  rpc ListOperationEvents(ListOperationEventsRequest) returns (ListOperationEventsResponse);
+}

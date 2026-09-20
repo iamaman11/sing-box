@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+enum OperationLifecycleStatus {
+  OPERATION_LIFECYCLE_STATUS_UNSPECIFIED = 0;
+  REQUESTED = 1;
+  RUNNING = 2;
+  SUCCEEDED = 3;
+  FAILED = 4;
+}
+
+message Operation {
+  int64 id = 1;
+  string kind = 2;
+  OperationLifecycleStatus status = 3;
+  int64 created_at_unix = 4;
+}
+
+message OperationEvent {
+  int64 id = 1;
+  int64 operation_id = 2;
+  string message = 3;
+  int64 created_at_unix = 4;
+}
+
+message OperationStatus {
+  Operation operation = 1;
+  repeated OperationEvent recent_events = 2;
+}
+
+message GetOperationRequest {
+  int64 operation_id = 1;
+}
+
+message ListOperationEventsRequest {
+  int64 operation_id = 1;
+}
+
+message ListOperationEventsResponse {
+  repeated OperationEvent events = 1;
+}

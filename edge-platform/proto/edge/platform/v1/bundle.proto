@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+import "edge/platform/v1/common.proto";
+
+message BundleFile {
+  string relative_path = 1;
+  bytes content = 2;
+  bool executable = 3;
+  bool sensitive = 4;
+}
+
+message ApplyBundleRequest {
+  repeated BundleFile stack_files = 1;
+  repeated BundleFile host_files = 2;
+  optional BundleFile deployment_summary = 3;
+  optional BundleFile agent_env_file = 4;
+  bool prune_existing = 5;
+  optional string bundle_id = 6;
+  optional string bundle_digest = 7;
+}
+
+message ApplyBundleResponse {
+  bool success = 1;
+  repeated string written_paths = 2;
+  optional string stack_dir = 3;
+  repeated string warnings = 4;
+  optional string active_bundle_id = 5;
+  optional string active_bundle_digest = 6;
+  optional string previous_bundle_id = 7;
+  optional string previous_bundle_digest = 8;
+}
+
+message RollbackBundleRequest {
+  string expected_current_bundle_digest = 1;
+}
+
+message RollbackBundleResponse {
+  bool success = 1;
+  optional string active_bundle_id = 2;
+  optional string active_bundle_digest = 3;
+  optional string previous_bundle_id = 4;
+  optional string previous_bundle_digest = 5;
+  repeated string warnings = 6;
+}
+
+message VerifyRuntimeRequest {
+  bool require_readiness = 1;
+  BootstrapMode mode = 2;
+}
+
+message ReadBundleIdentityRequest {}
+
+message ReadBundleIdentityResponse {
+  optional string active_bundle_id = 1;
+  optional string topology_version = 2;
+  optional string deployment_summary_path = 3;
+  optional string active_bundle_digest = 4;
+  optional string previous_bundle_id = 5;
+  optional string previous_bundle_digest = 6;
+}
+
+message ReadRenderedArtifactsRequest {}
+
+message ReadRenderedArtifactsResponse {
+  repeated FilePresence files = 1;
+}

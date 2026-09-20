@@ -32,10 +32,13 @@ jobs:
         env:
           REPOSITORY: ${{ github.repository }}
           REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${BASE_REVISION}"
+          git update-ref refs/buf/base FETCH_HEAD
           git fetch --no-tags --depth=1 origin "${REVISION}"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
@@ -254,7 +257,11 @@ jobs:
               for rule in acceptance_firewall["rules"]
           )
 
-          agent_proto = Path("edge-platform/proto/edge_platform.proto").read_text()
+          platform_proto_root = Path("edge-platform/proto/edge/platform/v1")
+          agent_proto = "\n".join(
+              path.read_text()
+              for path in sorted(platform_proto_root.glob("*.proto"))
+          )
           agent_manifest = Path("edge-platform/crates/edge-agent/Cargo.toml").read_text()
           agent_network = Path(
               "edge-platform/crates/edge-agent/src/network_observation.rs"
@@ -269,7 +276,11 @@ jobs:
               "edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs"
           ).read_text()
 
+          assert not Path("edge-platform/proto/edge_platform.proto").exists()
+          assert not Path("edge-platform/proto/release_set.proto").exists()
           assert "rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);" in agent_proto
+          assert "service ControllerService" in agent_proto
+          assert "service AgentService" in agent_proto
           assert 'rtnetlink = "0.23.0"' in agent_manifest
           assert 'bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }' in agent_manifest
           assert "Docker::connect_with_unix" in agent_docker
@@ -343,6 +354,25 @@ jobs:
             echo "Compose build directives are forbidden in the production stack" >&2
             exit 1
           fi
+
+      - name: Validate protobuf contracts with pinned Buf
+        shell: bash
+        env:
+          BUF_VERSION: "1.73.0"
+          BUF_LINUX_X86_64_SHA256: "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1"
+        run: |
+          set -euo pipefail
+          buf_bin="${RUNNER_TEMP}/buf"
+          curl --fail --silent --show-error --location \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64" \
+            --output "${buf_bin}"
+          echo "${BUF_LINUX_X86_64_SHA256}  ${buf_bin}" | sha256sum --check -
+          chmod +x "${buf_bin}"
+          test "$("${buf_bin}" --version)" = "${BUF_VERSION}"
+          cd edge-platform
+          "${buf_bin}" lint
+          "${buf_bin}" build
+          "${buf_bin}" breaking --against "../.git#ref=refs/buf/base,subdir=edge-platform"
 
       - name: Install pinned Rust toolchain
         shell: bash

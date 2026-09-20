@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+enum Profile {
+  PROFILE_UNSPECIFIED = 0;
+  DIRECT = 1;
+  WARP = 2;
+}
+
+enum DeployPhase {
+  DEPLOY_PHASE_UNSPECIFIED = 0;
+  DEPLOY_PHASE_REQUESTED = 1;
+  INSTANCE_CREATE_REQUESTED = 2;
+  INSTANCE_PROVISIONING = 3;
+  INSTANCE_ADDRESS_ASSIGNED = 4;
+  INSTANCE_RUNTIME_READY = 5;
+  HOST_TRUST_INITIALIZED = 6;
+  BUNDLE_RENDERED = 7;
+  BUNDLE_UPLOADED = 8;
+  BASE_BOOTSTRAP_STARTED = 9;
+  BASE_READY_VERIFIED = 10;
+  DNS_CUTOVER_STARTED = 11;
+  DNS_CUTOVER_VERIFIED = 12;
+  TUNNEL_BOOTSTRAP_STARTED = 13;
+  TUNNEL_READY_VERIFIED = 14;
+  DEPLOYMENT_PUBLISHED = 15;
+  LOCAL_CONFIG_SYNCED = 16;
+  DEPLOY_PHASE_COMPLETED = 17;
+  DEPLOY_PHASE_FAILED = 18;
+  ROLLBACK_STARTED = 19;
+  ROLLBACK_COMPLETED = 20;
+  LOCAL_RUNTIME_START_STARTED = 21;
+  LOCAL_RUNTIME_READY_VERIFIED = 22;
+  SELECTOR_INTENTS_RECONCILING = 23;
+  SELECTORS_VERIFIED = 24;
+  APP_EGRESS_VERIFIED = 25;
+  APP_READY_COMPLETED = 26;
+}
+
+enum AppReadinessPhase {
+  APP_READINESS_PHASE_UNSPECIFIED = 0;
+  DEPLOYMENT_ABSENT = 1;
+  SERVER_RUNTIME_READY = 2;
+  LOCAL_RUNTIME_READY = 3;
+  SELECTORS_READY = 4;
+  APP_EGRESS_READY = 5;
+  APP_READY = 6;
+  APP_READINESS_FAILED = 7;
+}
+
+enum BootstrapMode {
+  BOOTSTRAP_MODE_UNSPECIFIED = 0;
+  BOOTSTRAP_BASE = 1;
+  BOOTSTRAP_TUNNEL = 2;
+  BOOTSTRAP_FULL = 3;
+}
+
+enum FileCategory {
+  FILE_CATEGORY_UNSPECIFIED = 0;
+  REQUIRED_REPO_INPUT = 1;
+  LOCAL_ONLY_SENSITIVE = 2;
+}
+
+message Empty {}
+
+message FilePresence {
+  string path = 1;
+  bool present = 2;
+  FileCategory category = 3;
+}
+
+message InventoryReport {
+  string repo_root = 1;
+  bool rust_workspace_present = 2;
+  repeated FilePresence required_repo_files = 3;
+  repeated FilePresence local_only_files = 4;
+  repeated string blockers = 5;
+  repeated string warnings = 6;
+}
+
+message TrustEntry {
+  int64 id = 1;
+  string deployment_id = 2;
+  string instance_id = 3;
+  string ip = 4;
+  string known_host_line = 5;
+  optional string domain_name = 6;
+  optional string ca_cert_path = 7;
+  optional string server_cert_path = 8;
+  optional string client_cert_path = 9;
+  int64 updated_at_unix = 10;
+}
