@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: edge-platform-ci-${{ github.event.pull_request.number || github.ref }}
+  group: edge-platform-ci-${{ github.event_name }}-${{ github.event.action == 'closed' && 'promotion' || 'candidate' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -483,6 +483,7 @@ jobs:
     name: Build Linux and OCI candidate
     if: >-
       github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor_id == '44100369'
     needs: dependencies
@@ -881,7 +882,7 @@ jobs:
 
   candidate_complete:
     name: Candidate complete
-    if: always() && github.event_name == 'pull_request'
+    if: always() && github.event_name == 'pull_request' && github.event.action != 'closed'
     needs: [verify, dependencies, windows, linux_candidate, release_authority]
     runs-on: ubuntu-24.04
     steps:
