@@ -1,7 +1,7 @@
 use crate::vultr_host_bootstrap::{
-    InstanceAction, VultrOperationalApiProvider, apply_instance_action,
-    HostSubstrateVersions, ensure_host_certificate_rotated, prepare_strict_bootstrap,
-    scrub_user_data, strict_ssh_accept, verify_operator_key_matches, wait_provider_ready,
+    HostSubstrateVersions, InstanceAction, VultrOperationalApiProvider, apply_instance_action,
+    ensure_host_certificate_rotated, prepare_strict_bootstrap, scrub_user_data, strict_ssh_accept,
+    verify_operator_key_matches, wait_provider_ready,
 };
 use crate::vultr_lifecycle_service::{
     CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
@@ -801,10 +801,12 @@ fn vultr_api_key_from_env() -> Result<String, String> {
 
 fn host_substrate_versions_from_env() -> Result<HostSubstrateVersions, String> {
     HostSubstrateVersions::new(
-        env::var("EDGE_DOCKER_ENGINE_VERSION")
-            .map_err(|_| "EDGE_DOCKER_ENGINE_VERSION is required for vultr-lifecycle apply".to_owned())?,
-        env::var("EDGE_CONTAINERD_VERSION")
-            .map_err(|_| "EDGE_CONTAINERD_VERSION is required for vultr-lifecycle apply".to_owned())?,
+        env::var("EDGE_DOCKER_ENGINE_VERSION").map_err(|_| {
+            "EDGE_DOCKER_ENGINE_VERSION is required for vultr-lifecycle apply".to_owned()
+        })?,
+        env::var("EDGE_CONTAINERD_VERSION").map_err(|_| {
+            "EDGE_CONTAINERD_VERSION is required for vultr-lifecycle apply".to_owned()
+        })?,
         env::var("EDGE_COMPOSE_VERSION")
             .map_err(|_| "EDGE_COMPOSE_VERSION is required for vultr-lifecycle apply".to_owned())?,
     )

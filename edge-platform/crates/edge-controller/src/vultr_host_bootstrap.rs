@@ -50,15 +50,16 @@ impl HostSubstrateVersions {
 
 fn validate_package_version(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b':' | b'~' | b'_' | b'-'))
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b':' | b'~' | b'_' | b'-')
+        })
     {
-        return Err(format!("{label} package version is not a safe exact Debian version"));
+        return Err(format!(
+            "{label} package version is not a safe exact Debian version"
+        ));
     }
     Ok(())
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstanceAction {
@@ -442,14 +443,22 @@ fn render_host_substrate_versions(
 ) -> Result<String, String> {
     substrate.validate()?;
     let replacements = [
-        ("@@DOCKER_ENGINE_VERSION@@", substrate.docker_engine_version.as_str()),
-        ("@@CONTAINERD_VERSION@@", substrate.containerd_version.as_str()),
+        (
+            "@@DOCKER_ENGINE_VERSION@@",
+            substrate.docker_engine_version.as_str(),
+        ),
+        (
+            "@@CONTAINERD_VERSION@@",
+            substrate.containerd_version.as_str(),
+        ),
         ("@@COMPOSE_VERSION@@", substrate.compose_version.as_str()),
     ];
     let mut rendered = template.to_owned();
     for (marker, value) in replacements {
         if rendered.matches(marker).count() != 1 {
-            return Err(format!("bootstrap template must contain exactly one {marker} marker"));
+            return Err(format!(
+                "bootstrap template must contain exactly one {marker} marker"
+            ));
         }
         rendered = rendered.replacen(marker, value, 1);
     }
