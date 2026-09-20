@@ -1286,9 +1286,18 @@ async fn run_cleanup(args: &[String]) -> Result<(), String> {
         .map_err(|err| err.to_string())?;
 
     if context.authorized.disposition == PlanDisposition::Noop {
+        let environment_in_use = context
+            .authorized
+            .plan
+            .get("environment_in_use")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         return print_json_value(serde_json::json!({
             "environment": desired.environment,
             "action": "NOOP",
+            "environment_in_use": environment_in_use,
+            "ssh_key_removed": false,
+            "firewall_groups_removed": [],
             "plan": context.authorized.plan,
             "mutations_performed": 0,
         }));
