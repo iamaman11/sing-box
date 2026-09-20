@@ -1,17 +1,9 @@
 name: Edge Platform CI
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "edge-platform/**"
-      - "infra/vultr/**"
-      - "infra/application/**"
-      - "win/**"
-      - ".github/workflows/edge-platform-ci.yml"
-      - ".github/workflows/vultr-lifecycle.yml"
-      - ".github/workflows/vm-application-lifecycle.yml"
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, closed]
     paths:
       - "edge-platform/**"
       - "infra/vultr/**"
@@ -25,13 +17,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: edge-platform-ci-${{ github.event.pull_request.number || github.ref }}
+  group: edge-platform-ci-${{ github.event.action == 'closed' && 'promotion' || 'candidate' }}-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   verify:
     name: Source checks
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -210,7 +202,7 @@ jobs:
 
   dependencies:
     name: Resolve exact dependencies
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -334,7 +326,7 @@ jobs:
 
   windows:
     name: Build Windows candidate
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
     needs: dependencies
     runs-on: windows-2025
     timeout-minutes: 35
@@ -490,6 +482,7 @@ jobs:
     name: Build Linux and OCI candidate
     if: >-
       github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor_id == '44100369'
     needs: dependencies
@@ -738,7 +731,7 @@ jobs:
 
   release_authority:
     name: Create canonical ReleaseSet candidate
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
     needs: [dependencies, windows, linux_candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -888,7 +881,7 @@ jobs:
 
   candidate_complete:
     name: Candidate complete
-    if: always() && github.event_name == 'pull_request'
+    if: always() && github.event_name == 'pull_request' && github.event.action != 'closed'
     needs: [verify, dependencies, windows, linux_candidate, release_authority]
     runs-on: ubuntu-24.04
     steps:
@@ -916,7 +909,7 @@ jobs:
 
   promote:
     name: Promote accepted candidate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -930,23 +923,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.sha }}
+          ACCEPTED_REVISION: ${{ github.event.pull_request.merge_commit_sha }}
+          EVENT_CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          [[ "${ACCEPTED_REVISION}" =~ ^[0-9a-f]{40}$ ]]
 
-          prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls")"
-          test "$(jq 'length' <<<"${prs}")" -eq 1
-          candidate_revision="$(jq -er '.[0] | select(.merged_at != null) | .head.sha' <<<"${prs}")"
+          candidate_revision="${EVENT_CANDIDATE_REVISION}"
+          [[ "${candidate_revision}" =~ ^[0-9a-f]{40}$ ]]
 
           accepted_tree="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}" --jq '.tree.sha')"
           candidate_tree="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}" --jq '.tree.sha')"
           test "${accepted_tree}" = "${candidate_tree}"
 
           runs="$(gh api "repos/${REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs?event=pull_request&head_sha=${candidate_revision}&per_page=100")"
-          latest_run="$(jq -cer --arg head "${candidate_revision}" '
+          latest_run="$(jq -cer --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" '
             [.workflow_runs[]
               | select(.head_sha == $head)
-              | select(.event == "pull_request")]
+              | select(.event == "pull_request")
+              | select(.id != $current_run_id)
+              | select(.status == "completed")
+              | select(.conclusion == "success")]
             | sort_by(.id)
             | last
           ' <<<"${runs}")"
@@ -954,6 +952,7 @@ jobs:
           test "$(jq -er '.conclusion' <<<"${latest_run}")" = "success"
           candidate_run_id="$(jq -er '.id' <<<"${latest_run}")"
 
+          printf 'accepted_revision=%s\n' "${ACCEPTED_REVISION}" >> "${GITHUB_OUTPUT}"
           printf 'candidate_revision=%s\n' "${candidate_revision}" >> "${GITHUB_OUTPUT}"
           printf 'candidate_tree=%s\n' "${candidate_tree}" >> "${GITHUB_OUTPUT}"
           printf 'candidate_run_id=%s\n' "${candidate_run_id}" >> "${GITHUB_OUTPUT}"
@@ -982,7 +981,7 @@ jobs:
         shell: bash
         env:
           GHCR_TOKEN: ${{ github.token }}
-          ACCEPTED_REVISION: ${{ github.sha }}
+          ACCEPTED_REVISION: ${{ steps.locate.outputs.accepted_revision }}
           CANDIDATE_REVISION: ${{ steps.locate.outputs.candidate_revision }}
           CANDIDATE_TREE: ${{ steps.locate.outputs.candidate_tree }}
           CANDIDATE_RUN_ID: ${{ steps.locate.outputs.candidate_run_id }}
@@ -1049,7 +1048,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.sha }}
+          ACCEPTED_REVISION: ${{ steps.locate.outputs.accepted_revision }}
           CANDIDATE_REVISION: ${{ steps.locate.outputs.candidate_revision }}
           CANDIDATE_RUN_ID: ${{ steps.locate.outputs.candidate_run_id }}
           WINDOWS_DIR: ${{ runner.temp }}/accepted/windows
@@ -1069,7 +1068,7 @@ jobs:
       - name: Publish accepted Windows artifact without rebuild
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: edge-platform-windows-${{ github.sha }}
+          name: edge-platform-windows-${{ steps.locate.outputs.accepted_revision }}
           path: ${{ runner.temp }}/accepted/windows
           if-no-files-found: error
           retention-days: 30
@@ -1077,7 +1076,7 @@ jobs:
       - name: Publish accepted Linux artifact without rebuild
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: edge-platform-release-${{ github.sha }}
+          name: edge-platform-release-${{ steps.locate.outputs.accepted_revision }}
           path: ${{ runner.temp }}/accepted/linux
           if-no-files-found: error
           retention-days: 30
@@ -1085,7 +1084,7 @@ jobs:
       - name: Publish accepted ReleaseSet without rebuild
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: edge-platform-release-set-${{ github.sha }}
+          name: edge-platform-release-set-${{ steps.locate.outputs.accepted_revision }}
           path: ${{ runner.temp }}/accepted/release-set
           if-no-files-found: error
           retention-days: 30
