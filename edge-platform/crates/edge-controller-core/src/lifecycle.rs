@@ -54,10 +54,7 @@ pub enum PlanAuthorityError {
     InvalidDomain,
     Serialization(String),
     InvalidDigest,
-    Stale {
-        authorized: String,
-        current: String,
-    },
+    Stale { authorized: String, current: String },
 }
 
 impl fmt::Display for PlanAuthorityError {
@@ -68,10 +65,16 @@ impl fmt::Display for PlanAuthorityError {
                 "plan authority domain must be a bounded lowercase ASCII identifier"
             ),
             Self::Serialization(detail) => {
-                write!(f, "failed to canonicalize plan authority material: {detail}")
+                write!(
+                    f,
+                    "failed to canonicalize plan authority material: {detail}"
+                )
             }
             Self::InvalidDigest => {
-                write!(f, "plan authority digest must be 64 lowercase hexadecimal characters")
+                write!(
+                    f,
+                    "plan authority digest must be 64 lowercase hexadecimal characters"
+                )
             }
             Self::Stale {
                 authorized,
@@ -152,9 +155,7 @@ pub fn verify_exact_authority(
     Ok(())
 }
 
-pub fn canonical_digest<T: Serialize + ?Sized>(
-    value: &T,
-) -> Result<String, PlanAuthorityError> {
+pub fn canonical_digest<T: Serialize + ?Sized>(value: &T) -> Result<String, PlanAuthorityError> {
     let value = serde_json::to_value(value)
         .map_err(|err| PlanAuthorityError::Serialization(err.to_string()))?;
     let canonical = canonicalize(value);
@@ -184,9 +185,7 @@ fn validate_domain(domain: &str) -> Result<(), PlanAuthorityError> {
         || domain.len() > 96
         || domain.trim() != domain
         || !domain.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'-' | b'_' | b'.')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
         })
     {
         return Err(PlanAuthorityError::InvalidDomain);
@@ -238,16 +237,11 @@ mod tests {
             first.authority.authority_digest,
             changed.authority.authority_digest
         );
-        assert!(verify_exact_authority(
-            &first.authority.authority_digest,
-            &first.authority
-        )
-        .is_ok());
+        assert!(
+            verify_exact_authority(&first.authority.authority_digest, &first.authority).is_ok()
+        );
         assert!(matches!(
-            verify_exact_authority(
-                &first.authority.authority_digest,
-                &changed.authority
-            ),
+            verify_exact_authority(&first.authority.authority_digest, &changed.authority),
             Err(PlanAuthorityError::Stale { .. })
         ));
     }
@@ -255,8 +249,7 @@ mod tests {
     #[test]
     fn canonical_digest_ignores_json_object_insertion_order() {
         let left = json!({"a": 1, "b": {"x": 2, "y": 3}});
-        let right: Value =
-            serde_json::from_str(r#"{"b":{"y":3,"x":2},"a":1}"#).unwrap();
+        let right: Value = serde_json::from_str(r#"{"b":{"y":3,"x":2},"a":1}"#).unwrap();
         assert_eq!(
             canonical_digest(&left).unwrap(),
             canonical_digest(&right).unwrap()

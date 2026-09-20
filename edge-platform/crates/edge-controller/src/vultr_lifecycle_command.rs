@@ -6,8 +6,7 @@ use crate::vultr_host_bootstrap::{
 use crate::vultr_lifecycle_service::{
     CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
     apply_machine_with_firewall_profiles, destroy_machine_with_firewall_profiles,
-    inventory_desired_state_with_firewall_profiles,
-    plan_desired_state_with_firewall_profiles,
+    inventory_desired_state_with_firewall_profiles, plan_desired_state_with_firewall_profiles,
 };
 use crate::vultr_support_resources::{
     FirewallProfileSet, ResolvedFirewallProfile, VultrSupportApiProvider,
@@ -613,8 +612,8 @@ async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
         .iter()
         .find(|machine| machine.id == args[1])
         .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
-    let plan = destroy_plan(&desired, machine, &inventory, &args[2])
-        .map_err(|err| err.to_string())?;
+    let plan =
+        destroy_plan(&desired, machine, &inventory, &args[2]).map_err(|err| err.to_string())?;
     let desired_material = serde_json::json!({
         "desired": &desired,
         "machine_id": &args[1],

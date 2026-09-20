@@ -47,18 +47,16 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
-    BootstrapRuntimeResponse, BundleFile, ControllerStatus, DeployPhase, DeployRequest,
-    CheckStatus, DeployResponse, DestroyRequest, DestroyResponse, DiagnosticEvidence,
-    DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse,
-    Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
-    ListOperationEventsRequest, ListOperationEventsResponse, ListSecretRefsRequest,
-    ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent, OperationEventKind,
-    OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError,
-    ProviderObservation,
+    BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, DeployPhase,
+    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DiagnosticEvidence,
+    DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse, Empty, GetOperationRequest,
+    GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
+    ListOperationEventsResponse, ListSecretRefsRequest, ListSecretRefsResponse,
+    LocalRuntimeResponse, Operation, OperationEvent, OperationEventKind, OperationKind,
+    OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError, ProviderObservation,
     RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry, SelectorState,
     SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
-    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
-    timestamp_from_unix_seconds,
+    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -2232,7 +2230,7 @@ fn build_doctor_checks(
             detail: deployment
                 .and_then(|value| value.deployment_label.clone())
                 .unwrap_or_else(|| "no active deployment".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2247,7 +2245,7 @@ fn build_doctor_checks(
                     .and_then(|value| value.desired_main_route.as_ref())
                     .is_some(),
             detail: "desktop and ubuntu desired routes must be persisted".to_owned(),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2257,7 +2255,7 @@ fn build_doctor_checks(
             name: "state.live_state_artifact_present".to_owned(),
             ok: live_state_artifact_present,
             detail: default_live_state_path(repo_root).display().to_string(),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2270,7 +2268,7 @@ fn build_doctor_checks(
                 .map(|value| value.warnings.join("; "))
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "edge-agent status unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2283,7 +2281,7 @@ fn build_doctor_checks(
                 .map(|value| value.warnings.join("; "))
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "local sing-box runtime inspected".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2304,7 +2302,7 @@ fn build_doctor_checks(
                     )
                 })
                 .unwrap_or_else(|| "desktop selector state unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2325,7 +2323,7 @@ fn build_doctor_checks(
                     )
                 })
                 .unwrap_or_else(|| "ubuntu selector state unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2337,7 +2335,7 @@ fn build_doctor_checks(
             detail: ubuntu_proxy
                 .and_then(|value| value.url.clone())
                 .unwrap_or_else(|| "ubuntu proxy URL unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2364,7 +2362,7 @@ fn build_doctor_checks(
                     )
                 })
                 .unwrap_or_else(|| "server runtime unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2378,7 +2376,7 @@ fn build_doctor_checks(
             detail: local
                 .and_then(|value| value.active_config_path.clone())
                 .unwrap_or_else(|| "active local config unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2393,7 +2391,7 @@ fn build_doctor_checks(
                 .and_then(|value| value.ip.clone())
                 .or_else(|| desktop_trace.and_then(|value| value.note.clone()))
                 .unwrap_or_else(|| "desktop trace unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
@@ -2406,7 +2404,7 @@ fn build_doctor_checks(
                 .and_then(|value| value.ip.clone())
                 .or_else(|| ubuntu_trace.and_then(|value| value.note.clone()))
                 .unwrap_or_else(|| "ubuntu trace unavailable".to_owned()),
-        
+
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
             subsystem: DiagnosticSubsystem::Unspecified as i32,
