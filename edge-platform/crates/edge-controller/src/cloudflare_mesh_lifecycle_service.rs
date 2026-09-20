@@ -205,7 +205,9 @@ pub async fn exact_mesh_node_token<P: MeshProvider>(
     if token.is_empty()
         || token.len() > 16 * 1024
         || token.trim() != token
-        || token.bytes().any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+        || token
+            .bytes()
+            .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
     {
         return Err("Cloudflare Mesh node token has an invalid bounded shape".to_owned());
     }
