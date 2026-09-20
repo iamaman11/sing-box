@@ -137,9 +137,8 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         .map(|plan| {
             let disposition = match plan.class {
                 PlanClass::Noop => PlanDisposition::Noop,
-                PlanClass::Create => PlanDisposition::Mutate,
-                PlanClass::UpdateInPlace
-                | PlanClass::ReplaceRequired
+                PlanClass::Create | PlanClass::UpdateInPlace => PlanDisposition::Mutate,
+                PlanClass::ReplaceRequired
                 | PlanClass::BlockedDrift
                 | PlanClass::BlockedAmbiguous => PlanDisposition::Blocked,
             };
@@ -201,9 +200,8 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     let initial_class = initial_plan.class;
     let disposition = match initial_class {
         PlanClass::Noop => PlanDisposition::Noop,
-        PlanClass::Create => PlanDisposition::Mutate,
-        PlanClass::UpdateInPlace
-        | PlanClass::ReplaceRequired
+        PlanClass::Create | PlanClass::UpdateInPlace => PlanDisposition::Mutate,
+        PlanClass::ReplaceRequired
         | PlanClass::BlockedDrift
         | PlanClass::BlockedAmbiguous => PlanDisposition::Blocked,
     };
