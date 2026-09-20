@@ -1121,30 +1121,28 @@ async fn run_action(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    let reboot_observation = if let Some((
-        canonical_public_key,
-        operator_private_key_path,
-        boot_id_before,
-    )) = reboot_probe
-    {
-        let boot_id_after = wait_for_guest_boot_id_change(
-            &operational.main_ip,
-            &args[1],
-            &operator_private_key_path,
-            &canonical_public_key,
-            &boot_id_before,
-            60,
-            std::time::Duration::from_secs(2),
-        )
-        .await?;
-        Some(serde_json::json!({
-            "boot_id_before": boot_id_before,
-            "boot_id_after": boot_id_after,
-            "boot_id_changed": true,
-        }))
-    } else {
-        None
-    };
+    let reboot_observation =
+        if let Some((canonical_public_key, operator_private_key_path, boot_id_before)) =
+            reboot_probe
+        {
+            let boot_id_after = wait_for_guest_boot_id_change(
+                &operational.main_ip,
+                &args[1],
+                &operator_private_key_path,
+                &canonical_public_key,
+                &boot_id_before,
+                60,
+                std::time::Duration::from_secs(2),
+            )
+            .await?;
+            Some(serde_json::json!({
+                "boot_id_before": boot_id_before,
+                "boot_id_after": boot_id_after,
+                "boot_id_changed": true,
+            }))
+        } else {
+            None
+        };
 
     let next_plan = if matches!(action, InstanceAction::Start | InstanceAction::Halt) {
         let (next, _) = build_instance_action_authority(
