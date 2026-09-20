@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+edge-secrets = { path = "../edge-secrets" }
 edge-shared-types = { path = "../edge-shared-types" }
 edge-trust = { path = "../edge-trust" }
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "net"] }
