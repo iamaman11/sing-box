@@ -1244,31 +1244,59 @@ fn set_bundle_file_permissions(
 
 fn collect_rendered_artifacts(stack_dir: &Path) -> Vec<FilePresence> {
     let mut required = vec![
-        ("docker-compose.yml", FileCategory::RequiredRepoInput),
-        (RUNTIME_POLICY_FILE, FileCategory::RequiredRepoInput),
-        (RUNTIME_ENV_FILE, FileCategory::LocalOnlySensitive),
-        ("rendered/line2-proxy.json", FileCategory::RequiredRepoInput),
-        ("certs/proxy.crt", FileCategory::RequiredRepoInput),
-        ("certs/proxy.key", FileCategory::RequiredRepoInput),
+        (
+            stack_dir.join("docker-compose.yml"),
+            FileCategory::RequiredRepoInput,
+        ),
+        (
+            stack_dir.join(RUNTIME_POLICY_FILE),
+            FileCategory::RequiredRepoInput,
+        ),
+        (
+            stack_dir.join(RUNTIME_ENV_FILE),
+            FileCategory::LocalOnlySensitive,
+        ),
     ];
+    if line2_runtime_enabled(stack_dir) {
+        required.push((
+            stack_dir.join("rendered/line2-proxy.json"),
+            FileCategory::LocalOnlySensitive,
+        ));
+    }
     if tunnel_runtime_enabled(stack_dir) {
-        required.insert(
-            3,
-            (
-                "rendered/line1-gateway.json",
-                FileCategory::RequiredRepoInput,
-            ),
+        required.push((
+            stack_dir.join("rendered/line1-gateway.json"),
+            FileCategory::LocalOnlySensitive,
+        ));
+    }
+    if let Ok(paths) = expected_proxy_certificate_paths(stack_dir) {
+        required.extend(
+            paths
+                .into_iter()
+                .map(|path| (path, FileCategory::LocalOnlySensitive)),
         );
     }
 
     required
         .into_iter()
         .map(|(path, category)| FilePresence {
-            path: path.to_owned(),
-            present: stack_dir.join(path).is_file(),
+            path: rendered_artifact_display_path(stack_dir, &path),
+            present: path.is_file(),
             category: category as i32,
         })
         .collect()
+}
+
+fn rendered_artifact_display_path(stack_dir: &Path, path: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(stack_dir) {
+        return relative.to_string_lossy().replace('\\', "/");
+    }
+    if let Some(parent) = stack_dir.parent()
+        && let Ok(relative) = path.strip_prefix(parent)
+    {
+        return format!("../{}", relative.to_string_lossy().replace('\\', "/"));
+    }
+    path.display().to_string()
 }
 
 fn read_runtime_env(path: &Path) -> Option<std::collections::BTreeMap<String, String>> {
@@ -1820,7 +1848,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_rendered_artifacts() {
+    fn reports_rendered_artifacts_for_base_capability() {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(stack.join("rendered")).unwrap();
@@ -1831,13 +1859,72 @@ mod tests {
             "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
         )
         .unwrap();
-        fs::write(stack.join(RUNTIME_ENV_FILE), "").unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
         fs::write(stack.join("rendered/line2-proxy.json"), "{}").unwrap();
         fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
         fs::write(stack.join("certs/proxy.key"), "key").unwrap();
 
         let artifacts = collect_rendered_artifacts(&stack);
         assert!(artifacts.iter().all(|entry| entry.present));
+        assert!(
+            artifacts
+                .iter()
+                .any(|entry| entry.path == "rendered/line2-proxy.json")
+        );
+        assert!(
+            artifacts
+                .iter()
+                .all(|entry| !entry.path.contains("line1-gateway"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_host_certificate_state_for_tunnel_capability() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let owner = root
+            .join("certificate-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+            .join("edge.example.com");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(&owner).unwrap();
+        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "crt").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "key").unwrap();
+
+        let artifacts = collect_rendered_artifacts(&stack);
+        assert!(artifacts.iter().all(|entry| entry.present));
+        assert!(
+            artifacts
+                .iter()
+                .any(|entry| entry.path == "rendered/line1-gateway.json")
+        );
+        assert!(
+            artifacts
+                .iter()
+                .any(|entry| entry.path.starts_with("../certificate-state/"))
+        );
+        assert!(
+            artifacts
+                .iter()
+                .all(|entry| !entry.path.contains("line2-proxy"))
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
