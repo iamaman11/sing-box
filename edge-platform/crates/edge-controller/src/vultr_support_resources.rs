@@ -576,7 +576,10 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
     })
 }
 
-pub(crate) fn same_firewall_access_semantics(left: &FirewallRuleSpec, right: &FirewallRuleSpec) -> bool {
+pub(crate) fn same_firewall_access_semantics(
+    left: &FirewallRuleSpec,
+    right: &FirewallRuleSpec,
+) -> bool {
     left.ip_type == right.ip_type
         && left.protocol == right.protocol
         && left.subnet == right.subnet
