@@ -2320,7 +2320,7 @@ mod tests {
         let mut written = Vec::new();
         for (name, executable, sensitive, expected) in [
             ("regular.txt", false, false, 0o644),
-            ("bootstrap.sh", true, false, 0o755),
+            ("fixed-tool", true, false, 0o755),
             (".env.runtime", false, true, 0o600),
         ] {
             write_bundle_file(
@@ -2559,35 +2559,82 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn runs_bootstrap_script_by_mode() {
+    fn typed_image_environment_requires_exact_digests() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
         fs::write(
-            root.join(".env.runtime"),
-            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+            root.join(IMAGE_ENV_FILE),
+            concat!(
+                "EDGE_GATEWAY_IMAGE=ghcr.io/iamaman11/vultr-edge-gateway@sha256:",
+                "1111111111111111111111111111111111111111111111111111111111111111\n",
+                "EDGE_WARP_EGRESS_IMAGE=ghcr.io/iamaman11/vultr-warp-egress@sha256:",
+                "2222222222222222222222222222222222222222222222222222222222222222\n",
+                "CLOUDFLARE_MESH_IMAGE=docker.io/cloudflare/mesh@sha256:",
+                "3333333333333333333333333333333333333333333333333333333333333333\n",
+            ),
         )
         .unwrap();
-        let script = root.join("bootstrap.sh");
-        fs::write(
-            &script,
-            "#!/usr/bin/env bash\nset -euo pipefail\nmode=\"$1\"\nprintf '%s\n' \"$mode\" > .mode\ntouch docker-compose.yml\necho mode:$mode\n",
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script, permissions).unwrap();
 
-        let response = run_bootstrap(&root, BootstrapMode::BootstrapBase);
-        assert!(!response.success);
-        assert_eq!(response.mode, BootstrapMode::BootstrapBase as i32);
-        assert!(response.stdout.contains("mode:base"));
-        assert!(
-            response
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("vultr-warp-egress"))
+        let images = read_exact_image_environment(&root).unwrap();
+        assert_eq!(images.len(), 3);
+
+        fs::write(
+            root.join(IMAGE_ENV_FILE),
+            "EDGE_GATEWAY_IMAGE=ghcr.io/iamaman11/vultr-edge-gateway:latest\n",
+        )
+        .unwrap();
+        assert!(read_exact_image_environment(&root).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn typed_runtime_environment_accepts_vm_owned_credentials() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let mut runtime =
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n".to_owned();
+        runtime.push_str(&ApplicationRuntimeSecrets::generate().render_env());
+        fs::write(root.join(RUNTIME_ENV_FILE), runtime).unwrap();
+
+        let values = read_typed_runtime_environment(&root).unwrap();
+        assert_eq!(
+            values.get("PROXY_USERNAME").map(String::as_str),
+            Some("acceptance")
         );
+        assert!(values.contains_key("REALITY_PRIVATE_KEY"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn renders_line2_runtime_without_shell_expansion() {
+        let root = unique_test_dir();
+        fs::create_dir_all(root.join("line2-proxy")).unwrap();
+        fs::create_dir_all(root.join("rendered")).unwrap();
+        fs::write(
+            root.join("line2-proxy/config.template.json"),
+            r#"{"username":"${PROXY_USERNAME}","password":"${PROXY_PASSWORD}","cert":"${PROXY_CERT_PATH}","key":"${PROXY_KEY_PATH}"}"#,
+        )
+        .unwrap();
+
+        let values = BTreeMap::from([
+            ("PROXY_USERNAME".to_owned(), "acceptance".to_owned()),
+            ("PROXY_PASSWORD".to_owned(), "secret-value".to_owned()),
+        ]);
+        render_line2_runtime(&root, &values).unwrap();
+
+        let rendered = fs::read_to_string(root.join("rendered/line2-proxy.json")).unwrap();
+        assert!(rendered.contains("\"username\":\"acceptance\""));
+        assert!(rendered.contains("\"password\":\"secret-value\""));
+        assert!(!rendered.contains("${"));
+        let mode = fs::metadata(root.join("rendered/line2-proxy.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
 
         fs::remove_dir_all(root).unwrap();
     }
