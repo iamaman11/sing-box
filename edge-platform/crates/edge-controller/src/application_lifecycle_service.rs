@@ -10,13 +10,11 @@ use edge_controller_core::application_lifecycle::{
 };
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
-    ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile,
-    ReadBundleIdentityRequest, RollbackBundleRequest, VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile, RollbackBundleRequest,
+    VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -112,12 +110,6 @@ impl DesiredMutationMode {
     }
 }
 
-pub(crate) fn runtime_env_path() -> Option<PathBuf> {
-    env::var_os("EDGE_APPLICATION_RUNTIME_ENV_PATH")
-        .map(PathBuf::from)
-        .filter(|path| path.is_file())
-}
-
 pub(crate) fn verify_exact_agent_artifact(
     artifact: &AgentArtifactManifest,
     artifact_path: &Path,
@@ -149,7 +141,6 @@ pub(crate) fn prepare_application_bundle(
     repo_root: &Path,
     desired: &DesiredApplicationState,
     artifact: &AgentArtifactManifest,
-    runtime_env_path: Option<&Path>,
 ) -> Result<PreparedApplicationBundle, String> {
     desired.validate().map_err(|err| err.to_string())?;
     artifact.validate().map_err(|err| err.to_string())?;
@@ -163,7 +154,13 @@ pub(crate) fn prepare_application_bundle(
     }
     if bundle_root.join(".env.runtime").exists() {
         return Err(
-            "committed application bundle must not contain .env.runtime; runtime secrets are injected separately"
+            "committed application bundle must not contain .env.runtime; the VM derives it from Git-owned policy and VM-owned credentials"
+                .to_owned(),
+        );
+    }
+    if bundle_root.join(".env.runtime.policy").exists() {
+        return Err(
+            "committed application bundle must not contain .env.runtime.policy; runtime policy is derived only from application desired state"
                 .to_owned(),
         );
     }
@@ -171,32 +168,12 @@ pub(crate) fn prepare_application_bundle(
     let mut stack_files = Vec::new();
     collect_bundle_files(&bundle_root, &bundle_root, &mut stack_files)?;
 
-    match runtime_env_path {
-        Some(path) => {
-            let content = fs::read(path).map_err(|err| {
-                format!(
-                    "failed to read runtime environment {}: {err}",
-                    path.display()
-                )
-            })?;
-            if content.is_empty() {
-                return Err("runtime environment file must be non-empty".to_owned());
-            }
-            stack_files.push(BundleFile {
-                relative_path: ".env.runtime".to_owned(),
-                content,
-                executable: false,
-                sensitive: true,
-            });
-        }
-        None if desired.runtime_env_required => {
-            return Err(
-                "runtime environment material is required; set EDGE_APPLICATION_RUNTIME_ENV_PATH to a private file"
-                    .to_owned(),
-            );
-        }
-        None => {}
-    }
+    stack_files.push(BundleFile {
+        relative_path: ".env.runtime.policy".to_owned(),
+        content: render_runtime_policy_environment(desired).into_bytes(),
+        executable: false,
+        sensitive: false,
+    });
 
     let bundle_id = desired_bundle_id(desired, artifact).map_err(|err| err.to_string())?;
     let mut request = ApplyBundleRequest {
@@ -214,6 +191,24 @@ pub(crate) fn prepare_application_bundle(
         desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
 
     Ok(PreparedApplicationBundle { request, release })
+}
+
+fn render_runtime_policy_environment(desired: &DesiredApplicationState) -> String {
+    let mut values = Vec::new();
+    if let Some(line2) = desired.runtime_policy.line2.as_ref() {
+        values.push(("PROXY_USERNAME", line2.proxy_username.as_str()));
+        values.push(("PROXY_CERT_CN", line2.proxy_cert_cn.as_str()));
+    }
+    if let Some(line1) = desired.runtime_policy.line1.as_ref() {
+        values.push(("REALITY_SERVER_NAME", line1.reality_server_name.as_str()));
+        values.push(("TUNNEL_DOMAIN", line1.tunnel_domain.as_str()));
+        values.push(("ACME_EMAIL", line1.acme_email.as_str()));
+    }
+
+    values
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}\n"))
+        .collect()
 }
 
 pub(crate) async fn observe_application(
@@ -255,7 +250,6 @@ pub(crate) async fn execute_desired(
         desired,
         artifact,
         &prepared.release.bundle_digest,
-        true,
         &initial_observation,
     )
     .map_err(|err| err.to_string())?;
@@ -321,7 +315,6 @@ pub(crate) async fn execute_desired(
         desired,
         artifact,
         &prepared.release.bundle_digest,
-        true,
         &final_observation,
     )
     .map_err(|err| err.to_string())?;
@@ -352,7 +345,6 @@ pub(crate) async fn verify_desired(
         desired,
         artifact,
         &prepared.release.bundle_digest,
-        true,
         &observation,
     )
     .map_err(|err| err.to_string())?;
@@ -953,17 +945,26 @@ fn unique_temp_file(prefix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edge_controller_core::application_lifecycle::ApplicationBootstrapMode;
+    use edge_controller_core::application_lifecycle::{
+        ApplicationBootstrapMode, ApplicationRuntimePolicy, Line2RuntimePolicy,
+    };
 
     fn test_desired(bundle_root: &str) -> DesiredApplicationState {
         DesiredApplicationState {
-            schema: 1,
+            schema: 2,
             environment: "test".to_owned(),
             vultr_spec_path: "infra/vultr/test.json".to_owned(),
             machine_id: "edge-1".to_owned(),
             application_profile: "edge-stack".to_owned(),
             bundle_root: bundle_root.to_owned(),
             runtime_env_required: true,
+            runtime_policy: ApplicationRuntimePolicy {
+                line1: None,
+                line2: Some(Line2RuntimePolicy {
+                    proxy_username: "acceptance".to_owned(),
+                    proxy_cert_cn: "application-acceptance.local".to_owned(),
+                }),
+            },
             bootstrap_mode: ApplicationBootstrapMode::Base,
         }
     }
@@ -977,68 +978,55 @@ mod tests {
     }
 
     #[test]
-    fn bundle_requires_runtime_secret_without_committing_it() {
-        let root = unique_temp_file("application-bundle-test");
+    fn bundle_contains_public_runtime_policy_but_no_secret_env() {
+        let root = unique_temp_file("application-bundle-policy-test");
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
         fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
 
-        let desired = test_desired("stack");
-        let error =
-            prepare_application_bundle(&root, &desired, &test_artifact(), None).unwrap_err();
-        assert!(error.contains("runtime environment material is required"));
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn bundle_digest_binds_private_runtime_material() {
-        let root = unique_temp_file("application-bundle-digest-test");
-        let stack = root.join("stack");
-        fs::create_dir_all(&stack).unwrap();
-        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
-        fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
-        let env_a = root.join("env-a");
-        let env_b = root.join("env-b");
-        fs::write(&env_a, "TOKEN=one\n").unwrap();
-        fs::write(&env_b, "TOKEN=two\n").unwrap();
-
-        let desired = test_desired("stack");
-        let a =
-            prepare_application_bundle(&root, &desired, &test_artifact(), Some(&env_a)).unwrap();
-        let b =
-            prepare_application_bundle(&root, &desired, &test_artifact(), Some(&env_b)).unwrap();
-        assert_ne!(a.release.bundle_digest, b.release.bundle_digest);
+        let prepared =
+            prepare_application_bundle(&root, &test_desired("stack"), &test_artifact()).unwrap();
+        let policy = prepared
+            .request
+            .stack_files
+            .iter()
+            .find(|file| file.relative_path == ".env.runtime.policy")
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(policy.content.clone()).unwrap(),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=application-acceptance.local\n"
+        );
+        assert!(!policy.sensitive);
         assert!(
-            a.request
+            prepared
+                .request
                 .stack_files
                 .iter()
-                .find(|file| file.relative_path == ".env.runtime")
-                .unwrap()
-                .sensitive
+                .all(|file| file.relative_path != ".env.runtime")
         );
 
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn runtime_only_upgrade_gets_distinct_exact_release_identity() {
-        let root = unique_temp_file("application-release-identity-test");
+    fn public_runtime_policy_changes_exact_release_identity() {
+        let root = unique_temp_file("application-public-policy-digest-test");
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
-        fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
-        let env_a = root.join("env-a");
-        let env_b = root.join("env-b");
-        fs::write(&env_a, "TOKEN=one\n").unwrap();
-        fs::write(&env_b, "TOKEN=two\n").unwrap();
 
-        let desired = test_desired("stack");
-        let a =
-            prepare_application_bundle(&root, &desired, &test_artifact(), Some(&env_a)).unwrap();
-        let b =
-            prepare_application_bundle(&root, &desired, &test_artifact(), Some(&env_b)).unwrap();
+        let a_desired = test_desired("stack");
+        let mut b_desired = a_desired.clone();
+        b_desired
+            .runtime_policy
+            .line2
+            .as_mut()
+            .unwrap()
+            .proxy_username = "acceptance-v2".to_owned();
+
+        let a = prepare_application_bundle(&root, &a_desired, &test_artifact()).unwrap();
+        let b = prepare_application_bundle(&root, &b_desired, &test_artifact()).unwrap();
 
         assert_ne!(a.release.bundle_digest, b.release.bundle_digest);
         assert_ne!(a.release.release_id, b.release.release_id);
@@ -1053,17 +1041,28 @@ mod tests {
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join(".env.runtime"), "TOKEN=committed\n").unwrap();
-        let env_path = root.join("env");
-        fs::write(&env_path, "TOKEN=runtime\n").unwrap();
 
-        let error = prepare_application_bundle(
-            &root,
-            &test_desired("stack"),
-            &test_artifact(),
-            Some(&env_path),
-        )
-        .unwrap_err();
+        let error = prepare_application_bundle(&root, &test_desired("stack"), &test_artifact())
+            .unwrap_err();
         assert!(error.contains("must not contain .env.runtime"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn committed_runtime_policy_is_rejected() {
+        let root = unique_temp_file("application-bundle-policy-authority-test");
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(".env.runtime.policy"),
+            "PROXY_USERNAME=second-authority\n",
+        )
+        .unwrap();
+
+        let error = prepare_application_bundle(&root, &test_desired("stack"), &test_artifact())
+            .unwrap_err();
+        assert!(error.contains("runtime policy is derived only from application desired state"));
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Component, Path};
 
-pub const SUPPORTED_APPLICATION_SCHEMA: u32 = 1;
+pub const SUPPORTED_APPLICATION_SCHEMA: u32 = 2;
 pub const SUPPORTED_ARTIFACT_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,7 +18,32 @@ pub struct DesiredApplicationState {
     pub bundle_root: String,
     #[serde(default)]
     pub runtime_env_required: bool,
+    pub runtime_policy: ApplicationRuntimePolicy,
     pub bootstrap_mode: ApplicationBootstrapMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplicationRuntimePolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line1: Option<Line1RuntimePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line2: Option<Line2RuntimePolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Line1RuntimePolicy {
+    pub tunnel_domain: String,
+    pub acme_email: String,
+    pub reality_server_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Line2RuntimePolicy {
+    pub proxy_username: String,
+    pub proxy_cert_cn: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +176,12 @@ impl DesiredApplicationState {
                 "vultr_spec_path must be an infra/vultr/*.json path".to_owned(),
             ));
         }
-        Ok(())
+        if !self.runtime_env_required {
+            return Err(ApplicationSpecError::Validation(
+                "runtime_env_required must be true for the managed edge application".to_owned(),
+            ));
+        }
+        self.runtime_policy.validate(self.bootstrap_mode)
     }
 
     pub fn canonical_json(&self) -> Result<String, ApplicationSpecError> {
@@ -163,6 +193,70 @@ impl DesiredApplicationState {
     pub fn digest(&self) -> Result<String, ApplicationSpecError> {
         Ok(sha256_hex(self.canonical_json()?.as_bytes()))
     }
+}
+
+impl ApplicationRuntimePolicy {
+    fn validate(&self, mode: ApplicationBootstrapMode) -> Result<(), ApplicationSpecError> {
+        let line1_required = matches!(
+            mode,
+            ApplicationBootstrapMode::Tunnel | ApplicationBootstrapMode::Full
+        );
+        let line2_required = matches!(
+            mode,
+            ApplicationBootstrapMode::Base | ApplicationBootstrapMode::Full
+        );
+
+        if self.line1.is_some() != line1_required {
+            return Err(ApplicationSpecError::Validation(format!(
+                "runtime_policy.line1 presence must match bootstrap_mode {}",
+                mode.as_str()
+            )));
+        }
+        if self.line2.is_some() != line2_required {
+            return Err(ApplicationSpecError::Validation(format!(
+                "runtime_policy.line2 presence must match bootstrap_mode {}",
+                mode.as_str()
+            )));
+        }
+
+        if let Some(line1) = self.line1.as_ref() {
+            validate_runtime_public_value(
+                "runtime_policy.line1.tunnel_domain",
+                &line1.tunnel_domain,
+            )?;
+            validate_runtime_public_value("runtime_policy.line1.acme_email", &line1.acme_email)?;
+            validate_runtime_public_value(
+                "runtime_policy.line1.reality_server_name",
+                &line1.reality_server_name,
+            )?;
+        }
+        if let Some(line2) = self.line2.as_ref() {
+            validate_runtime_public_value(
+                "runtime_policy.line2.proxy_username",
+                &line2.proxy_username,
+            )?;
+            validate_runtime_public_value(
+                "runtime_policy.line2.proxy_cert_cn",
+                &line2.proxy_cert_cn,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_runtime_public_value(label: &str, value: &str) -> Result<(), ApplicationSpecError> {
+    if value.is_empty()
+        || value.len() > 253
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'.' | b'_' | b':' | b'@' | b'%' | b'+' | b'/' | b'-')
+        })
+    {
+        return Err(ApplicationSpecError::Validation(format!(
+            "{label} must be a non-empty single-line runtime policy value"
+        )));
+    }
+    Ok(())
 }
 
 impl AgentArtifactManifest {
@@ -226,21 +320,10 @@ pub fn plan_application(
     desired: &DesiredApplicationState,
     artifact: &AgentArtifactManifest,
     bundle_digest: &str,
-    runtime_env_available: bool,
     observation: &ApplicationObservation,
 ) -> Result<ApplicationPlan, ApplicationSpecError> {
     let release = desired_release(desired, artifact, bundle_digest)?;
     let desired_state_digest = desired.digest()?;
-
-    if desired.runtime_env_required && !runtime_env_available {
-        return Ok(ApplicationPlan {
-            class: ApplicationPlanClass::Blocked,
-            desired_state_digest,
-            desired_release: release,
-            actions: Vec::new(),
-            reasons: vec!["runtime environment material is required but unavailable".to_owned()],
-        });
-    }
 
     if let Some(current) = observation.current_release.as_ref() {
         let observed_agent = observation.observed_agent_sha256.as_deref();
@@ -473,13 +556,20 @@ mod tests {
 
     fn desired() -> DesiredApplicationState {
         DesiredApplicationState {
-            schema: 1,
+            schema: 2,
             environment: "production".to_owned(),
             vultr_spec_path: "infra/vultr/production.json".to_owned(),
             machine_id: "edge-1".to_owned(),
             application_profile: "edge-stack".to_owned(),
             bundle_root: "win/vultr-waw/stack".to_owned(),
             runtime_env_required: true,
+            runtime_policy: ApplicationRuntimePolicy {
+                line1: None,
+                line2: Some(Line2RuntimePolicy {
+                    proxy_username: "acceptance".to_owned(),
+                    proxy_cert_cn: "application-acceptance.local".to_owned(),
+                }),
+            },
             bootstrap_mode: ApplicationBootstrapMode::Base,
         }
     }
@@ -499,17 +589,44 @@ mod tests {
     #[test]
     fn strict_schema_rejects_unknown_fields() {
         let raw = r#"{
-            "schema":1,
+            "schema":2,
             "environment":"production",
             "vultr_spec_path":"infra/vultr/production.json",
             "machine_id":"edge-1",
             "application_profile":"edge-stack",
             "bundle_root":"win/vultr-waw/stack",
             "runtime_env_required":true,
+            "runtime_policy":{
+                "line2":{
+                    "proxy_username":"acceptance",
+                    "proxy_cert_cn":"application-acceptance.local"
+                }
+            },
             "bootstrap_mode":"base",
             "surprise":true
         }"#;
         assert!(DesiredApplicationState::parse_json(raw).is_err());
+    }
+
+    #[test]
+    fn runtime_policy_matches_bootstrap_mode() {
+        let mut value = desired();
+        value.runtime_policy.line2 = None;
+        assert!(value.validate().is_err());
+
+        value.runtime_policy.line2 = Some(Line2RuntimePolicy {
+            proxy_username: "acceptance".to_owned(),
+            proxy_cert_cn: "application-acceptance.local".to_owned(),
+        });
+        value.runtime_policy.line1 = Some(Line1RuntimePolicy {
+            tunnel_domain: "edge.example.com".to_owned(),
+            acme_email: "admin@example.com".to_owned(),
+            reality_server_name: "www.microsoft.com".to_owned(),
+        });
+        assert!(value.validate().is_err());
+
+        value.bootstrap_mode = ApplicationBootstrapMode::Full;
+        assert!(value.validate().is_ok());
     }
 
     #[test]
@@ -527,26 +644,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_runtime_secret_blocks_mutation() {
-        let plan = plan_application(
-            &desired(),
-            &artifact(),
-            &"3".repeat(64),
-            false,
-            &ApplicationObservation::default(),
-        )
-        .unwrap();
-        assert_eq!(plan.class, ApplicationPlanClass::Blocked);
-        assert!(plan.actions.is_empty());
-    }
-
-    #[test]
     fn first_release_plans_apply() {
         let plan = plan_application(
             &desired(),
             &artifact(),
             &"3".repeat(64),
-            true,
             &ApplicationObservation::default(),
         )
         .unwrap();
@@ -574,7 +676,7 @@ mod tests {
             previous_release: None,
         };
         let plan =
-            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
+            plan_application(&desired(), &artifact(), &"3".repeat(64), &observation).unwrap();
         assert_eq!(plan.class, ApplicationPlanClass::Noop);
         assert!(plan.actions.is_empty());
     }
@@ -590,7 +692,7 @@ mod tests {
             previous_release: None,
         };
         let plan =
-            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
+            plan_application(&desired(), &artifact(), &"3".repeat(64), &observation).unwrap();
         assert_eq!(plan.class, ApplicationPlanClass::Blocked);
     }
 
