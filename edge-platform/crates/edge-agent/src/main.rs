@@ -1,9 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
+use std::thread::sleep;
+use std::time::Duration;
 
 use edge_secrets::ApplicationRuntimeSecrets;
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
@@ -29,6 +31,10 @@ const RUNTIME_POLICY_FILE: &str = ".env.runtime.policy";
 const RUNTIME_ENV_FILE: &str = ".env.runtime";
 const RUNTIME_SECRET_DIR: &str = "runtime-secrets";
 const RUNTIME_SECRET_FILE: &str = "application-runtime-v1.env";
+const IMAGE_ENV_FILE: &str = ".images.env";
+const EDGE_GATEWAY_IMAGE_KEY: &str = "EDGE_GATEWAY_IMAGE";
+const EDGE_WARP_EGRESS_IMAGE_KEY: &str = "EDGE_WARP_EGRESS_IMAGE";
+const EDGE_MESH_IMAGE_KEY: &str = "CLOUDFLARE_MESH_IMAGE";
 
 #[tokio::main]
 async fn main() -> ExitCode {
