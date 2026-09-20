@@ -6,11 +6,13 @@ fn main() {
         "common.proto",
         "error.proto",
         "operation.proto",
+        "lifecycle.proto",
         "runtime.proto",
         "bundle.proto",
         "secrets.proto",
         "diagnostics.proto",
         "controller.proto",
+        "orchestrator.proto",
         "agent.proto",
     ]
     .into_iter()

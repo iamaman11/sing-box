@@ -48,14 +48,17 @@ use edge_shared_types::controller_service_server::{ControllerService, Controller
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
     BootstrapRuntimeResponse, BundleFile, ControllerStatus, DeployPhase, DeployRequest,
-    DeployResponse, DestroyRequest, DestroyResponse, DoctorCheck, DoctorRequest, DoctorResponse,
+    CheckStatus, DeployResponse, DestroyRequest, DestroyResponse, DiagnosticEvidence,
+    DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse,
     Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
     ListOperationEventsRequest, ListOperationEventsResponse, ListSecretRefsRequest,
-    ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent,
-    OperationLifecycleStatus, OperationStatus, PlatformError, ProviderObservation,
+    ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent, OperationEventKind,
+    OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError,
+    ProviderObservation,
     RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry, SelectorState,
     SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
     StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
+    timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -1781,11 +1784,16 @@ fn clash_controller_url(local_singbox: &edge_shared_types::LocalSingboxState) ->
 }
 
 fn operation_with_status(operation: StoredOperation, status: &str) -> Operation {
+    let typed_kind = operation_kind(&operation.kind);
+    let phase = operation_phase(status);
     Operation {
         id: operation.id,
         kind: operation.kind,
         status: lifecycle_status(status) as i32,
         created_at_unix: operation.created_at_unix,
+        typed_kind: typed_kind as i32,
+        phase: phase as i32,
+        created_at: Some(timestamp_from_unix_seconds(operation.created_at_unix)),
     }
 }
 
@@ -1798,12 +1806,42 @@ fn lifecycle_status(value: &str) -> OperationLifecycleStatus {
     }
 }
 
+fn operation_kind(value: &str) -> OperationKind {
+    match value {
+        "doctor" => OperationKind::Doctor,
+        "deploy" => OperationKind::Deploy,
+        "destroy" => OperationKind::Destroy,
+        "start_local_runtime" => OperationKind::StartLocalRuntime,
+        "stop_local_runtime" => OperationKind::StopLocalRuntime,
+        "restart_local_runtime" => OperationKind::RestartLocalRuntime,
+        "set_selector" => OperationKind::SetSelector,
+        "bootstrap_runtime" => OperationKind::BootstrapRuntime,
+        "production_plan" => OperationKind::ProductionPlan,
+        "production_apply" => OperationKind::ProductionApply,
+        "production_verify" => OperationKind::ProductionVerify,
+        _ => OperationKind::Unspecified,
+    }
+}
+
+fn operation_phase(status: &str) -> OperationPhase {
+    match status {
+        "RUNNING" => OperationPhase::Apply,
+        "SUCCEEDED" | "FAILED" => OperationPhase::Completed,
+        _ => OperationPhase::RequestedPhase,
+    }
+}
+
 fn stored_operation_to_proto(operation: StoredOperation) -> Operation {
+    let typed_kind = operation_kind(&operation.kind);
+    let phase = operation_phase(&operation.status);
     Operation {
         id: operation.id,
         kind: operation.kind,
         status: lifecycle_status(&operation.status) as i32,
         created_at_unix: operation.created_at_unix,
+        typed_kind: typed_kind as i32,
+        phase: phase as i32,
+        created_at: Some(timestamp_from_unix_seconds(operation.created_at_unix)),
     }
 }
 
@@ -1813,6 +1851,10 @@ fn stored_event_to_proto(event: StoredOperationEvent) -> OperationEvent {
         operation_id: event.operation_id,
         message: event.message,
         created_at_unix: event.created_at_unix,
+        event_kind: OperationEventKind::LegacyMessage as i32,
+        phase: OperationPhase::Unspecified as i32,
+        occurred_at: Some(timestamp_from_unix_seconds(event.created_at_unix)),
+        code: "legacy.message".to_owned(),
     }
 }
 
@@ -2190,6 +2232,11 @@ fn build_doctor_checks(
             detail: deployment
                 .and_then(|value| value.deployment_label.clone())
                 .unwrap_or_else(|| "no active deployment".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
         DoctorCheck {
             name: "state.selector_intents_present".to_owned(),
@@ -2200,11 +2247,21 @@ fn build_doctor_checks(
                     .and_then(|value| value.desired_main_route.as_ref())
                     .is_some(),
             detail: "desktop and ubuntu desired routes must be persisted".to_owned(),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
         DoctorCheck {
             name: "state.live_state_artifact_present".to_owned(),
             ok: live_state_artifact_present,
             detail: default_live_state_path(repo_root).display().to_string(),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
         DoctorCheck {
             name: "server.edge_agent_reachable".to_owned(),
@@ -2213,6 +2270,11 @@ fn build_doctor_checks(
                 .map(|value| value.warnings.join("; "))
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "edge-agent status unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
         DoctorCheck {
             name: "local.singbox_running".to_owned(),
@@ -2221,6 +2283,11 @@ fn build_doctor_checks(
                 .map(|value| value.warnings.join("; "))
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "local sing-box runtime inspected".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
         DoctorCheck {
             name: "selector.desktop_converged".to_owned(),
@@ -2237,6 +2304,11 @@ fn build_doctor_checks(
                     )
                 })
                 .unwrap_or_else(|| "desktop selector state unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
         DoctorCheck {
             name: "selector.ubuntu_converged".to_owned(),
@@ -2253,6 +2325,11 @@ fn build_doctor_checks(
                     )
                 })
                 .unwrap_or_else(|| "ubuntu selector state unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
         DoctorCheck {
             name: "ubuntu.proxy_available".to_owned(),
@@ -2260,6 +2337,11 @@ fn build_doctor_checks(
             detail: ubuntu_proxy
                 .and_then(|value| value.url.clone())
                 .unwrap_or_else(|| "ubuntu proxy URL unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         },
     ];
 
@@ -2282,6 +2364,11 @@ fn build_doctor_checks(
                     )
                 })
                 .unwrap_or_else(|| "server runtime unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         });
     }
     if request.require_local_runtime {
@@ -2291,6 +2378,11 @@ fn build_doctor_checks(
             detail: local
                 .and_then(|value| value.active_config_path.clone())
                 .unwrap_or_else(|| "active local config unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         });
     }
     if request.require_egress_traces {
@@ -2301,6 +2393,11 @@ fn build_doctor_checks(
                 .and_then(|value| value.ip.clone())
                 .or_else(|| desktop_trace.and_then(|value| value.note.clone()))
                 .unwrap_or_else(|| "desktop trace unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         });
         checks.push(DoctorCheck {
             name: "egress.ubuntu_trace_available".to_owned(),
@@ -2309,10 +2406,48 @@ fn build_doctor_checks(
                 .and_then(|value| value.ip.clone())
                 .or_else(|| ubuntu_trace.and_then(|value| value.note.clone()))
                 .unwrap_or_else(|| "ubuntu trace unavailable".to_owned()),
+        
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
         });
     }
 
+    for check in &mut checks {
+        enrich_doctor_check(check);
+    }
     checks
+}
+
+fn enrich_doctor_check(check: &mut DoctorCheck) {
+    check.check_id = check.name.clone();
+    check.status = if check.ok {
+        CheckStatus::Pass as i32
+    } else {
+        CheckStatus::Fail as i32
+    };
+    check.subsystem = diagnostic_subsystem(&check.name) as i32;
+    check.evidence = vec![DiagnosticEvidence {
+        code: format!("{}.detail", check.name),
+        summary: check.detail.clone(),
+    }];
+}
+
+fn diagnostic_subsystem(check_id: &str) -> DiagnosticSubsystem {
+    if check_id.starts_with("state.") {
+        DiagnosticSubsystem::State
+    } else if check_id.starts_with("server.") {
+        DiagnosticSubsystem::ServerRuntime
+    } else if check_id.starts_with("local.") {
+        DiagnosticSubsystem::LocalRuntime
+    } else if check_id.starts_with("selector.") || check_id.starts_with("ubuntu.") {
+        DiagnosticSubsystem::Selector
+    } else if check_id.starts_with("egress.") {
+        DiagnosticSubsystem::Egress
+    } else {
+        DiagnosticSubsystem::Unspecified
+    }
 }
 
 fn selector_is_converged(selector: &SelectorState) -> bool {

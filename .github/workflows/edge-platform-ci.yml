@@ -270,6 +270,11 @@ jobs:
           console_cli = Path("edge-platform/crates/edge-console/src/cli.rs").read_text()
           agent_cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text()
           observability = Path("edge-platform/crates/edge-observability/src/lib.rs").read_text()
+          lifecycle_core = Path("edge-platform/crates/edge-controller-core/src/lifecycle.rs").read_text()
+          lifecycle_proto = Path("edge-platform/proto/edge/platform/v1/lifecycle.proto").read_text()
+          diagnostics_proto = Path("edge-platform/proto/edge/platform/v1/diagnostics.proto").read_text()
+          operation_proto = Path("edge-platform/proto/edge/platform/v1/operation.proto").read_text()
+          orchestrator_proto = Path("edge-platform/proto/edge/platform/v1/orchestrator.proto").read_text()
           agent_network = Path(
               "edge-platform/crates/edge-agent/src/network_observation.rs"
           ).read_text()
@@ -288,6 +293,20 @@ jobs:
           assert "rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);" in agent_proto
           assert "service ControllerService" in agent_proto
           assert "service AgentService" in agent_proto
+          assert "message PlanAuthority" in lifecycle_proto
+          assert "bytes authority_sha256 = 6;" in lifecycle_proto
+          assert "enum CheckStatus" in diagnostics_proto
+          assert "string check_id = 4;" in diagnostics_proto
+          assert "enum OperationKind" in operation_proto
+          assert "google.protobuf.Timestamp created_at = 7;" in operation_proto
+          assert "service OrchestratorService" in orchestrator_proto
+          assert "rpc PlanDeployment(" in orchestrator_proto
+          assert "rpc ApplyDeployment(" in orchestrator_proto
+          assert "rpc VerifyDeployment(" in orchestrator_proto
+          assert "authorized_plan_sha256" in orchestrator_proto
+          assert "PLAN_AUTHORITY_SCHEMA" in lifecycle_core
+          assert "verify_exact_authority" in lifecycle_core
+          assert "PlanDisposition::Noop" in lifecycle_core
           for process_root in [controller_main, console_main, agent_main]:
               assert "env::args()" not in process_root
               assert "_ARG_INDEX" not in process_root

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package edge.platform.v1;
 
+import "google/protobuf/timestamp.proto";
+
 enum OperationLifecycleStatus {
   OPERATION_LIFECYCLE_STATUS_UNSPECIFIED = 0;
   REQUESTED = 1;
@@ -10,18 +12,73 @@ enum OperationLifecycleStatus {
   FAILED = 4;
 }
 
+enum OperationKind {
+  OPERATION_KIND_UNSPECIFIED = 0;
+  DOCTOR = 1;
+  DEPLOY = 2;
+  DESTROY = 3;
+  START_LOCAL_RUNTIME = 4;
+  STOP_LOCAL_RUNTIME = 5;
+  RESTART_LOCAL_RUNTIME = 6;
+  SET_SELECTOR = 7;
+  BOOTSTRAP_RUNTIME = 8;
+  PRODUCTION_PLAN = 9;
+  PRODUCTION_APPLY = 10;
+  PRODUCTION_VERIFY = 11;
+}
+
+enum OperationPhase {
+  OPERATION_PHASE_UNSPECIFIED = 0;
+  REQUESTED_PHASE = 1;
+  OBSERVE = 2;
+  PLAN = 3;
+  AUTHORIZE = 4;
+  APPLY = 5;
+  REOBSERVE = 6;
+  VERIFY = 7;
+  COMPLETED = 8;
+  ROLLBACK = 9;
+}
+
+enum OperationEventKind {
+  OPERATION_EVENT_KIND_UNSPECIFIED = 0;
+  STARTED = 1;
+  OBSERVED = 2;
+  PLAN_DERIVED = 3;
+  AUTHORITY_VERIFIED = 4;
+  MUTATION_REQUESTED = 5;
+  MUTATION_ACCEPTED = 6;
+  REOBSERVED = 7;
+  VERIFIED = 8;
+  WARNING = 9;
+  FAILURE = 10;
+  COMPLETED_EVENT = 11;
+  LEGACY_MESSAGE = 12;
+}
+
 message Operation {
   int64 id = 1;
+  // Legacy compatibility field retained until all clients consume typed_kind.
   string kind = 2;
   OperationLifecycleStatus status = 3;
   int64 created_at_unix = 4;
+
+  OperationKind typed_kind = 5;
+  OperationPhase phase = 6;
+  google.protobuf.Timestamp created_at = 7;
 }
 
 message OperationEvent {
   int64 id = 1;
   int64 operation_id = 2;
+  // Legacy compatibility field retained until event storage migration.
   string message = 3;
   int64 created_at_unix = 4;
+
+  OperationEventKind event_kind = 5;
+  OperationPhase phase = 6;
+  google.protobuf.Timestamp occurred_at = 7;
+  string code = 8;
 }
 
 message OperationStatus {

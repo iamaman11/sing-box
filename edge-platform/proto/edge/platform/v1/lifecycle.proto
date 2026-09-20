@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+enum PlanDisposition {
+  PLAN_DISPOSITION_UNSPECIFIED = 0;
+  NOOP = 1;
+  MUTATE = 2;
+  BLOCKED = 3;
+}
+
+message PlanAuthority {
+  uint32 schema_version = 1;
+  string domain = 2;
+  bytes desired_sha256 = 3;
+  bytes observed_sha256 = 4;
+  bytes plan_sha256 = 5;
+  bytes authority_sha256 = 6;
+}
+
+message PlanStep {
+  string step_id = 1;
+  bool destructive = 2;
+}
+
+message LifecyclePlan {
+  PlanDisposition disposition = 1;
+  PlanAuthority authority = 2;
+  repeated PlanStep steps = 3;
+  repeated string reasons = 4;
+}
+
+enum VerificationStatus {
+  VERIFICATION_STATUS_UNSPECIFIED = 0;
+  CONVERGED = 1;
+  MUTATION_REQUIRED = 2;
+  VERIFICATION_BLOCKED = 3;
+}
+
+message VerificationEvidence {
+  VerificationStatus status = 1;
+  PlanAuthority authority = 2;
+  repeated string evidence_codes = 3;
+}

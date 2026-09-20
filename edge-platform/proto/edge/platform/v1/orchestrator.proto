@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+import "edge/platform/v1/diagnostics.proto";
+import "edge/platform/v1/lifecycle.proto";
+import "edge/platform/v1/operation.proto";
+
+message ProductionIntent {
+  string environment = 1;
+  bytes release_set_sha256 = 2;
+  bytes desired_state_sha256 = 3;
+  string source_revision = 4;
+}
+
+message PlanDeploymentRequest {
+  ProductionIntent intent = 1;
+}
+
+message PlanDeploymentResponse {
+  LifecyclePlan plan = 1;
+  repeated DoctorCheck diagnostics = 2;
+}
+
+message ApplyDeploymentRequest {
+  ProductionIntent intent = 1;
+  bytes authorized_plan_sha256 = 2;
+}
+
+message ApplyDeploymentResponse {
+  Operation operation = 1;
+  LifecyclePlan next_plan = 2;
+}
+
+message VerifyDeploymentRequest {
+  ProductionIntent intent = 1;
+}
+
+message VerifyDeploymentResponse {
+  VerificationEvidence verification = 1;
+  LifecyclePlan current_plan = 2;
+}
+
+message DoctorProductionRequest {
+  string environment = 1;
+}
+
+message DoctorProductionResponse {
+  repeated DoctorCheck checks = 1;
+}
+
+service OrchestratorService {
+  rpc PlanDeployment(PlanDeploymentRequest) returns (PlanDeploymentResponse);
+  rpc ApplyDeployment(ApplyDeploymentRequest) returns (ApplyDeploymentResponse);
+  rpc VerifyDeployment(VerifyDeploymentRequest) returns (VerifyDeploymentResponse);
+  rpc DoctorProduction(DoctorProductionRequest) returns (DoctorProductionResponse);
+}
