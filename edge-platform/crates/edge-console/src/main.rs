@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    DoctorRequest, DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest,
+    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DoctorRequest, DoctorResponse,
+    Empty, GetOperationRequest, GetSecretRefRequest,
     GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest, ListSecretRefsRequest,
     LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest, SecretRefEntry,
     SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,

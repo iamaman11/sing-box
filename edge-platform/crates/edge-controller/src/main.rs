@@ -4054,7 +4054,7 @@ mod tests {
 
     #[test]
     fn resolves_repo_root_from_workspace() {
-        let repo_root = repo_root_from_args(usize::MAX).unwrap();
+        let repo_root = resolve_repo_root(None).unwrap();
         assert!(repo_root.exists());
     }
 
