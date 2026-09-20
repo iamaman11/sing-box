@@ -1,7 +1,7 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, ensure_host_certificate_rotated, prepare_strict_bootstrap,
-    scrub_user_data, strict_ssh_accept, verify_host_certificate_rotated,
+    scrub_user_data, strict_ssh_accept, strict_ssh_capture, verify_host_certificate_rotated,
     verify_operator_key_matches, verify_user_data_scrubbed, wait_provider_ready,
 };
 use crate::vultr_lifecycle_service::{
@@ -983,6 +983,66 @@ async fn run_action_plan(args: &[String]) -> Result<(), String> {
     }))
 }
 
+fn validate_linux_boot_id(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || !bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+    {
+        return Err("guest boot_id is not a canonical Linux UUID".to_owned());
+    }
+    Ok(())
+}
+
+async fn wait_for_guest_boot_id_change(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    previous_boot_id: &str,
+    attempts: usize,
+    delay: std::time::Duration,
+) -> Result<String, String> {
+    if attempts == 0 {
+        return Err("guest reboot observation attempts must be greater than zero".to_owned());
+    }
+    validate_linux_boot_id(previous_boot_id)?;
+
+    let mut last_state = "not-observed";
+    for attempt in 0..attempts {
+        match strict_ssh_capture(
+            target_ip,
+            logical_hostname,
+            operator_private_key_path,
+            canonical_operator_public_key,
+            "cat /proc/sys/kernel/random/boot_id",
+        ) {
+            Ok(current) => {
+                if validate_linux_boot_id(&current).is_err() {
+                    last_state = "invalid-boot-id";
+                } else if current != previous_boot_id {
+                    return Ok(current);
+                } else {
+                    last_state = "same-boot-id";
+                }
+            }
+            Err(_) => {
+                last_state = "ssh-unavailable";
+            }
+        }
+
+        if attempt + 1 < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Err(format!(
+        "guest reboot was not proven for {logical_hostname} at {target_ip}: boot_id did not change after {attempts} observations; last_state={last_state}"
+    ))
+}
+
 async fn run_action(args: &[String]) -> Result<(), String> {
     if args.len() != 4 {
         return Err(
@@ -1031,6 +1091,27 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         PlanDisposition::Mutate => {}
     }
 
+    let reboot_probe = if action == InstanceAction::Reboot {
+        let canonical_public_key = read_canonical_ssh_public_key()?;
+        let operator_private_key_path = operator_private_key_path_from_env()?;
+        verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+        let boot_id_before = strict_ssh_capture(
+            &operational.main_ip,
+            &args[1],
+            &operator_private_key_path,
+            &canonical_public_key,
+            "cat /proc/sys/kernel/random/boot_id",
+        )?;
+        validate_linux_boot_id(&boot_id_before)?;
+        Some((
+            canonical_public_key,
+            operator_private_key_path,
+            boot_id_before,
+        ))
+    } else {
+        None
+    };
+
     let observed = apply_instance_action(
         &mut operational_provider,
         &operational.id,
@@ -1039,6 +1120,29 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         std::time::Duration::from_secs(2),
     )
     .await?;
+
+    let reboot_observation =
+        if let Some((canonical_public_key, operator_private_key_path, boot_id_before)) =
+            reboot_probe
+        {
+            let boot_id_after = wait_for_guest_boot_id_change(
+                &operational.main_ip,
+                &args[1],
+                &operator_private_key_path,
+                &canonical_public_key,
+                &boot_id_before,
+                60,
+                std::time::Duration::from_secs(2),
+            )
+            .await?;
+            Some(serde_json::json!({
+                "boot_id_before": boot_id_before,
+                "boot_id_after": boot_id_after,
+                "boot_id_changed": true,
+            }))
+        } else {
+            None
+        };
 
     let next_plan = if matches!(action, InstanceAction::Start | InstanceAction::Halt) {
         let (next, _) = build_instance_action_authority(
@@ -1069,6 +1173,7 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         "status": observed.status,
         "server_status": observed.server_status,
         "next_plan": next_plan,
+        "reboot_observation": reboot_observation,
         "mutations_performed": 1,
     }))
 }
@@ -1648,6 +1753,14 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_boot_id_validation_is_strict() {
+        assert!(validate_linux_boot_id("930df168-8e6b-4dff-ba80-3c24ed12fd86").is_ok());
+        assert!(validate_linux_boot_id("").is_err());
+        assert!(validate_linux_boot_id("same-boot").is_err());
+        assert!(validate_linux_boot_id("930df168-8e6b-4dff-ba80-3c24ed12fd8z").is_err());
+    }
 
     #[test]
     fn firewall_binding_must_match_desired_profile() {
