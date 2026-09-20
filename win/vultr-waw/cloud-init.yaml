@@ -100,4 +100,4 @@ runcmd:
   - [bash, -lc, "/usr/local/sbin/install-docker.sh"]
   - [bash, -lc, "systemctl enable docker --now"]
   - [bash, -lc, "/usr/local/sbin/prepare-edge-host.sh"]
-  - [bash, -lc, "sudo docker version >/dev/null && sudo docker compose version >/dev/null && install -d -m 0755 /var/lib/singbox-lifecycle && printf '%s\\n' exact-substrate-ready > /var/lib/singbox-lifecycle/host-bootstrap"]
+  - [bash, -lc, "docker version >/dev/null && docker compose version >/dev/null && install -d -m 0755 /var/lib/singbox-lifecycle && printf '%s\\n' exact-substrate-ready > /var/lib/singbox-lifecycle/host-bootstrap"]
