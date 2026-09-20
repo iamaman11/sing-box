@@ -274,19 +274,35 @@ jobs:
 
           "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}"             | tee "${access_acquire}"
 
-          run_desired() {
-            "${bin}" application-lifecycle "${REQUESTED_OPERATION}"               "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}"
-          }
-
           case "${REQUESTED_OPERATION}" in
-            plan|apply|verify|upgrade)
-              run_desired | tee "${result}"
+            plan|verify)
+              "${bin}" application-lifecycle "${REQUESTED_OPERATION}" \
+                "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}" \
+                | tee "${result}"
+              ;;
+            apply|upgrade)
+              authority_plan="${RUNNER_TEMP}/application-authority-plan.json"
+              "${bin}" application-lifecycle plan \
+                "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}" \
+                > "${authority_plan}"
+              authority_digest="$(jq -er '.plan_authority.authority_digest' "${authority_plan}")"
+              [[ "${authority_digest}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" application-lifecycle "${REQUESTED_OPERATION}" \
+                "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}" \
+                "${authority_digest}" | tee "${result}"
               ;;
             rollback-plan)
               "${bin}" application-lifecycle rollback-plan "${SPEC_PATH}" | tee "${result}"
               ;;
             rollback-apply)
-              "${bin}" application-lifecycle rollback-apply "${SPEC_PATH}" "${ROLLBACK_DIGEST}"                 | tee "${result}"
+              rollback_plan="${RUNNER_TEMP}/application-rollback-authority-plan.json"
+              "${bin}" application-lifecycle rollback-plan "${SPEC_PATH}" > "${rollback_plan}"
+              planned_rollback_digest="$(jq -er '.rollback.rollback_digest' "${rollback_plan}")"
+              authority_digest="$(jq -er '.plan_authority.authority_digest' "${rollback_plan}")"
+              test "${planned_rollback_digest}" = "${ROLLBACK_DIGEST}"
+              [[ "${authority_digest}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" application-lifecycle rollback-apply \
+                "${SPEC_PATH}" "${ROLLBACK_DIGEST}" "${authority_digest}" | tee "${result}"
               ;;
             *)
               echo "unsupported authorized application operation" >&2
