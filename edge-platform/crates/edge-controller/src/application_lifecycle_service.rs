@@ -15,6 +15,7 @@ use edge_shared_types::{
 };
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -164,6 +165,7 @@ pub(crate) fn prepare_application_bundle(
                 .to_owned(),
         );
     }
+    validate_materialized_image_environment(&bundle_root.join(".images.env"))?;
 
     let mut stack_files = Vec::new();
     collect_bundle_files(&bundle_root, &bundle_root, &mut stack_files)?;
@@ -191,6 +193,75 @@ pub(crate) fn prepare_application_bundle(
         desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
 
     Ok(PreparedApplicationBundle { request, release })
+}
+
+fn validate_materialized_image_environment(path: &Path) -> Result<(), String> {
+    let raw = fs::read_to_string(path).map_err(|err| {
+        format!(
+            "exact application image environment is missing or unreadable at {}: {err}",
+            path.display()
+        )
+    })?;
+    let mut values = BTreeMap::new();
+    for (index, line) in raw.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            format!(
+                "application image environment line {} must use KEY=VALUE syntax",
+                index + 1
+            )
+        })?;
+        if key.is_empty() || key.trim() != key || value.is_empty() {
+            return Err(format!(
+                "application image environment line {} is invalid",
+                index + 1
+            ));
+        }
+        if values.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(format!(
+                "application image environment contains duplicate key: {key}"
+            ));
+        }
+    }
+
+    let expected = BTreeSet::from([
+        "EDGE_GATEWAY_IMAGE",
+        "EDGE_WARP_EGRESS_IMAGE",
+        "CLOUDFLARE_MESH_IMAGE",
+    ]);
+    let observed = values.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if observed != expected {
+        return Err(
+            "application image environment must contain exactly EDGE_GATEWAY_IMAGE, EDGE_WARP_EGRESS_IMAGE, and CLOUDFLARE_MESH_IMAGE"
+                .to_owned(),
+        );
+    }
+    validate_exact_image_ref(
+        "EDGE_GATEWAY_IMAGE",
+        values.get("EDGE_GATEWAY_IMAGE").unwrap(),
+        "ghcr.io/iamaman11/vultr-edge-gateway",
+    )?;
+    validate_exact_image_ref(
+        "EDGE_WARP_EGRESS_IMAGE",
+        values.get("EDGE_WARP_EGRESS_IMAGE").unwrap(),
+        "ghcr.io/iamaman11/vultr-warp-egress",
+    )?;
+    validate_exact_image_ref(
+        "CLOUDFLARE_MESH_IMAGE",
+        values.get("CLOUDFLARE_MESH_IMAGE").unwrap(),
+        "docker.io/cloudflare/mesh",
+    )?;
+    Ok(())
+}
+
+fn validate_exact_image_ref(label: &str, value: &str, repository: &str) -> Result<(), String> {
+    let prefix = format!("{repository}@sha256:");
+    let digest = value
+        .strip_prefix(&prefix)
+        .ok_or_else(|| format!("{label} must reference exact repository {repository} by digest"))?;
+    validate_lower_hex(label, digest, 64)
 }
 
 fn render_runtime_policy_environment(desired: &DesiredApplicationState) -> String {
@@ -977,12 +1048,28 @@ mod tests {
         }
     }
 
+    fn write_test_image_environment(stack: &Path) {
+        fs::write(
+            stack.join(".images.env"),
+            concat!(
+                "EDGE_GATEWAY_IMAGE=ghcr.io/iamaman11/vultr-edge-gateway@sha256:",
+                "1111111111111111111111111111111111111111111111111111111111111111\n",
+                "EDGE_WARP_EGRESS_IMAGE=ghcr.io/iamaman11/vultr-warp-egress@sha256:",
+                "2222222222222222222222222222222222222222222222222222222222222222\n",
+                "CLOUDFLARE_MESH_IMAGE=docker.io/cloudflare/mesh@sha256:",
+                "3333333333333333333333333333333333333333333333333333333333333333\n",
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn bundle_contains_public_runtime_policy_but_no_secret_env() {
         let root = unique_temp_file("application-bundle-policy-test");
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+        write_test_image_environment(&stack);
 
         let prepared =
             prepare_application_bundle(&root, &test_desired("stack"), &test_artifact()).unwrap();
@@ -1014,6 +1101,7 @@ mod tests {
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+        write_test_image_environment(&stack);
 
         let a_desired = test_desired("stack");
         let mut b_desired = a_desired.clone();
@@ -1030,6 +1118,20 @@ mod tests {
         assert_ne!(a.release.bundle_digest, b.release.bundle_digest);
         assert_ne!(a.release.release_id, b.release.release_id);
         assert_eq!(a.release.agent_sha256, b.release.agent_sha256);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_exact_image_environment_is_rejected_before_bundle_application() {
+        let root = unique_temp_file("application-image-authority-test");
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+
+        let error = prepare_application_bundle(&root, &test_desired("stack"), &test_artifact())
+            .unwrap_err();
+        assert!(error.contains("image environment is missing or unreadable"));
 
         fs::remove_dir_all(root).unwrap();
     }
