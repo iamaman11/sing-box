@@ -245,8 +245,7 @@ impl ApplicationRuntimePolicy {
 
 fn validate_acme_provider(value: &str) -> Result<(), ApplicationSpecError> {
     const LETSENCRYPT_PRODUCTION: &str = "letsencrypt";
-    const LETSENCRYPT_STAGING: &str =
-        "https://acme-staging-v02.api.letsencrypt.org/directory";
+    const LETSENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
     if !matches!(value, LETSENCRYPT_PRODUCTION | LETSENCRYPT_STAGING) {
         return Err(ApplicationSpecError::Validation(
             "runtime_policy.line1.acme_provider must be letsencrypt or the exact Let’s Encrypt staging directory"
