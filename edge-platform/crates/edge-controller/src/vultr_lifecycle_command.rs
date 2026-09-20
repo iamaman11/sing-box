@@ -1,10 +1,11 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, VultrOperationalApiProvider, apply_instance_action,
     ensure_host_certificate_rotated, prepare_strict_bootstrap, scrub_user_data, strict_ssh_accept,
-    verify_operator_key_matches, wait_provider_ready,
+    verify_host_certificate_rotated, verify_operator_key_matches, verify_user_data_scrubbed,
+    wait_provider_ready,
 };
 use crate::vultr_lifecycle_service::{
-    CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
+    ApplyAction, CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
     apply_machine_with_firewall_profiles, authorize_vultr_destroy,
     destroy_machine_with_firewall_profiles, inventory_desired_state_with_firewall_profiles,
     plan_desired_state_with_firewall_profiles,
@@ -324,21 +325,36 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    let scrub_changed = scrub_user_data(
-        &mut operational_provider,
-        &report.provider_id,
-        30,
-        std::time::Duration::from_secs(2),
-    )
-    .await?;
-
-    let rotated = ensure_host_certificate_rotated(
-        &ready.main_ip,
-        &machine.id,
-        &operator_private_key_path,
-        &canonical_public_key,
-        2,
-    )?;
+    let (scrub_changed, rotated) = match report.action {
+        ApplyAction::Created => {
+            let scrub_changed = scrub_user_data(
+                &mut operational_provider,
+                &report.provider_id,
+                30,
+                std::time::Duration::from_secs(2),
+            )
+            .await?;
+            let rotated = ensure_host_certificate_rotated(
+                &ready.main_ip,
+                &machine.id,
+                &operator_private_key_path,
+                &canonical_public_key,
+                2,
+            )?;
+            (scrub_changed, rotated)
+        }
+        ApplyAction::Noop => {
+            verify_user_data_scrubbed(&mut operational_provider, &report.provider_id).await?;
+            verify_host_certificate_rotated(
+                &ready.main_ip,
+                &machine.id,
+                &operator_private_key_path,
+                &canonical_public_key,
+                2,
+            )?;
+            (false, false)
+        }
+    };
 
     print_json_value(serde_json::json!({
         "action": report.action.as_str(),
