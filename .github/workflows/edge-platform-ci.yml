@@ -314,7 +314,7 @@ jobs:
           for planner in [application_command, dns_command, mesh_command, vpc_command_authority, vultr_command_authority]:
               assert "plan_authority" in planner
               assert "authorize_plan(" in planner
-          assert '".destroy_digest // empty' in Path(".github/workflows/vultr-lifecycle.yml").read_text()
+          assert ".destroy_digest // empty" in Path(".github/workflows/vultr-lifecycle.yml").read_text()
           for process_root in [controller_main, console_main, agent_main]:
               assert "env::args()" not in process_root
               assert "_ARG_INDEX" not in process_root
