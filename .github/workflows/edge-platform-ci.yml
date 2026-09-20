@@ -73,6 +73,10 @@ jobs:
             exit 1
           fi
 
+      - name: Validate control-plane workflow topology
+        shell: bash
+        run: python3 edge-platform/scripts/test_control_plane_workflow_topology.py
+
       - name: Validate VM stack
         shell: bash
         env:
