@@ -100,8 +100,12 @@ def main() -> None:
     )
 
     require(
-        ".guest_transition.boot_id_changed == true" in application,
-        "VPC attachment acceptance must require a proven guest boot transition",
+        ".guest_transition.network_ready == true" in application,
+        "VPC attachment acceptance must require exact guest VPC network readiness",
+    )
+    require(
+        ".guest_transition.boot_id_changed == true" not in application,
+        "VPC attachment success must not depend on undocumented provider reboot behavior",
     )
     require(
         "acceptance-vpc-reboot" not in application,
