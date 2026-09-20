@@ -534,7 +534,15 @@ impl AccessAuthorityMode {
 
 fn load_access_authority_profiles(
     desired: &DesiredState,
-) -> Result<(FirewallProfileSet, FirewallProfileSet, serde_json::Value, String), String> {
+) -> Result<
+    (
+        FirewallProfileSet,
+        FirewallProfileSet,
+        serde_json::Value,
+        String,
+    ),
+    String,
+> {
     let path = Path::new(FIREWALL_PROFILES_PATH);
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
@@ -547,10 +555,8 @@ fn load_access_authority_profiles(
         .collect::<Vec<_>>();
     let controller_ipv4 = env::var("EDGE_CONTROLLER_IPV4")
         .map_err(|_| "EDGE_CONTROLLER_IPV4 is required for access authority".to_owned())?;
-    resolved_profiles.resolve_controller_ipv4_for_profiles(
-        &profile_names,
-        Some(controller_ipv4.as_str()),
-    )?;
+    resolved_profiles
+        .resolve_controller_ipv4_for_profiles(&profile_names, Some(controller_ipv4.as_str()))?;
     for profile_name in &profile_names {
         resolved_profiles.profile(profile_name)?;
     }
@@ -646,12 +652,9 @@ async fn build_access_authority(
 
     match mode {
         AccessAuthorityMode::Acquire => {
-            let verified_firewalls = observe_verified_firewall_bindings(
-                support_provider,
-                desired,
-                &resolved_profiles,
-            )
-            .await?;
+            let verified_firewalls =
+                observe_verified_firewall_bindings(support_provider, desired, &resolved_profiles)
+                    .await?;
             let report = plan_desired_state_with_firewall_profiles(
                 lifecycle_provider,
                 desired,
@@ -840,7 +843,6 @@ async fn run_release_access(args: &[String]) -> Result<(), String> {
         "next_plan": next.plan,
     }))
 }
-
 
 async fn run_action_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
@@ -1063,7 +1065,6 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
         "support_cleanup_required": true,
     }))
 }
-
 
 struct SupportCleanupAuthorityContext {
     authorized: AuthorizedPlan<serde_json::Value>,
@@ -1334,7 +1335,6 @@ async fn run_cleanup(args: &[String]) -> Result<(), String> {
         "next_plan": next.authorized.plan,
     }))
 }
-
 
 pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
     let raw = fs::read_to_string(path)
