@@ -1,7 +1,7 @@
 use crate::application_lifecycle_service::{
     ApplicationAuthority, ApplicationObservationView, DesiredMutationMode, execute_desired,
     execute_rollback, observe_application, prepare_application_bundle, rollback_plan_remote,
-    runtime_secret_path, verify_desired, verify_exact_agent_artifact,
+    verify_desired, verify_exact_agent_artifact,
 };
 use crate::vultr_host_bootstrap::{strict_ssh_accept, verify_operator_key_matches};
 use crate::vultr_lifecycle_command::{
@@ -40,10 +40,8 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
     let authority = resolve_application_authority(&desired).await?;
-    let runtime_secret = runtime_secret_path();
-
-    if desired.runtime_env_required && runtime_secret.is_none() {
-        let observation = observe_application(&authority, &desired).await?;
+    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
+    let observation = observe_application(&authority, &desired).await?;
         print_json(json!({
             "class": "BLOCKED",
             "desired_state_digest": desired.digest().map_err(|err| err.to_string())?,
@@ -90,13 +88,7 @@ async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), 
     let desired = load_application_desired(&spec_path)?;
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
-    let runtime_secret = runtime_secret_path();
-    let prepared = prepare_application_bundle(
-        Path::new("."),
-        &desired,
-        &artifact,
-        runtime_secret.as_deref(),
-    )?;
+    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
     let authority = resolve_application_authority(&desired).await?;
     let report = execute_desired(
         &authority,
@@ -115,13 +107,7 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
     let desired = load_application_desired(&spec_path)?;
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
-    let runtime_secret = runtime_secret_path();
-    let prepared = prepare_application_bundle(
-        Path::new("."),
-        &desired,
-        &artifact,
-        runtime_secret.as_deref(),
-    )?;
+    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
     let authority = resolve_application_authority(&desired).await?;
     let (plan, observation) = verify_desired(&authority, &desired, &artifact, &prepared).await?;
     let healthy = plan.class == ApplicationPlanClass::Noop;
