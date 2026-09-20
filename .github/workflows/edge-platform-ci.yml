@@ -123,6 +123,47 @@ jobs:
           fi
           grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/line1-gateway/config.template.json
           grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/line2-proxy/config.template.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("win/vultr-waw/stack")
+          line1 = json.loads((root / "line1-gateway/config.template.json").read_text())
+          providers = line1.get("certificate_providers", [])
+          assert providers == [{
+              "type": "acme",
+              "tag": "edge-acme",
+              "domain": ["${TUNNEL_DOMAIN}"],
+              "data_directory": "/var/lib/sing-box/acme",
+              "email": "${ACME_EMAIL}",
+              "provider": "letsencrypt",
+              "disable_tls_alpn_challenge": True,
+          }]
+          hysteria = [
+              inbound for inbound in line1["inbounds"]
+              if inbound.get("type") == "hysteria2"
+          ]
+          assert len(hysteria) == 2
+          assert all(inbound["tls"].get("certificate_provider") == "edge-acme" for inbound in hysteria)
+          assert all("acme" not in inbound["tls"] for inbound in hysteria)
+
+          line2 = json.loads((root / "line2-proxy/config.template.json").read_text())
+          tls_inbounds = [
+              inbound["tls"] for inbound in line2["inbounds"]
+              if isinstance(inbound.get("tls"), dict)
+          ]
+          assert len(tls_inbounds) == 2
+          assert all(tls["certificate_path"] == "${PROXY_CERT_PATH}" for tls in tls_inbounds)
+          assert all(tls["key_path"] == "${PROXY_KEY_PATH}" for tls in tls_inbounds)
+
+          compose = (root / "docker-compose.yml").read_text()
+          assert "./tunnel-state:/var/lib/sing-box:ro" in compose
+          bootstrap = (root / "bootstrap.sh").read_text()
+          assert "Seed edge-platform/.runtime/cert-cache/acme" not in bootstrap
+          assert "ACME certificate cache is missing" not in bootstrap
+          assert 'install -m 0644 "$acme_cert" certs/proxy.crt' not in bootstrap
+          assert bootstrap.index("start_tunnels") < bootstrap.rindex("start_line2")
+          PY
           if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-edge-gateway|vultr-tunnel-edge' \
             win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
             echo "legacy six-service topology identifiers are forbidden" >&2
@@ -539,6 +580,8 @@ jobs:
           export REALITY_SERVER_NAME="www.microsoft.com"
           export TUNNEL_DOMAIN="edge.example.com"
           export ACME_EMAIL="admin@example.com"
+          export PROXY_CERT_PATH="${config_check}/proxy.crt"
+          export PROXY_KEY_PATH="${config_check}/proxy.key"
           export CONFIG_CHECK_DIR="${config_check}"
           python3 - <<'PY'
           import json
