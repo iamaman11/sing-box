@@ -5,8 +5,9 @@ use crate::vultr_host_bootstrap::{
 };
 use crate::vultr_lifecycle_service::{
     CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
-    apply_machine_with_firewall_profiles, destroy_machine_with_firewall_profiles,
-    inventory_desired_state_with_firewall_profiles, plan_desired_state_with_firewall_profiles,
+    apply_machine_with_firewall_profiles, authorize_vultr_destroy,
+    destroy_machine_with_firewall_profiles, inventory_desired_state_with_firewall_profiles,
+    plan_desired_state_with_firewall_profiles,
 };
 use crate::vultr_support_resources::{
     FirewallProfileSet, ResolvedFirewallProfile, VultrSupportApiProvider,
@@ -716,19 +717,8 @@ async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
     let plan =
         destroy_plan(&desired, machine, &inventory, &args[2]).map_err(|err| err.to_string())?;
-    let desired_material = serde_json::json!({
-        "desired": &desired,
-        "machine_id": &args[1],
-        "source_revision": &args[2],
-    });
-    let authorized = authorize_plan(
-        "vultr_destroy",
-        &desired_material,
-        &inventory,
-        plan.clone(),
-        PlanDisposition::Mutate,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized =
+        authorize_vultr_destroy(&desired, &args[1], &args[2], &inventory, plan.clone())?;
     let mut value = serde_json::to_value(&plan)
         .map_err(|err| format!("failed to serialize destroy plan: {err}"))?;
     let object = value
