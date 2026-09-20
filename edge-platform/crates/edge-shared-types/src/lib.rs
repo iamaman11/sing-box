@@ -588,7 +588,12 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v1_without_controller_hash() {
         let mut release = valid_release();
         release.schema_version = 1;
-        release.vm_runtime.as_mut().unwrap().edge_controller_sha256.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_controller_sha256
+            .clear();
         let bytes = encode_release_set(&release).unwrap();
         assert_eq!(decode_release_set(&bytes).unwrap(), release);
     }
@@ -603,7 +608,12 @@ mod release_set_tests {
     #[test]
     fn release_set_rejects_missing_v2_controller_hash() {
         let mut release = valid_release();
-        release.vm_runtime.as_mut().unwrap().edge_controller_sha256.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_controller_sha256
+            .clear();
         assert!(validate_release_set(&release).is_err());
     }
 
