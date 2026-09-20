@@ -698,7 +698,7 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
                 byte.is_ascii_alphanumeric()
                     || matches!(
                         byte,
-                        b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
+                        b'.' | b'_' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
                     )
             })
         {
