@@ -19,6 +19,19 @@
     "final": "upstream-cloudflare",
     "strategy": "prefer_ipv4"
   },
+  "certificate_providers": [
+    {
+      "type": "acme",
+      "tag": "edge-acme",
+      "domain": [
+        "${TUNNEL_DOMAIN}"
+      ],
+      "data_directory": "/var/lib/sing-box/acme",
+      "email": "${ACME_EMAIL}",
+      "provider": "letsencrypt",
+      "disable_tls_alpn_challenge": true
+    }
+  ],
   "inbounds": [
     {
       "type": "vless",
@@ -63,15 +76,7 @@
         "alpn": [
           "h3"
         ],
-        "acme": {
-          "domain": [
-            "${TUNNEL_DOMAIN}"
-          ],
-          "email": "${ACME_EMAIL}",
-          "provider": "letsencrypt",
-          "data_directory": "/var/lib/sing-box/acme",
-          "disable_tls_alpn_challenge": true
-        }
+        "certificate_provider": "edge-acme"
       },
       "ignore_client_bandwidth": true,
       "masquerade": "https://www.bing.com"
@@ -119,15 +124,7 @@
         "alpn": [
           "h3"
         ],
-        "acme": {
-          "domain": [
-            "${TUNNEL_DOMAIN}"
-          ],
-          "email": "${ACME_EMAIL}",
-          "provider": "letsencrypt",
-          "data_directory": "/var/lib/sing-box/acme",
-          "disable_tls_alpn_challenge": true
-        }
+        "certificate_provider": "edge-acme"
       },
       "ignore_client_bandwidth": true,
       "masquerade": "https://www.bing.com"
