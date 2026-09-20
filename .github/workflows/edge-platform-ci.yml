@@ -124,7 +124,7 @@ jobs:
           grep -Fq 'runtime-apply <mesh-spec-path> <application-spec-path>' edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs
           grep -Fq 'runtime-cleanup <application-spec-path>' edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs
           grep -Fq '../mesh-state:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml
-          if grep -Fq './mesh-state:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml; then
+          if grep -Fq -- '- ./mesh-state:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml; then
             echo "Mesh runtime state must not live inside release-swapped application stack" >&2
             exit 1
           fi
