@@ -2034,7 +2034,11 @@ mod tests {
 
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join(".env.runtime"), "TUNNEL_DOMAIN=\nACME_EMAIL=\n").unwrap();
+        fs::write(
+            root.join(".env.runtime"),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
 
         let verification = verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &state);
         assert!(verification.success);
