@@ -1,9 +1,8 @@
 use crate::cloudflare_dns_lifecycle_service::{
-    CloudflareDnsApiProvider, DnsExecutionPolicy, apply_dns_once, cleanup_dns_once, observe_dns,
-    plan_dns_apply, plan_dns_cleanup,
+    CloudflareDnsApiProvider, DnsExecutionPolicy, apply_dns_once, authorize_dns_apply,
+    authorize_dns_cleanup, cleanup_dns_once, observe_dns, plan_dns_apply, plan_dns_cleanup,
 };
-use edge_controller_core::cloudflare_dns_lifecycle::{ApplyAction, CleanupAction, DesiredDnsState};
-use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
+use edge_controller_core::cloudflare_dns_lifecycle::DesiredDnsState;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -43,23 +42,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
     let (observed, plan) = plan_dns_apply(&mut provider, &desired, &args[1]).await?;
-    let disposition = if matches!(plan.action, ApplyAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let desired_material = serde_json::json!({
-        "desired": &desired,
-        "target_ipv4": &args[1],
-    });
-    let authorized = authorize_plan(
-        "cloudflare_dns_apply",
-        &desired_material,
-        &observed,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_dns_apply(&desired, &args[1], &observed, plan.clone())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
@@ -70,9 +53,10 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Err(
-            "usage: edge-controller cloudflare-dns apply <spec-path> <target-ipv4>".to_owned(),
+            "usage: edge-controller cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>"
+                .to_owned(),
         );
     }
     let desired = load_desired(Path::new(&args[0]))?;
@@ -81,6 +65,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &mut provider,
         &desired,
         &args[1],
+        &args[2],
         DnsExecutionPolicy::default(),
     )
     .await?;
@@ -98,19 +83,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
     let (observed, plan) = plan_dns_cleanup(&mut provider, &desired).await?;
-    let disposition = if matches!(plan.action, CleanupAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let authorized = authorize_plan(
-        "cloudflare_dns_cleanup",
-        &desired,
-        &observed,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_dns_cleanup(&desired, &observed, plan.clone())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
@@ -121,9 +94,9 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Err(
-            "usage: edge-controller cloudflare-dns cleanup-apply <spec-path> <destructive-digest>"
+            "usage: edge-controller cloudflare-dns cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -133,6 +106,7 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
         &mut provider,
         &desired,
         &args[1],
+        &args[2],
         DnsExecutionPolicy::default(),
     )
     .await?;
@@ -171,9 +145,9 @@ fn usage() -> String {
         "usage:",
         "  edge-controller cloudflare-dns inventory <spec-path>",
         "  edge-controller cloudflare-dns plan <spec-path> <target-ipv4>",
-        "  edge-controller cloudflare-dns apply <spec-path> <target-ipv4>",
+        "  edge-controller cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>",
         "  edge-controller cloudflare-dns cleanup-plan <spec-path>",
-        "  edge-controller cloudflare-dns cleanup-apply <spec-path> <destructive-digest>",
+        "  edge-controller cloudflare-dns cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
     ]
     .join("\n")
 }
