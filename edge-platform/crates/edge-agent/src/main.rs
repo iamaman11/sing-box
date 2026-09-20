@@ -950,17 +950,21 @@ fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
         ));
     }
 
-    let certs_dir = stack_dir.join("certs");
-    let missing_certs = ["proxy.crt", "proxy.key"]
-        .iter()
-        .filter(|name| !certs_dir.join(name).is_file())
-        .map(|name| (*name).to_owned())
-        .collect::<Vec<_>>();
-    if !missing_certs.is_empty() {
-        state.degraded_reasons.push(format!(
-            "bundle artifact missing: certs/{}",
-            missing_certs.join(", certs/")
-        ));
+    match expected_proxy_certificate_paths(stack_dir) {
+        Ok(paths) => {
+            let missing = paths
+                .iter()
+                .filter(|path| !path.is_file())
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                state.degraded_reasons.push(format!(
+                    "bundle certificate artifact missing: {}",
+                    missing.join(", ")
+                ));
+            }
+        }
+        Err(reason) => state.degraded_reasons.push(reason),
     }
 
     if let Some(summary_path) = stack_dir
@@ -1267,6 +1271,47 @@ fn tunnel_runtime_enabled(stack_dir: &Path) -> bool {
     })
 }
 
+fn valid_certificate_domain(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
+fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], String> {
+    let runtime = read_runtime_env(&stack_dir.join(".env.runtime"))
+        .ok_or_else(|| "runtime environment is unavailable for certificate observation".to_owned())?;
+    if env_flag_present(&runtime, "TUNNEL_DOMAIN") {
+        let domain = runtime
+            .get("TUNNEL_DOMAIN")
+            .map(String::as_str)
+            .unwrap_or_default();
+        if !valid_certificate_domain(domain) {
+            return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
+        }
+        let owner = stack_dir
+            .join("tunnel-state")
+            .join("acme")
+            .join("certificates")
+            .join("acme-v02.api.letsencrypt.org-directory")
+            .join(domain);
+        return Ok([
+            owner.join(format!("{domain}.crt")),
+            owner.join(format!("{domain}.key")),
+        ]);
+    }
+
+    let certs = stack_dir.join("certs");
+    Ok([certs.join("proxy.crt"), certs.join("proxy.key")])
+}
+
 fn enabled_application_profiles(stack_dir: &Path) -> BTreeSet<String> {
     let mut profiles = BTreeSet::new();
     if tunnel_runtime_enabled(stack_dir) {
@@ -1536,6 +1581,63 @@ mod tests {
                 .unwrap()
                 .render_env(),
             store
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn certificate_observation_uses_owner_state_for_tunnel_runtime() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let owner = stack
+            .join("tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+            .join("edge.example.com");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(&owner).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "certificate").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "private-key").unwrap();
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+
+        assert!(state.degraded_reasons.is_empty());
+        assert!(!stack.join("certs/proxy.crt").exists());
+        assert!(!stack.join("certs/proxy.key").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn certificate_observation_rejects_unsafe_tunnel_domain() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=../escape\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+
+        assert!(
+            state
+                .degraded_reasons
+                .iter()
+                .any(|reason| reason.contains("TUNNEL_DOMAIN is invalid"))
         );
 
         fs::remove_dir_all(root).unwrap();
