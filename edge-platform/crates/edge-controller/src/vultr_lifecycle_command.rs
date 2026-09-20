@@ -1,6 +1,7 @@
 use crate::vultr_host_bootstrap::{
-    HostSubstrateVersions, InstanceAction, VultrOperationalApiProvider, apply_instance_action,
-    ensure_host_certificate_rotated, prepare_strict_bootstrap, scrub_user_data, strict_ssh_accept,
+    HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
+    apply_instance_action, ensure_host_certificate_rotated, prepare_strict_bootstrap,
+    scrub_user_data, strict_ssh_accept,
     verify_host_certificate_rotated, verify_operator_key_matches, verify_user_data_scrubbed,
     wait_provider_ready,
 };
@@ -844,6 +845,111 @@ async fn run_release_access(args: &[String]) -> Result<(), String> {
     }))
 }
 
+fn instance_action_disposition(
+    action: InstanceAction,
+    observed: &VultrInstance,
+) -> (PlanDisposition, &'static str) {
+    match action {
+        InstanceAction::Start => match observed.power_status.as_str() {
+            "running" => (PlanDisposition::Noop, "NOOP"),
+            "stopped" => (PlanDisposition::Mutate, "START"),
+            _ => (PlanDisposition::Blocked, "BLOCKED"),
+        },
+        InstanceAction::Halt => match observed.power_status.as_str() {
+            "stopped" => (PlanDisposition::Noop, "NOOP"),
+            "running" => (PlanDisposition::Mutate, "HALT"),
+            _ => (PlanDisposition::Blocked, "BLOCKED"),
+        },
+        InstanceAction::Reboot => {
+            if observed.power_status == "running"
+                && observed.status == "active"
+                && observed.server_status == "ok"
+            {
+                (PlanDisposition::Mutate, "REBOOT")
+            } else {
+                (PlanDisposition::Blocked, "BLOCKED")
+            }
+        }
+    }
+}
+
+async fn build_instance_action_authority(
+    desired: &DesiredState,
+    machine_id: &str,
+    action: InstanceAction,
+    lifecycle_provider: &mut VultrApiProvider,
+    support_provider: &mut VultrSupportApiProvider,
+    operational_provider: &mut VultrOperationalApiProvider,
+) -> Result<(AuthorizedPlan<serde_json::Value>, VultrInstance), String> {
+    let profiles = load_firewall_profiles(desired)?;
+    let verified_firewalls =
+        verified_firewall_bindings(support_provider, desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        lifecycle_provider,
+        desired,
+        Some(machine_id),
+        &verified_firewalls,
+    )
+    .await?;
+    let target = report
+        .plans
+        .first()
+        .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
+    if target.class != PlanClass::Noop {
+        return Err(format!(
+            "instance action requires exact NOOP provider identity; machine {} is {:?}: {}",
+            machine_id,
+            target.class,
+            target.reasons.join("; ")
+        ));
+    }
+    let provider_id = target
+        .provider_id
+        .as_deref()
+        .ok_or_else(|| "NOOP plan is missing provider id".to_owned())?;
+    let operational = operational_provider
+        .get_instance(provider_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    if operational.id != provider_id {
+        return Err(format!(
+            "instance action observation returned unexpected provider id {} for {}",
+            operational.id, provider_id
+        ));
+    }
+
+    let (disposition, planned_action) = instance_action_disposition(action, &operational);
+    let desired_material = serde_json::json!({
+        "desired": desired,
+        "machine_id": machine_id,
+        "requested_action": action.as_str(),
+    });
+    let observed_material = serde_json::json!({
+        "lifecycle_inventory": report.inventory,
+        "operational": {
+            "provider_id": operational.id,
+            "power_status": operational.power_status,
+            "status": operational.status,
+            "server_status": operational.server_status,
+        }
+    });
+    let action_plan = serde_json::json!({
+        "machine_id": machine_id,
+        "provider_id": provider_id,
+        "requested_action": action.as_str(),
+        "action": planned_action,
+    });
+    let authorized = authorize_plan(
+        "vultr_instance_action",
+        &desired_material,
+        &observed_material,
+        action_plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok((authorized, operational))
+}
+
 async fn run_action_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
@@ -853,56 +959,27 @@ async fn run_action_plan(args: &[String]) -> Result<(), String> {
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let action = InstanceAction::parse(&args[2])?;
-    let profiles = load_firewall_profiles(&desired)?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
-    let verified_firewalls =
-        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
-    let report = plan_desired_state_with_firewall_profiles(
-        &mut lifecycle_provider,
+    let mut operational_provider = operational_provider_from_env()?;
+    let (authorized, operational) = build_instance_action_authority(
         &desired,
-        Some(&args[1]),
-        &verified_firewalls,
+        &args[1],
+        action,
+        &mut lifecycle_provider,
+        &mut support_provider,
+        &mut operational_provider,
     )
     .await?;
-    let target = report
-        .plans
-        .first()
-        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
-    if target.class != PlanClass::Noop {
-        return Err(format!(
-            "instance action requires exact NOOP provider identity; machine {} is {:?}: {}",
-            args[1],
-            target.class,
-            target.reasons.join("; ")
-        ));
-    }
-    let provider_id = target
-        .provider_id
-        .as_deref()
-        .ok_or_else(|| "NOOP plan is missing provider id".to_owned())?;
-    let desired_material = serde_json::json!({
-        "desired": &desired,
-        "machine_id": &args[1],
-        "action": action.as_str(),
-    });
-    let action_plan = serde_json::json!({
-        "machine_id": &args[1],
-        "provider_id": provider_id,
-        "action": action.as_str(),
-    });
-    let authorized = authorize_plan(
-        "vultr_instance_action",
-        &desired_material,
-        &report.inventory,
-        action_plan.clone(),
-        PlanDisposition::Mutate,
-    )
-    .map_err(|err| err.to_string())?;
     print_json_value(serde_json::json!({
-        "plan": action_plan,
+        "plan": authorized.plan,
         "plan_authority": authorized.authority,
         "plan_disposition": authorized.disposition,
+        "observation": {
+            "power_status": operational.power_status,
+            "status": operational.status,
+            "server_status": operational.server_status,
+        },
         "mutations_performed": 0,
     }))
 }
@@ -916,70 +993,84 @@ async fn run_action(args: &[String]) -> Result<(), String> {
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let action = InstanceAction::parse(&args[2])?;
-    let profiles = load_firewall_profiles(&desired)?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
-    let verified_firewalls =
-        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
-    let plan = plan_desired_state_with_firewall_profiles(
-        &mut lifecycle_provider,
+    let mut operational_provider = operational_provider_from_env()?;
+    let (authorized, operational) = build_instance_action_authority(
         &desired,
-        Some(&args[1]),
-        &verified_firewalls,
+        &args[1],
+        action,
+        &mut lifecycle_provider,
+        &mut support_provider,
+        &mut operational_provider,
     )
     .await?;
-    let target = plan
-        .plans
-        .first()
-        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
-    if target.class != PlanClass::Noop {
-        return Err(format!(
-            "instance action requires exact NOOP provider identity; machine {} is {:?}: {}",
-            args[1],
-            target.class,
-            target.reasons.join("; ")
-        ));
-    }
-    let provider_id = target
-        .provider_id
-        .as_deref()
-        .ok_or_else(|| "NOOP plan is missing provider id".to_owned())?;
-    let desired_material = serde_json::json!({
-        "desired": &desired,
-        "machine_id": &args[1],
-        "action": action.as_str(),
-    });
-    let action_plan = serde_json::json!({
-        "machine_id": &args[1],
-        "provider_id": provider_id,
-        "action": action.as_str(),
-    });
-    let authorized = authorize_plan(
-        "vultr_instance_action",
-        &desired_material,
-        &plan.inventory,
-        action_plan,
-        PlanDisposition::Mutate,
-    )
-    .map_err(|err| err.to_string())?;
     verify_exact_authority(&args[3], &authorized.authority).map_err(|err| err.to_string())?;
-    let mut operational_provider = operational_provider_from_env()?;
+
+    match authorized.disposition {
+        PlanDisposition::Noop => {
+            return print_json_value(serde_json::json!({
+                "machine_id": args[1],
+                "provider_id": operational.id,
+                "action": "NOOP",
+                "power_status": operational.power_status,
+                "status": operational.status,
+                "server_status": operational.server_status,
+                "mutations_performed": 0,
+            }));
+        }
+        PlanDisposition::Blocked => {
+            return Err(format!(
+                "instance {} action {} is blocked by current operational state: power_status={} status={} server_status={}",
+                args[1],
+                action.as_str(),
+                operational.power_status,
+                operational.status,
+                operational.server_status
+            ));
+        }
+        PlanDisposition::Mutate => {}
+    }
+
     let observed = apply_instance_action(
         &mut operational_provider,
-        provider_id,
+        &operational.id,
         action,
         60,
         std::time::Duration::from_secs(2),
     )
     .await?;
 
+    let next_plan = if matches!(action, InstanceAction::Start | InstanceAction::Halt) {
+        let (next, _) = build_instance_action_authority(
+            &desired,
+            &args[1],
+            action,
+            &mut lifecycle_provider,
+            &mut support_provider,
+            &mut operational_provider,
+        )
+        .await?;
+        if next.disposition != PlanDisposition::Noop {
+            return Err(format!(
+                "instance action {} completed but did not converge to NOOP",
+                action.as_str()
+            ));
+        }
+        Some(next.plan)
+    } else {
+        None
+    };
+
     print_json_value(serde_json::json!({
         "machine_id": args[1],
-        "provider_id": provider_id,
+        "provider_id": operational.id,
         "action": action.as_str(),
         "power_status": observed.power_status,
         "status": observed.status,
         "server_status": observed.server_status,
+        "next_plan": next_plan,
+        "mutations_performed": 1,
     }))
 }
 
@@ -1628,6 +1719,57 @@ mod tests {
         assert_eq!(
             access_reconcile_class(&create),
             AccessReconcileClass::Blocked
+        );
+    }
+
+    fn operational_instance(power_status: &str, status: &str, server_status: &str) -> VultrInstance {
+        VultrInstance {
+            id: "instance-1".to_owned(),
+            label: "edge-1".to_owned(),
+            region: "waw".to_owned(),
+            plan: "vc2-1c-1gb".to_owned(),
+            status: status.to_owned(),
+            server_status: server_status.to_owned(),
+            power_status: power_status.to_owned(),
+            main_ip: "203.0.113.10".to_owned(),
+            v6_main_ip: String::new(),
+            firewall_group_id: "fw-1".to_owned(),
+            date_created: "2026-09-20T00:00:00Z".to_owned(),
+            tags: Vec::new(),
+            os_id: 2625,
+            snapshot_id: None,
+            enable_ipv6: false,
+        }
+    }
+
+    #[test]
+    fn instance_action_disposition_uses_operational_state() {
+        let running = operational_instance("running", "active", "ok");
+        assert_eq!(
+            instance_action_disposition(InstanceAction::Start, &running),
+            (PlanDisposition::Noop, "NOOP")
+        );
+        assert_eq!(
+            instance_action_disposition(InstanceAction::Halt, &running),
+            (PlanDisposition::Mutate, "HALT")
+        );
+        assert_eq!(
+            instance_action_disposition(InstanceAction::Reboot, &running),
+            (PlanDisposition::Mutate, "REBOOT")
+        );
+
+        let stopped = operational_instance("stopped", "active", "ok");
+        assert_eq!(
+            instance_action_disposition(InstanceAction::Start, &stopped),
+            (PlanDisposition::Mutate, "START")
+        );
+        assert_eq!(
+            instance_action_disposition(InstanceAction::Halt, &stopped),
+            (PlanDisposition::Noop, "NOOP")
+        );
+        assert_eq!(
+            instance_action_disposition(InstanceAction::Reboot, &stopped),
+            (PlanDisposition::Blocked, "BLOCKED")
         );
     }
 
