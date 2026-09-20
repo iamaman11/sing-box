@@ -47,9 +47,6 @@ prepare_proxy_certificate() {
   fi
 }
 
-envsubst < edge-gateway/config.template.json > rendered/edge-gateway.json
-envsubst < edge-gateway/config.direct.template.json > rendered/edge-gateway-direct.json
-
 require_digest_ref() {
   local name="$1"
   local value="${!name:-}"
@@ -74,7 +71,8 @@ start_base() {
   require_digest_ref EDGE_GATEWAY_IMAGE
   require_digest_ref EDGE_WARP_EGRESS_IMAGE
   prepare_proxy_certificate
-  compose_up warp-egress edge-gateway edge-gateway-direct
+  envsubst < line2-proxy/config.template.json > rendered/line2-proxy.json
+  compose_up warp-egress line2-proxy
 }
 
 start_mesh() {
@@ -117,23 +115,21 @@ start_tunnels() {
     exit 1
   fi
 
-  envsubst < tunnel-edge/config.template.json > rendered/tunnel-edge.json
-  envsubst < tunnel-edge/config.warp.template.json > rendered/tunnel-edge-warp.json
-  compose_up --profile tunnel tunnel-edge
+  envsubst < line1-gateway/config.template.json > rendered/line1-gateway.json
+  compose_up --profile tunnel line1-gateway
   local tunnel_ready=0
   for _ in $(seq 1 60); do
-    if docker compose --profile tunnel ps --status running --services | grep -Fxq "tunnel-edge"; then
+    if docker compose --profile tunnel ps --status running --services | grep -Fxq "line1-gateway"; then
       tunnel_ready=1
       break
     fi
     sleep 2
   done
   if [[ "$tunnel_ready" != "1" ]]; then
-    docker compose --profile tunnel logs --tail=80 tunnel-edge >&2 || true
-    echo "tunnel-edge did not reach running state within 120s" >&2
+    docker compose --profile tunnel logs --tail=80 line1-gateway >&2 || true
+    echo "line1-gateway did not reach running state within 120s" >&2
     exit 1
   fi
-  compose_up --profile tunnel tunnel-edge-warp
 }
 
 case "$MODE" in

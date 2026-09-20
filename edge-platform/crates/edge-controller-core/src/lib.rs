@@ -158,7 +158,8 @@ const REQUIRED_REPO_FILES: &[&str] = &[
     "edge-platform/FINALIZATION-PLAN.md",
     "win/vultr-waw/cloud-init.yaml",
     "win/vultr-waw/stack/docker-compose.yml",
-    "win/vultr-waw/stack/tunnel-edge/config.template.json",
+    "win/vultr-waw/stack/line1-gateway/config.template.json",
+    "win/vultr-waw/stack/line2-proxy/config.template.json",
     "win/windows/edge-dns-clean-vultr-dual.json",
 ];
 
@@ -782,7 +783,11 @@ mod tests {
         );
         create_file(&repo_root.join("win/vultr-waw/cloud-init.yaml"), "");
         create_file(
-            &repo_root.join("win/vultr-waw/stack/tunnel-edge/config.template.json"),
+            &repo_root.join("win/vultr-waw/stack/line1-gateway/config.template.json"),
+            "",
+        );
+        create_file(
+            &repo_root.join("win/vultr-waw/stack/line2-proxy/config.template.json"),
             "",
         );
         create_file(&repo_root.join("edge-platform/Cargo.toml"), "");

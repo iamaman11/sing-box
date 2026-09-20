@@ -65,6 +65,52 @@
           "http/1.1"
         ]
       }
+    },
+    {
+      "type": "http",
+      "tag": "http-proxy-direct-auth",
+      "listen": "::",
+      "listen_port": 4128,
+      "users": [
+        {
+          "username": "${PROXY_USERNAME}",
+          "password": "${PROXY_PASSWORD}"
+        }
+      ]
+    },
+    {
+      "type": "socks",
+      "tag": "socks-proxy-direct-auth",
+      "listen": "::",
+      "listen_port": 4080,
+      "users": [
+        {
+          "username": "${PROXY_USERNAME}",
+          "password": "${PROXY_PASSWORD}"
+        }
+      ]
+    },
+    {
+      "type": "http",
+      "tag": "https-proxy-direct-auth",
+      "listen": "::",
+      "listen_port": 4443,
+      "users": [
+        {
+          "username": "${PROXY_USERNAME}",
+          "password": "${PROXY_PASSWORD}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/certs/proxy.crt",
+        "key_path": "/certs/proxy.key",
+        "min_version": "1.2",
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ]
+      }
     }
   ],
   "outbounds": [
@@ -90,9 +136,17 @@
       {
         "ip_is_private": true,
         "outbound": "block"
+      },
+      {
+        "inbound": [
+          "http-proxy-auth",
+          "socks-proxy-auth",
+          "https-proxy-auth"
+        ],
+        "outbound": "warp-local"
       }
     ],
-    "final": "warp-local",
+    "final": "direct",
     "default_domain_resolver": "cloudflare"
   }
 }
