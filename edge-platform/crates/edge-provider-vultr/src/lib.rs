@@ -190,8 +190,16 @@ pub struct VultrVpc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VultrVpcAttachment {
     pub id: String,
+    pub mac_address: String,
     pub private_ipv4: String,
     pub subscription_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrInstanceVpc {
+    pub id: String,
+    pub mac_address: String,
+    pub private_ipv4: String,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +337,48 @@ pub async fn list_vpc_attachments_typed(
     }
 
     Err(pagination_limit_error("list Vultr VPC attachments"))
+}
+
+pub async fn list_instance_vpcs_typed(
+    api_key: &str,
+    instance_id: &str,
+) -> Result<Vec<VultrInstanceVpc>, VultrError> {
+    if instance_id.trim().is_empty() {
+        return Err(configuration_error(
+            "list Vultr instance VPCs",
+            "instance id is required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListInstanceVpcsEnvelope = observation_json("list Vultr instance VPCs", || {
+            let request = client
+                .get(format!("{API_ROOT}/instances/{instance_id}/vpcs"))
+                .query(&[("per_page", "500")]);
+            match current_cursor.as_deref() {
+                Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                _ => request,
+            }
+        })
+        .await?;
+        result.extend(page.vpcs.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr instance VPCs",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr instance VPCs"))
 }
 
 pub async fn attach_vpc_to_instance_typed(
@@ -1367,6 +1417,32 @@ struct VultrVpcAttachmentPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct ListInstanceVpcsEnvelope {
+    vpcs: Vec<VultrInstanceVpcPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrInstanceVpcPayload {
+    id: String,
+    #[serde(default)]
+    mac_address: String,
+    #[serde(default, rename = "ip_address")]
+    private_ipv4: String,
+}
+
+impl From<VultrInstanceVpcPayload> for VultrInstanceVpc {
+    fn from(value: VultrInstanceVpcPayload) -> Self {
+        Self {
+            id: value.id,
+            mac_address: value.mac_address,
+            private_ipv4: value.private_ipv4,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct VultrVpcAttachmentIpPayload {
     #[serde(default)]
     v4: String,
@@ -1383,6 +1459,7 @@ impl From<VultrVpcAttachmentPayload> for VultrVpcAttachment {
     fn from(value: VultrVpcAttachmentPayload) -> Self {
         Self {
             id: value.id,
+            mac_address: value.mac_address,
             private_ipv4: value.ip.v4,
             subscription_id: value
                 .linked_subscription
@@ -1804,6 +1881,7 @@ mod tests {
         .unwrap();
         let attachment: VultrVpcAttachment =
             attachments.attachments.into_iter().next().unwrap().into();
+        assert_eq!(attachment.mac_address, "00:11:22:33:44:55");
         assert_eq!(attachment.private_ipv4, "10.0.4.2");
         assert_eq!(attachment.subscription_id.as_deref(), Some("instance-1"));
     }
@@ -1823,7 +1901,24 @@ mod tests {
         let attachment: VultrVpcAttachment =
             attachments.attachments.into_iter().next().unwrap().into();
         assert_eq!(attachment.id, "attachment-pending");
+        assert_eq!(attachment.mac_address, "00:11:22:33:44:66");
         assert_eq!(attachment.subscription_id, None);
+    }
+
+    #[test]
+    fn decodes_instance_side_vpc_observation() {
+        let payload: ListInstanceVpcsEnvelope = serde_json::from_value(serde_json::json!({
+            "vpcs": [{
+                "id": "vpc-1",
+                "mac_address": "00:11:22:33:44:66",
+                "ip_address": "10.0.4.2"
+            }]
+        }))
+        .unwrap();
+        let vpc: VultrInstanceVpc = payload.vpcs.into_iter().next().unwrap().into();
+        assert_eq!(vpc.id, "vpc-1");
+        assert_eq!(vpc.mac_address, "00:11:22:33:44:66");
+        assert_eq!(vpc.private_ipv4, "10.0.4.2");
     }
 
     #[test]
