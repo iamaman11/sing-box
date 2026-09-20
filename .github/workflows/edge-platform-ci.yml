@@ -577,6 +577,16 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
 
+          $localBuild = git grep -n -E '(cargo|rustc)(\.exe)?[[:space:]]+(build|install|run)' -- edge-platform/scripts win/windows
+          if ($LASTEXITCODE -eq 0) { throw ("Windows operational/install scripts must consume GitHub-built artifacts, never build locally:" + [Environment]::NewLine + $localBuild) }
+          if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+
+          $runtimeBoundary = git grep -n -E 'Get-DnsClientServerAddress|Start-Process -FilePath.*sing-box|failed to capture sing-box pid from visible window launch' -- edge-platform/crates/edge-local-runtime
+          if ($LASTEXITCODE -eq 0) { throw ("Typed Windows runtime boundary regressed to PowerShell/text observation:" + [Environment]::NewLine + $runtimeBoundary) }
+          if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+
       - name: Build exact Windows control binaries
         working-directory: edge-platform
         shell: pwsh
