@@ -36,6 +36,8 @@ const EDGE_GATEWAY_IMAGE_KEY: &str = "EDGE_GATEWAY_IMAGE";
 const EDGE_WARP_EGRESS_IMAGE_KEY: &str = "EDGE_WARP_EGRESS_IMAGE";
 const EDGE_MESH_IMAGE_KEY: &str = "CLOUDFLARE_MESH_IMAGE";
 const WARP_CONTAINER: &str = "vultr-warp-egress";
+const LINE1_CONTAINER: &str = "vultr-line1-gateway";
+const LINE2_CONTAINER: &str = "vultr-line2-proxy";
 const MESH_CONTAINER: &str = "vultr-cloudflare-mesh";
 const CLOUDFLARE_TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 
@@ -1656,7 +1658,7 @@ fn inspect_docker() -> DockerObservation {
 }
 
 fn inspect_datapath_readiness(state: &mut AgentState) -> bool {
-    let direct_ready = probe_direct_egress();
+    let direct_ready = probe_direct_egress(&state.running_containers);
     state.direct_egress_ready = Some(direct_ready);
     if !direct_ready {
         state
@@ -1664,7 +1666,7 @@ fn inspect_datapath_readiness(state: &mut AgentState) -> bool {
             .push("direct egress datapath probe failed".to_owned());
     }
 
-    let warp_ready = probe_warp_egress();
+    let warp_ready = probe_warp_egress(&state.running_containers);
     state.warp_egress_ready = Some(warp_ready);
     if !warp_ready {
         state
@@ -1697,7 +1699,7 @@ fn inspect_datapath_readiness(state: &mut AgentState) -> bool {
 
 fn wait_for_warp_datapath() -> Result<(), String> {
     for _ in 0..45 {
-        if probe_warp_egress() {
+        if probe_warp_service_local() {
             return Ok(());
         }
         sleep(Duration::from_secs(2));
@@ -1705,10 +1707,26 @@ fn wait_for_warp_datapath() -> Result<(), String> {
     Err("WARP egress datapath did not become ready within 90 seconds".to_owned())
 }
 
-fn probe_direct_egress() -> bool {
+fn runtime_probe_consumer(running_containers: &[String]) -> Option<&'static str> {
+    if running_containers.iter().any(|name| name == LINE2_CONTAINER) {
+        return Some(LINE2_CONTAINER);
+    }
+    if running_containers.iter().any(|name| name == LINE1_CONTAINER) {
+        return Some(LINE1_CONTAINER);
+    }
+    None
+}
+
+fn probe_direct_egress(running_containers: &[String]) -> bool {
+    let Some(consumer) = runtime_probe_consumer(running_containers) else {
+        return false;
+    };
     bounded_command_output(
-        "curl",
+        "docker",
         &[
+            "exec",
+            consumer,
+            "curl",
             "-4",
             "--fail",
             "--silent",
@@ -1724,8 +1742,8 @@ fn probe_direct_egress() -> bool {
     .is_some_and(|output| cloudflare_trace_has_warp_mode(&output, "off"))
 }
 
-fn probe_warp_egress() -> bool {
-    let connected = bounded_command_output(
+fn warp_client_connected() -> bool {
+    bounded_command_output(
         "docker",
         &[
             "exec",
@@ -1736,11 +1754,13 @@ fn probe_warp_egress() -> bool {
         ],
         8,
     )
-    .is_some_and(|output| output.lines().any(|line| line.contains("Connected")));
-    if !connected {
+    .is_some_and(|output| output.lines().any(|line| line.contains("Connected")))
+}
+
+fn probe_warp_service_local() -> bool {
+    if !warp_client_connected() {
         return false;
     }
-
     bounded_command_output(
         "docker",
         &[
@@ -1756,7 +1776,40 @@ fn probe_warp_egress() -> bool {
             "--max-time",
             "8",
             "--socks5-hostname",
-            "127.0.0.1:1080",
+            "127.0.0.1:11080",
+            CLOUDFLARE_TRACE_URL,
+        ],
+        12,
+    )
+    .is_some_and(|output| {
+        cloudflare_trace_has_warp_mode(&output, "on")
+            || cloudflare_trace_has_warp_mode(&output, "plus")
+    })
+}
+
+fn probe_warp_egress(running_containers: &[String]) -> bool {
+    if !warp_client_connected() {
+        return false;
+    }
+    let Some(consumer) = runtime_probe_consumer(running_containers) else {
+        return false;
+    };
+    bounded_command_output(
+        "docker",
+        &[
+            "exec",
+            consumer,
+            "curl",
+            "-4",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "3",
+            "--max-time",
+            "8",
+            "--socks5-hostname",
+            "warp-egress:11080",
             CLOUDFLARE_TRACE_URL,
         ],
         12,
@@ -2888,6 +2941,22 @@ mod tests {
         assert_eq!(mode, 0o600);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn datapath_probe_uses_an_enabled_gateway_consumer() {
+        assert_eq!(
+            runtime_probe_consumer(&["vultr-line1-gateway".to_owned()]),
+            Some(LINE1_CONTAINER)
+        );
+        assert_eq!(
+            runtime_probe_consumer(&[
+                "vultr-line1-gateway".to_owned(),
+                "vultr-line2-proxy".to_owned(),
+            ]),
+            Some(LINE2_CONTAINER)
+        );
+        assert_eq!(runtime_probe_consumer(&["vultr-warp-egress".to_owned()]), None);
     }
 
     #[test]
