@@ -14,7 +14,9 @@ use crate::vultr_support_resources::{
     observe_verified_firewall_bindings, release_controller_ipv4_access, resolve_managed_ssh_key,
     validate_machine_catalog,
 };
-use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
+use edge_controller_core::lifecycle::{
+    PlanDisposition, authorize_plan, verify_exact_authority,
+};
 use edge_controller_core::vultr_lifecycle::{
     DesiredState, MANAGED_BY_IDENTITY, MachineSpec, PlanClass, decode_provider_tags, destroy_plan,
 };
@@ -36,6 +38,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         "apply" => run_apply(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
         "release-access" => run_release_access(&args[1..]).await,
+        "action-plan" => run_action_plan(&args[1..]).await,
         "action" => run_action(&args[1..]).await,
         "destroy-plan" => run_destroy_plan(&args[1..]).await,
         "destroy-apply" => run_destroy_apply(&args[1..]).await,
@@ -160,9 +163,10 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle apply <spec-path> <machine-id>".to_owned(),
+            "usage: edge-controller vultr-lifecycle apply <spec-path> <machine-id> <authorized-plan-sha256>"
+                .to_owned(),
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
@@ -189,11 +193,29 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &verified_firewalls,
     )
     .await?;
-    let initial_class = initial
+    let initial_plan = initial
         .plans
         .first()
-        .map(|plan| plan.class)
+        .cloned()
         .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
+    let initial_class = initial_plan.class;
+    let disposition = match initial_class {
+        PlanClass::Noop => PlanDisposition::Noop,
+        PlanClass::Create => PlanDisposition::Mutate,
+        PlanClass::UpdateInPlace
+        | PlanClass::ReplaceRequired
+        | PlanClass::BlockedDrift
+        | PlanClass::BlockedAmbiguous => PlanDisposition::Blocked,
+    };
+    let authorized = authorize_plan(
+        "vultr_machine",
+        &desired,
+        &initial.inventory,
+        initial_plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
+    verify_exact_authority(&args[2], &authorized.authority).map_err(|err| err.to_string())?;
 
     if matches!(
         initial_class,
@@ -531,10 +553,73 @@ async fn run_release_access(args: &[String]) -> Result<(), String> {
     }))
 }
 
-async fn run_action(args: &[String]) -> Result<(), String> {
+async fn run_action_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot>"
+            "usage: edge-controller vultr-lifecycle action-plan <spec-path> <machine-id> <start|halt|reboot>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let action = InstanceAction::parse(&args[2])?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        Some(&args[1]),
+        &verified_firewalls,
+    )
+    .await?;
+    let target = report
+        .plans
+        .first()
+        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
+    if target.class != PlanClass::Noop {
+        return Err(format!(
+            "instance action requires exact NOOP provider identity; machine {} is {:?}: {}",
+            args[1],
+            target.class,
+            target.reasons.join("; ")
+        ));
+    }
+    let provider_id = target
+        .provider_id
+        .as_deref()
+        .ok_or_else(|| "NOOP plan is missing provider id".to_owned())?;
+    let desired_material = serde_json::json!({
+        "desired": &desired,
+        "machine_id": &args[1],
+        "action": action.as_str(),
+    });
+    let action_plan = serde_json::json!({
+        "machine_id": &args[1],
+        "provider_id": provider_id,
+        "action": action.as_str(),
+    });
+    let authorized = authorize_plan(
+        "vultr_instance_action",
+        &desired_material,
+        &report.inventory,
+        action_plan.clone(),
+        PlanDisposition::Mutate,
+    )
+    .map_err(|err| err.to_string())?;
+    print_json_value(serde_json::json!({
+        "plan": action_plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
+        "mutations_performed": 0,
+    }))
+}
+
+async fn run_action(args: &[String]) -> Result<(), String> {
+    if args.len() != 4 {
+        return Err(
+            "usage: edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -568,6 +653,25 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         .provider_id
         .as_deref()
         .ok_or_else(|| "NOOP plan is missing provider id".to_owned())?;
+    let desired_material = serde_json::json!({
+        "desired": &desired,
+        "machine_id": &args[1],
+        "action": action.as_str(),
+    });
+    let action_plan = serde_json::json!({
+        "machine_id": &args[1],
+        "provider_id": provider_id,
+        "action": action.as_str(),
+    });
+    let authorized = authorize_plan(
+        "vultr_instance_action",
+        &desired_material,
+        &plan.inventory,
+        action_plan,
+        PlanDisposition::Mutate,
+    )
+    .map_err(|err| err.to_string())?;
+    verify_exact_authority(&args[3], &authorized.authority).map_err(|err| err.to_string())?;
     let mut operational_provider = operational_provider_from_env()?;
     let observed = apply_instance_action(
         &mut operational_provider,
@@ -646,9 +750,9 @@ async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 4 {
+    if args.len() != 5 {
         return Err(
-            "usage: edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest>"
+            "usage: edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -666,6 +770,7 @@ async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
         &args[1],
         &args[2],
         &args[3],
+        &args[4],
         &policy,
         &verified_firewalls,
     )
@@ -976,12 +1081,13 @@ fn usage() -> String {
         "  edge-controller vultr-lifecycle doctor <spec-path>",
         "  edge-controller vultr-lifecycle inventory <spec-path>",
         "  edge-controller vultr-lifecycle plan <spec-path> [machine-id]",
-        "  edge-controller vultr-lifecycle apply <spec-path> <machine-id>",
+        "  edge-controller vultr-lifecycle apply <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-controller vultr-lifecycle acquire-access <spec-path> <machine-id>",
         "  edge-controller vultr-lifecycle release-access <spec-path> <machine-id>",
-        "  edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot>",
+        "  edge-controller vultr-lifecycle action-plan <spec-path> <machine-id> <start|halt|reboot>",
+        "  edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot> <authorized-plan-sha256>",
         "  edge-controller vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>",
-        "  edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest>",
+        "  edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest> <authorized-plan-sha256>",
         "  edge-controller vultr-lifecycle cleanup <spec-path>",
     ]
     .join("\n")
