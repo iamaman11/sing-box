@@ -669,15 +669,14 @@ fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), Stri
 }
 
 fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
-    let allowed = [
-        "PROXY_USERNAME",
-        "PROXY_CERT_CN",
-        "REALITY_SERVER_NAME",
-        "TUNNEL_DOMAIN",
-        "ACME_EMAIL",
-    ]
-    .into_iter()
-    .collect::<BTreeSet<_>>();
+    let line2 = ["PROXY_USERNAME", "PROXY_CERT_CN"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let line1 = ["REALITY_SERVER_NAME", "TUNNEL_DOMAIN", "ACME_EMAIL"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let full = line1.union(&line2).copied().collect::<BTreeSet<_>>();
+    let allowed = full.clone();
     let mut observed = BTreeSet::new();
     for (index, line) in raw.lines().enumerate() {
         let line = line.trim();
@@ -693,17 +692,29 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
         if !allowed.contains(key) {
             return Err(format!("unsupported runtime policy key: {key}"));
         }
-        if value.is_empty() || value.contains(['\n', '\r']) {
+        if value.is_empty()
+            || value.len() > 253
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
+                    )
+            })
+        {
             return Err(format!(
-                "runtime policy {key} must be a non-empty single-line value"
+                "runtime policy {key} must be a non-empty shell-safe policy value"
             ));
         }
         if !observed.insert(key) {
             return Err(format!("runtime policy key is duplicated: {key}"));
         }
     }
-    if observed.is_empty() {
-        return Err("runtime policy file must be non-empty".to_owned());
+    if observed != line2 && observed != line1 && observed != full {
+        return Err(
+            "runtime policy key set must exactly match base, tunnel, or full application policy"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -1467,6 +1478,23 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_policy_rejects_incomplete_or_shell_unsafe_values() {
+        assert!(validate_runtime_policy_env("PROXY_USERNAME=acceptance\n").is_err());
+        assert!(
+            validate_runtime_policy_env(
+                "PROXY_USERNAME=$(touch/tmp/pwn)\nPROXY_CERT_CN=acceptance.local\n"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_runtime_policy_env(
+                "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
