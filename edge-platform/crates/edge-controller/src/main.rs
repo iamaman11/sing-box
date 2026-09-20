@@ -2427,8 +2427,16 @@ fn enrich_doctor_check(check: &mut DoctorCheck) {
     };
     check.subsystem = diagnostic_subsystem(&check.name) as i32;
     check.evidence = vec![DiagnosticEvidence {
-        code: format!("{}.detail", check.name),
-        summary: check.detail.clone(),
+        code: format!(
+            "{}.{}",
+            check.name,
+            if check.ok { "pass" } else { "fail" }
+        ),
+        summary: if check.ok {
+            "bounded diagnostic check passed".to_owned()
+        } else {
+            "bounded diagnostic check failed".to_owned()
+        },
     }];
 }
 
