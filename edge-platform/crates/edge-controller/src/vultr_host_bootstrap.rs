@@ -1540,8 +1540,7 @@ mod tests {
         );
         assert_eq!(unmarked_remote.detail, "no-stderr");
 
-        let sensitive =
-            bounded_ssh_evidence(b"password=secret\nline-2\nline-3\nline-4\nline-5\n");
+        let sensitive = bounded_ssh_evidence(b"password=secret\nline-2\nline-3\nline-4\nline-5\n");
         assert!(sensitive.contains("[redacted sensitive SSH evidence]"));
         assert!(!sensitive.contains("secret"));
         assert!(!sensitive.contains("line-5"));
