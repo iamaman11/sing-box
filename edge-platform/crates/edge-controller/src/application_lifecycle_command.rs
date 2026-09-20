@@ -58,8 +58,12 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    let prepared =
-        prepare_application_bundle(Path::new("."), &desired, &artifact, runtime_secret.as_deref())?;
+    let prepared = prepare_application_bundle(
+        Path::new("."),
+        &desired,
+        &artifact,
+        runtime_secret.as_deref(),
+    )?;
     let observation = observe_application(&authority, &desired).await?;
     let plan = plan_application(
         &desired,
@@ -87,8 +91,12 @@ async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), 
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
     let runtime_secret = runtime_secret_path();
-    let prepared =
-        prepare_application_bundle(Path::new("."), &desired, &artifact, runtime_secret.as_deref())?;
+    let prepared = prepare_application_bundle(
+        Path::new("."),
+        &desired,
+        &artifact,
+        runtime_secret.as_deref(),
+    )?;
     let authority = resolve_application_authority(&desired).await?;
     let report = execute_desired(
         &authority,
@@ -108,8 +116,12 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
     let runtime_secret = runtime_secret_path();
-    let prepared =
-        prepare_application_bundle(Path::new("."), &desired, &artifact, runtime_secret.as_deref())?;
+    let prepared = prepare_application_bundle(
+        Path::new("."),
+        &desired,
+        &artifact,
+        runtime_secret.as_deref(),
+    )?;
     let authority = resolve_application_authority(&desired).await?;
     let (plan, observation) = verify_desired(&authority, &desired, &artifact, &prepared).await?;
     let healthy = plan.class == ApplicationPlanClass::Noop;
