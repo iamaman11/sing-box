@@ -155,7 +155,13 @@ pub(crate) fn prepare_application_bundle(
     }
     if bundle_root.join(".env.runtime").exists() {
         return Err(
-            "committed application bundle must not contain .env.runtime; runtime secrets are injected separately"
+            "committed application bundle must not contain .env.runtime; the VM derives it from Git-owned policy and VM-owned credentials"
+                .to_owned(),
+        );
+    }
+    if bundle_root.join(".env.runtime.policy").exists() {
+        return Err(
+            "committed application bundle must not contain .env.runtime.policy; runtime policy is derived only from application desired state"
                 .to_owned(),
         );
     }
@@ -1039,6 +1045,24 @@ mod tests {
         let error =
             prepare_application_bundle(&root, &test_desired("stack"), &test_artifact()).unwrap_err();
         assert!(error.contains("must not contain .env.runtime"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn committed_runtime_policy_is_rejected() {
+        let root = unique_temp_file("application-bundle-policy-authority-test");
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(".env.runtime.policy"),
+            "PROXY_USERNAME=second-authority\n",
+        )
+        .unwrap();
+
+        let error =
+            prepare_application_bundle(&root, &test_desired("stack"), &test_artifact()).unwrap_err();
+        assert!(error.contains("runtime policy is derived only from application desired state"));
 
         fs::remove_dir_all(root).unwrap();
     }
