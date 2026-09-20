@@ -79,7 +79,6 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &mut provider,
         &desired,
         &args[1],
-        &args[2],
         MeshExecutionPolicy::default(),
     )
     .await?;
@@ -173,6 +172,7 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
         &mut provider,
         &desired,
         &args[1],
+        &args[2],
         MeshExecutionPolicy::default(),
     )
     .await?;
