@@ -5,14 +5,13 @@ use edge_shared_types::{
 };
 use futures_util::TryStreamExt;
 use rtnetlink::{
-    new_connection,
+    RouteMessageBuilder, new_connection,
     packet_route::{
         AddressFamily,
         address::{AddressAttribute, AddressScope},
         link::{LinkAttribute, LinkFlags},
         route::{RouteAddress, RouteAttribute, RouteHeader, RouteProtocol, RouteScope},
     },
-    RouteMessageBuilder,
 };
 
 pub(crate) async fn observe_ipv4_network() -> Result<Ipv4NetworkObservation, String> {
@@ -71,10 +70,13 @@ pub(crate) async fn observe_ipv4_network() -> Result<Ipv4NetworkObservation, Str
                 _ => None,
             })
             .or_else(|| {
-                message.attributes.iter().find_map(|attribute| match attribute {
-                    AddressAttribute::Address(IpAddr::V4(address)) => Some(*address),
-                    _ => None,
-                })
+                message
+                    .attributes
+                    .iter()
+                    .find_map(|attribute| match attribute {
+                        AddressAttribute::Address(IpAddr::V4(address)) => Some(*address),
+                        _ => None,
+                    })
             });
         let Some(local) = local else {
             continue;
@@ -140,9 +142,9 @@ pub(crate) async fn observe_ipv4_network() -> Result<Ipv4NetworkObservation, Str
 }
 
 fn normalize_observation(mut observation: Ipv4NetworkObservation) -> Ipv4NetworkObservation {
-    observation
-        .links
-        .sort_by(|left, right| (left.interface_index, &left.name).cmp(&(right.interface_index, &right.name)));
+    observation.links.sort_by(|left, right| {
+        (left.interface_index, &left.name).cmp(&(right.interface_index, &right.name))
+    });
     observation.addresses.sort_by(|left, right| {
         (
             left.interface_index,
