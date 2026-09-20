@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use edge_secrets::ApplicationRuntimeSecrets;
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
@@ -24,6 +25,10 @@ const APPLICATION_RELEASE_MARKER: &str = ".application-release.json";
 const PREVIOUS_STACK_DIR: &str = "stack.previous";
 const STAGING_STACK_DIR: &str = "stack.next";
 const ROLLBACK_STACK_DIR: &str = "stack.rollback";
+const RUNTIME_POLICY_FILE: &str = ".env.runtime.policy";
+const RUNTIME_ENV_FILE: &str = ".env.runtime";
+const RUNTIME_SECRET_DIR: &str = "runtime-secrets";
+const RUNTIME_SECRET_FILE: &str = "application-runtime-v1.env";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -478,6 +483,8 @@ fn apply_digest_bound_bundle(
     for file in &request.stack_files {
         write_bundle_file(&staging, file, &mut written_paths)?;
     }
+    materialize_vm_owned_runtime_environment(&staging)?;
+
     let release = ApplicationBundleRelease {
         schema: 1,
         bundle_id,
@@ -627,6 +634,133 @@ fn write_application_release(
         .map_err(|err| format!("failed to encode application release marker: {err}"))?;
     fs::write(stack_dir.join(APPLICATION_RELEASE_MARKER), raw)
         .map_err(|err| format!("failed to write application release marker: {err}"))
+}
+
+fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), String> {
+    let policy_path = stack_dir.join(RUNTIME_POLICY_FILE);
+    if !policy_path.is_file() {
+        return Ok(());
+    }
+
+    let policy = fs::read_to_string(&policy_path).map_err(|err| {
+        format!(
+            "failed to read runtime policy {}: {err}",
+            policy_path.display()
+        )
+    })?;
+    validate_runtime_policy_env(&policy)?;
+
+    let secrets = ensure_vm_runtime_secret_store(stack_dir)?;
+    let mut runtime = policy;
+    if !runtime.ends_with('\n') {
+        runtime.push('\n');
+    }
+    runtime.push_str(&secrets.render_env());
+
+    let runtime_path = stack_dir.join(RUNTIME_ENV_FILE);
+    fs::write(&runtime_path, runtime.as_bytes()).map_err(|err| {
+        format!(
+            "failed to write derived runtime environment {}: {err}",
+            runtime_path.display()
+        )
+    })?;
+    set_bundle_file_permissions(&runtime_path, false, true)?;
+    Ok(())
+}
+
+fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
+    let allowed = [
+        "PROXY_USERNAME",
+        "PROXY_CERT_CN",
+        "REALITY_SERVER_NAME",
+        "TUNNEL_DOMAIN",
+        "ACME_EMAIL",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let mut observed = BTreeSet::new();
+    for (index, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("runtime policy line {} must use KEY=VALUE syntax", index + 1))?;
+        if !allowed.contains(key) {
+            return Err(format!("unsupported runtime policy key: {key}"));
+        }
+        if value.is_empty() || value.contains(['\n', '\r']) {
+            return Err(format!("runtime policy {key} must be a non-empty single-line value"));
+        }
+        if !observed.insert(key) {
+            return Err(format!("runtime policy key is duplicated: {key}"));
+        }
+    }
+    if observed.is_empty() {
+        return Err("runtime policy file must be non-empty".to_owned());
+    }
+    Ok(())
+}
+
+fn ensure_vm_runtime_secret_store(
+    stack_dir: &Path,
+) -> Result<ApplicationRuntimeSecrets, String> {
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    let dir = parent.join(RUNTIME_SECRET_DIR);
+    let path = dir.join(RUNTIME_SECRET_FILE);
+
+    if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read VM runtime secret store {}: {err}", path.display()))?;
+        return ApplicationRuntimeSecrets::parse_env(&raw).map_err(|err| {
+            format!("VM runtime secret store {} is invalid: {err}", path.display())
+        });
+    }
+
+    fs::create_dir_all(&dir)
+        .map_err(|err| format!("failed to create runtime secret directory {}: {err}", dir.display()))?;
+    set_private_directory_permissions(&dir)?;
+
+    let generated = ApplicationRuntimeSecrets::generate();
+    generated.validate()?;
+    let temporary = dir.join(format!("{RUNTIME_SECRET_FILE}.new"));
+    fs::write(&temporary, generated.render_env().as_bytes()).map_err(|err| {
+        format!(
+            "failed to write staged VM runtime secret store {}: {err}",
+            temporary.display()
+        )
+    })?;
+    set_bundle_file_permissions(&temporary, false, true)?;
+    fs::rename(&temporary, &path).map_err(|err| {
+        format!(
+            "failed to atomically publish VM runtime secret store {}: {err}",
+            path.display()
+        )
+    })?;
+
+    let observed = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to re-read VM runtime secret store {}: {err}", path.display()))?;
+    ApplicationRuntimeSecrets::parse_env(&observed).map_err(|err| {
+        format!(
+            "published VM runtime secret store {} failed validation: {err}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(unix)]
+fn set_private_directory_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|err| format!("failed to set {} mode 700: {err}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn validate_lower_hex(label: &str, value: &str, expected_len: usize) -> Result<(), String> {
@@ -1051,7 +1185,8 @@ fn set_bundle_file_permissions(
 fn collect_rendered_artifacts(stack_dir: &Path) -> Vec<FilePresence> {
     let mut required = vec![
         ("docker-compose.yml", FileCategory::RequiredRepoInput),
-        (".env.runtime", FileCategory::RequiredRepoInput),
+        (RUNTIME_POLICY_FILE, FileCategory::RequiredRepoInput),
+        (RUNTIME_ENV_FILE, FileCategory::LocalOnlySensitive),
         ("rendered/line2-proxy.json", FileCategory::RequiredRepoInput),
         ("certs/proxy.crt", FileCategory::RequiredRepoInput),
         ("certs/proxy.key", FileCategory::RequiredRepoInput),
@@ -1311,6 +1446,39 @@ mod tests {
         assert_eq!(
             fs::read_to_string(stack.join("docker-compose.yml")).unwrap(),
             "services: {a: {}}\n"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vm_runtime_secret_store_is_generated_once_and_reused() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
+
+        materialize_vm_owned_runtime_environment(&stack).unwrap();
+        let first = fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap();
+        let store = fs::read_to_string(
+            root.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE),
+        )
+        .unwrap();
+
+        fs::remove_file(stack.join(RUNTIME_ENV_FILE)).unwrap();
+        materialize_vm_owned_runtime_environment(&stack).unwrap();
+        let second = fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.contains("PROXY_USERNAME=acceptance\n"));
+        assert!(first.contains("PROXY_PASSWORD="));
+        assert_eq!(
+            ApplicationRuntimeSecrets::parse_env(&store).unwrap().render_env(),
+            store
         );
 
         fs::remove_dir_all(root).unwrap();
