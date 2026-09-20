@@ -136,7 +136,8 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
         {
             if !matches!(report.performed, AttachmentAction::AttachInstance { .. }) {
                 return Err(
-                    "Vultr VPC attachment authority changed after guest boot observation"\n                        .to_owned(),
+                    "Vultr VPC attachment authority changed after guest boot observation"
+                        .to_owned(),
                 );
             }
             let boot_id_after = wait_for_guest_boot_id_change(
