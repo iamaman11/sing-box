@@ -56,8 +56,8 @@ services:
       - "4443:4443/tcp"
     volumes:
       - ./rendered/line2-proxy.json:/etc/sing-box/config.json:ro
-      - ./certs/proxy.crt:/certs/proxy.crt:ro
-      - ./certs/proxy.key:/certs/proxy.key:ro
+      - ./certs:/certs:ro
+      - ../certificate-state:/var/lib/sing-box:ro
     networks:
       - edge_net
 
@@ -81,7 +81,7 @@ services:
       - "9444:9444/udp"
     volumes:
       - ./rendered/line1-gateway.json:/etc/sing-box/config.json:ro
-      - ./tunnel-state:/var/lib/sing-box
+      - ../certificate-state:/var/lib/sing-box
     networks:
       - edge_net
 

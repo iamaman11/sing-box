@@ -220,10 +220,7 @@ impl ApplicationRuntimePolicy {
         }
 
         if let Some(line1) = self.line1.as_ref() {
-            validate_runtime_public_value(
-                "runtime_policy.line1.tunnel_domain",
-                &line1.tunnel_domain,
-            )?;
+            validate_runtime_dns_name("runtime_policy.line1.tunnel_domain", &line1.tunnel_domain)?;
             validate_runtime_public_value("runtime_policy.line1.acme_email", &line1.acme_email)?;
             validate_runtime_public_value(
                 "runtime_policy.line1.reality_server_name",
@@ -242,6 +239,27 @@ impl ApplicationRuntimePolicy {
         }
         Ok(())
     }
+}
+
+fn validate_runtime_dns_name(label: &str, value: &str) -> Result<(), ApplicationSpecError> {
+    if value.is_empty()
+        || value.len() > 253
+        || value != value.to_ascii_lowercase()
+        || !value.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+        })
+    {
+        return Err(ApplicationSpecError::Validation(format!(
+            "{label} must be a canonical lowercase DNS name"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_runtime_public_value(label: &str, value: &str) -> Result<(), ApplicationSpecError> {
@@ -626,6 +644,13 @@ mod tests {
         assert!(value.validate().is_err());
 
         value.bootstrap_mode = ApplicationBootstrapMode::Full;
+        assert!(value.validate().is_ok());
+
+        value.runtime_policy.line1.as_mut().unwrap().tunnel_domain = "../escape".to_owned();
+        assert!(value.validate().is_err());
+        value.runtime_policy.line1.as_mut().unwrap().tunnel_domain = "Edge.Example.com".to_owned();
+        assert!(value.validate().is_err());
+        value.runtime_policy.line1.as_mut().unwrap().tunnel_domain = "edge.example.com".to_owned();
         assert!(value.validate().is_ok());
     }
 

@@ -268,7 +268,10 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
 
     let compose_path = stack_dir.join("docker-compose.yml");
     let enabled_profiles = enabled_application_profiles(stack_dir);
-    let Some(compose) = inspect_compose(&compose_path, &mut state, &enabled_profiles) else {
+    let line2_enabled = line2_runtime_enabled(stack_dir);
+    let Some(compose) =
+        inspect_compose(&compose_path, &mut state, &enabled_profiles, line2_enabled)
+    else {
         state.healthy = false;
         return state;
     };
@@ -877,8 +880,16 @@ fn verify_bootstrap_post_state(
     }
 
     let tunnel_expected = tunnel_runtime_enabled(stack_dir);
+    let line2_expected = line2_runtime_enabled(stack_dir);
 
-    let mut expected = vec!["vultr-warp-egress", "vultr-line2-proxy"];
+    let mut expected = vec!["vultr-warp-egress"];
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull
+    ) && line2_expected
+    {
+        expected.push("vultr-line2-proxy");
+    }
     if matches!(
         mode,
         BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull
@@ -908,6 +919,16 @@ fn verify_bootstrap_post_state(
             "tunnel bootstrap requested but TUNNEL_DOMAIN/ACME_EMAIL are not configured".to_owned(),
         );
     }
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull
+    ) && !line2_expected
+    {
+        warnings.push(
+            "Line 2 bootstrap requested but PROXY_USERNAME/PROXY_CERT_CN are not configured"
+                .to_owned(),
+        );
+    }
 
     BootstrapVerification {
         success: warnings.is_empty(),
@@ -934,7 +955,10 @@ fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
     }
 
     let rendered_dir = stack_dir.join("rendered");
-    let mut expected_rendered = vec!["line2-proxy.json"];
+    let mut expected_rendered = Vec::new();
+    if line2_runtime_enabled(stack_dir) {
+        expected_rendered.push("line2-proxy.json");
+    }
     if tunnel_runtime_enabled(stack_dir) {
         expected_rendered.push("line1-gateway.json");
     }
@@ -950,17 +974,23 @@ fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
         ));
     }
 
-    let certs_dir = stack_dir.join("certs");
-    let missing_certs = ["proxy.crt", "proxy.key"]
-        .iter()
-        .filter(|name| !certs_dir.join(name).is_file())
-        .map(|name| (*name).to_owned())
-        .collect::<Vec<_>>();
-    if !missing_certs.is_empty() {
-        state.degraded_reasons.push(format!(
-            "bundle artifact missing: certs/{}",
-            missing_certs.join(", certs/")
-        ));
+    match expected_proxy_certificate_paths(stack_dir) {
+        Ok(paths) => {
+            let missing = paths
+                .iter()
+                .filter(|path| !path.is_file())
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                state.degraded_reasons.push(format!(
+                    "bundle artifact missing: certificate {}",
+                    missing.join(", ")
+                ));
+            }
+        }
+        Err(reason) => state
+            .degraded_reasons
+            .push(format!("bundle artifact invalid: {reason}")),
     }
 
     if let Some(summary_path) = stack_dir
@@ -982,6 +1012,7 @@ fn inspect_compose(
     compose_path: &Path,
     state: &mut AgentState,
     enabled_profiles: &BTreeSet<String>,
+    line2_enabled: bool,
 ) -> Option<ComposeObservation> {
     let raw = match fs::read_to_string(compose_path) {
         Ok(raw) => {
@@ -1012,7 +1043,10 @@ fn inspect_compose(
     let mut expected_tcp_ports = BTreeSet::new();
     let mut expected_udp_ports = BTreeSet::new();
 
-    for service in compose.services.into_values() {
+    for (service_name, service) in compose.services {
+        if service_name == "line2-proxy" && !line2_enabled {
+            continue;
+        }
         if !service.profiles.is_empty()
             && !service
                 .profiles
@@ -1210,31 +1244,59 @@ fn set_bundle_file_permissions(
 
 fn collect_rendered_artifacts(stack_dir: &Path) -> Vec<FilePresence> {
     let mut required = vec![
-        ("docker-compose.yml", FileCategory::RequiredRepoInput),
-        (RUNTIME_POLICY_FILE, FileCategory::RequiredRepoInput),
-        (RUNTIME_ENV_FILE, FileCategory::LocalOnlySensitive),
-        ("rendered/line2-proxy.json", FileCategory::RequiredRepoInput),
-        ("certs/proxy.crt", FileCategory::RequiredRepoInput),
-        ("certs/proxy.key", FileCategory::RequiredRepoInput),
+        (
+            stack_dir.join("docker-compose.yml"),
+            FileCategory::RequiredRepoInput,
+        ),
+        (
+            stack_dir.join(RUNTIME_POLICY_FILE),
+            FileCategory::RequiredRepoInput,
+        ),
+        (
+            stack_dir.join(RUNTIME_ENV_FILE),
+            FileCategory::LocalOnlySensitive,
+        ),
     ];
+    if line2_runtime_enabled(stack_dir) {
+        required.push((
+            stack_dir.join("rendered/line2-proxy.json"),
+            FileCategory::LocalOnlySensitive,
+        ));
+    }
     if tunnel_runtime_enabled(stack_dir) {
-        required.insert(
-            3,
-            (
-                "rendered/line1-gateway.json",
-                FileCategory::RequiredRepoInput,
-            ),
+        required.push((
+            stack_dir.join("rendered/line1-gateway.json"),
+            FileCategory::LocalOnlySensitive,
+        ));
+    }
+    if let Ok(paths) = expected_proxy_certificate_paths(stack_dir) {
+        required.extend(
+            paths
+                .into_iter()
+                .map(|path| (path, FileCategory::LocalOnlySensitive)),
         );
     }
 
     required
         .into_iter()
         .map(|(path, category)| FilePresence {
-            path: path.to_owned(),
-            present: stack_dir.join(path).is_file(),
+            path: rendered_artifact_display_path(stack_dir, &path),
+            present: path.is_file(),
             category: category as i32,
         })
         .collect()
+}
+
+fn rendered_artifact_display_path(stack_dir: &Path, path: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(stack_dir) {
+        return relative.to_string_lossy().replace('\\', "/");
+    }
+    if let Some(parent) = stack_dir.parent()
+        && let Ok(relative) = path.strip_prefix(parent)
+    {
+        return format!("../{}", relative.to_string_lossy().replace('\\', "/"));
+    }
+    path.display().to_string()
 }
 
 fn read_runtime_env(path: &Path) -> Option<std::collections::BTreeMap<String, String>> {
@@ -1261,10 +1323,60 @@ fn env_flag_present(values: &std::collections::BTreeMap<String, String>, key: &s
         .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn line2_runtime_enabled(stack_dir: &Path) -> bool {
+    read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
+        env_flag_present(&values, "PROXY_USERNAME") && env_flag_present(&values, "PROXY_CERT_CN")
+    })
+}
+
 fn tunnel_runtime_enabled(stack_dir: &Path) -> bool {
     read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
         env_flag_present(&values, "TUNNEL_DOMAIN") && env_flag_present(&values, "ACME_EMAIL")
     })
+}
+
+fn valid_certificate_domain(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
+fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], String> {
+    let runtime = read_runtime_env(&stack_dir.join(".env.runtime")).ok_or_else(|| {
+        "runtime environment is unavailable for certificate observation".to_owned()
+    })?;
+    if env_flag_present(&runtime, "TUNNEL_DOMAIN") {
+        let domain = runtime
+            .get("TUNNEL_DOMAIN")
+            .map(String::as_str)
+            .unwrap_or_default();
+        if !valid_certificate_domain(domain) {
+            return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
+        }
+        let owner = stack_dir
+            .parent()
+            .ok_or_else(|| "application stack path has no certificate-state parent".to_owned())?
+            .join("certificate-state")
+            .join("acme")
+            .join("certificates")
+            .join("acme-v02.api.letsencrypt.org-directory")
+            .join(domain);
+        return Ok([
+            owner.join(format!("{domain}.crt")),
+            owner.join(format!("{domain}.key")),
+        ]);
+    }
+
+    let certs = stack_dir.join("certs");
+    Ok([certs.join("proxy.crt"), certs.join("proxy.key")])
 }
 
 fn enabled_application_profiles(stack_dir: &Path) -> BTreeSet<String> {
@@ -1542,6 +1654,92 @@ mod tests {
     }
 
     #[test]
+    fn certificate_observation_uses_owner_state_for_tunnel_runtime() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let owner = root
+            .join("certificate-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+            .join("edge.example.com");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(&owner).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "certificate").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "private-key").unwrap();
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+
+        assert!(state.degraded_reasons.is_empty());
+        assert!(!stack.join("certs/proxy.crt").exists());
+        assert!(!stack.join("certs/proxy.key").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn certificate_observation_rejects_unsafe_tunnel_domain() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=../escape\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+
+        assert!(
+            state
+                .degraded_reasons
+                .iter()
+                .any(|reason| reason.contains("TUNNEL_DOMAIN is invalid"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tunnel_only_policy_does_not_require_line2_artifacts() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+
+        assert!(tunnel_runtime_enabled(&stack));
+        assert!(!line2_runtime_enabled(&stack));
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+
+        assert!(
+            !state
+                .degraded_reasons
+                .iter()
+                .any(|reason| reason.contains("line2-proxy.json"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_bundle_path_traversal() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
@@ -1650,7 +1848,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_rendered_artifacts() {
+    fn reports_rendered_artifacts_for_base_capability() {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(stack.join("rendered")).unwrap();
@@ -1661,13 +1859,72 @@ mod tests {
             "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
         )
         .unwrap();
-        fs::write(stack.join(RUNTIME_ENV_FILE), "").unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
         fs::write(stack.join("rendered/line2-proxy.json"), "{}").unwrap();
         fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
         fs::write(stack.join("certs/proxy.key"), "key").unwrap();
 
         let artifacts = collect_rendered_artifacts(&stack);
         assert!(artifacts.iter().all(|entry| entry.present));
+        assert!(
+            artifacts
+                .iter()
+                .any(|entry| entry.path == "rendered/line2-proxy.json")
+        );
+        assert!(
+            artifacts
+                .iter()
+                .all(|entry| !entry.path.contains("line1-gateway"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_host_certificate_state_for_tunnel_capability() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let owner = root
+            .join("certificate-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+            .join("edge.example.com");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(&owner).unwrap();
+        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "crt").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "key").unwrap();
+
+        let artifacts = collect_rendered_artifacts(&stack);
+        assert!(artifacts.iter().all(|entry| entry.present));
+        assert!(
+            artifacts
+                .iter()
+                .any(|entry| entry.path == "rendered/line1-gateway.json")
+        );
+        assert!(
+            artifacts
+                .iter()
+                .any(|entry| entry.path.starts_with("../certificate-state/"))
+        );
+        assert!(
+            artifacts
+                .iter()
+                .all(|entry| !entry.path.contains("line2-proxy"))
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -1707,6 +1964,7 @@ mod tests {
             &root.join("docker-compose.yml"),
             &mut state,
             &BTreeSet::new(),
+            true,
         )
         .unwrap();
         assert!(state.compose_file_present);
@@ -1746,6 +2004,7 @@ mod tests {
             &root.join("docker-compose.yml"),
             &mut state,
             &enabled_profiles,
+            true,
         )
         .unwrap();
         assert_eq!(
@@ -1755,6 +2014,17 @@ mod tests {
         assert_eq!(observation.expected_tcp_ports, vec![3128]);
         assert_eq!(observation.expected_udp_ports, vec![8443]);
 
+        let tunnel_only = inspect_compose(
+            &root.join("docker-compose.yml"),
+            &mut AgentState::bootstrap_placeholder(),
+            &enabled_profiles,
+            false,
+        )
+        .unwrap();
+        assert_eq!(tunnel_only.expected_containers, vec!["vultr-line1-gateway"]);
+        assert!(tunnel_only.expected_tcp_ports.is_empty());
+        assert_eq!(tunnel_only.expected_udp_ports, vec![8443]);
+
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1763,16 +2033,18 @@ mod tests {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(stack.join("rendered")).unwrap();
-        fs::create_dir_all(stack.join("certs")).unwrap();
+        let owner = root
+            .join("certificate-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+            .join("edge.example.com");
+        fs::create_dir_all(&owner).unwrap();
         fs::write(
             stack.join(".env.runtime"),
             "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\n",
         )
         .unwrap();
-        fs::write(stack.join("rendered/line2-proxy.json"), "{}").unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
-        fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
-        fs::write(stack.join("certs/proxy.key"), "key").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "crt").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "key").unwrap();
         fs::write(
             root.join("deployment-summary.json"),
             r#"{"label":"bundle-a","instance_id":"instance-1"}"#,
@@ -1798,7 +2070,11 @@ mod tests {
     fn runs_bootstrap_script_by_mode() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join(".env.runtime"), "TUNNEL_DOMAIN=\nACME_EMAIL=\n").unwrap();
+        fs::write(
+            root.join(".env.runtime"),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
         let script = root.join("bootstrap.sh");
         fs::write(
             &script,
@@ -1845,7 +2121,11 @@ mod tests {
 
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join(".env.runtime"), "TUNNEL_DOMAIN=\nACME_EMAIL=\n").unwrap();
+        fs::write(
+            root.join(".env.runtime"),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
 
         let verification = verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &state);
         assert!(verification.success);
