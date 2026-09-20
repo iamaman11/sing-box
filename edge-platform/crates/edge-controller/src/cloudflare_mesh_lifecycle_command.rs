@@ -9,9 +9,7 @@ use crate::cloudflare_mesh_lifecycle_service::{
     wait_mesh_provider_healthy,
 };
 use crate::vultr_host_bootstrap::strict_ssh_capture;
-use crate::vultr_vpc_lifecycle_service::{
-    VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready,
-};
+use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
 use edge_controller_core::cloudflare_mesh_lifecycle::{DesiredMeshState, MeshRouteSpec};
 use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
 use serde::{Deserialize, Serialize};
@@ -309,8 +307,7 @@ async fn load_desired_with_verified_vpc_route(
 ) -> Result<(DesiredMeshState, GuestVpcNetworkReport), String> {
     let mesh_base = load_desired(mesh_base_path)?;
     let vpc = load_vpc_desired(vpc_spec_path)?;
-    let api_key =
-        env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())?;
+    let api_key = env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())?;
     let mut provider = VultrVpcApiProvider::new(api_key)?;
     let ready = verify_vpc_ready(&mut provider, &vpc).await?;
     let authority = resolve_application_authority_from_spec(application_spec_path).await?;
