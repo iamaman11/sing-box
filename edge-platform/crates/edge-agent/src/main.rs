@@ -2484,13 +2484,17 @@ fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], St
         if !valid_certificate_domain(domain) {
             return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
         }
+        let provider = runtime
+            .get("ACME_PROVIDER")
+            .ok_or_else(|| "ACME_PROVIDER is required for certificate owner state".to_owned())?;
+        let directory = acme_certificate_directory(provider)?;
         let owner = stack_dir
             .parent()
             .ok_or_else(|| "application stack path has no certificate-state parent".to_owned())?
             .join("certificate-state")
             .join("acme")
             .join("certificates")
-            .join("acme-v02.api.letsencrypt.org-directory")
+            .join(directory)
             .join(domain);
         return Ok([
             owner.join(format!("{domain}.crt")),
@@ -2815,7 +2819,7 @@ mod tests {
         fs::create_dir_all(&owner).unwrap();
         fs::write(
             stack.join(RUNTIME_ENV_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
@@ -2830,6 +2834,39 @@ mod tests {
         assert!(state.degraded_reasons.is_empty());
         assert!(!stack.join("certs/proxy.crt").exists());
         assert!(!stack.join("certs/proxy.key").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn certificate_observation_uses_staging_provider_directory() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let owner = root
+            .join(
+                "certificate-state/acme/certificates/acme-staging-v02.api.letsencrypt.org-directory",
+            )
+            .join("edge.example.com");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(&owner).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=https://acme-staging-v02.api.letsencrypt.org/directory\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "certificate").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "private-key").unwrap();
+
+        let paths = expected_proxy_certificate_paths(&stack).unwrap();
+        assert_eq!(paths[0], owner.join("edge.example.com.crt"));
+        assert_eq!(paths[1], owner.join("edge.example.com.key"));
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+        assert!(state.degraded_reasons.is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }
