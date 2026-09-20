@@ -178,12 +178,14 @@ jobs:
           test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
           gateway_image="${EDGE_GATEWAY_IMAGE}"
           warp_image="${EDGE_WARP_EGRESS_IMAGE}"
+          mesh_image="${EDGE_MESH_IMAGE}"
           [[ "${gateway_image}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
           [[ "${warp_image}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
+          [[ "${mesh_image}" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
           bundle_root="$(jq -er '.bundle_root' "${SPEC_PATH}")"
           test -d "${bundle_root}"
-          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\n' \
-            "${gateway_image}" "${warp_image}" > "${bundle_root}/.images.env"
+          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\nCLOUDFLARE_MESH_IMAGE=%s\n' \
+            "${gateway_image}" "${warp_image}" "${mesh_image}" > "${bundle_root}/.images.env"
           chmod 0644 "${bundle_root}/.images.env"
           chmod 0755 "${controller}" "${agent}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
@@ -357,12 +359,14 @@ jobs:
           test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
           gateway_image="${EDGE_GATEWAY_IMAGE}"
           warp_image="${EDGE_WARP_EGRESS_IMAGE}"
+          mesh_image="${EDGE_MESH_IMAGE}"
           [[ "${gateway_image}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
           [[ "${warp_image}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
+          [[ "${mesh_image}" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
           bundle_root="$(jq -er '.bundle_root' "${SPEC_PATH}")"
           test -d "${bundle_root}"
-          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\n' \
-            "${gateway_image}" "${warp_image}" > "${bundle_root}/.images.env"
+          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\nCLOUDFLARE_MESH_IMAGE=%s\n' \
+            "${gateway_image}" "${warp_image}" "${mesh_image}" > "${bundle_root}/.images.env"
           chmod 0644 "${bundle_root}/.images.env"
           chmod 0755 "${controller}" "${agent}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
