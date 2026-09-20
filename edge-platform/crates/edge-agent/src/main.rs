@@ -1708,10 +1708,16 @@ fn wait_for_warp_datapath() -> Result<(), String> {
 }
 
 fn runtime_probe_consumer(running_containers: &[String]) -> Option<&'static str> {
-    if running_containers.iter().any(|name| name == LINE2_CONTAINER) {
+    if running_containers
+        .iter()
+        .any(|name| name == LINE2_CONTAINER)
+    {
         return Some(LINE2_CONTAINER);
     }
-    if running_containers.iter().any(|name| name == LINE1_CONTAINER) {
+    if running_containers
+        .iter()
+        .any(|name| name == LINE1_CONTAINER)
+    {
         return Some(LINE1_CONTAINER);
     }
     None
@@ -1745,13 +1751,7 @@ fn probe_direct_egress(running_containers: &[String]) -> bool {
 fn warp_client_connected() -> bool {
     bounded_command_output(
         "docker",
-        &[
-            "exec",
-            WARP_CONTAINER,
-            "warp-cli",
-            "--accept-tos",
-            "status",
-        ],
+        &["exec", WARP_CONTAINER, "warp-cli", "--accept-tos", "status"],
         8,
     )
     .is_some_and(|output| output.lines().any(|line| line.contains("Connected")))
@@ -1822,7 +1822,14 @@ fn probe_warp_egress(running_containers: &[String]) -> bool {
 
 fn mesh_container_present() -> Result<bool, String> {
     let output = Command::new("timeout")
-        .args(["6s", "docker", "inspect", "--type", "container", MESH_CONTAINER])
+        .args([
+            "6s",
+            "docker",
+            "inspect",
+            "--type",
+            "container",
+            MESH_CONTAINER,
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1842,12 +1849,9 @@ fn probe_mesh_runtime(running_containers: &[String]) -> bool {
         return false;
     }
 
-    let connected = bounded_command_output(
-        "docker",
-        &["exec", MESH_CONTAINER, "warp-cli", "status"],
-        8,
-    )
-    .is_some_and(|output| output.lines().any(|line| line.contains("Connected")));
+    let connected =
+        bounded_command_output("docker", &["exec", MESH_CONTAINER, "warp-cli", "status"], 8)
+            .is_some_and(|output| output.lines().any(|line| line.contains("Connected")));
     if !connected {
         return false;
     }
@@ -2956,7 +2960,10 @@ mod tests {
             ]),
             Some(LINE2_CONTAINER)
         );
-        assert_eq!(runtime_probe_consumer(&["vultr-warp-egress".to_owned()]), None);
+        assert_eq!(
+            runtime_probe_consumer(&["vultr-warp-egress".to_owned()]),
+            None
+        );
     }
 
     #[test]
