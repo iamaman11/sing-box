@@ -1,5 +1,7 @@
+mod docker_observation;
 mod network_observation;
 
+use crate::docker_observation::{DockerObservation, observe_docker};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -112,30 +114,27 @@ struct AgentServerImpl {
 #[tonic::async_trait]
 impl AgentService for AgentServerImpl {
     async fn get_health(&self, _request: Request<Empty>) -> Result<Response<AgentState>, Status> {
-        Ok(Response::new(inspect_runtime(
-            &self.stack_dir,
-            AgentMode::Health,
-        )))
+        Ok(Response::new(
+            inspect_runtime(&self.stack_dir, AgentMode::Health).await,
+        ))
     }
 
     async fn get_readiness(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<AgentState>, Status> {
-        Ok(Response::new(inspect_runtime(
-            &self.stack_dir,
-            AgentMode::Readiness,
-        )))
+        Ok(Response::new(
+            inspect_runtime(&self.stack_dir, AgentMode::Readiness).await,
+        ))
     }
 
     async fn get_runtime_state(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<AgentState>, Status> {
-        Ok(Response::new(inspect_runtime(
-            &self.stack_dir,
-            AgentMode::Runtime,
-        )))
+        Ok(Response::new(
+            inspect_runtime(&self.stack_dir, AgentMode::Runtime).await,
+        ))
     }
 
     async fn get_version(
@@ -168,7 +167,7 @@ impl AgentService for AgentServerImpl {
             return Err(Status::invalid_argument("bootstrap mode is required"));
         }
 
-        Ok(Response::new(run_bootstrap(&self.stack_dir, mode)))
+        Ok(Response::new(run_bootstrap(&self.stack_dir, mode).await))
     }
 
     async fn apply_bundle(
@@ -200,7 +199,7 @@ impl AgentService for AgentServerImpl {
         } else {
             AgentMode::Runtime
         };
-        let mut state = inspect_runtime(&self.stack_dir, inspection_mode);
+        let mut state = inspect_runtime(&self.stack_dir, inspection_mode).await;
         let bootstrap_mode = BootstrapMode::try_from(request.mode)
             .map_err(|_| Status::invalid_argument("unknown bootstrap verification mode"))?;
         if bootstrap_mode != BootstrapMode::Unspecified {
@@ -269,6 +268,7 @@ impl AgentService for AgentServerImpl {
         request: Request<MeshRuntimeConvergeRequest>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
         let state = converge_mesh_runtime(&self.stack_dir, &request.into_inner().node_token)
+            .await
             .map_err(|err| {
                 Status::failed_precondition(format!("Mesh runtime convergence failed: {err}"))
             })?;
@@ -279,14 +279,14 @@ impl AgentService for AgentServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
-        Ok(Response::new(inspect_mesh_runtime(&self.stack_dir)))
+        Ok(Response::new(inspect_mesh_runtime(&self.stack_dir).await))
     }
 
     async fn cleanup_mesh_runtime(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
-        let state = cleanup_mesh_runtime(&self.stack_dir).map_err(|err| {
+        let state = cleanup_mesh_runtime(&self.stack_dir).await.map_err(|err| {
             Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}"))
         })?;
         Ok(Response::new(state))
@@ -300,7 +300,7 @@ enum AgentMode {
     Runtime,
 }
 
-fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
+async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     let mut state = AgentState {
         healthy: true,
         ready: false,
@@ -333,7 +333,9 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         return state;
     };
 
-    let docker = inspect_docker();
+    let docker = observe_docker()
+        .await
+        .unwrap_or_else(|_| DockerObservation::unreachable());
     state.docker_reachable = docker.reachable;
     state.running_containers = docker.running_containers.clone();
     state.listening_tcp_ports = docker.listening_tcp_ports.clone();
@@ -392,7 +394,7 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     let datapaths_ready = if matches!(mode, AgentMode::Health) {
         true
     } else {
-        inspect_datapath_readiness(&mut state)
+        inspect_datapath_readiness(&mut state, &docker)
     };
 
     state.ready = state.compose_file_present
@@ -877,9 +879,9 @@ struct ApplicationBundleRelease {
     bundle_digest: String,
 }
 
-fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
+async fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
     let operation = execute_typed_bootstrap(stack_dir, mode);
-    let post_state = inspect_runtime(stack_dir, AgentMode::Runtime);
+    let post_state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
     let verified = verify_bootstrap_post_state(stack_dir, mode, &post_state);
     let success = operation.is_ok() && verified.success;
     let mut warnings = verified.warnings;
@@ -1242,37 +1244,28 @@ fn run_mesh_compose(
     Ok(())
 }
 
-fn mesh_exact_image_ready(expected: &str) -> bool {
-    bounded_command_output(
-        "docker",
-        &["inspect", "--format", "{{.Config.Image}}", MESH_CONTAINER],
-        6,
-    )
-    .is_some_and(|observed| observed.trim() == expected)
-}
-
-fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
+async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     let token_store_path = mesh_runtime_secret_path(stack_dir).ok();
     let token_store_present = token_store_path.as_ref().is_some_and(|path| path.is_file());
     let token_valid = read_mesh_node_token(stack_dir).is_ok();
-    let docker = inspect_docker();
-    let container_running = docker
-        .running_containers
-        .iter()
-        .any(|name| name == MESH_CONTAINER);
+    let (docker, docker_error) = match observe_docker().await {
+        Ok(observation) => (observation, None),
+        Err(err) => (DockerObservation::unreachable(), Some(err)),
+    };
+    let container_running = docker.container_running(MESH_CONTAINER);
     let expected_image = read_exact_image_environment(stack_dir)
         .ok()
         .and_then(|images| images.get(EDGE_MESH_IMAGE_KEY).cloned());
-    let exact_image_ready = container_running
-        && expected_image
-            .as_deref()
-            .is_some_and(mesh_exact_image_ready);
-    let runtime_ready = token_valid
-        && container_running
-        && exact_image_ready
-        && probe_mesh_runtime(&docker.running_containers);
+    let exact_image_ready = expected_image
+        .as_deref()
+        .is_some_and(|expected| docker.container_exact_image_ready(MESH_CONTAINER, expected));
+    let runtime_ready =
+        token_valid && container_running && exact_image_ready && probe_mesh_runtime(&docker);
 
     let mut warnings = Vec::new();
+    if let Some(err) = docker_error {
+        warnings.push(format!("Docker runtime observation failed: {err}"));
+    }
     if !token_store_present {
         warnings.push("Mesh runtime token store is absent".to_owned());
     } else if !token_valid {
@@ -1297,7 +1290,7 @@ fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     }
 }
 
-fn converge_mesh_runtime(stack_dir: &Path, node_token: &str) -> Result<MeshRuntimeState, String> {
+async fn converge_mesh_runtime(stack_dir: &Path, node_token: &str) -> Result<MeshRuntimeState, String> {
     validate_mesh_node_token(node_token)?;
     let images = read_exact_image_environment(stack_dir)?;
     prepare_mesh_runtime_state(stack_dir)?;
@@ -1323,22 +1316,22 @@ fn converge_mesh_runtime(stack_dir: &Path, node_token: &str) -> Result<MeshRunti
         ],
     )?;
 
-    let mut last = inspect_mesh_runtime(stack_dir);
+    let mut last = inspect_mesh_runtime(stack_dir).await;
     for _ in 0..45 {
         if last.runtime_ready {
             return Ok(last);
         }
         sleep(Duration::from_secs(2));
-        last = inspect_mesh_runtime(stack_dir);
+        last = inspect_mesh_runtime(stack_dir).await;
     }
     Ok(last)
 }
 
-fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
-    if !inspect_docker().reachable {
-        return Err("Mesh runtime cleanup requires observable Docker state".to_owned());
-    }
-    let mutation = if mesh_container_present()? {
+async fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
+    let before = observe_docker()
+        .await
+        .map_err(|err| format!("Mesh runtime cleanup requires observable Docker state: {err}"))?;
+    let mutation = if before.container_present(MESH_CONTAINER) {
         Some(
             Command::new("docker")
                 .args(["rm", "-f", MESH_CONTAINER])
@@ -1351,7 +1344,10 @@ fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
         None
     };
 
-    if mesh_container_present()? {
+    let after = observe_docker()
+        .await
+        .map_err(|err| format!("Mesh runtime cleanup re-observation failed: {err}"))?;
+    if after.container_present(MESH_CONTAINER) {
         return Err(format!(
             "Mesh runtime container remains present after one bounded removal attempt; exit_code={}",
             mutation.and_then(|status| status.code()).unwrap_or(-1)
@@ -1369,7 +1365,7 @@ fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
             .map_err(|err| format!("failed to remove Mesh runtime state: {err}"))?;
     }
 
-    let state = inspect_mesh_runtime(stack_dir);
+    let state = inspect_mesh_runtime(stack_dir).await;
     if state.token_store_present || state.container_running {
         return Err("Mesh runtime cleanup did not converge to absence".to_owned());
     }
@@ -1923,54 +1919,7 @@ fn inspect_compose(
     })
 }
 
-fn inspect_docker() -> DockerObservation {
-    let names_output = Command::new("docker")
-        .args(["ps", "--format", "{{.Names}}"])
-        .output();
-    let ports_output = Command::new("docker")
-        .args(["ps", "--format", "{{.Ports}}"])
-        .output();
-
-    let (Ok(names_output), Ok(ports_output)) = (names_output, ports_output) else {
-        return DockerObservation::unreachable();
-    };
-    if !names_output.status.success() || !ports_output.status.success() {
-        return DockerObservation::unreachable();
-    }
-
-    let running_containers = String::from_utf8_lossy(&names_output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-
-    let mut listening_tcp_ports = BTreeSet::new();
-    let mut listening_udp_ports = BTreeSet::new();
-    for line in String::from_utf8_lossy(&ports_output.stdout).lines() {
-        for mapping in line.split(',') {
-            if let Some(parsed) = parse_docker_port_mapping(mapping.trim()) {
-                match parsed.protocol {
-                    Protocol::Tcp => {
-                        listening_tcp_ports.insert(parsed.host_port);
-                    }
-                    Protocol::Udp => {
-                        listening_udp_ports.insert(parsed.host_port);
-                    }
-                }
-            }
-        }
-    }
-
-    DockerObservation {
-        reachable: true,
-        running_containers,
-        listening_tcp_ports: listening_tcp_ports.into_iter().collect(),
-        listening_udp_ports: listening_udp_ports.into_iter().collect(),
-    }
-}
-
-fn inspect_datapath_readiness(state: &mut AgentState) -> bool {
+fn inspect_datapath_readiness(state: &mut AgentState, docker: &DockerObservation) -> bool {
     let direct_ready = probe_direct_egress(&state.running_containers);
     state.direct_egress_ready = Some(direct_ready);
     if !direct_ready {
@@ -1987,23 +1936,16 @@ fn inspect_datapath_readiness(state: &mut AgentState) -> bool {
             .push("WARP egress datapath probe failed".to_owned());
     }
 
-    let mesh_ready = match mesh_container_present() {
-        Ok(false) => None,
-        Ok(true) => {
-            let ready = probe_mesh_runtime(&state.running_containers);
-            if !ready {
-                state
-                    .degraded_reasons
-                    .push("enabled Mesh runtime datapath probe failed".to_owned());
-            }
-            Some(ready)
-        }
-        Err(_) => {
+    let mesh_ready = if docker.container_present(MESH_CONTAINER) {
+        let ready = probe_mesh_runtime(docker);
+        if !ready {
             state
                 .degraded_reasons
-                .push("Mesh runtime enablement could not be observed".to_owned());
-            Some(false)
+                .push("enabled Mesh runtime datapath probe failed".to_owned());
         }
+        Some(ready)
+    } else {
+        None
     };
     state.mesh_runtime_ready = mesh_ready;
 
@@ -2133,32 +2075,8 @@ fn probe_warp_egress(running_containers: &[String]) -> bool {
     })
 }
 
-fn mesh_container_present() -> Result<bool, String> {
-    let output = Command::new("timeout")
-        .args([
-            "6s",
-            "docker",
-            "inspect",
-            "--type",
-            "container",
-            MESH_CONTAINER,
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|err| format!("fixed Mesh container inspection could not start: {err}"))?;
-    match output.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        Some(code) => Err(format!(
-            "fixed Mesh container inspection failed with exit_code={code}"
-        )),
-        None => Err("fixed Mesh container inspection terminated without exit code".to_owned()),
-    }
-}
-
-fn probe_mesh_runtime(running_containers: &[String]) -> bool {
-    if !running_containers.iter().any(|name| name == MESH_CONTAINER) {
+fn probe_mesh_runtime(docker: &DockerObservation) -> bool {
+    if !docker.container_running(MESH_CONTAINER) {
         return false;
     }
 
@@ -2184,17 +2102,7 @@ fn probe_mesh_runtime(running_containers: &[String]) -> bool {
         return false;
     }
 
-    bounded_command_output(
-        "docker",
-        &[
-            "inspect",
-            "--format",
-            "{{json .NetworkSettings.Networks}}",
-            MESH_CONTAINER,
-        ],
-        6,
-    )
-    .is_some_and(|output| mesh_network_membership_ready(&output))
+    docker.container_on_mesh_network(MESH_CONTAINER)
 }
 
 fn bounded_command_output(program: &str, args: &[&str], timeout_seconds: u64) -> Option<String> {
@@ -2230,17 +2138,6 @@ fn cloudflare_trace_has_warp_mode(raw: &str, expected: &str) -> bool {
     ip_present && warp == Some(expected)
 }
 
-fn mesh_network_membership_ready(raw: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|value| value.as_object().cloned())
-        .is_some_and(|networks| {
-            networks
-                .keys()
-                .any(|name| name == "mesh_net" || name.ends_with("_mesh_net"))
-        })
-}
-
 fn parse_compose_port(value: &str) -> Option<PortMapping> {
     let protocol = if value.ends_with("/udp") {
         Protocol::Udp
@@ -2249,20 +2146,6 @@ fn parse_compose_port(value: &str) -> Option<PortMapping> {
     };
     let base = value.split('/').next()?;
     let host_port = base.split(':').next()?.parse().ok()?;
-    Some(PortMapping {
-        host_port,
-        protocol,
-    })
-}
-
-fn parse_docker_port_mapping(value: &str) -> Option<PortMapping> {
-    let protocol = if value.ends_with("/udp") {
-        Protocol::Udp
-    } else {
-        Protocol::Tcp
-    };
-    let host_side = value.split("->").next()?;
-    let host_port = host_side.rsplit(':').next()?.parse().ok()?;
     Some(PortMapping {
         host_port,
         protocol,
@@ -2535,25 +2418,6 @@ struct ComposeObservation {
     expected_containers: Vec<String>,
     expected_tcp_ports: Vec<u32>,
     expected_udp_ports: Vec<u32>,
-}
-
-#[derive(Debug)]
-struct DockerObservation {
-    reachable: bool,
-    running_containers: Vec<String>,
-    listening_tcp_ports: Vec<u32>,
-    listening_udp_ports: Vec<u32>,
-}
-
-impl DockerObservation {
-    fn unreachable() -> Self {
-        Self {
-            reachable: false,
-            running_containers: Vec::new(),
-            listening_tcp_ports: Vec::new(),
-            listening_udp_ports: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -3365,20 +3229,6 @@ mod tests {
             "ip=203.0.113.10\nwarp=on\nwarp=off\n",
             "on"
         ));
-    }
-
-    #[test]
-    fn mesh_network_evidence_requires_mesh_network() {
-        assert!(mesh_network_membership_ready(
-            r#"{"vultr-edge_mesh_net":{"IPAddress":"172.20.0.2"}}"#
-        ));
-        assert!(mesh_network_membership_ready(
-            r#"{"mesh_net":{"IPAddress":"172.20.0.2"}}"#
-        ));
-        assert!(!mesh_network_membership_ready(
-            r#"{"vultr-edge_edge_net":{"IPAddress":"172.21.0.2"}}"#
-        ));
-        assert!(!mesh_network_membership_ready("not-json"));
     }
 
     #[test]

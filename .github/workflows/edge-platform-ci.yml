@@ -259,6 +259,9 @@ jobs:
           agent_network = Path(
               "edge-platform/crates/edge-agent/src/network_observation.rs"
           ).read_text()
+          agent_docker = Path(
+              "edge-platform/crates/edge-agent/src/docker_observation.rs"
+          ).read_text()
           application_service = Path(
               "edge-platform/crates/edge-controller/src/application_lifecycle_service.rs"
           ).read_text()
@@ -268,6 +271,15 @@ jobs:
 
           assert "rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);" in agent_proto
           assert 'rtnetlink = "0.23.0"' in agent_manifest
+          assert 'bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }' in agent_manifest
+          assert "Docker::connect_with_unix" in agent_docker
+          assert ".negotiate_version()" in agent_docker
+          assert ".list_containers(" in agent_docker
+          assert "ContainerSummaryStateEnum::RUNNING" in agent_docker
+          assert "PortSummaryTypeEnum::TCP" in agent_docker
+          assert "PortSummaryTypeEnum::UDP" in agent_docker
+          assert "parse_docker_port_mapping" not in agent
+          assert "mesh_network_membership_ready" not in agent
           for typed_network_contract in [
               "LinkFlags::Up",
               "LinkFlags::LowerUp",
@@ -338,33 +350,6 @@ jobs:
           rustup default 1.95.0
           rustc --version
           cargo --version
-
-      - name: Bootstrap Cargo lock for typed Docker dependency
-        working-directory: edge-platform
-        shell: bash
-        run: cargo check -p edge-agent
-
-      - name: Store bootstrapped Cargo lock
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: edge-platform-cargo-lock-${{ github.event.pull_request.head.sha }}
-          path: edge-platform/Cargo.lock
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Emit exact bootstrapped Cargo lock
-        working-directory: edge-platform
-        shell: bash
-        run: |
-          printf '%s\n' 'CARGO_LOCK_BASE64_BEGIN'
-          base64 -w0 Cargo.lock
-          printf '\n%s\n' 'CARGO_LOCK_BASE64_END'
-
-      - name: Stop temporary lock bootstrap candidate
-        shell: bash
-        run: |
-          echo "temporary Cargo.lock bootstrap head; final code must remove this step" >&2
-          exit 1
 
       - name: Check formatting
         working-directory: edge-platform
