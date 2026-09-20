@@ -19,7 +19,8 @@ pub use release::v1::{
     WindowsRuntime,
 };
 
-pub const RELEASE_SET_SCHEMA_VERSION: u32 = 1;
+pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 2;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 
@@ -52,10 +53,12 @@ pub fn release_set_sha256(bytes: &[u8]) -> Result<String, String> {
 }
 
 pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
-    if release.schema_version != RELEASE_SET_SCHEMA_VERSION {
+    if release.schema_version < MIN_RELEASE_SET_SCHEMA_VERSION
+        || release.schema_version > RELEASE_SET_SCHEMA_VERSION
+    {
         return Err(format!(
-            "unsupported release-set schema_version {}; expected {}",
-            release.schema_version, RELEASE_SET_SCHEMA_VERSION
+            "unsupported release-set schema_version {}; supported range is {}..={}",
+            release.schema_version, MIN_RELEASE_SET_SCHEMA_VERSION, RELEASE_SET_SCHEMA_VERSION
         ));
     }
     validate_lower_hex("source_revision", &release.source_revision, 40)?;
@@ -93,6 +96,20 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| "release-set vm_runtime is required".to_owned())?;
     validate_sha256_bytes("vm_runtime.edge_agent_sha256", &vm.edge_agent_sha256)?;
+    match release.schema_version {
+        1 => {
+            if !vm.edge_controller_sha256.is_empty() {
+                return Err(
+                    "schema v1 must not contain vm_runtime.edge_controller_sha256".to_owned(),
+                );
+            }
+        }
+        2 => validate_sha256_bytes(
+            "vm_runtime.edge_controller_sha256",
+            &vm.edge_controller_sha256,
+        )?,
+        _ => unreachable!("release-set schema range was validated above"),
+    }
     validate_oci_image(
         "vm_runtime.sing_box_image",
         vm.sing_box_image
@@ -524,6 +541,7 @@ mod release_set_tests {
             }),
             vm_runtime: Some(VmRuntime {
                 edge_agent_sha256: digest(7),
+                edge_controller_sha256: digest(11),
                 sing_box_image: Some(image("ghcr.io/iamaman11/sing-box-runtime", 8)),
                 warp_egress_image: Some(image("ghcr.io/iamaman11/warp-egress", 9)),
                 docker_engine_version: "29.0.1".to_owned(),
@@ -563,6 +581,39 @@ mod release_set_tests {
     fn release_set_rejects_wrong_digest_length() {
         let mut release = valid_release();
         release.vm_runtime.as_mut().unwrap().edge_agent_sha256 = vec![0; 31];
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_accepts_legacy_v1_without_controller_hash() {
+        let mut release = valid_release();
+        release.schema_version = 1;
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_controller_sha256
+            .clear();
+        let bytes = encode_release_set(&release).unwrap();
+        assert_eq!(decode_release_set(&bytes).unwrap(), release);
+    }
+
+    #[test]
+    fn release_set_rejects_v1_with_v2_controller_hash() {
+        let mut release = valid_release();
+        release.schema_version = 1;
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_missing_v2_controller_hash() {
+        let mut release = valid_release();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_controller_sha256
+            .clear();
         assert!(validate_release_set(&release).is_err());
     }
 

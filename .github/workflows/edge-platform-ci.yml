@@ -403,6 +403,7 @@ jobs:
       warp_ref: ${{ steps.images.outputs.warp_ref }}
       sing_box_binary_sha256: ${{ steps.images.outputs.sing_box_binary_sha256 }}
       edge_agent_sha256: ${{ steps.package.outputs.edge_agent_sha256 }}
+      edge_controller_sha256: ${{ steps.package.outputs.edge_controller_sha256 }}
     steps:
       - name: Checkout exact candidate revision
         shell: bash
@@ -573,6 +574,7 @@ jobs:
               mesh_image:$mesh_image
             }' > "${out}/manifest.json"
           printf 'edge_agent_sha256=%s\n' "${agent_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'edge_controller_sha256=%s\n' "${controller_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Store exact Linux candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -625,6 +627,7 @@ jobs:
           WINDOWS_SING_BOX_SHA256: ${{ needs.windows.outputs.sing_box_binary_sha256 }}
           LINUX_SING_BOX_SHA256: ${{ needs.linux_candidate.outputs.sing_box_binary_sha256 }}
           EDGE_AGENT_SHA256: ${{ needs.linux_candidate.outputs.edge_agent_sha256 }}
+          EDGE_CONTROLLER_SHA256: ${{ needs.linux_candidate.outputs.edge_controller_sha256 }}
           EDGE_GATEWAY_IMAGE: ${{ needs.linux_candidate.outputs.gateway_ref }}
           EDGE_WARP_EGRESS_IMAGE: ${{ needs.linux_candidate.outputs.warp_ref }}
           DOCKER_ENGINE_VERSION: ${{ needs.dependencies.outputs.docker_engine_version }}
@@ -649,6 +652,7 @@ jobs:
           test "$(sha256sum "${unpacked}/bin/sing-box.exe" | awk '{print $1}')" = "${WINDOWS_SING_BOX_SHA256}"
           test "$(sha256sum "${linux}/sing-box-linux" | awk '{print $1}')" = "${LINUX_SING_BOX_SHA256}"
           test "$(sha256sum "${linux}/edge-agent" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+          test "$(sha256sum "${linux}/edge-controller" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
 
           "${tool}" create \
             --output "${authority}/release-set.pb" \
@@ -661,6 +665,7 @@ jobs:
             --windows-controller-sha256 "${WINDOWS_CONTROLLER_SHA256}" \
             --windows-console-sha256 "${WINDOWS_CONSOLE_SHA256}" \
             --edge-agent-sha256 "${EDGE_AGENT_SHA256}" \
+            --edge-controller-sha256 "${EDGE_CONTROLLER_SHA256}" \
             --sing-box-image "${EDGE_GATEWAY_IMAGE}" \
             --warp-egress-image "${EDGE_WARP_EGRESS_IMAGE}" \
             --docker-engine-version "${DOCKER_ENGINE_VERSION}" \
@@ -678,7 +683,8 @@ jobs:
             --windows-console "${unpacked}/bin/edge-console.exe" \
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
-            --edge-agent "${linux}/edge-agent")"
+            --edge-agent "${linux}/edge-agent" \
+            --edge-controller "${linux}/edge-controller")"
           printf '%s\n' "${verify_output}"
 
           release_set_sha="$(sed -n 's/^release_set_sha256=//p' <<<"${verify_output}")"
@@ -836,7 +842,8 @@ jobs:
             --windows-console "${unpacked}/bin/edge-console.exe" \
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
-            --edge-agent "${linux}/edge-agent")"
+            --edge-agent "${linux}/edge-agent" \
+            --edge-controller "${linux}/edge-controller")"
           printf '%s\n' "${verify_output}"
 
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"

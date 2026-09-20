@@ -21,6 +21,7 @@ const CREATE_FLAGS: &[&str] = &[
     "windows-controller-sha256",
     "windows-console-sha256",
     "edge-agent-sha256",
+    "edge-controller-sha256",
     "sing-box-image",
     "warp-egress-image",
     "docker-engine-version",
@@ -40,6 +41,7 @@ const VERIFY_FLAGS: &[&str] = &[
     "windows-sing-box",
     "linux-sing-box",
     "edge-agent",
+    "edge-controller",
 ];
 
 fn main() {
@@ -143,6 +145,10 @@ fn create_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
             edge_agent_sha256: digest_from_hex(
                 "edge-agent-sha256",
                 flag(flags, "edge-agent-sha256")?,
+            )?,
+            edge_controller_sha256: digest_from_hex(
+                "edge-controller-sha256",
+                flag(flags, "edge-controller-sha256")?,
             )?,
             sing_box_image: Some(parse_image_ref(
                 "sing-box-image",
@@ -272,9 +278,24 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
         Path::new(flag(flags, "edge-agent")?),
         &vm.edge_agent_sha256,
     )?;
+    if release.schema_version >= 2 {
+        verify_file_digest(
+            "edge-controller",
+            Path::new(flag(flags, "edge-controller")?),
+            &vm.edge_controller_sha256,
+        )?;
+    }
 
     println!("release_set_sha256={digest}");
+    println!("schema_version={}", release.schema_version);
     println!("source_revision={}", release.source_revision);
+    println!("edge_agent_sha256={}", digest_to_hex(&vm.edge_agent_sha256));
+    if release.schema_version >= 2 {
+        println!(
+            "edge_controller_sha256={}",
+            digest_to_hex(&vm.edge_controller_sha256)
+        );
+    }
     println!(
         "sing_box_image={}",
         image_ref(
