@@ -220,10 +220,7 @@ impl ApplicationRuntimePolicy {
         }
 
         if let Some(line1) = self.line1.as_ref() {
-            validate_runtime_dns_name(
-                "runtime_policy.line1.tunnel_domain",
-                &line1.tunnel_domain,
-            )?;
+            validate_runtime_dns_name("runtime_policy.line1.tunnel_domain", &line1.tunnel_domain)?;
             validate_runtime_public_value("runtime_policy.line1.acme_email", &line1.acme_email)?;
             validate_runtime_public_value(
                 "runtime_policy.line1.reality_server_name",
