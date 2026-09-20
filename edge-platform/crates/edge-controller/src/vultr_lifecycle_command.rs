@@ -799,7 +799,7 @@ fn vultr_api_key_from_env() -> Result<String, String> {
     env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())
 }
 
-fn host_substrate_versions_from_env() -> Result<HostSubstrateVersions, String> {
+pub(crate) fn host_substrate_versions_from_env() -> Result<HostSubstrateVersions, String> {
     HostSubstrateVersions::new(
         env::var("EDGE_DOCKER_ENGINE_VERSION").map_err(|_| {
             "EDGE_DOCKER_ENGINE_VERSION is required for vultr-lifecycle apply".to_owned()
