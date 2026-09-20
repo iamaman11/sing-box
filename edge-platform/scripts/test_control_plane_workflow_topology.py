@@ -99,6 +99,20 @@ def main() -> None:
         "acceptance must prove support resources absent before fresh creation",
     )
 
+    require(
+        ".guest_transition.boot_id_changed == true" in application,
+        "VPC attachment acceptance must require a proven guest boot transition",
+    )
+    require(
+        "acceptance-vpc-reboot" not in application,
+        "VPC attachment must not be followed by a second explicit reboot",
+    )
+    reboot_action = 'vultr-lifecycle action-plan "${vultr_spec}" "${machine}" reboot'
+    require(
+        application.count(reboot_action) == 1,
+        "application acceptance must retain exactly one explicit reboot for final persistence verification",
+    )
+
 
 if __name__ == "__main__":
     main()
