@@ -54,7 +54,10 @@ jobs:
 
       - name: Validate durable release publisher
         shell: bash
-        run: bash -n edge-platform/scripts/publish_durable_release.sh
+        run: |
+          set -euo pipefail
+          bash -n edge-platform/scripts/publish_durable_release.sh
+          python3 edge-platform/scripts/test_publish_durable_release.py
 
       - name: Validate VM stack
         shell: bash
