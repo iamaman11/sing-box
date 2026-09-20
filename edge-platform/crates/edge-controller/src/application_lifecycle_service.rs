@@ -1173,7 +1173,7 @@ mod tests {
 
     fn test_desired(bundle_root: &str) -> DesiredApplicationState {
         DesiredApplicationState {
-            schema: 1,
+            schema: 2,
             environment: "test".to_owned(),
             vultr_spec_path: "infra/vultr/test.json".to_owned(),
             machine_id: "edge-1".to_owned(),

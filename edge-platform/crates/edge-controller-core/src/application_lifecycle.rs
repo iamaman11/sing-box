@@ -329,7 +329,7 @@ pub fn plan_application(
             desired_state_digest,
             desired_release: release,
             actions: Vec::new(),
-            reasons: vec!["runtime environment material is required but unavailable".to_owned()],
+            reasons: vec!["runtime credential material is required but unavailable".to_owned()],
         });
     }
 
@@ -564,7 +564,7 @@ mod tests {
 
     fn desired() -> DesiredApplicationState {
         DesiredApplicationState {
-            schema: 1,
+            schema: 2,
             environment: "production".to_owned(),
             vultr_spec_path: "infra/vultr/production.json".to_owned(),
             machine_id: "edge-1".to_owned(),
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn strict_schema_rejects_unknown_fields() {
         let raw = r#"{
-            "schema":1,
+            "schema":2,
             "environment":"production",
             "vultr_spec_path":"infra/vultr/production.json",
             "machine_id":"edge-1",
