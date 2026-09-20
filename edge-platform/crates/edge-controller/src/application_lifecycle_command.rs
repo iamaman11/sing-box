@@ -5,9 +5,9 @@ use crate::application_lifecycle_service::{
 };
 use crate::vultr_host_bootstrap::{strict_ssh_accept, verify_operator_key_matches};
 use crate::vultr_lifecycle_command::{
-    lifecycle_provider_from_env, load_desired_state, load_firewall_profiles,
-    operator_private_key_path_from_env, read_canonical_ssh_public_key, support_provider_from_env,
-    verified_firewall_bindings,
+    host_substrate_versions_from_env, lifecycle_provider_from_env, load_desired_state,
+    load_firewall_profiles, operator_private_key_path_from_env, read_canonical_ssh_public_key,
+    support_provider_from_env, verified_firewall_bindings,
 };
 use crate::vultr_lifecycle_service::plan_desired_state_with_firewall_profiles;
 use edge_controller_core::application_lifecycle::{
@@ -270,11 +270,13 @@ async fn resolve_application_authority(
     let operator_private_key_path = operator_private_key_path_from_env()?;
     let canonical_operator_public_key = read_canonical_ssh_public_key()?;
     verify_operator_key_matches(&operator_private_key_path, &canonical_operator_public_key)?;
+    let substrate = host_substrate_versions_from_env()?;
     strict_ssh_accept(
         &instance.main_ip,
         &desired.machine_id,
         &operator_private_key_path,
         &canonical_operator_public_key,
+        &substrate,
         15,
         Duration::from_secs(2),
     )

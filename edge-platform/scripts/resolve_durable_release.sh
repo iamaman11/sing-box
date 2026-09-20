@@ -217,6 +217,13 @@ controller_sha="$(extract_single edge_controller_sha256)"
 gateway_image="$(extract_single sing_box_image)"
 warp_image="$(extract_single warp_egress_image)"
 mesh_image="$(extract_single mesh_image)"
+docker_engine_version="$(extract_single docker_engine_version)"
+containerd_version="$(extract_single containerd_version)"
+compose_version="$(extract_single compose_version)"
+
+for package_version in "$docker_engine_version" "$containerd_version" "$compose_version"; do
+  [[ "$package_version" =~ ^[A-Za-z0-9.+:~_-]+$ ]]
+done
 
 test "$verified_release_set_sha" = "$release_set_sha"
 test "$schema_version" = "2"
@@ -241,6 +248,9 @@ EDGE_AGENT_SHA256=$agent_sha
 EDGE_GATEWAY_IMAGE=$gateway_image
 EDGE_WARP_EGRESS_IMAGE=$warp_image
 EDGE_MESH_IMAGE=$mesh_image
+EDGE_DOCKER_ENGINE_VERSION=$docker_engine_version
+EDGE_CONTAINERD_VERSION=$containerd_version
+EDGE_COMPOSE_VERSION=$compose_version
 EOF
 chmod 0644 "${out}/resolved.env"
 

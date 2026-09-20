@@ -71,6 +71,9 @@ print("edge_controller_sha256={csha}")
 print("sing_box_image=ghcr.io/iamaman11/vultr-edge-gateway@sha256:"+"1"*64)
 print("warp_egress_image=ghcr.io/iamaman11/vultr-warp-egress@sha256:"+"2"*64)
 print("mesh_image=docker.io/cloudflare/mesh@sha256:"+"3"*64)
+print("docker_engine_version=5:29.8.1-1~debian.13~trixie")
+print("containerd_version=2.3.5-1~debian.13~trixie")
+print("compose_version=5.5.1-1~debian.13~trixie")
 """.encode()
     acceptance=(json.dumps({"schema":1,"accepted_revision":accepted_override or accepted,
       "candidate_revision":candidate,"source_tree":tree,"candidate_run_id":123})+"\n").encode()
@@ -119,6 +122,9 @@ def run(state,meta,expected=None,ok=False):
         assert vals["EDGE_RELEASE_SET_SHA256"]==meta["pbsha"]
         assert vals["EDGE_CONTROLLER_SHA256"]==meta["csha"]
         assert vals["EDGE_AGENT_SHA256"]==meta["asha"]
+        assert vals["EDGE_DOCKER_ENGINE_VERSION"]=="5:29.8.1-1~debian.13~trixie"
+        assert vals["EDGE_CONTAINERD_VERSION"]=="2.3.5-1~debian.13~trixie"
+        assert vals["EDGE_COMPOSE_VERSION"]=="5.5.1-1~debian.13~trixie"
       else:
         assert p.returncode!=0,p.stdout
 

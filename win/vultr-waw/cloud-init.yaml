@@ -35,8 +35,12 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
+      DOCKER_ENGINE_VERSION='@@DOCKER_ENGINE_VERSION@@'
+      CONTAINERD_VERSION='@@CONTAINERD_VERSION@@'
+      COMPOSE_VERSION='@@COMPOSE_VERSION@@'
+
       apt-get update
-      apt-get install -y ca-certificates curl
+      apt-get install -y --no-install-recommends ca-certificates curl
       install -m 0755 -d /etc/apt/keyrings
       curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
       chmod a+r /etc/apt/keyrings/docker.asc
@@ -52,7 +56,36 @@ write_files:
       EOF
       apt-get update
       apt-get remove -y docker.io docker-compose containerd runc || true
-      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      apt-get install -y --no-install-recommends \
+        "docker-ce=${DOCKER_ENGINE_VERSION}" \
+        "docker-ce-cli=${DOCKER_ENGINE_VERSION}" \
+        "containerd.io=${CONTAINERD_VERSION}" \
+        "docker-compose-plugin=${COMPOSE_VERSION}"
+
+      require_package_version() {
+        local package="$1"
+        local expected="$2"
+        local actual
+        actual="$(dpkg-query -W -f='${Version}' "$package")"
+        if [[ "$actual" != "$expected" ]]; then
+          echo "package version mismatch for $package: expected=$expected actual=$actual" >&2
+          exit 1
+        fi
+      }
+
+      require_package_version docker-ce "$DOCKER_ENGINE_VERSION"
+      require_package_version docker-ce-cli "$DOCKER_ENGINE_VERSION"
+      require_package_version containerd.io "$CONTAINERD_VERSION"
+      require_package_version docker-compose-plugin "$COMPOSE_VERSION"
+      apt-mark hold docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null
+
+      install -d -m 0755 /var/lib/singbox-lifecycle
+      cat > /var/lib/singbox-lifecycle/host-substrate.env <<EOF
+      docker_engine_version=${DOCKER_ENGINE_VERSION}
+      containerd_version=${CONTAINERD_VERSION}
+      compose_version=${COMPOSE_VERSION}
+      EOF
+      chmod 0644 /var/lib/singbox-lifecycle/host-substrate.env
   - path: /usr/local/sbin/prepare-edge-host.sh
     permissions: "0755"
     content: |
@@ -67,3 +100,4 @@ runcmd:
   - [bash, -lc, "/usr/local/sbin/install-docker.sh"]
   - [bash, -lc, "systemctl enable docker --now"]
   - [bash, -lc, "/usr/local/sbin/prepare-edge-host.sh"]
+  - [bash, -lc, "docker version >/dev/null && docker compose version >/dev/null && install -d -m 0755 /var/lib/singbox-lifecycle && printf '%s\\n' exact-substrate-ready > /var/lib/singbox-lifecycle/host-bootstrap"]

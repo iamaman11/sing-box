@@ -18,6 +18,49 @@ pub struct StrictBootstrapBundle {
     pub cloud_init: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSubstrateVersions {
+    pub docker_engine_version: String,
+    pub containerd_version: String,
+    pub compose_version: String,
+}
+
+impl HostSubstrateVersions {
+    pub fn new(
+        docker_engine_version: String,
+        containerd_version: String,
+        compose_version: String,
+    ) -> Result<Self, String> {
+        let value = Self {
+            docker_engine_version,
+            containerd_version,
+            compose_version,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        validate_package_version("Docker Engine", &self.docker_engine_version)?;
+        validate_package_version("containerd", &self.containerd_version)?;
+        validate_package_version("Compose", &self.compose_version)?;
+        Ok(())
+    }
+}
+
+fn validate_package_version(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b':' | b'~' | b'_' | b'-')
+        })
+    {
+        return Err(format!(
+            "{label} package version is not a safe exact Debian version"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstanceAction {
     Start,
@@ -272,6 +315,7 @@ pub fn prepare_strict_bootstrap(
     logical_hostname: &str,
     operator_private_key_path: &Path,
     canonical_operator_public_key: &str,
+    substrate: &HostSubstrateVersions,
 ) -> Result<StrictBootstrapBundle, String> {
     validate_hostname(logical_hostname)?;
     if !operator_private_key_path.is_file() {
@@ -332,6 +376,7 @@ pub fn prepare_strict_bootstrap(
             &private_key,
             &public_key,
             &certificate,
+            substrate,
         )?;
         Ok(StrictBootstrapBundle { cloud_init })
     })();
@@ -346,7 +391,9 @@ fn render_strict_cloud_init(
     host_private_key: &str,
     host_public_key: &str,
     host_certificate: &str,
+    substrate: &HostSubstrateVersions,
 ) -> Result<String, String> {
+    let base_cloud_init = render_host_substrate_versions(base_cloud_init, substrate)?;
     if !base_cloud_init.starts_with("#cloud-config\n") {
         return Err("bootstrap template must start with #cloud-config".to_owned());
     }
@@ -384,10 +431,54 @@ fn render_strict_cloud_init(
     rendered = rendered.replacen(write_anchor, &files, 1);
     rendered = rendered.replacen(
         run_anchor,
-        "runcmd:\n  - [bash, -lc, \"sshd -t && systemctl restart ssh\"]\n  - [bash, -lc, \"install -d -m 0755 /var/lib/singbox-lifecycle && printf '%s\\n' strict-host-cert-ready > /var/lib/singbox-lifecycle/host-bootstrap\"]\n",
+        "runcmd:\n  - [bash, -lc, \"sshd -t && systemctl restart ssh\"]\n",
         1,
     );
     Ok(rendered)
+}
+
+fn render_host_substrate_versions(
+    template: &str,
+    substrate: &HostSubstrateVersions,
+) -> Result<String, String> {
+    substrate.validate()?;
+    let replacements = [
+        (
+            "@@DOCKER_ENGINE_VERSION@@",
+            substrate.docker_engine_version.as_str(),
+        ),
+        (
+            "@@CONTAINERD_VERSION@@",
+            substrate.containerd_version.as_str(),
+        ),
+        ("@@COMPOSE_VERSION@@", substrate.compose_version.as_str()),
+    ];
+    let mut rendered = template.to_owned();
+    for (marker, value) in replacements {
+        if rendered.matches(marker).count() != 1 {
+            return Err(format!(
+                "bootstrap template must contain exactly one {marker} marker"
+            ));
+        }
+        rendered = rendered.replacen(marker, value, 1);
+    }
+    Ok(rendered)
+}
+
+fn substrate_acceptance_command(substrate: &HostSubstrateVersions) -> Result<String, String> {
+    substrate.validate()?;
+    Ok(format!(
+        "test \"$(cat /var/lib/singbox-lifecycle/host-bootstrap)\" = exact-substrate-ready && \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-ce)\" = '{}' && \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-ce-cli)\" = '{}' && \
+         test \"$(dpkg-query -W -f='${{Version}}' containerd.io)\" = '{}' && \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-compose-plugin)\" = '{}' && \
+         sudo systemctl is-active --quiet docker && sudo docker version >/dev/null && sudo docker compose version >/dev/null && sudo sshd -t",
+        substrate.docker_engine_version,
+        substrate.docker_engine_version,
+        substrate.containerd_version,
+        substrate.compose_version,
+    ))
 }
 
 fn cloud_init_file(path: &str, mode: &str, content: &str) -> String {
@@ -434,6 +525,7 @@ pub async fn strict_ssh_accept(
     logical_hostname: &str,
     operator_private_key_path: &Path,
     canonical_operator_public_key: &str,
+    substrate: &HostSubstrateVersions,
     attempts: usize,
     delay: Duration,
 ) -> Result<(), String> {
@@ -441,12 +533,13 @@ pub async fn strict_ssh_accept(
         return Err("strict SSH attempts must be greater than zero".to_owned());
     }
     let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let substrate_check = substrate_acceptance_command(substrate)?;
     let args = strict_ssh_args(
         target_ip,
         logical_hostname,
         operator_private_key_path,
         &trust,
-        "test -f /var/lib/singbox-lifecycle/host-bootstrap && sudo sshd -t",
+        &substrate_check,
     );
     let mut last = None;
     for attempt in 0..attempts {
@@ -1122,21 +1215,45 @@ mod tests {
     #[test]
     fn strict_cloud_init_contains_host_cert_and_locked_root() {
         let base = "#cloud-config\nwrite_files:\n  - path: /tmp/base\n    content: base\nruncmd:\n  - [true]\n";
+        let base = format!(
+            "{base}# @@DOCKER_ENGINE_VERSION@@ @@CONTAINERD_VERSION@@ @@COMPOSE_VERSION@@\n"
+        );
+        let substrate = HostSubstrateVersions::new(
+            "5:29.8.1-1~debian.13~trixie".to_owned(),
+            "2.3.5-1~debian.13~trixie".to_owned(),
+            "5.5.1-1~debian.13~trixie".to_owned(),
+        )
+        .unwrap();
         let rendered = render_strict_cloud_init(
-            base,
+            &base,
             "edge-1",
             "ssh-ed25519 AAAACanonical comment",
             "PRIVATE\n",
             "ssh-ed25519 AAAAHost host\n",
             "ssh-ed25519-cert-v01@openssh.com AAAACert host\n",
+            &substrate,
         )
         .unwrap();
 
         assert!(rendered.contains("HostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub"));
+        assert!(rendered.contains("5:29.8.1-1~debian.13~trixie"));
+        assert!(rendered.contains("2.3.5-1~debian.13~trixie"));
+        assert!(!rendered.contains("@@DOCKER_ENGINE_VERSION@@"));
         assert!(rendered.contains("PermitRootLogin no"));
         assert!(rendered.contains("name: singbox-ops"));
         assert!(rendered.contains("hostname: edge-1"));
         assert!(!rendered.contains("StrictHostKeyChecking=accept-new"));
+    }
+
+    #[test]
+    fn substrate_versions_reject_shell_metacharacters() {
+        let error = HostSubstrateVersions::new(
+            "29.0.0;touch-/tmp/bad".to_owned(),
+            "2.3.5".to_owned(),
+            "5.5.1".to_owned(),
+        )
+        .unwrap_err();
+        assert!(error.contains("Docker Engine"));
     }
 
     #[test]

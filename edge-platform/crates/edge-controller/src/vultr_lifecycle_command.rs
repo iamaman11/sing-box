@@ -1,5 +1,5 @@
 use crate::vultr_host_bootstrap::{
-    InstanceAction, VultrOperationalApiProvider, apply_instance_action,
+    HostSubstrateVersions, InstanceAction, VultrOperationalApiProvider, apply_instance_action,
     ensure_host_certificate_rotated, prepare_strict_bootstrap, scrub_user_data, strict_ssh_accept,
     verify_operator_key_matches, wait_provider_ready,
 };
@@ -148,6 +148,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .find(|machine| machine.id == args[1])
         .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
     let profiles = load_firewall_profiles(&desired)?;
+    let substrate = host_substrate_versions_from_env()?;
     let policy = LifecycleExecutionPolicy::default();
     let canonical_public_key = read_canonical_ssh_public_key()?;
     let operator_private_key_path = operator_private_key_path_from_env()?;
@@ -236,6 +237,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
             &machine.id,
             &operator_private_key_path,
             &canonical_public_key,
+            &substrate,
         )?;
         resolve_create_prerequisites(
             machine,
@@ -271,6 +273,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &machine.id,
         &operator_private_key_path,
         &canonical_public_key,
+        &substrate,
         60,
         std::time::Duration::from_secs(5),
     )
@@ -796,6 +799,19 @@ fn vultr_api_key_from_env() -> Result<String, String> {
     env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())
 }
 
+pub(crate) fn host_substrate_versions_from_env() -> Result<HostSubstrateVersions, String> {
+    HostSubstrateVersions::new(
+        env::var("EDGE_DOCKER_ENGINE_VERSION").map_err(|_| {
+            "EDGE_DOCKER_ENGINE_VERSION is required for vultr-lifecycle apply".to_owned()
+        })?,
+        env::var("EDGE_CONTAINERD_VERSION").map_err(|_| {
+            "EDGE_CONTAINERD_VERSION is required for vultr-lifecycle apply".to_owned()
+        })?,
+        env::var("EDGE_COMPOSE_VERSION")
+            .map_err(|_| "EDGE_COMPOSE_VERSION is required for vultr-lifecycle apply".to_owned())?,
+    )
+}
+
 pub(crate) fn read_canonical_ssh_public_key() -> Result<String, String> {
     let path = Path::new(CANONICAL_SSH_PUBLIC_KEY_PATH);
     let public_key = fs::read_to_string(path).map_err(|err| {
@@ -819,7 +835,7 @@ fn resolve_create_prerequisites(
     firewall: Option<&ResolvedFirewallProfile>,
     cloud_init: String,
 ) -> Result<CreatePrerequisites, String> {
-    if machine.bootstrap_profile != "singbox-host-v1" {
+    if machine.bootstrap_profile != "singbox-host-v2" {
         return Err(format!(
             "bootstrap profile {} is not implemented by the current application layer",
             machine.bootstrap_profile
@@ -866,7 +882,7 @@ fn resolve_create_prerequisites(
 }
 
 fn read_base_cloud_init(machine: &MachineSpec) -> Result<String, String> {
-    if machine.bootstrap_profile != "singbox-host-v1" {
+    if machine.bootstrap_profile != "singbox-host-v2" {
         return Err(format!(
             "bootstrap profile {} is not implemented by the current application layer",
             machine.bootstrap_profile
@@ -937,7 +953,7 @@ mod tests {
         "enable_ipv6": false,
         "firewall_profile": "edge"
       },
-      "bootstrap_profile": "singbox-host-v1"
+      "bootstrap_profile": "singbox-host-v2"
     }
   ]
 }"#,
