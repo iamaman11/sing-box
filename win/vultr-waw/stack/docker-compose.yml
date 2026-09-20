@@ -58,6 +58,7 @@ services:
       - ./rendered/line2-proxy.json:/etc/sing-box/config.json:ro
       - ./certs/proxy.crt:/certs/proxy.crt:ro
       - ./certs/proxy.key:/certs/proxy.key:ro
+      - ./tunnel-state:/var/lib/sing-box:ro
     networks:
       - edge_net
 
