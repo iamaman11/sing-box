@@ -190,10 +190,7 @@ pub struct VultrVpc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VultrVpcAttachment {
     pub id: String,
-    pub attachment_type: String,
-    pub mac_address: String,
     pub private_ipv4: String,
-    pub subscription_type: String,
     pub subscription_id: String,
 }
 
@@ -1386,10 +1383,7 @@ impl From<VultrVpcAttachmentPayload> for VultrVpcAttachment {
     fn from(value: VultrVpcAttachmentPayload) -> Self {
         Self {
             id: value.id,
-            attachment_type: value.attachment_type,
-            mac_address: value.mac_address,
             private_ipv4: value.ip.v4,
-            subscription_type: value.linked_subscription.subscription_type,
             subscription_id: value.linked_subscription.id,
         }
     }
