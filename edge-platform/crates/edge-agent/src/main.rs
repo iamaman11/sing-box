@@ -1868,6 +1868,7 @@ mod tests {
             &root.join("docker-compose.yml"),
             &mut state,
             &BTreeSet::new(),
+            true,
         )
         .unwrap();
         assert!(state.compose_file_present);
@@ -1907,6 +1908,7 @@ mod tests {
             &root.join("docker-compose.yml"),
             &mut state,
             &enabled_profiles,
+            true,
         )
         .unwrap();
         assert_eq!(
@@ -1916,6 +1918,20 @@ mod tests {
         assert_eq!(observation.expected_tcp_ports, vec![3128]);
         assert_eq!(observation.expected_udp_ports, vec![8443]);
 
+        let tunnel_only = inspect_compose(
+            &root.join("docker-compose.yml"),
+            &mut AgentState::bootstrap_placeholder(),
+            &enabled_profiles,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            tunnel_only.expected_containers,
+            vec!["vultr-line1-gateway"]
+        );
+        assert!(tunnel_only.expected_tcp_ports.is_empty());
+        assert_eq!(tunnel_only.expected_udp_ports, vec![8443]);
+
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1924,16 +1940,18 @@ mod tests {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(stack.join("rendered")).unwrap();
-        fs::create_dir_all(stack.join("certs")).unwrap();
+        let owner = stack
+            .join("tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+            .join("edge.example.com");
+        fs::create_dir_all(&owner).unwrap();
         fs::write(
             stack.join(".env.runtime"),
             "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\n",
         )
         .unwrap();
-        fs::write(stack.join("rendered/line2-proxy.json"), "{}").unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
-        fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
-        fs::write(stack.join("certs/proxy.key"), "key").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "crt").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "key").unwrap();
         fs::write(
             root.join("deployment-summary.json"),
             r#"{"label":"bundle-a","instance_id":"instance-1"}"#,
