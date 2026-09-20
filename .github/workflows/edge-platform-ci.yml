@@ -158,7 +158,9 @@ jobs:
 
           compose = (root / "docker-compose.yml").read_text()
           assert "./certs:/certs:ro" in compose
-          assert "./tunnel-state:/var/lib/sing-box:ro" in compose
+          assert "../certificate-state:/var/lib/sing-box" in compose
+          assert "../certificate-state:/var/lib/sing-box:ro" in compose
+          assert "./tunnel-state:/var/lib/sing-box" not in compose
           assert "./certs/proxy.crt:/certs/proxy.crt:ro" not in compose
           assert "./certs/proxy.key:/certs/proxy.key:ro" not in compose
           bootstrap = (root / "bootstrap.sh").read_text()
