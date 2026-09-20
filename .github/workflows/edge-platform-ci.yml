@@ -1,16 +1,6 @@
 name: Edge Platform CI
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "edge-platform/**"
-      - "infra/vultr/**"
-      - "infra/application/**"
-      - "win/**"
-      - ".github/workflows/edge-platform-ci.yml"
-      - ".github/workflows/vultr-lifecycle.yml"
-      - ".github/workflows/vm-application-lifecycle.yml"
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, closed]
@@ -27,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: edge-platform-ci-${{ github.event_name }}-${{ github.event.action == 'closed' && 'promotion' || 'candidate' }}-${{ github.event.pull_request.number || github.ref }}
+  group: edge-platform-ci-${{ github.event.action == 'closed' && 'promotion' || 'candidate' }}-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -910,9 +900,7 @@ jobs:
 
   promote:
     name: Promote accepted candidate
-    if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true)
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -926,20 +914,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
-          EVENT_CANDIDATE_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+          ACCEPTED_REVISION: ${{ github.event.pull_request.merge_commit_sha }}
+          EVENT_CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           [[ "${ACCEPTED_REVISION}" =~ ^[0-9a-f]{40}$ ]]
 
-          if [[ -n "${EVENT_CANDIDATE_REVISION}" ]]; then
-            candidate_revision="${EVENT_CANDIDATE_REVISION}"
-          else
-            prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls")"
-            test "$(jq 'length' <<<"${prs}")" -eq 1
-            candidate_revision="$(jq -er '.[0] | select(.merged_at != null) | .head.sha' <<<"${prs}")"
-          fi
+          candidate_revision="${EVENT_CANDIDATE_REVISION}"
           [[ "${candidate_revision}" =~ ^[0-9a-f]{40}$ ]]
 
           accepted_tree="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}" --jq '.tree.sha')"
