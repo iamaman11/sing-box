@@ -1324,7 +1324,7 @@ async fn converge_mesh_runtime(
         if last.runtime_ready {
             return Ok(last);
         }
-        sleep(Duration::from_secs(2));
+        tokio::time::sleep(Duration::from_secs(2)).await;
         last = inspect_mesh_runtime(stack_dir).await;
     }
     Ok(last)

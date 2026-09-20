@@ -100,13 +100,15 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
 
     for summary in summaries {
         let running = matches!(summary.state, Some(ContainerSummaryStateEnum::RUNNING));
-        let names = summary
+        let mut names = summary
             .names
             .unwrap_or_default()
             .into_iter()
             .map(|name| name.trim_start_matches('/').to_owned())
             .filter(|name| !name.is_empty())
             .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
 
         if running {
             running_containers.extend(names.iter().cloned());
@@ -127,11 +129,13 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
         }
 
         let image = summary.image;
-        let networks = summary
+        let mut networks = summary
             .network_settings
             .and_then(|settings| settings.networks)
             .map(|networks| networks.into_keys().collect::<Vec<_>>())
             .unwrap_or_default();
+        networks.sort();
+        networks.dedup();
 
         for name in names {
             containers.push(DockerContainerObservation {
@@ -213,7 +217,7 @@ mod tests {
                 "docker.io/cloudflare/mesh@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 None,
                 None,
-                &["vultr-edge_mesh_net"],
+                &["z-net", "vultr-edge_mesh_net", "a-net"],
             ),
             container_summary(
                 "vultr-line2-proxy",
@@ -242,6 +246,19 @@ mod tests {
         assert_eq!(observation.listening_udp_ports, vec![8443]);
         assert!(observation.container_present("stopped-container"));
         assert!(!observation.container_running("stopped-container"));
+        let mesh = observation
+            .containers
+            .iter()
+            .find(|container| container.name == "vultr-cloudflare-mesh")
+            .unwrap();
+        assert_eq!(
+            mesh.networks,
+            vec![
+                "a-net".to_owned(),
+                "vultr-edge_mesh_net".to_owned(),
+                "z-net".to_owned()
+            ]
+        );
         assert!(observation.container_on_mesh_network("vultr-cloudflare-mesh"));
         assert!(observation.container_exact_image_ready(
             "vultr-cloudflare-mesh",

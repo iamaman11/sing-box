@@ -278,6 +278,8 @@ jobs:
           assert "ContainerSummaryStateEnum::RUNNING" in agent_docker
           assert "PortSummaryTypeEnum::TCP" in agent_docker
           assert "PortSummaryTypeEnum::UDP" in agent_docker
+          assert 'args(["ps", "--format"' not in agent
+          assert '"inspect", "--format"' not in agent
           assert "parse_docker_port_mapping" not in agent
           assert "mesh_network_membership_ready" not in agent
           for typed_network_contract in [
