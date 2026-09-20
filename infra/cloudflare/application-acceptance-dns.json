@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "environment": "application-acceptance",
+  "zone_name": "alegria.by",
+  "record_name": "stage2-acceptance.alegria.by"
+}
