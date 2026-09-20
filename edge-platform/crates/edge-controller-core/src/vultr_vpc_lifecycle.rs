@@ -207,7 +207,7 @@ pub fn plan_attachment(
     let matching = attachments
         .attachments
         .iter()
-.filter(|attachment| attachment.subscription_id == target_instance_id)
+        .filter(|attachment| attachment.subscription_id == target_instance_id)
         .collect::<Vec<_>>();
     match matching.as_slice() {
         [] => Ok(AttachmentPlan {
