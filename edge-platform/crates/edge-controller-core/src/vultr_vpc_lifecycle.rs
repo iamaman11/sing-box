@@ -151,7 +151,10 @@ impl DesiredVpcState {
     }
 
     pub fn ownership_description(&self) -> String {
-        format!("{DESCRIPTION_PREFIX}{}", self.environment)
+        format!(
+            "{DESCRIPTION_PREFIX}{}:{}",
+            self.environment, self.machine_id
+        )
     }
 }
 
@@ -516,7 +519,7 @@ mod tests {
         ObservedVpc {
             provider_id: "vpc-1".to_owned(),
             region: "waw".to_owned(),
-            description: "managed-by-sing-box:vpc:application-acceptance".to_owned(),
+            description: "managed-by-sing-box:vpc:application-acceptance:application-acceptance-1".to_owned(),
             v4_subnet: "10.0.4.0".to_owned(),
             v4_subnet_mask: 24,
         }
@@ -539,7 +542,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             parsed.ownership_description(),
-            "managed-by-sing-box:vpc:application-acceptance"
+            "managed-by-sing-box:vpc:application-acceptance:application-acceptance-1"
         );
         assert!(DesiredVpcState::parse_json(
             r#"{"schema":1,"environment":"application-acceptance","region":"waw","machine_id":"application-acceptance-1","cidr":"10.0.0.0/24"}"#
