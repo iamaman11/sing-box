@@ -3323,8 +3323,8 @@ mod tests {
         );
 
         let compose = include_str!("../../../../win/vultr-waw/stack/docker-compose.yml");
-        assert!(compose.contains("../warp-state:/var/lib/cloudflare-warp"));
-        assert!(!compose.contains("./warp-state:/var/lib/cloudflare-warp"));
+        assert!(compose.contains("- ../warp-state:/var/lib/cloudflare-warp"));
+        assert!(!compose.contains("- ./warp-state:/var/lib/cloudflare-warp"));
 
         fs::remove_dir_all(root).ok();
     }
