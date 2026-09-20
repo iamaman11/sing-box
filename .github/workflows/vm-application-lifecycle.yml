@@ -616,6 +616,7 @@ jobs:
                 "${bin}" vultr-lifecycle cleanup "${vultr_spec}" "${support_authority}" >/dev/null 2>&1 || true
               fi
             fi
+            return 0
           )
 
           # Recover any exact acceptance-owned residue from a previous failed run.
