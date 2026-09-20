@@ -251,7 +251,6 @@ pub(crate) async fn execute_desired(
         desired,
         artifact,
         &prepared.release.bundle_digest,
-        true,
         &initial_observation,
     )
     .map_err(|err| err.to_string())?;
@@ -317,7 +316,6 @@ pub(crate) async fn execute_desired(
         desired,
         artifact,
         &prepared.release.bundle_digest,
-        true,
         &final_observation,
     )
     .map_err(|err| err.to_string())?;
@@ -348,7 +346,6 @@ pub(crate) async fn verify_desired(
         desired,
         artifact,
         &prepared.release.bundle_digest,
-        true,
         &observation,
     )
     .map_err(|err| err.to_string())?;
