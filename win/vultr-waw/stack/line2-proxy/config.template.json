@@ -57,8 +57,8 @@
       ],
       "tls": {
         "enabled": true,
-        "certificate_path": "/certs/proxy.crt",
-        "key_path": "/certs/proxy.key",
+        "certificate_path": "${PROXY_CERT_PATH}",
+        "key_path": "${PROXY_KEY_PATH}",
         "min_version": "1.2",
         "alpn": [
           "h2",
@@ -103,8 +103,8 @@
       ],
       "tls": {
         "enabled": true,
-        "certificate_path": "/certs/proxy.crt",
-        "key_path": "/certs/proxy.key",
+        "certificate_path": "${PROXY_CERT_PATH}",
+        "key_path": "${PROXY_KEY_PATH}",
         "min_version": "1.2",
         "alpn": [
           "h2",
