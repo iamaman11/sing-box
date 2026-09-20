@@ -260,6 +260,22 @@ pub async fn apply_instance_action<P: OperationalProvider>(
     ))
 }
 
+pub async fn verify_user_data_scrubbed<P: OperationalProvider>(
+    provider: &mut P,
+    instance_id: &str,
+) -> Result<(), String> {
+    let observed = provider
+        .get_user_data(instance_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    if observed != SCRUBBED_USER_DATA {
+        return Err(format!(
+            "instance {instance_id} user-data is not in the canonical scrubbed state"
+        ));
+    }
+    Ok(())
+}
+
 pub async fn scrub_user_data<P: OperationalProvider>(
     provider: &mut P,
     instance_id: &str,
@@ -559,6 +575,30 @@ pub async fn strict_ssh_accept(
         "strict SSH acceptance failed for {logical_hostname} at {target_ip}: {}",
         last.unwrap_or_else(|| "no SSH attempt was made".to_owned())
     ))
+}
+
+pub fn verify_host_certificate_rotated(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    minimum_serial: u64,
+) -> Result<(), String> {
+    if minimum_serial == 0 {
+        return Err("minimum host certificate serial must be greater than zero".to_owned());
+    }
+    let observed = read_host_certificate_serial(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        canonical_operator_public_key,
+    )?;
+    if observed < minimum_serial {
+        return Err(format!(
+            "host certificate serial is stale: required at least {minimum_serial}, observed {observed}"
+        ));
+    }
+    Ok(())
 }
 
 pub fn ensure_host_certificate_rotated(
@@ -1147,6 +1187,26 @@ mod tests {
             .await
             .unwrap();
         assert!(!changed);
+        assert_eq!(provider.update_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn read_only_user_data_verification_never_mutates() {
+        let mut provider = FakeOperationalProvider {
+            user_data: SCRUBBED_USER_DATA.to_owned(),
+            ..FakeOperationalProvider::default()
+        };
+        verify_user_data_scrubbed(&mut provider, "instance-1")
+            .await
+            .unwrap();
+        assert_eq!(provider.update_calls, 0);
+
+        provider.user_data = "unexpected bootstrap material".to_owned();
+        assert!(
+            verify_user_data_scrubbed(&mut provider, "instance-1")
+                .await
+                .is_err()
+        );
         assert_eq!(provider.update_calls, 0);
     }
 
