@@ -452,7 +452,9 @@ mod tests {
     }
 
     async fn apply_authority(provider: &mut FakeProvider, target_ip: &str) -> String {
-        let (observed, plan) = plan_dns_apply(provider, &desired(), target_ip).await.unwrap();
+        let (observed, plan) = plan_dns_apply(provider, &desired(), target_ip)
+            .await
+            .unwrap();
         authorize_dns_apply(&desired(), target_ip, &observed, plan)
             .unwrap()
             .authority
@@ -480,8 +482,8 @@ mod tests {
             &authority,
             policy(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         assert_eq!(provider.create_calls, 1);
         assert!(matches!(report.performed, ApplyAction::Create { .. }));
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
@@ -502,8 +504,8 @@ mod tests {
             &authority,
             policy(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         assert_eq!(provider.create_calls, 1);
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
     }
@@ -544,8 +546,8 @@ mod tests {
             &authority,
             policy(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         assert_eq!(provider.update_calls, 1);
         assert!(matches!(report.performed, ApplyAction::Update { .. }));
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
