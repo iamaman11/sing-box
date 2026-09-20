@@ -651,7 +651,7 @@ mod tests {
     fn vpc_route_composition_rejects_git_routes_and_mismatched_authority() {
         let mut predeclared = mesh_base();
         predeclared.routes.push(MeshRouteSpec {
-            network: "1.1.1.1/32".to_owned(),
+            network: "10.255.0.0/24".to_owned(),
         });
         assert!(
             compose_verified_vpc_route(
