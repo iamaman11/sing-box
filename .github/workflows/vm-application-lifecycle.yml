@@ -670,26 +670,20 @@ jobs:
           attachment_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-vpc-attachment-plan.json")"
           "${bin}" vultr-vpc attachment-apply "${vpc_spec}" "${attachment_authority}" \
             > "${RUNNER_TEMP}/acceptance-vpc-attachment-apply.json"
-          jq -e '.performed.kind == "ATTACH_INSTANCE" and .next_plan.action.kind == "NOOP"' \
+          jq -e '.performed.kind == "ATTACH_INSTANCE" and
+                 .next_plan.action.kind == "NOOP" and
+                 .guest_transition.boot_id_changed == true and
+                 .guest_transition.boot_id_before != .guest_transition.boot_id_after' \
             "${RUNNER_TEMP}/acceptance-vpc-attachment-apply.json" >/dev/null
 
-          # Reboot after attachment so the guest network stack sees the provider-added VPC NIC.
-          "${bin}" vultr-lifecycle action-plan "${vultr_spec}" "${machine}" reboot \
-            > "${RUNNER_TEMP}/acceptance-vpc-reboot-plan.json"
-          reboot_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-vpc-reboot-plan.json")"
-          "${bin}" vultr-lifecycle action "${vultr_spec}" "${machine}" reboot "${reboot_authority}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-reboot.json"
-          jq -e '.action == "reboot" and
-                 .reboot_observation.boot_id_changed == true and
-                 .reboot_observation.boot_id_before != .reboot_observation.boot_id_after' \
-            "${RUNNER_TEMP}/acceptance-vpc-reboot.json" >/dev/null
+          # VPC attachment owns and proves the provider-induced guest reboot boundary.
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-post-reboot-plan.json"
-          post_reboot_vm_authority="$(machine_authority "${RUNNER_TEMP}/acceptance-vpc-post-reboot-plan.json")"
-          "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}" "${post_reboot_vm_authority}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-post-reboot-vm.json"
+            > "${RUNNER_TEMP}/acceptance-vpc-post-attachment-plan.json"
+          post_attachment_vm_authority="$(machine_authority "${RUNNER_TEMP}/acceptance-vpc-post-attachment-plan.json")"
+          "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}" "${post_attachment_vm_authority}" \
+            > "${RUNNER_TEMP}/acceptance-vpc-post-attachment-vm.json"
           jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"' \
-            "${RUNNER_TEMP}/acceptance-vpc-post-reboot-vm.json" >/dev/null
+            "${RUNNER_TEMP}/acceptance-vpc-post-attachment-vm.json" >/dev/null
 
           "${bin}" vultr-vpc verify "${vpc_spec}" \
             > "${RUNNER_TEMP}/acceptance-vpc-verify.json"

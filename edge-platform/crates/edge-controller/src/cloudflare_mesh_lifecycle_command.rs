@@ -551,6 +551,7 @@ mod tests {
             target: TargetInstance {
                 provider_id: "instance-1".to_owned(),
                 region: "waw".to_owned(),
+                main_ip: "203.0.113.10".to_owned(),
             },
             vpc_provider_id: "vpc-1".to_owned(),
             cidr: cidr.to_owned(),

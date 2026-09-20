@@ -983,7 +983,7 @@ async fn run_action_plan(args: &[String]) -> Result<(), String> {
     }))
 }
 
-fn validate_linux_boot_id(value: &str) -> Result<(), String> {
+pub(crate) fn validate_linux_boot_id(value: &str) -> Result<(), String> {
     let bytes = value.as_bytes();
     if bytes.len() != 36
         || !bytes.iter().enumerate().all(|(index, byte)| match index {
@@ -996,7 +996,24 @@ fn validate_linux_boot_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn wait_for_guest_boot_id_change(
+pub(crate) fn observe_guest_boot_id(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+) -> Result<String, String> {
+    let boot_id = strict_ssh_capture(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        canonical_operator_public_key,
+        "cat /proc/sys/kernel/random/boot_id",
+    )?;
+    validate_linux_boot_id(&boot_id)?;
+    Ok(boot_id)
+}
+
+pub(crate) async fn wait_for_guest_boot_id_change(
     target_ip: &str,
     logical_hostname: &str,
     operator_private_key_path: &Path,
@@ -1095,14 +1112,12 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         let canonical_public_key = read_canonical_ssh_public_key()?;
         let operator_private_key_path = operator_private_key_path_from_env()?;
         verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
-        let boot_id_before = strict_ssh_capture(
+        let boot_id_before = observe_guest_boot_id(
             &operational.main_ip,
             &args[1],
             &operator_private_key_path,
             &canonical_public_key,
-            "cat /proc/sys/kernel/random/boot_id",
         )?;
-        validate_linux_boot_id(&boot_id_before)?;
         Some((
             canonical_public_key,
             operator_private_key_path,
