@@ -533,13 +533,13 @@ mod tests {
         }
     }
 
-    fn guest_observation(lower_up: bool, include_route: bool) -> Ipv4NetworkObservation {
+    fn guest_observation() -> Ipv4NetworkObservation {
         Ipv4NetworkObservation {
             links: vec![edge_shared_types::Ipv4LinkObservation {
                 interface_index: 7,
                 name: "ens7".to_owned(),
                 up: true,
-                lower_up,
+                lower_up: true,
                 loopback: false,
             }],
             addresses: vec![edge_shared_types::Ipv4AddressObservation {
@@ -548,32 +548,131 @@ mod tests {
                 prefix_length: 24,
                 global_scope: true,
             }],
-            routes: if include_route {
-                vec![edge_shared_types::Ipv4RouteObservation {
-                    destination: "10.0.4.0".to_owned(),
-                    prefix_length: 24,
-                    output_interface_index: 7,
-                    preferred_source: Some("10.0.4.2".to_owned()),
-                    kernel_protocol: true,
-                    link_scope: true,
-                }]
-            } else {
-                Vec::new()
-            },
+            routes: vec![edge_shared_types::Ipv4RouteObservation {
+                destination: "10.0.4.0".to_owned(),
+                prefix_length: 24,
+                output_interface_index: 7,
+                preferred_source: Some("10.0.4.2".to_owned()),
+                kernel_protocol: true,
+                link_scope: true,
+            }],
         }
     }
 
     #[test]
-    fn guest_vpc_network_requires_exact_up_interface_and_connected_kernel_route() {
+    fn guest_vpc_network_accepts_only_exact_provider_backed_observation() {
         let ready = ready_report("10.0.4.0/24", "10.0.4.2");
-        let observation = guest_observation(true, true);
-
-        let report = evaluate_guest_vpc_network(&observation, &ready).unwrap();
+        let report = evaluate_guest_vpc_network(&guest_observation(), &ready).unwrap();
         assert_eq!(report.status, "PASS");
         assert_eq!(report.interface, "ens7");
+    }
 
-        assert!(evaluate_guest_vpc_network(&guest_observation(true, false), &ready).is_err());
-        assert!(evaluate_guest_vpc_network(&guest_observation(false, true), &ready).is_err());
+    #[test]
+    fn guest_vpc_network_rejects_missing_or_ambiguous_private_ip() {
+        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
+
+        let mut missing = guest_observation();
+        missing.addresses.clear();
+        assert!(evaluate_guest_vpc_network(&missing, &ready).is_err());
+
+        let mut ambiguous = guest_observation();
+        ambiguous.links.push(edge_shared_types::Ipv4LinkObservation {
+            interface_index: 8,
+            name: "ens8".to_owned(),
+            up: true,
+            lower_up: true,
+            loopback: false,
+        });
+        ambiguous
+            .addresses
+            .push(edge_shared_types::Ipv4AddressObservation {
+                interface_index: 8,
+                address: "10.0.4.2".to_owned(),
+                prefix_length: 24,
+                global_scope: true,
+            });
+        assert!(evaluate_guest_vpc_network(&ambiguous, &ready).is_err());
+
+        let mut wrong_prefix = guest_observation();
+        wrong_prefix.addresses[0].prefix_length = 25;
+        assert!(evaluate_guest_vpc_network(&wrong_prefix, &ready).is_err());
+    }
+
+    #[test]
+    fn guest_vpc_network_requires_admin_up_carrier_and_non_loopback_link() {
+        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
+
+        let mut admin_down = guest_observation();
+        admin_down.links[0].up = false;
+        assert!(evaluate_guest_vpc_network(&admin_down, &ready).is_err());
+
+        let mut carrier_down = guest_observation();
+        carrier_down.links[0].lower_up = false;
+        assert!(evaluate_guest_vpc_network(&carrier_down, &ready).is_err());
+
+        let mut loopback = guest_observation();
+        loopback.links[0].loopback = true;
+        assert!(evaluate_guest_vpc_network(&loopback, &ready).is_err());
+    }
+
+    #[test]
+    fn guest_vpc_network_requires_one_exact_connected_kernel_route() {
+        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
+
+        let mut missing = guest_observation();
+        missing.routes.clear();
+        assert!(evaluate_guest_vpc_network(&missing, &ready).is_err());
+
+        let mut duplicate = guest_observation();
+        duplicate.routes.push(duplicate.routes[0].clone());
+        assert!(evaluate_guest_vpc_network(&duplicate, &ready).is_err());
+
+        let mut wrong_interface = guest_observation();
+        wrong_interface.routes[0].output_interface_index = 8;
+        assert!(evaluate_guest_vpc_network(&wrong_interface, &ready).is_err());
+
+        let mut wrong_prefix = guest_observation();
+        wrong_prefix.routes[0].prefix_length = 25;
+        assert!(evaluate_guest_vpc_network(&wrong_prefix, &ready).is_err());
+
+        let mut wrong_preferred_source = guest_observation();
+        wrong_preferred_source.routes[0].preferred_source = Some("10.0.4.3".to_owned());
+        assert!(evaluate_guest_vpc_network(&wrong_preferred_source, &ready).is_err());
+
+        let mut wrong_protocol = guest_observation();
+        wrong_protocol.routes[0].kernel_protocol = false;
+        assert!(evaluate_guest_vpc_network(&wrong_protocol, &ready).is_err());
+
+        let mut wrong_scope = guest_observation();
+        wrong_scope.routes[0].link_scope = false;
+        assert!(evaluate_guest_vpc_network(&wrong_scope, &ready).is_err());
+    }
+
+    #[test]
+    fn guest_vpc_network_rejects_invalid_provider_network_authority() {
+        let observation = guest_observation();
+
+        assert!(
+            evaluate_guest_vpc_network(
+                &observation,
+                &ready_report("203.0.113.0/24", "203.0.113.2")
+            )
+            .is_err()
+        );
+        assert!(
+            evaluate_guest_vpc_network(
+                &observation,
+                &ready_report("10.0.4.7/24", "10.0.4.8")
+            )
+            .is_err()
+        );
+        assert!(
+            evaluate_guest_vpc_network(
+                &observation,
+                &ready_report("10.0.4.0/24", "10.0.5.2")
+            )
+            .is_err()
+        );
     }
 
     #[test]
