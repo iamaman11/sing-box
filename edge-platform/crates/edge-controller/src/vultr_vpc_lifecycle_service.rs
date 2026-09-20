@@ -1,11 +1,8 @@
-use edge_controller_core::vultr_lifecycle::{
-    MANAGED_BY_IDENTITY, decode_provider_tags,
-};
+use edge_controller_core::vultr_lifecycle::{MANAGED_BY_IDENTITY, decode_provider_tags};
 use edge_controller_core::vultr_vpc_lifecycle::{
-    AttachmentAction, AttachmentPlan, CleanupAction, CleanupPlan, DesiredVpcState,
-    ObservedVpc, ObservedVpcAttachment, VpcApplyAction, VpcApplyPlan,
-    VpcAttachmentObservation, VpcObservation, plan_attachment, plan_cleanup,
-    plan_vpc_apply, verify_cleanup_digest,
+    AttachmentAction, AttachmentPlan, CleanupAction, CleanupPlan, DesiredVpcState, ObservedVpc,
+    ObservedVpcAttachment, VpcApplyAction, VpcApplyPlan, VpcAttachmentObservation, VpcObservation,
+    plan_attachment, plan_cleanup, plan_vpc_apply, verify_cleanup_digest,
 };
 use edge_provider_vultr::{
     VultrError, VultrInstance, VultrVpc, VultrVpcAttachment, attach_vpc_to_instance_typed,
@@ -34,11 +31,8 @@ impl Default for VpcExecutionPolicy {
 #[allow(async_fn_in_trait)]
 pub trait VpcProvider {
     async fn list_vpcs(&mut self) -> Result<Vec<VultrVpc>, VultrError>;
-    async fn create_vpc(
-        &mut self,
-        region: &str,
-        description: &str,
-    ) -> Result<VultrVpc, VultrError>;
+    async fn create_vpc(&mut self, region: &str, description: &str)
+    -> Result<VultrVpc, VultrError>;
     async fn destroy_vpc(&mut self, vpc_id: &str) -> Result<(), VultrError>;
     async fn list_vpc_attachments(
         &mut self,
@@ -204,8 +198,7 @@ pub async fn apply_vpc_once<P: VpcProvider>(
                 return Err(err.to_string());
             }
 
-            let (observation, next_plan) =
-                wait_for_vpc_noop(provider, desired, &policy).await?;
+            let (observation, next_plan) = wait_for_vpc_noop(provider, desired, &policy).await?;
             Ok(VpcApplyReport {
                 performed: VpcApplyAction::CreateVpc,
                 observation,
@@ -249,8 +242,7 @@ pub async fn apply_vpc_attachment_once<P: VpcProvider>(
     policy: VpcExecutionPolicy,
 ) -> Result<AttachmentApplyReport, String> {
     validate_policy(&policy)?;
-    let (target, observation, attachments, plan) =
-        plan_vpc_attachment(provider, desired).await?;
+    let (target, observation, attachments, plan) = plan_vpc_attachment(provider, desired).await?;
 
     match &plan.action {
         AttachmentAction::Noop => Ok(AttachmentApplyReport {
@@ -288,8 +280,7 @@ pub async fn verify_vpc_ready<P: VpcProvider>(
     provider: &mut P,
     desired: &DesiredVpcState,
 ) -> Result<VpcReadyReport, String> {
-    let (target, _observation, _attachments, plan) =
-        plan_vpc_attachment(provider, desired).await?;
+    let (target, _observation, _attachments, plan) = plan_vpc_attachment(provider, desired).await?;
     if plan.action != AttachmentAction::Noop {
         return Err(format!(
             "Vultr VPC is not READY for machine {}: attachment plan is {:?}",
@@ -329,8 +320,8 @@ pub async fn plan_vpc_cleanup<P: VpcProvider>(
     let vpc_plan = plan_vpc_apply(desired, &observation).map_err(|err| err.to_string())?;
     let Some(vpc_id) = vpc_plan.provider_id else {
         let attachments = VpcAttachmentObservation::default();
-        let plan =
-            plan_cleanup(desired, &observation, &attachments, None).map_err(|err| err.to_string())?;
+        let plan = plan_cleanup(desired, &observation, &attachments, None)
+            .map_err(|err| err.to_string())?;
         return Ok((observation, attachments, plan));
     };
 
@@ -398,9 +389,7 @@ pub async fn cleanup_vpc_once<P: VpcProvider>(
             instance_id,
         } => {
             let performed = authorized.action.clone();
-            let mutation = provider
-                .detach_vpc_from_instance(instance_id, vpc_id)
-                .await;
+            let mutation = provider.detach_vpc_from_instance(instance_id, vpc_id).await;
             if let Err(err) = &mutation
                 && !err.requires_mutation_reobservation()
             {
@@ -462,13 +451,8 @@ async fn wait_for_attachment_noop<P: VpcProvider>(
         let observation = observe_vpc(provider, desired).await?;
         let vpc_id = exact_vpc_id(desired, &observation)?;
         let attachments = observe_attachments(provider, &vpc_id).await?;
-        let plan = plan_attachment(
-            desired,
-            &observation,
-            &attachments,
-            &target.provider_id,
-        )
-        .map_err(|err| err.to_string())?;
+        let plan = plan_attachment(desired, &observation, &attachments, &target.provider_id)
+            .map_err(|err| err.to_string())?;
         if plan.action == AttachmentAction::Noop {
             return Ok((observation, attachments, plan));
         }
@@ -552,10 +536,7 @@ async fn resolve_exact_target_instance<P: VpcProvider>(
     }
 }
 
-fn exact_vpc_id(
-    desired: &DesiredVpcState,
-    observation: &VpcObservation,
-) -> Result<String, String> {
+fn exact_vpc_id(desired: &DesiredVpcState, observation: &VpcObservation) -> Result<String, String> {
     let plan = plan_vpc_apply(desired, observation).map_err(|err| err.to_string())?;
     match plan {
         VpcApplyPlan {
