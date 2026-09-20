@@ -28,7 +28,7 @@
       ],
       "data_directory": "/var/lib/sing-box/acme",
       "email": "${ACME_EMAIL}",
-      "provider": "letsencrypt",
+      "provider": "${ACME_PROVIDER}",
       "disable_tls_alpn_challenge": true
     }
   ],
