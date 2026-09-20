@@ -611,15 +611,19 @@ jobs:
 
           mesh_noop=0
           for _ in 1 2 3 4; do
-            "${bin}" line3-mesh vpc-plan "${mesh_base_spec}" "${vpc_spec}" \
+            "${bin}" line3-mesh vpc-plan "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
               > "${RUNNER_TEMP}/acceptance-mesh-plan.json"
+            jq -e '.guest_vpc.status == "PASS"' \
+              "${RUNNER_TEMP}/acceptance-mesh-plan.json" >/dev/null
             if jq -e '.plan.action.kind == "NOOP"' \
                 "${RUNNER_TEMP}/acceptance-mesh-plan.json" >/dev/null; then
               mesh_noop=1
               break
             fi
-            "${bin}" line3-mesh vpc-apply "${mesh_base_spec}" "${vpc_spec}" \
+            "${bin}" line3-mesh vpc-apply "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
               > "${RUNNER_TEMP}/acceptance-mesh-apply.json"
+            jq -e '.guest_vpc.status == "PASS"' \
+              "${RUNNER_TEMP}/acceptance-mesh-apply.json" >/dev/null
           done
           test "${mesh_noop}" = "1"
 
