@@ -1,3 +1,5 @@
+mod network_observation;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -12,7 +14,8 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
-    FilePresence, MeshRuntimeConvergeRequest, MeshRuntimeState, ReadBundleIdentityRequest,
+    FilePresence, Ipv4NetworkObservation, MeshRuntimeConvergeRequest, MeshRuntimeState,
+    ReadBundleIdentityRequest,
     ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
     RollbackBundleRequest, RollbackBundleResponse, VerifyRuntimeRequest,
     canonical_apply_bundle_digest,
@@ -144,6 +147,16 @@ impl AgentService for AgentServerImpl {
             name: "edge-agent".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
         }))
+    }
+
+    async fn observe_ipv4_network(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<Ipv4NetworkObservation>, Status> {
+        let observation = network_observation::observe_ipv4_network()
+            .await
+            .map_err(|err| Status::internal(format!("IPv4 network observation failed: {err}")))?;
+        Ok(Response::new(observation))
     }
 
     async fn bootstrap_runtime(
