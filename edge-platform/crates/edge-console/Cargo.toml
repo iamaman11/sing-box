@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+clap = { version = "=4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+edge-observability = { path = "../edge-observability" }
+thiserror = "=2.0.18"
+tracing = "=0.1.44"
 edge-shared-types = { path = "../edge-shared-types" }
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread"] }
 tonic = "0.14.5"
