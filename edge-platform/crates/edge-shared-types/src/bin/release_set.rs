@@ -44,6 +44,14 @@ const VERIFY_FLAGS: &[&str] = &[
     "edge-controller",
 ];
 
+const VERIFY_VM_FLAGS: &[&str] = &[
+    "input",
+    "sha256-file",
+    "source-revision",
+    "edge-agent",
+    "edge-controller",
+];
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -59,12 +67,13 @@ fn run() -> Result<(), String> {
     match command.as_str() {
         "create" => create_release_set(&flags),
         "verify" => verify_release_set(&flags),
+        "verify-vm" => verify_vm_release_set(&flags),
         _ => Err(usage()),
     }
 }
 
 fn usage() -> String {
-    "usage: edge-release-set create|verify --flag value ...".to_owned()
+    "usage: edge-release-set create|verify|verify-vm --flag value ...".to_owned()
 }
 
 fn parse_flags(args: Vec<String>) -> Result<BTreeMap<String, String>, String> {
@@ -198,9 +207,9 @@ fn create_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
-    require_allowed(flags, VERIFY_FLAGS)?;
-
+fn load_verified_release_set(
+    flags: &BTreeMap<String, String>,
+) -> Result<(ReleaseSet, String), String> {
     let input = PathBuf::from(flag(flags, "input")?);
     let sha256_file = PathBuf::from(flag(flags, "sha256-file")?);
     let bytes =
@@ -231,6 +240,13 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
         return Err("release-set SHA-256 sidecar does not match exact protobuf bytes".to_owned());
     }
 
+    Ok((release, digest))
+}
+
+fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, VERIFY_FLAGS)?;
+    let (release, digest) = load_verified_release_set(flags)?;
+
     let sing_box = release
         .sing_box
         .as_ref()
@@ -243,11 +259,6 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
         .vm_runtime
         .as_ref()
         .ok_or_else(|| "release-set vm_runtime is required".to_owned())?;
-    let cloudflare = release
-        .cloudflare
-        .as_ref()
-        .ok_or_else(|| "release-set cloudflare is required".to_owned())?;
-
     verify_file_digest(
         "windows artifact",
         Path::new(flag(flags, "windows-artifact")?),
@@ -285,6 +296,45 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
             &vm.edge_controller_sha256,
         )?;
     }
+
+    print_vm_evidence(&release, &digest)
+}
+
+fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, VERIFY_VM_FLAGS)?;
+    let (release, digest) = load_verified_release_set(flags)?;
+
+    if release.schema_version < 2 {
+        return Err("verify-vm requires release-set schema_version >= 2".to_owned());
+    }
+
+    let vm = release
+        .vm_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set vm_runtime is required".to_owned())?;
+    verify_file_digest(
+        "edge-agent",
+        Path::new(flag(flags, "edge-agent")?),
+        &vm.edge_agent_sha256,
+    )?;
+    verify_file_digest(
+        "edge-controller",
+        Path::new(flag(flags, "edge-controller")?),
+        &vm.edge_controller_sha256,
+    )?;
+
+    print_vm_evidence(&release, &digest)
+}
+
+fn print_vm_evidence(release: &ReleaseSet, digest: &str) -> Result<(), String> {
+    let vm = release
+        .vm_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set vm_runtime is required".to_owned())?;
+    let cloudflare = release
+        .cloudflare
+        .as_ref()
+        .ok_or_else(|| "release-set cloudflare is required".to_owned())?;
 
     println!("release_set_sha256={digest}");
     println!("schema_version={}", release.schema_version);
