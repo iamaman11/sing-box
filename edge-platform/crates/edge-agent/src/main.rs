@@ -1324,6 +1324,9 @@ fn converge_mesh_runtime(stack_dir: &Path, node_token: &str) -> Result<MeshRunti
 }
 
 fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
+    if !inspect_docker().reachable {
+        return Err("Mesh runtime cleanup requires observable Docker state".to_owned());
+    }
     let mutation = if mesh_container_present()? {
         Some(
             Command::new("docker")
