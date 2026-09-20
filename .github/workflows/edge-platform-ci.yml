@@ -928,6 +928,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           ACCEPTED_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
           EVENT_CANDIDATE_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           [[ "${ACCEPTED_REVISION}" =~ ^[0-9a-f]{40}$ ]]
@@ -946,10 +947,13 @@ jobs:
           test "${accepted_tree}" = "${candidate_tree}"
 
           runs="$(gh api "repos/${REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs?event=pull_request&head_sha=${candidate_revision}&per_page=100")"
-          latest_run="$(jq -cer --arg head "${candidate_revision}" '
+          latest_run="$(jq -cer --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" '
             [.workflow_runs[]
               | select(.head_sha == $head)
-              | select(.event == "pull_request")]
+              | select(.event == "pull_request")
+              | select(.id != $current_run_id)
+              | select(.status == "completed")
+              | select(.conclusion == "success")]
             | sort_by(.id)
             | last
           ' <<<"${runs}")"
