@@ -1086,6 +1086,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(provider.attach_calls, 1);
+        assert_eq!(report.target.main_ip, "203.0.113.10");
         assert_eq!(report.next_plan.action, AttachmentAction::Noop);
         assert_eq!(report.next_plan.private_ipv4.as_deref(), Some("10.0.4.2"));
     }
