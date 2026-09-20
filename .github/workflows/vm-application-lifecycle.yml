@@ -200,6 +200,31 @@ jobs:
           printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
 
+      - name: Materialize private application runtime credentials
+        if: >-
+          needs.authorize.outputs.operation == 'plan' ||
+          needs.authorize.outputs.operation == 'apply' ||
+          needs.authorize.outputs.operation == 'verify' ||
+          needs.authorize.outputs.operation == 'upgrade'
+        shell: bash
+        env:
+          APPLICATION_RUNTIME_SECRETS: ${{ secrets.EDGE_APPLICATION_RUNTIME_SECRETS }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${APPLICATION_RUNTIME_SECRETS:-}" ]]; then
+            if [[ "${REQUESTED_OPERATION}" == "plan" ]]; then
+              exit 0
+            fi
+            echo "EDGE_APPLICATION_RUNTIME_SECRETS is required for ${REQUESTED_OPERATION}" >&2
+            exit 1
+          fi
+          secret_path="${RUNNER_TEMP}/application-runtime-secrets.env"
+          umask 077
+          printf '%s' "${APPLICATION_RUNTIME_SECRETS}" > "${secret_path}"
+          test -s "${secret_path}"
+          chmod 600 "${secret_path}"
+          printf 'EDGE_APPLICATION_RUNTIME_SECRET_PATH=%s\n' "${secret_path}" >> "${GITHUB_ENV}"
+
       - name: Materialize strict SSH authority
         shell: bash
         env:
@@ -420,8 +445,8 @@ jobs:
           source_revision="${GITHUB_SHA}"
           artifact="${EDGE_APPLICATION_ARTIFACT}"
           manifest="${EDGE_APPLICATION_ARTIFACT_MANIFEST}"
-          runtime_v1="${RUNNER_TEMP}/application-runtime-v1.env"
-          runtime_v2="${RUNNER_TEMP}/application-runtime-v2.env"
+          runtime_v1="${RUNNER_TEMP}/application-runtime-v1.secret"
+          runtime_v2="${RUNNER_TEMP}/application-runtime-v2.secret"
           access_release="${RUNNER_TEMP}/acceptance-access-release.json"
 
           test -f "${vultr_spec}"
@@ -429,18 +454,10 @@ jobs:
           password_v1="$(openssl rand -hex 16)"
           password_v2="$(openssl rand -hex 16)"
           cat > "${runtime_v1}" <<EOF
-          PROXY_USERNAME=acceptance
           PROXY_PASSWORD=${password_v1}
-          PROXY_CERT_CN=application-acceptance.local
-          TUNNEL_DOMAIN=
-          ACME_EMAIL=
           EOF
           cat > "${runtime_v2}" <<EOF
-          PROXY_USERNAME=acceptance
           PROXY_PASSWORD=${password_v2}
-          PROXY_CERT_CN=application-acceptance.local
-          TUNNEL_DOMAIN=
-          ACME_EMAIL=
           EOF
           chmod 600 "${runtime_v1}" "${runtime_v2}"
 
@@ -467,19 +484,19 @@ jobs:
           "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}"             > "${RUNNER_TEMP}/acceptance-vm-apply.json"
           jq -e '.action == "CREATED"'             "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
 
-          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-app-apply.json"
+          EDGE_APPLICATION_RUNTIME_SECRET_PATH="${runtime_v1}"             "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-app-apply.json"
           jq -e             '.initial_plan.class == "APPLY" and .final_plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-app-apply.json" >/dev/null
 
-          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-app-noop.json"
+          EDGE_APPLICATION_RUNTIME_SECRET_PATH="${runtime_v1}"             "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-app-noop.json"
           jq -e             '.initial_plan.class == "NOOP" and .final_plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-app-noop.json" >/dev/null
 
-          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-verify-v1.json"
+          EDGE_APPLICATION_RUNTIME_SECRET_PATH="${runtime_v1}"             "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-verify-v1.json"
           jq -e '.status == "PASS" and .plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-verify-v1.json" >/dev/null
 
           release_v1="$(jq -er '.final_plan.desired_release.release_id'             "${RUNNER_TEMP}/acceptance-app-noop.json")"
           bundle_v1="$(jq -er '.final_plan.desired_release.bundle_digest'             "${RUNNER_TEMP}/acceptance-app-noop.json")"
 
-          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v2}"             "${bin}" application-lifecycle upgrade "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-upgrade.json"
+          EDGE_APPLICATION_RUNTIME_SECRET_PATH="${runtime_v2}"             "${bin}" application-lifecycle upgrade "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-upgrade.json"
           jq -e             '.initial_plan.class == "UPGRADE" and .final_plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-upgrade.json" >/dev/null
 
           release_v2="$(jq -er '.final_plan.desired_release.release_id'             "${RUNNER_TEMP}/acceptance-upgrade.json")"
@@ -496,7 +513,7 @@ jobs:
           "${bin}" application-lifecycle rollback-apply "${app_spec}" "${rollback_digest}"             > "${RUNNER_TEMP}/acceptance-rollback-apply.json"
           jq -e '.status == "ROLLED_BACK"'             "${RUNNER_TEMP}/acceptance-rollback-apply.json" >/dev/null
 
-          EDGE_APPLICATION_RUNTIME_ENV_PATH="${runtime_v1}"             "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-verify-rollback.json"
+          EDGE_APPLICATION_RUNTIME_SECRET_PATH="${runtime_v1}"             "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}"             > "${RUNNER_TEMP}/acceptance-verify-rollback.json"
           jq -e '.status == "PASS" and .plan.class == "NOOP"'             "${RUNNER_TEMP}/acceptance-verify-rollback.json" >/dev/null
 
           "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}"             | tee "${access_release}"

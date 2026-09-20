@@ -244,9 +244,10 @@ impl ApplicationRuntimePolicy {
 fn validate_runtime_public_value(label: &str, value: &str) -> Result<(), ApplicationSpecError> {
     if value.is_empty()
         || value.len() > 253
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte == b'=')
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'-')
+        })
     {
         return Err(ApplicationSpecError::Validation(format!(
             "{label} must be a non-empty single-line runtime policy value"
