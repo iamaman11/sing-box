@@ -99,14 +99,7 @@ impl DnsProvider for CloudflareDnsApiProvider {
         record_name: &str,
         ip: &str,
     ) -> Result<(), String> {
-        update_a_record_by_id(
-            &self.api_token,
-            zone_name,
-            record_id,
-            record_name,
-            ip,
-        )
-        .await
+        update_a_record_by_id(&self.api_token, zone_name, record_id, record_name, ip).await
     }
 
     async fn delete_record(&mut self, zone_name: &str, record_id: &str) -> Result<(), String> {
@@ -164,12 +157,7 @@ pub async fn apply_dns_once<P: DnsProvider>(
             ..
         } => {
             let mutation = provider
-                .update_record(
-                    &desired.zone_name,
-                    record_id,
-                    &desired.record_name,
-                    to_ip,
-                )
+                .update_record(&desired.zone_name, record_id, &desired.record_name, to_ip)
                 .await;
             reobserve_apply_change(provider, desired, target_ip, policy, &plan.action, mutation)
                 .await
@@ -202,9 +190,7 @@ pub async fn cleanup_dns_once<P: DnsProvider>(
             return Err("Cloudflare DNS cleanup target is already absent".to_owned());
         }
         CleanupAction::Delete { record_id, .. } => {
-            provider
-                .delete_record(&desired.zone_name, record_id)
-                .await
+            provider.delete_record(&desired.zone_name, record_id).await
         }
     };
     reobserve_cleanup_change(provider, desired, policy, &action, mutation).await
@@ -354,7 +340,11 @@ mod tests {
         ) -> Result<(), String> {
             self.update_calls += 1;
             if self.mutation_error.is_none() || self.commit_on_error {
-                if let Some(record) = self.records.iter_mut().find(|record| record.id == record_id) {
+                if let Some(record) = self
+                    .records
+                    .iter_mut()
+                    .find(|record| record.id == record_id)
+                {
                     record.ip = ip.to_owned();
                 }
             }
@@ -364,11 +354,7 @@ mod tests {
             }
         }
 
-        async fn delete_record(
-            &mut self,
-            _zone_name: &str,
-            record_id: &str,
-        ) -> Result<(), String> {
+        async fn delete_record(&mut self, _zone_name: &str, record_id: &str) -> Result<(), String> {
             self.delete_calls += 1;
             if self.mutation_error.is_none() || self.commit_on_error {
                 self.records.retain(|record| record.id != record_id);
@@ -408,10 +394,9 @@ mod tests {
     #[tokio::test]
     async fn create_is_observed_once_and_converges_to_noop() {
         let mut provider = FakeProvider::default();
-        let report =
-            apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
-                .await
-                .unwrap();
+        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
+            .await
+            .unwrap();
         assert_eq!(provider.create_calls, 1);
         assert!(matches!(report.performed, ApplyAction::Create { .. }));
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
@@ -424,10 +409,9 @@ mod tests {
             commit_on_error: true,
             ..FakeProvider::default()
         };
-        let report =
-            apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
-                .await
-                .unwrap();
+        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
+            .await
+            .unwrap();
         assert_eq!(provider.create_calls, 1);
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
     }
@@ -453,10 +437,9 @@ mod tests {
             records: vec![record("203.0.113.9")],
             ..FakeProvider::default()
         };
-        let report =
-            apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
-                .await
-                .unwrap();
+        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
+            .await
+            .unwrap();
         assert_eq!(provider.update_calls, 1);
         assert!(matches!(report.performed, ApplyAction::Update { .. }));
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
