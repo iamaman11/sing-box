@@ -484,12 +484,15 @@ fn render_host_substrate_versions(
 fn substrate_acceptance_command(substrate: &HostSubstrateVersions) -> Result<String, String> {
     substrate.validate()?;
     Ok(format!(
-        "test \"$(cat /var/lib/singbox-lifecycle/host-bootstrap)\" = exact-substrate-ready && \
-         test \"$(dpkg-query -W -f='${{Version}}' docker-ce)\" = '{}' && \
-         test \"$(dpkg-query -W -f='${{Version}}' docker-ce-cli)\" = '{}' && \
-         test \"$(dpkg-query -W -f='${{Version}}' containerd.io)\" = '{}' && \
-         test \"$(dpkg-query -W -f='${{Version}}' docker-compose-plugin)\" = '{}' && \
-         sudo systemctl is-active --quiet docker && sudo docker version >/dev/null && sudo docker compose version >/dev/null && sudo sshd -t",
+        "test \"$(cat /var/lib/singbox-lifecycle/host-bootstrap 2>/dev/null)\" = exact-substrate-ready || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:host-bootstrap-marker' >&2; exit 42; }}; \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-ce 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-ce-version' >&2; exit 42; }}; \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-ce-cli 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-cli-version' >&2; exit 42; }}; \
+         test \"$(dpkg-query -W -f='${{Version}}' containerd.io 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:containerd-version' >&2; exit 42; }}; \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-compose-plugin 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:compose-version' >&2; exit 42; }}; \
+         sudo systemctl is-active --quiet docker || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-service' >&2; exit 42; }}; \
+         sudo docker version >/dev/null || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-api' >&2; exit 42; }}; \
+         sudo docker compose version >/dev/null || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:compose-cli' >&2; exit 42; }}; \
+         sudo sshd -t || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:sshd-config' >&2; exit 42; }}",
         substrate.docker_engine_version,
         substrate.docker_engine_version,
         substrate.containerd_version,
@@ -536,6 +539,162 @@ pub fn verify_operator_key_matches(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrictSshFailureClass {
+    Transport,
+    HostTrust,
+    Authentication,
+    RemoteAcceptance,
+    OtherSsh,
+}
+
+impl StrictSshFailureClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Transport => "TRANSPORT",
+            Self::HostTrust => "HOST_TRUST",
+            Self::Authentication => "AUTHENTICATION",
+            Self::RemoteAcceptance => "REMOTE_ACCEPTANCE",
+            Self::OtherSsh => "OTHER_SSH",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StrictSshAttemptEvidence {
+    class: StrictSshFailureClass,
+    exit_code: Option<i32>,
+    detail: String,
+}
+
+#[derive(Debug, Default)]
+struct StrictSshFailureCounts {
+    transport: usize,
+    host_trust: usize,
+    authentication: usize,
+    remote_acceptance: usize,
+    other_ssh: usize,
+}
+
+impl StrictSshFailureCounts {
+    fn record(&mut self, class: StrictSshFailureClass) {
+        match class {
+            StrictSshFailureClass::Transport => self.transport += 1,
+            StrictSshFailureClass::HostTrust => self.host_trust += 1,
+            StrictSshFailureClass::Authentication => self.authentication += 1,
+            StrictSshFailureClass::RemoteAcceptance => self.remote_acceptance += 1,
+            StrictSshFailureClass::OtherSsh => self.other_ssh += 1,
+        }
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "transport={} host_trust={} authentication={} remote_acceptance={} other_ssh={}",
+            self.transport,
+            self.host_trust,
+            self.authentication,
+            self.remote_acceptance,
+            self.other_ssh
+        )
+    }
+}
+
+fn bounded_ssh_evidence(stderr: &[u8]) -> String {
+    let mut parts = String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let lowered = line.to_ascii_lowercase();
+            if ["password", "private_key", "private key", "authorization", "token="]
+                .iter()
+                .any(|marker| lowered.contains(marker))
+            {
+                "[redacted sensitive SSH evidence]".to_owned()
+            } else {
+                line.chars().take(240).collect::<String>()
+            }
+        })
+        .take(4)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "no-stderr".to_owned()
+    } else {
+        parts.truncate(4);
+        parts.join(" | ")
+    }
+}
+
+fn classify_strict_ssh_failure(
+    exit_code: Option<i32>,
+    stderr: &[u8],
+) -> StrictSshAttemptEvidence {
+    let detail = bounded_ssh_evidence(stderr);
+    let lowered = detail.to_ascii_lowercase();
+    let class = if lowered.contains("edge_substrate_fail:") {
+        StrictSshFailureClass::RemoteAcceptance
+    } else if [
+        "host key verification failed",
+        "remote host identification has changed",
+        "certificate invalid",
+        "host certificate",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
+    {
+        StrictSshFailureClass::HostTrust
+    } else if ["permission denied", "authentication failed", "too many authentication failures"]
+        .iter()
+        .any(|marker| lowered.contains(marker))
+    {
+        StrictSshFailureClass::Authentication
+    } else if [
+        "connection refused",
+        "connection timed out",
+        "operation timed out",
+        "no route to host",
+        "network is unreachable",
+        "connection reset",
+        "connection closed",
+        "kex_exchange_identification",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
+    {
+        StrictSshFailureClass::Transport
+    } else if exit_code.is_some_and(|code| code != 255) {
+        StrictSshFailureClass::RemoteAcceptance
+    } else {
+        StrictSshFailureClass::OtherSsh
+    };
+    StrictSshAttemptEvidence {
+        class,
+        exit_code,
+        detail,
+    }
+}
+
+fn run_strict_ssh_attempt(args: &[String]) -> Result<(), StrictSshAttemptEvidence> {
+    let output = Command::new("ssh")
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|err| StrictSshAttemptEvidence {
+            class: StrictSshFailureClass::OtherSsh,
+            exit_code: None,
+            detail: format!("failed-to-start-ssh:{err}"),
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(classify_strict_ssh_failure(
+            output.status.code(),
+            &output.stderr,
+        ))
+    }
+}
+
 pub async fn strict_ssh_accept(
     target_ip: &str,
     logical_hostname: &str,
@@ -557,23 +716,37 @@ pub async fn strict_ssh_accept(
         &trust,
         &substrate_check,
     );
+    let mut counts = StrictSshFailureCounts::default();
     let mut last = None;
     for attempt in 0..attempts {
-        match run_checked("ssh", &args, None) {
+        match run_strict_ssh_attempt(&args) {
             Ok(()) => {
                 let _ = fs::remove_file(&trust);
                 return Ok(());
             }
-            Err(err) => last = Some(err),
+            Err(evidence) => {
+                counts.record(evidence.class);
+                last = Some(evidence);
+            }
         }
         if attempt + 1 < attempts {
             sleep(delay).await;
         }
     }
     let _ = fs::remove_file(&trust);
+    let last = last.unwrap_or(StrictSshAttemptEvidence {
+        class: StrictSshFailureClass::OtherSsh,
+        exit_code: None,
+        detail: "no SSH attempt was made".to_owned(),
+    });
     Err(format!(
-        "strict SSH acceptance failed for {logical_hostname} at {target_ip}: {}",
-        last.unwrap_or_else(|| "no SSH attempt was made".to_owned())
+        "strict SSH acceptance failed for {logical_hostname} at {target_ip}: attempts={attempts} counts=[{}] last_class={} last_exit_code={} last_detail={}",
+        counts.summary(),
+        last.class.label(),
+        last.exit_code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_owned()),
+        last.detail
     ))
 }
 
@@ -1303,6 +1476,68 @@ mod tests {
         assert!(rendered.contains("name: singbox-ops"));
         assert!(rendered.contains("hostname: edge-1"));
         assert!(!rendered.contains("StrictHostKeyChecking=accept-new"));
+    }
+
+    #[test]
+    fn substrate_acceptance_command_emits_typed_failure_markers() {
+        let substrate = HostSubstrateVersions::new(
+            "5:29.8.1-1~debian.13~trixie".to_owned(),
+            "2.3.5-1~debian.13~trixie".to_owned(),
+            "5.5.1-1~debian.13~trixie".to_owned(),
+        )
+        .unwrap();
+        let command = substrate_acceptance_command(&substrate).unwrap();
+
+        for marker in [
+            "EDGE_SUBSTRATE_FAIL:host-bootstrap-marker",
+            "EDGE_SUBSTRATE_FAIL:docker-ce-version",
+            "EDGE_SUBSTRATE_FAIL:docker-cli-version",
+            "EDGE_SUBSTRATE_FAIL:containerd-version",
+            "EDGE_SUBSTRATE_FAIL:compose-version",
+            "EDGE_SUBSTRATE_FAIL:docker-service",
+            "EDGE_SUBSTRATE_FAIL:docker-api",
+            "EDGE_SUBSTRATE_FAIL:compose-cli",
+            "EDGE_SUBSTRATE_FAIL:sshd-config",
+        ] {
+            assert!(command.contains(marker), "missing marker {marker}");
+        }
+    }
+
+    #[test]
+    fn strict_ssh_failure_classification_is_typed_and_bounded() {
+        assert_eq!(
+            classify_strict_ssh_failure(Some(255), b"ssh: connect to host x port 22: Connection refused").class,
+            StrictSshFailureClass::Transport
+        );
+        assert_eq!(
+            classify_strict_ssh_failure(Some(255), b"Host key verification failed.").class,
+            StrictSshFailureClass::HostTrust
+        );
+        assert_eq!(
+            classify_strict_ssh_failure(Some(255), b"Permission denied (publickey).").class,
+            StrictSshFailureClass::Authentication
+        );
+
+        let remote = classify_strict_ssh_failure(
+            Some(42),
+            b"EDGE_SUBSTRATE_FAIL:docker-service",
+        );
+        assert_eq!(remote.class, StrictSshFailureClass::RemoteAcceptance);
+        assert!(remote.detail.contains("docker-service"));
+
+        let unmarked_remote = classify_strict_ssh_failure(Some(1), b"");
+        assert_eq!(
+            unmarked_remote.class,
+            StrictSshFailureClass::RemoteAcceptance
+        );
+        assert_eq!(unmarked_remote.detail, "no-stderr");
+
+        let sensitive = bounded_ssh_evidence(
+            b"password=secret\nline-2\nline-3\nline-4\nline-5\n",
+        );
+        assert!(sensitive.contains("[redacted sensitive SSH evidence]"));
+        assert!(!sensitive.contains("secret"));
+        assert!(!sensitive.contains("line-5"));
     }
 
     #[test]
