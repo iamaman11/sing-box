@@ -1059,7 +1059,10 @@ fn collect_rendered_artifacts(stack_dir: &Path) -> Vec<FilePresence> {
     if tunnel_runtime_enabled(stack_dir) {
         required.insert(
             3,
-            ("rendered/line1-gateway.json", FileCategory::RequiredRepoInput),
+            (
+                "rendered/line1-gateway.json",
+                FileCategory::RequiredRepoInput,
+            ),
         );
     }
 
@@ -1470,9 +1473,12 @@ mod tests {
         .unwrap();
 
         let mut state = AgentState::bootstrap_placeholder();
-        let observation =
-            inspect_compose(&root.join("docker-compose.yml"), &mut state, &BTreeSet::new())
-                .unwrap();
+        let observation = inspect_compose(
+            &root.join("docker-compose.yml"),
+            &mut state,
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert!(state.compose_file_present);
         assert_eq!(observation.expected_containers.len(), 2);
         assert_eq!(observation.expected_tcp_ports, vec![3128]);
