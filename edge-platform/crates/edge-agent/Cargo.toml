@@ -9,13 +9,14 @@ rust-version.workspace = true
 edge-secrets = { path = "../edge-secrets" }
 edge-shared-types = { path = "../edge-shared-types" }
 edge-trust = { path = "../edge-trust" }
-tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "net"] }
+tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "net", "time"] }
 tonic = { version = "0.14.5", features = ["tls-ring"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_yaml = "0.9.34"
 futures-util = "0.3.32"
 rtnetlink = "0.23.0"
+bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
 
 [[bin]]
 name = "edge-agent"

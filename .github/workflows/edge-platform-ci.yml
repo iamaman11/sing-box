@@ -259,6 +259,9 @@ jobs:
           agent_network = Path(
               "edge-platform/crates/edge-agent/src/network_observation.rs"
           ).read_text()
+          agent_docker = Path(
+              "edge-platform/crates/edge-agent/src/docker_observation.rs"
+          ).read_text()
           application_service = Path(
               "edge-platform/crates/edge-controller/src/application_lifecycle_service.rs"
           ).read_text()
@@ -268,6 +271,17 @@ jobs:
 
           assert "rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);" in agent_proto
           assert 'rtnetlink = "0.23.0"' in agent_manifest
+          assert 'bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }' in agent_manifest
+          assert "Docker::connect_with_unix" in agent_docker
+          assert ".negotiate_version()" in agent_docker
+          assert ".list_containers(" in agent_docker
+          assert "ContainerSummaryStateEnum::RUNNING" in agent_docker
+          assert "PortSummaryTypeEnum::TCP" in agent_docker
+          assert "PortSummaryTypeEnum::UDP" in agent_docker
+          assert 'args(["ps", "--format"' not in agent
+          assert '"inspect", "--format"' not in agent
+          assert "parse_docker_port_mapping" not in agent
+          assert "mesh_network_membership_ready" not in agent
           for typed_network_contract in [
               "LinkFlags::Up",
               "LinkFlags::LowerUp",
