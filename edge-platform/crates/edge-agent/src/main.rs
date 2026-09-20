@@ -1656,7 +1656,12 @@ mod tests {
         fs::create_dir_all(stack.join("rendered")).unwrap();
         fs::create_dir_all(stack.join("certs")).unwrap();
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
-        fs::write(stack.join(".env.runtime"), "").unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
+        fs::write(stack.join(RUNTIME_ENV_FILE), "").unwrap();
         fs::write(stack.join("rendered/line2-proxy.json"), "{}").unwrap();
         fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
         fs::write(stack.join("certs/proxy.key"), "key").unwrap();
