@@ -251,13 +251,8 @@ pub async fn apply_vpc_attachment_once<P: VpcProvider>(
 ) -> Result<AttachmentApplyReport, String> {
     validate_policy(&policy)?;
     let (target, observation, attachments, plan) = plan_vpc_attachment(provider, desired).await?;
-    let authorized = authorize_vpc_attachment(
-        desired,
-        &target,
-        &observation,
-        &attachments,
-        plan.clone(),
-    )?;
+    let authorized =
+        authorize_vpc_attachment(desired, &target, &observation, &attachments, plan.clone())?;
     verify_exact_authority(authorized_plan_digest, &authorized.authority)
         .map_err(|err| err.to_string())?;
 
@@ -329,7 +324,6 @@ pub async fn verify_vpc_ready<P: VpcProvider>(
     })
 }
 
-
 pub fn authorize_vpc_apply(
     desired: &DesiredVpcState,
     observation: &VpcObservation,
@@ -340,14 +334,8 @@ pub fn authorize_vpc_apply(
     } else {
         PlanDisposition::Mutate
     };
-    authorize_plan(
-        "vultr_vpc_apply",
-        desired,
-        observation,
-        plan,
-        disposition,
-    )
-    .map_err(|err| err.to_string())
+    authorize_plan("vultr_vpc_apply", desired, observation, plan, disposition)
+        .map_err(|err| err.to_string())
 }
 
 pub fn authorize_vpc_attachment(
@@ -862,8 +850,7 @@ mod tests {
         provider: &mut FakeProvider,
         desired: &DesiredVpcState,
     ) -> (String, String) {
-        let (observation, attachments, plan) =
-            plan_vpc_cleanup(provider, desired).await.unwrap();
+        let (observation, attachments, plan) = plan_vpc_cleanup(provider, desired).await.unwrap();
         let destructive = plan.destructive_digest.clone().unwrap();
         let generic = authorize_vpc_cleanup(desired, &observation, &attachments, plan)
             .unwrap()
@@ -907,7 +894,9 @@ mod tests {
         let desired = desired();
         let mut provider = FakeProvider::default();
         let authority = vpc_authority(&mut provider, &desired).await;
-        provider.vpcs.push(fake_vpc("waw", &desired.ownership_description()));
+        provider
+            .vpcs
+            .push(fake_vpc("waw", &desired.ownership_description()));
 
         let error = apply_vpc_once(&mut provider, &desired, &authority, policy())
             .await
