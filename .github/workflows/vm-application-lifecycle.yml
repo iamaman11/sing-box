@@ -399,11 +399,8 @@ jobs:
 
       - name: Validate disposable Cloudflare desired state
         shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${CLOUDFLARE_API_TOKEN}"
           mesh_spec="infra/cloudflare/application-acceptance-mesh.json"
           test -f "${mesh_spec}"
           account_id="$(jq -er '.account_id' "${mesh_spec}")"
