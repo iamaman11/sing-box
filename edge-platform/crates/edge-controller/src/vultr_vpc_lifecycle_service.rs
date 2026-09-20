@@ -536,6 +536,13 @@ async fn wait_for_attachment_noop<P: VpcProvider>(
         let observation = observe_vpc(provider, desired).await?;
         let vpc_id = exact_vpc_id(desired, &observation)?;
         let attachments = observe_attachments(provider, &vpc_id).await?;
+        if attachments_have_unresolved_subscription(&attachments) {
+            if attempt < policy.reobserve_attempts {
+                sleep(policy.reobserve_delay).await;
+                continue;
+            }
+            break;
+        }
         let plan = plan_attachment(desired, &observation, &attachments, &target.provider_id)
             .map_err(|err| err.to_string())?;
         if plan.action == AttachmentAction::Noop {
@@ -555,7 +562,42 @@ async fn wait_for_cleanup_progress<P: VpcProvider>(
     expect_delete_vpc: bool,
 ) -> Result<(VpcObservation, VpcAttachmentObservation, CleanupPlan), String> {
     for attempt in 1..=policy.reobserve_attempts {
-        let (observation, attachments, plan) = plan_vpc_cleanup(provider, desired).await?;
+        let observation = observe_vpc(provider, desired).await?;
+        let vpc_plan = plan_vpc_apply(desired, &observation).map_err(|err| err.to_string())?;
+        let (attachments, target) = if let Some(vpc_id) = vpc_plan.provider_id {
+            let attachments = observe_attachments(provider, &vpc_id).await?;
+            if attachments_have_unresolved_subscription(&attachments) {
+                if attempt < policy.reobserve_attempts {
+                    sleep(policy.reobserve_delay).await;
+                    continue;
+                }
+                break;
+            }
+            let target = if attachments.attachments.is_empty() {
+                None
+            } else {
+                Some(
+                    resolve_exact_target_instance(provider, desired)
+                        .await?
+                        .ok_or_else(|| {
+                            format!(
+                                "refusing Vultr VPC cleanup: attachments exist but exact lifecycle-owned instance {} is absent",
+                                desired.machine_id
+                            )
+                        })?,
+                )
+            };
+            (attachments, target)
+        } else {
+            (VpcAttachmentObservation::default(), None)
+        };
+        let plan = plan_cleanup(
+            desired,
+            &observation,
+            &attachments,
+            target.as_ref().map(|target| target.provider_id.as_str()),
+        )
+        .map_err(|err| err.to_string())?;
         let converged = if expect_delete_vpc {
             matches!(plan.action, CleanupAction::DeleteVpc { .. })
         } else {
@@ -670,6 +712,15 @@ fn normalize_attachment(value: VultrVpcAttachment) -> ObservedVpcAttachment {
     }
 }
 
+fn attachments_have_unresolved_subscription(
+    attachments: &VpcAttachmentObservation,
+) -> bool {
+    attachments
+        .attachments
+        .iter()
+        .any(|attachment| attachment.subscription_id.is_none())
+}
+
 fn validate_policy(policy: &VpcExecutionPolicy) -> Result<(), String> {
     if policy.reobserve_attempts == 0 {
         return Err("Vultr VPC reobserve_attempts must be greater than zero".to_owned());
@@ -698,6 +749,8 @@ mod tests {
         attach_error: Option<VultrError>,
         commit_create_on_error: bool,
         commit_attach_on_error: bool,
+        transient_unresolved_after_attach: bool,
+        unresolved_attachment_reads: usize,
     }
 
     impl VpcProvider for FakeProvider {
@@ -731,6 +784,14 @@ mod tests {
             &mut self,
             _vpc_id: &str,
         ) -> Result<Vec<VultrVpcAttachment>, VultrError> {
+            if self.unresolved_attachment_reads > 0 {
+                self.unresolved_attachment_reads -= 1;
+                let mut attachments = self.attachments.clone();
+                for attachment in &mut attachments {
+                    attachment.subscription_id = None;
+                }
+                return Ok(attachments);
+            }
             Ok(self.attachments.clone())
         }
 
@@ -743,6 +804,9 @@ mod tests {
             let attachment = fake_attachment(instance_id);
             if self.attach_error.is_none() || self.commit_attach_on_error {
                 self.attachments.push(attachment);
+                if self.transient_unresolved_after_attach {
+                    self.unresolved_attachment_reads = 1;
+                }
             }
             match self.attach_error.clone() {
                 Some(error) => Err(error),
@@ -757,7 +821,7 @@ mod tests {
         ) -> Result<(), VultrError> {
             self.detach_calls += 1;
             self.attachments
-                .retain(|attachment| attachment.subscription_id != instance_id);
+                .retain(|attachment| attachment.subscription_id.as_deref() != Some(instance_id));
             Ok(())
         }
 
@@ -790,7 +854,7 @@ mod tests {
         VultrVpcAttachment {
             id: "attachment-1".to_owned(),
             private_ipv4: "10.0.4.2".to_owned(),
-            subscription_id: instance_id.to_owned(),
+            subscription_id: Some(instance_id.to_owned()),
         }
     }
 
@@ -912,6 +976,24 @@ mod tests {
         let mut provider = FakeProvider {
             vpcs: vec![fake_vpc("waw", &desired.ownership_description())],
             instances: vec![fake_instance()],
+            ..FakeProvider::default()
+        };
+        let authority = attachment_authority(&mut provider, &desired).await;
+        let report = apply_vpc_attachment_once(&mut provider, &desired, &authority, policy())
+            .await
+            .unwrap();
+        assert_eq!(provider.attach_calls, 1);
+        assert_eq!(report.next_plan.action, AttachmentAction::Noop);
+        assert_eq!(report.next_plan.private_ipv4.as_deref(), Some("10.0.4.2"));
+    }
+
+    #[tokio::test]
+    async fn transient_unresolved_attachment_is_reobserved_without_replay() {
+        let desired = desired();
+        let mut provider = FakeProvider {
+            vpcs: vec![fake_vpc("waw", &desired.ownership_description())],
+            instances: vec![fake_instance()],
+            transient_unresolved_after_attach: true,
             ..FakeProvider::default()
         };
         let authority = attachment_authority(&mut provider, &desired).await;
