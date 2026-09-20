@@ -983,12 +983,14 @@ fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
                 .collect::<Vec<_>>();
             if !missing.is_empty() {
                 state.degraded_reasons.push(format!(
-                    "bundle certificate artifact missing: {}",
+                    "bundle artifact missing: certificate {}",
                     missing.join(", ")
                 ));
             }
         }
-        Err(reason) => state.degraded_reasons.push(reason),
+        Err(reason) => state
+            .degraded_reasons
+            .push(format!("bundle artifact invalid: {reason}")),
     }
 
     if let Some(summary_path) = stack_dir
