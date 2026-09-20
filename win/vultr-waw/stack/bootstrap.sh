@@ -21,6 +21,25 @@ set +a
 
 mkdir -p certs rendered warp-state mesh-state tunnel-state
 
+validate_tunnel_domain() {
+  local value="${TUNNEL_DOMAIN:-}"
+  local label
+  local labels=()
+
+  if [[ -z "$value" || ${#value} -gt 253 || "$value" != "${value,,}" ]]; then
+    echo "TUNNEL_DOMAIN must be a canonical lowercase DNS name" >&2
+    return 1
+  fi
+
+  IFS='.' read -r -a labels <<< "$value"
+  for label in "${labels[@]}"; do
+    if [[ ${#label} -lt 1 || ${#label} -gt 63 || ! "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+      echo "TUNNEL_DOMAIN contains an invalid DNS label" >&2
+      return 1
+    fi
+  done
+}
+
 acme_certificate_dir() {
   printf 'tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory/%s' "${TUNNEL_DOMAIN}"
 }
@@ -47,6 +66,7 @@ wait_for_owned_certificate() {
 
 prepare_proxy_certificate() {
   if [[ -n "${TUNNEL_DOMAIN:-}" ]]; then
+    validate_tunnel_domain
     local cert_dir
     local cert
     local key
@@ -138,6 +158,7 @@ start_tunnels() {
     echo "TUNNEL_DOMAIN and ACME_EMAIL are required for tunnel mode" >&2
     return 1
   fi
+  validate_tunnel_domain
 
   envsubst < line1-gateway/config.template.json > rendered/line1-gateway.json
   docker compose --profile tunnel pull line1-gateway
