@@ -188,7 +188,7 @@ pub async fn apply_vpc_once<P: VpcProvider>(
 ) -> Result<VpcApplyReport, String> {
     validate_policy(&policy)?;
     let (observation, plan) = plan_vpc(provider, desired).await?;
-    match plan.action {
+    match &plan.action {
         VpcApplyAction::Noop => Ok(VpcApplyReport {
             performed: VpcApplyAction::Noop,
             observation,
