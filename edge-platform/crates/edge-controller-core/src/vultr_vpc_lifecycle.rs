@@ -33,7 +33,6 @@ pub struct VpcObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedVpcAttachment {
     pub attachment_id: String,
-    pub subscription_type: String,
     pub subscription_id: String,
     pub private_ipv4: String,
 }
@@ -208,10 +207,7 @@ pub fn plan_attachment(
     let matching = attachments
         .attachments
         .iter()
-        .filter(|attachment| {
-            attachment.subscription_type == "instance"
-                && attachment.subscription_id == target_instance_id
-        })
+.filter(|attachment| attachment.subscription_id == target_instance_id)
         .collect::<Vec<_>>();
     match matching.as_slice() {
         [] => Ok(AttachmentPlan {
@@ -411,10 +407,11 @@ fn reject_foreign_attachments(
     attachments: &VpcAttachmentObservation,
     target_instance_id: &str,
 ) -> Result<(), VpcLifecycleError> {
-    if let Some(foreign) = attachments.attachments.iter().find(|attachment| {
-        attachment.subscription_type != "instance"
-            || attachment.subscription_id != target_instance_id
-    }) {
+    if let Some(foreign) = attachments
+        .attachments
+        .iter()
+        .find(|attachment| attachment.subscription_id != target_instance_id)
+    {
         return Err(VpcLifecycleError::Conflict(format!(
             "owned disposable Vultr VPC has foreign attachment {}",
             foreign.attachment_id
@@ -515,7 +512,6 @@ mod tests {
     fn attachment(instance: &str, ip: &str) -> ObservedVpcAttachment {
         ObservedVpcAttachment {
             attachment_id: "attachment-1".to_owned(),
-            subscription_type: "instance".to_owned(),
             subscription_id: instance.to_owned(),
             private_ipv4: ip.to_owned(),
         }
