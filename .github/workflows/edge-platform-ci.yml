@@ -254,13 +254,34 @@ jobs:
               for rule in acceptance_firewall["rules"]
           )
 
+          mesh_command = Path(
+              "edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs"
+          ).read_text()
+          for surface in [
+              "line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path>",
+              "line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path>",
+              "line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
+              "line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
+          ]:
+              assert surface in mesh_command
+          assert "verify_vpc_ready" in mesh_command
+          assert "run-local route authority comes only from verified Vultr VPC state" in mesh_command
+
           workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           assert "CLOUDFLARE_ACCOUNT_ID" not in workflow
-          assert "vpc_cidr=\"$(jq -er '.cidr'" in workflow
           assert "vultr-vpc attachment-apply" in workflow
           assert "vultr-vpc verify" in workflow
           assert "vultr-vpc cleanup-apply" in workflow
-          assert '.routes = [{"network": $cidr}]' in workflow
+          assert 'line3-mesh vpc-plan "${mesh_base_spec}" "${vpc_spec}"' in workflow
+          assert 'line3-mesh vpc-apply "${mesh_base_spec}" "${vpc_spec}"' in workflow
+          assert 'line3-mesh vpc-runtime-apply "${mesh_base_spec}" "${vpc_spec}" "${app_spec}"' in workflow
+          assert 'line3-mesh vpc-runtime-verify "${mesh_base_spec}" "${vpc_spec}" "${app_spec}"' in workflow
+          assert 'test -n "${VULTR_API_KEY}"' in workflow
+          assert 'test -n "${CLOUDFLARE_API_TOKEN}"' in workflow
+          assert "jq --arg cidr" not in workflow
+          assert "vpc_cidr=" not in workflow
+          assert "mesh_spec=" not in workflow
+          assert '.routes = [{"network": $cidr}]' not in workflow
 
           for acceptance_path in [
               "infra/application/disposable-acceptance.json",
