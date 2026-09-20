@@ -8,8 +8,9 @@ use edge_controller_core::vultr_vpc_lifecycle::{
     plan_attachment, plan_cleanup, plan_vpc_apply, verify_cleanup_digest,
 };
 use edge_provider_vultr::{
-    VultrError, VultrInstance, VultrVpc, VultrVpcAttachment, attach_vpc_to_instance_typed,
-    create_vpc_typed, destroy_vpc_typed, detach_vpc_from_instance_typed, list_instances_typed,
+    VultrError, VultrInstance, VultrInstanceVpc, VultrVpc, VultrVpcAttachment,
+    attach_vpc_to_instance_typed, create_vpc_typed, destroy_vpc_typed,
+    detach_vpc_from_instance_typed, list_instance_vpcs_typed, list_instances_typed,
     list_vpc_attachments_typed, list_vpcs_typed,
 };
 use serde::Serialize;
@@ -41,6 +42,10 @@ pub trait VpcProvider {
         &mut self,
         vpc_id: &str,
     ) -> Result<Vec<VultrVpcAttachment>, VultrError>;
+    async fn list_instance_vpcs(
+        &mut self,
+        instance_id: &str,
+    ) -> Result<Vec<VultrInstanceVpc>, VultrError>;
     async fn attach_vpc_to_instance(
         &mut self,
         instance_id: &str,
@@ -89,6 +94,13 @@ impl VpcProvider for VultrVpcApiProvider {
         vpc_id: &str,
     ) -> Result<Vec<VultrVpcAttachment>, VultrError> {
         list_vpc_attachments_typed(&self.api_key, vpc_id).await
+    }
+
+    async fn list_instance_vpcs(
+        &mut self,
+        instance_id: &str,
+    ) -> Result<Vec<VultrInstanceVpc>, VultrError> {
+        list_instance_vpcs_typed(&self.api_key, instance_id).await
     }
 
     async fn attach_vpc_to_instance(
@@ -237,7 +249,7 @@ pub async fn plan_vpc_attachment<P: VpcProvider>(
         })?;
     let observation = observe_vpc(provider, desired).await?;
     let vpc_id = exact_vpc_id(desired, &observation)?;
-    let attachments = observe_attachments(provider, &vpc_id).await?;
+    let attachments = observe_attachments(provider, &vpc_id, Some(&target)).await?;
     let plan = plan_attachment(desired, &observation, &attachments, &target.provider_id)
         .map_err(|err| err.to_string())?;
     Ok((target, observation, attachments, plan))
@@ -406,21 +418,14 @@ pub async fn plan_vpc_cleanup<P: VpcProvider>(
         return Ok((observation, attachments, plan));
     };
 
-    let attachments = observe_attachments(provider, &vpc_id).await?;
-    let target = if attachments.attachments.is_empty() {
-        None
-    } else {
-        Some(
-            resolve_exact_target_instance(provider, desired)
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "refusing Vultr VPC cleanup: attachments exist but exact lifecycle-owned instance {} is absent",
-                        desired.machine_id
-                    )
-                })?,
-        )
-    };
+    let target = resolve_exact_target_instance(provider, desired).await?;
+    let attachments = observe_attachments(provider, &vpc_id, target.as_ref()).await?;
+    if !attachments.attachments.is_empty() && target.is_none() {
+        return Err(format!(
+            "refusing Vultr VPC cleanup: attachments exist but exact lifecycle-owned instance {} is absent",
+            desired.machine_id
+        ));
+    }
     let plan = plan_cleanup(
         desired,
         &observation,
@@ -535,7 +540,7 @@ async fn wait_for_attachment_noop<P: VpcProvider>(
     for attempt in 1..=policy.reobserve_attempts {
         let observation = observe_vpc(provider, desired).await?;
         let vpc_id = exact_vpc_id(desired, &observation)?;
-        let attachments = observe_attachments(provider, &vpc_id).await?;
+        let attachments = observe_attachments(provider, &vpc_id, Some(target)).await?;
         if attachments_have_unresolved_subscription(&attachments) {
             if attempt < policy.reobserve_attempts {
                 sleep(policy.reobserve_delay).await;
@@ -565,7 +570,8 @@ async fn wait_for_cleanup_progress<P: VpcProvider>(
         let observation = observe_vpc(provider, desired).await?;
         let vpc_plan = plan_vpc_apply(desired, &observation).map_err(|err| err.to_string())?;
         let (attachments, target) = if let Some(vpc_id) = vpc_plan.provider_id {
-            let attachments = observe_attachments(provider, &vpc_id).await?;
+            let target = resolve_exact_target_instance(provider, desired).await?;
+            let attachments = observe_attachments(provider, &vpc_id, target.as_ref()).await?;
             if attachments_have_unresolved_subscription(&attachments) {
                 if attempt < policy.reobserve_attempts {
                     sleep(policy.reobserve_delay).await;
@@ -573,20 +579,12 @@ async fn wait_for_cleanup_progress<P: VpcProvider>(
                 }
                 break;
             }
-            let target = if attachments.attachments.is_empty() {
-                None
-            } else {
-                Some(
-                    resolve_exact_target_instance(provider, desired)
-                        .await?
-                        .ok_or_else(|| {
-                            format!(
-                                "refusing Vultr VPC cleanup: attachments exist but exact lifecycle-owned instance {} is absent",
-                                desired.machine_id
-                            )
-                        })?,
-                )
-            };
+            if !attachments.attachments.is_empty() && target.is_none() {
+                return Err(format!(
+                    "refusing Vultr VPC cleanup: attachments exist but exact lifecycle-owned instance {} is absent",
+                    desired.machine_id
+                ));
+            }
             (attachments, target)
         } else {
             (VpcAttachmentObservation::default(), None)
@@ -678,11 +676,26 @@ fn exact_vpc_id(desired: &DesiredVpcState, observation: &VpcObservation) -> Resu
 async fn observe_attachments<P: VpcProvider>(
     provider: &mut P,
     vpc_id: &str,
+    target: Option<&TargetInstance>,
 ) -> Result<VpcAttachmentObservation, String> {
-    let mut attachments = provider
+    let mut raw = provider
         .list_vpc_attachments(vpc_id)
         .await
-        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())?;
+
+    if raw
+        .iter()
+        .any(|attachment| attachment.subscription_id.is_none())
+        && let Some(target) = target
+    {
+        let instance_vpcs = provider
+            .list_instance_vpcs(&target.provider_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        resolve_target_attachment_identity(&mut raw, vpc_id, target, &instance_vpcs)?;
+    }
+
+    let mut attachments = raw
         .into_iter()
         .map(normalize_attachment)
         .collect::<Vec<_>>();
@@ -692,6 +705,73 @@ async fn observe_attachments<P: VpcProvider>(
             .then_with(|| left.attachment_id.cmp(&right.attachment_id))
     });
     Ok(VpcAttachmentObservation { attachments })
+}
+
+fn resolve_target_attachment_identity(
+    attachments: &mut [VultrVpcAttachment],
+    vpc_id: &str,
+    target: &TargetInstance,
+    instance_vpcs: &[VultrInstanceVpc],
+) -> Result<(), String> {
+    let exact = instance_vpcs
+        .iter()
+        .filter(|vpc| vpc.id == vpc_id)
+        .collect::<Vec<_>>();
+    let target_vpc = match exact.as_slice() {
+        [] => return Ok(()),
+        [vpc] => *vpc,
+        _ => {
+            return Err(format!(
+                "Vultr instance {} reports multiple entries for VPC {}",
+                target.provider_id, vpc_id
+            ));
+        }
+    };
+
+    let candidates = attachments
+        .iter()
+        .enumerate()
+        .filter(|(_, attachment)| {
+            attachment.subscription_id.is_none()
+                && attachment_matches_instance_vpc(attachment, target_vpc)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    match candidates.as_slice() {
+        [] => Ok(()),
+        [index] => {
+            let attachment = &mut attachments[*index];
+            attachment.subscription_id = Some(target.provider_id.clone());
+            if attachment.private_ipv4.is_empty() {
+                attachment.private_ipv4 = target_vpc.private_ipv4.clone();
+            }
+            Ok(())
+        }
+        _ => Err(format!(
+            "Vultr VPC {} has multiple unresolved attachments matching exact instance {}",
+            vpc_id, target.provider_id
+        )),
+    }
+}
+
+fn attachment_matches_instance_vpc(
+    attachment: &VultrVpcAttachment,
+    instance_vpc: &VultrInstanceVpc,
+) -> bool {
+    let ip_comparable =
+        !attachment.private_ipv4.is_empty() && !instance_vpc.private_ipv4.is_empty();
+    let mac_comparable = !attachment.mac_address.is_empty() && !instance_vpc.mac_address.is_empty();
+
+    let ip_matches = ip_comparable && attachment.private_ipv4 == instance_vpc.private_ipv4;
+    let mac_matches = mac_comparable
+        && attachment
+            .mac_address
+            .eq_ignore_ascii_case(&instance_vpc.mac_address);
+    let ip_conflicts = ip_comparable && !ip_matches;
+    let mac_conflicts = mac_comparable && !mac_matches;
+
+    (ip_matches || mac_matches) && !ip_conflicts && !mac_conflicts
 }
 
 fn normalize_vpc(value: VultrVpc) -> ObservedVpc {
@@ -738,6 +818,7 @@ mod tests {
     struct FakeProvider {
         vpcs: Vec<VultrVpc>,
         attachments: Vec<VultrVpcAttachment>,
+        instance_vpcs: Vec<VultrInstanceVpc>,
         instances: Vec<VultrInstance>,
         create_vpc_calls: usize,
         attach_calls: usize,
@@ -748,6 +829,7 @@ mod tests {
         commit_create_on_error: bool,
         commit_attach_on_error: bool,
         transient_unresolved_after_attach: bool,
+        persistent_unresolved_after_attach: bool,
         unresolved_attachment_reads: usize,
     }
 
@@ -793,6 +875,13 @@ mod tests {
             Ok(self.attachments.clone())
         }
 
+        async fn list_instance_vpcs(
+            &mut self,
+            _instance_id: &str,
+        ) -> Result<Vec<VultrInstanceVpc>, VultrError> {
+            Ok(self.instance_vpcs.clone())
+        }
+
         async fn attach_vpc_to_instance(
             &mut self,
             instance_id: &str,
@@ -802,8 +891,12 @@ mod tests {
             let attachment = fake_attachment(instance_id);
             if self.attach_error.is_none() || self.commit_attach_on_error {
                 self.attachments.push(attachment);
+                self.instance_vpcs.push(fake_instance_vpc(_vpc_id));
                 if self.transient_unresolved_after_attach {
                     self.unresolved_attachment_reads = 1;
+                }
+                if self.persistent_unresolved_after_attach {
+                    self.unresolved_attachment_reads = usize::MAX;
                 }
             }
             match self.attach_error.clone() {
@@ -815,11 +908,12 @@ mod tests {
         async fn detach_vpc_from_instance(
             &mut self,
             instance_id: &str,
-            _vpc_id: &str,
+            vpc_id: &str,
         ) -> Result<(), VultrError> {
             self.detach_calls += 1;
             self.attachments
                 .retain(|attachment| attachment.subscription_id.as_deref() != Some(instance_id));
+            self.instance_vpcs.retain(|vpc| vpc.id != vpc_id);
             Ok(())
         }
 
@@ -851,8 +945,17 @@ mod tests {
     fn fake_attachment(instance_id: &str) -> VultrVpcAttachment {
         VultrVpcAttachment {
             id: "attachment-1".to_owned(),
+            mac_address: "52:54:00:00:04:02".to_owned(),
             private_ipv4: "10.0.4.2".to_owned(),
             subscription_id: Some(instance_id.to_owned()),
+        }
+    }
+
+    fn fake_instance_vpc(vpc_id: &str) -> VultrInstanceVpc {
+        VultrInstanceVpc {
+            id: vpc_id.to_owned(),
+            mac_address: "52:54:00:00:04:02".to_owned(),
+            private_ipv4: "10.0.4.2".to_owned(),
         }
     }
 
@@ -1001,6 +1104,58 @@ mod tests {
         assert_eq!(provider.attach_calls, 1);
         assert_eq!(report.next_plan.action, AttachmentAction::Noop);
         assert_eq!(report.next_plan.private_ipv4.as_deref(), Some("10.0.4.2"));
+    }
+
+    #[tokio::test]
+    async fn persistent_null_subscription_resolves_from_exact_instance_vpc_without_replay() {
+        let desired = desired();
+        let mut provider = FakeProvider {
+            vpcs: vec![fake_vpc("waw", &desired.ownership_description())],
+            instances: vec![fake_instance()],
+            persistent_unresolved_after_attach: true,
+            ..FakeProvider::default()
+        };
+        let authority = attachment_authority(&mut provider, &desired).await;
+        let report = apply_vpc_attachment_once(&mut provider, &desired, &authority, policy())
+            .await
+            .unwrap();
+        assert_eq!(provider.attach_calls, 1);
+        assert_eq!(report.next_plan.action, AttachmentAction::Noop);
+        assert_eq!(report.next_plan.private_ipv4.as_deref(), Some("10.0.4.2"));
+    }
+
+    #[test]
+    fn unresolved_attachment_requires_matching_instance_side_network_identity() {
+        let target = TargetInstance {
+            provider_id: "instance-1".to_owned(),
+            region: "waw".to_owned(),
+        };
+        let mut attachments = vec![VultrVpcAttachment {
+            id: "attachment-pending".to_owned(),
+            mac_address: "52:54:00:00:04:02".to_owned(),
+            private_ipv4: "10.0.4.2".to_owned(),
+            subscription_id: None,
+        }];
+        let mismatched = vec![VultrInstanceVpc {
+            id: "vpc-1".to_owned(),
+            mac_address: "52:54:00:00:04:99".to_owned(),
+            private_ipv4: "10.0.4.99".to_owned(),
+        }];
+        resolve_target_attachment_identity(&mut attachments, "vpc-1", &target, &mismatched)
+            .unwrap();
+        assert_eq!(attachments[0].subscription_id, None);
+
+        resolve_target_attachment_identity(
+            &mut attachments,
+            "vpc-1",
+            &target,
+            &[fake_instance_vpc("vpc-1")],
+        )
+        .unwrap();
+        assert_eq!(
+            attachments[0].subscription_id.as_deref(),
+            Some("instance-1")
+        );
     }
 
     #[tokio::test]
