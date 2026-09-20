@@ -204,10 +204,27 @@ pub async fn plan_desired_state_with_firewall_profiles<P: LifecycleProvider>(
     })
 }
 
+pub fn authorize_vultr_machine(
+    desired: &DesiredState,
+    inventory: &LifecycleInventory,
+    plan: MachinePlan,
+) -> Result<AuthorizedPlan<MachinePlan>, String> {
+    let disposition = match plan.class {
+        PlanClass::Noop => PlanDisposition::Noop,
+        PlanClass::Create | PlanClass::UpdateInPlace => PlanDisposition::Mutate,
+        PlanClass::ReplaceRequired | PlanClass::BlockedDrift | PlanClass::BlockedAmbiguous => {
+            PlanDisposition::Blocked
+        }
+    };
+    authorize_plan("vultr_machine", desired, inventory, plan, disposition)
+        .map_err(|err| err.to_string())
+}
+
 pub async fn apply_machine<P: LifecycleProvider>(
     provider: &mut P,
     desired: &DesiredState,
     machine_id: &str,
+    authorized_plan_digest: &str,
     prerequisites: &CreatePrerequisites,
     policy: &LifecycleExecutionPolicy,
 ) -> Result<ApplyReport, String> {
@@ -216,6 +233,7 @@ pub async fn apply_machine<P: LifecycleProvider>(
         provider,
         desired,
         machine_id,
+        authorized_plan_digest,
         prerequisites,
         policy,
         &verified_firewall_profiles,
@@ -227,6 +245,7 @@ pub async fn apply_machine_with_firewall_profiles<P: LifecycleProvider>(
     provider: &mut P,
     desired: &DesiredState,
     machine_id: &str,
+    authorized_plan_digest: &str,
     prerequisites: &CreatePrerequisites,
     policy: &LifecycleExecutionPolicy,
     verified_firewall_profiles: &BTreeMap<String, String>,
@@ -235,6 +254,9 @@ pub async fn apply_machine_with_firewall_profiles<P: LifecycleProvider>(
     let machine = machine_by_id(desired, machine_id)?;
     let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
     let initial_plan = plan_machine(desired, machine, &inventory).map_err(|err| err.to_string())?;
+    let authorized = authorize_vultr_machine(desired, &inventory, initial_plan.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
 
     match initial_plan.class {
         PlanClass::Noop => {
@@ -784,6 +806,20 @@ mod tests {
         }
     }
 
+    async fn machine_authority(
+        provider: &mut FakeProvider,
+        desired: &DesiredState,
+        machine_id: &str,
+    ) -> String {
+        let report = plan_desired_state(provider, desired, Some(machine_id))
+            .await
+            .unwrap();
+        authorize_vultr_machine(desired, &report.inventory, report.plans[0].clone())
+            .unwrap()
+            .authority
+            .authority_digest
+    }
+
     async fn destroy_authorities(
         provider: &mut FakeProvider,
         desired: &DesiredState,
@@ -844,10 +880,12 @@ mod tests {
         let desired = desired();
         let mut provider = FakeProvider::default();
 
+        let first_authority = machine_authority(&mut provider, &desired, "edge-1").await;
         let first = apply_machine(
             &mut provider,
             &desired,
             "edge-1",
+            &first_authority,
             &prerequisites(),
             &test_policy(),
         )
@@ -856,10 +894,12 @@ mod tests {
         assert_eq!(first.action, ApplyAction::Created);
         assert_eq!(provider.create_calls, 1);
 
+        let second_authority = machine_authority(&mut provider, &desired, "edge-1").await;
         let second = apply_machine(
             &mut provider,
             &desired,
             "edge-1",
+            &second_authority,
             &prerequisites(),
             &test_policy(),
         )
@@ -878,10 +918,12 @@ mod tests {
             ..FakeProvider::default()
         };
 
+        let authority = machine_authority(&mut provider, &desired, "edge-1").await;
         let report = apply_machine(
             &mut provider,
             &desired,
             "edge-1",
+            &authority,
             &prerequisites(),
             &test_policy(),
         )
@@ -901,10 +943,12 @@ mod tests {
             ..FakeProvider::default()
         };
 
+        let authority = machine_authority(&mut provider, &desired, "edge-1").await;
         let error = apply_machine(
             &mut provider,
             &desired,
             "edge-1",
+            &authority,
             &prerequisites(),
             &test_policy(),
         )
@@ -913,6 +957,31 @@ mod tests {
 
         assert!(error.contains("CREATE was not replayed"));
         assert_eq!(provider.create_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_machine_authority_refuses_before_create() {
+        let desired = desired();
+        let mut provider = FakeProvider::default();
+        let authority = machine_authority(&mut provider, &desired, "edge-1").await;
+        let machine = &desired.machines[0];
+        provider
+            .instances
+            .push(instance_for_machine(&desired, machine, "instance-1"));
+
+        let error = apply_machine(
+            &mut provider,
+            &desired,
+            "edge-1",
+            &authority,
+            &prerequisites(),
+            &test_policy(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("plan authority is stale"));
+        assert_eq!(provider.create_calls, 0);
     }
 
     #[tokio::test]
@@ -926,10 +995,12 @@ mod tests {
             ..FakeProvider::default()
         };
 
+        let authority = machine_authority(&mut provider, &desired, "edge-1").await;
         let error = apply_machine(
             &mut provider,
             &desired,
             "edge-1",
+            &authority,
             &prerequisites(),
             &test_policy(),
         )
