@@ -14,6 +14,7 @@ use crate::vultr_lifecycle_service::plan_desired_state_with_firewall_profiles;
 use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationPlanClass, DesiredApplicationState, plan_application,
 };
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use edge_controller_core::vultr_lifecycle::PlanClass;
 use edge_provider_vultr::get_instance_typed;
 use serde_json::json;
