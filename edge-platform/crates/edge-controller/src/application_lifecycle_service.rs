@@ -1064,8 +1064,8 @@ mod tests {
         )
         .unwrap();
 
-        let error =
-            prepare_application_bundle(&root, &test_desired("stack"), &test_artifact()).unwrap_err();
+        let error = prepare_application_bundle(&root, &test_desired("stack"), &test_artifact())
+            .unwrap_err();
         assert!(error.contains("runtime policy is derived only from application desired state"));
 
         fs::remove_dir_all(root).unwrap();
