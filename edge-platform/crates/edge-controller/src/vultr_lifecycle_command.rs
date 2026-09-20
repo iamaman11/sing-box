@@ -5,8 +5,9 @@ use crate::vultr_host_bootstrap::{
     wait_provider_ready,
 };
 use crate::vultr_lifecycle_service::{
-    ApplyAction, CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
-    apply_machine_with_firewall_profiles, authorize_vultr_destroy,
+    ApplyAction, ApplyReport, CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider,
+    VultrApiProvider, apply_machine_with_firewall_profiles, authorize_vultr_destroy,
+    authorize_vultr_machine,
     destroy_machine_with_firewall_profiles, inventory_desired_state_with_firewall_profiles,
     plan_desired_state_with_firewall_profiles,
 };
@@ -137,21 +138,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         .iter()
         .cloned()
         .map(|plan| {
-            let disposition = match plan.class {
-                PlanClass::Noop => PlanDisposition::Noop,
-                PlanClass::Create | PlanClass::UpdateInPlace => PlanDisposition::Mutate,
-                PlanClass::ReplaceRequired
-                | PlanClass::BlockedDrift
-                | PlanClass::BlockedAmbiguous => PlanDisposition::Blocked,
-            };
-            authorize_plan(
-                "vultr_machine",
-                &desired,
-                &report.inventory,
-                plan,
-                disposition,
-            )
-            .map_err(|err| err.to_string())
+            authorize_vultr_machine(&desired, &report.inventory, plan)
         })
         .collect::<Result<Vec<_>, _>>()?;
     print_json_value(serde_json::json!({
@@ -200,21 +187,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .cloned()
         .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
     let initial_class = initial_plan.class;
-    let disposition = match initial_class {
-        PlanClass::Noop => PlanDisposition::Noop,
-        PlanClass::Create | PlanClass::UpdateInPlace => PlanDisposition::Mutate,
-        PlanClass::ReplaceRequired
-        | PlanClass::BlockedDrift
-        | PlanClass::BlockedAmbiguous => PlanDisposition::Blocked,
-    };
-    let authorized = authorize_plan(
-        "vultr_machine",
-        &desired,
-        &initial.inventory,
-        initial_plan,
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_vultr_machine(&desired, &initial.inventory, initial_plan)?;
     verify_exact_authority(&args[2], &authorized.authority).map_err(|err| err.to_string())?;
 
     if matches!(
@@ -262,11 +235,27 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         &verified_firewalls,
     )
     .await?;
-    let after_support_class = after_support
+    let after_support_plan = after_support
         .plans
         .first()
-        .map(|plan| plan.class)
+        .cloned()
         .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
+    let after_support_class = after_support_plan.class;
+
+    if initial_class == PlanClass::UpdateInPlace && after_support_class != PlanClass::Noop {
+        return Err(format!(
+            "machine {} support-resource convergence did not reach NOOP: {:?}: {}",
+            machine.id,
+            after_support_class,
+            after_support_plan.reasons.join("; ")
+        ));
+    }
+    if initial_class != PlanClass::UpdateInPlace {
+        let after_support_authorized =
+            authorize_vultr_machine(&desired, &after_support.inventory, after_support_plan.clone())?;
+        verify_exact_authority(&args[2], &after_support_authorized.authority)
+            .map_err(|err| err.to_string())?;
+    }
 
     let prerequisites = if after_support_class == PlanClass::Create {
         validate_machine_catalog(&mut support_provider, machine).await?;
@@ -295,15 +284,31 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         empty_create_prerequisites(machine)
     };
 
-    let report = apply_machine_with_firewall_profiles(
-        &mut lifecycle_provider,
-        &desired,
-        &args[1],
-        &prerequisites,
-        &policy,
-        &verified_firewalls,
-    )
-    .await?;
+    let support_reconciled =
+        initial_class == PlanClass::UpdateInPlace && after_support_class == PlanClass::Noop;
+    let report = if support_reconciled {
+        let provider_id = after_support_plan
+            .provider_id
+            .clone()
+            .ok_or_else(|| "converged UPDATE_IN_PLACE plan is missing provider id".to_owned())?;
+        ApplyReport {
+            action: ApplyAction::Noop,
+            machine_id: machine.id.clone(),
+            provider_id,
+            final_plan: after_support_plan,
+        }
+    } else {
+        apply_machine_with_firewall_profiles(
+            &mut lifecycle_provider,
+            &desired,
+            &args[1],
+            &args[2],
+            &prerequisites,
+            &policy,
+            &verified_firewalls,
+        )
+        .await?
+    };
 
     let mut operational_provider = operational_provider_from_env()?;
     let ready = wait_provider_ready(
@@ -366,6 +371,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         "user_data_scrubbed": true,
         "user_data_scrub_changed": scrub_changed,
         "host_certificate_rotated": rotated,
+        "support_reconciled": support_reconciled,
     }))
 }
 
