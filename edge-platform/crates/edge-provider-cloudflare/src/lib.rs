@@ -14,6 +14,14 @@ pub struct CloudflareDnsRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareDnsObservedRecord {
+    pub id: String,
+    pub zone_id: String,
+    pub record_name: String,
+    pub ip: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudflareMeshNode {
     pub id: String,
     pub name: String,
@@ -95,6 +103,99 @@ pub async fn delete_a_record(
         .map_err(|err| format!("failed to delete Cloudflare DNS record: {err}"))?;
     ensure_success(response).await?;
     Ok(())
+}
+
+pub async fn list_a_records(
+    api_token: &str,
+    zone_name: &str,
+    record_name: &str,
+) -> Result<Vec<CloudflareDnsObservedRecord>, String> {
+    require_non_empty("Cloudflare DNS zone", zone_name)?;
+    require_non_empty("Cloudflare DNS record name", record_name)?;
+    let client = authorized_client(api_token)?;
+    let zone = fetch_zone(&client, zone_name).await?;
+    let records = fetch_records(&client, &zone.id, record_name).await?;
+    Ok(records
+        .into_iter()
+        .map(|record| CloudflareDnsObservedRecord {
+            id: record.id,
+            zone_id: zone.id.clone(),
+            record_name: record.name,
+            ip: record.content,
+        })
+        .collect())
+}
+
+pub async fn create_a_record(
+    api_token: &str,
+    zone_name: &str,
+    record_name: &str,
+    ip: &str,
+) -> Result<(), String> {
+    let client = authorized_client(api_token)?;
+    let zone = fetch_zone(&client, zone_name).await?;
+    let body = DnsRecordWriteRequest {
+        record_type: "A".to_owned(),
+        name: record_name.to_owned(),
+        content: ip.to_owned(),
+        ttl: 120,
+        proxied: false,
+    };
+    let response = client
+        .post(format!("{API_ROOT}/zones/{}/dns_records", zone.id))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare DNS record: {err}"))?;
+    ensure_success(response).await
+}
+
+pub async fn update_a_record_by_id(
+    api_token: &str,
+    zone_name: &str,
+    record_id: &str,
+    record_name: &str,
+    ip: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare DNS record ID", record_id)?;
+    let client = authorized_client(api_token)?;
+    let zone = fetch_zone(&client, zone_name).await?;
+    let body = DnsRecordWriteRequest {
+        record_type: "A".to_owned(),
+        name: record_name.to_owned(),
+        content: ip.to_owned(),
+        ttl: 120,
+        proxied: false,
+    };
+    let response = client
+        .put(format!(
+            "{API_ROOT}/zones/{}/dns_records/{record_id}",
+            zone.id
+        ))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("failed to update Cloudflare DNS record: {err}"))?;
+    ensure_success(response).await
+}
+
+pub async fn delete_a_record_by_id(
+    api_token: &str,
+    zone_name: &str,
+    record_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare DNS record ID", record_id)?;
+    let client = authorized_client(api_token)?;
+    let zone = fetch_zone(&client, zone_name).await?;
+    let response = client
+        .delete(format!(
+            "{API_ROOT}/zones/{}/dns_records/{record_id}",
+            zone.id
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to delete Cloudflare DNS record: {err}"))?;
+    ensure_success(response).await
 }
 
 pub async fn list_mesh_nodes(
@@ -402,14 +503,25 @@ async fn fetch_record(
     zone_id: &str,
     record_name: &str,
 ) -> Result<Option<DnsRecord>, String> {
+    Ok(fetch_records(client, zone_id, record_name)
+        .await?
+        .into_iter()
+        .next())
+}
+
+async fn fetch_records(
+    client: &Client,
+    zone_id: &str,
+    record_name: &str,
+) -> Result<Vec<DnsRecord>, String> {
     let response = client
         .get(format!("{API_ROOT}/zones/{zone_id}/dns_records"))
-        .query(&[("type", "A"), ("name", record_name)])
+        .query(&[("type", "A"), ("name", record_name), ("per_page", "100")])
         .send()
         .await
         .map_err(|err| format!("failed to query Cloudflare DNS records: {err}"))?;
     let payload: ApiEnvelope<Vec<DnsRecord>> = parse_success_json(response).await?;
-    Ok(payload.result.into_iter().next())
+    Ok(payload.result)
 }
 
 async fn ensure_success(response: reqwest::Response) -> Result<(), String> {
@@ -468,6 +580,8 @@ struct ZoneRecord {
 #[derive(Debug, Deserialize)]
 struct DnsRecord {
     id: String,
+    name: String,
+    content: String,
 }
 
 #[derive(Debug, Deserialize)]

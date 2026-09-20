@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 mod application_lifecycle_command;
 mod application_lifecycle_service;
+mod cloudflare_dns_lifecycle_command;
+mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
 mod deploy_orchestrator;
@@ -150,6 +152,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "application-lifecycle" => {
             let args = env::args().skip(2).collect::<Vec<_>>();
             application_lifecycle_command::run(args)
+                .await
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+        }
+        "cloudflare-dns" => {
+            let args = env::args().skip(2).collect::<Vec<_>>();
+            cloudflare_dns_lifecycle_command::run(args)
                 .await
                 .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
         }
