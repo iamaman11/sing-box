@@ -2,6 +2,9 @@ use edge_controller_core::cloudflare_mesh_lifecycle::{
     ApplyAction, ApplyPlan, CleanupAction, CleanupPlan, DesiredMeshState, MeshObservation,
     ObservedMeshNode, ObservedMeshRoute, plan_apply, plan_cleanup, verify_cleanup_digest,
 };
+use edge_controller_core::lifecycle::{
+    AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
+};
 use edge_provider_cloudflare::{
     CloudflareMeshNode, CloudflareMeshRoute, create_mesh_cidr_route, create_mesh_node,
     delete_mesh_cidr_route, delete_mesh_node, get_mesh_node_token, list_mesh_nodes,
@@ -146,10 +149,14 @@ pub async fn plan_mesh_apply<P: MeshProvider>(
 pub async fn apply_mesh_once<P: MeshProvider>(
     provider: &mut P,
     desired: &DesiredMeshState,
+    authorized_plan_digest: &str,
     policy: MeshExecutionPolicy,
 ) -> Result<MeshApplyReport, String> {
     validate_policy(policy)?;
     let (before, plan) = plan_mesh_apply(provider, desired).await?;
+    let authorized = authorize_mesh_apply(desired, &before, plan.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
     match plan.action.clone() {
         ApplyAction::Noop => Ok(MeshApplyReport {
             performed: ApplyAction::Noop,
@@ -255,16 +262,64 @@ pub async fn plan_mesh_cleanup<P: MeshProvider>(
     Ok((observed, plan))
 }
 
+pub fn authorize_mesh_apply(
+    desired: &DesiredMeshState,
+    observed: &MeshObservation,
+    plan: ApplyPlan,
+) -> Result<AuthorizedPlan<ApplyPlan>, String> {
+    let disposition = if matches!(plan.action, ApplyAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    authorize_plan(
+        "cloudflare_mesh_apply",
+        desired,
+        observed,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn authorize_mesh_cleanup(
+    desired: &DesiredMeshState,
+    observed: &MeshObservation,
+    plan: CleanupPlan,
+) -> Result<AuthorizedPlan<CleanupPlan>, String> {
+    let disposition = if matches!(plan.action, CleanupAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    authorize_plan(
+        "cloudflare_mesh_cleanup",
+        desired,
+        observed,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub async fn cleanup_mesh_once<P: MeshProvider>(
     provider: &mut P,
     desired: &DesiredMeshState,
     expected_digest: &str,
+    authorized_plan_digest: &str,
     policy: MeshExecutionPolicy,
 ) -> Result<MeshCleanupReport, String> {
     validate_policy(policy)?;
     let observed = observe_mesh(provider, desired).await?;
+    let current = plan_cleanup(desired, &observed).map_err(|err| err.to_string())?;
+    let authorized = authorize_mesh_cleanup(desired, &observed, current.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
     let plan = verify_cleanup_digest(desired, &observed, expected_digest)
         .map_err(|err| err.to_string())?;
+    if current != plan {
+        return Err("Cloudflare Mesh cleanup authorization changed during planning".to_owned());
+    }
     let action = plan.action.clone();
 
     let mutation = match &action {
@@ -522,10 +577,33 @@ mod tests {
         }
     }
 
+    async fn apply_authority(provider: &mut FakeProvider, desired: &DesiredMeshState) -> String {
+        let (observed, plan) = plan_mesh_apply(provider, desired).await.unwrap();
+        authorize_mesh_apply(desired, &observed, plan)
+            .unwrap()
+            .authority
+            .authority_digest
+    }
+
+    async fn cleanup_authority(
+        provider: &mut FakeProvider,
+        desired: &DesiredMeshState,
+    ) -> (String, String) {
+        let (observed, plan) = plan_mesh_cleanup(provider, desired).await.unwrap();
+        let destructive = plan.destructive_digest.clone().unwrap();
+        let generic = authorize_mesh_cleanup(desired, &observed, plan)
+            .unwrap()
+            .authority
+            .authority_digest;
+        (destructive, generic)
+    }
+
     #[tokio::test]
     async fn create_node_is_one_shot_and_observed() {
+        let desired = desired(&[]);
         let mut provider = FakeProvider::default();
-        let report = apply_mesh_once(&mut provider, &desired(&[]), policy())
+        let authority = apply_authority(&mut provider, &desired).await;
+        let report = apply_mesh_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.create_node_calls, 1);
@@ -540,7 +618,9 @@ mod tests {
             commit_node_on_error: true,
             ..FakeProvider::default()
         };
-        let report = apply_mesh_once(&mut provider, &desired(&[]), policy())
+        let desired = desired(&[]);
+        let authority = apply_authority(&mut provider, &desired).await;
+        let report = apply_mesh_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.create_node_calls, 1);
@@ -557,7 +637,9 @@ mod tests {
             }],
             ..FakeProvider::default()
         };
-        let report = apply_mesh_once(&mut provider, &desired(&["1.1.1.1/32"]), policy())
+        let desired = desired(&["1.1.1.1/32"]);
+        let authority = apply_authority(&mut provider, &desired).await;
+        let report = apply_mesh_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.create_route_calls, 1);
@@ -568,6 +650,26 @@ mod tests {
             }
         );
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
+    }
+
+    #[tokio::test]
+    async fn stale_apply_authority_rejects_without_mutation() {
+        let desired = desired(&[]);
+        let mut provider = FakeProvider::default();
+        let authority = apply_authority(&mut provider, &desired).await;
+        provider.nodes.push(CloudflareMeshNode {
+            id: "node-foreign".to_owned(),
+            name: desired.node_name.clone(),
+            status: Some("healthy".to_owned()),
+        });
+
+        let error = apply_mesh_once(&mut provider, &desired, &authority, policy())
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("stale"));
+        assert_eq!(provider.create_node_calls, 0);
+        assert_eq!(provider.create_route_calls, 0);
     }
 
     #[tokio::test]
@@ -628,9 +730,16 @@ mod tests {
             }],
             ..FakeProvider::default()
         };
-        let error = cleanup_mesh_once(&mut provider, &desired, &"0".repeat(64), policy())
-            .await
-            .unwrap_err();
+        let (_, authority) = cleanup_authority(&mut provider, &desired).await;
+        let error = cleanup_mesh_once(
+            &mut provider,
+            &desired,
+            &"0".repeat(64),
+            &authority,
+            policy(),
+        )
+        .await
+        .unwrap_err();
         assert!(error.contains("stale"));
         assert_eq!(provider.delete_node_calls, 0);
         assert_eq!(provider.delete_route_calls, 0);
@@ -656,9 +765,8 @@ mod tests {
             ..FakeProvider::default()
         };
 
-        let (_, plan) = plan_mesh_cleanup(&mut provider, &desired).await.unwrap();
-        let digest = plan.destructive_digest.unwrap();
-        let report = cleanup_mesh_once(&mut provider, &desired, &digest, policy())
+        let (digest, authority) = cleanup_authority(&mut provider, &desired).await;
+        let report = cleanup_mesh_once(&mut provider, &desired, &digest, &authority, policy())
             .await
             .unwrap();
 
