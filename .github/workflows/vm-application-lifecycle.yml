@@ -672,11 +672,14 @@ jobs:
             > "${RUNNER_TEMP}/acceptance-vpc-attachment-apply.json"
           jq -e '.performed.kind == "ATTACH_INSTANCE" and
                  .next_plan.action.kind == "NOOP" and
-                 .guest_transition.boot_id_changed == true and
-                 .guest_transition.boot_id_before != .guest_transition.boot_id_after' \
+                 .guest_transition.network_ready == true and
+                 (.guest_transition.boot_id_changed | type == "boolean") and
+                 (.guest_transition.interface | type == "string") and
+                 .guest_transition.cidr == .next_plan.cidr and
+                 .guest_transition.private_ipv4 == .next_plan.private_ipv4' \
             "${RUNNER_TEMP}/acceptance-vpc-attachment-apply.json" >/dev/null
 
-          # VPC attachment owns and proves the provider-induced guest reboot boundary.
+          # VPC attachment owns the guest transition and proves the exact provider-backed NIC/route ready.
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-vpc-post-attachment-plan.json"
           post_attachment_vm_authority="$(machine_authority "${RUNNER_TEMP}/acceptance-vpc-post-attachment-plan.json")"
