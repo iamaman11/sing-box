@@ -191,7 +191,7 @@ pub struct VultrVpc {
 pub struct VultrVpcAttachment {
     pub id: String,
     pub private_ipv4: String,
-    pub subscription_id: String,
+    pub subscription_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1363,7 +1363,7 @@ struct VultrVpcAttachmentPayload {
     #[serde(default)]
     mac_address: String,
     ip: VultrVpcAttachmentIpPayload,
-    linked_subscription: VultrVpcAttachmentSubscriptionPayload,
+    linked_subscription: Option<VultrVpcAttachmentSubscriptionPayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1384,7 +1384,9 @@ impl From<VultrVpcAttachmentPayload> for VultrVpcAttachment {
         Self {
             id: value.id,
             private_ipv4: value.ip.v4,
-            subscription_id: value.linked_subscription.id,
+            subscription_id: value
+                .linked_subscription
+                .map(|subscription| subscription.id),
         }
     }
 }
@@ -1803,7 +1805,25 @@ mod tests {
         let attachment: VultrVpcAttachment =
             attachments.attachments.into_iter().next().unwrap().into();
         assert_eq!(attachment.private_ipv4, "10.0.4.2");
-        assert_eq!(attachment.subscription_id, "instance-1");
+        assert_eq!(attachment.subscription_id.as_deref(), Some("instance-1"));
+    }
+
+    #[test]
+    fn decodes_vpc_attachment_with_null_linked_subscription() {
+        let attachments: ListVpcAttachmentsEnvelope = serde_json::from_value(serde_json::json!({
+            "attachments": [{
+                "id": "attachment-pending",
+                "type": "instance",
+                "mac_address": "00:11:22:33:44:66",
+                "ip": {"v4": ""},
+                "linked_subscription": null
+            }]
+        }))
+        .unwrap();
+        let attachment: VultrVpcAttachment =
+            attachments.attachments.into_iter().next().unwrap().into();
+        assert_eq!(attachment.id, "attachment-pending");
+        assert_eq!(attachment.subscription_id, None);
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub struct VpcObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedVpcAttachment {
     pub attachment_id: String,
-    pub subscription_id: String,
+    pub subscription_id: Option<String>,
     pub private_ipv4: String,
 }
 
@@ -207,7 +207,7 @@ pub fn plan_attachment(
     let matching = attachments
         .attachments
         .iter()
-        .filter(|attachment| attachment.subscription_id == target_instance_id)
+        .filter(|attachment| attachment.subscription_id.as_deref() == Some(target_instance_id))
         .collect::<Vec<_>>();
     match matching.as_slice() {
         [] => Ok(AttachmentPlan {
@@ -268,7 +268,7 @@ pub fn plan_cleanup(
         let matching = attachments
             .attachments
             .iter()
-            .filter(|attachment| attachment.subscription_id == target_instance_id)
+            .filter(|attachment| attachment.subscription_id.as_deref() == Some(target_instance_id))
             .collect::<Vec<_>>();
         match matching.as_slice() {
             [attachment] => {
@@ -407,10 +407,20 @@ fn reject_foreign_attachments(
     attachments: &VpcAttachmentObservation,
     target_instance_id: &str,
 ) -> Result<(), VpcLifecycleError> {
+    if let Some(unresolved) = attachments
+        .attachments
+        .iter()
+        .find(|attachment| attachment.subscription_id.is_none())
+    {
+        return Err(VpcLifecycleError::Conflict(format!(
+            "owned disposable Vultr VPC has unresolved attachment {} without linked subscription",
+            unresolved.attachment_id
+        )));
+    }
     if let Some(foreign) = attachments
         .attachments
         .iter()
-        .find(|attachment| attachment.subscription_id != target_instance_id)
+        .find(|attachment| attachment.subscription_id.as_deref() != Some(target_instance_id))
     {
         return Err(VpcLifecycleError::Conflict(format!(
             "owned disposable Vultr VPC has foreign attachment {}",
@@ -512,7 +522,7 @@ mod tests {
     fn attachment(instance: &str, ip: &str) -> ObservedVpcAttachment {
         ObservedVpcAttachment {
             attachment_id: "attachment-1".to_owned(),
-            subscription_id: instance.to_owned(),
+            subscription_id: Some(instance.to_owned()),
             private_ipv4: ip.to_owned(),
         }
     }
@@ -610,6 +620,21 @@ mod tests {
         let plan = plan_attachment(&desired(), &observed, &attachments, target).unwrap();
         assert_eq!(plan.action, AttachmentAction::Noop);
         assert_eq!(plan.private_ipv4.as_deref(), Some("10.0.4.2"));
+    }
+
+    #[test]
+    fn unresolved_vpc_attachment_fails_closed() {
+        let observed = VpcObservation { vpcs: vec![vpc()] };
+        let attachments = VpcAttachmentObservation {
+            attachments: vec![ObservedVpcAttachment {
+                attachment_id: "attachment-pending".to_owned(),
+                subscription_id: None,
+                private_ipv4: String::new(),
+            }],
+        };
+        let error = plan_attachment(&desired(), &observed, &attachments, "instance-1").unwrap_err();
+        assert!(matches!(error, VpcLifecycleError::Conflict(_)));
+        assert!(error.to_string().contains("unresolved attachment"));
     }
 
     #[test]
