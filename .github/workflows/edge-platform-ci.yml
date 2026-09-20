@@ -150,7 +150,7 @@ jobs:
               "domain": ["${TUNNEL_DOMAIN}"],
               "data_directory": "/var/lib/sing-box/acme",
               "email": "${ACME_EMAIL}",
-              "provider": "letsencrypt",
+              "provider": "${ACME_PROVIDER}",
               "disable_tls_alpn_challenge": True,
           }]
           hysteria = [
@@ -183,6 +183,9 @@ jobs:
           workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           assert "CLOUDFLARE_MESH_IMAGE=%s" in workflow
           assert 'mesh_image="${EDGE_MESH_IMAGE}"' in workflow
+          application = json.loads(Path("infra/application/disposable-acceptance.json").read_text())
+          assert application["bootstrap_mode"] == "full"
+          assert application["runtime_policy"]["line1"]["acme_provider"] == "https://acme-staging-v02.api.letsencrypt.org/directory"
           PY
           if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-tunnel-edge' \
             win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
@@ -601,6 +604,7 @@ jobs:
           export REALITY_SERVER_NAME="www.microsoft.com"
           export TUNNEL_DOMAIN="edge.example.com"
           export ACME_EMAIL="admin@example.com"
+          export ACME_PROVIDER="letsencrypt"
           export PROXY_CERT_PATH="${config_check}/proxy.crt"
           export PROXY_KEY_PATH="${config_check}/proxy.key"
           export CONFIG_CHECK_DIR="${config_check}"
