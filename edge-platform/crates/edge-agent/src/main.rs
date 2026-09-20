@@ -2905,7 +2905,7 @@ mod tests {
         fs::create_dir_all(stack.join("rendered")).unwrap();
         fs::write(
             stack.join(RUNTIME_ENV_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
@@ -3227,7 +3227,7 @@ mod tests {
         fs::create_dir_all(&owner).unwrap();
         fs::write(
             stack.join(".env.runtime"),
-            "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\n",
+            "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
