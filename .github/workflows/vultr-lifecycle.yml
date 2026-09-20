@@ -292,7 +292,14 @@ jobs:
                 run_lifecycle destroy-apply "${spec}" "${machine}" "${source_revision}" "${digest}" "${authority}" >/dev/null 2>&1 || true
               fi
             fi
-            run_lifecycle cleanup "${spec}" >/dev/null 2>&1 || true
+            local support_plan="${RUNNER_TEMP}/acceptance-emergency-support-plan.json"
+            if run_lifecycle cleanup-plan "${spec}" > "${support_plan}" 2>/dev/null; then
+              local support_authority
+              support_authority="$(plan_authority "${support_plan}" 2>/dev/null || true)"
+              if [[ "${support_authority}" =~ ^[0-9a-f]{64}$ ]]; then
+                run_lifecycle cleanup "${spec}" "${support_authority}" >/dev/null 2>&1 || true
+              fi
+            fi
           }
 
           case "${REQUESTED_OPERATION}" in
@@ -327,10 +334,18 @@ jobs:
               planned_digest="$(jq -er '.destroy_digest' "${RUNNER_TEMP}/destroy-authority-plan.json")"
               authority="$(plan_authority "${RUNNER_TEMP}/destroy-authority-plan.json")"
               test "${planned_digest}" = "${DESTROY_DIGEST}"
-              run_lifecycle destroy-apply "${spec}" "${machine}" "${source_revision}" "${DESTROY_DIGEST}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
+              run_lifecycle destroy-apply "${spec}" "${machine}" "${source_revision}" "${DESTROY_DIGEST}" "${authority}" > "${RUNNER_TEMP}/destroy-result.json"
+              run_lifecycle cleanup-plan "${spec}" > "${RUNNER_TEMP}/destroy-support-plan.json"
+              support_authority="$(plan_authority "${RUNNER_TEMP}/destroy-support-plan.json")"
+              run_lifecycle cleanup "${spec}" "${support_authority}" > "${RUNNER_TEMP}/destroy-support-result.json"
+              jq -s '.[0] + {support_cleanup: .[1]}' \
+                "${RUNNER_TEMP}/destroy-result.json" "${RUNNER_TEMP}/destroy-support-result.json" \
+                | tee "${RUNNER_TEMP}/result.json"
               ;;
             cleanup)
-              run_lifecycle cleanup "${spec}" | tee "${RUNNER_TEMP}/result.json"
+              run_lifecycle cleanup-plan "${spec}" > "${RUNNER_TEMP}/cleanup-authority-plan.json"
+              authority="$(plan_authority "${RUNNER_TEMP}/cleanup-authority-plan.json")"
+              run_lifecycle cleanup "${spec}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
               ;;
             acceptance)
               run_lifecycle doctor "${spec}" > "${RUNNER_TEMP}/doctor.json"
@@ -393,10 +408,18 @@ jobs:
               digest="$(jq -r '.destroy_digest' "${RUNNER_TEMP}/destroy-plan-final.json")"
               destroy_authority="$(plan_authority "${RUNNER_TEMP}/destroy-plan-final.json")"
               run_lifecycle destroy-apply "${spec}" "${machine}" "${source_revision}" "${digest}" "${destroy_authority}" > "${RUNNER_TEMP}/destroy-apply.json"
-              jq -e '.absence_verified == true and .support_cleanup.environment_in_use == false'                 "${RUNNER_TEMP}/destroy-apply.json" >/dev/null
+              jq -e '.absence_verified == true' "${RUNNER_TEMP}/destroy-apply.json" >/dev/null
 
-              run_lifecycle cleanup "${spec}" > "${RUNNER_TEMP}/cleanup-idempotent.json"
-              jq -e '.environment_in_use == false and .ssh_key_removed == false and (.firewall_groups_removed | length) == 0'                 "${RUNNER_TEMP}/cleanup-idempotent.json" >/dev/null
+              run_lifecycle cleanup-plan "${spec}" > "${RUNNER_TEMP}/support-cleanup-plan.json"
+              support_authority="$(plan_authority "${RUNNER_TEMP}/support-cleanup-plan.json")"
+              run_lifecycle cleanup "${spec}" "${support_authority}" > "${RUNNER_TEMP}/support-cleanup.json"
+              jq -e '.environment_in_use == false' "${RUNNER_TEMP}/support-cleanup.json" >/dev/null
+
+              run_lifecycle cleanup-plan "${spec}" > "${RUNNER_TEMP}/cleanup-idempotent-plan.json"
+              jq -e '.plan.action == "NOOP"' "${RUNNER_TEMP}/cleanup-idempotent-plan.json" >/dev/null
+              noop_support_authority="$(plan_authority "${RUNNER_TEMP}/cleanup-idempotent-plan.json")"
+              run_lifecycle cleanup "${spec}" "${noop_support_authority}" > "${RUNNER_TEMP}/cleanup-idempotent.json"
+              jq -e '.action == "NOOP" and .environment_in_use == false and .ssh_key_removed == false and (.firewall_groups_removed | length) == 0' "${RUNNER_TEMP}/cleanup-idempotent.json" >/dev/null
 
               run_lifecycle inventory "${spec}" > "${RUNNER_TEMP}/inventory-after.json"
               jq -e '[.inventory.resources[] | select(.ownership.environment == "lifecycle-acceptance")] | length == 0'                 "${RUNNER_TEMP}/inventory-after.json" >/dev/null
