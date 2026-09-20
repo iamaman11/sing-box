@@ -289,10 +289,7 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
     println!("release_set_sha256={digest}");
     println!("schema_version={}", release.schema_version);
     println!("source_revision={}", release.source_revision);
-    println!(
-        "edge_agent_sha256={}",
-        digest_to_hex(&vm.edge_agent_sha256)
-    );
+    println!("edge_agent_sha256={}", digest_to_hex(&vm.edge_agent_sha256));
     if release.schema_version >= 2 {
         println!(
             "edge_controller_sha256={}",
