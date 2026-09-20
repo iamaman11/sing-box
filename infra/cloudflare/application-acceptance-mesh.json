@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "account_id": "__SET_EXACT_CLOUDFLARE_ACCOUNT_ID_BEFORE_ACCEPTANCE__",
+  "environment": "application-acceptance",
+  "node_name": "singbox-line3-application-acceptance",
+  "routes": [
+    {
+      "network": "1.1.1.1/32"
+    }
+  ]
+}
