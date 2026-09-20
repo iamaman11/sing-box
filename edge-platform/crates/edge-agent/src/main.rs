@@ -15,10 +15,9 @@ use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
     FilePresence, Ipv4NetworkObservation, MeshRuntimeConvergeRequest, MeshRuntimeState,
-    ReadBundleIdentityRequest,
-    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
-    RollbackBundleRequest, RollbackBundleResponse, VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
+    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
+    VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use serde::{Deserialize, Serialize};
