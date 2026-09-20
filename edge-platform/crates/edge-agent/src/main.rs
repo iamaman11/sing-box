@@ -765,9 +765,14 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
     let line2 = ["PROXY_USERNAME", "PROXY_CERT_CN"]
         .into_iter()
         .collect::<BTreeSet<_>>();
-    let line1 = ["REALITY_SERVER_NAME", "TUNNEL_DOMAIN", "ACME_EMAIL"]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let line1 = [
+        "REALITY_SERVER_NAME",
+        "TUNNEL_DOMAIN",
+        "ACME_EMAIL",
+        "ACME_PROVIDER",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
     let full = line1.union(&line2).copied().collect::<BTreeSet<_>>();
     let allowed = full.clone();
     let mut observed = BTreeSet::new();
@@ -2626,6 +2631,30 @@ mod tests {
                 "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n"
             )
             .is_ok()
+        );
+        assert!(
+            validate_runtime_policy_env(
+                "REALITY_SERVER_NAME=reality.example.com\nTUNNEL_DOMAIN=tunnel.example.com\nACME_EMAIL=edge@example.com\n"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_runtime_policy_env(
+                "REALITY_SERVER_NAME=reality.example.com\nTUNNEL_DOMAIN=tunnel.example.com\nACME_EMAIL=edge@example.com\nACME_PROVIDER=letsencrypt\n"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_runtime_policy_env(
+                "REALITY_SERVER_NAME=reality.example.com\nTUNNEL_DOMAIN=tunnel.example.com\nACME_EMAIL=edge@example.com\nACME_PROVIDER=https://acme-staging-v02.api.letsencrypt.org/directory\nPROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_runtime_policy_env(
+                "REALITY_SERVER_NAME=reality.example.com\nTUNNEL_DOMAIN=tunnel.example.com\nACME_EMAIL=edge@example.com\nACME_PROVIDER=letsencrypt\nUNKNOWN_POLICY=value\n"
+            )
+            .is_err()
         );
     }
 
