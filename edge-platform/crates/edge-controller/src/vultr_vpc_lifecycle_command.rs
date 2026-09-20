@@ -1,12 +1,9 @@
 use crate::vultr_vpc_lifecycle_service::{
     VpcExecutionPolicy, VultrVpcApiProvider, apply_vpc_attachment_once, apply_vpc_once,
-    cleanup_vpc_once, observe_vpc, plan_vpc, plan_vpc_attachment, plan_vpc_cleanup,
-    verify_vpc_ready,
+    authorize_vpc_apply, authorize_vpc_attachment, authorize_vpc_cleanup, cleanup_vpc_once,
+    observe_vpc, plan_vpc, plan_vpc_attachment, plan_vpc_cleanup, verify_vpc_ready,
 };
-use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
-use edge_controller_core::vultr_vpc_lifecycle::{
-    AttachmentAction, CleanupAction, DesiredVpcState, VpcApplyAction,
-};
+use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -41,19 +38,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let desired = one_spec_arg(args, "plan")?;
     let mut provider = provider_from_env()?;
     let (observation, plan) = plan_vpc(&mut provider, &desired).await?;
-    let disposition = if matches!(plan.action, VpcApplyAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let authorized = authorize_plan(
-        "vultr_vpc_apply",
-        &desired,
-        &observation,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_vpc_apply(&desired, &observation, plan.clone())?;
     print_json(serde_json::json!({
         "observation": observation,
         "plan": plan,
@@ -64,9 +49,21 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_apply(args: &[String]) -> Result<(), String> {
-    let desired = one_spec_arg(args, "apply")?;
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller vultr-vpc apply <spec-path> <authorized-plan-sha256>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
-    let report = apply_vpc_once(&mut provider, &desired, VpcExecutionPolicy::default()).await?;
+    let report = apply_vpc_once(
+        &mut provider,
+        &desired,
+        &args[1],
+        VpcExecutionPolicy::default(),
+    )
+    .await?;
     print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
 }
 
@@ -75,27 +72,8 @@ async fn run_attachment_plan(args: &[String]) -> Result<(), String> {
     let mut provider = provider_from_env()?;
     let (target, observation, attachments, plan) =
         plan_vpc_attachment(&mut provider, &desired).await?;
-    let disposition = if matches!(plan.action, AttachmentAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let desired_material = serde_json::json!({
-        "desired": &desired,
-        "target_provider_id": &target.provider_id,
-    });
-    let observed_material = serde_json::json!({
-        "vpc": &observation,
-        "attachments": &attachments,
-    });
-    let authorized = authorize_plan(
-        "vultr_vpc_attachment",
-        &desired_material,
-        &observed_material,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized =
+        authorize_vpc_attachment(&desired, &target, &observation, &attachments, plan.clone())?;
     print_json(serde_json::json!({
         "target": target,
         "observation": observation,
@@ -108,10 +86,21 @@ async fn run_attachment_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
-    let desired = one_spec_arg(args, "attachment-apply")?;
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller vultr-vpc attachment-apply <spec-path> <authorized-plan-sha256>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
-    let report =
-        apply_vpc_attachment_once(&mut provider, &desired, VpcExecutionPolicy::default()).await?;
+    let report = apply_vpc_attachment_once(
+        &mut provider,
+        &desired,
+        &args[1],
+        VpcExecutionPolicy::default(),
+    )
+    .await?;
     print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
 }
 
@@ -126,23 +115,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     let desired = one_spec_arg(args, "cleanup-plan")?;
     let mut provider = provider_from_env()?;
     let (observation, attachments, plan) = plan_vpc_cleanup(&mut provider, &desired).await?;
-    let disposition = if matches!(plan.action, CleanupAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let observed_material = serde_json::json!({
-        "vpc": &observation,
-        "attachments": &attachments,
-    });
-    let authorized = authorize_plan(
-        "vultr_vpc_cleanup",
-        &desired,
-        &observed_material,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_vpc_cleanup(&desired, &observation, &attachments, plan.clone())?;
     print_json(serde_json::json!({
         "observation": observation,
         "attachments": attachments,
@@ -154,9 +127,9 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-vpc cleanup-apply <spec-path> <destructive-digest>"
+            "usage: edge-controller vultr-vpc cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -166,6 +139,7 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
         &mut provider,
         &desired,
         &args[1],
+        &args[2],
         VpcExecutionPolicy::default(),
     )
     .await?;
@@ -208,12 +182,12 @@ fn usage() -> String {
         "usage:",
         "  edge-controller vultr-vpc inventory <spec-path>",
         "  edge-controller vultr-vpc plan <spec-path>",
-        "  edge-controller vultr-vpc apply <spec-path>",
+        "  edge-controller vultr-vpc apply <spec-path> <authorized-plan-sha256>",
         "  edge-controller vultr-vpc attachment-plan <spec-path>",
-        "  edge-controller vultr-vpc attachment-apply <spec-path>",
+        "  edge-controller vultr-vpc attachment-apply <spec-path> <authorized-plan-sha256>",
         "  edge-controller vultr-vpc verify <spec-path>",
         "  edge-controller vultr-vpc cleanup-plan <spec-path>",
-        "  edge-controller vultr-vpc cleanup-apply <spec-path> <destructive-digest>",
+        "  edge-controller vultr-vpc cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
     ]
     .join("\n")
 }
