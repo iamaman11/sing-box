@@ -249,10 +249,7 @@ fn validate_runtime_public_value(label: &str, value: &str) -> Result<(), Applica
         || value.len() > 253
         || !value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'.' | b'_' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
-                )
+                || matches!(byte, b'.' | b'_' | b':' | b'@' | b'%' | b'+' | b'/' | b'-')
         })
     {
         return Err(ApplicationSpecError::Validation(format!(
