@@ -8,14 +8,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod application_lifecycle_command;
-mod cli;
-mod error;
 mod application_lifecycle_service;
+mod cli;
 mod cloudflare_dns_lifecycle_command;
 mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
 mod deploy_orchestrator;
+mod error;
 mod vultr_host_bootstrap;
 mod vultr_lifecycle_adapter;
 mod vultr_lifecycle_command;
@@ -223,9 +223,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
                 Some(addr) => addr,
                 None => DEFAULT_CONTROLLER_ADDR
                     .parse::<SocketAddr>()
-                    .map_err(|err| ControllerError::Command(format!(
-                        "invalid built-in controller address {DEFAULT_CONTROLLER_ADDR}: {err}"
-                    )))?,
+                    .map_err(|err| {
+                        ControllerError::Command(format!(
+                            "invalid built-in controller address {DEFAULT_CONTROLLER_ADDR}: {err}"
+                        ))
+                    })?,
             };
             serve(repo_root, addr).await?;
             Ok(())
@@ -236,14 +238,18 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
             Ok(())
         }
         Command::ControllerBootstrapRuntime(args) => {
-            let response =
-                controller_bootstrap_runtime(cli::controller_endpoint(args.endpoint), args.mode.into())
-                    .await?;
+            let response = controller_bootstrap_runtime(
+                cli::controller_endpoint(args.endpoint),
+                args.mode.into(),
+            )
+            .await?;
             io::stdout().write_all(&response.encode_proto())?;
             if response.success {
                 Ok(())
             } else {
-                Err(ControllerError::Command(format_bootstrap_failure(&response)))
+                Err(ControllerError::Command(format_bootstrap_failure(
+                    &response,
+                )))
             }
         }
         Command::BootstrapRuntime(args) => {
@@ -254,7 +260,9 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
             if response.success {
                 Ok(())
             } else {
-                Err(ControllerError::Command(format_bootstrap_failure(&response)))
+                Err(ControllerError::Command(format_bootstrap_failure(
+                    &response,
+                )))
             }
         }
         Command::StartLocal(args) => {
@@ -300,7 +308,9 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
             if response.success {
                 Ok(())
             } else {
-                Err(ControllerError::Command("selector update failed".to_owned()))
+                Err(ControllerError::Command(
+                    "selector update failed".to_owned(),
+                ))
             }
         }
         Command::Trace(args) => {

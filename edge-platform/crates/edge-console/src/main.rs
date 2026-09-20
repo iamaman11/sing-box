@@ -16,12 +16,11 @@ use std::time::{Duration, Instant};
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    DoctorRequest, DoctorResponse,
-    Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
-    ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
-    RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
-    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState,
+    DoctorRequest, DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest,
+    GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest, ListSecretRefsRequest,
+    LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest, SecretRefEntry,
+    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -111,8 +110,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             Ok(())
         }
         Command::GetSecret(args) => {
-            let entry =
-                get_secret_ref(cli::controller_endpoint(args.endpoint), &args.name).await?;
+            let entry = get_secret_ref(cli::controller_endpoint(args.endpoint), &args.name).await?;
             print_secret_ref(&entry);
             Ok(())
         }
@@ -212,11 +210,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             Ok(())
         }
         Command::WatchOperation(args) => {
-            watch_operation(
-                cli::controller_endpoint(args.endpoint),
-                args.operation_id,
-            )
-            .await?;
+            watch_operation(cli::controller_endpoint(args.endpoint), args.operation_id).await?;
             Ok(())
         }
     }

@@ -2,7 +2,11 @@ use clap::{Args, Parser, Subcommand};
 use std::env;
 
 #[derive(Debug, Parser)]
-#[command(name = "edge-console", version, about = "Typed local edge operator console")]
+#[command(
+    name = "edge-console",
+    version,
+    about = "Typed local edge operator console"
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -96,7 +100,11 @@ pub(crate) struct OperationEndpointArgs {
 pub(crate) fn controller_endpoint(value: Option<String>) -> String {
     value
         .and_then(non_blank)
-        .or_else(|| env::var("EDGE_CONTROLLER_ENDPOINT").ok().and_then(non_blank))
+        .or_else(|| {
+            env::var("EDGE_CONTROLLER_ENDPOINT")
+                .ok()
+                .and_then(non_blank)
+        })
         .unwrap_or_else(|| crate::DEFAULT_CONTROLLER_ENDPOINT.to_owned())
 }
 

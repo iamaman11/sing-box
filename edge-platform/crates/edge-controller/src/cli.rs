@@ -5,7 +5,11 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "edge-controller", version, about = "Typed edge platform controller")]
+#[command(
+    name = "edge-controller",
+    version,
+    about = "Typed edge platform controller"
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -489,7 +493,11 @@ impl VultrVpcCommand {
 
 pub(crate) fn controller_endpoint(value: Option<String>) -> String {
     normalized(value)
-        .or_else(|| env::var("EDGE_CONTROLLER_ENDPOINT").ok().and_then(non_blank))
+        .or_else(|| {
+            env::var("EDGE_CONTROLLER_ENDPOINT")
+                .ok()
+                .and_then(non_blank)
+        })
         .unwrap_or_else(|| format!("http://{}", crate::DEFAULT_CONTROLLER_ADDR))
 }
 
