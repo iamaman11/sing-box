@@ -652,17 +652,145 @@ mod tests {
 
     #[test]
     fn parses_typed_controller_commands() {
-        let cli = Cli::try_parse_from([
-            "edge-controller",
-            "vultr-lifecycle",
-            "action",
-            "infra/vultr/production.json",
-            "primary",
-            "reboot",
-            &"a".repeat(64),
-        ])
-        .unwrap();
-        assert_eq!(cli.command_name(), "vultr-lifecycle");
+        let digest = "a".repeat(64);
+        let cases = [
+            vec![
+                "edge-controller",
+                "application-lifecycle",
+                "apply",
+                "infra/application/production.json",
+                "artifact.json",
+                "edge-agent",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "application-lifecycle",
+                "rollback-apply",
+                "infra/application/production.json",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "cloudflare-dns",
+                "apply",
+                "infra/cloudflare/dns.json",
+                "203.0.113.10",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "cloudflare-dns",
+                "cleanup-apply",
+                "infra/cloudflare/dns.json",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "line3-mesh",
+                "apply",
+                "infra/cloudflare/mesh.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "line3-mesh",
+                "vpc-apply",
+                "infra/cloudflare/mesh.json",
+                "infra/vultr/vpc.json",
+                "infra/application/production.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "line3-mesh",
+                "cleanup-apply",
+                "infra/cloudflare/mesh.json",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "apply",
+                "infra/vultr/production.json",
+                "primary",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "acquire-access",
+                "infra/vultr/production.json",
+                "primary",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "release-access",
+                "infra/vultr/production.json",
+                "primary",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "action",
+                "infra/vultr/production.json",
+                "primary",
+                "reboot",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "destroy-apply",
+                "infra/vultr/production.json",
+                "primary",
+                "0123456789012345678901234567890123456789",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "cleanup",
+                "infra/vultr/production.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-vpc",
+                "apply",
+                "infra/vultr/vpc.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-vpc",
+                "attachment-apply",
+                "infra/vultr/vpc.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-vpc",
+                "cleanup-apply",
+                "infra/vultr/vpc.json",
+                &digest,
+                &digest,
+            ],
+        ];
+
+        for args in cases {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "authority-bearing typed command must parse"
+            );
+        }
 
         assert!(
             Cli::try_parse_from([
@@ -689,21 +817,18 @@ mod tests {
             Cli::try_parse_from([
                 "edge-controller",
                 "vultr-lifecycle",
-                "acquire-access",
+                "release-access-plan",
                 "infra/vultr/production.json",
                 "primary",
-                &"b".repeat(64),
             ])
             .is_ok()
         );
         assert!(
             Cli::try_parse_from([
                 "edge-controller",
-                "cloudflare-dns",
-                "cleanup-apply",
-                "infra/cloudflare/dns.json",
-                &"c".repeat(64),
-                &"d".repeat(64),
+                "vultr-lifecycle",
+                "cleanup-plan",
+                "infra/vultr/production.json",
             ])
             .is_ok()
         );
