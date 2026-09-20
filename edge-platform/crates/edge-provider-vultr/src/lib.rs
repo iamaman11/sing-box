@@ -1384,7 +1384,9 @@ impl From<VultrVpcAttachmentPayload> for VultrVpcAttachment {
         Self {
             id: value.id,
             private_ipv4: value.ip.v4,
-            subscription_id: value.linked_subscription.map(|subscription| subscription.id),
+            subscription_id: value
+                .linked_subscription
+                .map(|subscription| subscription.id),
         }
     }
 }
