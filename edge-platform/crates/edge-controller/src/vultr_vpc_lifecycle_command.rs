@@ -168,7 +168,6 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
     print_json(value)
 }
 
-
 fn validate_guest_vpc_expectation(cidr: &str, private_ipv4: &str) -> Result<u8, String> {
     let (subnet_text, prefix_text) = cidr
         .split_once('/')
@@ -381,10 +380,8 @@ mod tests {
 
     #[test]
     fn guest_vpc_probe_output_preserves_boot_and_interface_identity() {
-        let (boot_id, interface) = parse_guest_vpc_probe_output(
-            "11111111-2222-3333-4444-555555555555\tens7",
-        )
-        .unwrap();
+        let (boot_id, interface) =
+            parse_guest_vpc_probe_output("11111111-2222-3333-4444-555555555555\tens7").unwrap();
         assert_eq!(boot_id, "11111111-2222-3333-4444-555555555555");
         assert_eq!(interface, "ens7");
         assert!(parse_guest_vpc_probe_output("not-a-boot-id\tens7").is_err());
