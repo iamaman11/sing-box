@@ -516,11 +516,7 @@ async fn fetch_records(
 ) -> Result<Vec<DnsRecord>, String> {
     let response = client
         .get(format!("{API_ROOT}/zones/{zone_id}/dns_records"))
-        .query(&[
-            ("type", "A"),
-            ("name", record_name),
-            ("per_page", "100"),
-        ])
+        .query(&[("type", "A"), ("name", record_name), ("per_page", "100")])
         .send()
         .await
         .map_err(|err| format!("failed to query Cloudflare DNS records: {err}"))?;
