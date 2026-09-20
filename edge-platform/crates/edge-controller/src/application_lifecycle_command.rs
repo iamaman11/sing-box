@@ -42,27 +42,6 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let authority = resolve_application_authority(&desired).await?;
     let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
     let observation = observe_application(&authority, &desired).await?;
-        print_json(json!({
-            "class": "BLOCKED",
-            "desired_state_digest": desired.digest().map_err(|err| err.to_string())?,
-            "artifact_source_revision": artifact.source_revision,
-            "artifact_sha256": artifact.sha256,
-            "observation": ApplicationObservationView::from(&observation),
-            "reasons": [
-                "runtime credential material is required for an exact bundle digest; set EDGE_APPLICATION_RUNTIME_SECRET_PATH to a private file"
-            ],
-            "mutations_performed": 0
-        }))?;
-        return Ok(());
-    }
-
-    let prepared = prepare_application_bundle(
-        Path::new("."),
-        &desired,
-        &artifact,
-        runtime_secret.as_deref(),
-    )?;
-    let observation = observe_application(&authority, &desired).await?;
     let plan = plan_application(
         &desired,
         &artifact,
