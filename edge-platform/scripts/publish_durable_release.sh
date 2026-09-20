@@ -9,7 +9,16 @@ require_env() {
   fi
 }
 
-for name in   GH_TOKEN   REPOSITORY   ACCEPTED_REVISION   CANDIDATE_REVISION   CANDIDATE_RUN_ID   WINDOWS_DIR   LINUX_DIR   RELEASE_SET_DIR   OUTPUT_DIR; do
+for name in \
+  GH_TOKEN \
+  REPOSITORY \
+  ACCEPTED_REVISION \
+  CANDIDATE_REVISION \
+  CANDIDATE_RUN_ID \
+  WINDOWS_DIR \
+  LINUX_DIR \
+  RELEASE_SET_DIR \
+  OUTPUT_DIR; do
   require_env "$name"
 done
 
@@ -101,22 +110,59 @@ else
     cat "$ref_error" >&2
     exit 1
   fi
-  gh api --method POST "repos/${REPOSITORY}/git/refs"     -f ref="refs/tags/${release_tag}"     -f sha="$ACCEPTED_REVISION" >/dev/null
+  gh api --method POST "repos/${REPOSITORY}/git/refs" \
+    -f ref="refs/tags/${release_tag}" \
+    -f sha="$ACCEPTED_REVISION" >/dev/null
 fi
 
-release_error="${stage}/release-error.txt"
-if ! release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}" 2>"$release_error")"; then
-  if ! grep -qiE '404|Not Found' "$release_error"; then
-    cat "$release_error" >&2
+find_release_by_tag() {
+  local page=1
+  local page_json
+  local count
+  local matches="${stage}/release-matches.jsonl"
+  : > "$matches"
+
+  while :; do
+    page_json="$(gh api "repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
+    jq -c --arg tag "$release_tag" '.[] | select(.tag_name == $tag)' <<<"$page_json" >> "$matches"
+    count="$(jq 'length' <<<"$page_json")"
+    [[ "$count" =~ ^[0-9]+$ ]]
+    if (( count < 100 )); then
+      break
+    fi
+    ((page += 1))
+  done
+
+  count="$(grep -c . "$matches" || true)"
+  if [[ "$count" -gt 1 ]]; then
+    echo "multiple GitHub Releases use the canonical tag: $release_tag" >&2
     exit 1
   fi
-  gh release create "$release_tag"     --repo "$REPOSITORY"     --verify-tag     --draft     --latest=false     --title "$release_title"     --notes-file "$notes"
-  release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
+  if [[ "$count" -eq 1 ]]; then
+    cat "$matches"
+  fi
+}
+
+release_json="$(find_release_by_tag)"
+if [[ -z "$release_json" ]]; then
+  release_json="$(gh api --method POST "repos/${REPOSITORY}/releases" \
+    -f tag_name="$release_tag" \
+    -f target_commitish="$ACCEPTED_REVISION" \
+    -f name="$release_title" \
+    -f body="$(cat "$notes")" \
+    -F draft=true \
+    -F prerelease=false \
+    -f make_latest=false)"
 fi
 
 test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
-test "$(jq -er '.prerelease' <<<"$release_json")" = "false"
-draft="$(jq -er '.draft' <<<"$release_json")"
+jq -e '(.id | type) == "number"' <<<"$release_json" >/dev/null
+jq -e '(.draft | type) == "boolean"' <<<"$release_json" >/dev/null
+jq -e '(.prerelease | type) == "boolean"' <<<"$release_json" >/dev/null
+release_id="$(jq -r '.id' <<<"$release_json")"
+draft="$(jq -r '.draft' <<<"$release_json")"
+prerelease="$(jq -r '.prerelease' <<<"$release_json")"
+test "$prerelease" = "false"
 
 is_expected_asset() {
   local candidate="$1"
@@ -129,55 +175,106 @@ is_expected_asset() {
   return 1
 }
 
-mapfile -t existing_assets < <(jq -r '.assets[].name' <<<"$release_json" | sort)
-for asset in "${existing_assets[@]}"; do
-  if ! is_expected_asset "$asset"; then
-    echo "unexpected asset already exists in immutable release: $asset" >&2
-    exit 1
-  fi
-  gh release download "$release_tag" --repo "$REPOSITORY" --pattern "$asset" --dir "$verify_dir"
-  cmp --silent "${stage}/${asset}" "${verify_dir}/${asset}" || {
-    echo "existing release asset bytes differ: $asset" >&2
-    exit 1
-  }
-  rm -f "${verify_dir}/${asset}"
-done
+download_asset_by_id() {
+  local asset_id="$1"
+  local destination="$2"
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --header "Authorization: Bearer ${GH_TOKEN}" \
+    --header "Accept: application/octet-stream" \
+    --header "X-GitHub-Api-Version: 2022-11-28" \
+    --output "$destination" \
+    "https://api.github.com/repos/${REPOSITORY}/releases/assets/${asset_id}"
+}
 
-if [[ "$draft" = "false" ]]; then
-  test "${#existing_assets[@]}" -eq "${#expected_assets[@]}"
-else
+verify_release_assets() {
+  local json="$1"
+  local asset
+  local asset_ids
+  local asset_id
+
+  mapfile -t actual_assets < <(jq -r '.assets[].name' <<<"$json" | sort)
+  for asset in "${actual_assets[@]}"; do
+    if ! is_expected_asset "$asset"; then
+      echo "unexpected asset exists in canonical release: $asset" >&2
+      exit 1
+    fi
+
+    asset_ids="$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .id' <<<"$json")"
+    test "$(grep -c . <<<"$asset_ids")" -eq 1
+    asset_id="$(head -n 1 <<<"$asset_ids")"
+    [[ "$asset_id" =~ ^[0-9]+$ ]]
+
+    download_asset_by_id "$asset_id" "${verify_dir}/${asset}"
+    cmp --silent "${stage}/${asset}" "${verify_dir}/${asset}" || {
+      echo "release asset bytes differ: $asset" >&2
+      exit 1
+    }
+    rm -f "${verify_dir}/${asset}"
+  done
+}
+
+verify_release_assets "$release_json"
+mapfile -t existing_assets < <(jq -r '.assets[].name' <<<"$release_json" | sort)
+
+if [[ "$draft" = "true" ]]; then
   for asset in "${expected_assets[@]}"; do
     if ! printf '%s\n' "${existing_assets[@]}" | grep -Fxq "$asset"; then
-      gh release upload "$release_tag" "${stage}/${asset}" --repo "$REPOSITORY"
+      curl \
+        --fail \
+        --silent \
+        --show-error \
+        --request POST \
+        --header "Authorization: Bearer ${GH_TOKEN}" \
+        --header "Accept: application/vnd.github+json" \
+        --header "X-GitHub-Api-Version: 2022-11-28" \
+        --header "Content-Type: application/octet-stream" \
+        --data-binary "@${stage}/${asset}" \
+        "https://uploads.github.com/repos/${REPOSITORY}/releases/${release_id}/assets?name=${asset}" \
+        >/dev/null
     fi
   done
 
-  release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
+  release_json="$(gh api "repos/${REPOSITORY}/releases/${release_id}")"
+  verify_release_assets "$release_json"
   mapfile -t final_assets < <(jq -r '.assets[].name' <<<"$release_json" | sort)
   test "${#final_assets[@]}" -eq "${#expected_assets[@]}"
-  for asset in "${final_assets[@]}"; do
-    is_expected_asset "$asset"
-    gh release download "$release_tag" --repo "$REPOSITORY" --pattern "$asset" --dir "$verify_dir"
-    cmp --silent "${stage}/${asset}" "${verify_dir}/${asset}"
-    rm -f "${verify_dir}/${asset}"
-  done
 
-  gh release edit "$release_tag" --repo "$REPOSITORY" --draft=false >/dev/null
+  release_json="$(gh api --method PATCH "repos/${REPOSITORY}/releases/${release_id}" \
+    -F draft=false \
+    -F prerelease=false)"
+elif [[ "$draft" = "false" ]]; then
+  test "${#existing_assets[@]}" -eq "${#expected_assets[@]}"
+else
+  echo "invalid release draft state: $draft" >&2
+  exit 1
 fi
 
-release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
-test "$(jq -er '.draft' <<<"$release_json")" = "false"
-test "$(jq -er '.prerelease' <<<"$release_json")" = "false"
+test "$(jq -r '.draft' <<<"$release_json")" = "false"
+test "$(jq -r '.prerelease' <<<"$release_json")" = "false"
+test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
+test "$(jq -r '.id' <<<"$release_json")" = "$release_id"
+verify_release_assets "$release_json"
+
 mapfile -t published_assets < <(jq -r '.assets[].name' <<<"$release_json" | sort)
 test "${#published_assets[@]}" -eq "${#expected_assets[@]}"
 for asset in "${published_assets[@]}"; do
   is_expected_asset "$asset"
 done
 
+published_by_tag="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
+test "$(jq -r '.id' <<<"$published_by_tag")" = "$release_id"
+test "$(jq -r '.draft' <<<"$published_by_tag")" = "false"
+test "$(jq -r '.prerelease' <<<"$published_by_tag")" = "false"
+
 ref_json="$(gh api "repos/${REPOSITORY}/git/ref/tags/${release_tag}")"
 test "$(jq -er '.object.type' <<<"$ref_json")" = "commit"
 test "$(jq -er '.object.sha' <<<"$ref_json")" = "$ACCEPTED_REVISION"
 
 printf 'release_tag=%s\n' "$release_tag"
+printf 'release_id=%s\n' "$release_id"
 printf 'release_set_sha256=%s\n' "$release_set_sha"
 printf 'durable_assets=%s\n' "${#published_assets[@]}"
