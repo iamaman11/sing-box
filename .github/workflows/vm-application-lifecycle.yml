@@ -186,6 +186,9 @@ jobs:
             "${gateway_image}" "${warp_image}" > "${bundle_root}/.images.env"
           chmod 0644 "${bundle_root}/.images.env"
           chmod 0755 "${controller}" "${agent}"
+          printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
           agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           jq -n \
             --arg source_revision "${GITHUB_SHA}" \
@@ -362,6 +365,9 @@ jobs:
             "${gateway_image}" "${warp_image}" > "${bundle_root}/.images.env"
           chmod 0644 "${bundle_root}/.images.env"
           chmod 0755 "${controller}" "${agent}"
+          printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
           agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           jq -n \
             --arg source_revision "${GITHUB_SHA}" \

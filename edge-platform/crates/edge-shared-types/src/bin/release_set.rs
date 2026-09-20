@@ -371,6 +371,9 @@ fn print_vm_evidence(release: &ReleaseSet, digest: &str) -> Result<(), String> {
                 .ok_or_else(|| "cloudflare.mesh_image is required".to_owned())?
         )
     );
+    println!("docker_engine_version={}", vm.docker_engine_version);
+    println!("containerd_version={}", vm.containerd_version);
+    println!("compose_version={}", vm.compose_version);
     Ok(())
 }
 

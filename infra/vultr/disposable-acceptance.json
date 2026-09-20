@@ -12,7 +12,7 @@
         "enable_ipv6": false,
         "firewall_profile": "acceptance-ssh"
       },
-      "bootstrap_profile": "singbox-host-v1",
+      "bootstrap_profile": "singbox-host-v2",
       "application_profiles": [
         "application-acceptance"
       ],

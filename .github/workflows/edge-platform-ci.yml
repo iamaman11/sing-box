@@ -88,6 +88,14 @@ jobs:
         run: |
           set -euo pipefail
           bash -n win/vultr-waw/stack/bootstrap.sh
+          grep -Fq "docker-ce=@@DOCKER_ENGINE_VERSION@@" win/vultr-waw/cloud-init.yaml
+          grep -Fq "docker-ce-cli=@@DOCKER_ENGINE_VERSION@@" win/vultr-waw/cloud-init.yaml
+          grep -Fq "containerd.io=@@CONTAINERD_VERSION@@" win/vultr-waw/cloud-init.yaml
+          grep -Fq "docker-compose-plugin=@@COMPOSE_VERSION@@" win/vultr-waw/cloud-init.yaml
+          if grep -Fq "docker-buildx-plugin" win/vultr-waw/cloud-init.yaml; then
+            echo "VM runtime must not install unneeded docker-buildx-plugin" >&2
+            exit 1
+          fi
           docker compose -f win/vultr-waw/stack/docker-compose.yml config --quiet
           docker compose -f win/vultr-waw/stack/docker-compose.yml --profile tunnel --profile mesh config --quiet
           mapfile -t default_services < <(docker compose -f win/vultr-waw/stack/docker-compose.yml config --services | sort)
@@ -789,6 +797,9 @@ jobs:
           test "$(sed -n 's/^sing_box_image=//p' <<<"${vm_verify_output}")" = "${EDGE_GATEWAY_IMAGE}"
           test "$(sed -n 's/^warp_egress_image=//p' <<<"${vm_verify_output}")" = "${EDGE_WARP_EGRESS_IMAGE}"
           test "$(sed -n 's/^mesh_image=//p' <<<"${vm_verify_output}")" = "${MESH_IMAGE}"
+          test "$(sed -n 's/^docker_engine_version=//p' <<<"${vm_verify_output}")" = "${DOCKER_ENGINE_VERSION}"
+          test "$(sed -n 's/^containerd_version=//p' <<<"${vm_verify_output}")" = "${CONTAINERD_VERSION}"
+          test "$(sed -n 's/^compose_version=//p' <<<"${vm_verify_output}")" = "${COMPOSE_VERSION}"
 
           printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           docker buildx imagetools inspect "${EDGE_GATEWAY_IMAGE}" >/dev/null
