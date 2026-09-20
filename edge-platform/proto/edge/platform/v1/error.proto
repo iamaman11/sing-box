@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+enum ErrorSubsystem {
+  ERROR_SUBSYSTEM_UNSPECIFIED = 0;
+  PROVIDER_COMPUTE = 1;
+  PROVIDER_DNS = 2;
+  RUNTIME_COMPOSE = 3;
+  TRANSPORT_SSH = 4;
+  LOCAL_SINGBOX = 5;
+  SERVER_AGENT = 6;
+  STATE = 7;
+}
+
+message PlatformError {
+  string code = 1;
+  string stage = 2;
+  string message = 3;
+  bool retryable = 4;
+  ErrorSubsystem subsystem = 5;
+}

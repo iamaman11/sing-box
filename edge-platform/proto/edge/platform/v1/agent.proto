@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+import "edge/platform/v1/bundle.proto";
+import "edge/platform/v1/common.proto";
+import "edge/platform/v1/runtime.proto";
+
+service AgentService {
+  rpc GetHealth(Empty) returns (AgentState);
+  rpc GetReadiness(Empty) returns (AgentState);
+  rpc GetRuntimeState(Empty) returns (AgentState);
+  rpc GetVersion(Empty) returns (AgentVersion);
+  rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);
+  rpc ApplyBundle(ApplyBundleRequest) returns (ApplyBundleResponse);
+  rpc RollbackBundle(RollbackBundleRequest) returns (RollbackBundleResponse);
+  rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
+  rpc VerifyRuntime(VerifyRuntimeRequest) returns (AgentState);
+  rpc ReadBundleIdentity(ReadBundleIdentityRequest) returns (ReadBundleIdentityResponse);
+  rpc ReadRenderedArtifacts(ReadRenderedArtifactsRequest) returns (ReadRenderedArtifactsResponse);
+  rpc ConvergeMeshRuntime(MeshRuntimeConvergeRequest) returns (MeshRuntimeState);
+  rpc VerifyMeshRuntime(Empty) returns (MeshRuntimeState);
+  rpc CleanupMeshRuntime(Empty) returns (MeshRuntimeState);
+}

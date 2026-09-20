@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+import "edge/platform/v1/operation.proto";
+import "edge/platform/v1/runtime.proto";
+
+message DoctorRequest {
+  bool require_server_ready = 1;
+  bool require_local_runtime = 2;
+  bool require_egress_traces = 3;
+}
+
+message DoctorCheck {
+  string name = 1;
+  bool ok = 2;
+  string detail = 3;
+}
+
+message DoctorResponse {
+  bool ok = 1;
+  repeated DoctorCheck checks = 2;
+  ControllerStatus status = 3;
+  optional TraceObservation desktop_trace = 4;
+  optional TraceObservation ubuntu_trace = 5;
+  optional Operation operation = 6;
+}
