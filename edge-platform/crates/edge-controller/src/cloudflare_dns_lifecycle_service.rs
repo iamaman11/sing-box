@@ -2,6 +2,9 @@ use edge_controller_core::cloudflare_dns_lifecycle::{
     ApplyAction, ApplyPlan, CleanupAction, CleanupPlan, DesiredDnsState, DnsObservation,
     ObservedDnsRecord, plan_apply, plan_cleanup, verify_cleanup_digest,
 };
+use edge_controller_core::lifecycle::{
+    AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
+};
 use edge_provider_cloudflare::{
     CloudflareDnsObservedRecord, create_a_record, delete_a_record_by_id, list_a_records,
     update_a_record_by_id,
@@ -134,10 +137,14 @@ pub async fn apply_dns_once<P: DnsProvider>(
     provider: &mut P,
     desired: &DesiredDnsState,
     target_ip: &str,
+    authorized_plan_digest: &str,
     policy: DnsExecutionPolicy,
 ) -> Result<DnsApplyReport, String> {
     validate_policy(policy)?;
     let (before, plan) = plan_dns_apply(provider, desired, target_ip).await?;
+    let authorized = authorize_dns_apply(desired, target_ip, &before, plan.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
     match plan.action.clone() {
         ApplyAction::Noop => Ok(DnsApplyReport {
             performed: ApplyAction::Noop,
@@ -174,16 +181,69 @@ pub async fn plan_dns_cleanup<P: DnsProvider>(
     Ok((observed, plan))
 }
 
+pub fn authorize_dns_apply(
+    desired: &DesiredDnsState,
+    target_ip: &str,
+    observed: &DnsObservation,
+    plan: ApplyPlan,
+) -> Result<AuthorizedPlan<ApplyPlan>, String> {
+    let desired_material = serde_json::json!({
+        "desired": desired,
+        "target_ipv4": target_ip,
+    });
+    let disposition = if matches!(plan.action, ApplyAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    authorize_plan(
+        "cloudflare_dns_apply",
+        &desired_material,
+        observed,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn authorize_dns_cleanup(
+    desired: &DesiredDnsState,
+    observed: &DnsObservation,
+    plan: CleanupPlan,
+) -> Result<AuthorizedPlan<CleanupPlan>, String> {
+    let disposition = if matches!(plan.action, CleanupAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    authorize_plan(
+        "cloudflare_dns_cleanup",
+        desired,
+        observed,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub async fn cleanup_dns_once<P: DnsProvider>(
     provider: &mut P,
     desired: &DesiredDnsState,
     expected_digest: &str,
+    authorized_plan_digest: &str,
     policy: DnsExecutionPolicy,
 ) -> Result<DnsCleanupReport, String> {
     validate_policy(policy)?;
     let observed = observe_dns(provider, desired).await?;
+    let current = plan_cleanup(desired, &observed).map_err(|err| err.to_string())?;
+    let authorized = authorize_dns_cleanup(desired, &observed, current.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
     let plan = verify_cleanup_digest(desired, &observed, expected_digest)
         .map_err(|err| err.to_string())?;
+    if current != plan {
+        return Err("Cloudflare DNS cleanup authorization changed during planning".to_owned());
+    }
     let action = plan.action.clone();
     let mutation = match &action {
         CleanupAction::Noop => {
@@ -391,10 +451,28 @@ mod tests {
         }
     }
 
+    async fn apply_authority(provider: &mut FakeProvider, target_ip: &str) -> String {
+        let (observed, plan) = plan_dns_apply(provider, &desired(), target_ip).await.unwrap();
+        authorize_dns_apply(&desired(), target_ip, &observed, plan)
+            .unwrap()
+            .authority
+            .authority_digest
+    }
+
+    async fn cleanup_authority(provider: &mut FakeProvider) -> (String, String) {
+        let (observed, plan) = plan_dns_cleanup(provider, &desired()).await.unwrap();
+        let destructive = plan.destructive_digest.clone().unwrap();
+        let generic = authorize_dns_cleanup(&desired(), &observed, plan)
+            .unwrap()
+            .authority
+            .authority_digest;
+        (destructive, generic)
+    }
+
     #[tokio::test]
     async fn create_is_observed_once_and_converges_to_noop() {
         let mut provider = FakeProvider::default();
-        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
+        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
             .await
             .unwrap();
         assert_eq!(provider.create_calls, 1);
@@ -409,7 +487,7 @@ mod tests {
             commit_on_error: true,
             ..FakeProvider::default()
         };
-        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
+        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
             .await
             .unwrap();
         assert_eq!(provider.create_calls, 1);
@@ -424,7 +502,7 @@ mod tests {
             ..FakeProvider::default()
         };
         assert!(
-            apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
+            apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
                 .await
                 .is_err()
         );
@@ -437,7 +515,7 @@ mod tests {
             records: vec![record("203.0.113.9")],
             ..FakeProvider::default()
         };
-        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", policy())
+        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
             .await
             .unwrap();
         assert_eq!(provider.update_calls, 1);
@@ -451,9 +529,8 @@ mod tests {
             records: vec![record("203.0.113.10")],
             ..FakeProvider::default()
         };
-        let (_, plan) = plan_dns_cleanup(&mut provider, &desired()).await.unwrap();
-        let digest = plan.destructive_digest.unwrap();
-        let report = cleanup_dns_once(&mut provider, &desired(), &digest, policy())
+        let (digest, authority) = cleanup_authority(&mut provider).await;
+        let report = cleanup_dns_once(&mut provider, &desired(), &digest, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.delete_calls, 1);
