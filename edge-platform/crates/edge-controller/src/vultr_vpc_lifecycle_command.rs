@@ -132,8 +132,7 @@ fn load_desired(path: &Path) -> Result<DesiredVpcState, String> {
 }
 
 fn provider_from_env() -> Result<VultrVpcApiProvider, String> {
-    let api_key =
-        env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())?;
+    let api_key = env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())?;
     VultrVpcApiProvider::new(api_key)
 }
 
