@@ -77,6 +77,28 @@ def main() -> None:
         "Vultr backend must serialize its execute mutation job",
     )
 
+    require(
+        "cleanup_acceptance() (" in application,
+        "acceptance cleanup must run in an isolated subshell",
+    )
+    preflight_marker = (
+        "# Recover any exact acceptance-owned residue from a previous failed run."
+    )
+    support_marker = 'acceptance-support-before.json'
+    vm_marker = 'acceptance-plan-before.json'
+    require(preflight_marker in application, "acceptance must retain residue-recovery preflight")
+    preflight_pos = application.index(preflight_marker)
+    support_pos = application.index(support_marker, preflight_pos)
+    vm_pos = application.index(vm_marker, support_pos)
+    require(
+        preflight_pos < support_pos < vm_pos,
+        "strict support clean-room proof must precede fresh VM planning",
+    )
+    require(
+        '.plan.action == "NOOP" and .plan.environment_in_use == false' in application,
+        "acceptance must prove support resources absent before fresh creation",
+    )
+
 
 if __name__ == "__main__":
     main()

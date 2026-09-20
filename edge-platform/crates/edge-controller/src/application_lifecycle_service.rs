@@ -39,6 +39,8 @@ const AGENT_DROPIN_PATH: &str =
     "/etc/systemd/system/edge-agent.service.d/90-application-control.conf";
 const AGENT_DROPIN_CONTENT: &str =
     "[Service]\nEnvironment=EDGE_AGENT_ADDR=127.0.0.1:50061\nEnvironmentFile=\n";
+const READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS: usize = 45;
+const READ_ONLY_RUNTIME_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ApplicationAuthority {
@@ -468,15 +470,36 @@ pub(crate) async fn verify_desired(
     artifact: &AgentArtifactManifest,
     prepared: &PreparedApplicationBundle,
 ) -> Result<(ApplicationPlan, ApplicationObservationView), String> {
-    let observation = observe_application(authority, desired).await?;
-    let plan = plan_application(
-        desired,
-        artifact,
-        &prepared.release.bundle_digest,
-        &observation,
-    )
-    .map_err(|err| err.to_string())?;
-    Ok((plan, ApplicationObservationView::from(&observation)))
+    for attempt in 0..READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS {
+        let observation = observe_application(authority, desired).await?;
+        let plan = plan_application(
+            desired,
+            artifact,
+            &prepared.release.bundle_digest,
+            &observation,
+        )
+        .map_err(|err| err.to_string())?;
+
+        if plan.class == ApplicationPlanClass::Noop
+            || !exact_release_identity_observed(&observation, &prepared.release)
+            || attempt + 1 == READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS
+        {
+            return Ok((plan, ApplicationObservationView::from(&observation)));
+        }
+
+        sleep(READ_ONLY_RUNTIME_REOBSERVE_DELAY).await;
+    }
+
+    unreachable!("bounded application verification loop always returns")
+}
+
+fn exact_release_identity_observed(
+    observation: &ApplicationObservation,
+    release: &PublishedApplicationRelease,
+) -> bool {
+    observation.observed_agent_sha256.as_deref() == Some(release.agent_sha256.as_str())
+        && observation.observed_bundle_digest.as_deref() == Some(release.bundle_digest.as_str())
+        && observation.current_release.as_ref() == Some(release)
 }
 
 pub(crate) async fn rollback_plan_remote(
@@ -951,11 +974,40 @@ pub(crate) async fn verify_mesh_runtime_remote(
     authority: &ApplicationAuthority,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    client
-        .verify_mesh_runtime(Request::new(edge_shared_types::Empty {}))
-        .await
-        .map_err(|err| format!("typed VerifyMeshRuntime RPC failed: {err}"))
-        .map(|response| response.into_inner())
+    let mut last_state = None;
+    let mut last_error = None;
+
+    for attempt in 0..READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS {
+        match client
+            .verify_mesh_runtime(Request::new(edge_shared_types::Empty {}))
+            .await
+        {
+            Ok(response) => {
+                let state = response.into_inner();
+                if state.runtime_ready {
+                    return Ok(state);
+                }
+                last_state = Some(state);
+                last_error = None;
+            }
+            Err(err) => {
+                last_error = Some(err.to_string());
+            }
+        }
+
+        if attempt + 1 < READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS {
+            sleep(READ_ONLY_RUNTIME_REOBSERVE_DELAY).await;
+        }
+    }
+
+    if let Some(state) = last_state {
+        return Ok(state);
+    }
+
+    Err(format!(
+        "typed VerifyMeshRuntime RPC did not produce an observation after bounded re-observation: {}",
+        last_error.unwrap_or_else(|| "no RPC observation completed".to_owned())
+    ))
 }
 
 pub(crate) async fn cleanup_mesh_runtime_remote(
@@ -1203,6 +1255,25 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exact_release_identity_can_wait_for_readiness_without_masking_drift() {
+        let desired = test_desired("stack");
+        let artifact = test_artifact();
+        let release = desired_release(&desired, &artifact, &"3".repeat(64)).unwrap();
+        let mut observation = ApplicationObservation {
+            observed_agent_sha256: Some(release.agent_sha256.clone()),
+            observed_bundle_digest: Some(release.bundle_digest.clone()),
+            runtime_ready: false,
+            current_release: Some(release.clone()),
+            previous_release: None,
+        };
+
+        assert!(exact_release_identity_observed(&observation, &release));
+
+        observation.observed_bundle_digest = Some("4".repeat(64));
+        assert!(!exact_release_identity_observed(&observation, &release));
     }
 
     #[test]

@@ -10,7 +10,7 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - ./warp-state:/var/lib/cloudflare-warp
+      - ../warp-state:/var/lib/cloudflare-warp
     networks:
       - edge_net
 

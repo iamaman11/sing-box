@@ -578,7 +578,7 @@ jobs:
               "${plan}" >/dev/null
           }
 
-          cleanup_acceptance() {
+          cleanup_acceptance() (
             set +e
             "${bin}" line3-mesh runtime-cleanup "${app_spec}" >/dev/null 2>&1 || true
             cleanup_mesh_provider
@@ -616,7 +616,17 @@ jobs:
                 "${bin}" vultr-lifecycle cleanup "${vultr_spec}" "${support_authority}" >/dev/null 2>&1 || true
               fi
             fi
-          }
+            return 0
+          )
+
+          # Recover any exact acceptance-owned residue from a previous failed run.
+          # The cleanup itself is best-effort, but the following read-only assertions are strict.
+          cleanup_acceptance
+
+          "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
+            > "${RUNNER_TEMP}/acceptance-support-before.json"
+          jq -e '.plan.action == "NOOP" and .plan.environment_in_use == false' \
+            "${RUNNER_TEMP}/acceptance-support-before.json" >/dev/null
 
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-plan-before.json"

@@ -1124,7 +1124,7 @@ fn validate_exact_image_ref(label: &str, value: &str, repository: &str) -> Resul
 }
 
 fn prepare_runtime_directories(stack_dir: &Path) -> Result<(), String> {
-    for relative in ["certs", "rendered", "warp-state"] {
+    for relative in ["certs", "rendered"] {
         fs::create_dir_all(stack_dir.join(relative)).map_err(|err| {
             format!(
                 "failed to create typed runtime directory {}: {err}",
@@ -1134,6 +1134,15 @@ fn prepare_runtime_directories(stack_dir: &Path) -> Result<(), String> {
     }
     set_private_directory_permissions(&stack_dir.join("certs"))?;
     set_private_directory_permissions(&stack_dir.join("rendered"))?;
+
+    let warp_state = warp_runtime_state_dir(stack_dir)?;
+    fs::create_dir_all(&warp_state).map_err(|err| {
+        format!(
+            "failed to create host-level WARP runtime state {}: {err}",
+            warp_state.display()
+        )
+    })?;
+    set_private_directory_permissions(&warp_state)?;
 
     let parent = stack_dir
         .parent()
@@ -1160,6 +1169,13 @@ fn validate_mesh_node_token(value: &str) -> Result<(), String> {
         return Err("Mesh node token must be a non-empty bounded single-line value".to_owned());
     }
     Ok(())
+}
+
+fn warp_runtime_state_dir(stack_dir: &Path) -> Result<PathBuf, String> {
+    let host_root = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no host-state parent".to_owned())?;
+    Ok(host_root.join("warp-state"))
 }
 
 fn mesh_runtime_secret_path(stack_dir: &Path) -> Result<PathBuf, String> {
@@ -2484,13 +2500,17 @@ fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], St
         if !valid_certificate_domain(domain) {
             return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
         }
+        let provider = runtime
+            .get("ACME_PROVIDER")
+            .ok_or_else(|| "ACME_PROVIDER is required for certificate owner state".to_owned())?;
+        let directory = acme_certificate_directory(provider)?;
         let owner = stack_dir
             .parent()
             .ok_or_else(|| "application stack path has no certificate-state parent".to_owned())?
             .join("certificate-state")
             .join("acme")
             .join("certificates")
-            .join("acme-v02.api.letsencrypt.org-directory")
+            .join(directory)
             .join(domain);
         return Ok([
             owner.join(format!("{domain}.crt")),
@@ -2815,7 +2835,7 @@ mod tests {
         fs::create_dir_all(&owner).unwrap();
         fs::write(
             stack.join(RUNTIME_ENV_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
@@ -2830,6 +2850,39 @@ mod tests {
         assert!(state.degraded_reasons.is_empty());
         assert!(!stack.join("certs/proxy.crt").exists());
         assert!(!stack.join("certs/proxy.key").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn certificate_observation_uses_staging_provider_directory() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let owner = root
+            .join(
+                "certificate-state/acme/certificates/acme-staging-v02.api.letsencrypt.org-directory",
+            )
+            .join("edge.example.com");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::create_dir_all(&owner).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=https://acme-staging-v02.api.letsencrypt.org/directory\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}\n").unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+        fs::write(owner.join("edge.example.com.crt"), "certificate").unwrap();
+        fs::write(owner.join("edge.example.com.key"), "private-key").unwrap();
+
+        let paths = expected_proxy_certificate_paths(&stack).unwrap();
+        assert_eq!(paths[0], owner.join("edge.example.com.crt"));
+        assert_eq!(paths[1], owner.join("edge.example.com.key"));
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+        assert!(state.degraded_reasons.is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -2868,7 +2921,7 @@ mod tests {
         fs::create_dir_all(stack.join("rendered")).unwrap();
         fs::write(
             stack.join(RUNTIME_ENV_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
@@ -3047,12 +3100,12 @@ mod tests {
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
         fs::write(
             stack.join(RUNTIME_POLICY_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(
             stack.join(RUNTIME_ENV_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
@@ -3190,7 +3243,7 @@ mod tests {
         fs::create_dir_all(&owner).unwrap();
         fs::write(
             stack.join(".env.runtime"),
-            "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\n",
+            "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
@@ -3253,6 +3306,27 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn warp_state_is_host_level_across_release_swap_names() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let previous = root.join("stack.previous");
+        assert_eq!(
+            warp_runtime_state_dir(&stack).unwrap(),
+            root.join("warp-state")
+        );
+        assert_eq!(
+            warp_runtime_state_dir(&previous).unwrap(),
+            root.join("warp-state")
+        );
+
+        let compose = include_str!("../../../../win/vultr-waw/stack/docker-compose.yml");
+        assert!(compose.contains("- ../warp-state:/var/lib/cloudflare-warp"));
+        assert!(!compose.contains("- ./warp-state:/var/lib/cloudflare-warp"));
+
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]
