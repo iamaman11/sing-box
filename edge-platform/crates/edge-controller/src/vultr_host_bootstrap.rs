@@ -484,20 +484,78 @@ fn render_host_substrate_versions(
 fn substrate_acceptance_command(substrate: &HostSubstrateVersions) -> Result<String, String> {
     substrate.validate()?;
     Ok(format!(
-        "test \"$(cat /var/lib/singbox-lifecycle/host-bootstrap 2>/dev/null)\" = exact-substrate-ready || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:host-bootstrap-marker' >&2; exit 42; }}; \
-         test \"$(dpkg-query -W -f='${{Version}}' docker-ce 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-ce-version' >&2; exit 42; }}; \
-         test \"$(dpkg-query -W -f='${{Version}}' docker-ce-cli 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-cli-version' >&2; exit 42; }}; \
-         test \"$(dpkg-query -W -f='${{Version}}' containerd.io 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:containerd-version' >&2; exit 42; }}; \
-         test \"$(dpkg-query -W -f='${{Version}}' docker-compose-plugin 2>/dev/null)\" = '{}' || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:compose-version' >&2; exit 42; }}; \
-         sudo systemctl is-active --quiet docker || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-service' >&2; exit 42; }}; \
-         sudo docker version >/dev/null || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:docker-api' >&2; exit 42; }}; \
-         sudo docker compose version >/dev/null || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:compose-cli' >&2; exit 42; }}; \
-         sudo sshd -t || {{ printf '%s\\n' 'EDGE_SUBSTRATE_FAIL:sshd-config' >&2; exit 42; }}",
+        "failures=''; \
+         record_failure() {{ if test -n \"$failures\"; then failures=\"$failures,$1\"; else failures=\"$1\"; fi; }}; \
+         test \"$(cat /var/lib/singbox-lifecycle/host-bootstrap 2>/dev/null)\" = exact-substrate-ready || record_failure host-bootstrap-marker; \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-ce 2>/dev/null)\" = '{}' || record_failure docker-ce-version; \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-ce-cli 2>/dev/null)\" = '{}' || record_failure docker-cli-version; \
+         test \"$(dpkg-query -W -f='${{Version}}' containerd.io 2>/dev/null)\" = '{}' || record_failure containerd-version; \
+         test \"$(dpkg-query -W -f='${{Version}}' docker-compose-plugin 2>/dev/null)\" = '{}' || record_failure compose-version; \
+         sudo systemctl is-active --quiet docker || record_failure docker-service; \
+         sudo docker version >/dev/null 2>&1 || record_failure docker-api; \
+         sudo docker compose version >/dev/null 2>&1 || record_failure compose-cli; \
+         sudo sshd -t >/dev/null 2>&1 || record_failure sshd-config; \
+         if test -n \"$failures\"; then printf '%s\\n' \"EDGE_SUBSTRATE_FAIL:$failures\" >&2; exit 42; fi",
         substrate.docker_engine_version,
         substrate.docker_engine_version,
         substrate.containerd_version,
         substrate.compose_version,
     ))
+}
+
+fn substrate_forensic_command() -> &'static str {
+    "marker=$(cat /var/lib/singbox-lifecycle/host-bootstrap 2>/dev/null || printf missing); \
+     marker_stat=$(stat -c '%U:%G:%a:%s:%Y' /var/lib/singbox-lifecycle/host-bootstrap 2>/dev/null || printf missing); \
+     env_stat=$(stat -c '%U:%G:%a:%s:%Y' /var/lib/singbox-lifecycle/host-substrate.env 2>/dev/null || printf missing); \
+     docker_ce=$(dpkg-query -W -f='${Version}' docker-ce 2>/dev/null || printf missing); \
+     docker_cli=$(dpkg-query -W -f='${Version}' docker-ce-cli 2>/dev/null || printf missing); \
+     containerd=$(dpkg-query -W -f='${Version}' containerd.io 2>/dev/null || printf missing); \
+     compose=$(dpkg-query -W -f='${Version}' docker-compose-plugin 2>/dev/null || printf missing); \
+     docker_active=$(sudo systemctl is-active docker 2>/dev/null || printf unavailable); \
+     docker_enabled=$(sudo systemctl is-enabled docker 2>/dev/null || printf unavailable); \
+     root_mount=$(findmnt -n -o SOURCE,FSTYPE --target / 2>/dev/null | tr ' ' ':' || printf unavailable); \
+     var_mount=$(findmnt -n -o SOURCE,FSTYPE --target /var 2>/dev/null | tr ' ' ':' || printf unavailable); \
+     boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unavailable); \
+     uptime=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || printf unavailable); \
+     cloud_instance_id=$(cat /var/lib/cloud/data/instance-id 2>/dev/null || printf unavailable); \
+     cloud_status=$(cloud-init status 2>/dev/null | tr ' ' '_' || printf unavailable); \
+     opt_stat=$(stat -c '%U:%G:%a:%s:%Y' /opt/vultr-edge-stack 2>/dev/null || printf missing); \
+     printf '%s\\n' \"EDGE_SUBSTRATE_FORENSIC:boot_id=$boot_id;uptime=$uptime;marker=$marker;marker_stat=$marker_stat;env_stat=$env_stat;docker_ce=$docker_ce;docker_cli=$docker_cli;containerd=$containerd;compose=$compose;docker_active=$docker_active;docker_enabled=$docker_enabled;root_mount=$root_mount;var_mount=$var_mount;cloud_instance_id=$cloud_instance_id;cloud_status=$cloud_status;opt_stat=$opt_stat\""
+}
+
+fn bounded_forensic_evidence(stdout: &[u8]) -> String {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("EDGE_SUBSTRATE_FORENSIC:"))
+        .unwrap_or("unavailable")
+        .chars()
+        .take(1200)
+        .collect()
+}
+
+fn capture_substrate_forensics(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    known_hosts_path: &Path,
+) -> String {
+    let args = strict_ssh_args(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        known_hosts_path,
+        substrate_forensic_command(),
+    );
+    match Command::new("ssh")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) if output.status.success() => bounded_forensic_evidence(&output.stdout),
+        _ => "unavailable".to_owned(),
+    }
 }
 
 fn cloud_init_file(path: &str, mode: &str, content: &str) -> String {
@@ -725,6 +783,7 @@ pub async fn strict_ssh_accept(
     );
     let mut counts = StrictSshFailureCounts::default();
     let mut last = None;
+    let mut forensic = None;
     for attempt in 0..attempts {
         match run_strict_ssh_attempt(&args) {
             Ok(()) => {
@@ -732,6 +791,16 @@ pub async fn strict_ssh_accept(
                 return Ok(());
             }
             Err(evidence) => {
+                if evidence.class == StrictSshFailureClass::RemoteAcceptance
+                    && (forensic.is_none() || attempt + 1 == attempts)
+                {
+                    forensic = Some(capture_substrate_forensics(
+                        target_ip,
+                        logical_hostname,
+                        operator_private_key_path,
+                        &trust,
+                    ));
+                }
                 counts.record(evidence.class);
                 last = Some(evidence);
             }
@@ -740,20 +809,22 @@ pub async fn strict_ssh_accept(
             sleep(delay).await;
         }
     }
-    let _ = fs::remove_file(&trust);
     let last = last.unwrap_or(StrictSshAttemptEvidence {
         class: StrictSshFailureClass::OtherSsh,
         exit_code: None,
         detail: "no SSH attempt was made".to_owned(),
     });
+    let forensic = forensic.unwrap_or_else(|| "not-collected".to_owned());
+    let _ = fs::remove_file(&trust);
     Err(format!(
-        "strict SSH acceptance failed for {logical_hostname} at {target_ip}: attempts={attempts} counts=[{}] last_class={} last_exit_code={} last_detail={}",
+        "strict SSH acceptance failed for {logical_hostname} at {target_ip}: attempts={attempts} counts=[{}] last_class={} last_exit_code={} last_detail={} forensic={}",
         counts.summary(),
         last.class.label(),
         last.exit_code
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_owned()),
-        last.detail
+        last.detail,
+        forensic
     ))
 }
 
@@ -1496,18 +1567,39 @@ mod tests {
         let command = substrate_acceptance_command(&substrate).unwrap();
 
         for marker in [
-            "EDGE_SUBSTRATE_FAIL:host-bootstrap-marker",
-            "EDGE_SUBSTRATE_FAIL:docker-ce-version",
-            "EDGE_SUBSTRATE_FAIL:docker-cli-version",
-            "EDGE_SUBSTRATE_FAIL:containerd-version",
-            "EDGE_SUBSTRATE_FAIL:compose-version",
-            "EDGE_SUBSTRATE_FAIL:docker-service",
-            "EDGE_SUBSTRATE_FAIL:docker-api",
-            "EDGE_SUBSTRATE_FAIL:compose-cli",
-            "EDGE_SUBSTRATE_FAIL:sshd-config",
+            "host-bootstrap-marker",
+            "docker-ce-version",
+            "docker-cli-version",
+            "containerd-version",
+            "compose-version",
+            "docker-service",
+            "docker-api",
+            "compose-cli",
+            "sshd-config",
         ] {
             assert!(command.contains(marker), "missing marker {marker}");
         }
+        assert!(command.contains("record_failure"));
+        assert!(command.contains("EDGE_SUBSTRATE_FAIL:$failures"));
+        assert_eq!(command.matches("exit 42").count(), 1);
+    }
+
+    #[test]
+    fn substrate_forensics_are_bounded_and_exclude_sensitive_payloads() {
+        let command = substrate_forensic_command();
+        assert!(command.contains("EDGE_SUBSTRATE_FORENSIC:"));
+        assert!(command.contains("/proc/sys/kernel/random/boot_id"));
+        assert!(command.contains("/var/lib/cloud/data/instance-id"));
+        assert!(!command.contains("/var/lib/cloud/instance/user-data"));
+        assert!(!command.contains("private_key"));
+        assert!(!command.contains("token="));
+
+        let oversized = format!(
+            "noise\\nEDGE_SUBSTRATE_FORENSIC:{}\\n",
+            "x".repeat(1500)
+        );
+        let bounded = bounded_forensic_evidence(oversized.as_bytes());
+        assert_eq!(bounded.chars().count(), 1200);
     }
 
     #[test]
