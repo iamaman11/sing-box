@@ -59,6 +59,25 @@ jobs:
           bash -n edge-platform/scripts/publish_durable_release.sh
           python3 edge-platform/scripts/test_publish_durable_release.py
 
+      - name: Validate durable lifecycle release resolver
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n edge-platform/scripts/resolve_durable_release.sh
+          python3 edge-platform/scripts/test_resolve_durable_release.py
+          if grep -n --fixed-strings 'actions/download-artifact' \
+            .github/workflows/vm-application-lifecycle.yml \
+            .github/workflows/vultr-lifecycle.yml; then
+            echo "lifecycle workflows must not depend on expiring Actions artifacts" >&2
+            exit 1
+          fi
+          if grep -n --fixed-strings 'manifest.json' \
+            .github/workflows/vm-application-lifecycle.yml \
+            .github/workflows/vultr-lifecycle.yml; then
+            echo "lifecycle workflows must consume canonical ReleaseSet authority, not transitional manifests" >&2
+            exit 1
+          fi
+
       - name: Validate VM stack
         shell: bash
         env:
@@ -691,6 +710,22 @@ jobs:
           test "$(wc -l <<<"${release_set_sha}")" -eq 1
           [[ "${release_set_sha}" =~ ^[0-9a-f]{64}$ ]]
           printf 'release_set_sha256=%s\n' "${release_set_sha}" >> "${GITHUB_OUTPUT}"
+
+          vm_verify_output="$("${tool}" verify-vm \
+            --input "${authority}/release-set.pb" \
+            --sha256-file "${authority}/release-set.pb.sha256" \
+            --source-revision "${CANDIDATE_REVISION}" \
+            --edge-agent "${linux}/edge-agent" \
+            --edge-controller "${linux}/edge-controller")"
+          printf '%s\n' "${vm_verify_output}"
+          test "$(sed -n 's/^release_set_sha256=//p' <<<"${vm_verify_output}")" = "${release_set_sha}"
+          test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "2"
+          test "$(sed -n 's/^source_revision=//p' <<<"${vm_verify_output}")" = "${CANDIDATE_REVISION}"
+          test "$(sed -n 's/^edge_agent_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_AGENT_SHA256}"
+          test "$(sed -n 's/^edge_controller_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_CONTROLLER_SHA256}"
+          test "$(sed -n 's/^sing_box_image=//p' <<<"${vm_verify_output}")" = "${EDGE_GATEWAY_IMAGE}"
+          test "$(sed -n 's/^warp_egress_image=//p' <<<"${vm_verify_output}")" = "${EDGE_WARP_EGRESS_IMAGE}"
+          test "$(sed -n 's/^mesh_image=//p' <<<"${vm_verify_output}")" = "${MESH_IMAGE}"
 
           printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           docker buildx imagetools inspect "${EDGE_GATEWAY_IMAGE}" >/dev/null
