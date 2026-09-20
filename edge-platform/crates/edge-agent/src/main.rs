@@ -3084,12 +3084,12 @@ mod tests {
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
         fs::write(
             stack.join(RUNTIME_POLICY_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(
             stack.join(RUNTIME_ENV_FILE),
-            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\nACME_PROVIDER=letsencrypt\n",
         )
         .unwrap();
         fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
