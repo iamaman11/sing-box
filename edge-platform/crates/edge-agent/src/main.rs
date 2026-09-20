@@ -727,9 +727,14 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
     let line2 = ["PROXY_USERNAME", "PROXY_CERT_CN"]
         .into_iter()
         .collect::<BTreeSet<_>>();
-    let line1 = ["REALITY_SERVER_NAME", "TUNNEL_DOMAIN", "ACME_EMAIL"]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let line1 = [
+        "REALITY_SERVER_NAME",
+        "TUNNEL_DOMAIN",
+        "ACME_EMAIL",
+        "ACME_PROVIDER",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
     let full = line1.union(&line2).copied().collect::<BTreeSet<_>>();
     let allowed = full.clone();
     let mut observed = BTreeSet::new();
@@ -935,6 +940,7 @@ fn read_typed_runtime_environment(stack_dir: &Path) -> Result<BTreeMap<String, S
         "REALITY_SERVER_NAME",
         "TUNNEL_DOMAIN",
         "ACME_EMAIL",
+        "ACME_PROVIDER",
         "PROXY_PASSWORD",
         "VLESS_UUID",
         "HY2_PASSWORD",
@@ -986,11 +992,16 @@ fn read_typed_runtime_environment(stack_dir: &Path) -> Result<BTreeMap<String, S
     if line2_count != 0 && line2_count != 2 {
         return Err("runtime environment contains incomplete Line 2 policy".to_owned());
     }
-    let line1_count = ["REALITY_SERVER_NAME", "TUNNEL_DOMAIN", "ACME_EMAIL"]
-        .into_iter()
-        .filter(|key| values.contains_key(*key))
-        .count();
-    if line1_count != 0 && line1_count != 3 {
+    let line1_count = [
+        "REALITY_SERVER_NAME",
+        "TUNNEL_DOMAIN",
+        "ACME_EMAIL",
+        "ACME_PROVIDER",
+    ]
+    .into_iter()
+    .filter(|key| values.contains_key(*key))
+    .count();
+    if line1_count != 0 && line1_count != 4 {
         return Err("runtime environment contains incomplete Line 1 policy".to_owned());
     }
     if line1_count == 0 && line2_count == 0 {
@@ -1375,7 +1386,12 @@ fn require_line2_policy(runtime: &BTreeMap<String, String>) -> Result<(), String
 }
 
 fn require_tunnel_policy(runtime: &BTreeMap<String, String>) -> Result<(), String> {
-    for key in ["REALITY_SERVER_NAME", "TUNNEL_DOMAIN", "ACME_EMAIL"] {
+    for key in [
+        "REALITY_SERVER_NAME",
+        "TUNNEL_DOMAIN",
+        "ACME_EMAIL",
+        "ACME_PROVIDER",
+    ] {
         if !runtime.contains_key(key) {
             return Err(format!(
                 "tunnel bootstrap requires runtime policy key: {key}"
@@ -1386,6 +1402,7 @@ fn require_tunnel_policy(runtime: &BTreeMap<String, String>) -> Result<(), Strin
     if !valid_certificate_domain(domain) {
         return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
     }
+    acme_provider_storage_dir(runtime.get("ACME_PROVIDER").unwrap())?;
     Ok(())
 }
 
@@ -1410,6 +1427,7 @@ fn render_line1_runtime(
             "REALITY_WARP_SHORT_ID",
             "TUNNEL_DOMAIN",
             "ACME_EMAIL",
+            "ACME_PROVIDER",
         ],
     )
 }
@@ -1487,9 +1505,11 @@ fn line2_certificate_container_paths(
         if !valid_certificate_domain(domain) {
             return Err("TUNNEL_DOMAIN is invalid for Line 2 certificate paths".to_owned());
         }
-        let base = format!(
-            "/var/lib/sing-box/acme/certificates/acme-v02.api.letsencrypt.org-directory/{domain}"
-        );
+        let provider = runtime
+            .get("ACME_PROVIDER")
+            .ok_or_else(|| "ACME_PROVIDER is missing for Line 2 certificate paths".to_owned())?;
+        let provider_dir = acme_provider_storage_dir(provider)?;
+        let base = format!("/var/lib/sing-box/acme/certificates/{provider_dir}/{domain}");
         return Ok((
             format!("{base}/{domain}.crt"),
             format!("{base}/{domain}.key"),
@@ -2424,7 +2444,9 @@ fn line2_runtime_enabled(stack_dir: &Path) -> bool {
 
 fn tunnel_runtime_enabled(stack_dir: &Path) -> bool {
     read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
-        env_flag_present(&values, "TUNNEL_DOMAIN") && env_flag_present(&values, "ACME_EMAIL")
+        env_flag_present(&values, "TUNNEL_DOMAIN")
+            && env_flag_present(&values, "ACME_EMAIL")
+            && env_flag_present(&values, "ACME_PROVIDER")
     })
 }
 
@@ -2442,6 +2464,16 @@ fn valid_certificate_domain(value: &str) -> bool {
         })
 }
 
+fn acme_provider_storage_dir(value: &str) -> Result<&'static str, String> {
+    match value {
+        "letsencrypt" => Ok("acme-v02.api.letsencrypt.org-directory"),
+        "https://acme-staging-v02.api.letsencrypt.org/directory" => {
+            Ok("acme-staging-v02.api.letsencrypt.org-directory")
+        }
+        _ => Err("ACME_PROVIDER is not an accepted Let's Encrypt provider".to_owned()),
+    }
+}
+
 fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], String> {
     let runtime = read_runtime_env(&stack_dir.join(".env.runtime")).ok_or_else(|| {
         "runtime environment is unavailable for certificate observation".to_owned()
@@ -2454,13 +2486,18 @@ fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], St
         if !valid_certificate_domain(domain) {
             return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
         }
+        let provider = runtime
+            .get("ACME_PROVIDER")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let provider_dir = acme_provider_storage_dir(provider)?;
         let owner = stack_dir
             .parent()
             .ok_or_else(|| "application stack path has no certificate-state parent".to_owned())?
             .join("certificate-state")
             .join("acme")
             .join("certificates")
-            .join("acme-v02.api.letsencrypt.org-directory")
+            .join(provider_dir)
             .join(domain);
         return Ok([
             owner.join(format!("{domain}.crt")),
@@ -3211,6 +3248,22 @@ mod tests {
             root.join("mesh-state")
         );
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn acme_provider_storage_is_explicit_for_production_and_staging() {
+        assert_eq!(
+            acme_provider_storage_dir("letsencrypt").unwrap(),
+            "acme-v02.api.letsencrypt.org-directory"
+        );
+        assert_eq!(
+            acme_provider_storage_dir(
+                "https://acme-staging-v02.api.letsencrypt.org/directory"
+            )
+            .unwrap(),
+            "acme-staging-v02.api.letsencrypt.org-directory"
+        );
+        assert!(acme_provider_storage_dir("https://unexpected.example/directory").is_err());
     }
 
     #[test]
