@@ -397,22 +397,17 @@ jobs:
           chmod 600 "${key_path}"
           printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
 
-      - name: Materialize disposable Cloudflare authority
+      - name: Validate disposable Cloudflare desired state
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           test -n "${CLOUDFLARE_API_TOKEN}"
-          [[ "${CLOUDFLARE_ACCOUNT_ID}" =~ ^[0-9a-f]{32}$ ]]
-          template="infra/cloudflare/application-acceptance-mesh.template.json"
-          test -f "${template}"
-          test "$(jq -r '.account_id' "${template}")" = "__CLOUDFLARE_ACCOUNT_ID__"
-          mesh_spec="${RUNNER_TEMP}/application-acceptance-mesh.json"
-          jq --arg account_id "${CLOUDFLARE_ACCOUNT_ID}" \
-            '.account_id = $account_id' "${template}" > "${mesh_spec}"
-          chmod 600 "${mesh_spec}"
+          mesh_spec="infra/cloudflare/application-acceptance-mesh.json"
+          test -f "${mesh_spec}"
+          account_id="$(jq -er '.account_id' "${mesh_spec}")"
+          [[ "${account_id}" =~ ^[0-9a-f]{32}$ ]]
           printf 'EDGE_ACCEPTANCE_MESH_SPEC=%s\n' "${mesh_spec}" >> "${GITHUB_ENV}"
           printf 'EDGE_ACCEPTANCE_DNS_SPEC=%s\n' \
             "infra/cloudflare/application-acceptance-dns.json" >> "${GITHUB_ENV}"
@@ -769,4 +764,3 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-${RUNNER_TEMP}/singbox-vultr-ops}"
-          rm -f "${EDGE_ACCEPTANCE_MESH_SPEC:-${RUNNER_TEMP}/application-acceptance-mesh.json}"
