@@ -515,10 +515,17 @@ mod tests {
             commit_on_error: false,
             ..FakeProvider::default()
         };
+        let authority = apply_authority(&mut provider, "203.0.113.10").await;
         assert!(
-            apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
-                .await
-                .is_err()
+            apply_dns_once(
+                &mut provider,
+                &desired(),
+                "203.0.113.10",
+                &authority,
+                policy(),
+            )
+            .await
+            .is_err()
         );
         assert_eq!(provider.create_calls, 1);
     }
