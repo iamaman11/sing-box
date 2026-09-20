@@ -514,7 +514,7 @@ fn collect_dir_recursive(
             .map_err(|err| format!("failed to strip prefix from {}: {err}", path.display()))?
             .to_string_lossy()
             .replace('\\', "/");
-        let executable = relative_path == "bootstrap.sh";
+        let executable = false;
         let content = read_template_file(&path)
             .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
         files.push(BundleFilePayload {
@@ -890,16 +890,12 @@ mod tests {
                 .contains("\"instance_id\": \"instance-1\"")
         );
         assert!(bundle.agent_env_content.contains(SERVER_TLS_ROOT));
-        let bootstrap = bundle
-            .stack_files
-            .iter()
-            .find(|file| file.relative_path == "bootstrap.sh")
-            .expect("bootstrap.sh should exist in stack bundle");
-        let bootstrap_text =
-            String::from_utf8(bootstrap.content.clone()).expect("bootstrap.sh should be utf-8");
         assert!(
-            !bootstrap_text.contains("\r\n"),
-            "bootstrap.sh should use LF line endings"
+            bundle
+                .stack_files
+                .iter()
+                .all(|file| file.relative_path != "bootstrap.sh" && !file.executable),
+            "repository application bundle must not contain an executable bootstrap owner"
         );
         let _ = fs::remove_dir_all(bundle.generated_dir);
     }
