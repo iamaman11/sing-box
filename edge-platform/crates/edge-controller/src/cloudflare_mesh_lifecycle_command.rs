@@ -1,6 +1,6 @@
 use crate::application_lifecycle_command::resolve_application_authority_from_spec;
 use crate::application_lifecycle_service::{
-    ApplicationAuthority, cleanup_mesh_runtime_remote, converge_mesh_runtime_remote,
+    cleanup_mesh_runtime_remote, converge_mesh_runtime_remote, observe_ipv4_network_remote,
     verify_mesh_runtime_remote,
 };
 use crate::cloudflare_mesh_lifecycle_service::{
@@ -8,18 +8,15 @@ use crate::cloudflare_mesh_lifecycle_service::{
     exact_mesh_node_token, observe_mesh, plan_mesh_apply, plan_mesh_cleanup,
     wait_mesh_provider_healthy,
 };
-use crate::vultr_host_bootstrap::strict_ssh_capture;
 use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
 use edge_controller_core::cloudflare_mesh_lifecycle::{DesiredMeshState, MeshRouteSpec};
 use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
-use serde::{Deserialize, Serialize};
+use edge_shared_types::Ipv4NetworkObservation;
+use serde::Serialize;
 use std::env;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::Path;
-
-const GUEST_IPV4_ADDRESS_OBSERVATION: &str = "ip -j -4 address show scope global";
-const GUEST_IPV4_ROUTE_OBSERVATION: &str = "ip -j -4 route show scope link";
 
 pub async fn run(args: Vec<String>) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
@@ -311,7 +308,8 @@ async fn load_desired_with_verified_vpc_route(
     let mut provider = VultrVpcApiProvider::new(api_key)?;
     let ready = verify_vpc_ready(&mut provider, &vpc).await?;
     let authority = resolve_application_authority_from_spec(application_spec_path).await?;
-    let guest_vpc = verify_guest_vpc_network(&authority, &ready)?;
+    let guest_observation = observe_ipv4_network_remote(&authority).await?;
+    let guest_vpc = evaluate_guest_vpc_network(&guest_observation, &ready)?;
     let desired = compose_verified_vpc_route(mesh_base, &vpc, ready)?;
     Ok((desired, guest_vpc))
 }
@@ -324,81 +322,42 @@ struct GuestVpcNetworkReport {
     private_ipv4: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct GuestAddressInterface {
-    ifname: String,
-    #[serde(default)]
-    flags: Vec<String>,
-    #[serde(default)]
-    addr_info: Vec<GuestAddressInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GuestAddressInfo {
-    family: String,
-    local: String,
-    prefixlen: u8,
-    scope: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GuestRouteEntry {
-    dst: Option<String>,
-    dev: Option<String>,
-    protocol: Option<String>,
-    scope: Option<String>,
-    prefsrc: Option<String>,
-}
-
-fn verify_guest_vpc_network(
-    authority: &ApplicationAuthority,
-    ready: &VpcReadyReport,
-) -> Result<GuestVpcNetworkReport, String> {
-    let addresses = strict_ssh_capture(
-        &authority.target_ip,
-        &authority.logical_hostname,
-        &authority.operator_private_key_path,
-        &authority.canonical_operator_public_key,
-        GUEST_IPV4_ADDRESS_OBSERVATION,
-    )?;
-    let routes = strict_ssh_capture(
-        &authority.target_ip,
-        &authority.logical_hostname,
-        &authority.operator_private_key_path,
-        &authority.canonical_operator_public_key,
-        GUEST_IPV4_ROUTE_OBSERVATION,
-    )?;
-    evaluate_guest_vpc_network(&addresses, &routes, ready)
-}
-
 fn evaluate_guest_vpc_network(
-    address_json: &str,
-    route_json: &str,
+    observation: &Ipv4NetworkObservation,
     ready: &VpcReadyReport,
 ) -> Result<GuestVpcNetworkReport, String> {
     let prefix = validate_verified_private_network(&ready.cidr, &ready.private_ipv4)?;
-    let addresses = serde_json::from_str::<Vec<GuestAddressInterface>>(address_json)
-        .map_err(|_| "guest IPv4 address observation was not valid JSON".to_owned())?;
+    let (subnet, _) = ready
+        .cidr
+        .split_once('/')
+        .ok_or_else(|| "verified Vultr VPC CIDR must use IPv4 prefix notation".to_owned())?;
 
-    let mut matching_interfaces = addresses
+    let mut matching_interfaces = observation
+        .addresses
         .iter()
-        .filter(|interface| {
-            interface.ifname != "lo"
-                && interface.flags.iter().any(|flag| flag == "UP")
-                && interface.flags.iter().any(|flag| flag == "LOWER_UP")
-                && interface.addr_info.iter().any(|address| {
-                    address.family == "inet"
-                        && address.scope == "global"
-                        && address.local == ready.private_ipv4
-                        && address.prefixlen == prefix
-                })
+        .filter(|address| {
+            address.global_scope
+                && address.address == ready.private_ipv4
+                && address.prefix_length == u32::from(prefix)
         })
-        .map(|interface| interface.ifname.clone())
+        .filter_map(|address| {
+            observation
+                .links
+                .iter()
+                .find(|link| {
+                    link.interface_index == address.interface_index
+                        && !link.loopback
+                        && link.up
+                        && link.lower_up
+                })
+                .map(|link| (link.interface_index, link.name.clone()))
+        })
         .collect::<Vec<_>>();
     matching_interfaces.sort();
     matching_interfaces.dedup();
-    let interface = match matching_interfaces.as_slice() {
-        [interface] => interface.clone(),
+
+    let (interface_index, interface) = match matching_interfaces.as_slice() {
+        [(interface_index, interface)] => (*interface_index, interface.clone()),
         [] => {
             return Err(
                 "guest did not expose the exact provider-observed private IPv4 on an UP VPC interface"
@@ -412,16 +371,16 @@ fn evaluate_guest_vpc_network(
         }
     };
 
-    let routes = serde_json::from_str::<Vec<GuestRouteEntry>>(route_json)
-        .map_err(|_| "guest IPv4 route observation was not valid JSON".to_owned())?;
-    let route_matches = routes
+    let route_matches = observation
+        .routes
         .iter()
         .filter(|route| {
-            route.dst.as_deref() == Some(ready.cidr.as_str())
-                && route.dev.as_deref() == Some(interface.as_str())
-                && route.protocol.as_deref() == Some("kernel")
-                && route.scope.as_deref() == Some("link")
-                && route.prefsrc.as_deref() == Some(ready.private_ipv4.as_str())
+            route.destination == subnet
+                && route.prefix_length == u32::from(prefix)
+                && route.output_interface_index == interface_index
+                && route.kernel_protocol
+                && route.link_scope
+                && route.preferred_source.as_deref() == Some(ready.private_ipv4.as_str())
         })
         .count();
     if route_matches != 1 {
@@ -574,40 +533,141 @@ mod tests {
         }
     }
 
-    #[test]
-    fn guest_vpc_network_requires_exact_up_interface_and_connected_kernel_route() {
-        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
-        let address_json = r#"[
-            {
-                "ifname":"ens7",
-                "flags":["BROADCAST","MULTICAST","UP","LOWER_UP"],
-                "addr_info":[
-                    {"family":"inet","local":"10.0.4.2","prefixlen":24,"scope":"global"}
-                ]
-            }
-        ]"#;
-        let route_json = r#"[
-            {
-                "dst":"10.0.4.0/24",
-                "dev":"ens7",
-                "protocol":"kernel",
-                "scope":"link",
-                "prefsrc":"10.0.4.2"
-            }
-        ]"#;
+    fn guest_observation() -> Ipv4NetworkObservation {
+        Ipv4NetworkObservation {
+            links: vec![edge_shared_types::Ipv4LinkObservation {
+                interface_index: 7,
+                name: "ens7".to_owned(),
+                up: true,
+                lower_up: true,
+                loopback: false,
+            }],
+            addresses: vec![edge_shared_types::Ipv4AddressObservation {
+                interface_index: 7,
+                address: "10.0.4.2".to_owned(),
+                prefix_length: 24,
+                global_scope: true,
+            }],
+            routes: vec![edge_shared_types::Ipv4RouteObservation {
+                destination: "10.0.4.0".to_owned(),
+                prefix_length: 24,
+                output_interface_index: 7,
+                preferred_source: Some("10.0.4.2".to_owned()),
+                kernel_protocol: true,
+                link_scope: true,
+            }],
+        }
+    }
 
-        let report = evaluate_guest_vpc_network(address_json, route_json, &ready).unwrap();
+    #[test]
+    fn guest_vpc_network_accepts_only_exact_provider_backed_observation() {
+        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
+        let report = evaluate_guest_vpc_network(&guest_observation(), &ready).unwrap();
         assert_eq!(report.status, "PASS");
         assert_eq!(report.interface, "ens7");
+    }
 
-        assert!(evaluate_guest_vpc_network(address_json, "[]", &ready).is_err());
+    #[test]
+    fn guest_vpc_network_rejects_missing_or_ambiguous_private_ip() {
+        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
+
+        let mut missing = guest_observation();
+        missing.addresses.clear();
+        assert!(evaluate_guest_vpc_network(&missing, &ready).is_err());
+
+        let mut ambiguous = guest_observation();
+        ambiguous
+            .links
+            .push(edge_shared_types::Ipv4LinkObservation {
+                interface_index: 8,
+                name: "ens8".to_owned(),
+                up: true,
+                lower_up: true,
+                loopback: false,
+            });
+        ambiguous
+            .addresses
+            .push(edge_shared_types::Ipv4AddressObservation {
+                interface_index: 8,
+                address: "10.0.4.2".to_owned(),
+                prefix_length: 24,
+                global_scope: true,
+            });
+        assert!(evaluate_guest_vpc_network(&ambiguous, &ready).is_err());
+
+        let mut wrong_prefix = guest_observation();
+        wrong_prefix.addresses[0].prefix_length = 25;
+        assert!(evaluate_guest_vpc_network(&wrong_prefix, &ready).is_err());
+    }
+
+    #[test]
+    fn guest_vpc_network_requires_admin_up_carrier_and_non_loopback_link() {
+        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
+
+        let mut admin_down = guest_observation();
+        admin_down.links[0].up = false;
+        assert!(evaluate_guest_vpc_network(&admin_down, &ready).is_err());
+
+        let mut carrier_down = guest_observation();
+        carrier_down.links[0].lower_up = false;
+        assert!(evaluate_guest_vpc_network(&carrier_down, &ready).is_err());
+
+        let mut loopback = guest_observation();
+        loopback.links[0].loopback = true;
+        assert!(evaluate_guest_vpc_network(&loopback, &ready).is_err());
+    }
+
+    #[test]
+    fn guest_vpc_network_requires_one_exact_connected_kernel_route() {
+        let ready = ready_report("10.0.4.0/24", "10.0.4.2");
+
+        let mut missing = guest_observation();
+        missing.routes.clear();
+        assert!(evaluate_guest_vpc_network(&missing, &ready).is_err());
+
+        let mut duplicate = guest_observation();
+        duplicate.routes.push(duplicate.routes[0].clone());
+        assert!(evaluate_guest_vpc_network(&duplicate, &ready).is_err());
+
+        let mut wrong_interface = guest_observation();
+        wrong_interface.routes[0].output_interface_index = 8;
+        assert!(evaluate_guest_vpc_network(&wrong_interface, &ready).is_err());
+
+        let mut wrong_prefix = guest_observation();
+        wrong_prefix.routes[0].prefix_length = 25;
+        assert!(evaluate_guest_vpc_network(&wrong_prefix, &ready).is_err());
+
+        let mut wrong_preferred_source = guest_observation();
+        wrong_preferred_source.routes[0].preferred_source = Some("10.0.4.3".to_owned());
+        assert!(evaluate_guest_vpc_network(&wrong_preferred_source, &ready).is_err());
+
+        let mut wrong_protocol = guest_observation();
+        wrong_protocol.routes[0].kernel_protocol = false;
+        assert!(evaluate_guest_vpc_network(&wrong_protocol, &ready).is_err());
+
+        let mut wrong_scope = guest_observation();
+        wrong_scope.routes[0].link_scope = false;
+        assert!(evaluate_guest_vpc_network(&wrong_scope, &ready).is_err());
+    }
+
+    #[test]
+    fn guest_vpc_network_rejects_invalid_provider_network_authority() {
+        let observation = guest_observation();
+
         assert!(
             evaluate_guest_vpc_network(
-                r#"[{"ifname":"ens7","flags":["UP"],"addr_info":[{"family":"inet","local":"10.0.4.2","prefixlen":24,"scope":"global"}]}]"#,
-                route_json,
-                &ready
+                &observation,
+                &ready_report("203.0.113.0/24", "203.0.113.2")
             )
             .is_err()
+        );
+        assert!(
+            evaluate_guest_vpc_network(&observation, &ready_report("10.0.4.7/24", "10.0.4.8"))
+                .is_err()
+        );
+        assert!(
+            evaluate_guest_vpc_network(&observation, &ready_report("10.0.4.0/24", "10.0.5.2"))
+                .is_err()
         );
     }
 

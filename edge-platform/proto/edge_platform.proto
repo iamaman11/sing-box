@@ -138,6 +138,36 @@ message ControllerStatus {
 
 message Empty {}
 
+message Ipv4LinkObservation {
+  uint32 interface_index = 1;
+  string name = 2;
+  bool up = 3;
+  bool lower_up = 4;
+  bool loopback = 5;
+}
+
+message Ipv4AddressObservation {
+  uint32 interface_index = 1;
+  string address = 2;
+  uint32 prefix_length = 3;
+  bool global_scope = 4;
+}
+
+message Ipv4RouteObservation {
+  string destination = 1;
+  uint32 prefix_length = 2;
+  uint32 output_interface_index = 3;
+  optional string preferred_source = 4;
+  bool kernel_protocol = 5;
+  bool link_scope = 6;
+}
+
+message Ipv4NetworkObservation {
+  repeated Ipv4LinkObservation links = 1;
+  repeated Ipv4AddressObservation addresses = 2;
+  repeated Ipv4RouteObservation routes = 3;
+}
+
 message AgentVersion {
   string name = 1;
   string version = 2;
@@ -504,6 +534,7 @@ service AgentService {
   rpc GetReadiness(Empty) returns (AgentState);
   rpc GetRuntimeState(Empty) returns (AgentState);
   rpc GetVersion(Empty) returns (AgentVersion);
+  rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);
   rpc ApplyBundle(ApplyBundleRequest) returns (ApplyBundleResponse);
   rpc RollbackBundle(RollbackBundleRequest) returns (RollbackBundleResponse);
   rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);

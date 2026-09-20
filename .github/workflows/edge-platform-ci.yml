@@ -254,9 +254,31 @@ jobs:
               for rule in acceptance_firewall["rules"]
           )
 
+          agent_proto = Path("edge-platform/proto/edge_platform.proto").read_text()
+          agent_manifest = Path("edge-platform/crates/edge-agent/Cargo.toml").read_text()
+          agent_network = Path(
+              "edge-platform/crates/edge-agent/src/network_observation.rs"
+          ).read_text()
+          application_service = Path(
+              "edge-platform/crates/edge-controller/src/application_lifecycle_service.rs"
+          ).read_text()
           mesh_command = Path(
               "edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs"
           ).read_text()
+
+          assert "rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);" in agent_proto
+          assert 'rtnetlink = "0.23.0"' in agent_manifest
+          for typed_network_contract in [
+              "LinkFlags::Up",
+              "LinkFlags::LowerUp",
+              "RouteProtocol::Kernel",
+              "RouteScope::Link",
+              "RouteHeader::RT_TABLE_MAIN",
+          ]:
+              assert typed_network_contract in agent_network
+          assert "observe_ipv4_network_remote" in application_service
+          assert ".observe_ipv4_network(" in application_service
+
           for surface in [
               "line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
               "line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
@@ -265,11 +287,12 @@ jobs:
           ]:
               assert surface in mesh_command
           assert "verify_vpc_ready" in mesh_command
+          assert "observe_ipv4_network_remote" in mesh_command
           assert "run-local route authority comes only from verified Vultr VPC state" in mesh_command
-          assert 'GUEST_IPV4_ADDRESS_OBSERVATION: &str = "ip -j -4 address show scope global"' in mesh_command
-          assert 'GUEST_IPV4_ROUTE_OBSERVATION: &str = "ip -j -4 route show scope link"' in mesh_command
-          assert "strict_ssh_capture" in mesh_command
           assert "guest_vpc" in mesh_command
+          assert "ip -j -4 address" not in mesh_command
+          assert "ip -j -4 route" not in mesh_command
+          assert "strict_ssh_capture" not in mesh_command
 
           workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           assert "CLOUDFLARE_ACCOUNT_ID" not in workflow

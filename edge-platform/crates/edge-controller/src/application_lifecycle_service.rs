@@ -10,7 +10,7 @@ use edge_controller_core::application_lifecycle::{
 };
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
-    ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile,
+    ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile, Ipv4NetworkObservation,
     MeshRuntimeConvergeRequest, MeshRuntimeState, RollbackBundleRequest, VerifyRuntimeRequest,
     canonical_apply_bundle_digest,
 };
@@ -859,6 +859,17 @@ async fn verify_runtime_ready(
         .map_err(|err| format!("typed VerifyRuntime RPC failed: {err}"))?
         .into_inner();
     Ok(response.ready)
+}
+
+pub(crate) async fn observe_ipv4_network_remote(
+    authority: &ApplicationAuthority,
+) -> Result<Ipv4NetworkObservation, String> {
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    client
+        .observe_ipv4_network(Request::new(edge_shared_types::Empty {}))
+        .await
+        .map_err(|err| format!("typed ObserveIpv4Network RPC failed: {err}"))
+        .map(|response| response.into_inner())
 }
 
 pub(crate) async fn converge_mesh_runtime_remote(
