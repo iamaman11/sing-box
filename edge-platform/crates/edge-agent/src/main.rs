@@ -257,7 +257,9 @@ impl AgentService for AgentServerImpl {
         request: Request<MeshRuntimeConvergeRequest>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
         let state = converge_mesh_runtime(&self.stack_dir, &request.into_inner().node_token)
-            .map_err(|err| Status::failed_precondition(format!("Mesh runtime convergence failed: {err}")))?;
+            .map_err(|err| {
+                Status::failed_precondition(format!("Mesh runtime convergence failed: {err}"))
+            })?;
         Ok(Response::new(state))
     }
 
@@ -272,8 +274,9 @@ impl AgentService for AgentServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
-        let state = cleanup_mesh_runtime(&self.stack_dir)
-            .map_err(|err| Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}")))?;
+        let state = cleanup_mesh_runtime(&self.stack_dir).map_err(|err| {
+            Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}"))
+        })?;
         Ok(Response::new(state))
     }
 }
@@ -1104,7 +1107,9 @@ fn validate_mesh_node_token(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 16 * 1024
         || value.trim() != value
-        || value.bytes().any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
     {
         return Err("Mesh node token must be a non-empty bounded single-line value".to_owned());
     }
@@ -1227,12 +1232,7 @@ fn run_mesh_compose(
 fn mesh_exact_image_ready(expected: &str) -> bool {
     bounded_command_output(
         "docker",
-        &[
-            "inspect",
-            "--format",
-            "{{.Config.Image}}",
-            MESH_CONTAINER,
-        ],
+        &["inspect", "--format", "{{.Config.Image}}", MESH_CONTAINER],
         6,
     )
     .is_some_and(|observed| observed.trim() == expected)
@@ -1240,9 +1240,7 @@ fn mesh_exact_image_ready(expected: &str) -> bool {
 
 fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     let token_store_path = mesh_runtime_secret_path(stack_dir).ok();
-    let token_store_present = token_store_path
-        .as_ref()
-        .is_some_and(|path| path.is_file());
+    let token_store_present = token_store_path.as_ref().is_some_and(|path| path.is_file());
     let token_valid = read_mesh_node_token(stack_dir).is_ok();
     let docker = inspect_docker();
     let container_running = docker
@@ -1343,9 +1341,7 @@ fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
     if mesh_container_present()? {
         return Err(format!(
             "Mesh runtime container remains present after one bounded removal attempt; exit_code={}",
-            mutation
-                .and_then(|status| status.code())
-                .unwrap_or(-1)
+            mutation.and_then(|status| status.code()).unwrap_or(-1)
         ));
     }
 
