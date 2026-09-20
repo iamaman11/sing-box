@@ -4,16 +4,12 @@ use crate::application_lifecycle_service::{
     verify_mesh_runtime_remote,
 };
 use crate::cloudflare_mesh_lifecycle_service::{
-    CloudflareMeshApiProvider, MeshExecutionPolicy, apply_mesh_once, cleanup_mesh_once,
-    exact_mesh_node_token, observe_mesh, plan_mesh_apply, plan_mesh_cleanup,
-    wait_mesh_provider_healthy,
+    CloudflareMeshApiProvider, MeshExecutionPolicy, apply_mesh_once, authorize_mesh_apply,
+    authorize_mesh_cleanup, cleanup_mesh_once, exact_mesh_node_token, observe_mesh,
+    plan_mesh_apply, plan_mesh_cleanup, wait_mesh_provider_healthy,
 };
 use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
-use edge_controller_core::cloudflare_mesh_lifecycle::{
-    ApplyAction as MeshApplyAction, CleanupAction as MeshCleanupAction, DesiredMeshState,
-    MeshRouteSpec,
-};
-use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
+use edge_controller_core::cloudflare_mesh_lifecycle::{DesiredMeshState, MeshRouteSpec};
 use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::Ipv4NetworkObservation;
 use serde::Serialize;
@@ -61,19 +57,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
-    let disposition = if matches!(plan.action, MeshApplyAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let authorized = authorize_plan(
-        "cloudflare_mesh_apply",
-        &desired,
-        &observed,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_mesh_apply(&desired, &observed, plan.clone())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
@@ -83,12 +67,22 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err("usage: edge-controller line3-mesh apply <spec-path>".to_owned());
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller line3-mesh apply <spec-path> <authorized-plan-sha256>"
+                .to_owned(),
+        );
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
-    let report = apply_mesh_once(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    let report = apply_mesh_once(
+        &mut provider,
+        &desired,
+        &args[1],
+        &args[2],
+        MeshExecutionPolicy::default(),
+    )
+    .await?;
     print_json(serde_json::json!({
         "performed": report.performed,
         "observation": report.observation,
@@ -111,19 +105,7 @@ async fn run_vpc_plan(args: &[String]) -> Result<(), String> {
     .await?;
     let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
-    let disposition = if matches!(plan.action, MeshApplyAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let authorized = authorize_plan(
-        "cloudflare_mesh_apply",
-        &desired,
-        &observed,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_mesh_apply(&desired, &observed, plan.clone())?;
     print_json(serde_json::json!({
         "guest_vpc": guest_vpc,
         "observation": observed,
@@ -134,9 +116,9 @@ async fn run_vpc_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_vpc_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 3 {
+    if args.len() != 4 {
         return Err(
-            "usage: edge-controller line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>"
+            "usage: edge-controller line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -147,7 +129,13 @@ async fn run_vpc_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
     let mut provider = provider_from_env(&desired)?;
-    let report = apply_mesh_once(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    let report = apply_mesh_once(
+        &mut provider,
+        &desired,
+        &args[3],
+        MeshExecutionPolicy::default(),
+    )
+    .await?;
     print_json(serde_json::json!({
         "guest_vpc": guest_vpc,
         "performed": report.performed,
@@ -163,19 +151,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_cleanup(&mut provider, &desired).await?;
-    let disposition = if matches!(plan.action, MeshCleanupAction::Noop) {
-        PlanDisposition::Noop
-    } else {
-        PlanDisposition::Mutate
-    };
-    let authorized = authorize_plan(
-        "cloudflare_mesh_cleanup",
-        &desired,
-        &observed,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
+    let authorized = authorize_mesh_cleanup(&desired, &observed, plan.clone())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
@@ -185,9 +161,9 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
 }
 
 async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Err(
-            "usage: edge-controller line3-mesh cleanup-apply <spec-path> <destructive-digest>"
+            "usage: edge-controller line3-mesh cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -531,11 +507,11 @@ fn usage() -> String {
         "usage:",
         "  edge-controller line3-mesh inventory <spec-path>",
         "  edge-controller line3-mesh plan <spec-path>",
-        "  edge-controller line3-mesh apply <spec-path>",
+        "  edge-controller line3-mesh apply <spec-path> <authorized-plan-sha256>",
         "  edge-controller line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-        "  edge-controller line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
+        "  edge-controller line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path> <authorized-plan-sha256>",
         "  edge-controller line3-mesh cleanup-plan <spec-path>",
-        "  edge-controller line3-mesh cleanup-apply <spec-path> <destructive-digest>",
+        "  edge-controller line3-mesh cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
         "  edge-controller line3-mesh runtime-apply <mesh-spec-path> <application-spec-path>",
         "  edge-controller line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
         "  edge-controller line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>",
