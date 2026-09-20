@@ -1,9 +1,8 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, ensure_host_certificate_rotated, prepare_strict_bootstrap,
-    scrub_user_data, strict_ssh_accept,
-    verify_host_certificate_rotated, verify_operator_key_matches, verify_user_data_scrubbed,
-    wait_provider_ready,
+    scrub_user_data, strict_ssh_accept, verify_host_certificate_rotated,
+    verify_operator_key_matches, verify_user_data_scrubbed, wait_provider_ready,
 };
 use crate::vultr_lifecycle_service::{
     ApplyAction, ApplyReport, CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider,
@@ -1722,7 +1721,11 @@ mod tests {
         );
     }
 
-    fn operational_instance(power_status: &str, status: &str, server_status: &str) -> VultrInstance {
+    fn operational_instance(
+        power_status: &str,
+        status: &str,
+        server_status: &str,
+    ) -> VultrInstance {
         VultrInstance {
             id: "instance-1".to_owned(),
             label: "edge-1".to_owned(),
