@@ -1290,7 +1290,10 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     }
 }
 
-async fn converge_mesh_runtime(stack_dir: &Path, node_token: &str) -> Result<MeshRuntimeState, String> {
+async fn converge_mesh_runtime(
+    stack_dir: &Path,
+    node_token: &str,
+) -> Result<MeshRuntimeState, String> {
     validate_mesh_node_token(node_token)?;
     let images = read_exact_image_environment(stack_dir)?;
     prepare_mesh_runtime_state(stack_dir)?;

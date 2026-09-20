@@ -41,7 +41,9 @@ impl DockerObservation {
     }
 
     pub(crate) fn container_present(&self, name: &str) -> bool {
-        self.containers.iter().any(|container| container.name == name)
+        self.containers
+            .iter()
+            .any(|container| container.name == name)
     }
 
     pub(crate) fn container_running(&self, name: &str) -> bool {
@@ -97,10 +99,7 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
     let mut listening_udp_ports = BTreeSet::new();
 
     for summary in summaries {
-        let running = matches!(
-            summary.state,
-            Some(ContainerSummaryStateEnum::RUNNING)
-        );
+        let running = matches!(summary.state, Some(ContainerSummaryStateEnum::RUNNING));
         let names = summary
             .names
             .unwrap_or_default()
