@@ -223,14 +223,8 @@ fn render_runtime_environment(
     let expected = expected_runtime_secret_keys(desired.bootstrap_mode);
     let observed = secrets.keys().map(String::as_str).collect::<BTreeSet<_>>();
     if observed != expected {
-        let missing = expected
-            .difference(&observed)
-            .copied()
-            .collect::<Vec<_>>();
-        let unexpected = observed
-            .difference(&expected)
-            .copied()
-            .collect::<Vec<_>>();
+        let missing = expected.difference(&observed).copied().collect::<Vec<_>>();
+        let unexpected = observed.difference(&expected).copied().collect::<Vec<_>>();
         return Err(format!(
             "runtime credential keys do not match bootstrap mode {}: missing=[{}] unexpected=[{}]",
             desired.bootstrap_mode.as_str(),
@@ -369,7 +363,10 @@ fn validate_runtime_secret_value(key: &str, value: &str) -> Result<(), String> {
     if value.len() > 256
         || !value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
-                || matches!(byte, b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'=' | b'-')
+                || matches!(
+                    byte,
+                    b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'=' | b'-'
+                )
         })
     {
         return Err(format!(
@@ -415,17 +412,12 @@ fn validate_runtime_secret_value(key: &str, value: &str) -> Result<(), String> {
 
 fn validate_runtime_uuid(key: &str, value: &str) -> Result<(), String> {
     if value.len() != 36
-        || !value
-            .chars()
-            .enumerate()
-            .all(|(index, ch)| match index {
-                8 | 13 | 18 | 23 => ch == '-',
-                _ => ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase(),
-            })
+        || !value.chars().enumerate().all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase(),
+        })
     {
-        return Err(format!(
-            "runtime credential {key} must be a lowercase UUID"
-        ));
+        return Err(format!("runtime credential {key} must be a lowercase UUID"));
     }
     Ok(())
 }
