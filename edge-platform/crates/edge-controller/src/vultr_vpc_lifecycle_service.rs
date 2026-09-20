@@ -712,9 +712,7 @@ fn normalize_attachment(value: VultrVpcAttachment) -> ObservedVpcAttachment {
     }
 }
 
-fn attachments_have_unresolved_subscription(
-    attachments: &VpcAttachmentObservation,
-) -> bool {
+fn attachments_have_unresolved_subscription(attachments: &VpcAttachmentObservation) -> bool {
     attachments
         .attachments
         .iter()
