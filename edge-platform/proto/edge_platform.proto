@@ -397,6 +397,18 @@ message ReadRenderedArtifactsResponse {
   repeated FilePresence files = 1;
 }
 
+message MeshRuntimeConvergeRequest {
+  string node_token = 1;
+}
+
+message MeshRuntimeState {
+  bool token_store_present = 1;
+  bool container_running = 2;
+  bool exact_image_ready = 3;
+  bool runtime_ready = 4;
+  repeated string warnings = 5;
+}
+
 message DeployRequest {
   optional string label_prefix = 1;
   optional string target_ip = 2;
@@ -498,4 +510,7 @@ service AgentService {
   rpc VerifyRuntime(VerifyRuntimeRequest) returns (AgentState);
   rpc ReadBundleIdentity(ReadBundleIdentityRequest) returns (ReadBundleIdentityResponse);
   rpc ReadRenderedArtifacts(ReadRenderedArtifactsRequest) returns (ReadRenderedArtifactsResponse);
+  rpc ConvergeMeshRuntime(MeshRuntimeConvergeRequest) returns (MeshRuntimeState);
+  rpc VerifyMeshRuntime(Empty) returns (MeshRuntimeState);
+  rpc CleanupMeshRuntime(Empty) returns (MeshRuntimeState);
 }

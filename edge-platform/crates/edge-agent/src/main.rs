@@ -12,9 +12,10 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
-    FilePresence, ReadBundleIdentityRequest, ReadBundleIdentityResponse,
-    ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse, RollbackBundleRequest,
-    RollbackBundleResponse, VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    FilePresence, MeshRuntimeConvergeRequest, MeshRuntimeState, ReadBundleIdentityRequest,
+    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
+    RollbackBundleRequest, RollbackBundleResponse, VerifyRuntimeRequest,
+    canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,9 @@ const RUNTIME_POLICY_FILE: &str = ".env.runtime.policy";
 const RUNTIME_ENV_FILE: &str = ".env.runtime";
 const RUNTIME_SECRET_DIR: &str = "runtime-secrets";
 const RUNTIME_SECRET_FILE: &str = "application-runtime-v1.env";
+const MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env";
 const IMAGE_ENV_FILE: &str = ".images.env";
+const MESH_NODE_TOKEN_KEY: &str = "MESH_NODE_TOKEN";
 const EDGE_GATEWAY_IMAGE_KEY: &str = "EDGE_GATEWAY_IMAGE";
 const EDGE_WARP_EGRESS_IMAGE_KEY: &str = "EDGE_WARP_EGRESS_IMAGE";
 const EDGE_MESH_IMAGE_KEY: &str = "CLOUDFLARE_MESH_IMAGE";
@@ -247,6 +250,34 @@ impl AgentService for AgentServerImpl {
         Ok(Response::new(ReadRenderedArtifactsResponse {
             files: collect_rendered_artifacts(&self.stack_dir),
         }))
+    }
+
+    async fn converge_mesh_runtime(
+        &self,
+        request: Request<MeshRuntimeConvergeRequest>,
+    ) -> Result<Response<MeshRuntimeState>, Status> {
+        let state = converge_mesh_runtime(&self.stack_dir, &request.into_inner().node_token)
+            .map_err(|err| {
+                Status::failed_precondition(format!("Mesh runtime convergence failed: {err}"))
+            })?;
+        Ok(Response::new(state))
+    }
+
+    async fn verify_mesh_runtime(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<MeshRuntimeState>, Status> {
+        Ok(Response::new(inspect_mesh_runtime(&self.stack_dir)))
+    }
+
+    async fn cleanup_mesh_runtime(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<MeshRuntimeState>, Status> {
+        let state = cleanup_mesh_runtime(&self.stack_dir).map_err(|err| {
+            Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}"))
+        })?;
+        Ok(Response::new(state))
     }
 }
 
@@ -1047,7 +1078,7 @@ fn validate_exact_image_ref(label: &str, value: &str, repository: &str) -> Resul
 }
 
 fn prepare_runtime_directories(stack_dir: &Path) -> Result<(), String> {
-    for relative in ["certs", "rendered", "warp-state", "mesh-state"] {
+    for relative in ["certs", "rendered", "warp-state"] {
         fs::create_dir_all(stack_dir.join(relative)).map_err(|err| {
             format!(
                 "failed to create typed runtime directory {}: {err}",
@@ -1070,6 +1101,266 @@ fn prepare_runtime_directories(stack_dir: &Path) -> Result<(), String> {
     })?;
     set_private_directory_permissions(&certificate_state)?;
     Ok(())
+}
+
+fn validate_mesh_node_token(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 16 * 1024
+        || value.trim() != value
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+    {
+        return Err("Mesh node token must be a non-empty bounded single-line value".to_owned());
+    }
+    Ok(())
+}
+
+fn mesh_runtime_secret_path(stack_dir: &Path) -> Result<PathBuf, String> {
+    let host_root = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no host-state parent".to_owned())?;
+    Ok(host_root
+        .join(RUNTIME_SECRET_DIR)
+        .join(MESH_RUNTIME_SECRET_FILE))
+}
+
+fn mesh_runtime_state_dir(stack_dir: &Path) -> Result<PathBuf, String> {
+    let host_root = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no host-state parent".to_owned())?;
+    Ok(host_root.join("mesh-state"))
+}
+
+fn read_mesh_node_token(stack_dir: &Path) -> Result<String, String> {
+    let path = mesh_runtime_secret_path(stack_dir)?;
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read Mesh runtime secret store: {err}"))?;
+    let line = raw
+        .strip_suffix('\n')
+        .ok_or_else(|| "Mesh runtime secret store must end with one newline".to_owned())?;
+    if line.contains('\n') || line.contains('\r') {
+        return Err("Mesh runtime secret store must contain exactly one line".to_owned());
+    }
+    let value = line
+        .strip_prefix("MESH_NODE_TOKEN=")
+        .ok_or_else(|| "Mesh runtime secret store has an invalid schema".to_owned())?;
+    validate_mesh_node_token(value)?;
+    Ok(value.to_owned())
+}
+
+fn persist_mesh_node_token(stack_dir: &Path, value: &str) -> Result<(), String> {
+    validate_mesh_node_token(value)?;
+    let path = mesh_runtime_secret_path(stack_dir)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Mesh runtime secret store has no parent".to_owned())?;
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("failed to create Mesh runtime secret directory: {err}"))?;
+    set_private_directory_permissions(parent)?;
+
+    if path.exists() {
+        let observed = read_mesh_node_token(stack_dir)?;
+        if observed == value {
+            set_bundle_file_permissions(&path, false, true)?;
+            return Ok(());
+        }
+    }
+
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, format!("{MESH_NODE_TOKEN_KEY}={value}\n"))
+        .map_err(|err| format!("failed to write temporary Mesh runtime secret store: {err}"))?;
+    set_bundle_file_permissions(&temporary, false, true)?;
+    fs::rename(&temporary, &path)
+        .map_err(|err| format!("failed to atomically publish Mesh runtime secret store: {err}"))?;
+    if read_mesh_node_token(stack_dir)? != value {
+        return Err("published Mesh runtime secret store failed exact verification".to_owned());
+    }
+    Ok(())
+}
+
+fn prepare_mesh_runtime_state(stack_dir: &Path) -> Result<(), String> {
+    let state = mesh_runtime_state_dir(stack_dir)?;
+    fs::create_dir_all(&state)
+        .map_err(|err| format!("failed to create host-level Mesh runtime state: {err}"))?;
+    set_private_directory_permissions(&state)
+}
+
+fn run_mesh_compose(
+    stack_dir: &Path,
+    images: &BTreeMap<String, String>,
+    node_token: &str,
+    args: &[&str],
+) -> Result<(), String> {
+    validate_mesh_node_token(node_token)?;
+    let mut command = Command::new("docker");
+    command
+        .arg("compose")
+        .arg("-f")
+        .arg("docker-compose.yml")
+        .args(args)
+        .current_dir(stack_dir)
+        .env(
+            EDGE_GATEWAY_IMAGE_KEY,
+            images.get(EDGE_GATEWAY_IMAGE_KEY).unwrap(),
+        )
+        .env(
+            EDGE_WARP_EGRESS_IMAGE_KEY,
+            images.get(EDGE_WARP_EGRESS_IMAGE_KEY).unwrap(),
+        )
+        .env(
+            EDGE_MESH_IMAGE_KEY,
+            images.get(EDGE_MESH_IMAGE_KEY).unwrap(),
+        )
+        .env(MESH_NODE_TOKEN_KEY, node_token)
+        .env_remove("COMPOSE_FILE")
+        .env_remove("COMPOSE_PROFILES")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = command
+        .status()
+        .map_err(|err| format!("fixed Mesh compose operation could not start: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "fixed Mesh compose operation failed with exit_code={}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(())
+}
+
+fn mesh_exact_image_ready(expected: &str) -> bool {
+    bounded_command_output(
+        "docker",
+        &["inspect", "--format", "{{.Config.Image}}", MESH_CONTAINER],
+        6,
+    )
+    .is_some_and(|observed| observed.trim() == expected)
+}
+
+fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
+    let token_store_path = mesh_runtime_secret_path(stack_dir).ok();
+    let token_store_present = token_store_path.as_ref().is_some_and(|path| path.is_file());
+    let token_valid = read_mesh_node_token(stack_dir).is_ok();
+    let docker = inspect_docker();
+    let container_running = docker
+        .running_containers
+        .iter()
+        .any(|name| name == MESH_CONTAINER);
+    let expected_image = read_exact_image_environment(stack_dir)
+        .ok()
+        .and_then(|images| images.get(EDGE_MESH_IMAGE_KEY).cloned());
+    let exact_image_ready = container_running
+        && expected_image
+            .as_deref()
+            .is_some_and(mesh_exact_image_ready);
+    let runtime_ready = token_valid
+        && container_running
+        && exact_image_ready
+        && probe_mesh_runtime(&docker.running_containers);
+
+    let mut warnings = Vec::new();
+    if !token_store_present {
+        warnings.push("Mesh runtime token store is absent".to_owned());
+    } else if !token_valid {
+        warnings.push("Mesh runtime token store is invalid".to_owned());
+    }
+    if !container_running {
+        warnings.push("Mesh runtime container is not running".to_owned());
+    }
+    if container_running && !exact_image_ready {
+        warnings.push("Mesh runtime container does not use the exact accepted image".to_owned());
+    }
+    if container_running && exact_image_ready && !runtime_ready {
+        warnings.push("Mesh runtime datapath is not ready".to_owned());
+    }
+
+    MeshRuntimeState {
+        token_store_present,
+        container_running,
+        exact_image_ready,
+        runtime_ready,
+        warnings,
+    }
+}
+
+fn converge_mesh_runtime(stack_dir: &Path, node_token: &str) -> Result<MeshRuntimeState, String> {
+    validate_mesh_node_token(node_token)?;
+    let images = read_exact_image_environment(stack_dir)?;
+    prepare_mesh_runtime_state(stack_dir)?;
+    persist_mesh_node_token(stack_dir, node_token)?;
+    run_mesh_compose(
+        stack_dir,
+        &images,
+        node_token,
+        &["--profile", "mesh", "pull", "cloudflare-mesh"],
+    )?;
+    run_mesh_compose(
+        stack_dir,
+        &images,
+        node_token,
+        &[
+            "--profile",
+            "mesh",
+            "up",
+            "-d",
+            "--force-recreate",
+            "--no-deps",
+            "cloudflare-mesh",
+        ],
+    )?;
+
+    let mut last = inspect_mesh_runtime(stack_dir);
+    for _ in 0..45 {
+        if last.runtime_ready {
+            return Ok(last);
+        }
+        sleep(Duration::from_secs(2));
+        last = inspect_mesh_runtime(stack_dir);
+    }
+    Ok(last)
+}
+
+fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
+    if !inspect_docker().reachable {
+        return Err("Mesh runtime cleanup requires observable Docker state".to_owned());
+    }
+    let mutation = if mesh_container_present()? {
+        Some(
+            Command::new("docker")
+                .args(["rm", "-f", MESH_CONTAINER])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|err| format!("fixed Mesh container removal could not start: {err}"))?,
+        )
+    } else {
+        None
+    };
+
+    if mesh_container_present()? {
+        return Err(format!(
+            "Mesh runtime container remains present after one bounded removal attempt; exit_code={}",
+            mutation.and_then(|status| status.code()).unwrap_or(-1)
+        ));
+    }
+
+    let token_path = mesh_runtime_secret_path(stack_dir)?;
+    if token_path.exists() {
+        fs::remove_file(&token_path)
+            .map_err(|err| format!("failed to remove Mesh runtime token store: {err}"))?;
+    }
+    let state_dir = mesh_runtime_state_dir(stack_dir)?;
+    if state_dir.exists() {
+        fs::remove_dir_all(&state_dir)
+            .map_err(|err| format!("failed to remove Mesh runtime state: {err}"))?;
+    }
+
+    let state = inspect_mesh_runtime(stack_dir);
+    if state.token_store_present || state.container_running {
+        return Err("Mesh runtime cleanup did not converge to absence".to_owned());
+    }
+    Ok(state)
 }
 
 fn require_line2_policy(runtime: &BTreeMap<String, String>) -> Result<(), String> {
@@ -2865,6 +3156,61 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mesh_token_validation_is_closed_and_secret_safe() {
+        assert!(validate_mesh_node_token("opaque-token-value").is_ok());
+        assert!(validate_mesh_node_token("").is_err());
+        assert!(validate_mesh_node_token(" token").is_err());
+        assert!(validate_mesh_node_token("token\ninjected").is_err());
+        assert!(validate_mesh_node_token("token\rinjected").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mesh_token_store_is_host_level_private_and_not_release_local() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        persist_mesh_node_token(&stack, "opaque-token-value").unwrap();
+
+        let path = root.join("runtime-secrets/mesh-node-v1.env");
+        assert!(path.is_file());
+        assert!(!stack.join("runtime-secrets/mesh-node-v1.env").exists());
+        assert_eq!(read_mesh_node_token(&stack).unwrap(), "opaque-token-value");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mesh_state_is_host_level_across_release_swap_names() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let previous = root.join("stack.previous");
+        assert_eq!(
+            mesh_runtime_state_dir(&stack).unwrap(),
+            root.join("mesh-state")
+        );
+        assert_eq!(
+            mesh_runtime_state_dir(&previous).unwrap(),
+            root.join("mesh-state")
+        );
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

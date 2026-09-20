@@ -10,8 +10,9 @@ use edge_controller_core::application_lifecycle::{
 };
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
-    ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile, RollbackBundleRequest,
-    VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile,
+    MeshRuntimeConvergeRequest, MeshRuntimeState, RollbackBundleRequest, VerifyRuntimeRequest,
+    canonical_apply_bundle_digest,
 };
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
@@ -857,6 +858,40 @@ async fn verify_runtime_ready(
         .map_err(|err| format!("typed VerifyRuntime RPC failed: {err}"))?
         .into_inner();
     Ok(response.ready)
+}
+
+pub(crate) async fn converge_mesh_runtime_remote(
+    authority: &ApplicationAuthority,
+    node_token: String,
+) -> Result<MeshRuntimeState, String> {
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    client
+        .converge_mesh_runtime(Request::new(MeshRuntimeConvergeRequest { node_token }))
+        .await
+        .map_err(|err| format!("typed ConvergeMeshRuntime RPC failed: {err}"))
+        .map(|response| response.into_inner())
+}
+
+pub(crate) async fn verify_mesh_runtime_remote(
+    authority: &ApplicationAuthority,
+) -> Result<MeshRuntimeState, String> {
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    client
+        .verify_mesh_runtime(Request::new(edge_shared_types::Empty {}))
+        .await
+        .map_err(|err| format!("typed VerifyMeshRuntime RPC failed: {err}"))
+        .map(|response| response.into_inner())
+}
+
+pub(crate) async fn cleanup_mesh_runtime_remote(
+    authority: &ApplicationAuthority,
+) -> Result<MeshRuntimeState, String> {
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    client
+        .cleanup_mesh_runtime(Request::new(edge_shared_types::Empty {}))
+        .await
+        .map_err(|err| format!("typed CleanupMeshRuntime RPC failed: {err}"))
+        .map(|response| response.into_inner())
 }
 
 async fn connect_agent(
