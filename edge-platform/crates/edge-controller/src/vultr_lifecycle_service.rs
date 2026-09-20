@@ -2,6 +2,9 @@ use crate::vultr_lifecycle_adapter::{
     managed_provider_tags, normalize_vultr_inventory,
     normalize_vultr_inventory_with_firewall_profiles,
 };
+use edge_controller_core::lifecycle::{
+    AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
+};
 use edge_controller_core::vultr_lifecycle::{
     DesiredState, DestroyPlan, LifecycleInventory, MachinePlan, MachineSpec, PlanClass,
     authorize_destroy, destroy_plan, plan_all, plan_machine,
@@ -346,12 +349,35 @@ pub async fn build_destroy_plan_with_firewall_profiles<P: LifecycleProvider>(
     destroy_plan(desired, machine, &inventory, source_revision).map_err(|err| err.to_string())
 }
 
+pub fn authorize_vultr_destroy(
+    desired: &DesiredState,
+    machine_id: &str,
+    source_revision: &str,
+    inventory: &LifecycleInventory,
+    plan: DestroyPlan,
+) -> Result<AuthorizedPlan<DestroyPlan>, String> {
+    let desired_material = serde_json::json!({
+        "desired": desired,
+        "machine_id": machine_id,
+        "source_revision": source_revision,
+    });
+    authorize_plan(
+        "vultr_destroy",
+        &desired_material,
+        inventory,
+        plan,
+        PlanDisposition::Mutate,
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub async fn destroy_machine<P: LifecycleProvider>(
     provider: &mut P,
     desired: &DesiredState,
     machine_id: &str,
     source_revision: &str,
     authorized_digest: &str,
+    authorized_plan_digest: &str,
     policy: &LifecycleExecutionPolicy,
 ) -> Result<DestroyApplyReport, String> {
     let verified_firewall_profiles = BTreeMap::new();
@@ -361,6 +387,7 @@ pub async fn destroy_machine<P: LifecycleProvider>(
         machine_id,
         source_revision,
         authorized_digest,
+        authorized_plan_digest,
         policy,
         &verified_firewall_profiles,
     )
@@ -373,12 +400,19 @@ pub async fn destroy_machine_with_firewall_profiles<P: LifecycleProvider>(
     machine_id: &str,
     source_revision: &str,
     authorized_digest: &str,
+    authorized_plan_digest: &str,
     policy: &LifecycleExecutionPolicy,
     verified_firewall_profiles: &BTreeMap<String, String>,
 ) -> Result<DestroyApplyReport, String> {
     validate_policy(policy)?;
     let machine = machine_by_id(desired, machine_id)?;
     let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
+    let current_plan =
+        destroy_plan(desired, machine, &inventory, source_revision).map_err(|err| err.to_string())?;
+    let generic =
+        authorize_vultr_destroy(desired, machine_id, source_revision, &inventory, current_plan)?;
+    verify_exact_authority(authorized_plan_digest, &generic.authority)
+        .map_err(|err| err.to_string())?;
     let provider_id = authorize_destroy(
         desired,
         machine,
@@ -750,6 +784,31 @@ mod tests {
         }
     }
 
+    async fn destroy_authorities(
+        provider: &mut FakeProvider,
+        desired: &DesiredState,
+        machine_id: &str,
+        revision: &str,
+    ) -> (DestroyPlan, String) {
+        let plan = build_destroy_plan(provider, desired, machine_id, revision)
+            .await
+            .unwrap();
+        let inventory = observe_inventory(provider, desired, &BTreeMap::new())
+            .await
+            .unwrap();
+        let generic = authorize_vultr_destroy(
+            desired,
+            machine_id,
+            revision,
+            &inventory,
+            plan.clone(),
+        )
+        .unwrap()
+        .authority
+        .authority_digest;
+        (plan, generic)
+    }
+
     fn not_found_error() -> VultrError {
         VultrError {
             operation: "read Vultr instance",
@@ -890,23 +949,53 @@ mod tests {
             ..FakeProvider::default()
         };
         let revision = "350aca23473b71e4fab83f7c55abde90a6f5d307";
-        let plan = build_destroy_plan(&mut provider, &desired, "edge-1", revision)
-            .await
-            .unwrap();
+        let (plan, _) = destroy_authorities(&mut provider, &desired, "edge-1", revision).await;
 
         provider.instances[0].plan = "vc2-2c-4gb".to_owned();
+        let (_, current_authority) =
+            destroy_authorities(&mut provider, &desired, "edge-1", revision).await;
         let error = destroy_machine(
             &mut provider,
             &desired,
             "edge-1",
             revision,
             &plan.destroy_digest,
+            &current_authority,
             &test_policy(),
         )
         .await
         .unwrap_err();
 
         assert!(error.contains("destroy digest is stale"));
+        assert_eq!(provider.delete_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn stale_generic_destroy_authority_refuses_before_delete() {
+        let desired = desired();
+        let machine = &desired.machines[0];
+        let mut provider = FakeProvider {
+            instances: vec![instance_for_machine(&desired, machine, "instance-1")],
+            ..FakeProvider::default()
+        };
+        let revision = "350aca23473b71e4fab83f7c55abde90a6f5d307";
+        let (plan, authority) =
+            destroy_authorities(&mut provider, &desired, "edge-1", revision).await;
+
+        provider.instances[0].power_status = "stopped".to_owned();
+        let error = destroy_machine(
+            &mut provider,
+            &desired,
+            "edge-1",
+            revision,
+            &plan.destroy_digest,
+            &authority,
+            &test_policy(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("plan authority is stale"));
         assert_eq!(provider.delete_calls, 0);
     }
 
@@ -920,9 +1009,8 @@ mod tests {
             ..FakeProvider::default()
         };
         let revision = "350aca23473b71e4fab83f7c55abde90a6f5d307";
-        let plan = build_destroy_plan(&mut provider, &desired, "edge-1", revision)
-            .await
-            .unwrap();
+        let (plan, authority) =
+            destroy_authorities(&mut provider, &desired, "edge-1", revision).await;
 
         let report = destroy_machine(
             &mut provider,
@@ -930,6 +1018,7 @@ mod tests {
             "edge-1",
             revision,
             &plan.destroy_digest,
+            &authority,
             &test_policy(),
         )
         .await
@@ -951,9 +1040,8 @@ mod tests {
             ..FakeProvider::default()
         };
         let revision = "350aca23473b71e4fab83f7c55abde90a6f5d307";
-        let plan = build_destroy_plan(&mut provider, &desired, "edge-1", revision)
-            .await
-            .unwrap();
+        let (plan, authority) =
+            destroy_authorities(&mut provider, &desired, "edge-1", revision).await;
 
         let report = destroy_machine(
             &mut provider,
@@ -961,6 +1049,7 @@ mod tests {
             "edge-1",
             revision,
             &plan.destroy_digest,
+            &authority,
             &test_policy(),
         )
         .await
