@@ -2698,6 +2698,29 @@ mod tests {
     }
 
     #[test]
+    fn certificate_readiness_requires_complete_valid_material() {
+        let mut evidence = CertificateReadinessEvidence {
+            cert_present: true,
+            key_present: true,
+            key_nonempty: true,
+            cert_valid: false,
+            line1: Some(ContainerRuntimeEvidence {
+                present: true,
+                running: true,
+                exit_code: None,
+                runtime_error: None,
+                log_tail: Vec::new(),
+            }),
+            docker_observation_error: None,
+        };
+        assert!(!evidence.ready());
+
+        evidence.cert_valid = true;
+        assert!(evidence.ready());
+        assert!(evidence.summary().contains("running=true"));
+    }
+
+    #[test]
     fn runtime_policy_rejects_incomplete_or_shell_unsafe_values() {
         assert!(validate_runtime_policy_env("PROXY_USERNAME=acceptance\n").is_err());
         assert!(
