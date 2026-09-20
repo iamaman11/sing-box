@@ -535,7 +535,9 @@ fn observe_owned_windows_dns_adapter_indices() -> Result<Vec<u32>, String> {
             continue;
         }
         if result != 0 {
-            return Err(format!("GetAdaptersAddresses failed with Win32 error {result}"));
+            return Err(format!(
+                "GetAdaptersAddresses failed with Win32 error {result}"
+            ));
         }
 
         let mut owned_indices = Vec::new();
