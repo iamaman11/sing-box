@@ -36,6 +36,7 @@ pub struct ApplicationRuntimePolicy {
 pub struct Line1RuntimePolicy {
     pub tunnel_domain: String,
     pub acme_email: String,
+    pub acme_provider: String,
     pub reality_server_name: String,
 }
 
@@ -222,6 +223,7 @@ impl ApplicationRuntimePolicy {
         if let Some(line1) = self.line1.as_ref() {
             validate_runtime_dns_name("runtime_policy.line1.tunnel_domain", &line1.tunnel_domain)?;
             validate_runtime_public_value("runtime_policy.line1.acme_email", &line1.acme_email)?;
+            validate_acme_provider(&line1.acme_provider)?;
             validate_runtime_public_value(
                 "runtime_policy.line1.reality_server_name",
                 &line1.reality_server_name,
@@ -239,6 +241,19 @@ impl ApplicationRuntimePolicy {
         }
         Ok(())
     }
+}
+
+fn validate_acme_provider(value: &str) -> Result<(), ApplicationSpecError> {
+    const LETSENCRYPT_PRODUCTION: &str = "letsencrypt";
+    const LETSENCRYPT_STAGING: &str =
+        "https://acme-staging-v02.api.letsencrypt.org/directory";
+    if !matches!(value, LETSENCRYPT_PRODUCTION | LETSENCRYPT_STAGING) {
+        return Err(ApplicationSpecError::Validation(
+            "runtime_policy.line1.acme_provider must be letsencrypt or the exact Let’s Encrypt staging directory"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_runtime_dns_name(label: &str, value: &str) -> Result<(), ApplicationSpecError> {
@@ -639,6 +654,7 @@ mod tests {
         value.runtime_policy.line1 = Some(Line1RuntimePolicy {
             tunnel_domain: "edge.example.com".to_owned(),
             acme_email: "admin@example.com".to_owned(),
+            acme_provider: "letsencrypt".to_owned(),
             reality_server_name: "www.microsoft.com".to_owned(),
         });
         assert!(value.validate().is_err());
@@ -652,6 +668,13 @@ mod tests {
         assert!(value.validate().is_err());
         value.runtime_policy.line1.as_mut().unwrap().tunnel_domain = "edge.example.com".to_owned();
         assert!(value.validate().is_ok());
+
+        value.runtime_policy.line1.as_mut().unwrap().acme_provider =
+            "https://acme-staging-v02.api.letsencrypt.org/directory".to_owned();
+        assert!(value.validate().is_ok());
+        value.runtime_policy.line1.as_mut().unwrap().acme_provider =
+            "https://example.com/acme/directory".to_owned();
+        assert!(value.validate().is_err());
     }
 
     #[test]
