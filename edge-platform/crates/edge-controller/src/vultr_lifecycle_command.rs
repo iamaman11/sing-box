@@ -7,9 +7,8 @@ use crate::vultr_host_bootstrap::{
 use crate::vultr_lifecycle_service::{
     ApplyAction, ApplyReport, CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider,
     VultrApiProvider, apply_machine_with_firewall_profiles, authorize_vultr_destroy,
-    authorize_vultr_machine,
-    destroy_machine_with_firewall_profiles, inventory_desired_state_with_firewall_profiles,
-    plan_desired_state_with_firewall_profiles,
+    authorize_vultr_machine, destroy_machine_with_firewall_profiles,
+    inventory_desired_state_with_firewall_profiles, plan_desired_state_with_firewall_profiles,
 };
 use crate::vultr_support_resources::{
     FirewallProfileSet, ResolvedFirewallProfile, VultrSupportApiProvider,
@@ -17,9 +16,7 @@ use crate::vultr_support_resources::{
     observe_verified_firewall_bindings, release_controller_ipv4_access, resolve_managed_ssh_key,
     validate_machine_catalog,
 };
-use edge_controller_core::lifecycle::{
-    PlanDisposition, authorize_plan, verify_exact_authority,
-};
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan, verify_exact_authority};
 use edge_controller_core::vultr_lifecycle::{
     DesiredState, MANAGED_BY_IDENTITY, MachineSpec, PlanClass, decode_provider_tags, destroy_plan,
 };
@@ -137,9 +134,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         .plans
         .iter()
         .cloned()
-        .map(|plan| {
-            authorize_vultr_machine(&desired, &report.inventory, plan)
-        })
+        .map(|plan| authorize_vultr_machine(&desired, &report.inventory, plan))
         .collect::<Result<Vec<_>, _>>()?;
     print_json_value(serde_json::json!({
         "environment": report.environment,
@@ -251,8 +246,11 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         ));
     }
     if initial_class != PlanClass::UpdateInPlace {
-        let after_support_authorized =
-            authorize_vultr_machine(&desired, &after_support.inventory, after_support_plan.clone())?;
+        let after_support_authorized = authorize_vultr_machine(
+            &desired,
+            &after_support.inventory,
+            after_support_plan.clone(),
+        )?;
         verify_exact_authority(&args[2], &after_support_authorized.authority)
             .map_err(|err| err.to_string())?;
     }
