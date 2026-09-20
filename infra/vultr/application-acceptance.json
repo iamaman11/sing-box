@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "environment": "application-acceptance",
+  "machines": [
+    {
+      "id": "application-acceptance-1",
+      "role": "application-acceptance",
+      "provider": {
+        "region": "waw",
+        "plan": "vc2-1c-1gb",
+        "os_id": 2625,
+        "enable_ipv6": false,
+        "firewall_profile": "application-acceptance"
+      },
+      "bootstrap_profile": "singbox-host-v2",
+      "application_profiles": [
+        "application-acceptance"
+      ],
+      "tags": [
+        "disposable-application-acceptance"
+      ]
+    }
+  ]
+}
