@@ -186,6 +186,12 @@ jobs:
           application = json.loads(Path("infra/application/disposable-acceptance.json").read_text())
           assert application["bootstrap_mode"] == "full"
           assert application["runtime_policy"]["line1"]["acme_provider"] == "https://acme-staging-v02.api.letsencrypt.org/directory"
+          mesh = json.loads(Path("infra/cloudflare/application-acceptance-mesh.json").read_text())
+          account_id = mesh["account_id"]
+          assert len(account_id) == 32
+          assert all(ch in "0123456789abcdef" for ch in account_id)
+          workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
+          assert "CLOUDFLARE_ACCOUNT_ID" not in workflow
           PY
           if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-tunnel-edge' \
             win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
