@@ -580,7 +580,6 @@ fn normalize_vpc(value: VultrVpc) -> ObservedVpc {
 fn normalize_attachment(value: VultrVpcAttachment) -> ObservedVpcAttachment {
     ObservedVpcAttachment {
         attachment_id: value.id,
-        subscription_type: value.subscription_type,
         subscription_id: value.subscription_id,
         private_ipv4: value.private_ipv4,
     }
@@ -705,10 +704,7 @@ mod tests {
     fn fake_attachment(instance_id: &str) -> VultrVpcAttachment {
         VultrVpcAttachment {
             id: "attachment-1".to_owned(),
-            attachment_type: "instance".to_owned(),
-            mac_address: "00:11:22:33:44:55".to_owned(),
             private_ipv4: "10.0.4.2".to_owned(),
-            subscription_type: "instance".to_owned(),
             subscription_id: instance_id.to_owned(),
         }
     }
