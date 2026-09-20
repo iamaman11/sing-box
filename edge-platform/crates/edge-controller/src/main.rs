@@ -4210,6 +4210,28 @@ mod tests {
     }
 
     #[test]
+    fn typed_diagnostic_evidence_does_not_copy_legacy_detail() {
+        let mut check = DoctorCheck {
+            name: "server.edge_agent_reachable".to_owned(),
+            ok: false,
+            detail: "provider_token=super-secret arbitrary transport exception".to_owned(),
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
+        };
+
+        enrich_doctor_check(&mut check);
+
+        assert_eq!(check.check_id, "server.edge_agent_reachable");
+        assert_eq!(check.status, CheckStatus::Fail as i32);
+        assert_eq!(check.evidence.len(), 1);
+        assert_eq!(check.evidence[0].code, "server.edge_agent_reachable.fail");
+        assert!(!check.evidence[0].summary.contains("super-secret"));
+        assert!(!check.evidence[0].summary.contains("exception"));
+    }
+
+    #[test]
     fn formats_bootstrap_failure_message() {
         let message = format_bootstrap_failure(&BootstrapRuntimeResponse {
             success: false,
