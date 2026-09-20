@@ -128,6 +128,7 @@ impl VpcProvider for VultrVpcApiProvider {
 pub struct TargetInstance {
     pub provider_id: String,
     pub region: String,
+    pub main_ip: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -645,6 +646,7 @@ async fn resolve_exact_target_instance<P: VpcProvider>(
             matches.push(TargetInstance {
                 provider_id: instance.id,
                 region: instance.region,
+                main_ip: instance.main_ip,
             });
         }
     }
@@ -1129,6 +1131,7 @@ mod tests {
         let target = TargetInstance {
             provider_id: "instance-1".to_owned(),
             region: "waw".to_owned(),
+            main_ip: "203.0.113.10".to_owned(),
         };
         let mut attachments = vec![VultrVpcAttachment {
             id: "attachment-pending".to_owned(),
