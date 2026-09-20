@@ -264,10 +264,12 @@ pub async fn create_vpc_typed(
     let client = authorized_client(api_key)?;
     execute_json_once(
         "create Vultr VPC",
-        client.post(format!("{API_ROOT}/vpcs")).json(&CreateVpcPayload {
-            region: region.to_owned(),
-            description: description.to_owned(),
-        }),
+        client
+            .post(format!("{API_ROOT}/vpcs"))
+            .json(&CreateVpcPayload {
+                region: region.to_owned(),
+                description: description.to_owned(),
+            }),
         true,
     )
     .await
@@ -276,7 +278,10 @@ pub async fn create_vpc_typed(
 
 pub async fn destroy_vpc_typed(api_key: &str, vpc_id: &str) -> Result<(), VultrError> {
     if vpc_id.trim().is_empty() {
-        return Err(configuration_error("destroy Vultr VPC", "VPC id is required"));
+        return Err(configuration_error(
+            "destroy Vultr VPC",
+            "VPC id is required",
+        ));
     }
     let client = authorized_client(api_key)?;
     execute_empty_mutation_once(
@@ -1791,23 +1796,18 @@ mod tests {
         assert_eq!(vpc.v4_subnet, "10.0.4.0");
         assert_eq!(vpc.v4_subnet_mask, 24);
 
-        let attachments: ListVpcAttachmentsEnvelope =
-            serde_json::from_value(serde_json::json!({
-                "attachments": [{
-                    "id": "attachment-1",
-                    "type": "instance",
-                    "mac_address": "00:11:22:33:44:55",
-                    "ip": {"v4": "10.0.4.2"},
-                    "linked_subscription": {"type": "instance", "id": "instance-1"}
-                }]
-            }))
-            .unwrap();
-        let attachment: VultrVpcAttachment = attachments
-            .attachments
-            .into_iter()
-            .next()
-            .unwrap()
-            .into();
+        let attachments: ListVpcAttachmentsEnvelope = serde_json::from_value(serde_json::json!({
+            "attachments": [{
+                "id": "attachment-1",
+                "type": "instance",
+                "mac_address": "00:11:22:33:44:55",
+                "ip": {"v4": "10.0.4.2"},
+                "linked_subscription": {"type": "instance", "id": "instance-1"}
+            }]
+        }))
+        .unwrap();
+        let attachment: VultrVpcAttachment =
+            attachments.attachments.into_iter().next().unwrap().into();
         assert_eq!(attachment.private_ipv4, "10.0.4.2");
         assert_eq!(attachment.subscription_id, "instance-1");
     }
