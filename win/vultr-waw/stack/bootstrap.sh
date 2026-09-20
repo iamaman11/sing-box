@@ -19,7 +19,7 @@ source ./.env.runtime
 source ./.images.env
 set +a
 
-mkdir -p certs rendered warp-state mesh-state tunnel-state
+mkdir -p certs rendered warp-state mesh-state ../certificate-state
 
 validate_tunnel_domain() {
   local value="${TUNNEL_DOMAIN:-}"
@@ -41,7 +41,7 @@ validate_tunnel_domain() {
 }
 
 acme_certificate_dir() {
-  printf 'tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory/%s' "${TUNNEL_DOMAIN}"
+  printf '../certificate-state/acme/certificates/acme-v02.api.letsencrypt.org-directory/%s' "${TUNNEL_DOMAIN}"
 }
 
 wait_for_owned_certificate() {
