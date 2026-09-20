@@ -4,7 +4,8 @@ use edge_controller_core::cloudflare_mesh_lifecycle::{
 };
 use edge_provider_cloudflare::{
     CloudflareMeshNode, CloudflareMeshRoute, create_mesh_cidr_route, create_mesh_node,
-    delete_mesh_cidr_route, delete_mesh_node, list_mesh_nodes, list_mesh_routes,
+    delete_mesh_cidr_route, delete_mesh_node, get_mesh_node_token, list_mesh_nodes,
+    list_mesh_routes,
 };
 use std::time::Duration;
 use tokio::time::sleep;
@@ -51,6 +52,7 @@ pub trait MeshProvider {
     ) -> Result<CloudflareMeshRoute, String>;
     async fn delete_route(&mut self, route_id: &str) -> Result<(), String>;
     async fn delete_node(&mut self, node_id: &str) -> Result<(), String>;
+    async fn get_node_token(&mut self, node_id: &str) -> Result<String, String>;
 }
 
 pub struct CloudflareMeshApiProvider {
@@ -108,6 +110,10 @@ impl MeshProvider for CloudflareMeshApiProvider {
 
     async fn delete_node(&mut self, node_id: &str) -> Result<(), String> {
         delete_mesh_node(&self.api_token, &self.account_id, node_id).await
+    }
+
+    async fn get_node_token(&mut self, node_id: &str) -> Result<String, String> {
+        get_mesh_node_token(&self.api_token, &self.account_id, node_id).await
     }
 }
 
@@ -179,6 +185,63 @@ pub async fn apply_mesh_once<P: MeshProvider>(
             .await
         }
     }
+}
+
+pub async fn exact_mesh_node_token<P: MeshProvider>(
+    provider: &mut P,
+    desired: &DesiredMeshState,
+) -> Result<String, String> {
+    let (observed, plan) = plan_mesh_apply(provider, desired).await?;
+    if plan.action != ApplyAction::Noop {
+        return Err(format!(
+            "Mesh runtime token requires provider desired state NOOP; observed {:?}",
+            plan.action
+        ));
+    }
+    let [node] = observed.nodes.as_slice() else {
+        return Err("Mesh runtime token requires exactly one observed provider node".to_owned());
+    };
+    let token = provider.get_node_token(&node.provider_id).await?;
+    if token.is_empty()
+        || token.len() > 16 * 1024
+        || token.trim() != token
+        || token.bytes().any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+    {
+        return Err("Cloudflare Mesh node token has an invalid bounded shape".to_owned());
+    }
+    Ok(token)
+}
+
+pub async fn wait_mesh_provider_healthy<P: MeshProvider>(
+    provider: &mut P,
+    desired: &DesiredMeshState,
+    policy: MeshExecutionPolicy,
+) -> Result<MeshObservation, String> {
+    validate_policy(policy)?;
+    let mut last_status = None;
+    for attempt in 0..policy.reobserve_attempts {
+        let (observed, plan) = plan_mesh_apply(provider, desired).await?;
+        if plan.action != ApplyAction::Noop {
+            return Err(format!(
+                "Mesh provider desired state drifted while waiting for health: {:?}",
+                plan.action
+            ));
+        }
+        let [node] = observed.nodes.as_slice() else {
+            return Err("Mesh provider health requires exactly one observed node".to_owned());
+        };
+        if node.status.as_deref() == Some("healthy") {
+            return Ok(observed);
+        }
+        last_status = node.status.clone();
+        if attempt + 1 < policy.reobserve_attempts {
+            sleep(policy.reobserve_delay).await;
+        }
+    }
+    Err(format!(
+        "Cloudflare Mesh node did not become healthy after bounded re-observation; last_status={}",
+        last_status.as_deref().unwrap_or("missing")
+    ))
 }
 
 pub async fn plan_mesh_cleanup<P: MeshProvider>(
@@ -423,6 +486,14 @@ mod tests {
             self.nodes.retain(|node| node.id != node_id);
             Ok(())
         }
+
+        async fn get_node_token(&mut self, node_id: &str) -> Result<String, String> {
+            if self.nodes.iter().any(|node| node.id == node_id) {
+                Ok("opaque-mesh-node-token".to_owned())
+            } else {
+                Err("node is absent".to_owned())
+            }
+        }
     }
 
     fn desired(routes: &[&str]) -> DesiredMeshState {
@@ -495,6 +566,53 @@ mod tests {
             }
         );
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
+    }
+
+    #[tokio::test]
+    async fn token_is_available_only_for_exact_noop_provider_state() {
+        let mut provider = FakeProvider {
+            nodes: vec![CloudflareMeshNode {
+                id: "node-1".to_owned(),
+                name: "singbox-line3-poc".to_owned(),
+                status: Some("healthy".to_owned()),
+            }],
+            ..FakeProvider::default()
+        };
+        assert_eq!(
+            exact_mesh_node_token(&mut provider, &desired(&[]))
+                .await
+                .unwrap(),
+            "opaque-mesh-node-token"
+        );
+
+        let mut missing = FakeProvider::default();
+        assert!(
+            exact_mesh_node_token(&mut missing, &desired(&[]))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_health_requires_healthy_status_and_no_drift() {
+        let mut provider = FakeProvider {
+            nodes: vec![CloudflareMeshNode {
+                id: "node-1".to_owned(),
+                name: "singbox-line3-poc".to_owned(),
+                status: Some("healthy".to_owned()),
+            }],
+            ..FakeProvider::default()
+        };
+        wait_mesh_provider_healthy(&mut provider, &desired(&[]), policy())
+            .await
+            .unwrap();
+
+        provider.nodes[0].status = Some("degraded".to_owned());
+        assert!(
+            wait_mesh_provider_healthy(&mut provider, &desired(&[]), policy())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
