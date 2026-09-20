@@ -1279,7 +1279,7 @@ fn valid_certificate_domain(value: &str) -> bool {
                 && label.len() <= 63
                 && label
                     .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
                 && !label.starts_with('-')
                 && !label.ends_with('-')
         })
