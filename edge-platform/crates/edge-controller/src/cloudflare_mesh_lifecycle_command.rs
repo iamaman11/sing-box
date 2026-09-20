@@ -1,6 +1,11 @@
+use crate::application_lifecycle_command::resolve_application_authority_from_spec;
+use crate::application_lifecycle_service::{
+    cleanup_mesh_runtime_remote, converge_mesh_runtime_remote, verify_mesh_runtime_remote,
+};
 use crate::cloudflare_mesh_lifecycle_service::{
     CloudflareMeshApiProvider, MeshExecutionPolicy, apply_mesh_once, cleanup_mesh_once,
-    observe_mesh, plan_mesh_apply, plan_mesh_cleanup,
+    exact_mesh_node_token, observe_mesh, plan_mesh_apply, plan_mesh_cleanup,
+    wait_mesh_provider_healthy,
 };
 use edge_controller_core::cloudflare_mesh_lifecycle::DesiredMeshState;
 use std::env;
@@ -15,6 +20,9 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         "apply" => run_apply(&args[1..]).await,
         "cleanup-plan" => run_cleanup_plan(&args[1..]).await,
         "cleanup-apply" => run_cleanup_apply(&args[1..]).await,
+        "runtime-apply" => run_runtime_apply(&args[1..]).await,
+        "runtime-verify" => run_runtime_verify(&args[1..]).await,
+        "runtime-cleanup" => run_runtime_cleanup(&args[1..]).await,
         _ => Err(usage()),
     }
 }
@@ -95,6 +103,83 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
     }))
 }
 
+async fn run_runtime_apply(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller line3-mesh runtime-apply <mesh-spec-path> <application-spec-path>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired(Path::new(&args[0]))?;
+    let mut provider = provider_from_env(&desired)?;
+    let node_token = exact_mesh_node_token(&mut provider, &desired).await?;
+    let authority = resolve_application_authority_from_spec(Path::new(&args[1])).await?;
+    let state = converge_mesh_runtime_remote(&authority, node_token).await?;
+    if !state.runtime_ready {
+        return Err(format!(
+            "Mesh runtime convergence completed without READY: {}",
+            state.warnings.join("; ")
+        ));
+    }
+    let provider_observation =
+        wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    print_mesh_runtime_result("READY", &state, Some(provider_observation))
+}
+
+async fn run_runtime_verify(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired(Path::new(&args[0]))?;
+    let mut provider = provider_from_env(&desired)?;
+    let provider_observation =
+        wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    let authority = resolve_application_authority_from_spec(Path::new(&args[1])).await?;
+    let state = verify_mesh_runtime_remote(&authority).await?;
+    if !state.runtime_ready {
+        return Err(format!(
+            "Mesh runtime verify did not observe READY: {}",
+            state.warnings.join("; ")
+        ));
+    }
+    print_mesh_runtime_result("PASS", &state, Some(provider_observation))
+}
+
+async fn run_runtime_cleanup(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err(
+            "usage: edge-controller line3-mesh runtime-cleanup <application-spec-path>".to_owned(),
+        );
+    }
+    let authority = resolve_application_authority_from_spec(Path::new(&args[0])).await?;
+    let state = cleanup_mesh_runtime_remote(&authority).await?;
+    if state.token_store_present || state.container_running {
+        return Err("Mesh runtime cleanup did not observe exact absence".to_owned());
+    }
+    print_mesh_runtime_result("ABSENT", &state, None)
+}
+
+fn print_mesh_runtime_result(
+    status: &str,
+    state: &edge_shared_types::MeshRuntimeState,
+    provider_observation: Option<edge_controller_core::cloudflare_mesh_lifecycle::MeshObservation>,
+) -> Result<(), String> {
+    print_json(serde_json::json!({
+        "status": status,
+        "runtime": {
+            "token_store_present": state.token_store_present,
+            "container_running": state.container_running,
+            "exact_image_ready": state.exact_image_ready,
+            "runtime_ready": state.runtime_ready,
+            "warnings": state.warnings,
+        },
+        "provider_observation": provider_observation,
+    }))
+}
+
 fn load_desired(path: &Path) -> Result<DesiredMeshState, String> {
     let raw = fs::read_to_string(path).map_err(|err| {
         format!(
@@ -126,6 +211,9 @@ fn usage() -> String {
         "  edge-controller line3-mesh apply <spec-path>",
         "  edge-controller line3-mesh cleanup-plan <spec-path>",
         "  edge-controller line3-mesh cleanup-apply <spec-path> <destructive-digest>",
+        "  edge-controller line3-mesh runtime-apply <mesh-spec-path> <application-spec-path>",
+        "  edge-controller line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>",
+        "  edge-controller line3-mesh runtime-cleanup <application-spec-path>",
     ]
     .join("\n")
 }
@@ -139,6 +227,9 @@ mod tests {
         let text = usage();
         assert!(text.contains("line3-mesh plan"));
         assert!(text.contains("line3-mesh cleanup-apply"));
+        assert!(text.contains("line3-mesh runtime-apply"));
+        assert!(text.contains("line3-mesh runtime-verify"));
+        assert!(text.contains("line3-mesh runtime-cleanup"));
         assert!(!text.contains("node-id"));
         assert!(!text.contains("route-id"));
         assert!(!text.contains("token"));
