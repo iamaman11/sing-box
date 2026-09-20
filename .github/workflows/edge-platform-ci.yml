@@ -87,7 +87,7 @@ jobs:
           MESH_NODE_TOKEN: ci-placeholder
         run: |
           set -euo pipefail
-          bash -n win/vultr-waw/stack/bootstrap.sh
+          test ! -e win/vultr-waw/stack/bootstrap.sh
           grep -Fq "DOCKER_ENGINE_VERSION='@@DOCKER_ENGINE_VERSION@@'" win/vultr-waw/cloud-init.yaml
           grep -Fq "CONTAINERD_VERSION='@@CONTAINERD_VERSION@@'" win/vultr-waw/cloud-init.yaml
           grep -Fq "COMPOSE_VERSION='@@COMPOSE_VERSION@@'" win/vultr-waw/cloud-init.yaml
@@ -163,13 +163,14 @@ jobs:
           assert "./tunnel-state:/var/lib/sing-box" not in compose
           assert "./certs/proxy.crt:/certs/proxy.crt:ro" not in compose
           assert "./certs/proxy.key:/certs/proxy.key:ro" not in compose
-          bootstrap = (root / "bootstrap.sh").read_text()
-          assert "Seed edge-platform/.runtime/cert-cache/acme" not in bootstrap
-          assert "ACME certificate cache is missing" not in bootstrap
-          assert 'install -m 0644 "$acme_cert" certs/proxy.crt' not in bootstrap
-          assert bootstrap.index("start_tunnels") < bootstrap.rindex("start_line2")
+          agent = Path("edge-platform/crates/edge-agent/src/main.rs").read_text()
+          assert 'stack_dir.join("bootstrap.sh")' not in agent
+          assert "Command::new(&script)" not in agent
+          workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
+          assert "CLOUDFLARE_MESH_IMAGE=%s" in workflow
+          assert 'mesh_image="${EDGE_MESH_IMAGE}"' in workflow
           PY
-          if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-edge-gateway|vultr-tunnel-edge' \
+          if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-tunnel-edge' \
             win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
             echo "legacy six-service topology identifiers are forbidden" >&2
             exit 1
