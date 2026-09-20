@@ -352,6 +352,14 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Emit exact bootstrapped Cargo lock
+        working-directory: edge-platform
+        shell: bash
+        run: |
+          printf '%s\n' 'CARGO_LOCK_BASE64_BEGIN'
+          base64 -w0 Cargo.lock
+          printf '\n%s\n' 'CARGO_LOCK_BASE64_END'
+
       - name: Stop temporary lock bootstrap candidate
         shell: bash
         run: |
