@@ -120,6 +120,7 @@ pub struct LifecyclePlanReport {
     pub environment: String,
     pub desired_state_digest: String,
     pub plans: Vec<MachinePlan>,
+    pub inventory: LifecycleInventory,
     pub orphaned_managed_provider_ids: Vec<String>,
 }
 
@@ -195,7 +196,8 @@ pub async fn plan_desired_state_with_firewall_profiles<P: LifecycleProvider>(
         environment: desired.environment.clone(),
         desired_state_digest: desired.digest().map_err(|err| err.to_string())?,
         plans,
-        orphaned_managed_provider_ids: inventory.orphaned_managed_provider_ids,
+        orphaned_managed_provider_ids: inventory.orphaned_managed_provider_ids.clone(),
+        inventory,
     })
 }
 

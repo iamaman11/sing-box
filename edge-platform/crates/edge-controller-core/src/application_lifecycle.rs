@@ -83,7 +83,7 @@ pub struct PublishedApplicationRelease {
     pub bootstrap_mode: ApplicationBootstrapMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ApplicationObservation {
     pub observed_agent_sha256: Option<String>,
     pub observed_bundle_digest: Option<String>,

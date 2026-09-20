@@ -13,6 +13,7 @@ use crate::vultr_lifecycle_service::plan_desired_state_with_firewall_profiles;
 use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationPlanClass, DesiredApplicationState, plan_application,
 };
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use edge_controller_core::vultr_lifecycle::PlanClass;
 use edge_provider_vultr::get_instance_typed;
 use serde_json::json;
@@ -49,9 +50,29 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         &observation,
     )
     .map_err(|err| err.to_string())?;
+    let disposition = match plan.class {
+        ApplicationPlanClass::Noop => PlanDisposition::Noop,
+        ApplicationPlanClass::Apply | ApplicationPlanClass::Upgrade => PlanDisposition::Mutate,
+        ApplicationPlanClass::Blocked => PlanDisposition::Blocked,
+    };
+    let desired_material = json!({
+        "desired": &desired,
+        "artifact": &artifact,
+        "bundle_digest": &prepared.release.bundle_digest,
+    });
+    let authorized = authorize_plan(
+        "application",
+        &desired_material,
+        &observation,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
 
     print_json(json!({
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "observation": ApplicationObservationView::from(&observation),
         "mutations_performed": 0
     }))
@@ -89,9 +110,31 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
     let authority = resolve_application_authority(&desired).await?;
     let (plan, observation) = verify_desired(&authority, &desired, &artifact, &prepared).await?;
     let healthy = plan.class == ApplicationPlanClass::Noop;
+    let disposition = if healthy {
+        PlanDisposition::Noop
+    } else if plan.class == ApplicationPlanClass::Blocked {
+        PlanDisposition::Blocked
+    } else {
+        PlanDisposition::Mutate
+    };
+    let desired_material = json!({
+        "desired": &desired,
+        "artifact": &artifact,
+        "bundle_digest": &prepared.release.bundle_digest,
+    });
+    let authorized = authorize_plan(
+        "application",
+        &desired_material,
+        &observation,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(json!({
         "status": if healthy { "PASS" } else { "FAIL" },
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "observation": observation,
         "mutations_performed": 0
     }))?;

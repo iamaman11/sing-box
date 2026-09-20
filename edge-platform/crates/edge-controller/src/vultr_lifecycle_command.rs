@@ -5,8 +5,8 @@ use crate::vultr_host_bootstrap::{
 };
 use crate::vultr_lifecycle_service::{
     CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider, VultrApiProvider,
-    apply_machine_with_firewall_profiles, build_destroy_plan_with_firewall_profiles,
-    destroy_machine_with_firewall_profiles, inventory_desired_state_with_firewall_profiles,
+    apply_machine_with_firewall_profiles, destroy_machine_with_firewall_profiles,
+    inventory_desired_state_with_firewall_profiles,
     plan_desired_state_with_firewall_profiles,
 };
 use crate::vultr_support_resources::{
@@ -15,8 +15,9 @@ use crate::vultr_support_resources::{
     observe_verified_firewall_bindings, release_controller_ipv4_access, resolve_managed_ssh_key,
     validate_machine_catalog,
 };
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use edge_controller_core::vultr_lifecycle::{
-    DesiredState, MANAGED_BY_IDENTITY, MachineSpec, PlanClass, decode_provider_tags,
+    DesiredState, MANAGED_BY_IDENTITY, MachineSpec, PlanClass, decode_provider_tags, destroy_plan,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -127,10 +128,34 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         &verified_firewalls,
     )
     .await?;
+    let authorized_plans = report
+        .plans
+        .iter()
+        .cloned()
+        .map(|plan| {
+            let disposition = match plan.class {
+                PlanClass::Noop => PlanDisposition::Noop,
+                PlanClass::Create => PlanDisposition::Mutate,
+                PlanClass::UpdateInPlace
+                | PlanClass::ReplaceRequired
+                | PlanClass::BlockedDrift
+                | PlanClass::BlockedAmbiguous => PlanDisposition::Blocked,
+            };
+            authorize_plan(
+                "vultr_machine",
+                &desired,
+                &report.inventory,
+                plan,
+                disposition,
+            )
+            .map_err(|err| err.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     print_json_value(serde_json::json!({
         "environment": report.environment,
         "desired_state_digest": report.desired_state_digest,
         "plans": report.plans,
+        "authorized_plans": authorized_plans,
         "orphaned_managed_provider_ids": report.orphaned_managed_provider_ids,
     }))
 }
@@ -577,16 +602,47 @@ async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
     let mut support_provider = support_provider_from_env()?;
     let verified_firewalls =
         verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
-    let plan = build_destroy_plan_with_firewall_profiles(
+    let inventory = inventory_desired_state_with_firewall_profiles(
         &mut lifecycle_provider,
         &desired,
-        &args[1],
-        &args[2],
         &verified_firewalls,
     )
     .await?;
-    let value = serde_json::to_value(&plan)
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == args[1])
+        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+    let plan = destroy_plan(&desired, machine, &inventory, &args[2])
+        .map_err(|err| err.to_string())?;
+    let desired_material = serde_json::json!({
+        "desired": &desired,
+        "machine_id": &args[1],
+        "source_revision": &args[2],
+    });
+    let authorized = authorize_plan(
+        "vultr_destroy",
+        &desired_material,
+        &inventory,
+        plan.clone(),
+        PlanDisposition::Mutate,
+    )
+    .map_err(|err| err.to_string())?;
+    let mut value = serde_json::to_value(&plan)
         .map_err(|err| format!("failed to serialize destroy plan: {err}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "destroy plan serialization must be a JSON object".to_owned())?;
+    object.insert(
+        "plan_authority".to_owned(),
+        serde_json::to_value(&authorized.authority)
+            .map_err(|err| format!("failed to serialize plan authority: {err}"))?,
+    );
+    object.insert(
+        "plan_disposition".to_owned(),
+        serde_json::to_value(authorized.disposition)
+            .map_err(|err| format!("failed to serialize plan disposition: {err}"))?,
+    );
     print_json_value(value)
 }
 

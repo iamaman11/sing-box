@@ -15,7 +15,7 @@ enum CheckStatus {
 
 enum DiagnosticSubsystem {
   DIAGNOSTIC_SUBSYSTEM_UNSPECIFIED = 0;
-  STATE = 1;
+  DIAGNOSTIC_STATE = 1;
   PROVIDER = 2;
   SERVER_RUNTIME = 3;
   LOCAL_RUNTIME = 4;

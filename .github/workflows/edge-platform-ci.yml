@@ -307,6 +307,14 @@ jobs:
           assert "PLAN_AUTHORITY_SCHEMA" in lifecycle_core
           assert "verify_exact_authority" in lifecycle_core
           assert "PlanDisposition::Noop" in lifecycle_core
+          application_command = Path("edge-platform/crates/edge-controller/src/application_lifecycle_command.rs").read_text()
+          dns_command = Path("edge-platform/crates/edge-controller/src/cloudflare_dns_lifecycle_command.rs").read_text()
+          vpc_command_authority = Path("edge-platform/crates/edge-controller/src/vultr_vpc_lifecycle_command.rs").read_text()
+          vultr_command_authority = Path("edge-platform/crates/edge-controller/src/vultr_lifecycle_command.rs").read_text()
+          for planner in [application_command, dns_command, mesh_command, vpc_command_authority, vultr_command_authority]:
+              assert "plan_authority" in planner
+              assert "authorize_plan(" in planner
+          assert '".destroy_digest // empty' in Path(".github/workflows/vultr-lifecycle.yml").read_text()
           for process_root in [controller_main, console_main, agent_main]:
               assert "env::args()" not in process_root
               assert "_ARG_INDEX" not in process_root

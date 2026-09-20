@@ -9,7 +9,11 @@ use crate::cloudflare_mesh_lifecycle_service::{
     wait_mesh_provider_healthy,
 };
 use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
-use edge_controller_core::cloudflare_mesh_lifecycle::{DesiredMeshState, MeshRouteSpec};
+use edge_controller_core::cloudflare_mesh_lifecycle::{
+    ApplyAction as MeshApplyAction, CleanupAction as MeshCleanupAction, DesiredMeshState,
+    MeshRouteSpec,
+};
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::Ipv4NetworkObservation;
 use serde::Serialize;
@@ -57,9 +61,24 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
+    let disposition = if matches!(plan.action, MeshApplyAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let authorized = authorize_plan(
+        "cloudflare_mesh_apply",
+        &desired,
+        &observed,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
     }))
 }
 
@@ -92,10 +111,25 @@ async fn run_vpc_plan(args: &[String]) -> Result<(), String> {
     .await?;
     let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
+    let disposition = if matches!(plan.action, MeshApplyAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let authorized = authorize_plan(
+        "cloudflare_mesh_apply",
+        &desired,
+        &observed,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "guest_vpc": guest_vpc,
         "observation": observed,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
     }))
 }
 
@@ -129,9 +163,24 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
     let (observed, plan) = plan_mesh_cleanup(&mut provider, &desired).await?;
+    let disposition = if matches!(plan.action, MeshCleanupAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let authorized = authorize_plan(
+        "cloudflare_mesh_cleanup",
+        &desired,
+        &observed,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
     }))
 }
 

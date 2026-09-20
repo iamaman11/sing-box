@@ -3,7 +3,10 @@ use crate::vultr_vpc_lifecycle_service::{
     cleanup_vpc_once, observe_vpc, plan_vpc, plan_vpc_attachment, plan_vpc_cleanup,
     verify_vpc_ready,
 };
-use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
+use edge_controller_core::vultr_vpc_lifecycle::{
+    AttachmentAction, CleanupAction, DesiredVpcState, VpcApplyAction,
+};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -38,9 +41,24 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let desired = one_spec_arg(args, "plan")?;
     let mut provider = provider_from_env()?;
     let (observation, plan) = plan_vpc(&mut provider, &desired).await?;
+    let disposition = if matches!(plan.action, VpcApplyAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let authorized = authorize_plan(
+        "vultr_vpc_apply",
+        &desired,
+        &observation,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "observation": observation,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "mutations_performed": 0,
     }))
 }
@@ -57,11 +75,34 @@ async fn run_attachment_plan(args: &[String]) -> Result<(), String> {
     let mut provider = provider_from_env()?;
     let (target, observation, attachments, plan) =
         plan_vpc_attachment(&mut provider, &desired).await?;
+    let disposition = if matches!(plan.action, AttachmentAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let desired_material = serde_json::json!({
+        "desired": &desired,
+        "target_provider_id": &target.provider_id,
+    });
+    let observed_material = serde_json::json!({
+        "vpc": &observation,
+        "attachments": &attachments,
+    });
+    let authorized = authorize_plan(
+        "vultr_vpc_attachment",
+        &desired_material,
+        &observed_material,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "target": target,
         "observation": observation,
         "attachments": attachments,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "mutations_performed": 0,
     }))
 }
@@ -85,10 +126,29 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     let desired = one_spec_arg(args, "cleanup-plan")?;
     let mut provider = provider_from_env()?;
     let (observation, attachments, plan) = plan_vpc_cleanup(&mut provider, &desired).await?;
+    let disposition = if matches!(plan.action, CleanupAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let observed_material = serde_json::json!({
+        "vpc": &observation,
+        "attachments": &attachments,
+    });
+    let authorized = authorize_plan(
+        "vultr_vpc_cleanup",
+        &desired,
+        &observed_material,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "observation": observation,
         "attachments": attachments,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "mutations_performed": 0,
     }))
 }

@@ -2,7 +2,8 @@ use crate::cloudflare_dns_lifecycle_service::{
     CloudflareDnsApiProvider, DnsExecutionPolicy, apply_dns_once, cleanup_dns_once, observe_dns,
     plan_dns_apply, plan_dns_cleanup,
 };
-use edge_controller_core::cloudflare_dns_lifecycle::DesiredDnsState;
+use edge_controller_core::cloudflare_dns_lifecycle::{ApplyAction, CleanupAction, DesiredDnsState};
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -42,9 +43,28 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
     let (observed, plan) = plan_dns_apply(&mut provider, &desired, &args[1]).await?;
+    let disposition = if matches!(plan.action, ApplyAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let desired_material = serde_json::json!({
+        "desired": &desired,
+        "target_ipv4": &args[1],
+    });
+    let authorized = authorize_plan(
+        "cloudflare_dns_apply",
+        &desired_material,
+        &observed,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "mutations_performed": 0,
     }))
 }
@@ -78,9 +98,24 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
     let (observed, plan) = plan_dns_cleanup(&mut provider, &desired).await?;
+    let disposition = if matches!(plan.action, CleanupAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let authorized = authorize_plan(
+        "cloudflare_dns_cleanup",
+        &desired,
+        &observed,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(serde_json::json!({
         "observation": observed,
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "mutations_performed": 0,
     }))
 }

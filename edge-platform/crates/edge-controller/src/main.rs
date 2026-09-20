@@ -2436,7 +2436,7 @@ fn enrich_doctor_check(check: &mut DoctorCheck) {
 
 fn diagnostic_subsystem(check_id: &str) -> DiagnosticSubsystem {
     if check_id.starts_with("state.") {
-        DiagnosticSubsystem::State
+        DiagnosticSubsystem::DiagnosticState
     } else if check_id.starts_with("server.") {
         DiagnosticSubsystem::ServerRuntime
     } else if check_id.starts_with("local.") {
