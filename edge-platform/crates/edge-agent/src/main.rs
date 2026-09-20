@@ -3257,10 +3257,8 @@ mod tests {
             "acme-v02.api.letsencrypt.org-directory"
         );
         assert_eq!(
-            acme_provider_storage_dir(
-                "https://acme-staging-v02.api.letsencrypt.org/directory"
-            )
-            .unwrap(),
+            acme_provider_storage_dir("https://acme-staging-v02.api.letsencrypt.org/directory")
+                .unwrap(),
             "acme-staging-v02.api.letsencrypt.org-directory"
         );
         assert!(acme_provider_storage_dir("https://unexpected.example/directory").is_err());
