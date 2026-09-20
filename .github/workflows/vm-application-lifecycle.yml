@@ -1,27 +1,17 @@
 name: VM Application Lifecycle
 
 on:
-  issue_comment:
-    types: [created]
+  workflow_call:
+    inputs:
+      command_body:
+        description: Authorized /application command from the control-plane router
+        required: true
+        type: string
 
 permissions: {}
 
-concurrency:
-  group: vultr-control-plane-production
-  cancel-in-progress: false
-  queue: max
-
 jobs:
   authorize:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.repository == 'iamaman11/sing-box' &&
-      github.repository_id == '1221750822' &&
-      github.event.issue.number == 1 &&
-      !github.event.issue.pull_request &&
-      github.actor_id == '44100369' &&
-      github.run_attempt == 1 &&
-      startsWith(github.event.comment.body, '/application ')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -34,7 +24,7 @@ jobs:
         id: parse
         shell: bash
         env:
-          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_BODY: ${{ inputs.command_body }}
         run: |
           set -euo pipefail
           python3 <<'PY'
@@ -124,6 +114,9 @@ jobs:
 
   execute:
     needs: [authorize, verify]
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
     if: needs.authorize.outputs.operation != 'acceptance'
     runs-on: ubuntu-24.04
     environment:
@@ -334,6 +327,9 @@ jobs:
 
   acceptance:
     needs: [authorize, verify]
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
     if: needs.authorize.outputs.operation == 'acceptance'
     runs-on: ubuntu-24.04
     environment:
