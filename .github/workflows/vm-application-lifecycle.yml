@@ -250,7 +250,13 @@ jobs:
             if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
               return 0
             fi
-            "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}"               | tee "${access_release}"
+            local release_plan="${RUNNER_TEMP}/application-access-release-plan.json"
+            local release_authority
+            "${bin}" vultr-lifecycle release-access-plan "${vultr_spec}" "${machine}" > "${release_plan}"
+            release_authority="$(jq -er '.plan_authority.authority_digest' "${release_plan}")"
+            [[ "${release_authority}" =~ ^[0-9a-f]{64}$ ]]
+            "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" "${release_authority}" \
+              | tee "${access_release}"
           }
 
           finish() {
@@ -272,7 +278,12 @@ jobs:
           trap finish EXIT
           ACCESS_CLEANUP_ARMED=1
 
-          "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}"             | tee "${access_acquire}"
+          access_acquire_plan="${RUNNER_TEMP}/application-access-acquire-plan.json"
+          "${bin}" vultr-lifecycle acquire-access-plan "${vultr_spec}" "${machine}" > "${access_acquire_plan}"
+          access_acquire_authority="$(jq -er '.plan_authority.authority_digest' "${access_acquire_plan}")"
+          [[ "${access_acquire_authority}" =~ ^[0-9a-f]{64}$ ]]
+          "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}" "${access_acquire_authority}" \
+            | tee "${access_acquire}"
 
           case "${REQUESTED_OPERATION}" in
             plan|verify)
@@ -549,8 +560,16 @@ jobs:
             cleanup_mesh_provider
             cleanup_dns_provider
             cleanup_vpc_provider
-            "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" \
-              > "${RUNNER_TEMP}/acceptance-emergency-release.json" 2>&1 || true
+            local access_release_plan="${RUNNER_TEMP}/acceptance-emergency-release-plan.json"
+            if "${bin}" vultr-lifecycle release-access-plan "${vultr_spec}" "${machine}" \
+                > "${access_release_plan}" 2>/dev/null; then
+              local access_release_authority
+              access_release_authority="$(plan_authority "${access_release_plan}" 2>/dev/null || true)"
+              if [[ "${access_release_authority}" =~ ^[0-9a-f]{64}$ ]]; then
+                "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" "${access_release_authority}" \
+                  > "${RUNNER_TEMP}/acceptance-emergency-release.json" 2>&1 || true
+              fi
+            fi
 
             local destroy_json="${RUNNER_TEMP}/acceptance-emergency-destroy.json"
             if "${bin}" vultr-lifecycle destroy-plan \
@@ -565,7 +584,14 @@ jobs:
                   >/dev/null 2>&1 || true
               fi
             fi
-            "${bin}" vultr-lifecycle cleanup "${vultr_spec}" >/dev/null 2>&1 || true
+            local support_plan="${RUNNER_TEMP}/acceptance-emergency-support-cleanup-plan.json"
+            if "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" > "${support_plan}" 2>/dev/null; then
+              local support_authority
+              support_authority="$(plan_authority "${support_plan}" 2>/dev/null || true)"
+              if [[ "${support_authority}" =~ ^[0-9a-f]{64}$ ]]; then
+                "${bin}" vultr-lifecycle cleanup "${vultr_spec}" "${support_authority}" >/dev/null 2>&1 || true
+              fi
+            fi
           }
 
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
@@ -843,9 +869,12 @@ jobs:
           done
           test "${vpc_absent}" = "1"
 
-          "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" \
+          "${bin}" vultr-lifecycle release-access-plan "${vultr_spec}" "${machine}" \
+            > "${RUNNER_TEMP}/acceptance-access-release-plan.json"
+          access_release_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-access-release-plan.json")"
+          "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" "${access_release_authority}" \
             | tee "${access_release}"
-          jq -e '.verified_absent == true' "${access_release}" >/dev/null
+          jq -e '.verified_absent == true or .action == "NOOP"' "${access_release}" >/dev/null
 
           "${bin}" vultr-lifecycle destroy-plan \
             "${vultr_spec}" "${machine}" "${source_revision}" \
@@ -859,8 +888,15 @@ jobs:
           jq -e '.absence_verified == true' \
             "${RUNNER_TEMP}/acceptance-destroy-apply.json" >/dev/null
 
-          "${bin}" vultr-lifecycle cleanup "${vultr_spec}" \
+          "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
+            > "${RUNNER_TEMP}/acceptance-support-cleanup-plan.json"
+          support_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-support-cleanup-plan.json")"
+          "${bin}" vultr-lifecycle cleanup "${vultr_spec}" "${support_cleanup_authority}" \
             > "${RUNNER_TEMP}/acceptance-support-cleanup.json"
+          jq -e '.environment_in_use == false' "${RUNNER_TEMP}/acceptance-support-cleanup.json" >/dev/null
+          "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
+            > "${RUNNER_TEMP}/acceptance-support-cleanup-noop-plan.json"
+          jq -e '.plan.action == "NOOP"' "${RUNNER_TEMP}/acceptance-support-cleanup-noop-plan.json" >/dev/null
           "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-plan-after.json"
           jq -e '.plans[0].class == "CREATE"' \
