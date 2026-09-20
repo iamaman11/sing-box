@@ -1594,10 +1594,7 @@ mod tests {
         assert!(!command.contains("private_key"));
         assert!(!command.contains("token="));
 
-        let oversized = format!(
-            "noise\\nEDGE_SUBSTRATE_FORENSIC:{}\\n",
-            "x".repeat(1500)
-        );
+        let oversized = format!("noise\nEDGE_SUBSTRATE_FORENSIC:{}\n", "x".repeat(1500));
         let bounded = bounded_forensic_evidence(oversized.as_bytes());
         assert_eq!(bounded.chars().count(), 1200);
     }
