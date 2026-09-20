@@ -177,6 +177,26 @@ pub struct VultrRegionAvailability {
     pub available_plans: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrVpc {
+    pub id: String,
+    pub region: String,
+    pub description: String,
+    pub v4_subnet: String,
+    pub v4_subnet_mask: u8,
+    pub date_created: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VultrVpcAttachment {
+    pub id: String,
+    pub attachment_type: String,
+    pub mac_address: String,
+    pub private_ipv4: String,
+    pub subscription_type: String,
+    pub subscription_id: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateInstanceRequest<'a> {
     pub region: &'a str,
@@ -189,6 +209,170 @@ pub struct CreateInstanceRequest<'a> {
     pub firewall_group_id: Option<&'a str>,
     pub tags: Vec<&'a str>,
     pub enable_ipv6: bool,
+}
+
+pub async fn list_vpcs_typed(api_key: &str) -> Result<Vec<VultrVpc>, VultrError> {
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListVpcsEnvelope = observation_json("list Vultr VPCs", || {
+            let request = client
+                .get(format!("{API_ROOT}/vpcs"))
+                .query(&[("per_page", "500")]);
+            match current_cursor.as_deref() {
+                Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                _ => request,
+            }
+        })
+        .await?;
+        result.extend(page.vpcs.into_iter().map(Into::into));
+        cursor = next_cursor("list Vultr VPCs", page_count, page.meta, &mut seen_cursors)?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr VPCs"))
+}
+
+pub async fn get_vpc_typed(api_key: &str, vpc_id: &str) -> Result<VultrVpc, VultrError> {
+    if vpc_id.trim().is_empty() {
+        return Err(configuration_error("read Vultr VPC", "VPC id is required"));
+    }
+    let client = authorized_client(api_key)?;
+    let url = format!("{API_ROOT}/vpcs/{vpc_id}");
+    observation_json("read Vultr VPC", || client.get(&url))
+        .await
+        .map(|payload: VpcEnvelope| payload.vpc.into())
+}
+
+pub async fn create_vpc_typed(
+    api_key: &str,
+    region: &str,
+    description: &str,
+) -> Result<VultrVpc, VultrError> {
+    if region.trim().is_empty() || description.trim().is_empty() {
+        return Err(configuration_error(
+            "create Vultr VPC",
+            "VPC region and description are required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    execute_json_once(
+        "create Vultr VPC",
+        client.post(format!("{API_ROOT}/vpcs")).json(&CreateVpcPayload {
+            region: region.to_owned(),
+            description: description.to_owned(),
+        }),
+        true,
+    )
+    .await
+    .map(|payload: VpcEnvelope| payload.vpc.into())
+}
+
+pub async fn destroy_vpc_typed(api_key: &str, vpc_id: &str) -> Result<(), VultrError> {
+    if vpc_id.trim().is_empty() {
+        return Err(configuration_error("destroy Vultr VPC", "VPC id is required"));
+    }
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        "destroy Vultr VPC",
+        client.delete(format!("{API_ROOT}/vpcs/{vpc_id}")),
+    )
+    .await
+}
+
+pub async fn list_vpc_attachments_typed(
+    api_key: &str,
+    vpc_id: &str,
+) -> Result<Vec<VultrVpcAttachment>, VultrError> {
+    if vpc_id.trim().is_empty() {
+        return Err(configuration_error(
+            "list Vultr VPC attachments",
+            "VPC id is required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    let mut result = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+
+    for page_count in 1..=MAX_LIST_PAGES {
+        let current_cursor = cursor.clone();
+        let page: ListVpcAttachmentsEnvelope =
+            observation_json("list Vultr VPC attachments", || {
+                let request = client
+                    .get(format!("{API_ROOT}/vpcs/{vpc_id}/attachments"))
+                    .query(&[("per_page", "500")]);
+                match current_cursor.as_deref() {
+                    Some(cursor) if !cursor.is_empty() => request.query(&[("cursor", cursor)]),
+                    _ => request,
+                }
+            })
+            .await?;
+        result.extend(page.attachments.into_iter().map(Into::into));
+        cursor = next_cursor(
+            "list Vultr VPC attachments",
+            page_count,
+            page.meta,
+            &mut seen_cursors,
+        )?;
+        if cursor.is_none() {
+            return Ok(result);
+        }
+    }
+
+    Err(pagination_limit_error("list Vultr VPC attachments"))
+}
+
+pub async fn attach_vpc_to_instance_typed(
+    api_key: &str,
+    instance_id: &str,
+    vpc_id: &str,
+) -> Result<(), VultrError> {
+    if instance_id.trim().is_empty() || vpc_id.trim().is_empty() {
+        return Err(configuration_error(
+            "attach Vultr VPC to instance",
+            "instance id and VPC id are required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        "attach Vultr VPC to instance",
+        client
+            .post(format!("{API_ROOT}/instances/{instance_id}/vpcs/attach"))
+            .json(&InstanceVpcPayload {
+                vpc_id: vpc_id.to_owned(),
+            }),
+    )
+    .await
+}
+
+pub async fn detach_vpc_from_instance_typed(
+    api_key: &str,
+    instance_id: &str,
+    vpc_id: &str,
+) -> Result<(), VultrError> {
+    if instance_id.trim().is_empty() || vpc_id.trim().is_empty() {
+        return Err(configuration_error(
+            "detach Vultr VPC from instance",
+            "instance id and VPC id are required",
+        ));
+    }
+    let client = authorized_client(api_key)?;
+    execute_empty_mutation_once(
+        "detach Vultr VPC from instance",
+        client
+            .post(format!("{API_ROOT}/instances/{instance_id}/vpcs/detach"))
+            .json(&InstanceVpcPayload {
+                vpc_id: vpc_id.to_owned(),
+            }),
+    )
+    .await
 }
 
 pub async fn create_instance_typed(
@@ -1116,6 +1300,97 @@ fn build_create_instance_payload(
 }
 
 #[derive(Debug, Serialize)]
+struct CreateVpcPayload {
+    region: String,
+    description: String,
+}
+
+#[derive(Debug, Serialize)]
+struct InstanceVpcPayload {
+    vpc_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VpcEnvelope {
+    vpc: VultrVpcPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListVpcsEnvelope {
+    vpcs: Vec<VultrVpcPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrVpcPayload {
+    id: String,
+    region: String,
+    description: String,
+    v4_subnet: String,
+    v4_subnet_mask: u8,
+    #[serde(default)]
+    date_created: String,
+}
+
+impl From<VultrVpcPayload> for VultrVpc {
+    fn from(value: VultrVpcPayload) -> Self {
+        Self {
+            id: value.id,
+            region: value.region,
+            description: value.description,
+            v4_subnet: value.v4_subnet,
+            v4_subnet_mask: value.v4_subnet_mask,
+            date_created: value.date_created,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListVpcAttachmentsEnvelope {
+    attachments: Vec<VultrVpcAttachmentPayload>,
+    #[serde(default)]
+    meta: Option<ListMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrVpcAttachmentPayload {
+    id: String,
+    #[serde(rename = "type", default)]
+    attachment_type: String,
+    #[serde(default)]
+    mac_address: String,
+    ip: VultrVpcAttachmentIpPayload,
+    linked_subscription: VultrVpcAttachmentSubscriptionPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrVpcAttachmentIpPayload {
+    #[serde(default)]
+    v4: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VultrVpcAttachmentSubscriptionPayload {
+    #[serde(rename = "type", default)]
+    subscription_type: String,
+    id: String,
+}
+
+impl From<VultrVpcAttachmentPayload> for VultrVpcAttachment {
+    fn from(value: VultrVpcAttachmentPayload) -> Self {
+        Self {
+            id: value.id,
+            attachment_type: value.attachment_type,
+            mac_address: value.mac_address,
+            private_ipv4: value.ip.v4,
+            subscription_type: value.linked_subscription.subscription_type,
+            subscription_id: value.linked_subscription.id,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct CreateInstancePayload {
     region: String,
     plan: String,
@@ -1481,6 +1756,60 @@ mod tests {
                 .unwrap(),
             b"#cloud-config\n# scrubbed\n"
         );
+    }
+
+    #[test]
+    fn serializes_vpc_create_without_inventing_subnet() {
+        let payload = CreateVpcPayload {
+            region: "waw".to_owned(),
+            description: "managed-by-sing-box:vpc:application-acceptance".to_owned(),
+        };
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["region"], "waw");
+        assert_eq!(
+            json["description"],
+            "managed-by-sing-box:vpc:application-acceptance"
+        );
+        assert!(json.get("v4_subnet").is_none());
+        assert!(json.get("v4_subnet_mask").is_none());
+    }
+
+    #[test]
+    fn decodes_vpc_and_attachment_observation() {
+        let vpc: VpcEnvelope = serde_json::from_value(serde_json::json!({
+            "vpc": {
+                "id": "vpc-1",
+                "region": "waw",
+                "description": "managed-by-sing-box:vpc:application-acceptance",
+                "v4_subnet": "10.0.4.0",
+                "v4_subnet_mask": 24,
+                "date_created": "2026-09-20T00:00:00+00:00"
+            }
+        }))
+        .unwrap();
+        let vpc: VultrVpc = vpc.vpc.into();
+        assert_eq!(vpc.v4_subnet, "10.0.4.0");
+        assert_eq!(vpc.v4_subnet_mask, 24);
+
+        let attachments: ListVpcAttachmentsEnvelope =
+            serde_json::from_value(serde_json::json!({
+                "attachments": [{
+                    "id": "attachment-1",
+                    "type": "instance",
+                    "mac_address": "00:11:22:33:44:55",
+                    "ip": {"v4": "10.0.4.2"},
+                    "linked_subscription": {"type": "instance", "id": "instance-1"}
+                }]
+            }))
+            .unwrap();
+        let attachment: VultrVpcAttachment = attachments
+            .attachments
+            .into_iter()
+            .next()
+            .unwrap()
+            .into();
+        assert_eq!(attachment.private_ipv4, "10.0.4.2");
+        assert_eq!(attachment.subscription_id, "instance-1");
     }
 
     #[test]
