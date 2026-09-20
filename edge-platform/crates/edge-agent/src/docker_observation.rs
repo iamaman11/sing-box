@@ -2,12 +2,14 @@ use std::collections::{BTreeSet, HashMap};
 
 use bollard::{
     API_DEFAULT_VERSION, Docker,
+    errors::Error as BollardError,
     models::{
         ContainerSummary, ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, PortSummary,
         PortSummaryTypeEnum,
     },
-    query_parameters::ListContainersOptionsBuilder,
+    query_parameters::{ListContainersOptionsBuilder, LogsOptionsBuilder},
 };
+use futures_util::TryStreamExt;
 
 const DOCKER_SOCKET: &str = "unix:///var/run/docker.sock";
 const DOCKER_API_TIMEOUT_SECONDS: u64 = 6;
@@ -27,6 +29,34 @@ pub(crate) struct DockerObservation {
     pub(crate) listening_tcp_ports: Vec<u32>,
     pub(crate) listening_udp_ports: Vec<u32>,
     containers: Vec<DockerContainerObservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContainerRuntimeEvidence {
+    pub(crate) present: bool,
+    pub(crate) running: bool,
+    pub(crate) exit_code: Option<i64>,
+    pub(crate) runtime_error: Option<String>,
+    pub(crate) log_tail: Vec<String>,
+}
+
+impl ContainerRuntimeEvidence {
+    pub(crate) fn summary(&self) -> String {
+        let exit_code = self
+            .exit_code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let runtime_error = self.runtime_error.as_deref().unwrap_or("none");
+        let logs = if self.log_tail.is_empty() {
+            "none".to_owned()
+        } else {
+            self.log_tail.join(" | ")
+        };
+        format!(
+            "present={} running={} exit_code={} runtime_error={} log_tail={}",
+            self.present, self.running, exit_code, runtime_error, logs
+        )
+    }
 }
 
 impl DockerObservation {
@@ -72,8 +102,8 @@ impl DockerObservation {
     }
 }
 
-pub(crate) async fn observe_docker() -> Result<DockerObservation, String> {
-    let docker = Docker::connect_with_unix(
+async fn docker_connection() -> Result<Docker, String> {
+    Docker::connect_with_unix(
         DOCKER_SOCKET,
         DOCKER_API_TIMEOUT_SECONDS,
         API_DEFAULT_VERSION,
@@ -81,7 +111,11 @@ pub(crate) async fn observe_docker() -> Result<DockerObservation, String> {
     .map_err(|err| format!("failed to open Docker Engine Unix socket: {err}"))?
     .negotiate_version()
     .await
-    .map_err(|err| format!("failed to negotiate Docker Engine API version: {err}"))?;
+    .map_err(|err| format!("failed to negotiate Docker Engine API version: {err}"))
+}
+
+pub(crate) async fn observe_docker() -> Result<DockerObservation, String> {
+    let docker = docker_connection().await?;
 
     let options = ListContainersOptionsBuilder::default().all(true).build();
     let containers = docker
@@ -90,6 +124,97 @@ pub(crate) async fn observe_docker() -> Result<DockerObservation, String> {
         .map_err(|err| format!("failed to list Docker containers: {err}"))?;
 
     Ok(normalize_containers(containers))
+}
+
+pub(crate) async fn observe_container_runtime(
+    container_name: &str,
+) -> Result<ContainerRuntimeEvidence, String> {
+    let docker = docker_connection().await?;
+    let inspect = match docker.inspect_container(container_name, None).await {
+        Ok(inspect) => inspect,
+        Err(BollardError::DockerResponseServerError {
+            status_code: 404, ..
+        }) => {
+            return Ok(ContainerRuntimeEvidence {
+                present: false,
+                running: false,
+                exit_code: None,
+                runtime_error: None,
+                log_tail: Vec::new(),
+            });
+        }
+        Err(err) => {
+            return Err(format!(
+                "failed to inspect Docker container {container_name}: {err}"
+            ));
+        }
+    };
+
+    let state = inspect.state.unwrap_or_default();
+    let options = LogsOptionsBuilder::default()
+        .stdout(true)
+        .stderr(true)
+        .timestamps(false)
+        .tail("40")
+        .build();
+    let log_tail = match docker
+        .logs(container_name, Some(options))
+        .try_collect::<Vec<_>>()
+        .await
+    {
+        Ok(outputs) => {
+            bounded_redacted_log_tail(outputs.into_iter().map(|output| output.to_string()))
+        }
+        Err(err) => vec![format!("[docker log observation unavailable: {err}]")],
+    };
+
+    Ok(ContainerRuntimeEvidence {
+        present: true,
+        running: state.running.unwrap_or(false),
+        exit_code: state.exit_code,
+        runtime_error: state.error.filter(|value| !value.is_empty()),
+        log_tail,
+    })
+}
+
+fn bounded_redacted_log_tail<I>(lines: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut normalized = lines
+        .into_iter()
+        .flat_map(|chunk| {
+            chunk
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(redact_runtime_log_line)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    if normalized.len() > 40 {
+        normalized.drain(..normalized.len() - 40);
+    }
+    normalized
+}
+
+fn redact_runtime_log_line(line: &str) -> String {
+    let lowered = line.to_ascii_lowercase();
+    if [
+        "password",
+        "private_key",
+        "private key",
+        "authorization",
+        "credential",
+        "token=",
+        "uuid=",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
+    {
+        return "[redacted sensitive runtime log line]".to_owned();
+    }
+    line.chars().take(320).collect()
 }
 
 fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
@@ -264,6 +389,27 @@ mod tests {
             "vultr-cloudflare-mesh",
             "docker.io/cloudflare/mesh@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
+    }
+
+    #[test]
+    fn runtime_log_tail_is_bounded_and_redacts_sensitive_lines() {
+        let input = (0..45)
+            .map(|index| {
+                if index == 44 {
+                    "password=should-not-escape".to_owned()
+                } else {
+                    format!("safe-line-{index}")
+                }
+            })
+            .collect::<Vec<_>>();
+        let tail = bounded_redacted_log_tail(input);
+
+        assert_eq!(tail.len(), 40);
+        assert_eq!(tail.first().map(String::as_str), Some("safe-line-5"));
+        assert_eq!(
+            tail.last().map(String::as_str),
+            Some("[redacted sensitive runtime log line]")
+        );
     }
 
     #[test]

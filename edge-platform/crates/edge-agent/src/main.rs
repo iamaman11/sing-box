@@ -3,7 +3,9 @@ mod docker_observation;
 mod error;
 mod network_observation;
 
-use crate::docker_observation::{DockerObservation, observe_docker};
+use crate::docker_observation::{
+    ContainerRuntimeEvidence, DockerObservation, observe_container_runtime, observe_docker,
+};
 use clap::Parser;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -909,7 +911,7 @@ struct ApplicationBundleRelease {
 }
 
 async fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
-    let operation = execute_typed_bootstrap(stack_dir, mode);
+    let operation = execute_typed_bootstrap(stack_dir, mode).await;
     let post_state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
     let verified = verify_bootstrap_post_state(stack_dir, mode, &post_state);
     let success = operation.is_ok() && verified.success;
@@ -929,7 +931,7 @@ async fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntim
     }
 }
 
-fn execute_typed_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> Result<(), String> {
+async fn execute_typed_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> Result<(), String> {
     if mode == BootstrapMode::Unspecified {
         return Err("typed bootstrap mode is required".to_owned());
     }
@@ -951,14 +953,14 @@ fn execute_typed_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> Result<(), 
             require_tunnel_policy(&runtime)?;
             render_line1_runtime(stack_dir, &runtime)?;
             start_line1_gateway(stack_dir, &images)?;
-            wait_for_owned_certificate(stack_dir)?;
+            wait_for_owned_certificate(stack_dir).await?;
         }
         BootstrapMode::BootstrapFull => {
             require_line2_policy(&runtime)?;
             require_tunnel_policy(&runtime)?;
             render_line1_runtime(stack_dir, &runtime)?;
             start_line1_gateway(stack_dir, &images)?;
-            wait_for_owned_certificate(stack_dir)?;
+            wait_for_owned_certificate(stack_dir).await?;
             render_line2_runtime(stack_dir, &runtime)?;
             start_line2_proxy(stack_dir, &images)?;
         }
@@ -1708,22 +1710,96 @@ fn run_fixed_command(
     Ok(())
 }
 
-fn wait_for_owned_certificate(stack_dir: &Path) -> Result<(), String> {
+#[derive(Debug, Clone)]
+struct CertificateReadinessEvidence {
+    cert_present: bool,
+    key_present: bool,
+    key_nonempty: bool,
+    cert_valid: bool,
+    line1: Option<ContainerRuntimeEvidence>,
+    docker_observation_error: Option<String>,
+}
+
+impl CertificateReadinessEvidence {
+    fn ready(&self) -> bool {
+        self.cert_present && self.key_present && self.key_nonempty && self.cert_valid
+    }
+
+    fn summary(&self) -> String {
+        let line1 = self
+            .line1
+            .as_ref()
+            .map(ContainerRuntimeEvidence::summary)
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let docker_error = self.docker_observation_error.as_deref().unwrap_or("none");
+        format!(
+            "certificate={{present:{} key_present:{} key_nonempty:{} valid:{}}} line1={{ {line1} }} docker_observation_error={docker_error}",
+            self.cert_present, self.key_present, self.key_nonempty, self.cert_valid
+        )
+    }
+}
+
+async fn observe_certificate_readiness(cert: &Path, key: &Path) -> CertificateReadinessEvidence {
+    let cert_present = cert.is_file();
+    let key_present = key.is_file();
+    let key_nonempty = key_present && fs::metadata(key).is_ok_and(|metadata| metadata.len() > 0);
+    let cert_valid = cert_present && certificate_is_valid(cert, 300);
+
+    match observe_container_runtime(LINE1_CONTAINER).await {
+        Ok(line1) => CertificateReadinessEvidence {
+            cert_present,
+            key_present,
+            key_nonempty,
+            cert_valid,
+            line1: Some(line1),
+            docker_observation_error: None,
+        },
+        Err(err) => CertificateReadinessEvidence {
+            cert_present,
+            key_present,
+            key_nonempty,
+            cert_valid,
+            line1: None,
+            docker_observation_error: Some(err),
+        },
+    }
+}
+
+async fn wait_for_owned_certificate(stack_dir: &Path) -> Result<(), String> {
     let [cert, key] = expected_proxy_certificate_paths(stack_dir)?;
+    let mut consecutive_not_running = 0u8;
+    let mut last = observe_certificate_readiness(&cert, &key).await;
+
     for _ in 0..90 {
-        if cert.is_file()
-            && key.is_file()
-            && fs::metadata(&key).is_ok_and(|metadata| metadata.len() > 0)
-            && certificate_is_valid(&cert, 300)
-        {
+        if last.ready() {
             return Ok(());
         }
-        sleep(Duration::from_secs(2));
+
+        if let Some(line1) = last.line1.as_ref() {
+            if !line1.present || !line1.running {
+                consecutive_not_running = consecutive_not_running.saturating_add(1);
+            } else {
+                consecutive_not_running = 0;
+            }
+        } else {
+            consecutive_not_running = 0;
+        }
+
+        if consecutive_not_running >= 3 {
+            return Err(format!(
+                "Line 1 certificate owner is not running after three bounded observations; {}",
+                last.summary()
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        last = observe_certificate_readiness(&cert, &key).await;
     }
-    Err(
-        "Line 1 certificate owner did not publish a valid certificate within 180 seconds"
-            .to_owned(),
-    )
+
+    Err(format!(
+        "Line 1 certificate owner did not publish a valid certificate within 180 seconds; {}",
+        last.summary()
+    ))
 }
 
 fn certificate_is_valid(path: &Path, minimum_validity_seconds: u64) -> bool {
@@ -2615,6 +2691,29 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn certificate_readiness_requires_complete_valid_material() {
+        let mut evidence = CertificateReadinessEvidence {
+            cert_present: true,
+            key_present: true,
+            key_nonempty: true,
+            cert_valid: false,
+            line1: Some(ContainerRuntimeEvidence {
+                present: true,
+                running: true,
+                exit_code: None,
+                runtime_error: None,
+                log_tail: Vec::new(),
+            }),
+            docker_observation_error: None,
+        };
+        assert!(!evidence.ready());
+
+        evidence.cert_valid = true;
+        assert!(evidence.ready());
+        assert!(evidence.summary().contains("running=true"));
     }
 
     #[test]
