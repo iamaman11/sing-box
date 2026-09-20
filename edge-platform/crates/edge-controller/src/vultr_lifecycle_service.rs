@@ -429,10 +429,15 @@ pub async fn destroy_machine_with_firewall_profiles<P: LifecycleProvider>(
     validate_policy(policy)?;
     let machine = machine_by_id(desired, machine_id)?;
     let inventory = observe_inventory(provider, desired, verified_firewall_profiles).await?;
-    let current_plan =
-        destroy_plan(desired, machine, &inventory, source_revision).map_err(|err| err.to_string())?;
-    let generic =
-        authorize_vultr_destroy(desired, machine_id, source_revision, &inventory, current_plan)?;
+    let current_plan = destroy_plan(desired, machine, &inventory, source_revision)
+        .map_err(|err| err.to_string())?;
+    let generic = authorize_vultr_destroy(
+        desired,
+        machine_id,
+        source_revision,
+        &inventory,
+        current_plan,
+    )?;
     verify_exact_authority(authorized_plan_digest, &generic.authority)
         .map_err(|err| err.to_string())?;
     let provider_id = authorize_destroy(
@@ -832,16 +837,11 @@ mod tests {
         let inventory = observe_inventory(provider, desired, &BTreeMap::new())
             .await
             .unwrap();
-        let generic = authorize_vultr_destroy(
-            desired,
-            machine_id,
-            revision,
-            &inventory,
-            plan.clone(),
-        )
-        .unwrap()
-        .authority
-        .authority_digest;
+        let generic =
+            authorize_vultr_destroy(desired, machine_id, revision, &inventory, plan.clone())
+                .unwrap()
+                .authority
+                .authority_digest;
         (plan, generic)
     }
 
