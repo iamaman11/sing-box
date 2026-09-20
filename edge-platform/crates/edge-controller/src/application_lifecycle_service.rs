@@ -457,7 +457,7 @@ fn collect_bundle_files(
             return Err("application bundle source must not contain .env.runtime".to_owned());
         }
         files.push(BundleFile {
-            executable: relative_path == "bootstrap.sh",
+            executable: false,
             sensitive: false,
             relative_path,
             content: fs::read(&path)
@@ -983,7 +983,6 @@ mod tests {
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
-        fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
 
         let prepared =
             prepare_application_bundle(&root, &test_desired("stack"), &test_artifact()).unwrap();
