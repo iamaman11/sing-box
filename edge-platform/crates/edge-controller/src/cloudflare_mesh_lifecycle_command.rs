@@ -576,13 +576,15 @@ mod tests {
         assert!(evaluate_guest_vpc_network(&missing, &ready).is_err());
 
         let mut ambiguous = guest_observation();
-        ambiguous.links.push(edge_shared_types::Ipv4LinkObservation {
-            interface_index: 8,
-            name: "ens8".to_owned(),
-            up: true,
-            lower_up: true,
-            loopback: false,
-        });
+        ambiguous
+            .links
+            .push(edge_shared_types::Ipv4LinkObservation {
+                interface_index: 8,
+                name: "ens8".to_owned(),
+                up: true,
+                lower_up: true,
+                loopback: false,
+            });
         ambiguous
             .addresses
             .push(edge_shared_types::Ipv4AddressObservation {
@@ -660,18 +662,12 @@ mod tests {
             .is_err()
         );
         assert!(
-            evaluate_guest_vpc_network(
-                &observation,
-                &ready_report("10.0.4.7/24", "10.0.4.8")
-            )
-            .is_err()
+            evaluate_guest_vpc_network(&observation, &ready_report("10.0.4.7/24", "10.0.4.8"))
+                .is_err()
         );
         assert!(
-            evaluate_guest_vpc_network(
-                &observation,
-                &ready_report("10.0.4.0/24", "10.0.5.2")
-            )
-            .is_err()
+            evaluate_guest_vpc_network(&observation, &ready_report("10.0.4.0/24", "10.0.5.2"))
+                .is_err()
         );
     }
 
