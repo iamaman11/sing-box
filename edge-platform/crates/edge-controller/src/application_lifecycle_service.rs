@@ -11,8 +11,7 @@ use edge_controller_core::application_lifecycle::{
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
     ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile, RollbackBundleRequest,
-    VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
