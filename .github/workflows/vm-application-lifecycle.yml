@@ -554,6 +554,34 @@ jobs:
             done
           }
 
+          ensure_vpc_clean_room() {
+            local plan="${RUNNER_TEMP}/acceptance-vpc-before.json"
+            local apply_result="${RUNNER_TEMP}/acceptance-vpc-preflight-cleanup.json"
+            local digest authority
+            local attempt
+
+            for attempt in 1 2 3 4; do
+              "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" > "${plan}"
+              digest="$(jq -r '.plan.destructive_digest // empty' "${plan}")"
+              if [[ -z "${digest}" ]]; then
+                jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
+                  "${plan}" >/dev/null
+                return 0
+              fi
+
+              [[ "${digest}" =~ ^[0-9a-f]{64}$ ]]
+              authority="$(plan_authority "${plan}")"
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+
+              "${bin}" vultr-vpc cleanup-apply "${vpc_spec}" "${digest}" "${authority}" \
+                > "${apply_result}"
+            done
+
+            "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" > "${plan}"
+            jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
+              "${plan}" >/dev/null
+          }
+
           cleanup_acceptance() {
             set +e
             "${bin}" line3-mesh runtime-cleanup "${app_spec}" >/dev/null 2>&1 || true
@@ -611,10 +639,7 @@ jobs:
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
             "${RUNNER_TEMP}/acceptance-mesh-before.json" >/dev/null
 
-          "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-before.json"
-          jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-            "${RUNNER_TEMP}/acceptance-vpc-before.json" >/dev/null
+          ensure_vpc_clean_room
 
           trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
 
