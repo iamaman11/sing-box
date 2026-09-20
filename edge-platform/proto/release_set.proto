@@ -35,6 +35,7 @@ message VmRuntime {
   string docker_engine_version = 4;
   string containerd_version = 5;
   string compose_version = 6;
+  bytes edge_controller_sha256 = 7;
 }
 
 message CloudflareRuntime {
