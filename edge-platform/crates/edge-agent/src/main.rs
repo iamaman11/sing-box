@@ -262,7 +262,8 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     inspect_bundle_artifacts(stack_dir, &mut state);
 
     let compose_path = stack_dir.join("docker-compose.yml");
-    let Some(compose) = inspect_compose(&compose_path, &mut state) else {
+    let enabled_profiles = enabled_application_profiles(stack_dir);
+    let Some(compose) = inspect_compose(&compose_path, &mut state, &enabled_profiles) else {
         state.healthy = false;
         return state;
     };
@@ -715,26 +716,15 @@ fn verify_bootstrap_post_state(
         warnings.push("docker runtime is not reachable after bootstrap".to_owned());
     }
 
-    let runtime_env = read_runtime_env(&stack_dir.join(".env.runtime"));
-    let tunnel_expected = runtime_env
-        .as_ref()
-        .map(|values| {
-            env_flag_present(values, "TUNNEL_DOMAIN") && env_flag_present(values, "ACME_EMAIL")
-        })
-        .unwrap_or(false);
+    let tunnel_expected = tunnel_runtime_enabled(stack_dir);
 
-    let mut expected = vec![
-        "vultr-warp-egress",
-        "vultr-edge-gateway",
-        "vultr-edge-gateway-direct",
-    ];
+    let mut expected = vec!["vultr-warp-egress", "vultr-line2-proxy"];
     if matches!(
         mode,
         BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull
     ) && tunnel_expected
     {
-        expected.push("vultr-tunnel-edge");
-        expected.push("vultr-tunnel-edge-warp");
+        expected.push("vultr-line1-gateway");
     }
 
     for container in expected {
@@ -784,16 +774,15 @@ fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
     }
 
     let rendered_dir = stack_dir.join("rendered");
-    let missing_rendered = [
-        "edge-gateway.json",
-        "edge-gateway-direct.json",
-        "tunnel-edge.json",
-        "tunnel-edge-warp.json",
-    ]
-    .iter()
-    .filter(|name| !rendered_dir.join(name).is_file())
-    .map(|name| (*name).to_owned())
-    .collect::<Vec<_>>();
+    let mut expected_rendered = vec!["line2-proxy.json"];
+    if tunnel_runtime_enabled(stack_dir) {
+        expected_rendered.push("line1-gateway.json");
+    }
+    let missing_rendered = expected_rendered
+        .iter()
+        .filter(|name| !rendered_dir.join(name).is_file())
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
     if !missing_rendered.is_empty() {
         state.degraded_reasons.push(format!(
             "bundle artifact missing: rendered/{}",
@@ -829,7 +818,11 @@ fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
     }
 }
 
-fn inspect_compose(compose_path: &Path, state: &mut AgentState) -> Option<ComposeObservation> {
+fn inspect_compose(
+    compose_path: &Path,
+    state: &mut AgentState,
+    enabled_profiles: &BTreeSet<String>,
+) -> Option<ComposeObservation> {
     let raw = match fs::read_to_string(compose_path) {
         Ok(raw) => {
             state.compose_file_present = true;
@@ -860,6 +853,14 @@ fn inspect_compose(compose_path: &Path, state: &mut AgentState) -> Option<Compos
     let mut expected_udp_ports = BTreeSet::new();
 
     for service in compose.services.into_values() {
+        if !service.profiles.is_empty()
+            && !service
+                .profiles
+                .iter()
+                .any(|profile| enabled_profiles.contains(profile))
+        {
+            continue;
+        }
         if let Some(name) = service.container_name {
             expected_containers.push(name);
         }
@@ -1048,32 +1049,28 @@ fn set_bundle_file_permissions(
 }
 
 fn collect_rendered_artifacts(stack_dir: &Path) -> Vec<FilePresence> {
-    [
+    let mut required = vec![
         ("docker-compose.yml", FileCategory::RequiredRepoInput),
         (".env.runtime", FileCategory::RequiredRepoInput),
-        (
-            "rendered/edge-gateway.json",
-            FileCategory::RequiredRepoInput,
-        ),
-        (
-            "rendered/edge-gateway-direct.json",
-            FileCategory::RequiredRepoInput,
-        ),
-        ("rendered/tunnel-edge.json", FileCategory::RequiredRepoInput),
-        (
-            "rendered/tunnel-edge-warp.json",
-            FileCategory::RequiredRepoInput,
-        ),
+        ("rendered/line2-proxy.json", FileCategory::RequiredRepoInput),
         ("certs/proxy.crt", FileCategory::RequiredRepoInput),
         ("certs/proxy.key", FileCategory::RequiredRepoInput),
-    ]
-    .into_iter()
-    .map(|(path, category)| FilePresence {
-        path: path.to_owned(),
-        present: stack_dir.join(path).is_file(),
-        category: category as i32,
-    })
-    .collect()
+    ];
+    if tunnel_runtime_enabled(stack_dir) {
+        required.insert(
+            3,
+            ("rendered/line1-gateway.json", FileCategory::RequiredRepoInput),
+        );
+    }
+
+    required
+        .into_iter()
+        .map(|(path, category)| FilePresence {
+            path: path.to_owned(),
+            present: stack_dir.join(path).is_file(),
+            category: category as i32,
+        })
+        .collect()
 }
 
 fn read_runtime_env(path: &Path) -> Option<std::collections::BTreeMap<String, String>> {
@@ -1098,6 +1095,20 @@ fn env_flag_present(values: &std::collections::BTreeMap<String, String>, key: &s
     values
         .get(key)
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn tunnel_runtime_enabled(stack_dir: &Path) -> bool {
+    read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
+        env_flag_present(&values, "TUNNEL_DOMAIN") && env_flag_present(&values, "ACME_EMAIL")
+    })
+}
+
+fn enabled_application_profiles(stack_dir: &Path) -> BTreeSet<String> {
+    let mut profiles = BTreeSet::new();
+    if tunnel_runtime_enabled(stack_dir) {
+        profiles.insert("tunnel".to_owned());
+    }
+    profiles
 }
 
 fn read_bundle_summary(path: &Path) -> Option<BundleSummary> {
@@ -1159,6 +1170,8 @@ struct ComposeService {
     container_name: Option<String>,
     #[serde(default)]
     ports: Vec<String>,
+    #[serde(default)]
+    profiles: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1416,10 +1429,7 @@ mod tests {
         fs::create_dir_all(stack.join("certs")).unwrap();
         fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
         fs::write(stack.join(".env.runtime"), "").unwrap();
-        fs::write(stack.join("rendered/edge-gateway.json"), "{}").unwrap();
-        fs::write(stack.join("rendered/edge-gateway-direct.json"), "{}").unwrap();
-        fs::write(stack.join("rendered/tunnel-edge.json"), "{}").unwrap();
-        fs::write(stack.join("rendered/tunnel-edge-warp.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}").unwrap();
         fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
         fs::write(stack.join("certs/proxy.key"), "key").unwrap();
 
@@ -1447,12 +1457,12 @@ mod tests {
         fs::write(
             root.join("docker-compose.yml"),
             r#"services:
-  edge-gateway:
-    container_name: vultr-edge-gateway
+  line2-proxy:
+    container_name: vultr-line2-proxy
     ports:
       - "3128:3128/tcp"
-  tunnel-edge:
-    container_name: vultr-tunnel-edge
+  line1-gateway:
+    container_name: vultr-line1-gateway
     ports:
       - "8443:8443/udp"
 "#,
@@ -1460,9 +1470,52 @@ mod tests {
         .unwrap();
 
         let mut state = AgentState::bootstrap_placeholder();
-        let observation = inspect_compose(&root.join("docker-compose.yml"), &mut state).unwrap();
+        let observation =
+            inspect_compose(&root.join("docker-compose.yml"), &mut state, &BTreeSet::new())
+                .unwrap();
         assert!(state.compose_file_present);
         assert_eq!(observation.expected_containers.len(), 2);
+        assert_eq!(observation.expected_tcp_ports, vec![3128]);
+        assert_eq!(observation.expected_udp_ports, vec![8443]);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compose_observation_honors_enabled_application_profiles() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("docker-compose.yml"),
+            r#"services:
+  line2-proxy:
+    container_name: vultr-line2-proxy
+    ports:
+      - "3128:3128/tcp"
+  line1-gateway:
+    profiles: [tunnel]
+    container_name: vultr-line1-gateway
+    ports:
+      - "8443:8443/udp"
+  cloudflare-mesh:
+    profiles: [mesh]
+    container_name: vultr-cloudflare-mesh
+"#,
+        )
+        .unwrap();
+
+        let mut state = AgentState::bootstrap_placeholder();
+        let enabled_profiles = BTreeSet::from(["tunnel".to_owned()]);
+        let observation = inspect_compose(
+            &root.join("docker-compose.yml"),
+            &mut state,
+            &enabled_profiles,
+        )
+        .unwrap();
+        assert_eq!(
+            observation.expected_containers,
+            vec!["vultr-line1-gateway", "vultr-line2-proxy"]
+        );
         assert_eq!(observation.expected_tcp_ports, vec![3128]);
         assert_eq!(observation.expected_udp_ports, vec![8443]);
 
@@ -1477,13 +1530,11 @@ mod tests {
         fs::create_dir_all(stack.join("certs")).unwrap();
         fs::write(
             stack.join(".env.runtime"),
-            "TUNNEL_DOMAIN=edge.example.com\n",
+            "TUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=admin@example.com\n",
         )
         .unwrap();
-        fs::write(stack.join("rendered/edge-gateway.json"), "{}").unwrap();
-        fs::write(stack.join("rendered/edge-gateway-direct.json"), "{}").unwrap();
-        fs::write(stack.join("rendered/tunnel-edge.json"), "{}").unwrap();
-        fs::write(stack.join("rendered/tunnel-edge-warp.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), "{}").unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}").unwrap();
         fs::write(stack.join("certs/proxy.crt"), "crt").unwrap();
         fs::write(stack.join("certs/proxy.key"), "key").unwrap();
         fs::write(
@@ -1549,8 +1600,7 @@ mod tests {
             observed_stack_path: Some("/opt/vultr-edge-stack/stack".to_owned()),
             running_containers: vec![
                 "vultr-warp-egress".to_owned(),
-                "vultr-edge-gateway".to_owned(),
-                "vultr-edge-gateway-direct".to_owned(),
+                "vultr-line2-proxy".to_owned(),
             ],
             missing_containers: Vec::new(),
             listening_tcp_ports: Vec::new(),
@@ -1580,8 +1630,7 @@ mod tests {
             observed_stack_path: Some("/opt/vultr-edge-stack/stack".to_owned()),
             running_containers: vec![
                 "vultr-warp-egress".to_owned(),
-                "vultr-edge-gateway".to_owned(),
-                "vultr-edge-gateway-direct".to_owned(),
+                "vultr-line2-proxy".to_owned(),
             ],
             missing_containers: Vec::new(),
             listening_tcp_ports: Vec::new(),
@@ -1603,7 +1652,7 @@ mod tests {
             verification
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("vultr-tunnel-edge"))
+                .any(|warning| warning.contains("vultr-line1-gateway"))
         );
 
         fs::remove_dir_all(root).unwrap();
