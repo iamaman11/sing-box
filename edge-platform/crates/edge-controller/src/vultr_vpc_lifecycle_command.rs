@@ -1,9 +1,14 @@
+use crate::vultr_host_bootstrap::verify_operator_key_matches;
+use crate::vultr_lifecycle_command::{
+    observe_guest_boot_id, operator_private_key_path_from_env, read_canonical_ssh_public_key,
+    wait_for_guest_boot_id_change,
+};
 use crate::vultr_vpc_lifecycle_service::{
     VpcExecutionPolicy, VultrVpcApiProvider, apply_vpc_attachment_once, apply_vpc_once,
     authorize_vpc_apply, authorize_vpc_attachment, authorize_vpc_cleanup, cleanup_vpc_once,
     observe_vpc, plan_vpc, plan_vpc_attachment, plan_vpc_cleanup, verify_vpc_ready,
 };
-use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
+use edge_controller_core::vultr_vpc_lifecycle::{AttachmentAction, DesiredVpcState};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -94,6 +99,31 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
+
+    let (target_before, _observation, _attachments, plan_before) =
+        plan_vpc_attachment(&mut provider, &desired).await?;
+    let guest_transition_probe = if matches!(
+        plan_before.action,
+        AttachmentAction::AttachInstance { .. }
+    ) {
+        let canonical_public_key = read_canonical_ssh_public_key()?;
+        let operator_private_key_path = operator_private_key_path_from_env()?;
+        verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+        let boot_id_before = observe_guest_boot_id(
+            &target_before.main_ip,
+            &desired.machine_id,
+            &operator_private_key_path,
+            &canonical_public_key,
+        )?;
+        Some((
+            canonical_public_key,
+            operator_private_key_path,
+            boot_id_before,
+        ))
+    } else {
+        None
+    };
+
     let report = apply_vpc_attachment_once(
         &mut provider,
         &desired,
@@ -101,7 +131,43 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
         VpcExecutionPolicy::default(),
     )
     .await?;
-    print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
+
+    let guest_transition = if let Some((
+        canonical_public_key,
+        operator_private_key_path,
+        boot_id_before,
+    )) = guest_transition_probe
+    {
+        if !matches!(
+            report.performed,
+            AttachmentAction::AttachInstance { .. }
+        ) {
+            return Err(
+                "Vultr VPC attachment authority changed after guest boot observation".to_owned(),
+            );
+        }
+        let boot_id_after = wait_for_guest_boot_id_change(
+            &report.target.main_ip,
+            &desired.machine_id,
+            &operator_private_key_path,
+            &canonical_public_key,
+            &boot_id_before,
+            60,
+            std::time::Duration::from_secs(2),
+        )
+        .await?;
+        Some(serde_json::json!({
+            "boot_id_before": boot_id_before,
+            "boot_id_after": boot_id_after,
+            "boot_id_changed": true,
+        }))
+    } else {
+        None
+    };
+
+    let mut value = serde_json::to_value(report).map_err(|err| err.to_string())?;
+    value["guest_transition"] = guest_transition.unwrap_or(serde_json::Value::Null);
+    print_json(value)
 }
 
 async fn run_verify(args: &[String]) -> Result<(), String> {
