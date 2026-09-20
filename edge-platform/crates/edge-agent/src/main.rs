@@ -1510,8 +1510,22 @@ mod tests {
 
         materialize_vm_owned_runtime_environment(&stack).unwrap();
         let first = fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap();
-        let store =
-            fs::read_to_string(root.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE)).unwrap();
+        let secret_dir = root.join(RUNTIME_SECRET_DIR);
+        let secret_path = secret_dir.join(RUNTIME_SECRET_FILE);
+        let store = fs::read_to_string(&secret_path).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&secret_dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&secret_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
 
         fs::remove_file(stack.join(RUNTIME_ENV_FILE)).unwrap();
         materialize_vm_owned_runtime_environment(&stack).unwrap();
