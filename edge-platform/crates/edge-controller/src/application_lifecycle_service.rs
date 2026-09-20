@@ -16,6 +16,7 @@ use edge_shared_types::{
 };
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -112,8 +113,8 @@ impl DesiredMutationMode {
     }
 }
 
-pub(crate) fn runtime_env_path() -> Option<PathBuf> {
-    env::var_os("EDGE_APPLICATION_RUNTIME_ENV_PATH")
+pub(crate) fn runtime_secret_path() -> Option<PathBuf> {
+    env::var_os("EDGE_APPLICATION_RUNTIME_SECRET_PATH")
         .map(PathBuf::from)
         .filter(|path| path.is_file())
 }
@@ -149,7 +150,7 @@ pub(crate) fn prepare_application_bundle(
     repo_root: &Path,
     desired: &DesiredApplicationState,
     artifact: &AgentArtifactManifest,
-    runtime_env_path: Option<&Path>,
+    runtime_secret_path: Option<&Path>,
 ) -> Result<PreparedApplicationBundle, String> {
     desired.validate().map_err(|err| err.to_string())?;
     artifact.validate().map_err(|err| err.to_string())?;
@@ -171,17 +172,9 @@ pub(crate) fn prepare_application_bundle(
     let mut stack_files = Vec::new();
     collect_bundle_files(&bundle_root, &bundle_root, &mut stack_files)?;
 
-    match runtime_env_path {
+    match runtime_secret_path {
         Some(path) => {
-            let content = fs::read(path).map_err(|err| {
-                format!(
-                    "failed to read runtime environment {}: {err}",
-                    path.display()
-                )
-            })?;
-            if content.is_empty() {
-                return Err("runtime environment file must be non-empty".to_owned());
-            }
+            let content = render_runtime_environment(desired, path)?;
             stack_files.push(BundleFile {
                 relative_path: ".env.runtime".to_owned(),
                 content,
@@ -191,7 +184,7 @@ pub(crate) fn prepare_application_bundle(
         }
         None if desired.runtime_env_required => {
             return Err(
-                "runtime environment material is required; set EDGE_APPLICATION_RUNTIME_ENV_PATH to a private file"
+                "runtime credential material is required; set EDGE_APPLICATION_RUNTIME_SECRET_PATH to a private file"
                     .to_owned(),
             );
         }
@@ -214,6 +207,227 @@ pub(crate) fn prepare_application_bundle(
         desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
 
     Ok(PreparedApplicationBundle { request, release })
+}
+
+fn render_runtime_environment(
+    desired: &DesiredApplicationState,
+    secret_path: &Path,
+) -> Result<Vec<u8>, String> {
+    let raw = fs::read_to_string(secret_path).map_err(|err| {
+        format!(
+            "failed to read runtime credential file {}: {err}",
+            secret_path.display()
+        )
+    })?;
+    let secrets = parse_runtime_secrets(&raw)?;
+    let expected = expected_runtime_secret_keys(desired.bootstrap_mode);
+    let observed = secrets.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if observed != expected {
+        let missing = expected
+            .difference(&observed)
+            .copied()
+            .collect::<Vec<_>>();
+        let unexpected = observed
+            .difference(&expected)
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "runtime credential keys do not match bootstrap mode {}: missing=[{}] unexpected=[{}]",
+            desired.bootstrap_mode.as_str(),
+            missing.join(","),
+            unexpected.join(",")
+        ));
+    }
+
+    for (key, value) in &secrets {
+        validate_runtime_secret_value(key, value)?;
+    }
+
+    let mut values = Vec::new();
+    if let Some(line2) = desired.runtime_policy.line2.as_ref() {
+        values.push(("PROXY_USERNAME", line2.proxy_username.as_str()));
+        values.push((
+            "PROXY_PASSWORD",
+            required_runtime_secret(&secrets, "PROXY_PASSWORD")?,
+        ));
+        values.push(("PROXY_CERT_CN", line2.proxy_cert_cn.as_str()));
+    }
+    if let Some(line1) = desired.runtime_policy.line1.as_ref() {
+        values.push((
+            "VLESS_UUID",
+            required_runtime_secret(&secrets, "VLESS_UUID")?,
+        ));
+        values.push((
+            "HY2_PASSWORD",
+            required_runtime_secret(&secrets, "HY2_PASSWORD")?,
+        ));
+        values.push((
+            "REALITY_PRIVATE_KEY",
+            required_runtime_secret(&secrets, "REALITY_PRIVATE_KEY")?,
+        ));
+        values.push((
+            "REALITY_SHORT_ID",
+            required_runtime_secret(&secrets, "REALITY_SHORT_ID")?,
+        ));
+        values.push((
+            "VLESS_WARP_UUID",
+            required_runtime_secret(&secrets, "VLESS_WARP_UUID")?,
+        ));
+        values.push((
+            "HY2_WARP_PASSWORD",
+            required_runtime_secret(&secrets, "HY2_WARP_PASSWORD")?,
+        ));
+        values.push((
+            "REALITY_WARP_PRIVATE_KEY",
+            required_runtime_secret(&secrets, "REALITY_WARP_PRIVATE_KEY")?,
+        ));
+        values.push((
+            "REALITY_WARP_SHORT_ID",
+            required_runtime_secret(&secrets, "REALITY_WARP_SHORT_ID")?,
+        ));
+        values.push(("REALITY_SERVER_NAME", line1.reality_server_name.as_str()));
+        values.push(("TUNNEL_DOMAIN", line1.tunnel_domain.as_str()));
+        values.push(("ACME_EMAIL", line1.acme_email.as_str()));
+    }
+
+    let rendered = values
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}\n"))
+        .collect::<String>();
+    Ok(rendered.into_bytes())
+}
+
+fn parse_runtime_secrets(raw: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut values = BTreeMap::new();
+    for (index, line) in raw.lines().enumerate() {
+        let line_number = index + 1;
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            format!("runtime credential line {line_number} must use KEY=VALUE syntax")
+        })?;
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(format!(
+                "runtime credential line {line_number} has an invalid key"
+            ));
+        }
+        if value.is_empty() {
+            return Err(format!("runtime credential {key} must be non-empty"));
+        }
+        if values.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(format!("runtime credential key {key} is duplicated"));
+        }
+    }
+    if values.is_empty() {
+        return Err("runtime credential file must be non-empty".to_owned());
+    }
+    Ok(values)
+}
+
+fn expected_runtime_secret_keys(mode: ApplicationBootstrapMode) -> BTreeSet<&'static str> {
+    let mut keys = BTreeSet::new();
+    if matches!(
+        mode,
+        ApplicationBootstrapMode::Base | ApplicationBootstrapMode::Full
+    ) {
+        keys.insert("PROXY_PASSWORD");
+    }
+    if matches!(
+        mode,
+        ApplicationBootstrapMode::Tunnel | ApplicationBootstrapMode::Full
+    ) {
+        keys.extend([
+            "HY2_PASSWORD",
+            "HY2_WARP_PASSWORD",
+            "REALITY_PRIVATE_KEY",
+            "REALITY_SHORT_ID",
+            "REALITY_WARP_PRIVATE_KEY",
+            "REALITY_WARP_SHORT_ID",
+            "VLESS_UUID",
+            "VLESS_WARP_UUID",
+        ]);
+    }
+    keys
+}
+
+fn required_runtime_secret<'a>(
+    secrets: &'a BTreeMap<String, String>,
+    key: &str,
+) -> Result<&'a str, String> {
+    secrets
+        .get(key)
+        .map(String::as_str)
+        .ok_or_else(|| format!("required runtime credential {key} is missing"))
+}
+
+fn validate_runtime_secret_value(key: &str, value: &str) -> Result<(), String> {
+    if value.len() > 256
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'=' | b'-')
+        })
+    {
+        return Err(format!(
+            "runtime credential {key} contains characters unsafe for the canonical env-file format"
+        ));
+    }
+
+    match key {
+        "PROXY_PASSWORD" | "HY2_PASSWORD" | "HY2_WARP_PASSWORD" => {
+            if value.len() < 16 {
+                return Err(format!(
+                    "runtime credential {key} must be at least 16 characters"
+                ));
+            }
+        }
+        "VLESS_UUID" | "VLESS_WARP_UUID" => validate_runtime_uuid(key, value)?,
+        "REALITY_PRIVATE_KEY" | "REALITY_WARP_PRIVATE_KEY" => {
+            if value.len() != 43
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                return Err(format!(
+                    "runtime credential {key} must be a 43-character base64url X25519 private key"
+                ));
+            }
+        }
+        "REALITY_SHORT_ID" | "REALITY_WARP_SHORT_ID" => {
+            if value.len() != 16
+                || !value
+                    .chars()
+                    .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+            {
+                return Err(format!(
+                    "runtime credential {key} must be exactly 16 lowercase hexadecimal characters"
+                ));
+            }
+        }
+        _ => return Err(format!("unsupported runtime credential key {key}")),
+    }
+    Ok(())
+}
+
+fn validate_runtime_uuid(key: &str, value: &str) -> Result<(), String> {
+    if value.len() != 36
+        || !value
+            .chars()
+            .enumerate()
+            .all(|(index, ch)| match index {
+                8 | 13 | 18 | 23 => ch == '-',
+                _ => ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase(),
+            })
+    {
+        return Err(format!(
+            "runtime credential {key} must be a lowercase UUID"
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn observe_application(
@@ -953,7 +1167,9 @@ fn unique_temp_file(prefix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edge_controller_core::application_lifecycle::ApplicationBootstrapMode;
+    use edge_controller_core::application_lifecycle::{
+        ApplicationBootstrapMode, ApplicationRuntimePolicy, Line2RuntimePolicy,
+    };
 
     fn test_desired(bundle_root: &str) -> DesiredApplicationState {
         DesiredApplicationState {
@@ -964,6 +1180,13 @@ mod tests {
             application_profile: "edge-stack".to_owned(),
             bundle_root: bundle_root.to_owned(),
             runtime_env_required: true,
+            runtime_policy: ApplicationRuntimePolicy {
+                line1: None,
+                line2: Some(Line2RuntimePolicy {
+                    proxy_username: "acceptance".to_owned(),
+                    proxy_cert_cn: "application-acceptance.local".to_owned(),
+                }),
+            },
             bootstrap_mode: ApplicationBootstrapMode::Base,
         }
     }
@@ -987,7 +1210,7 @@ mod tests {
         let desired = test_desired("stack");
         let error =
             prepare_application_bundle(&root, &desired, &test_artifact(), None).unwrap_err();
-        assert!(error.contains("runtime environment material is required"));
+        assert!(error.contains("runtime credential material is required"));
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -1001,8 +1224,8 @@ mod tests {
         fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
         let env_a = root.join("env-a");
         let env_b = root.join("env-b");
-        fs::write(&env_a, "TOKEN=one\n").unwrap();
-        fs::write(&env_b, "TOKEN=two\n").unwrap();
+        fs::write(&env_a, "PROXY_PASSWORD=0123456789abcdef\n").unwrap();
+        fs::write(&env_b, "PROXY_PASSWORD=fedcba9876543210\n").unwrap();
 
         let desired = test_desired("stack");
         let a =
@@ -1031,8 +1254,8 @@ mod tests {
         fs::write(stack.join("bootstrap.sh"), "#!/bin/sh\n").unwrap();
         let env_a = root.join("env-a");
         let env_b = root.join("env-b");
-        fs::write(&env_a, "TOKEN=one\n").unwrap();
-        fs::write(&env_b, "TOKEN=two\n").unwrap();
+        fs::write(&env_a, "PROXY_PASSWORD=0123456789abcdef\n").unwrap();
+        fs::write(&env_b, "PROXY_PASSWORD=fedcba9876543210\n").unwrap();
 
         let desired = test_desired("stack");
         let a =
@@ -1048,13 +1271,85 @@ mod tests {
     }
 
     #[test]
+    fn runtime_secret_schema_rejects_unknown_and_duplicate_keys() {
+        let root = unique_temp_file("application-runtime-secret-schema-test");
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+
+        let unknown = root.join("unknown");
+        fs::write(
+            &unknown,
+            "PROXY_PASSWORD=0123456789abcdef\nMESH_NODE_TOKEN=forbidden\n",
+        )
+        .unwrap();
+        let error = prepare_application_bundle(
+            &root,
+            &test_desired("stack"),
+            &test_artifact(),
+            Some(&unknown),
+        )
+        .unwrap_err();
+        assert!(error.contains("unexpected=[MESH_NODE_TOKEN]"));
+
+        let duplicate = root.join("duplicate");
+        fs::write(
+            &duplicate,
+            "PROXY_PASSWORD=0123456789abcdef\nPROXY_PASSWORD=fedcba9876543210\n",
+        )
+        .unwrap();
+        let error = prepare_application_bundle(
+            &root,
+            &test_desired("stack"),
+            &test_artifact(),
+            Some(&duplicate),
+        )
+        .unwrap_err();
+        assert!(error.contains("duplicated"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_env_is_composed_from_public_policy_and_private_credentials() {
+        let root = unique_temp_file("application-runtime-composition-test");
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(stack.join("docker-compose.yml"), "services: {}\n").unwrap();
+        let secret = root.join("secret");
+        fs::write(&secret, "PROXY_PASSWORD=0123456789abcdef\n").unwrap();
+
+        let prepared = prepare_application_bundle(
+            &root,
+            &test_desired("stack"),
+            &test_artifact(),
+            Some(&secret),
+        )
+        .unwrap();
+        let runtime = prepared
+            .request
+            .stack_files
+            .iter()
+            .find(|file| file.relative_path == ".env.runtime")
+            .unwrap();
+        let content = String::from_utf8(runtime.content.clone()).unwrap();
+        assert_eq!(
+            content,
+            "PROXY_USERNAME=acceptance\nPROXY_PASSWORD=0123456789abcdef\nPROXY_CERT_CN=application-acceptance.local\n"
+        );
+        assert!(runtime.sensitive);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn committed_runtime_env_is_rejected() {
         let root = unique_temp_file("application-bundle-secret-test");
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
         fs::write(stack.join(".env.runtime"), "TOKEN=committed\n").unwrap();
         let env_path = root.join("env");
-        fs::write(&env_path, "TOKEN=runtime\n").unwrap();
+        fs::write(&env_path, "PROXY_PASSWORD=0123456789abcdef\n").unwrap();
 
         let error = prepare_application_bundle(
             &root,
