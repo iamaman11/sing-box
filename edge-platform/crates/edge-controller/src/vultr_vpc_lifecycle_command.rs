@@ -102,27 +102,25 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
 
     let (target_before, _observation, _attachments, plan_before) =
         plan_vpc_attachment(&mut provider, &desired).await?;
-    let guest_transition_probe = if matches!(
-        plan_before.action,
-        AttachmentAction::AttachInstance { .. }
-    ) {
-        let canonical_public_key = read_canonical_ssh_public_key()?;
-        let operator_private_key_path = operator_private_key_path_from_env()?;
-        verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
-        let boot_id_before = observe_guest_boot_id(
-            &target_before.main_ip,
-            &desired.machine_id,
-            &operator_private_key_path,
-            &canonical_public_key,
-        )?;
-        Some((
-            canonical_public_key,
-            operator_private_key_path,
-            boot_id_before,
-        ))
-    } else {
-        None
-    };
+    let guest_transition_probe =
+        if matches!(plan_before.action, AttachmentAction::AttachInstance { .. }) {
+            let canonical_public_key = read_canonical_ssh_public_key()?;
+            let operator_private_key_path = operator_private_key_path_from_env()?;
+            verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+            let boot_id_before = observe_guest_boot_id(
+                &target_before.main_ip,
+                &desired.machine_id,
+                &operator_private_key_path,
+                &canonical_public_key,
+            )?;
+            Some((
+                canonical_public_key,
+                operator_private_key_path,
+                boot_id_before,
+            ))
+        } else {
+            None
+        };
 
     let report = apply_vpc_attachment_once(
         &mut provider,
@@ -132,38 +130,33 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    let guest_transition = if let Some((
-        canonical_public_key,
-        operator_private_key_path,
-        boot_id_before,
-    )) = guest_transition_probe
-    {
-        if !matches!(
-            report.performed,
-            AttachmentAction::AttachInstance { .. }
-        ) {
-            return Err(
-                "Vultr VPC attachment authority changed after guest boot observation".to_owned(),
-            );
-        }
-        let boot_id_after = wait_for_guest_boot_id_change(
-            &report.target.main_ip,
-            &desired.machine_id,
-            &operator_private_key_path,
-            &canonical_public_key,
-            &boot_id_before,
-            60,
-            std::time::Duration::from_secs(2),
-        )
-        .await?;
-        Some(serde_json::json!({
-            "boot_id_before": boot_id_before,
-            "boot_id_after": boot_id_after,
-            "boot_id_changed": true,
-        }))
-    } else {
-        None
-    };
+    let guest_transition =
+        if let Some((canonical_public_key, operator_private_key_path, boot_id_before)) =
+            guest_transition_probe
+        {
+            if !matches!(report.performed, AttachmentAction::AttachInstance { .. }) {
+                return Err(
+                    "Vultr VPC attachment authority changed after guest boot observation".to_owned(),
+                );
+            }
+            let boot_id_after = wait_for_guest_boot_id_change(
+                &report.target.main_ip,
+                &desired.machine_id,
+                &operator_private_key_path,
+                &canonical_public_key,
+                &boot_id_before,
+                60,
+                std::time::Duration::from_secs(2),
+            )
+            .await?;
+            Some(serde_json::json!({
+                "boot_id_before": boot_id_before,
+                "boot_id_after": boot_id_after,
+                "boot_id_changed": true,
+            }))
+        } else {
+            None
+        };
 
     let mut value = serde_json::to_value(report).map_err(|err| err.to_string())?;
     value["guest_transition"] = guest_transition.unwrap_or(serde_json::Value::Null);
