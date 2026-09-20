@@ -8,6 +8,7 @@ members = [
     "crates/edge-controller",
     "crates/edge-controller-core",
     "crates/edge-local-runtime",
+    "crates/edge-observability",
     "crates/edge-provider-cloudflare",
     "crates/edge-provider-vultr",
     "crates/edge-secrets",

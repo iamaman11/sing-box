@@ -1,7 +1,10 @@
+mod cli;
 mod docker_observation;
+mod error;
 mod network_observation;
 
 use crate::docker_observation::{DockerObservation, observe_docker};
+use clap::Parser;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -11,6 +14,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
+use edge_observability::init as init_observability;
 use edge_secrets::ApplicationRuntimeSecrets;
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
@@ -22,6 +26,7 @@ use edge_shared_types::{
     VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
+use error::AgentError;
 use serde::{Deserialize, Serialize};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -50,25 +55,62 @@ const CLOUDFLARE_TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
+    let telemetry = init_observability("edge-agent");
+    let parsed = match cli::Cli::try_parse() {
+        Ok(parsed) => parsed,
         Err(err) => {
+            let code = err.exit_code();
+            let _ = err.print();
+            return ExitCode::from(code as u8);
+        }
+    };
+    let command = parsed.command_name();
+    tracing::info!(
+        component = "edge-agent",
+        correlation_id = %telemetry.id(),
+        command,
+        event = "command.start",
+        "command started"
+    );
+
+    match run(parsed).await {
+        Ok(()) => {
+            tracing::info!(
+                component = "edge-agent",
+                correlation_id = %telemetry.id(),
+                command,
+                event = "command.success",
+                "command completed"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            tracing::error!(
+                component = "edge-agent",
+                correlation_id = %telemetry.id(),
+                command,
+                error_category = err.category(),
+                event = "command.failure",
+                "command failed"
+            );
             eprintln!("{err}");
             ExitCode::from(1)
         }
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let command = env::args().nth(1).unwrap_or_else(|| "serve".to_owned());
+async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
+    use cli::Command;
 
-    match command.as_str() {
-        "serve" => {
-            let addr = agent_addr_from_args(2)?;
-            let stack_dir = stack_dir_from_args(3);
-            serve(addr, stack_dir).await
+    match parsed
+        .command
+        .unwrap_or_else(|| Command::Serve(cli::ServeArgs::default()))
+    {
+        Command::Serve(args) => {
+            let (addr, stack_dir) = args.resolve().map_err(AgentError::Command)?;
+            serve(addr, stack_dir).await?;
+            Ok(())
         }
-        other => Err(format!("unsupported command: {other}").into()),
     }
 }
 
@@ -87,24 +129,6 @@ async fn serve(addr: SocketAddr, stack_dir: PathBuf) -> Result<(), Box<dyn std::
         .serve(addr)
         .await?;
     Ok(())
-}
-
-fn agent_addr_from_args(index: usize) -> Result<SocketAddr, Box<dyn std::error::Error>> {
-    let addr = env::args()
-        .nth(index)
-        .or_else(|| env::var("EDGE_AGENT_ADDR").ok())
-        .unwrap_or_else(|| DEFAULT_AGENT_ADDR.to_owned());
-    Ok(addr.parse()?)
-}
-
-fn stack_dir_from_args(index: usize) -> PathBuf {
-    if let Some(path) = env::args().nth(index) {
-        return PathBuf::from(path);
-    }
-    if let Ok(path) = env::var("EDGE_STACK_DIR") {
-        return PathBuf::from(path);
-    }
-    PathBuf::from(DEFAULT_STACK_DIR)
 }
 
 struct AgentServerImpl {

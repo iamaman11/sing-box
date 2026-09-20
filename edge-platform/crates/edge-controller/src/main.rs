@@ -9,11 +9,13 @@ use std::time::{Duration, Instant};
 
 mod application_lifecycle_command;
 mod application_lifecycle_service;
+mod cli;
 mod cloudflare_dns_lifecycle_command;
 mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
 mod deploy_orchestrator;
+mod error;
 mod vultr_host_bootstrap;
 mod vultr_lifecycle_adapter;
 mod vultr_lifecycle_command;
@@ -22,6 +24,7 @@ mod vultr_support_resources;
 mod vultr_vpc_lifecycle_command;
 mod vultr_vpc_lifecycle_service;
 
+use clap::Parser;
 use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
 };
@@ -35,6 +38,7 @@ use edge_local_runtime::{
     restart_local_runtime_visible as restart_runtime_process_visible, restore_windows_dns_if_owned,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
+use edge_observability::init as init_observability;
 use edge_provider_cloudflare::mock_upsert_a_record;
 use edge_provider_vultr::mock_instance;
 use edge_secrets::{default_env_ref, resolve_secret_path};
@@ -64,6 +68,7 @@ use edge_trust::{
     AgentClientTlsPaths, agent_client_tls_from_paths, agent_endpoint_scheme,
     optional_agent_client_tls_from_env,
 };
+use error::ControllerError;
 use prost::Message;
 use serde_json::Value;
 use tokio::time::{sleep, timeout};
@@ -91,8 +96,6 @@ const TUNNEL_BOOTSTRAP_TIMEOUT_SECS: u64 = 900;
 const EGRESS_TRACE_TIMEOUT_SECS: u64 = 60;
 const BOOTSTRAP_RPC_ATTEMPTS: usize = 3;
 const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
-const DEPLOY_ENDPOINT_ARG_INDEX: usize = 10;
-const DESTROY_ENDPOINT_ARG_INDEX: usize = 6;
 const KNOWN_SECRET_NAMES: &[&str] = &[SECRET_SSH_PRIVATE_KEY_PATH];
 
 #[derive(Debug, Clone)]
@@ -138,162 +141,203 @@ struct DeployRollbackContext {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
+    let telemetry = init_observability("edge-controller");
+    let parsed = match cli::Cli::try_parse() {
+        Ok(parsed) => parsed,
         Err(err) => {
+            let code = err.exit_code();
+            let _ = err.print();
+            return ExitCode::from(code as u8);
+        }
+    };
+    let command = parsed.command_name();
+    tracing::info!(
+        component = "edge-controller",
+        correlation_id = %telemetry.id(),
+        command,
+        event = "command.start",
+        "command started"
+    );
+
+    match run(parsed).await {
+        Ok(()) => {
+            tracing::info!(
+                component = "edge-controller",
+                correlation_id = %telemetry.id(),
+                command,
+                event = "command.success",
+                "command completed"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            tracing::error!(
+                component = "edge-controller",
+                correlation_id = %telemetry.id(),
+                command,
+                error_category = err.category(),
+                event = "command.failure",
+                "command failed"
+            );
             eprintln!("{err}");
             ExitCode::from(1)
         }
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let command = env::args().nth(1).unwrap_or_else(|| "serve".to_owned());
+async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
+    use cli::Command;
 
-    match command.as_str() {
-        "application-lifecycle" => {
-            let args = env::args().skip(2).collect::<Vec<_>>();
-            application_lifecycle_command::run(args)
+    match parsed
+        .command
+        .unwrap_or_else(|| Command::Serve(cli::ServeArgs::default()))
+    {
+        Command::ApplicationLifecycle { command } => {
+            application_lifecycle_command::run(command.into_legacy_args())
                 .await
-                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+                .map_err(ControllerError::Command)
         }
-        "cloudflare-dns" => {
-            let args = env::args().skip(2).collect::<Vec<_>>();
-            cloudflare_dns_lifecycle_command::run(args)
+        Command::CloudflareDns { command } => {
+            cloudflare_dns_lifecycle_command::run(command.into_legacy_args())
                 .await
-                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+                .map_err(ControllerError::Command)
         }
-        "line3-mesh" => {
-            let args = env::args().skip(2).collect::<Vec<_>>();
-            cloudflare_mesh_lifecycle_command::run(args)
+        Command::Line3Mesh { command } => {
+            cloudflare_mesh_lifecycle_command::run(command.into_legacy_args())
                 .await
-                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+                .map_err(ControllerError::Command)
         }
-        "vultr-lifecycle" => {
-            let args = env::args().skip(2).collect::<Vec<_>>();
-            vultr_lifecycle_command::run(args)
+        Command::VultrLifecycle { command } => {
+            vultr_lifecycle_command::run(command.into_legacy_args())
                 .await
-                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+                .map_err(ControllerError::Command)
         }
-        "vultr-vpc" => {
-            let args = env::args().skip(2).collect::<Vec<_>>();
-            vultr_vpc_lifecycle_command::run(args)
+        Command::VultrVpc { command } => {
+            vultr_vpc_lifecycle_command::run(command.into_legacy_args())
                 .await
-                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })
+                .map_err(ControllerError::Command)
         }
-        "serve" => {
-            let repo_root = repo_root_from_args(2)?;
-            let addr = controller_addr_from_args(3)?;
-            serve(repo_root, addr).await
+        Command::Serve(args) => {
+            let repo_root = resolve_repo_root(args.repo_root)?;
+            let addr = match args.addr {
+                Some(addr) => addr,
+                None => DEFAULT_CONTROLLER_ADDR
+                    .parse::<SocketAddr>()
+                    .map_err(|err| {
+                        ControllerError::Command(format!(
+                            "invalid built-in controller address {DEFAULT_CONTROLLER_ADDR}: {err}"
+                        ))
+                    })?,
+            };
+            serve(repo_root, addr).await?;
+            Ok(())
         }
-        "get-status" => {
-            let endpoint = controller_endpoint_from_args(2);
-            let status = fetch_status(endpoint).await?;
+        Command::GetStatus(args) => {
+            let status = fetch_status(args.resolve()).await?;
             io::stdout().write_all(&status.encode_proto())?;
             Ok(())
         }
-        "controller-bootstrap-runtime" => {
-            let mode = bootstrap_mode_from_args(2)?;
-            let endpoint = controller_endpoint_from_args(3);
-            let response = controller_bootstrap_runtime(endpoint, mode).await?;
+        Command::ControllerBootstrapRuntime(args) => {
+            let response = controller_bootstrap_runtime(
+                cli::controller_endpoint(args.endpoint),
+                args.mode.into(),
+            )
+            .await?;
             io::stdout().write_all(&response.encode_proto())?;
             if response.success {
                 Ok(())
             } else {
-                Err(format_bootstrap_failure(&response).into())
+                Err(ControllerError::Command(format_bootstrap_failure(
+                    &response,
+                )))
             }
         }
-        "bootstrap-runtime" => {
-            let mode = bootstrap_mode_from_args(2)?;
-            let endpoint = agent_endpoint_from_args(3);
-            let response = bootstrap_runtime(endpoint, mode)
+        Command::BootstrapRuntime(args) => {
+            let response = bootstrap_runtime(cli::agent_endpoint(args.endpoint), args.mode.into())
                 .await
-                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+                .map_err(ControllerError::Command)?;
             io::stdout().write_all(&response.encode_proto())?;
             if response.success {
                 Ok(())
             } else {
-                Err(format_bootstrap_failure(&response).into())
+                Err(ControllerError::Command(format_bootstrap_failure(
+                    &response,
+                )))
             }
         }
-        "start-local" => {
-            let endpoint = controller_endpoint_from_args(2);
-            let response = start_local_runtime_via_controller(endpoint).await?;
+        Command::StartLocal(args) => {
+            let response = start_local_runtime_via_controller(args.resolve()).await?;
             io::stdout().write_all(&response.encode_proto())?;
             if response.success {
                 Ok(())
             } else {
-                Err(response.note.into())
+                Err(ControllerError::Command(response.note))
             }
         }
-        "stop-local" => {
-            let endpoint = controller_endpoint_from_args(2);
-            let response = stop_local_runtime_via_controller(endpoint).await?;
+        Command::StopLocal(args) => {
+            let response = stop_local_runtime_via_controller(args.resolve()).await?;
             io::stdout().write_all(&response.encode_proto())?;
             if response.success {
                 Ok(())
             } else {
-                Err(response.note.into())
+                Err(ControllerError::Command(response.note))
             }
         }
-        "restart-local" => {
-            let endpoint = controller_endpoint_from_args(2);
-            let response = restart_local_runtime_via_controller(endpoint).await?;
+        Command::RestartLocal(args) => {
+            let response = restart_local_runtime_via_controller(args.resolve()).await?;
             io::stdout().write_all(&response.encode_proto())?;
             if response.success {
                 Ok(())
             } else {
-                Err(response.note.into())
+                Err(ControllerError::Command(response.note))
             }
         }
-        "get-selector" => {
-            let endpoint = controller_endpoint_from_args(2);
-            let selector = fetch_selector_state(endpoint).await?;
+        Command::GetSelector(args) => {
+            let selector = fetch_selector_state(args.resolve()).await?;
             io::stdout().write_all(&selector.encode_to_vec())?;
             Ok(())
         }
-        "set-selector" => {
-            let name = env::args()
-                .nth(2)
-                .ok_or("set-selector requires a selector target name")?;
-            let endpoint = controller_endpoint_from_args(3);
-            let response = set_selector_via_controller(endpoint, "proxy-selector", &name).await?;
+        Command::SetSelector(args) => {
+            let response = set_selector_via_controller(
+                cli::controller_endpoint(args.endpoint),
+                "proxy-selector",
+                &args.name,
+            )
+            .await?;
             io::stdout().write_all(&response.encode_to_vec())?;
             if response.success {
                 Ok(())
             } else {
-                Err("selector update failed".into())
+                Err(ControllerError::Command(
+                    "selector update failed".to_owned(),
+                ))
             }
         }
-        "trace" => {
-            let endpoint = controller_endpoint_from_args(2);
-            let trace = get_trace_via_controller(endpoint).await?;
+        Command::Trace(args) => {
+            let trace = get_trace_via_controller(args.resolve()).await?;
             io::stdout().write_all(&trace.encode_to_vec())?;
             Ok(())
         }
-        "deploy" => {
-            let request = deploy_request_from_args()?;
-            let endpoint = controller_endpoint_from_args(DEPLOY_ENDPOINT_ARG_INDEX);
+        Command::Deploy(args) => {
+            let (request, endpoint) = args.into_parts();
             let response = deploy_via_controller(endpoint, request).await?;
             io::stdout().write_all(&response.encode_to_vec())?;
             if response.success {
                 Ok(())
             } else {
-                Err("deploy failed".into())
+                Err(ControllerError::Command("deploy failed".to_owned()))
             }
         }
-        "destroy" => {
-            let request = destroy_request_from_args()?;
-            let endpoint = controller_endpoint_from_args(DESTROY_ENDPOINT_ARG_INDEX);
+        Command::Destroy(args) => {
+            let (request, endpoint) = args.into_parts();
             let response = destroy_via_controller(endpoint, request).await?;
             io::stdout().write_all(&response.encode_to_vec())?;
             if response.success {
                 Ok(())
             } else {
-                Err("destroy failed".into())
+                Err(ControllerError::Command("destroy failed".to_owned()))
             }
         }
-        other => Err(format!("unsupported command: {other}").into()),
     }
 }
 
@@ -551,88 +595,6 @@ fn format_bootstrap_failure(response: &BootstrapRuntimeResponse) -> String {
     parts.join(": ")
 }
 
-fn controller_addr_from_args(index: usize) -> Result<SocketAddr, Box<dyn std::error::Error>> {
-    let addr = env::args()
-        .nth(index)
-        .unwrap_or_else(|| DEFAULT_CONTROLLER_ADDR.to_owned());
-    Ok(addr.parse()?)
-}
-
-fn controller_endpoint_from_args(index: usize) -> String {
-    env::args()
-        .nth(index)
-        .or_else(|| env::var("EDGE_CONTROLLER_ENDPOINT").ok())
-        .unwrap_or_else(|| format!("http://{DEFAULT_CONTROLLER_ADDR}"))
-}
-
-fn optional_arg(index: usize) -> Option<String> {
-    env::args().nth(index).and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_owned())
-        }
-    })
-}
-
-fn agent_endpoint_from_args(index: usize) -> String {
-    env::args()
-        .nth(index)
-        .or_else(|| env::var("EDGE_AGENT_ENDPOINT").ok())
-        .unwrap_or_else(|| DEFAULT_AGENT_ENDPOINT.to_owned())
-}
-
-fn bootstrap_mode_from_args(index: usize) -> Result<BootstrapMode, Box<dyn std::error::Error>> {
-    let mode = env::args()
-        .nth(index)
-        .ok_or("bootstrap-runtime requires mode: base, tunnel, or full")?;
-    match mode.as_str() {
-        "base" => Ok(BootstrapMode::BootstrapBase),
-        "tunnel" => Ok(BootstrapMode::BootstrapTunnel),
-        "full" => Ok(BootstrapMode::BootstrapFull),
-        _ => Err(format!("unsupported bootstrap mode: {mode}").into()),
-    }
-}
-
-fn deploy_request_from_args() -> Result<DeployRequest, Box<dyn std::error::Error>> {
-    Ok(DeployRequest {
-        label_prefix: optional_arg(2),
-        target_ip: optional_arg(3),
-        instance_id: optional_arg(4),
-        tunnel_domain: optional_arg(5),
-        acme_email: optional_arg(6),
-        dns_record_name: optional_arg(7),
-        cloudflare_zone_name: optional_arg(8),
-        mock_provider: env::var("EDGE_MOCK_PROVIDER")
-            .ok()
-            .is_some_and(|value| value == "1"),
-        skip_dns: env::var("EDGE_SKIP_DNS")
-            .ok()
-            .is_some_and(|value| value == "1"),
-        snapshot_id: optional_arg(9),
-    })
-}
-
-fn destroy_request_from_args() -> Result<DestroyRequest, Box<dyn std::error::Error>> {
-    Ok(DestroyRequest {
-        instance_id: optional_arg(2),
-        target_ip: optional_arg(3),
-        dns_record_name: optional_arg(4),
-        cloudflare_zone_name: optional_arg(5),
-        mock_provider: env::var("EDGE_MOCK_PROVIDER")
-            .ok()
-            .is_some_and(|value| value == "1"),
-        delete_dns: env::var("EDGE_DELETE_DNS")
-            .ok()
-            .is_none_or(|value| value == "1"),
-        delete_instance: env::var("EDGE_DELETE_INSTANCE")
-            .ok()
-            .is_some_and(|value| value == "1"),
-        lifecycle_reason: env::var("EDGE_LIFECYCLE_REASON").ok(),
-    })
-}
-
 fn resolve_path_secret(
     state: &Arc<Mutex<EdgeState>>,
     name: &str,
@@ -714,9 +676,9 @@ fn secret_name_to_env(name: &str) -> &'static str {
     }
 }
 
-fn repo_root_from_args(index: usize) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Some(path) = env::args().nth(index) {
-        return Ok(PathBuf::from(path));
+fn resolve_repo_root(explicit: Option<PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(path) = explicit {
+        return Ok(path);
     }
 
     let cwd = env::current_dir()?;
@@ -4092,7 +4054,7 @@ mod tests {
 
     #[test]
     fn resolves_repo_root_from_workspace() {
-        let repo_root = repo_root_from_args(usize::MAX).unwrap();
+        let repo_root = resolve_repo_root(None).unwrap();
         assert!(repo_root.exists());
     }
 
@@ -4154,12 +4116,6 @@ mod tests {
             blank_option(Some("  edge.alegria.by  ".to_owned())),
             Some("edge.alegria.by".to_owned())
         );
-    }
-
-    #[test]
-    fn command_endpoint_indices_match_positional_contracts() {
-        assert_eq!(DEPLOY_ENDPOINT_ARG_INDEX, 10);
-        assert_eq!(DESTROY_ENDPOINT_ARG_INDEX, 6);
     }
 
     #[test]
