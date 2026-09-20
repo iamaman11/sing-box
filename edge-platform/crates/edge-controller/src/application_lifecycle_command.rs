@@ -46,7 +46,6 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         &desired,
         &artifact,
         &prepared.release.bundle_digest,
-        true,
         &observation,
     )
     .map_err(|err| err.to_string())?;
