@@ -1327,7 +1327,9 @@ fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], St
             return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
         }
         let owner = stack_dir
-            .join("tunnel-state")
+            .parent()
+            .ok_or_else(|| "application stack path has no certificate-state parent".to_owned())?
+            .join("certificate-state")
             .join("acme")
             .join("certificates")
             .join("acme-v02.api.letsencrypt.org-directory")
@@ -1620,8 +1622,8 @@ mod tests {
     fn certificate_observation_uses_owner_state_for_tunnel_runtime() {
         let root = unique_test_dir();
         let stack = root.join("stack");
-        let owner = stack
-            .join("tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+        let owner = root
+            .join("certificate-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
             .join("edge.example.com");
         fs::create_dir_all(stack.join("rendered")).unwrap();
         fs::create_dir_all(&owner).unwrap();
@@ -1940,8 +1942,8 @@ mod tests {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(stack.join("rendered")).unwrap();
-        let owner = stack
-            .join("tunnel-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
+        let owner = root
+            .join("certificate-state/acme/certificates/acme-v02.api.letsencrypt.org-directory")
             .join("edge.example.com");
         fs::create_dir_all(&owner).unwrap();
         fs::write(
