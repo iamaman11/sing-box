@@ -271,8 +271,7 @@ fn default_acme_provider() -> String {
 
 fn validate_acme_provider(value: &str) -> Result<(), ApplicationSpecError> {
     const LETS_ENCRYPT_PRODUCTION: &str = "letsencrypt";
-    const LETS_ENCRYPT_STAGING: &str =
-        "https://acme-staging-v02.api.letsencrypt.org/directory";
+    const LETS_ENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
     if !matches!(value, LETS_ENCRYPT_PRODUCTION | LETS_ENCRYPT_STAGING) {
         return Err(ApplicationSpecError::Validation(
             "runtime_policy.line1.acme_provider must be letsencrypt or the canonical Let's Encrypt staging directory"
