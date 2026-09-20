@@ -37,9 +37,9 @@ services:
     networks:
       - mesh_net
 
-  edge-gateway:
+  line2-proxy:
     image: ${EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}
-    container_name: vultr-edge-gateway
+    container_name: vultr-line2-proxy
     restart: unless-stopped
     depends_on:
       - warp-egress
@@ -51,53 +51,21 @@ services:
       - "3128:3128/tcp"
       - "1080:1080/tcp"
       - "9443:9443/tcp"
+      - "4128:4128/tcp"
+      - "4080:4080/tcp"
+      - "4443:4443/tcp"
     volumes:
-      - ./rendered/edge-gateway.json:/etc/sing-box/config.json:ro
+      - ./rendered/line2-proxy.json:/etc/sing-box/config.json:ro
       - ./certs/proxy.crt:/certs/proxy.crt:ro
       - ./certs/proxy.key:/certs/proxy.key:ro
     networks:
       - edge_net
 
-  edge-gateway-direct:
-    image: ${EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}
-    container_name: vultr-edge-gateway-direct
-    restart: unless-stopped
-    command:
-      - run
-      - -c
-      - /etc/sing-box/config.json
-    ports:
-      - "4128:4128/tcp"
-      - "4080:4080/tcp"
-      - "4443:4443/tcp"
-    volumes:
-      - ./rendered/edge-gateway-direct.json:/etc/sing-box/config.json:ro
-      - ./certs/proxy.crt:/certs/proxy.crt:ro
-      - ./certs/proxy.key:/certs/proxy.key:ro
-
-  tunnel-edge:
+  line1-gateway:
     profiles:
       - tunnel
     image: ${EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}
-    container_name: vultr-tunnel-edge
-    restart: unless-stopped
-    command:
-      - run
-      - -c
-      - /etc/sing-box/config.json
-    ports:
-      - "80:80/tcp"
-      - "443:443/tcp"
-      - "8443:8443/udp"
-    volumes:
-      - ./rendered/tunnel-edge.json:/etc/sing-box/config.json:ro
-      - ./tunnel-state:/var/lib/sing-box
-
-  tunnel-edge-warp:
-    profiles:
-      - tunnel
-    image: ${EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}
-    container_name: vultr-tunnel-edge-warp
+    container_name: vultr-line1-gateway
     restart: unless-stopped
     depends_on:
       - warp-egress
@@ -106,10 +74,13 @@ services:
       - -c
       - /etc/sing-box/config.json
     ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "8443:8443/udp"
       - "5443:5443/tcp"
       - "9444:9444/udp"
     volumes:
-      - ./rendered/tunnel-edge-warp.json:/etc/sing-box/config.json:ro
+      - ./rendered/line1-gateway.json:/etc/sing-box/config.json:ro
       - ./tunnel-state:/var/lib/sing-box
     networks:
       - edge_net
