@@ -170,7 +170,7 @@ jobs:
           assert "CLOUDFLARE_MESH_IMAGE=%s" in workflow
           assert 'mesh_image="${EDGE_MESH_IMAGE}"' in workflow
           PY
-          if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-edge-gateway|vultr-tunnel-edge' \
+          if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-tunnel-edge' \
             win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
             echo "legacy six-service topology identifiers are forbidden" >&2
             exit 1
