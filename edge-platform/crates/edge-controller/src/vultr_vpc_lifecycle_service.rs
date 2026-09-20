@@ -944,7 +944,8 @@ mod tests {
             commit_attach_on_error: true,
             ..FakeProvider::default()
         };
-        let report = apply_vpc_attachment_once(&mut provider, &desired, policy())
+        let authority = attachment_authority(&mut provider, &desired).await;
+        let report = apply_vpc_attachment_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.attach_calls, 1);
