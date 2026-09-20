@@ -185,6 +185,23 @@ jobs:
           workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           assert "CLOUDFLARE_MESH_IMAGE=%s" in workflow
           assert 'mesh_image="${EDGE_MESH_IMAGE}"' in workflow
+
+          vpc = json.loads(Path("infra/vultr/application-acceptance-vpc.json").read_text())
+          assert vpc == {
+              "schema": 1,
+              "environment": "application-acceptance",
+              "region": "waw",
+              "machine_id": "application-acceptance-1",
+          }
+          assert not any(key in vpc for key in ("cidr", "v4_subnet", "v4_subnet_mask", "vpc_id"))
+          vpc_provider = Path("edge-platform/crates/edge-provider-vultr/src/lib.rs").read_text()
+          assert 'format!("{API_ROOT}/vpcs")' in vpc_provider
+          assert "/vpc2" not in vpc_provider
+          vpc_command = Path(
+              "edge-platform/crates/edge-controller/src/vultr_vpc_lifecycle_command.rs"
+          ).read_text()
+          assert "vultr-vpc verify <spec-path>" in vpc_command
+          assert "vultr-vpc cleanup-apply <spec-path> <destructive-digest>" in vpc_command
           PY
           if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-tunnel-edge' \
             win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
