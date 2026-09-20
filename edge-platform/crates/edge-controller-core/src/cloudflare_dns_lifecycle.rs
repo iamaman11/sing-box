@@ -32,7 +32,9 @@ pub struct DnsObservation {
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ApplyAction {
     Noop,
-    Create { ip: String },
+    Create {
+        ip: String,
+    },
     Update {
         record_id: String,
         from_ip: String,
@@ -119,7 +121,10 @@ pub fn validate_target_ipv4(value: &str) -> Result<Ipv4Addr, DnsLifecycleError> 
     let parsed = value.parse::<Ipv4Addr>().map_err(|err| {
         DnsLifecycleError::Validation(format!("invalid Cloudflare DNS target IPv4 {value}: {err}"))
     })?;
-    if parsed.is_unspecified() || parsed.is_loopback() || parsed.is_multicast() || parsed.is_broadcast()
+    if parsed.is_unspecified()
+        || parsed.is_loopback()
+        || parsed.is_multicast()
+        || parsed.is_broadcast()
     {
         return Err(DnsLifecycleError::Validation(format!(
             "Cloudflare DNS target IPv4 is not routable: {value}"
@@ -278,11 +283,7 @@ fn validate_dns_name(label: &str, value: &str) -> Result<(), DnsLifecycleError> 
     Ok(())
 }
 
-fn validate_identifier(
-    label: &str,
-    value: &str,
-    max_len: usize,
-) -> Result<(), DnsLifecycleError> {
+fn validate_identifier(label: &str, value: &str, max_len: usize) -> Result<(), DnsLifecycleError> {
     if value.is_empty()
         || value.len() > max_len
         || !value
@@ -354,15 +355,11 @@ mod tests {
             }],
         };
         assert_eq!(
-            plan_apply(&desired, "203.0.113.10", &exact)
-                .unwrap()
-                .action,
+            plan_apply(&desired, "203.0.113.10", &exact).unwrap().action,
             ApplyAction::Noop
         );
         assert_eq!(
-            plan_apply(&desired, "203.0.113.11", &exact)
-                .unwrap()
-                .action,
+            plan_apply(&desired, "203.0.113.11", &exact).unwrap().action,
             ApplyAction::Update {
                 record_id: "dns-1".to_owned(),
                 from_ip: "203.0.113.10".to_owned(),
