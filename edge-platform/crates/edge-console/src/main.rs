@@ -1,3 +1,9 @@
+mod cli;
+mod error;
+
+use clap::Parser;
+use edge_observability::init as init_observability;
+use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
 use std::io::{self, Write};
@@ -10,7 +16,7 @@ use std::time::{Duration, Instant};
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DoctorRequest, DoctorResponse,
+    DoctorRequest, DoctorResponse,
     Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
@@ -23,167 +29,196 @@ use tonic::transport::Channel;
 const DEFAULT_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:50051";
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
 const MAX_CONTROLLER_SERVICE_LOG_BYTES: u64 = 8 * 1024 * 1024;
-const DEFAULT_DNS_RECORD: &str = "edge.alegria.by";
-const DEFAULT_CLOUDFLARE_ZONE: &str = "alegria.by";
-const DEFAULT_ACME_EMAIL: &str = "admin@alegria.by";
-const DEFAULT_VULTR_SNAPSHOT_ID: &str = "61605612-d7a2-47b1-85ef-aef90f5083df";
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
-const DEPLOY_ENDPOINT_ARG_INDEX: usize = 10;
-const DESTROY_ENDPOINT_ARG_INDEX: usize = 6;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
+    let telemetry = init_observability("edge-console");
+    let parsed = match cli::Cli::try_parse() {
+        Ok(parsed) => parsed,
         Err(err) => {
+            let code = err.exit_code();
+            let _ = err.print();
+            return ExitCode::from(code as u8);
+        }
+    };
+    let command = parsed.command_name();
+    tracing::info!(
+        component = "edge-console",
+        correlation_id = %telemetry.id(),
+        command,
+        event = "command.start",
+        "command started"
+    );
+
+    match run(parsed).await {
+        Ok(()) => {
+            tracing::info!(
+                component = "edge-console",
+                correlation_id = %telemetry.id(),
+                command,
+                event = "command.success",
+                "command completed"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            tracing::error!(
+                component = "edge-console",
+                correlation_id = %telemetry.id(),
+                command,
+                error_category = err.category(),
+                event = "command.failure",
+                "command failed"
+            );
             eprintln!("{err}");
             ExitCode::from(1)
         }
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let command = env::args().nth(1).unwrap_or_else(|| "menu".to_owned());
+async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
+    use cli::Command;
 
-    match command.as_str() {
-        "menu" => run_menu(controller_endpoint_from_args(2)).await,
-        "status" => {
-            let status = fetch_status(controller_endpoint_from_args(2)).await?;
+    match parsed
+        .command
+        .unwrap_or_else(|| Command::Menu(cli::EndpointArgs::default()))
+    {
+        Command::Menu(args) => {
+            run_menu(args.resolve()).await?;
+            Ok(())
+        }
+        Command::Status(args) => {
+            let status = fetch_status(args.resolve()).await?;
             print_status(&status);
             Ok(())
         }
-        "doctor" => {
-            let doctor = fetch_doctor(controller_endpoint_from_args(2)).await?;
+        Command::Doctor(args) => {
+            let doctor = fetch_doctor(args.resolve()).await?;
             print_doctor(&doctor);
             if doctor.ok {
                 Ok(())
             } else {
-                Err("doctor reported failing checks".into())
+                Err(ConsoleError::Command(
+                    "doctor reported failing checks".to_owned(),
+                ))
             }
         }
-        "secrets" => {
-            let secrets = list_secret_refs(controller_endpoint_from_args(2)).await?;
+        Command::Secrets(args) => {
+            let secrets = list_secret_refs(args.resolve()).await?;
             print_secret_refs(&secrets);
             Ok(())
         }
-        "get-secret" => {
-            let name = env::args()
-                .nth(2)
-                .ok_or("get-secret requires a secret name")?;
-            let entry = get_secret_ref(controller_endpoint_from_args(3), &name).await?;
-            print_secret_ref(&entry);
-            Ok(())
-        }
-        "set-secret" => {
-            let name = env::args()
-                .nth(2)
-                .ok_or("set-secret requires a secret name")?;
-            let secret_ref = env::args()
-                .nth(3)
-                .ok_or("set-secret requires a secret reference")?;
+        Command::GetSecret(args) => {
             let entry =
-                set_secret_ref(controller_endpoint_from_args(4), &name, &secret_ref).await?;
+                get_secret_ref(cli::controller_endpoint(args.endpoint), &args.name).await?;
             print_secret_ref(&entry);
             Ok(())
         }
-        "start-local" => {
-            let response = start_local(controller_endpoint_from_args(2)).await?;
-            print_local_runtime_result(&response);
-            finish_local_result(response)
+        Command::SetSecret(args) => {
+            let entry = set_secret_ref(
+                cli::controller_endpoint(args.endpoint),
+                &args.name,
+                &args.secret_ref,
+            )
+            .await?;
+            print_secret_ref(&entry);
+            Ok(())
         }
-        "start-local-visible" => {
-            let response = start_local_visible(controller_endpoint_from_args(2)).await?;
+        Command::StartLocal(args) => {
+            let response = start_local(args.resolve()).await?;
             print_local_runtime_result(&response);
-            finish_local_result(response)
+            finish_local_result(response)?;
+            Ok(())
         }
-        "stop-local" => {
-            let response = stop_local(controller_endpoint_from_args(2)).await?;
+        Command::StartLocalVisible(args) => {
+            let response = start_local_visible(args.resolve()).await?;
             print_local_runtime_result(&response);
-            finish_local_result(response)
+            finish_local_result(response)?;
+            Ok(())
         }
-        "restart-local" => {
-            let response = restart_local(controller_endpoint_from_args(2)).await?;
+        Command::StopLocal(args) => {
+            let response = stop_local(args.resolve()).await?;
             print_local_runtime_result(&response);
-            finish_local_result(response)
+            finish_local_result(response)?;
+            Ok(())
         }
-        "restart-local-visible" => {
-            let response = restart_local_visible(controller_endpoint_from_args(2)).await?;
+        Command::RestartLocal(args) => {
+            let response = restart_local(args.resolve()).await?;
             print_local_runtime_result(&response);
-            finish_local_result(response)
+            finish_local_result(response)?;
+            Ok(())
         }
-        "get-selector" => {
-            let selector =
-                fetch_selector_state(controller_endpoint_from_args(2), DESKTOP_SELECTOR_GROUP)
-                    .await?;
+        Command::RestartLocalVisible(args) => {
+            let response = restart_local_visible(args.resolve()).await?;
+            print_local_runtime_result(&response);
+            finish_local_result(response)?;
+            Ok(())
+        }
+        Command::GetSelector(args) => {
+            let selector = fetch_selector_state(args.resolve(), DESKTOP_SELECTOR_GROUP).await?;
             print_selector_state(&selector);
             Ok(())
         }
-        "get-ubuntu-selector" => {
-            let selector =
-                fetch_selector_state(controller_endpoint_from_args(2), UBUNTU_SELECTOR_GROUP)
-                    .await?;
+        Command::GetUbuntuSelector(args) => {
+            let selector = fetch_selector_state(args.resolve(), UBUNTU_SELECTOR_GROUP).await?;
             print_selector_state_with_label("Ubuntu selector", &selector);
             Ok(())
         }
-        "set-selector" => {
-            let name = env::args()
-                .nth(2)
-                .ok_or("set-selector requires a selector target name")?;
+        Command::SetSelector(args) => {
             let response = set_selector(
-                controller_endpoint_from_args(3),
+                cli::controller_endpoint(args.endpoint),
                 DESKTOP_SELECTOR_GROUP,
-                &name,
+                &args.name,
             )
             .await?;
             print_set_selector_result(&response);
-            finish_selector_result(response)
+            finish_selector_result(response)?;
+            Ok(())
         }
-        "set-ubuntu-selector" => {
-            let name = env::args()
-                .nth(2)
-                .ok_or("set-ubuntu-selector requires a selector target name")?;
+        Command::SetUbuntuSelector(args) => {
             let response = set_selector(
-                controller_endpoint_from_args(3),
+                cli::controller_endpoint(args.endpoint),
                 UBUNTU_SELECTOR_GROUP,
-                &name,
+                &args.name,
             )
             .await?;
             print_set_selector_result(&response);
-            finish_selector_result(response)
+            finish_selector_result(response)?;
+            Ok(())
         }
-        "trace" => {
-            let trace = fetch_trace(controller_endpoint_from_args(2)).await?;
+        Command::Trace(args) => {
+            let trace = fetch_trace(args.resolve()).await?;
             print_trace(&trace);
             Ok(())
         }
-        "trace-ubuntu" => {
-            let status = fetch_status(controller_endpoint_from_args(2)).await?;
-            let proxy_url = ubuntu_proxy_url_from_status(&status)
-                .ok_or("ubuntu proxy endpoint is not available in controller status")?;
-            let trace =
-                fetch_trace_with_proxy(controller_endpoint_from_args(2), Some(proxy_url)).await?;
+        Command::TraceUbuntu(args) => {
+            let endpoint = args.resolve();
+            let status = fetch_status(endpoint.clone()).await?;
+            let proxy_url = ubuntu_proxy_url_from_status(&status).ok_or_else(|| {
+                ConsoleError::Command(
+                    "ubuntu proxy endpoint is not available in controller status".to_owned(),
+                )
+            })?;
+            let trace = fetch_trace_with_proxy(endpoint, Some(proxy_url)).await?;
             print_trace_with_label("Ubuntu egress IP", &trace);
             Ok(())
         }
-        "get-operation" => {
-            let operation_id = env::args()
-                .nth(2)
-                .ok_or("get-operation requires an operation id")?
-                .parse::<i64>()?;
-            let status = get_operation(controller_endpoint_from_args(3), operation_id).await?;
+        Command::GetOperation(args) => {
+            let status =
+                get_operation(cli::controller_endpoint(args.endpoint), args.operation_id).await?;
             print_operation_status(&status);
             Ok(())
         }
-        "watch-operation" => {
-            let operation_id = env::args()
-                .nth(2)
-                .ok_or("watch-operation requires an operation id")?
-                .parse::<i64>()?;
-            let endpoint = controller_endpoint_from_args(3);
-            watch_operation(endpoint, operation_id).await
+        Command::WatchOperation(args) => {
+            watch_operation(
+                cli::controller_endpoint(args.endpoint),
+                args.operation_id,
+            )
+            .await?;
+            Ok(())
         }
-        other => Err(format!("unsupported command: {other}").into()),
     }
 }
 
@@ -371,24 +406,6 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
     }
 }
 
-fn controller_endpoint_from_args(index: usize) -> String {
-    env::args()
-        .nth(index)
-        .or_else(|| env::var("EDGE_CONTROLLER_ENDPOINT").ok())
-        .unwrap_or_else(|| DEFAULT_CONTROLLER_ENDPOINT.to_owned())
-}
-
-fn optional_arg(index: usize) -> Option<String> {
-    env::args().nth(index).and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_owned())
-        }
-    })
-}
-
 fn looks_like_repo_root(path: &Path) -> bool {
     path.join("edge-platform").join("Cargo.toml").is_file()
         || (path.join("Cargo.toml").is_file() && path.join("crates").is_dir())
@@ -561,44 +578,6 @@ async fn connect_controller(
             )
             .into())
         }
-    }
-}
-
-fn deploy_request_from_args() -> DeployRequest {
-    DeployRequest {
-        label_prefix: optional_arg(2).or_else(|| Some("waw-edge".to_owned())),
-        target_ip: optional_arg(3),
-        instance_id: optional_arg(4),
-        tunnel_domain: optional_arg(5).or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
-        acme_email: optional_arg(6).or_else(|| Some(DEFAULT_ACME_EMAIL.to_owned())),
-        dns_record_name: optional_arg(7).or_else(|| Some(DEFAULT_DNS_RECORD.to_owned())),
-        cloudflare_zone_name: optional_arg(8).or_else(|| Some(DEFAULT_CLOUDFLARE_ZONE.to_owned())),
-        mock_provider: env::var("EDGE_MOCK_PROVIDER")
-            .ok()
-            .is_some_and(|value| value == "1"),
-        skip_dns: env::var("EDGE_SKIP_DNS")
-            .ok()
-            .is_some_and(|value| value == "1"),
-        snapshot_id: optional_arg(9).or_else(|| Some(DEFAULT_VULTR_SNAPSHOT_ID.to_owned())),
-    }
-}
-
-fn destroy_request_from_args() -> DestroyRequest {
-    DestroyRequest {
-        instance_id: optional_arg(2),
-        target_ip: optional_arg(3),
-        dns_record_name: optional_arg(4),
-        cloudflare_zone_name: optional_arg(5),
-        mock_provider: env::var("EDGE_MOCK_PROVIDER")
-            .ok()
-            .is_some_and(|value| value == "1"),
-        delete_dns: env::var("EDGE_DELETE_DNS")
-            .ok()
-            .is_none_or(|value| value == "1"),
-        delete_instance: env::var("EDGE_DELETE_INSTANCE")
-            .ok()
-            .is_none_or(|value| value == "1"),
-        lifecycle_reason: env::var("EDGE_LIFECYCLE_REASON").ok(),
     }
 }
 
@@ -1475,30 +1454,6 @@ mod tests {
         assert!(message.contains("controller bootstrap base failed with exit code 3"));
         assert!(message.contains("docker not reachable"));
         assert!(message.contains("gateway container missing"));
-    }
-
-    #[test]
-    fn optional_arg_like_normalization_drops_blank_values() {
-        let normalize = |value: Option<&str>| {
-            value.and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_owned())
-                }
-            })
-        };
-
-        assert_eq!(normalize(Some("")), None);
-        assert_eq!(normalize(Some("   ")), None);
-        assert_eq!(normalize(Some("  edge  ")), Some("edge".to_owned()));
-    }
-
-    #[test]
-    fn command_endpoint_indices_match_positional_contracts() {
-        assert_eq!(DEPLOY_ENDPOINT_ARG_INDEX, 10);
-        assert_eq!(DESTROY_ENDPOINT_ARG_INDEX, 6);
     }
 
     #[test]

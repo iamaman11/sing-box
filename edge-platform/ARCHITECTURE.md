@@ -45,3 +45,26 @@ names, service names and RPC signatures are compatibility authority.
 
 The first lint baseline is Buf MINIMAL: package/directory correctness and import
 cycle safety without forcing a breaking rename of established v1 symbols.
+
+## Typed process boundary (Gate C / C2)
+
+The controller, console and agent process entry points use a closed typed CLI
+grammar before any lifecycle mutation can execute. Manual `env::args().nth()`
+and magic argument-index constants are forbidden by CI.
+
+Dependency decisions:
+
+- `clap 4.6.7`: current stable release, MSRV 1.85; used with a reduced feature
+  set to remove positional parser/index machinery while preserving help/usage.
+- `thiserror 2.0.18`: already present in the accepted lock graph; now used
+  directly for process-boundary error categories.
+- `tracing 0.1.44`: already present in the accepted lock graph.
+- `tracing-subscriber 0.3.20`: deliberately pinned with only `fmt`; it
+  contains the ANSI-injection fix and avoids the currently reported
+  0.3.22/0.3.23 span-clone regression.
+
+`edge-observability` is deliberately tiny. It owns only process-level,
+secret-safe structured tracing and correlation identity. It is not a telemetry
+backend, remote collector, lifecycle authority or state store. Correlation IDs
+accept only bounded safe tokens from `EDGE_CORRELATION_ID`; arbitrary
+environment content is never emitted.

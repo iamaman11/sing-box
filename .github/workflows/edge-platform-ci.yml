@@ -263,6 +263,13 @@ jobs:
               for path in sorted(platform_proto_root.glob("*.proto"))
           )
           agent_manifest = Path("edge-platform/crates/edge-agent/Cargo.toml").read_text()
+          controller_main = Path("edge-platform/crates/edge-controller/src/main.rs").read_text()
+          console_main = Path("edge-platform/crates/edge-console/src/main.rs").read_text()
+          agent_main = Path("edge-platform/crates/edge-agent/src/main.rs").read_text()
+          controller_cli = Path("edge-platform/crates/edge-controller/src/cli.rs").read_text()
+          console_cli = Path("edge-platform/crates/edge-console/src/cli.rs").read_text()
+          agent_cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text()
+          observability = Path("edge-platform/crates/edge-observability/src/lib.rs").read_text()
           agent_network = Path(
               "edge-platform/crates/edge-agent/src/network_observation.rs"
           ).read_text()
@@ -281,6 +288,18 @@ jobs:
           assert "rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);" in agent_proto
           assert "service ControllerService" in agent_proto
           assert "service AgentService" in agent_proto
+          for process_root in [controller_main, console_main, agent_main]:
+              assert "env::args()" not in process_root
+              assert "_ARG_INDEX" not in process_root
+              assert "init_observability" in process_root
+          for typed_cli in [controller_cli, console_cli, agent_cli]:
+              assert "derive(Debug, Parser)" in typed_cli
+              assert "Subcommand" in typed_cli
+          assert "EDGE_CORRELATION_ID" in observability
+          assert "with_max_level(Level::INFO)" in observability
+          assert 'clap = { version = "=4.6.7"' in agent_manifest
+          assert 'thiserror = "=2.0.18"' in agent_manifest
+          assert 'tracing = "=0.1.44"' in agent_manifest
           assert 'rtnetlink = "0.23.0"' in agent_manifest
           assert 'bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }' in agent_manifest
           assert "Docker::connect_with_unix" in agent_docker
