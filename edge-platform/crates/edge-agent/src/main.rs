@@ -1538,6 +1538,22 @@ mod tests {
             store
         );
 
+        fs::rename(&stack, root.join("stack.previous")).unwrap();
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance-v2\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
+        materialize_vm_owned_runtime_environment(&stack).unwrap();
+        let upgraded = fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap();
+        let upgraded_store =
+            fs::read_to_string(root.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE)).unwrap();
+
+        assert_ne!(first, upgraded);
+        assert!(upgraded.contains("PROXY_USERNAME=acceptance-v2\n"));
+        assert_eq!(store, upgraded_store);
+
         fs::remove_dir_all(root).unwrap();
     }
 
