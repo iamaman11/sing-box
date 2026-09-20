@@ -686,7 +686,10 @@ jobs:
           jq -e '.status == "PASS" and .runtime.runtime_ready == true' \
             "${RUNNER_TEMP}/acceptance-mesh-runtime-verify.json" >/dev/null
 
-          "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}" \
+          "${bin}" application-lifecycle plan "${app_spec}" "${manifest}" "${artifact}" \
+            > "${RUNNER_TEMP}/acceptance-app-noop-plan.json"
+          app_noop_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-app-noop-plan.json")"
+          "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}" "${app_noop_authority}" \
             > "${RUNNER_TEMP}/acceptance-app-noop.json"
           jq -e '.initial_plan.class == "NOOP" and .final_plan.class == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-app-noop.json" >/dev/null
@@ -709,7 +712,10 @@ jobs:
           upgrade_spec="${RUNNER_TEMP}/application-upgrade.json"
           jq '.runtime_policy.line2.proxy_username = "acceptance-v2"' \
             "${app_spec}" > "${upgrade_spec}"
-          "${bin}" application-lifecycle upgrade "${upgrade_spec}" "${manifest}" "${artifact}" \
+          "${bin}" application-lifecycle plan "${upgrade_spec}" "${manifest}" "${artifact}" \
+            > "${RUNNER_TEMP}/acceptance-upgrade-plan.json"
+          upgrade_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-upgrade-plan.json")"
+          "${bin}" application-lifecycle upgrade "${upgrade_spec}" "${manifest}" "${artifact}" "${upgrade_authority}" \
             > "${RUNNER_TEMP}/acceptance-upgrade.json"
           jq -e '.initial_plan.class == "UPGRADE" and .final_plan.class == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-upgrade.json" >/dev/null
@@ -731,7 +737,8 @@ jobs:
              .rollback.previous_release.release_id == $previous' \
             "${RUNNER_TEMP}/acceptance-rollback-plan.json" >/dev/null
 
-          "${bin}" application-lifecycle rollback-apply "${app_spec}" "${rollback_digest}" \
+          rollback_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-rollback-plan.json")"
+          "${bin}" application-lifecycle rollback-apply "${app_spec}" "${rollback_digest}" "${rollback_authority}" \
             > "${RUNNER_TEMP}/acceptance-rollback-apply.json"
           jq -e '.status == "ROLLED_BACK"' \
             "${RUNNER_TEMP}/acceptance-rollback-apply.json" >/dev/null
@@ -741,9 +748,15 @@ jobs:
           jq -e '.status == "PASS" and .plan.class == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-verify-rollback.json" >/dev/null
 
-          "${bin}" vultr-lifecycle action "${vultr_spec}" "${machine}" reboot \
+          "${bin}" vultr-lifecycle action-plan "${vultr_spec}" "${machine}" reboot \
+            > "${RUNNER_TEMP}/acceptance-reboot-plan.json"
+          reboot_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-reboot-plan.json")"
+          "${bin}" vultr-lifecycle action "${vultr_spec}" "${machine}" reboot "${reboot_authority}" \
             > "${RUNNER_TEMP}/acceptance-reboot.json"
-          "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}" \
+          "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
+            > "${RUNNER_TEMP}/acceptance-post-reboot-plan.json"
+          post_reboot_authority="$(machine_authority "${RUNNER_TEMP}/acceptance-post-reboot-plan.json")"
+          "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}" "${post_reboot_authority}" \
             > "${RUNNER_TEMP}/acceptance-post-reboot-vm.json"
           jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"' \
             "${RUNNER_TEMP}/acceptance-post-reboot-vm.json" >/dev/null
@@ -794,7 +807,8 @@ jobs:
               break
             fi
             [[ "${mesh_digest}" =~ ^[0-9a-f]{64}$ ]]
-            "${bin}" line3-mesh cleanup-apply "${mesh_base_spec}" "${mesh_digest}" \
+            mesh_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-mesh-cleanup-plan.json")"
+            "${bin}" line3-mesh cleanup-apply "${mesh_base_spec}" "${mesh_digest}" "${mesh_cleanup_authority}" \
               > "${RUNNER_TEMP}/acceptance-mesh-cleanup-apply.json"
           done
           test "${mesh_absent}" = "1"
@@ -804,7 +818,8 @@ jobs:
           dns_digest="$(jq -er '.plan.destructive_digest' \
             "${RUNNER_TEMP}/acceptance-dns-cleanup-plan.json")"
           [[ "${dns_digest}" =~ ^[0-9a-f]{64}$ ]]
-          "${bin}" cloudflare-dns cleanup-apply "${dns_spec}" "${dns_digest}" \
+          dns_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-dns-cleanup-plan.json")"
+          "${bin}" cloudflare-dns cleanup-apply "${dns_spec}" "${dns_digest}" "${dns_cleanup_authority}" \
             > "${RUNNER_TEMP}/acceptance-dns-cleanup-apply.json"
           jq -e '.next_plan.action.kind == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-dns-cleanup-apply.json" >/dev/null
@@ -822,7 +837,8 @@ jobs:
               break
             fi
             [[ "${vpc_digest}" =~ ^[0-9a-f]{64}$ ]]
-            "${bin}" vultr-vpc cleanup-apply "${vpc_spec}" "${vpc_digest}" \
+            vpc_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-vpc-cleanup-plan.json")"
+            "${bin}" vultr-vpc cleanup-apply "${vpc_spec}" "${vpc_digest}" "${vpc_cleanup_authority}" \
               > "${RUNNER_TEMP}/acceptance-vpc-cleanup-apply.json"
           done
           test "${vpc_absent}" = "1"
@@ -836,8 +852,9 @@ jobs:
             > "${RUNNER_TEMP}/acceptance-destroy-plan.json"
           destroy_digest="$(jq -er '.destroy_digest' \
             "${RUNNER_TEMP}/acceptance-destroy-plan.json")"
+          destroy_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-destroy-plan.json")"
           "${bin}" vultr-lifecycle destroy-apply \
-            "${vultr_spec}" "${machine}" "${source_revision}" "${destroy_digest}" \
+            "${vultr_spec}" "${machine}" "${source_revision}" "${destroy_digest}" "${destroy_authority}" \
             > "${RUNNER_TEMP}/acceptance-destroy-apply.json"
           jq -e '.absence_verified == true' \
             "${RUNNER_TEMP}/acceptance-destroy-apply.json" >/dev/null
