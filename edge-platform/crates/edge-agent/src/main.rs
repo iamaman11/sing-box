@@ -1739,14 +1739,10 @@ impl CertificateReadinessEvidence {
     }
 }
 
-async fn observe_certificate_readiness(
-    cert: &Path,
-    key: &Path,
-) -> CertificateReadinessEvidence {
+async fn observe_certificate_readiness(cert: &Path, key: &Path) -> CertificateReadinessEvidence {
     let cert_present = cert.is_file();
     let key_present = key.is_file();
-    let key_nonempty = key_present
-        && fs::metadata(key).is_ok_and(|metadata| metadata.len() > 0);
+    let key_nonempty = key_present && fs::metadata(key).is_ok_and(|metadata| metadata.len() > 0);
     let cert_valid = cert_present && certificate_is_valid(cert, 300);
 
     match observe_container_runtime(LINE1_CONTAINER).await {
