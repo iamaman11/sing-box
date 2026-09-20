@@ -119,6 +119,8 @@ jobs:
           grep -Fq 'direct egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'WARP egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'enabled Mesh runtime datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'https://acme-staging-v02.api.letsencrypt.org/directory' edge-platform/crates/edge-controller-core/src/application_lifecycle.rs
+          grep -Fq 'ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env"' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'run_mesh_compose(' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'runtime-apply <mesh-spec-path> <application-spec-path>' edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs
@@ -150,7 +152,7 @@ jobs:
               "domain": ["${TUNNEL_DOMAIN}"],
               "data_directory": "/var/lib/sing-box/acme",
               "email": "${ACME_EMAIL}",
-              "provider": "letsencrypt",
+              "provider": "${ACME_PROVIDER}",
               "disable_tls_alpn_challenge": True,
           }]
           hysteria = [
@@ -601,6 +603,7 @@ jobs:
           export REALITY_SERVER_NAME="www.microsoft.com"
           export TUNNEL_DOMAIN="edge.example.com"
           export ACME_EMAIL="admin@example.com"
+          export ACME_PROVIDER="letsencrypt"
           export PROXY_CERT_PATH="${config_check}/proxy.crt"
           export PROXY_KEY_PATH="${config_check}/proxy.key"
           export CONFIG_CHECK_DIR="${config_check}"

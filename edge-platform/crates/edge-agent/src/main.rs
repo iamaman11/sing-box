@@ -935,6 +935,7 @@ fn read_typed_runtime_environment(stack_dir: &Path) -> Result<BTreeMap<String, S
         "REALITY_SERVER_NAME",
         "TUNNEL_DOMAIN",
         "ACME_EMAIL",
+        "ACME_PROVIDER",
         "PROXY_PASSWORD",
         "VLESS_UUID",
         "HY2_PASSWORD",
@@ -1375,7 +1376,12 @@ fn require_line2_policy(runtime: &BTreeMap<String, String>) -> Result<(), String
 }
 
 fn require_tunnel_policy(runtime: &BTreeMap<String, String>) -> Result<(), String> {
-    for key in ["REALITY_SERVER_NAME", "TUNNEL_DOMAIN", "ACME_EMAIL"] {
+    for key in [
+        "REALITY_SERVER_NAME",
+        "TUNNEL_DOMAIN",
+        "ACME_EMAIL",
+        "ACME_PROVIDER",
+    ] {
         if !runtime.contains_key(key) {
             return Err(format!(
                 "tunnel bootstrap requires runtime policy key: {key}"
@@ -1386,6 +1392,7 @@ fn require_tunnel_policy(runtime: &BTreeMap<String, String>) -> Result<(), Strin
     if !valid_certificate_domain(domain) {
         return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
     }
+    validate_acme_provider(runtime.get("ACME_PROVIDER").unwrap())?;
     Ok(())
 }
 
@@ -1410,6 +1417,7 @@ fn render_line1_runtime(
             "REALITY_WARP_SHORT_ID",
             "TUNNEL_DOMAIN",
             "ACME_EMAIL",
+            "ACME_PROVIDER",
         ],
     )
 }
@@ -1487,9 +1495,11 @@ fn line2_certificate_container_paths(
         if !valid_certificate_domain(domain) {
             return Err("TUNNEL_DOMAIN is invalid for Line 2 certificate paths".to_owned());
         }
-        let base = format!(
-            "/var/lib/sing-box/acme/certificates/acme-v02.api.letsencrypt.org-directory/{domain}"
-        );
+        let provider = runtime
+            .get("ACME_PROVIDER")
+            .ok_or_else(|| "ACME_PROVIDER is required for Line 2 certificate paths".to_owned())?;
+        let directory = acme_certificate_directory(provider)?;
+        let base = format!("/var/lib/sing-box/acme/certificates/{directory}/{domain}");
         return Ok((
             format!("{base}/{domain}.crt"),
             format!("{base}/{domain}.key"),
@@ -2426,6 +2436,23 @@ fn tunnel_runtime_enabled(stack_dir: &Path) -> bool {
     read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
         env_flag_present(&values, "TUNNEL_DOMAIN") && env_flag_present(&values, "ACME_EMAIL")
     })
+}
+
+fn validate_acme_provider(value: &str) -> Result<(), String> {
+    acme_certificate_directory(value).map(|_| ())
+}
+
+fn acme_certificate_directory(value: &str) -> Result<&'static str, String> {
+    match value {
+        "letsencrypt" => Ok("acme-v02.api.letsencrypt.org-directory"),
+        "https://acme-staging-v02.api.letsencrypt.org/directory" => {
+            Ok("acme-staging-v02.api.letsencrypt.org-directory")
+        }
+        _ => Err(
+            "ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory"
+                .to_owned(),
+        ),
+    }
 }
 
 fn valid_certificate_domain(value: &str) -> bool {
