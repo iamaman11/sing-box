@@ -202,6 +202,74 @@ jobs:
           ).read_text()
           assert "vultr-vpc verify <spec-path>" in vpc_command
           assert "vultr-vpc cleanup-apply <spec-path> <destructive-digest>" in vpc_command
+
+          application = json.loads(Path("infra/application/disposable-acceptance.json").read_text())
+          assert application["environment"] == "application-acceptance"
+          assert application["vultr_spec_path"] == "infra/vultr/application-acceptance.json"
+          assert application["machine_id"] == "application-acceptance-1"
+          assert application["bootstrap_mode"] == "full"
+          assert application["runtime_policy"]["line1"] == {
+              "tunnel_domain": "stage2-acceptance.alegria.by",
+              "acme_email": "admin@alegria.by",
+              "reality_server_name": "www.microsoft.com",
+              "acme_provider": "https://acme-staging-v02.api.letsencrypt.org/directory",
+          }
+          assert application["runtime_policy"]["line2"]["proxy_cert_cn"] == "stage2-acceptance.alegria.by"
+
+          dns = json.loads(Path("infra/cloudflare/application-acceptance-dns.json").read_text())
+          assert dns == {
+              "schema": 1,
+              "environment": "application-acceptance",
+              "zone_name": "alegria.by",
+              "record_name": "stage2-acceptance.alegria.by",
+          }
+
+          mesh = json.loads(Path("infra/cloudflare/application-acceptance-mesh.json").read_text())
+          assert mesh == {
+              "schema": 1,
+              "account_id": "4426df1449e417511bc7697d60b7f62f",
+              "environment": "application-acceptance",
+              "node_name": "singbox-line3-application-acceptance",
+              "routes": [],
+          }
+          assert "1.1.1.1/32" not in Path("infra/cloudflare/application-acceptance-mesh.json").read_text()
+
+          acceptance_vm = json.loads(Path("infra/vultr/application-acceptance.json").read_text())
+          assert acceptance_vm["environment"] == "application-acceptance"
+          assert len(acceptance_vm["machines"]) == 1
+          assert acceptance_vm["machines"][0]["id"] == "application-acceptance-1"
+          assert acceptance_vm["machines"][0]["provider"]["region"] == "waw"
+          assert acceptance_vm["machines"][0]["provider"]["firewall_profile"] == "application-acceptance"
+
+          firewall = json.loads(Path("infra/vultr/firewall-profiles.json").read_text())
+          acceptance_firewall = next(
+              profile for profile in firewall["profiles"]
+              if profile["name"] == "application-acceptance"
+          )
+          assert any(
+              rule["protocol"] == "tcp"
+              and rule["port"] == "80"
+              and rule["subnet"] == "0.0.0.0"
+              and rule["subnet_size"] == 0
+              for rule in acceptance_firewall["rules"]
+          )
+
+          workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
+          assert "CLOUDFLARE_ACCOUNT_ID" not in workflow
+          assert 'vpc_cidr="$(jq -er '.cidr'' in workflow
+          assert "vultr-vpc attachment-apply" in workflow
+          assert "vultr-vpc verify" in workflow
+          assert "vultr-vpc cleanup-apply" in workflow
+          assert '.routes = [{"network": $cidr}]' in workflow
+
+          for acceptance_path in [
+              "infra/application/disposable-acceptance.json",
+              "infra/cloudflare/application-acceptance-dns.json",
+              "infra/cloudflare/application-acceptance-mesh.json",
+              "infra/vultr/application-acceptance.json",
+              "infra/vultr/application-acceptance-vpc.json",
+          ]:
+              assert "miu.alegria.by" not in Path(acceptance_path).read_text()
           PY
           if grep -R --line-number -E 'edge-gateway-direct|tunnel-edge-warp|vultr-tunnel-edge' \
             win/vultr-waw/stack edge-platform/crates/edge-agent/src/main.rs; then
