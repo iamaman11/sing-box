@@ -1053,7 +1053,7 @@ mod tests {
         let (plan, authority) =
             destroy_authorities(&mut provider, &desired, "edge-1", revision).await;
 
-        provider.instances[0].power_status = "stopped".to_owned();
+        provider.instances[0].main_ip = "203.0.113.99".to_owned();
         let error = destroy_machine(
             &mut provider,
             &desired,
