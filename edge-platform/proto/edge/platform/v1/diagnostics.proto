@@ -5,6 +5,31 @@ package edge.platform.v1;
 import "edge/platform/v1/operation.proto";
 import "edge/platform/v1/runtime.proto";
 
+enum CheckStatus {
+  CHECK_STATUS_UNSPECIFIED = 0;
+  PASS = 1;
+  FAIL = 2;
+  WARN = 3;
+  SKIPPED = 4;
+}
+
+enum DiagnosticSubsystem {
+  DIAGNOSTIC_SUBSYSTEM_UNSPECIFIED = 0;
+  DIAGNOSTIC_STATE = 1;
+  PROVIDER = 2;
+  SERVER_RUNTIME = 3;
+  LOCAL_RUNTIME = 4;
+  SELECTOR = 5;
+  EGRESS = 6;
+  RELEASE = 7;
+  SECURITY = 8;
+}
+
+message DiagnosticEvidence {
+  string code = 1;
+  string summary = 2;
+}
+
 message DoctorRequest {
   bool require_server_ready = 1;
   bool require_local_runtime = 2;
@@ -12,9 +37,15 @@ message DoctorRequest {
 }
 
 message DoctorCheck {
+  // Legacy compatibility fields retained through the v1 transition.
   string name = 1;
   bool ok = 2;
   string detail = 3;
+
+  string check_id = 4;
+  CheckStatus status = 5;
+  DiagnosticSubsystem subsystem = 6;
+  repeated DiagnosticEvidence evidence = 7;
 }
 
 message DoctorResponse {

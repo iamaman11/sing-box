@@ -1,3 +1,6 @@
+use edge_controller_core::lifecycle::{
+    AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
+};
 use edge_controller_core::vultr_lifecycle::{MANAGED_BY_IDENTITY, decode_provider_tags};
 use edge_controller_core::vultr_vpc_lifecycle::{
     AttachmentAction, AttachmentPlan, CleanupAction, CleanupPlan, DesiredVpcState, ObservedVpc,
@@ -178,10 +181,14 @@ pub async fn plan_vpc<P: VpcProvider>(
 pub async fn apply_vpc_once<P: VpcProvider>(
     provider: &mut P,
     desired: &DesiredVpcState,
+    authorized_plan_digest: &str,
     policy: VpcExecutionPolicy,
 ) -> Result<VpcApplyReport, String> {
     validate_policy(&policy)?;
     let (observation, plan) = plan_vpc(provider, desired).await?;
+    let authorized = authorize_vpc_apply(desired, &observation, plan.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
     match &plan.action {
         VpcApplyAction::Noop => Ok(VpcApplyReport {
             performed: VpcApplyAction::Noop,
@@ -239,10 +246,15 @@ pub async fn plan_vpc_attachment<P: VpcProvider>(
 pub async fn apply_vpc_attachment_once<P: VpcProvider>(
     provider: &mut P,
     desired: &DesiredVpcState,
+    authorized_plan_digest: &str,
     policy: VpcExecutionPolicy,
 ) -> Result<AttachmentApplyReport, String> {
     validate_policy(&policy)?;
     let (target, observation, attachments, plan) = plan_vpc_attachment(provider, desired).await?;
+    let authorized =
+        authorize_vpc_attachment(desired, &target, &observation, &attachments, plan.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
 
     match &plan.action {
         AttachmentAction::Noop => Ok(AttachmentApplyReport {
@@ -312,6 +324,75 @@ pub async fn verify_vpc_ready<P: VpcProvider>(
     })
 }
 
+pub fn authorize_vpc_apply(
+    desired: &DesiredVpcState,
+    observation: &VpcObservation,
+    plan: VpcApplyPlan,
+) -> Result<AuthorizedPlan<VpcApplyPlan>, String> {
+    let disposition = if matches!(plan.action, VpcApplyAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    authorize_plan("vultr_vpc_apply", desired, observation, plan, disposition)
+        .map_err(|err| err.to_string())
+}
+
+pub fn authorize_vpc_attachment(
+    desired: &DesiredVpcState,
+    target: &TargetInstance,
+    observation: &VpcObservation,
+    attachments: &VpcAttachmentObservation,
+    plan: AttachmentPlan,
+) -> Result<AuthorizedPlan<AttachmentPlan>, String> {
+    let disposition = if matches!(plan.action, AttachmentAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let desired_material = serde_json::json!({
+        "desired": desired,
+        "target_provider_id": &target.provider_id,
+    });
+    let observed_material = serde_json::json!({
+        "vpc": observation,
+        "attachments": attachments,
+    });
+    authorize_plan(
+        "vultr_vpc_attachment",
+        &desired_material,
+        &observed_material,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn authorize_vpc_cleanup(
+    desired: &DesiredVpcState,
+    observation: &VpcObservation,
+    attachments: &VpcAttachmentObservation,
+    plan: CleanupPlan,
+) -> Result<AuthorizedPlan<CleanupPlan>, String> {
+    let disposition = if matches!(plan.action, CleanupAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    let observed_material = serde_json::json!({
+        "vpc": observation,
+        "attachments": attachments,
+    });
+    authorize_plan(
+        "vultr_vpc_cleanup",
+        desired,
+        &observed_material,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub async fn plan_vpc_cleanup<P: VpcProvider>(
     provider: &mut P,
     desired: &DesiredVpcState,
@@ -354,6 +435,7 @@ pub async fn cleanup_vpc_once<P: VpcProvider>(
     provider: &mut P,
     desired: &DesiredVpcState,
     expected_digest: &str,
+    authorized_plan_digest: &str,
     policy: VpcExecutionPolicy,
 ) -> Result<CleanupApplyReport, String> {
     validate_policy(&policy)?;
@@ -369,7 +451,10 @@ pub async fn cleanup_vpc_once<P: VpcProvider>(
                 })?,
         )
     };
-    let authorized = verify_cleanup_digest(
+    let generic = authorize_vpc_cleanup(desired, &observation, &attachments, current.clone())?;
+    verify_exact_authority(authorized_plan_digest, &generic.authority)
+        .map_err(|err| err.to_string())?;
+    let destructive = verify_cleanup_digest(
         desired,
         &observation,
         &attachments,
@@ -378,17 +463,17 @@ pub async fn cleanup_vpc_once<P: VpcProvider>(
     )
     .map_err(|err| err.to_string())?;
 
-    if current != authorized {
+    if current != destructive {
         return Err("Vultr VPC cleanup authorization changed during planning".to_owned());
     }
 
-    match &authorized.action {
+    match &destructive.action {
         CleanupAction::Noop => Err("Vultr VPC cleanup target is already absent".to_owned()),
         CleanupAction::DetachInstance {
             vpc_id,
             instance_id,
         } => {
-            let performed = authorized.action.clone();
+            let performed = destructive.action.clone();
             let mutation = provider.detach_vpc_from_instance(instance_id, vpc_id).await;
             if let Err(err) = &mutation
                 && !err.requires_mutation_reobservation()
@@ -405,7 +490,7 @@ pub async fn cleanup_vpc_once<P: VpcProvider>(
             })
         }
         CleanupAction::DeleteVpc { vpc_id } => {
-            let performed = authorized.action.clone();
+            let performed = destructive.action.clone();
             let mutation = provider.destroy_vpc(vpc_id).await;
             if let Err(err) = &mutation
                 && !err.requires_mutation_reobservation()
@@ -741,10 +826,45 @@ mod tests {
         }
     }
 
+    async fn vpc_authority(provider: &mut FakeProvider, desired: &DesiredVpcState) -> String {
+        let (observation, plan) = plan_vpc(provider, desired).await.unwrap();
+        authorize_vpc_apply(desired, &observation, plan)
+            .unwrap()
+            .authority
+            .authority_digest
+    }
+
+    async fn attachment_authority(
+        provider: &mut FakeProvider,
+        desired: &DesiredVpcState,
+    ) -> String {
+        let (target, observation, attachments, plan) =
+            plan_vpc_attachment(provider, desired).await.unwrap();
+        authorize_vpc_attachment(desired, &target, &observation, &attachments, plan)
+            .unwrap()
+            .authority
+            .authority_digest
+    }
+
+    async fn cleanup_authority(
+        provider: &mut FakeProvider,
+        desired: &DesiredVpcState,
+    ) -> (String, String) {
+        let (observation, attachments, plan) = plan_vpc_cleanup(provider, desired).await.unwrap();
+        let destructive = plan.destructive_digest.clone().unwrap();
+        let generic = authorize_vpc_cleanup(desired, &observation, &attachments, plan)
+            .unwrap()
+            .authority
+            .authority_digest;
+        (destructive, generic)
+    }
+
     #[tokio::test]
     async fn create_is_one_shot_and_reobserved() {
+        let desired = desired();
         let mut provider = FakeProvider::default();
-        let report = apply_vpc_once(&mut provider, &desired(), policy())
+        let authority = vpc_authority(&mut provider, &desired).await;
+        let report = apply_vpc_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.create_vpc_calls, 1);
@@ -760,11 +880,30 @@ mod tests {
             commit_create_on_error: true,
             ..FakeProvider::default()
         };
-        let report = apply_vpc_once(&mut provider, &desired(), policy())
+        let desired = desired();
+        let authority = vpc_authority(&mut provider, &desired).await;
+        let report = apply_vpc_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.create_vpc_calls, 1);
         assert_eq!(report.next_plan.action, VpcApplyAction::Noop);
+    }
+
+    #[tokio::test]
+    async fn stale_vpc_authority_rejects_without_mutation() {
+        let desired = desired();
+        let mut provider = FakeProvider::default();
+        let authority = vpc_authority(&mut provider, &desired).await;
+        provider
+            .vpcs
+            .push(fake_vpc("waw", &desired.ownership_description()));
+
+        let error = apply_vpc_once(&mut provider, &desired, &authority, policy())
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("stale"));
+        assert_eq!(provider.create_vpc_calls, 0);
     }
 
     #[tokio::test]
@@ -775,7 +914,8 @@ mod tests {
             instances: vec![fake_instance()],
             ..FakeProvider::default()
         };
-        let report = apply_vpc_attachment_once(&mut provider, &desired, policy())
+        let authority = attachment_authority(&mut provider, &desired).await;
+        let report = apply_vpc_attachment_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.attach_calls, 1);
@@ -793,7 +933,8 @@ mod tests {
             commit_attach_on_error: true,
             ..FakeProvider::default()
         };
-        let report = apply_vpc_attachment_once(&mut provider, &desired, policy())
+        let authority = attachment_authority(&mut provider, &desired).await;
+        let report = apply_vpc_attachment_once(&mut provider, &desired, &authority, policy())
             .await
             .unwrap();
         assert_eq!(provider.attach_calls, 1);
@@ -825,23 +966,33 @@ mod tests {
             ..FakeProvider::default()
         };
 
-        let (_, _, detach_plan) = plan_vpc_cleanup(&mut provider, &desired).await.unwrap();
-        let detach_digest = detach_plan.destructive_digest.unwrap();
-        let detach = cleanup_vpc_once(&mut provider, &desired, &detach_digest, policy())
-            .await
-            .unwrap();
+        let (detach_digest, detach_authority) = cleanup_authority(&mut provider, &desired).await;
+        let detach = cleanup_vpc_once(
+            &mut provider,
+            &desired,
+            &detach_digest,
+            &detach_authority,
+            policy(),
+        )
+        .await
+        .unwrap();
         assert_eq!(provider.detach_calls, 1);
         assert!(matches!(
             detach.next_plan.action,
             CleanupAction::DeleteVpc { .. }
         ));
 
-        let (_, _, delete_plan) = plan_vpc_cleanup(&mut provider, &desired).await.unwrap();
-        let delete_digest = delete_plan.destructive_digest.unwrap();
+        let (delete_digest, delete_authority) = cleanup_authority(&mut provider, &desired).await;
         assert_ne!(detach_digest, delete_digest);
-        let delete = cleanup_vpc_once(&mut provider, &desired, &delete_digest, policy())
-            .await
-            .unwrap();
+        let delete = cleanup_vpc_once(
+            &mut provider,
+            &desired,
+            &delete_digest,
+            &delete_authority,
+            policy(),
+        )
+        .await
+        .unwrap();
         assert_eq!(provider.delete_vpc_calls, 1);
         assert_eq!(delete.next_plan.action, CleanupAction::Noop);
     }

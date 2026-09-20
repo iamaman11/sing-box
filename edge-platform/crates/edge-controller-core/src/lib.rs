@@ -1,6 +1,7 @@
 pub mod application_lifecycle;
 pub mod cloudflare_dns_lifecycle;
 pub mod cloudflare_mesh_lifecycle;
+pub mod lifecycle;
 pub mod vultr_lifecycle;
 pub mod vultr_vpc_lifecycle;
 

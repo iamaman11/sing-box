@@ -8,6 +8,9 @@ use edge_controller_core::application_lifecycle::{
     RollbackPlan, authorize_rollback, build_rollback_plan, desired_bundle_id, desired_release,
     plan_application,
 };
+use edge_controller_core::lifecycle::{
+    AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
+};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
     ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile, Ipv4NetworkObservation,
@@ -315,6 +318,7 @@ pub(crate) async fn execute_desired(
     artifact: &AgentArtifactManifest,
     artifact_path: &Path,
     prepared: &PreparedApplicationBundle,
+    authorized_plan_digest: &str,
     mode: DesiredMutationMode,
 ) -> Result<ApplicationExecutionReport, String> {
     verify_exact_agent_artifact(artifact, artifact_path)?;
@@ -326,6 +330,15 @@ pub(crate) async fn execute_desired(
         &initial_observation,
     )
     .map_err(|err| err.to_string())?;
+    let authorized = authorize_application_plan(
+        desired,
+        artifact,
+        &prepared.release.bundle_digest,
+        &initial_observation,
+        initial_plan.clone(),
+    )?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
 
     match initial_plan.class {
         ApplicationPlanClass::Blocked => {
@@ -407,6 +420,48 @@ pub(crate) async fn execute_desired(
     })
 }
 
+pub(crate) fn authorize_application_plan(
+    desired: &DesiredApplicationState,
+    artifact: &AgentArtifactManifest,
+    bundle_digest: &str,
+    observation: &ApplicationObservation,
+    plan: ApplicationPlan,
+) -> Result<AuthorizedPlan<ApplicationPlan>, String> {
+    let disposition = match plan.class {
+        ApplicationPlanClass::Noop => PlanDisposition::Noop,
+        ApplicationPlanClass::Apply | ApplicationPlanClass::Upgrade => PlanDisposition::Mutate,
+        ApplicationPlanClass::Blocked => PlanDisposition::Blocked,
+    };
+    let desired_material = serde_json::json!({
+        "desired": desired,
+        "artifact": artifact,
+        "bundle_digest": bundle_digest,
+    });
+    authorize_plan(
+        "application",
+        &desired_material,
+        observation,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub(crate) fn authorize_application_rollback(
+    desired: &DesiredApplicationState,
+    observation: &ApplicationObservation,
+    plan: RollbackPlan,
+) -> Result<AuthorizedPlan<RollbackPlan>, String> {
+    authorize_plan(
+        "application_rollback",
+        desired,
+        observation,
+        plan,
+        PlanDisposition::Mutate,
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub(crate) async fn verify_desired(
     authority: &ApplicationAuthority,
     desired: &DesiredApplicationState,
@@ -427,21 +482,29 @@ pub(crate) async fn verify_desired(
 pub(crate) async fn rollback_plan_remote(
     authority: &ApplicationAuthority,
     desired: &DesiredApplicationState,
-) -> Result<RollbackPlan, String> {
+) -> Result<(ApplicationObservation, RollbackPlan), String> {
     let observation = observe_application(authority, desired).await?;
     let plan = build_rollback_plan(desired, &observation).map_err(|err| err.to_string())?;
     verify_previous_release_material(authority, &plan.current_release, &plan.previous_release)?;
-    Ok(plan)
+    Ok((observation, plan))
 }
 
 pub(crate) async fn execute_rollback(
     authority: &ApplicationAuthority,
     desired: &DesiredApplicationState,
     authorized_digest: &str,
+    authorized_plan_digest: &str,
 ) -> Result<ApplicationObservationView, String> {
     let observation = observe_application(authority, desired).await?;
+    let current = build_rollback_plan(desired, &observation).map_err(|err| err.to_string())?;
+    let generic = authorize_application_rollback(desired, &observation, current.clone())?;
+    verify_exact_authority(authorized_plan_digest, &generic.authority)
+        .map_err(|err| err.to_string())?;
     let plan = authorize_rollback(desired, &observation, authorized_digest)
         .map_err(|err| err.to_string())?;
+    if current != plan {
+        return Err("application rollback authorization changed during planning".to_owned());
+    }
     verify_previous_release_material(authority, &plan.current_release, &plan.previous_release)?;
 
     rollback_bundle_once(authority, &plan).await?;

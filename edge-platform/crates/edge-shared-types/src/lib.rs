@@ -24,6 +24,10 @@ pub const RELEASE_SET_SCHEMA_VERSION: u32 = 2;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 
+pub fn timestamp_from_unix_seconds(seconds: i64) -> prost_types::Timestamp {
+    prost_types::Timestamp { seconds, nanos: 0 }
+}
+
 pub fn encode_release_set(release: &ReleaseSet) -> Result<Vec<u8>, String> {
     validate_release_set(release)?;
     Ok(release.encode_to_vec())

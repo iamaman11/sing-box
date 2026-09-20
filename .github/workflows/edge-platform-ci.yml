@@ -270,6 +270,11 @@ jobs:
           console_cli = Path("edge-platform/crates/edge-console/src/cli.rs").read_text()
           agent_cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text()
           observability = Path("edge-platform/crates/edge-observability/src/lib.rs").read_text()
+          lifecycle_core = Path("edge-platform/crates/edge-controller-core/src/lifecycle.rs").read_text()
+          lifecycle_proto = Path("edge-platform/proto/edge/platform/v1/lifecycle.proto").read_text()
+          diagnostics_proto = Path("edge-platform/proto/edge/platform/v1/diagnostics.proto").read_text()
+          operation_proto = Path("edge-platform/proto/edge/platform/v1/operation.proto").read_text()
+          orchestrator_proto = Path("edge-platform/proto/edge/platform/v1/orchestrator.proto").read_text()
           agent_network = Path(
               "edge-platform/crates/edge-agent/src/network_observation.rs"
           ).read_text()
@@ -288,6 +293,42 @@ jobs:
           assert "rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);" in agent_proto
           assert "service ControllerService" in agent_proto
           assert "service AgentService" in agent_proto
+          assert "message PlanAuthority" in lifecycle_proto
+          assert "bytes authority_sha256 = 6;" in lifecycle_proto
+          assert "enum CheckStatus" in diagnostics_proto
+          assert "string check_id = 4;" in diagnostics_proto
+          assert "enum OperationKind" in operation_proto
+          assert "google.protobuf.Timestamp created_at = 7;" in operation_proto
+          assert "service OrchestratorService" in orchestrator_proto
+          assert "rpc PlanDeployment(" in orchestrator_proto
+          assert "rpc ApplyDeployment(" in orchestrator_proto
+          assert "rpc VerifyDeployment(" in orchestrator_proto
+          assert "authorized_plan_sha256" in orchestrator_proto
+          assert "PLAN_AUTHORITY_SCHEMA" in lifecycle_core
+          assert "verify_exact_authority" in lifecycle_core
+          assert "PlanDisposition::Noop" in lifecycle_core
+          application_command = Path("edge-platform/crates/edge-controller/src/application_lifecycle_command.rs").read_text()
+          dns_command = Path("edge-platform/crates/edge-controller/src/cloudflare_dns_lifecycle_command.rs").read_text()
+          vpc_command_authority = Path("edge-platform/crates/edge-controller/src/vultr_vpc_lifecycle_command.rs").read_text()
+          vultr_command_authority = Path("edge-platform/crates/edge-controller/src/vultr_lifecycle_command.rs").read_text()
+          dns_service = Path("edge-platform/crates/edge-controller/src/cloudflare_dns_lifecycle_service.rs").read_text()
+          mesh_service = Path("edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_service.rs").read_text()
+          vpc_service = Path("edge-platform/crates/edge-controller/src/vultr_vpc_lifecycle_service.rs").read_text()
+          vultr_service = Path("edge-platform/crates/edge-controller/src/vultr_lifecycle_service.rs").read_text()
+          for planner in [application_command, dns_command, mesh_command, vpc_command_authority, vultr_command_authority]:
+              assert "plan_authority" in planner
+          for mutation_boundary in [application_service, dns_service, mesh_service, vpc_service, vultr_service]:
+              assert "verify_exact_authority" in mutation_boundary
+          assert "authorized-plan-sha256" in application_command
+          assert "authorized-plan-sha256" in dns_command
+          assert "authorized-plan-sha256" in mesh_command
+          assert "authorized-plan-sha256" in vpc_command_authority
+          assert "authorized-plan-sha256" in vultr_command_authority
+          vultr_workflow = Path(".github/workflows/vultr-lifecycle.yml").read_text()
+          application_workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
+          assert ".destroy_digest // empty" in vultr_workflow
+          assert "plan_authority" in vultr_workflow
+          assert "plan_authority" in application_workflow
           for process_root in [controller_main, console_main, agent_main]:
               assert "env::args()" not in process_root
               assert "_ARG_INDEX" not in process_root

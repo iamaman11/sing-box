@@ -1,7 +1,8 @@
 use crate::application_lifecycle_service::{
-    ApplicationAuthority, ApplicationObservationView, DesiredMutationMode, execute_desired,
-    execute_rollback, observe_application, prepare_application_bundle, rollback_plan_remote,
-    verify_desired, verify_exact_agent_artifact,
+    ApplicationAuthority, ApplicationObservationView, DesiredMutationMode,
+    authorize_application_plan, authorize_application_rollback, execute_desired, execute_rollback,
+    observe_application, prepare_application_bundle, rollback_plan_remote, verify_desired,
+    verify_exact_agent_artifact,
 };
 use crate::vultr_host_bootstrap::{strict_ssh_accept, verify_operator_key_matches};
 use crate::vultr_lifecycle_command::{
@@ -13,6 +14,7 @@ use crate::vultr_lifecycle_service::plan_desired_state_with_firewall_profiles;
 use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationPlanClass, DesiredApplicationState, plan_application,
 };
+use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use edge_controller_core::vultr_lifecycle::PlanClass;
 use edge_provider_vultr::get_instance_typed;
 use serde_json::json;
@@ -49,9 +51,18 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
         &observation,
     )
     .map_err(|err| err.to_string())?;
+    let authorized = authorize_application_plan(
+        &desired,
+        &artifact,
+        &prepared.release.bundle_digest,
+        &observation,
+        plan.clone(),
+    )?;
 
     print_json(json!({
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "observation": ApplicationObservationView::from(&observation),
         "mutations_performed": 0
     }))
@@ -62,7 +73,15 @@ async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), 
         DesiredMutationMode::Apply => "apply",
         DesiredMutationMode::Upgrade => "upgrade",
     };
-    let (spec_path, manifest_path, artifact_path) = desired_args(args, operation)?;
+    if args.len() != 4 {
+        return Err(format!(
+            "usage: edge-controller application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>"
+        ));
+    }
+    let spec_path = PathBuf::from(&args[0]);
+    let manifest_path = PathBuf::from(&args[1]);
+    let artifact_path = PathBuf::from(&args[2]);
+    let authorized_plan_digest = &args[3];
     let desired = load_application_desired(&spec_path)?;
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_exact_agent_artifact(&artifact, &artifact_path)?;
@@ -74,6 +93,7 @@ async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), 
         &artifact,
         &artifact_path,
         &prepared,
+        authorized_plan_digest,
         mode,
     )
     .await?;
@@ -89,9 +109,31 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
     let authority = resolve_application_authority(&desired).await?;
     let (plan, observation) = verify_desired(&authority, &desired, &artifact, &prepared).await?;
     let healthy = plan.class == ApplicationPlanClass::Noop;
+    let disposition = if healthy {
+        PlanDisposition::Noop
+    } else if plan.class == ApplicationPlanClass::Blocked {
+        PlanDisposition::Blocked
+    } else {
+        PlanDisposition::Mutate
+    };
+    let desired_material = json!({
+        "desired": &desired,
+        "artifact": &artifact,
+        "bundle_digest": &prepared.release.bundle_digest,
+    });
+    let authorized = authorize_plan(
+        "application",
+        &desired_material,
+        &observation,
+        plan.clone(),
+        disposition,
+    )
+    .map_err(|err| err.to_string())?;
     print_json(json!({
         "status": if healthy { "PASS" } else { "FAIL" },
         "plan": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "observation": observation,
         "mutations_performed": 0
     }))?;
@@ -110,24 +152,28 @@ async fn run_rollback_plan(args: &[String]) -> Result<(), String> {
     }
     let desired = load_application_desired(Path::new(&args[0]))?;
     let authority = resolve_application_authority(&desired).await?;
-    let plan = rollback_plan_remote(&authority, &desired).await?;
+    let (observation, plan) = rollback_plan_remote(&authority, &desired).await?;
+    let authorized = authorize_application_rollback(&desired, &observation, plan.clone())?;
     print_json(json!({
         "rollback": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
         "mutations_performed": 0
     }))
 }
 
 async fn run_rollback_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Err(
-            "usage: edge-controller application-lifecycle rollback-apply <spec-path> <rollback-digest>"
+            "usage: edge-controller application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
     validate_digest(&args[1])?;
+    validate_digest(&args[2])?;
     let desired = load_application_desired(Path::new(&args[0]))?;
     let authority = resolve_application_authority(&desired).await?;
-    let observation = execute_rollback(&authority, &desired, &args[1]).await?;
+    let observation = execute_rollback(&authority, &desired, &args[1], &args[2]).await?;
     print_json(json!({
         "status": "ROLLED_BACK",
         "observation": observation
@@ -297,11 +343,11 @@ fn usage() -> String {
     [
         "usage:",
         "  edge-controller application-lifecycle plan <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
-        "  edge-controller application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
+        "  edge-controller application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
         "  edge-controller application-lifecycle verify <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
-        "  edge-controller application-lifecycle upgrade <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
+        "  edge-controller application-lifecycle upgrade <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
         "  edge-controller application-lifecycle rollback-plan <spec-path>",
-        "  edge-controller application-lifecycle rollback-apply <spec-path> <rollback-digest>",
+        "  edge-controller application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>",
     ]
     .join("\n")
 }

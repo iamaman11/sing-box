@@ -210,12 +210,32 @@ impl DesiredApplicationArgs {
     }
 }
 
+#[derive(Debug, Args, Clone)]
+pub(crate) struct DesiredApplicationAuthorizedArgs {
+    pub spec_path: PathBuf,
+    pub artifact_manifest_path: PathBuf,
+    pub edge_agent_artifact_path: PathBuf,
+    pub authorized_plan_sha256: String,
+}
+
+impl DesiredApplicationAuthorizedArgs {
+    fn into_legacy(self, operation: &str) -> Vec<String> {
+        vec![
+            operation.to_owned(),
+            path(self.spec_path),
+            path(self.artifact_manifest_path),
+            path(self.edge_agent_artifact_path),
+            self.authorized_plan_sha256,
+        ]
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationLifecycleCommand {
     Plan(DesiredApplicationArgs),
-    Apply(DesiredApplicationArgs),
+    Apply(DesiredApplicationAuthorizedArgs),
     Verify(DesiredApplicationArgs),
-    Upgrade(DesiredApplicationArgs),
+    Upgrade(DesiredApplicationAuthorizedArgs),
     RollbackPlan(SpecArgs),
     RollbackApply(CleanupApplyArgs),
 }
@@ -228,11 +248,7 @@ impl ApplicationLifecycleCommand {
             Self::Verify(args) => args.into_legacy("verify"),
             Self::Upgrade(args) => args.into_legacy("upgrade"),
             Self::RollbackPlan(args) => vec!["rollback-plan".to_owned(), path(args.spec_path)],
-            Self::RollbackApply(args) => vec![
-                "rollback-apply".to_owned(),
-                path(args.spec_path),
-                args.digest,
-            ],
+            Self::RollbackApply(args) => destructive_apply("rollback-apply", args),
         }
     }
 }
@@ -243,9 +259,16 @@ pub(crate) struct SpecArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+pub(crate) struct AuthorizedSpecArgs {
+    pub spec_path: PathBuf,
+    pub authorized_plan_sha256: String,
+}
+
+#[derive(Debug, Args, Clone)]
 pub(crate) struct CleanupApplyArgs {
     pub spec_path: PathBuf,
     pub digest: String,
+    pub authorized_plan_sha256: String,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -254,11 +277,18 @@ pub(crate) struct DnsTargetArgs {
     pub target_ipv4: Ipv4Addr,
 }
 
+#[derive(Debug, Args, Clone)]
+pub(crate) struct DnsTargetAuthorizedArgs {
+    pub spec_path: PathBuf,
+    pub target_ipv4: Ipv4Addr,
+    pub authorized_plan_sha256: String,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareDnsCommand {
     Inventory(SpecArgs),
     Plan(DnsTargetArgs),
-    Apply(DnsTargetArgs),
+    Apply(DnsTargetAuthorizedArgs),
     CleanupPlan(SpecArgs),
     CleanupApply(CleanupApplyArgs),
 }
@@ -276,13 +306,10 @@ impl CloudflareDnsCommand {
                 "apply".to_owned(),
                 path(args.spec_path),
                 args.target_ipv4.to_string(),
+                args.authorized_plan_sha256,
             ],
             Self::CleanupPlan(args) => vec!["cleanup-plan".to_owned(), path(args.spec_path)],
-            Self::CleanupApply(args) => vec![
-                "cleanup-apply".to_owned(),
-                path(args.spec_path),
-                args.digest,
-            ],
+            Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
         }
     }
 }
@@ -292,6 +319,14 @@ pub(crate) struct MeshVpcArgs {
     pub mesh_base_spec_path: PathBuf,
     pub vpc_spec_path: PathBuf,
     pub application_spec_path: PathBuf,
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct MeshVpcAuthorizedArgs {
+    pub mesh_base_spec_path: PathBuf,
+    pub vpc_spec_path: PathBuf,
+    pub application_spec_path: PathBuf,
+    pub authorized_plan_sha256: String,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -309,9 +344,9 @@ pub(crate) struct RuntimeCleanupArgs {
 pub(crate) enum MeshCommand {
     Inventory(SpecArgs),
     Plan(SpecArgs),
-    Apply(SpecArgs),
+    Apply(AuthorizedSpecArgs),
     VpcPlan(MeshVpcArgs),
-    VpcApply(MeshVpcArgs),
+    VpcApply(MeshVpcAuthorizedArgs),
     CleanupPlan(SpecArgs),
     CleanupApply(CleanupApplyArgs),
     RuntimeApply(MeshRuntimeArgs),
@@ -326,15 +361,17 @@ impl MeshCommand {
         match self {
             Self::Inventory(args) => one("inventory", args),
             Self::Plan(args) => one("plan", args),
-            Self::Apply(args) => one("apply", args),
+            Self::Apply(args) => authorized_spec("apply", args),
             Self::VpcPlan(args) => mesh_vpc("vpc-plan", args),
-            Self::VpcApply(args) => mesh_vpc("vpc-apply", args),
-            Self::CleanupPlan(args) => one("cleanup-plan", args),
-            Self::CleanupApply(args) => vec![
-                "cleanup-apply".to_owned(),
-                path(args.spec_path),
-                args.digest,
+            Self::VpcApply(args) => vec![
+                "vpc-apply".to_owned(),
+                path(args.mesh_base_spec_path),
+                path(args.vpc_spec_path),
+                path(args.application_spec_path),
+                args.authorized_plan_sha256,
             ],
+            Self::CleanupPlan(args) => one("cleanup-plan", args),
+            Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
             Self::RuntimeApply(args) => vec![
                 "runtime-apply".to_owned(),
                 path(args.mesh_spec_path),
@@ -367,6 +404,13 @@ pub(crate) struct VultrMachineArgs {
     pub machine_id: String,
 }
 
+#[derive(Debug, Args, Clone)]
+pub(crate) struct VultrAuthorizedMachineArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub authorized_plan_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum VultrActionArg {
     Start,
@@ -393,6 +437,15 @@ pub(crate) struct VultrActionArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+pub(crate) struct VultrAuthorizedActionArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    #[arg(value_enum)]
+    pub action: VultrActionArg,
+    pub authorized_plan_sha256: String,
+}
+
+#[derive(Debug, Args, Clone)]
 pub(crate) struct VultrDestroyPlanArgs {
     pub spec_path: PathBuf,
     pub machine_id: String,
@@ -405,6 +458,7 @@ pub(crate) struct VultrDestroyApplyArgs {
     pub machine_id: String,
     pub source_revision: String,
     pub destroy_digest: String,
+    pub authorized_plan_sha256: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -412,13 +466,17 @@ pub(crate) enum VultrLifecycleCommand {
     Doctor(SpecArgs),
     Inventory(SpecArgs),
     Plan(VultrPlanArgs),
-    Apply(VultrMachineArgs),
-    AcquireAccess(VultrMachineArgs),
-    ReleaseAccess(VultrMachineArgs),
-    Action(VultrActionArgs),
+    Apply(VultrAuthorizedMachineArgs),
+    AcquireAccessPlan(VultrMachineArgs),
+    AcquireAccess(VultrAuthorizedMachineArgs),
+    ReleaseAccessPlan(VultrMachineArgs),
+    ReleaseAccess(VultrAuthorizedMachineArgs),
+    ActionPlan(VultrActionArgs),
+    Action(VultrAuthorizedActionArgs),
     DestroyPlan(VultrDestroyPlanArgs),
     DestroyApply(VultrDestroyApplyArgs),
-    Cleanup(SpecArgs),
+    CleanupPlan(SpecArgs),
+    Cleanup(AuthorizedSpecArgs),
 }
 
 impl VultrLifecycleCommand {
@@ -433,14 +491,38 @@ impl VultrLifecycleCommand {
                 }
                 out
             }
-            Self::Apply(args) => machine("apply", args),
-            Self::AcquireAccess(args) => machine("acquire-access", args),
-            Self::ReleaseAccess(args) => machine("release-access", args),
+            Self::Apply(args) => vec![
+                "apply".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.authorized_plan_sha256,
+            ],
+            Self::AcquireAccessPlan(args) => machine("acquire-access-plan", args),
+            Self::AcquireAccess(args) => vec![
+                "acquire-access".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.authorized_plan_sha256,
+            ],
+            Self::ReleaseAccessPlan(args) => machine("release-access-plan", args),
+            Self::ReleaseAccess(args) => vec![
+                "release-access".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.authorized_plan_sha256,
+            ],
+            Self::ActionPlan(args) => vec![
+                "action-plan".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.action.as_str().to_owned(),
+            ],
             Self::Action(args) => vec![
                 "action".to_owned(),
                 path(args.spec_path),
                 args.machine_id,
                 args.action.as_str().to_owned(),
+                args.authorized_plan_sha256,
             ],
             Self::DestroyPlan(args) => vec![
                 "destroy-plan".to_owned(),
@@ -454,8 +536,10 @@ impl VultrLifecycleCommand {
                 args.machine_id,
                 args.source_revision,
                 args.destroy_digest,
+                args.authorized_plan_sha256,
             ],
-            Self::Cleanup(args) => one("cleanup", args),
+            Self::CleanupPlan(args) => one("cleanup-plan", args),
+            Self::Cleanup(args) => authorized_spec("cleanup", args),
         }
     }
 }
@@ -464,9 +548,9 @@ impl VultrLifecycleCommand {
 pub(crate) enum VultrVpcCommand {
     Inventory(SpecArgs),
     Plan(SpecArgs),
-    Apply(SpecArgs),
+    Apply(AuthorizedSpecArgs),
     AttachmentPlan(SpecArgs),
-    AttachmentApply(SpecArgs),
+    AttachmentApply(AuthorizedSpecArgs),
     Verify(SpecArgs),
     CleanupPlan(SpecArgs),
     CleanupApply(CleanupApplyArgs),
@@ -477,16 +561,12 @@ impl VultrVpcCommand {
         match self {
             Self::Inventory(args) => one("inventory", args),
             Self::Plan(args) => one("plan", args),
-            Self::Apply(args) => one("apply", args),
+            Self::Apply(args) => authorized_spec("apply", args),
             Self::AttachmentPlan(args) => one("attachment-plan", args),
-            Self::AttachmentApply(args) => one("attachment-apply", args),
+            Self::AttachmentApply(args) => authorized_spec("attachment-apply", args),
             Self::Verify(args) => one("verify", args),
             Self::CleanupPlan(args) => one("cleanup-plan", args),
-            Self::CleanupApply(args) => vec![
-                "cleanup-apply".to_owned(),
-                path(args.spec_path),
-                args.digest,
-            ],
+            Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
         }
     }
 }
@@ -509,6 +589,23 @@ pub(crate) fn agent_endpoint(value: Option<String>) -> String {
 
 fn one(operation: &str, args: SpecArgs) -> Vec<String> {
     vec![operation.to_owned(), path(args.spec_path)]
+}
+
+fn authorized_spec(operation: &str, args: AuthorizedSpecArgs) -> Vec<String> {
+    vec![
+        operation.to_owned(),
+        path(args.spec_path),
+        args.authorized_plan_sha256,
+    ]
+}
+
+fn destructive_apply(operation: &str, args: CleanupApplyArgs) -> Vec<String> {
+    vec![
+        operation.to_owned(),
+        path(args.spec_path),
+        args.digest,
+        args.authorized_plan_sha256,
+    ]
 }
 
 fn machine(operation: &str, args: VultrMachineArgs) -> Vec<String> {
@@ -555,16 +652,186 @@ mod tests {
 
     #[test]
     fn parses_typed_controller_commands() {
-        let cli = Cli::try_parse_from([
-            "edge-controller",
-            "vultr-lifecycle",
-            "action",
-            "infra/vultr/production.json",
-            "primary",
-            "reboot",
-        ])
-        .unwrap();
-        assert_eq!(cli.command_name(), "vultr-lifecycle");
+        let digest = "a".repeat(64);
+        let cases = [
+            vec![
+                "edge-controller",
+                "application-lifecycle",
+                "apply",
+                "infra/application/production.json",
+                "artifact.json",
+                "edge-agent",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "application-lifecycle",
+                "rollback-apply",
+                "infra/application/production.json",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "cloudflare-dns",
+                "apply",
+                "infra/cloudflare/dns.json",
+                "203.0.113.10",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "cloudflare-dns",
+                "cleanup-apply",
+                "infra/cloudflare/dns.json",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "line3-mesh",
+                "apply",
+                "infra/cloudflare/mesh.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "line3-mesh",
+                "vpc-apply",
+                "infra/cloudflare/mesh.json",
+                "infra/vultr/vpc.json",
+                "infra/application/production.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "line3-mesh",
+                "cleanup-apply",
+                "infra/cloudflare/mesh.json",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "apply",
+                "infra/vultr/production.json",
+                "primary",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "acquire-access",
+                "infra/vultr/production.json",
+                "primary",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "release-access",
+                "infra/vultr/production.json",
+                "primary",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "action",
+                "infra/vultr/production.json",
+                "primary",
+                "reboot",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "destroy-apply",
+                "infra/vultr/production.json",
+                "primary",
+                "0123456789012345678901234567890123456789",
+                &digest,
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-lifecycle",
+                "cleanup",
+                "infra/vultr/production.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-vpc",
+                "apply",
+                "infra/vultr/vpc.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-vpc",
+                "attachment-apply",
+                "infra/vultr/vpc.json",
+                &digest,
+            ],
+            vec![
+                "edge-controller",
+                "vultr-vpc",
+                "cleanup-apply",
+                "infra/vultr/vpc.json",
+                &digest,
+                &digest,
+            ],
+        ];
+
+        for args in cases {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "authority-bearing typed command must parse"
+            );
+        }
+
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "vultr-lifecycle",
+                "action-plan",
+                "infra/vultr/production.json",
+                "primary",
+                "reboot",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "vultr-lifecycle",
+                "acquire-access-plan",
+                "infra/vultr/production.json",
+                "primary",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "vultr-lifecycle",
+                "release-access-plan",
+                "infra/vultr/production.json",
+                "primary",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-controller",
+                "vultr-lifecycle",
+                "cleanup-plan",
+                "infra/vultr/production.json",
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

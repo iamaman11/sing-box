@@ -68,3 +68,44 @@ secret-safe structured tracing and correlation identity. It is not a telemetry
 backend, remote collector, lifecycle authority or state store. Correlation IDs
 accept only bounded safe tokens from `EDGE_CORRELATION_ID`; arbitrary
 environment content is never emitted.
+
+## Deterministic lifecycle authority (Gate C / BIG SLICE 1)
+
+`edge-controller-core::lifecycle` defines the shared authority envelope for
+provider/application plans:
+
+```text
+canonical desired
+      +
+canonical observation
+      +
+exact derived plan
+      +
+plan disposition
+      |
+      v
+PlanAuthority
+  desired_digest
+  observed_digest
+  plan_digest
+  authority_digest
+```
+
+The authority digest is deterministic and stale-safe. A mutation authorization
+must match the authority derived from a fresh observation; changed provider or
+runtime state changes the digest and fails closed. `NOOP` is the only
+converged disposition.
+
+Existing domain-specific destroy/cleanup/rollback digests remain valid
+compatibility authorities during migration. They are not removed or weakened.
+
+The v1 protobuf surface now has additive typed diagnostics, operation metadata,
+plan authority and a separate `OrchestratorService` contract. The service is
+deliberately separate from `ControllerService`: future provider/VM production
+ownership belongs to the GitHub-only `edge-orchestrator`, while installed
+Windows `edge-controller.exe` remains local-runtime owner.
+
+Legacy string/time fields remain temporarily for wire compatibility. New typed
+fields are populated at the controller adapter boundary; persistent event
+storage migration is intentionally deferred to the versioned-migration
+execution-hardening slice rather than adding another ad-hoc schema mutation.
