@@ -449,7 +449,6 @@ jobs:
           machine="$(jq -er '.machine_id' "${app_spec}")"
           dns_spec="${EDGE_ACCEPTANCE_DNS_SPEC}"
           mesh_base_spec="${EDGE_ACCEPTANCE_MESH_BASE_SPEC}"
-          mesh_spec="${RUNNER_TEMP}/acceptance-mesh.json"
           vpc_spec="${EDGE_ACCEPTANCE_VPC_SPEC}"
           source_revision="${GITHUB_SHA}"
           artifact="${EDGE_APPLICATION_ARTIFACT}"
@@ -460,7 +459,9 @@ jobs:
           test -f "${dns_spec}"
           test -f "${mesh_base_spec}"
           test -f "${vpc_spec}"
-          cp "${mesh_base_spec}" "${mesh_spec}"
+          test -n "${VULTR_API_KEY}"
+          test -n "${CLOUDFLARE_API_TOKEN}"
+          test -s "${EDGE_SSH_PRIVATE_KEY_PATH}"
           test "$(jq -r '.bootstrap_mode' "${app_spec}")" = "full"
           test "$(jq -r '.runtime_policy.line1.acme_provider' "${app_spec}")" = \
             "https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -469,7 +470,7 @@ jobs:
             local plan="${RUNNER_TEMP}/acceptance-emergency-mesh-plan.json"
             local digest
             for _ in 1 2 3 4; do
-              if ! "${bin}" line3-mesh cleanup-plan "${mesh_spec}" > "${plan}" 2>/dev/null; then
+              if ! "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" > "${plan}" 2>/dev/null; then
                 return 0
               fi
               digest="$(jq -r '.plan.destructive_digest // empty' "${plan}")"
@@ -479,7 +480,7 @@ jobs:
               if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ ]]; then
                 return 0
               fi
-              "${bin}" line3-mesh cleanup-apply "${mesh_spec}" "${digest}" \
+              "${bin}" line3-mesh cleanup-apply "${mesh_base_spec}" "${digest}" \
                 >/dev/null 2>&1 || return 0
             done
           }
@@ -549,7 +550,7 @@ jobs:
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
             "${RUNNER_TEMP}/acceptance-dns-before.json" >/dev/null
 
-          "${bin}" line3-mesh cleanup-plan "${mesh_spec}" \
+          "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" \
             > "${RUNNER_TEMP}/acceptance-mesh-before.json"
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
             "${RUNNER_TEMP}/acceptance-mesh-before.json" >/dev/null
@@ -593,11 +594,6 @@ jobs:
             > "${RUNNER_TEMP}/acceptance-vpc-verify.json"
           jq -e '.status == "PASS" and (.cidr | type == "string") and (.private_ipv4 | type == "string")' \
             "${RUNNER_TEMP}/acceptance-vpc-verify.json" >/dev/null
-          vpc_cidr="$(jq -er '.cidr' "${RUNNER_TEMP}/acceptance-vpc-verify.json")"
-          jq --arg cidr "${vpc_cidr}" '.routes = [{"network": $cidr}]' \
-            "${mesh_base_spec}" > "${mesh_spec}"
-          test "$(jq -er '.routes | length' "${mesh_spec}")" = "1"
-          test "$(jq -er '.routes[0].network' "${mesh_spec}")" = "${vpc_cidr}"
 
           "${bin}" cloudflare-dns plan "${dns_spec}" "${vm_ip}" \
             > "${RUNNER_TEMP}/acceptance-dns-plan.json"
@@ -615,19 +611,19 @@ jobs:
 
           mesh_noop=0
           for _ in 1 2 3 4; do
-            "${bin}" line3-mesh plan "${mesh_spec}" \
+            "${bin}" line3-mesh vpc-plan "${mesh_base_spec}" "${vpc_spec}" \
               > "${RUNNER_TEMP}/acceptance-mesh-plan.json"
             if jq -e '.plan.action.kind == "NOOP"' \
                 "${RUNNER_TEMP}/acceptance-mesh-plan.json" >/dev/null; then
               mesh_noop=1
               break
             fi
-            "${bin}" line3-mesh apply "${mesh_spec}" \
+            "${bin}" line3-mesh vpc-apply "${mesh_base_spec}" "${vpc_spec}" \
               > "${RUNNER_TEMP}/acceptance-mesh-apply.json"
           done
           test "${mesh_noop}" = "1"
 
-          "${bin}" line3-mesh runtime-apply "${mesh_spec}" "${app_spec}" \
+          "${bin}" line3-mesh vpc-runtime-apply "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
             > "${RUNNER_TEMP}/acceptance-mesh-runtime-apply.json"
           jq -e \
             '.status == "READY" and
@@ -636,7 +632,7 @@ jobs:
              .provider_observation.nodes[0].status == "healthy"' \
             "${RUNNER_TEMP}/acceptance-mesh-runtime-apply.json" >/dev/null
 
-          "${bin}" line3-mesh runtime-verify "${mesh_spec}" "${app_spec}" \
+          "${bin}" line3-mesh vpc-runtime-verify "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
             > "${RUNNER_TEMP}/acceptance-mesh-runtime-verify.json"
           jq -e '.status == "PASS" and .runtime.runtime_ready == true' \
             "${RUNNER_TEMP}/acceptance-mesh-runtime-verify.json" >/dev/null
@@ -708,7 +704,7 @@ jobs:
           jq -e '.status == "PASS" and .plan.class == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-post-reboot-app.json" >/dev/null
 
-          "${bin}" line3-mesh runtime-verify "${mesh_spec}" "${app_spec}" \
+          "${bin}" line3-mesh vpc-runtime-verify "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
             > "${RUNNER_TEMP}/acceptance-post-reboot-mesh.json"
           jq -e '.status == "PASS" and .runtime.runtime_ready == true' \
             "${RUNNER_TEMP}/acceptance-post-reboot-mesh.json" >/dev/null
@@ -720,8 +716,12 @@ jobs:
 
           "${bin}" vultr-vpc verify "${vpc_spec}" \
             > "${RUNNER_TEMP}/acceptance-post-reboot-vpc.json"
-          jq -e --arg cidr "${vpc_cidr}" \
-            '.status == "PASS" and .cidr == $cidr' \
+          jq -e -s \
+            '.[0].status == "PASS" and
+             .[1].status == "PASS" and
+             .[0].cidr == .[1].cidr and
+             .[0].private_ipv4 == .[1].private_ipv4' \
+            "${RUNNER_TEMP}/acceptance-vpc-verify.json" \
             "${RUNNER_TEMP}/acceptance-post-reboot-vpc.json" >/dev/null
 
           "${bin}" line3-mesh runtime-cleanup "${app_spec}" \
@@ -734,7 +734,7 @@ jobs:
 
           mesh_absent=0
           for _ in 1 2 3 4; do
-            "${bin}" line3-mesh cleanup-plan "${mesh_spec}" \
+            "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" \
               > "${RUNNER_TEMP}/acceptance-mesh-cleanup-plan.json"
             mesh_digest="$(jq -r '.plan.destructive_digest // empty' \
               "${RUNNER_TEMP}/acceptance-mesh-cleanup-plan.json")"
@@ -745,7 +745,7 @@ jobs:
               break
             fi
             [[ "${mesh_digest}" =~ ^[0-9a-f]{64}$ ]]
-            "${bin}" line3-mesh cleanup-apply "${mesh_spec}" "${mesh_digest}" \
+            "${bin}" line3-mesh cleanup-apply "${mesh_base_spec}" "${mesh_digest}" \
               > "${RUNNER_TEMP}/acceptance-mesh-cleanup-apply.json"
           done
           test "${mesh_absent}" = "1"
@@ -805,7 +805,7 @@ jobs:
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
             "${RUNNER_TEMP}/acceptance-dns-after.json" >/dev/null
 
-          "${bin}" line3-mesh cleanup-plan "${mesh_spec}" \
+          "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" \
             > "${RUNNER_TEMP}/acceptance-mesh-after.json"
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
             "${RUNNER_TEMP}/acceptance-mesh-after.json" >/dev/null
