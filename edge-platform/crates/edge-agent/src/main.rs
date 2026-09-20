@@ -901,7 +901,9 @@ fn read_typed_runtime_environment(stack_dir: &Path) -> Result<BTreeMap<String, S
         "REALITY_WARP_SHORT_ID",
     ]);
     if let Some(key) = values.keys().find(|key| !allowed.contains(key.as_str())) {
-        return Err(format!("runtime environment contains unsupported key: {key}"));
+        return Err(format!(
+            "runtime environment contains unsupported key: {key}"
+        ));
     }
 
     let secret_keys = [
@@ -985,8 +987,12 @@ fn read_exact_image_environment(stack_dir: &Path) -> Result<BTreeMap<String, Str
 }
 
 fn read_strict_env_file(path: &Path) -> Result<BTreeMap<String, String>, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read required environment {}: {err}", path.display()))?;
+    let raw = fs::read_to_string(path).map_err(|err| {
+        format!(
+            "failed to read required environment {}: {err}",
+            path.display()
+        )
+    })?;
     let mut values = BTreeMap::new();
     for (index, line) in raw.lines().enumerate() {
         if line.is_empty() {
@@ -1053,7 +1059,9 @@ fn prepare_runtime_directories(stack_dir: &Path) -> Result<(), String> {
 fn require_line2_policy(runtime: &BTreeMap<String, String>) -> Result<(), String> {
     for key in ["PROXY_USERNAME", "PROXY_CERT_CN"] {
         if !runtime.contains_key(key) {
-            return Err(format!("Line 2 bootstrap requires runtime policy key: {key}"));
+            return Err(format!(
+                "Line 2 bootstrap requires runtime policy key: {key}"
+            ));
         }
     }
     Ok(())
@@ -1062,7 +1070,9 @@ fn require_line2_policy(runtime: &BTreeMap<String, String>) -> Result<(), String
 fn require_tunnel_policy(runtime: &BTreeMap<String, String>) -> Result<(), String> {
     for key in ["REALITY_SERVER_NAME", "TUNNEL_DOMAIN", "ACME_EMAIL"] {
         if !runtime.contains_key(key) {
-            return Err(format!("tunnel bootstrap requires runtime policy key: {key}"));
+            return Err(format!(
+                "tunnel bootstrap requires runtime policy key: {key}"
+            ));
         }
     }
     let domain = runtime.get("TUNNEL_DOMAIN").unwrap();
@@ -1154,8 +1164,12 @@ fn render_runtime_template(
     }
 
     let target = stack_dir.join(target_relative);
-    fs::write(&target, rendered.as_bytes())
-        .map_err(|err| format!("failed to write rendered runtime {}: {err}", target.display()))?;
+    fs::write(&target, rendered.as_bytes()).map_err(|err| {
+        format!(
+            "failed to write rendered runtime {}: {err}",
+            target.display()
+        )
+    })?;
     set_bundle_file_permissions(&target, false, true)
 }
 
@@ -1182,7 +1196,9 @@ fn prepare_base_proxy_certificate(
     runtime: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     if runtime.contains_key("TUNNEL_DOMAIN") {
-        return Err("base certificate fallback is forbidden when tunnel policy is enabled".to_owned());
+        return Err(
+            "base certificate fallback is forbidden when tunnel policy is enabled".to_owned(),
+        );
     }
     let cert = stack_dir.join("certs/proxy.crt");
     let key = stack_dir.join("certs/proxy.key");
@@ -1217,7 +1233,13 @@ fn prepare_base_proxy_certificate(
         "-subj".to_owned(),
         format!("/CN={common_name}"),
     ];
-    run_fixed_command(stack_dir, "openssl", &args, &BTreeMap::new(), "generate base certificate")?;
+    run_fixed_command(
+        stack_dir,
+        "openssl",
+        &args,
+        &BTreeMap::new(),
+        "generate base certificate",
+    )?;
     set_bundle_file_permissions(&key, false, true)?;
     set_bundle_file_permissions(&cert, false, false)?;
     if !certificate_is_valid(&cert, 300) || !key.is_file() {
@@ -1226,10 +1248,7 @@ fn prepare_base_proxy_certificate(
     Ok(())
 }
 
-fn start_warp_egress(
-    stack_dir: &Path,
-    images: &BTreeMap<String, String>,
-) -> Result<(), String> {
+fn start_warp_egress(stack_dir: &Path, images: &BTreeMap<String, String>) -> Result<(), String> {
     run_compose(stack_dir, images, &["pull", "warp-egress"])?;
     run_compose(
         stack_dir,
@@ -1238,10 +1257,7 @@ fn start_warp_egress(
     )
 }
 
-fn start_line1_gateway(
-    stack_dir: &Path,
-    images: &BTreeMap<String, String>,
-) -> Result<(), String> {
+fn start_line1_gateway(stack_dir: &Path, images: &BTreeMap<String, String>) -> Result<(), String> {
     run_compose(
         stack_dir,
         images,
@@ -1262,21 +1278,12 @@ fn start_line1_gateway(
     )
 }
 
-fn start_line2_proxy(
-    stack_dir: &Path,
-    images: &BTreeMap<String, String>,
-) -> Result<(), String> {
+fn start_line2_proxy(stack_dir: &Path, images: &BTreeMap<String, String>) -> Result<(), String> {
     run_compose(stack_dir, images, &["pull", "line2-proxy"])?;
     run_compose(
         stack_dir,
         images,
-        &[
-            "up",
-            "-d",
-            "--force-recreate",
-            "--no-deps",
-            "line2-proxy",
-        ],
+        &["up", "-d", "--force-recreate", "--no-deps", "line2-proxy"],
     )
 }
 
@@ -1300,7 +1307,10 @@ fn run_compose(
             EDGE_WARP_EGRESS_IMAGE_KEY,
             images.get(EDGE_WARP_EGRESS_IMAGE_KEY).unwrap(),
         )
-        .env(EDGE_MESH_IMAGE_KEY, images.get(EDGE_MESH_IMAGE_KEY).unwrap())
+        .env(
+            EDGE_MESH_IMAGE_KEY,
+            images.get(EDGE_MESH_IMAGE_KEY).unwrap(),
+        )
         .env_remove("COMPOSE_FILE")
         .env_remove("COMPOSE_PROFILES")
         .stdout(Stdio::null())
@@ -1353,7 +1363,10 @@ fn wait_for_owned_certificate(stack_dir: &Path) -> Result<(), String> {
         }
         sleep(Duration::from_secs(2));
     }
-    Err("Line 1 certificate owner did not publish a valid certificate within 180 seconds".to_owned())
+    Err(
+        "Line 1 certificate owner did not publish a valid certificate within 180 seconds"
+            .to_owned(),
+    )
 }
 
 fn certificate_is_valid(path: &Path, minimum_validity_seconds: u64) -> bool {
@@ -2592,8 +2605,7 @@ mod tests {
     fn typed_runtime_environment_accepts_vm_owned_credentials() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
-        let mut runtime =
-            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n".to_owned();
+        let mut runtime = "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n".to_owned();
         runtime.push_str(&ApplicationRuntimeSecrets::generate().render_env());
         fs::write(root.join(RUNTIME_ENV_FILE), runtime).unwrap();
 
