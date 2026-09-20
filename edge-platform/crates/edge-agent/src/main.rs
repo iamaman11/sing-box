@@ -696,10 +696,7 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
             || value.len() > 253
             || !value.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric()
-                    || matches!(
-                        byte,
-                        b'.' | b'_' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
-                    )
+                    || matches!(byte, b'.' | b'_' | b':' | b'@' | b'%' | b'+' | b'/' | b'-')
             })
         {
             return Err(format!(
