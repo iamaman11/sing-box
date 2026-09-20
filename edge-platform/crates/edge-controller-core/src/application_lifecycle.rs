@@ -323,21 +323,10 @@ pub fn plan_application(
     desired: &DesiredApplicationState,
     artifact: &AgentArtifactManifest,
     bundle_digest: &str,
-    runtime_env_available: bool,
     observation: &ApplicationObservation,
 ) -> Result<ApplicationPlan, ApplicationSpecError> {
     let release = desired_release(desired, artifact, bundle_digest)?;
     let desired_state_digest = desired.digest()?;
-
-    if desired.runtime_env_required && !runtime_env_available {
-        return Ok(ApplicationPlan {
-            class: ApplicationPlanClass::Blocked,
-            desired_state_digest,
-            desired_release: release,
-            actions: Vec::new(),
-            reasons: vec!["runtime credential material is required but unavailable".to_owned()],
-        });
-    }
 
     if let Some(current) = observation.current_release.as_ref() {
         let observed_agent = observation.observed_agent_sha256.as_deref();
@@ -658,26 +647,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_runtime_secret_blocks_mutation() {
-        let plan = plan_application(
-            &desired(),
-            &artifact(),
-            &"3".repeat(64),
-            false,
-            &ApplicationObservation::default(),
-        )
-        .unwrap();
-        assert_eq!(plan.class, ApplicationPlanClass::Blocked);
-        assert!(plan.actions.is_empty());
-    }
-
-    #[test]
     fn first_release_plans_apply() {
         let plan = plan_application(
             &desired(),
             &artifact(),
             &"3".repeat(64),
-            true,
             &ApplicationObservation::default(),
         )
         .unwrap();
@@ -705,7 +679,7 @@ mod tests {
             previous_release: None,
         };
         let plan =
-            plan_application(&desired(), &artifact(), &"3".repeat(64), true, &observation).unwrap();
+            plan_application(&desired(), &artifact(), &"3".repeat(64), &observation).unwrap();
         assert_eq!(plan.class, ApplicationPlanClass::Noop);
         assert!(plan.actions.is_empty());
     }
