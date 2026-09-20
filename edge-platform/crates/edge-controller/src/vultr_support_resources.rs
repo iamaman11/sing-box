@@ -576,7 +576,7 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
     })
 }
 
-fn same_firewall_access_semantics(left: &FirewallRuleSpec, right: &FirewallRuleSpec) -> bool {
+pub(crate) fn same_firewall_access_semantics(left: &FirewallRuleSpec, right: &FirewallRuleSpec) -> bool {
     left.ip_type == right.ip_type
         && left.protocol == right.protocol
         && left.subnet == right.subnet
@@ -585,7 +585,7 @@ fn same_firewall_access_semantics(left: &FirewallRuleSpec, right: &FirewallRuleS
         && left.source == right.source
 }
 
-fn controller_ipv4_access_specs(
+pub(crate) fn controller_ipv4_access_specs(
     unresolved_profile: &FirewallProfile,
     controller_ipv4: &str,
 ) -> Result<BTreeSet<FirewallRuleSpec>, String> {
@@ -993,7 +993,7 @@ fn current_rule_map(
     Ok(result)
 }
 
-fn firewall_rule_spec(rule: &VultrFirewallRule) -> Result<FirewallRuleSpec, String> {
+pub(crate) fn firewall_rule_spec(rule: &VultrFirewallRule) -> Result<FirewallRuleSpec, String> {
     let subnet = rule.subnet.trim().to_owned();
     let raw_source = rule.source.trim();
     let provider_derived_source = format!("{subnet}/{}", rule.subnet_size);
@@ -1015,11 +1015,11 @@ fn firewall_rule_spec(rule: &VultrFirewallRule) -> Result<FirewallRuleSpec, Stri
     Ok(spec)
 }
 
-fn firewall_group_description(environment: &str, profile_name: &str) -> String {
+pub(crate) fn firewall_group_description(environment: &str, profile_name: &str) -> String {
     format!("singbox-{environment}-fw-{profile_name}")
 }
 
-fn public_key_material(public_key: &str) -> Result<String, String> {
+pub(crate) fn public_key_material(public_key: &str) -> Result<String, String> {
     let fields = public_key.split_whitespace().collect::<Vec<_>>();
     if fields.len() < 2 {
         return Err("SSH public key must contain algorithm and base64 material".to_owned());
