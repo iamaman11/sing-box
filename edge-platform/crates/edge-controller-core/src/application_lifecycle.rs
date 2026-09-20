@@ -220,7 +220,10 @@ impl ApplicationRuntimePolicy {
         }
 
         if let Some(line1) = self.line1.as_ref() {
-            validate_runtime_public_value("runtime_policy.line1.tunnel_domain", &line1.tunnel_domain)?;
+            validate_runtime_public_value(
+                "runtime_policy.line1.tunnel_domain",
+                &line1.tunnel_domain,
+            )?;
             validate_runtime_public_value("runtime_policy.line1.acme_email", &line1.acme_email)?;
             validate_runtime_public_value(
                 "runtime_policy.line1.reality_server_name",
@@ -246,7 +249,10 @@ fn validate_runtime_public_value(label: &str, value: &str) -> Result<(), Applica
         || value.len() > 253
         || !value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
-                || matches!(byte, b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'-')
+                || matches!(
+                    byte,
+                    b'.' | b'_' | b'~' | b':' | b'@' | b'%' | b'+' | b'/' | b'-'
+                )
         })
     {
         return Err(ApplicationSpecError::Validation(format!(
