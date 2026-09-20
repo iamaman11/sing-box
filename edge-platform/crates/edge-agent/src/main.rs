@@ -268,7 +268,10 @@ fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
 
     let compose_path = stack_dir.join("docker-compose.yml");
     let enabled_profiles = enabled_application_profiles(stack_dir);
-    let Some(compose) = inspect_compose(&compose_path, &mut state, &enabled_profiles) else {
+    let line2_enabled = line2_runtime_enabled(stack_dir);
+    let Some(compose) =
+        inspect_compose(&compose_path, &mut state, &enabled_profiles, line2_enabled)
+    else {
         state.healthy = false;
         return state;
     };
@@ -877,8 +880,13 @@ fn verify_bootstrap_post_state(
     }
 
     let tunnel_expected = tunnel_runtime_enabled(stack_dir);
+    let line2_expected = line2_runtime_enabled(stack_dir);
 
-    let mut expected = vec!["vultr-warp-egress", "vultr-line2-proxy"];
+    let mut expected = vec!["vultr-warp-egress"];
+    if matches!(mode, BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull) && line2_expected
+    {
+        expected.push("vultr-line2-proxy");
+    }
     if matches!(
         mode,
         BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull
@@ -908,6 +916,14 @@ fn verify_bootstrap_post_state(
             "tunnel bootstrap requested but TUNNEL_DOMAIN/ACME_EMAIL are not configured".to_owned(),
         );
     }
+    if matches!(mode, BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull)
+        && !line2_expected
+    {
+        warnings.push(
+            "Line 2 bootstrap requested but PROXY_USERNAME/PROXY_CERT_CN are not configured"
+                .to_owned(),
+        );
+    }
 
     BootstrapVerification {
         success: warnings.is_empty(),
@@ -934,7 +950,10 @@ fn inspect_bundle_artifacts(stack_dir: &Path, state: &mut AgentState) {
     }
 
     let rendered_dir = stack_dir.join("rendered");
-    let mut expected_rendered = vec!["line2-proxy.json"];
+    let mut expected_rendered = Vec::new();
+    if line2_runtime_enabled(stack_dir) {
+        expected_rendered.push("line2-proxy.json");
+    }
     if tunnel_runtime_enabled(stack_dir) {
         expected_rendered.push("line1-gateway.json");
     }
@@ -986,6 +1005,7 @@ fn inspect_compose(
     compose_path: &Path,
     state: &mut AgentState,
     enabled_profiles: &BTreeSet<String>,
+    line2_enabled: bool,
 ) -> Option<ComposeObservation> {
     let raw = match fs::read_to_string(compose_path) {
         Ok(raw) => {
@@ -1016,7 +1036,10 @@ fn inspect_compose(
     let mut expected_tcp_ports = BTreeSet::new();
     let mut expected_udp_ports = BTreeSet::new();
 
-    for service in compose.services.into_values() {
+    for (service_name, service) in compose.services {
+        if service_name == "line2-proxy" && !line2_enabled {
+            continue;
+        }
         if !service.profiles.is_empty()
             && !service
                 .profiles
@@ -1263,6 +1286,12 @@ fn env_flag_present(values: &std::collections::BTreeMap<String, String>, key: &s
     values
         .get(key)
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn line2_runtime_enabled(stack_dir: &Path) -> bool {
+    read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
+        env_flag_present(&values, "PROXY_USERNAME") && env_flag_present(&values, "PROXY_CERT_CN")
+    })
 }
 
 fn tunnel_runtime_enabled(stack_dir: &Path) -> bool {
@@ -1639,6 +1668,35 @@ mod tests {
                 .degraded_reasons
                 .iter()
                 .any(|reason| reason.contains("TUNNEL_DOMAIN is invalid"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tunnel_only_policy_does_not_require_line2_artifacts() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(stack.join("rendered")).unwrap();
+        fs::write(
+            stack.join(RUNTIME_ENV_FILE),
+            "REALITY_SERVER_NAME=www.example.com\nTUNNEL_DOMAIN=edge.example.com\nACME_EMAIL=ops@example.com\n",
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), "{}\n").unwrap();
+
+        assert!(tunnel_runtime_enabled(&stack));
+        assert!(!line2_runtime_enabled(&stack));
+
+        let mut state = AgentState::bootstrap_placeholder();
+        state.degraded_reasons.clear();
+        inspect_bundle_artifacts(&stack, &mut state);
+
+        assert!(
+            !state
+                .degraded_reasons
+                .iter()
+                .any(|reason| reason.contains("line2-proxy.json"))
         );
 
         fs::remove_dir_all(root).unwrap();
