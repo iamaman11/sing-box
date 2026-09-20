@@ -472,7 +472,14 @@ mod tests {
     #[tokio::test]
     async fn create_is_observed_once_and_converges_to_noop() {
         let mut provider = FakeProvider::default();
-        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
+        let authority = apply_authority(&mut provider, "203.0.113.10").await;
+        let report = apply_dns_once(
+            &mut provider,
+            &desired(),
+            "203.0.113.10",
+            &authority,
+            policy(),
+        )
             .await
             .unwrap();
         assert_eq!(provider.create_calls, 1);
@@ -487,7 +494,14 @@ mod tests {
             commit_on_error: true,
             ..FakeProvider::default()
         };
-        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
+        let authority = apply_authority(&mut provider, "203.0.113.10").await;
+        let report = apply_dns_once(
+            &mut provider,
+            &desired(),
+            "203.0.113.10",
+            &authority,
+            policy(),
+        )
             .await
             .unwrap();
         assert_eq!(provider.create_calls, 1);
@@ -515,12 +529,40 @@ mod tests {
             records: vec![record("203.0.113.9")],
             ..FakeProvider::default()
         };
-        let report = apply_dns_once(&mut provider, &desired(), "203.0.113.10", &apply_authority(&mut provider, "203.0.113.10").await, policy())
+        let authority = apply_authority(&mut provider, "203.0.113.10").await;
+        let report = apply_dns_once(
+            &mut provider,
+            &desired(),
+            "203.0.113.10",
+            &authority,
+            policy(),
+        )
             .await
             .unwrap();
         assert_eq!(provider.update_calls, 1);
         assert!(matches!(report.performed, ApplyAction::Update { .. }));
         assert_eq!(report.next_plan.action, ApplyAction::Noop);
+    }
+
+    #[tokio::test]
+    async fn stale_apply_authority_rejects_without_mutation() {
+        let mut provider = FakeProvider::default();
+        let authority = apply_authority(&mut provider, "203.0.113.10").await;
+        provider.records.push(record("203.0.113.9"));
+
+        let error = apply_dns_once(
+            &mut provider,
+            &desired(),
+            "203.0.113.10",
+            &authority,
+            policy(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("stale"));
+        assert_eq!(provider.create_calls, 0);
+        assert_eq!(provider.update_calls, 0);
     }
 
     #[tokio::test]
