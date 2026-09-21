@@ -136,7 +136,14 @@ fn runtime_inputs(desired: &DesiredZeroTrustState) -> Result<ZeroTrustRuntimeInp
             desired.gateway_allow.identity_email_env
         )
     })?;
-    ZeroTrustRuntimeInputs::new(android_profile_id, identity_email)
+    let reachability_confirmed = env::var("CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED")
+        .ok()
+        .is_some_and(|value| value == "1");
+    ZeroTrustRuntimeInputs::new(
+        android_profile_id,
+        identity_email,
+        reachability_confirmed,
+    )
 }
 
 fn provider_from_env(
