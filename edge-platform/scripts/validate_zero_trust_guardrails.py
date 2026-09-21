@@ -191,6 +191,7 @@ def validate_repository(doc, repo_root):
     specs = doc["canonical_specs"]
     selectors = doc["owned_resource_selectors"]
     boundary = doc["zero_trust_boundary"]
+    boundary = doc["zero_trust_boundary"]
 
     try:
         dns = json.loads((repo_root / specs["dns"]).read_text(encoding="utf-8"))
