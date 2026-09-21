@@ -1,5 +1,7 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::time::Duration;
 
 const API_ROOT: &str = "https://api.cloudflare.com/client/v4";
 const MAX_API_PAGES: u32 = 1000;
@@ -35,6 +37,56 @@ pub struct CloudflareMeshRoute {
     pub tunnel_id: String,
     pub tunnel_type: Option<String>,
     pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareZeroTrustDeviceSettings {
+    pub gateway_proxy_enabled: Option<bool>,
+    pub gateway_udp_proxy_enabled: Option<bool>,
+    pub use_zt_virtual_ip: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareDeviceProfile {
+    pub id: String,
+    pub name: String,
+    pub enabled: Option<bool>,
+    pub precedence: Option<u64>,
+    pub match_expression: Option<String>,
+    pub service_mode: Option<String>,
+    pub tunnel_protocol: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareSplitTunnelEntry {
+    pub address: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareGatewayRule {
+    pub id: String,
+    pub name: String,
+    pub action: String,
+    pub precedence: Option<u64>,
+    pub enabled: Option<bool>,
+    pub traffic: Option<String>,
+    pub identity: Option<String>,
+    pub device_posture: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareAccessApplication {
+    pub id: String,
+    pub name: String,
+    pub app_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareAccessPolicy {
+    pub id: String,
+    pub name: String,
+    pub decision: Option<String>,
 }
 
 pub async fn upsert_a_record(
@@ -408,6 +460,276 @@ pub async fn delete_mesh_cidr_route(
     ensure_success(response).await
 }
 
+
+pub async fn get_zero_trust_device_settings(
+    api_token: &str,
+    account_id: &str,
+) -> Result<CloudflareZeroTrustDeviceSettings, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!("{API_ROOT}/accounts/{account_id}/devices/settings"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to get Cloudflare Zero Trust device settings: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    let result = payload
+        .result
+        .as_object()
+        .ok_or_else(|| "Cloudflare device settings result must be an object".to_owned())?;
+    Ok(CloudflareZeroTrustDeviceSettings {
+        gateway_proxy_enabled: result
+            .get("gateway_proxy_enabled")
+            .and_then(Value::as_bool),
+        gateway_udp_proxy_enabled: result
+            .get("gateway_udp_proxy_enabled")
+            .and_then(Value::as_bool),
+        use_zt_virtual_ip: result.get("use_zt_virtual_ip").and_then(Value::as_bool),
+    })
+}
+
+pub async fn list_device_profiles(
+    api_token: &str,
+    account_id: &str,
+) -> Result<Vec<CloudflareDeviceProfile>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!("{API_ROOT}/accounts/{account_id}/devices/policies"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to list Cloudflare device profiles: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    value_array(payload.result, "Cloudflare device profiles")?
+        .into_iter()
+        .map(device_profile_from_value)
+        .collect()
+}
+
+pub async fn get_device_profile_includes(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+    get_device_profile_split_tunnels(api_token, account_id, profile_id, "include").await
+}
+
+pub async fn get_device_profile_excludes(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+    get_device_profile_split_tunnels(api_token, account_id, profile_id, "exclude").await
+}
+
+async fn get_device_profile_split_tunnels(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+    kind: &str,
+) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare device profile ID", profile_id)?;
+    if !matches!(kind, "include" | "exclude") {
+        return Err("Cloudflare split tunnel kind must be include or exclude".to_owned());
+    }
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}/{kind}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to get Cloudflare device profile {kind} list: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    value_array(payload.result, "Cloudflare split tunnel list")?
+        .into_iter()
+        .map(split_tunnel_from_value)
+        .collect()
+}
+
+pub async fn list_gateway_rules(
+    api_token: &str,
+    account_id: &str,
+) -> Result<Vec<CloudflareGatewayRule>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!("{API_ROOT}/accounts/{account_id}/gateway/rules"))
+        .query(&[("order_by", "precedence"), ("direction", "asc")])
+        .send()
+        .await
+        .map_err(|err| format!("failed to list Cloudflare Gateway rules: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    value_array(payload.result, "Cloudflare Gateway rules")?
+        .into_iter()
+        .map(gateway_rule_from_value)
+        .collect()
+}
+
+pub async fn list_access_applications(
+    api_token: &str,
+    account_id: &str,
+) -> Result<Vec<CloudflareAccessApplication>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let mut applications = Vec::new();
+    for page in 1..=MAX_API_PAGES {
+        let response = client
+            .get(format!("{API_ROOT}/accounts/{account_id}/access/apps"))
+            .query(&[
+                ("page", page.to_string()),
+                ("per_page", "50".to_owned()),
+            ])
+            .send()
+            .await
+            .map_err(|err| format!("failed to list Cloudflare Access applications: {err}"))?;
+        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+        let values = value_array(payload.result, "Cloudflare Access applications")?;
+        let page_count = values.len();
+        for value in values {
+            applications.push(access_application_from_value(value)?);
+        }
+        if page_count < 50 {
+            return Ok(applications);
+        }
+    }
+    Err(format!(
+        "Cloudflare Access application pagination exceeded {MAX_API_PAGES} pages"
+    ))
+}
+
+pub async fn list_access_application_policies(
+    api_token: &str,
+    account_id: &str,
+    app_id: &str,
+) -> Result<Vec<CloudflareAccessPolicy>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access application ID", app_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{app_id}/policies"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to list Cloudflare Access application policies: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    value_array(payload.result, "Cloudflare Access application policies")?
+        .into_iter()
+        .map(access_policy_from_value)
+        .collect()
+}
+
+fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare device profile must be an object".to_owned())?;
+    Ok(CloudflareDeviceProfile {
+        id: required_value_string(object, "id", "Cloudflare device profile")?,
+        name: required_value_string(object, "name", "Cloudflare device profile")?,
+        enabled: object.get("enabled").and_then(Value::as_bool),
+        precedence: object.get("precedence").and_then(Value::as_u64),
+        match_expression: object
+            .get("match")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        service_mode: object
+            .get("service_mode_v2")
+            .and_then(Value::as_object)
+            .and_then(|mode| mode.get("mode"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        tunnel_protocol: object
+            .get("tunnel_protocol")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn split_tunnel_from_value(value: Value) -> Result<CloudflareSplitTunnelEntry, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare split tunnel entry must be an object".to_owned())?;
+    Ok(CloudflareSplitTunnelEntry {
+        address: required_value_string(object, "address", "Cloudflare split tunnel entry")?,
+        description: object
+            .get("description")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn gateway_rule_from_value(value: Value) -> Result<CloudflareGatewayRule, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Gateway rule must be an object".to_owned())?;
+    Ok(CloudflareGatewayRule {
+        id: required_value_string(object, "id", "Cloudflare Gateway rule")?,
+        name: required_value_string(object, "name", "Cloudflare Gateway rule")?,
+        action: required_value_string(object, "action", "Cloudflare Gateway rule")?,
+        precedence: object.get("precedence").and_then(Value::as_u64),
+        enabled: object.get("enabled").and_then(Value::as_bool),
+        traffic: object
+            .get("traffic")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        identity: object
+            .get("identity")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        device_posture: object
+            .get("device_posture")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplication, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Access application must be an object".to_owned())?;
+    Ok(CloudflareAccessApplication {
+        id: required_value_string(object, "id", "Cloudflare Access application")?,
+        name: required_value_string(object, "name", "Cloudflare Access application")?,
+        app_type: required_value_string(object, "type", "Cloudflare Access application")?,
+    })
+}
+
+fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Access policy must be an object".to_owned())?;
+    Ok(CloudflareAccessPolicy {
+        id: required_value_string(object, "id", "Cloudflare Access policy")?,
+        name: required_value_string(object, "name", "Cloudflare Access policy")?,
+        decision: object
+            .get("decision")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn required_value_string(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> Result<String, String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("{label} field {key} is required"))
+}
+
+fn value_array(value: Value, label: &str) -> Result<Vec<Value>, String> {
+    value
+        .as_array()
+        .cloned()
+        .ok_or_else(|| format!("{label} result must be an array"))
+}
+
 pub fn mock_upsert_a_record(zone_name: &str, record_name: &str, ip: &str) -> CloudflareDnsRecord {
     CloudflareDnsRecord {
         zone_name: zone_name.to_owned(),
@@ -469,6 +791,8 @@ fn authorized_client(api_token: &str) -> Result<Client, String> {
     }
     Client::builder()
         .user_agent("edge-platform/0.1")
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .default_headers(
             [(
                 reqwest::header::AUTHORIZATION,
