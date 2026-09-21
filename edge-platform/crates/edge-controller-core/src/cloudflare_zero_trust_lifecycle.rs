@@ -673,9 +673,7 @@ fn canonical_cidr_set(values: &[String]) -> Result<BTreeSet<String>, ZeroTrustLi
     Ok(result)
 }
 
-fn observed_ipv4_cidr(
-    value: &str,
-) -> Result<Option<String>, ZeroTrustLifecycleError> {
+fn observed_ipv4_cidr(value: &str) -> Result<Option<String>, ZeroTrustLifecycleError> {
     let (address, prefix) = value.split_once('/').ok_or_else(|| {
         ZeroTrustLifecycleError::Validation(format!("CIDR {value} must use prefix notation"))
     })?;
