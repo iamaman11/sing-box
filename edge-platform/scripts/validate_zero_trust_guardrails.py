@@ -149,6 +149,55 @@ def validate_document(doc):
     return errors
 
 
+def validate_repository(doc, repo_root):
+    errors = validate_repository(doc, Path("."))
+    if errors:
+        return errors
+
+    specs = doc["canonical_specs"]
+    selectors = doc["owned_resource_selectors"]
+
+    try:
+        dns = json.loads((repo_root / specs["dns"]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"failed to load canonical DNS spec: {error}")
+        return errors
+
+    try:
+        mesh = json.loads((repo_root / specs["mesh"]).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"failed to load canonical Mesh spec: {error}")
+        return errors
+
+    _expect(
+        errors,
+        dns.get("record_name") == selectors["dns_record_name"],
+        "ownership DNS selector differs from canonical DNS spec",
+    )
+    _expect(
+        errors,
+        mesh.get("node_name") == selectors["mesh_node_name"],
+        "ownership Mesh node selector differs from canonical Mesh spec",
+    )
+    _expect(
+        errors,
+        mesh.get("account_id") == doc["account_id"],
+        "ownership account differs from canonical Mesh spec",
+    )
+    _expect(
+        errors,
+        mesh.get("routes") == [],
+        "canonical Mesh base spec must remain route-free; route authority is derived from verified VPC state",
+    )
+    _expect(
+        errors,
+        dns.get("environment") == mesh.get("environment") == "application-acceptance",
+        "canonical DNS and Mesh specs must share application-acceptance ownership",
+    )
+
+    return errors
+
+
 def main(argv):
     if len(argv) != 2:
         raise SystemExit(
