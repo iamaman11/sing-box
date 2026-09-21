@@ -33,6 +33,8 @@ const REMOTE_PREVIOUS_AGENT: &str = "/opt/vultr-edge-stack/bin/edge-agent.previo
 const REMOTE_STACK_RELEASE: &str = "/opt/vultr-edge-stack/stack/.application-release.json";
 const REMOTE_PREVIOUS_STACK_RELEASE: &str =
     "/opt/vultr-edge-stack/stack.previous/.application-release.json";
+const REMOTE_STAGING_STACK_RELEASE: &str =
+    "/opt/vultr-edge-stack/stack.next/.application-release.json";
 const REMOTE_CONTROL_RELEASE: &str = "/opt/vultr-edge-stack/application-release.json";
 const REMOTE_CONTROL_RELEASE_STAGING: &str = "/tmp/singbox-application-release.json.tmp";
 const AGENT_DROPIN_PATH: &str =
@@ -41,6 +43,8 @@ const AGENT_DROPIN_CONTENT: &str =
     "[Service]\nEnvironment=EDGE_AGENT_ADDR=127.0.0.1:50061\nEnvironmentFile=\n";
 const READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS: usize = 45;
 const READ_ONLY_RUNTIME_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
+const UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS: usize = 45;
+const UNCERTAIN_BUNDLE_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ApplicationAuthority {
@@ -676,6 +680,72 @@ fn read_remote_bundle_release(
     Ok(Some(value))
 }
 
+fn exact_bundle_digest_observed(
+    observed: Option<&BundleReleaseView>,
+    expected_digest: &str,
+) -> bool {
+    observed.is_some_and(|value| value.bundle_digest == expected_digest)
+}
+
+fn bounded_detail(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+fn application_agent_forensic_summary(authority: &ApplicationAuthority) -> String {
+    let command = format!(
+        "marker_digest() {{ path=\"$1\"; if sudo test -f \"$path\"; then sudo jq -r '.bundle_digest // \"invalid\"' \"$path\" 2>/dev/null || printf invalid; else printf absent; fi; }}; active=$(marker_digest '{active}'); staging=$(marker_digest '{staging}'); previous=$(marker_digest '{previous}'); unit_active=$(systemctl is-active edge-agent.service 2>/dev/null || true); unit_sub=$(systemctl show edge-agent.service -p SubState --value 2>/dev/null || true); unit_result=$(systemctl show edge-agent.service -p Result --value 2>/dev/null || true); unit_restarts=$(systemctl show edge-agent.service -p NRestarts --value 2>/dev/null || true); unit_status=$(systemctl show edge-agent.service -p ExecMainStatus --value 2>/dev/null || true); listener=$(ss -ltnH 'sport = :50061' 2>/dev/null | wc -l | tr -d ' ' || true); boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true); printf 'active=%s staging=%s previous=%s unit_active=%s unit_sub=%s unit_result=%s unit_restarts=%s unit_status=%s listener=%s boot_id=%s' \"$active\" \"$staging\" \"$previous\" \"$unit_active\" \"$unit_sub\" \"$unit_result\" \"$unit_restarts\" \"$unit_status\" \"$listener\" \"$boot_id\"",
+        active = REMOTE_STACK_RELEASE,
+        staging = REMOTE_STAGING_STACK_RELEASE,
+        previous = REMOTE_PREVIOUS_STACK_RELEASE,
+    );
+    match strict_ssh_capture(
+        &authority.target_ip,
+        &authority.logical_hostname,
+        &authority.operator_private_key_path,
+        &authority.canonical_operator_public_key,
+        &command,
+    ) {
+        Ok(value) => bounded_detail(&value, 1200),
+        Err(err) => format!("forensic_unavailable={}", bounded_detail(&err, 512)),
+    }
+}
+
+async fn wait_for_exact_bundle_digest_after_uncertain_mutation(
+    authority: &ApplicationAuthority,
+    expected_digest: &str,
+) -> Result<(), String> {
+    validate_lower_hex("expected uncertain bundle digest", expected_digest, 64)?;
+    let mut last_detail = "not-observed".to_owned();
+
+    for attempt in 0..UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS {
+        match read_remote_bundle_release(authority, REMOTE_STACK_RELEASE) {
+            Ok(observed) if exact_bundle_digest_observed(observed.as_ref(), expected_digest) => {
+                return Ok(());
+            }
+            Ok(Some(observed)) => {
+                last_detail = format!("active_digest={}", observed.bundle_digest);
+            }
+            Ok(None) => {
+                last_detail = "active_digest=absent".to_owned();
+            }
+            Err(err) => {
+                last_detail = format!("observation_error={}", bounded_detail(&err, 512));
+            }
+        }
+
+        if attempt + 1 < UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS {
+            sleep(UNCERTAIN_BUNDLE_REOBSERVE_DELAY).await;
+        }
+    }
+
+    Err(format!(
+        "desired bundle digest was not observed after {} bounded read-only observations; last={}; forensic={}",
+        UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS,
+        last_detail,
+        application_agent_forensic_summary(authority)
+    ))
+}
+
 fn read_control_state(
     authority: &ApplicationAuthority,
 ) -> Result<Option<ApplicationControlState>, String> {
@@ -816,16 +886,17 @@ async fn apply_bundle_once(
             response.get_ref().active_bundle_digest
         )),
         Err(err) => {
-            let observed = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
-            if observed
-                .as_ref()
-                .is_some_and(|value| value.bundle_digest == prepared.release.bundle_digest)
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(
+                authority,
+                &prepared.release.bundle_digest,
+            )
+            .await
             {
-                return Ok(());
+                Ok(()) => Ok(()),
+                Err(observation) => Err(format!(
+                    "ApplyBundle outcome is uncertain; RPC was not replayed: {err}; {observation}"
+                )),
             }
-            Err(format!(
-                "ApplyBundle outcome is uncertain and desired bundle was not observed; RPC was not replayed: {err}"
-            ))
         }
     }
 }
@@ -852,16 +923,17 @@ async fn rollback_bundle_once(
             response.get_ref().active_bundle_digest
         )),
         Err(err) => {
-            let observed = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
-            if observed
-                .as_ref()
-                .is_some_and(|value| value.bundle_digest == plan.previous_release.bundle_digest)
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(
+                authority,
+                &plan.previous_release.bundle_digest,
+            )
+            .await
             {
-                return Ok(());
+                Ok(()) => Ok(()),
+                Err(observation) => Err(format!(
+                    "RollbackBundle outcome is uncertain; RPC was not replayed: {err}; {observation}"
+                )),
             }
-            Err(format!(
-                "RollbackBundle outcome is uncertain and previous bundle was not observed; RPC was not replayed: {err}"
-            ))
         }
     }
 }
@@ -1178,6 +1250,34 @@ fn unique_temp_file(prefix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_bundle_digest_observation_matches_only_exact_digest() {
+        let observed = BundleReleaseView {
+            schema: 1,
+            bundle_id: "bundle-a".to_owned(),
+            bundle_digest:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        };
+        assert!(exact_bundle_digest_observed(
+            Some(&observed),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(!exact_bundle_digest_observed(
+            Some(&observed),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ));
+        assert!(!exact_bundle_digest_observed(
+            None,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+    }
+
+    #[test]
+    fn bounded_detail_never_exceeds_requested_character_count() {
+        assert_eq!(bounded_detail("abcdef", 4), "abcd");
+        assert_eq!(bounded_detail("abc", 4), "abc");
+    }
     use edge_controller_core::application_lifecycle::{
         ApplicationBootstrapMode, ApplicationRuntimePolicy, Line2RuntimePolicy,
     };
