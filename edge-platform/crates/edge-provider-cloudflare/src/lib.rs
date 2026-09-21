@@ -50,6 +50,7 @@ pub struct CloudflareZeroTrustDeviceSettings {
 pub struct CloudflareDeviceProfile {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub enabled: Option<bool>,
     pub precedence: Option<u64>,
     pub match_expression: Option<String>,
@@ -68,6 +69,7 @@ pub struct CloudflareSplitTunnelEntry {
 pub struct CloudflareGatewayRule {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub action: String,
     pub precedence: Option<u64>,
     pub enabled: Option<bool>,
@@ -109,6 +111,12 @@ pub struct CloudflareDeviceProfileWrite {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareServiceModeWrite {
     pub mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareDeviceProfileTransportWrite {
+    pub service_mode_v2: CloudflareServiceModeWrite,
+    pub tunnel_protocol: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -599,6 +607,34 @@ pub async fn update_device_profile(
     device_profile_from_value(payload.result)
 }
 
+pub async fn update_device_profile_transport(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+    service_mode: &str,
+    tunnel_protocol: &str,
+) -> Result<CloudflareDeviceProfile, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare device profile ID", profile_id)?;
+    require_non_empty("Cloudflare device profile service mode", service_mode)?;
+    require_non_empty("Cloudflare device profile tunnel protocol", tunnel_protocol)?;
+    let request = CloudflareDeviceProfileTransportWrite {
+        service_mode_v2: CloudflareServiceModeWrite {
+            mode: service_mode.to_owned(),
+        },
+        tunnel_protocol: tunnel_protocol.to_owned(),
+    };
+    let client = authorized_client(api_token)?;
+    let response = client
+        .patch(format!("{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"))
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| format!("failed to update Cloudflare device profile transport: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    device_profile_from_value(payload.result)
+}
+
 pub async fn get_device_profile_includes(
     api_token: &str,
     account_id: &str,
@@ -855,6 +891,10 @@ fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, St
             .or_else(|| optional_value_string(object, "id"))
             .ok_or_else(|| "Cloudflare device profile field policy_id/id is required".to_owned())?,
         name: required_value_string(object, "name", "Cloudflare device profile")?,
+        description: object
+            .get("description")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         enabled: object.get("enabled").and_then(Value::as_bool),
         precedence: object.get("precedence").and_then(Value::as_u64),
         match_expression: object
@@ -900,6 +940,10 @@ fn gateway_rule_from_value(value: Value) -> Result<CloudflareGatewayRule, String
     Ok(CloudflareGatewayRule {
         id: required_value_string(object, "id", "Cloudflare Gateway rule")?,
         name: required_value_string(object, "name", "Cloudflare Gateway rule")?,
+        description: object
+            .get("description")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         action: required_value_string(object, "action", "Cloudflare Gateway rule")?,
         precedence: object.get("precedence").and_then(Value::as_u64),
         enabled: object.get("enabled").and_then(Value::as_bool),
