@@ -4,7 +4,8 @@
   "account_id": "4426df1449e417511bc7697d60b7f62f",
   "canonical_specs": {
     "dns": "infra/cloudflare/application-acceptance-dns.json",
-    "mesh": "infra/cloudflare/application-acceptance-mesh.json"
+    "mesh": "infra/cloudflare/application-acceptance-mesh.json",
+    "zero_trust_lifecycle": "infra/cloudflare/zero-trust-lifecycle.json"
   },
   "owned_resource_selectors": {
     "dns_record_name": "stage2-acceptance.alegria.by",
@@ -12,10 +13,10 @@
     "mesh_route_authority": "verified-vultr-vpc-only"
   },
   "zero_trust_boundary": {
-    "mode": "external-prerequisite-read-only",
+    "mode": "controlled-project-prerequisite-lifecycle",
     "mutate_existing_objects": false,
-    "project_profile_creation_allowed": false,
-    "generic_warp_connector_selector_allowed": false,
+    "project_profile_creation_allowed": true,
+    "generic_warp_connector_selector_allowed": true,
     "generic_warp_connector_selector": "identity.email == \"warp_connector@wispy-fire-124a.cloudflareaccess.com\"",
     "protected_categories": [
       "default-device-profile",
@@ -27,7 +28,8 @@
     "required_client_contract": {
       "service_mode": "warp",
       "tunnel_protocol": "masque",
-      "mesh_cidr": "100.96.0.0/12"
+      "mesh_cidr": "100.96.0.0/12",
+      "cloudflare_source_cidr": "100.64.0.0/12"
     },
     "project_owned_legacy_warp_connector_names": [
       "vultr"
@@ -36,7 +38,11 @@
       "enrolled-device-reachability"
     ],
     "access_enrollment_required": true,
-    "gateway_mesh_allow_required": true
+    "gateway_mesh_allow_required": true,
+    "controlled_existing_mutations": [
+      "runtime-authorized-android-profile-split-tunnel-only"
+    ],
+    "gateway_project_rule_creation_allowed": true
   },
   "evidence": {
     "must_be_outside_repository_worktree": true,
