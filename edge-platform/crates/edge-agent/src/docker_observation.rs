@@ -206,6 +206,8 @@ fn redact_runtime_log_line(line: &str) -> String {
         "private key",
         "authorization",
         "credential",
+        "mesh_node_token",
+        "bearer ",
         "token=",
         "uuid=",
     ]
@@ -409,6 +411,14 @@ mod tests {
         assert_eq!(
             tail.last().map(String::as_str),
             Some("[redacted sensitive runtime log line]")
+        );
+        assert_eq!(
+            redact_runtime_log_line("MESH_NODE_TOKEN secret-value"),
+            "[redacted sensitive runtime log line]"
+        );
+        assert_eq!(
+            redact_runtime_log_line("Authorization: Bearer secret-value"),
+            "[redacted sensitive runtime log line]"
         );
     }
 

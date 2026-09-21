@@ -1306,8 +1306,17 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     let exact_image_ready = expected_image
         .as_deref()
         .is_some_and(|expected| docker.container_exact_image_ready(MESH_CONTAINER, expected));
-    let runtime_ready =
-        token_valid && container_running && exact_image_ready && probe_mesh_runtime(&docker);
+    let datapath = if container_running && exact_image_ready {
+        Some(probe_mesh_runtime(&docker))
+    } else {
+        None
+    };
+    let runtime_ready = token_valid
+        && container_running
+        && exact_image_ready
+        && datapath
+            .as_ref()
+            .is_some_and(MeshRuntimeProbeEvidence::ready);
 
     let mut warnings = Vec::new();
     if let Some(err) = docker_error {
@@ -1324,8 +1333,21 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     if container_running && !exact_image_ready {
         warnings.push("Mesh runtime container does not use the exact accepted image".to_owned());
     }
-    if container_running && exact_image_ready && !runtime_ready {
-        warnings.push("Mesh runtime datapath is not ready".to_owned());
+    if let Some(datapath) = datapath.as_ref()
+        && !datapath.ready()
+    {
+        datapath.append_failure_warnings(&mut warnings);
+        match observe_container_runtime(MESH_CONTAINER).await {
+            Ok(evidence) => warnings.push(format!(
+                "Mesh runtime container evidence: {}",
+                bounded_container_runtime_summary(&evidence)
+            )),
+            Err(err) => warnings.push(format!(
+                "Mesh runtime container evidence unavailable: {}",
+                err.chars().take(512).collect::<String>()
+            )),
+        }
+        warnings.push(mesh_tunnel_protocol_evidence());
     }
 
     MeshRuntimeState {
@@ -2061,11 +2083,10 @@ fn inspect_datapath_readiness(state: &mut AgentState, docker: &DockerObservation
     }
 
     let mesh_ready = if docker.container_present(MESH_CONTAINER) {
-        let ready = probe_mesh_runtime(docker);
+        let evidence = probe_mesh_runtime(docker);
+        let ready = evidence.ready();
         if !ready {
-            state
-                .degraded_reasons
-                .push("enabled Mesh runtime datapath probe failed".to_owned());
+            evidence.append_failure_warnings(&mut state.degraded_reasons);
         }
         Some(ready)
     } else {
@@ -2199,19 +2220,38 @@ fn probe_warp_egress(running_containers: &[String]) -> bool {
     })
 }
 
-fn probe_mesh_runtime(docker: &DockerObservation) -> bool {
-    if !docker.container_running(MESH_CONTAINER) {
-        return false;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MeshRuntimeProbeEvidence {
+    warp_connected: bool,
+    ipv4_forwarding: bool,
+    mesh_network_attached: bool,
+}
+
+impl MeshRuntimeProbeEvidence {
+    fn ready(&self) -> bool {
+        self.warp_connected && self.ipv4_forwarding && self.mesh_network_attached
     }
 
-    let connected =
+    fn append_failure_warnings(&self, warnings: &mut Vec<String>) {
+        if !self.warp_connected {
+            warnings.push("Mesh runtime warp-cli status is not Connected".to_owned());
+        }
+        if !self.ipv4_forwarding {
+            warnings.push("Mesh runtime IPv4 forwarding is not enabled".to_owned());
+        }
+        if !self.mesh_network_attached {
+            warnings.push(
+                "Mesh runtime container is not attached to the expected mesh network".to_owned(),
+            );
+        }
+    }
+}
+
+fn probe_mesh_runtime(docker: &DockerObservation) -> MeshRuntimeProbeEvidence {
+    let warp_connected =
         bounded_command_output("docker", &["exec", MESH_CONTAINER, "warp-cli", "status"], 8)
             .is_some_and(|output| output.lines().any(|line| line.contains("Connected")));
-    if !connected {
-        return false;
-    }
-
-    let forwarding = bounded_command_output(
+    let ipv4_forwarding = bounded_command_output(
         "docker",
         &[
             "exec",
@@ -2222,11 +2262,49 @@ fn probe_mesh_runtime(docker: &DockerObservation) -> bool {
         6,
     )
     .is_some_and(|output| output.trim() == "1");
-    if !forwarding {
-        return false;
-    }
+    let mesh_network_attached = docker.container_on_mesh_network(MESH_CONTAINER);
 
-    docker.container_on_mesh_network(MESH_CONTAINER)
+    MeshRuntimeProbeEvidence {
+        warp_connected,
+        ipv4_forwarding,
+        mesh_network_attached,
+    }
+}
+
+fn mesh_tunnel_protocol_evidence() -> String {
+    let Some(output) = bounded_command_output(
+        "docker",
+        &["exec", MESH_CONTAINER, "warp-cli", "settings"],
+        8,
+    ) else {
+        return "Mesh runtime tunnel protocol evidence: unavailable".to_owned();
+    };
+    let protocol = output
+        .lines()
+        .find(|line| line.to_ascii_lowercase().contains("protocol"))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.chars().take(160).collect::<String>())
+        .unwrap_or_else(|| "not-reported".to_owned());
+    format!("Mesh runtime tunnel protocol evidence: {protocol}")
+}
+
+fn bounded_container_runtime_summary(evidence: &ContainerRuntimeEvidence) -> String {
+    let exit_code = evidence
+        .exit_code
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let runtime_error = evidence.runtime_error.as_deref().unwrap_or("none");
+    let start = evidence.log_tail.len().saturating_sub(8);
+    let logs = if evidence.log_tail.is_empty() {
+        "none".to_owned()
+    } else {
+        evidence.log_tail[start..].join(" | ")
+    };
+    format!(
+        "present={} running={} exit_code={} runtime_error={} log_tail={}",
+        evidence.present, evidence.running, exit_code, runtime_error, logs
+    )
 }
 
 fn bounded_command_output(program: &str, args: &[&str], timeout_seconds: u64) -> Option<String> {
@@ -2711,6 +2789,49 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mesh_runtime_probe_evidence_reports_each_failed_predicate() {
+        let evidence = MeshRuntimeProbeEvidence {
+            warp_connected: false,
+            ipv4_forwarding: true,
+            mesh_network_attached: false,
+        };
+        assert!(!evidence.ready());
+
+        let mut warnings = Vec::new();
+        evidence.append_failure_warnings(&mut warnings);
+        assert_eq!(
+            warnings,
+            vec![
+                "Mesh runtime warp-cli status is not Connected",
+                "Mesh runtime container is not attached to the expected mesh network",
+            ]
+        );
+    }
+
+    #[test]
+    fn mesh_tunnel_protocol_evidence_output_is_bounded_to_protocol_line() {
+        let raw = "mode: warp\ntunnel protocol: MASQUE\nother: value\n";
+        let protocol = raw
+            .lines()
+            .find(|line| line.to_ascii_lowercase().contains("protocol"))
+            .map(str::trim)
+            .unwrap();
+        assert_eq!(protocol, "tunnel protocol: MASQUE");
+    }
+
+    #[test]
+    fn mesh_runtime_probe_evidence_requires_all_predicates() {
+        assert!(
+            MeshRuntimeProbeEvidence {
+                warp_connected: true,
+                ipv4_forwarding: true,
+                mesh_network_attached: true,
+            }
+            .ready()
+        );
     }
 
     #[test]

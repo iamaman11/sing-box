@@ -125,7 +125,11 @@ jobs:
           grep -Fq '"warp-egress:11080"' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'direct egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'WARP egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
-          grep -Fq 'enabled Mesh runtime datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'Mesh runtime warp-cli status is not Connected' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'Mesh runtime IPv4 forwarding is not enabled' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'Mesh runtime container is not attached to the expected mesh network' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'Mesh runtime tunnel protocol evidence:' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'bounded_container_runtime_summary' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'https://acme-staging-v02.api.letsencrypt.org/directory' edge-platform/crates/edge-controller-core/src/application_lifecycle.rs
           grep -Fq 'ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env"' edge-platform/crates/edge-agent/src/main.rs
