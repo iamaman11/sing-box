@@ -871,7 +871,7 @@ fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, St
         id: optional_value_string(object, "policy_id")
             .or_else(|| optional_value_string(object, "id"))
             .ok_or_else(|| "Cloudflare device profile field policy_id/id is required".to_owned())?,
-        name: required_value_string(object, "name", "Cloudflare device profile")?,
+        name: optional_value_string(object, "name").unwrap_or_default(),
         description: object
             .get("description")
             .and_then(Value::as_str)
@@ -1441,6 +1441,21 @@ mod tests {
                 .unwrap()
                 .contains("posture-android")
         );
+    }
+
+    #[test]
+    fn parses_unnamed_device_profile_without_aborting_inventory() {
+        let profile = device_profile_from_value(serde_json::json!({
+            "policy_id": "profile-unnamed",
+            "enabled": true,
+            "precedence": 1,
+            "service_mode_v2": {"mode": "proxy"}
+        }))
+        .unwrap();
+
+        assert_eq!(profile.id, "profile-unnamed");
+        assert!(profile.name.is_empty());
+        assert_eq!(profile.service_mode.as_deref(), Some("proxy"));
     }
 
     #[test]
