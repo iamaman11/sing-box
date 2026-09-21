@@ -491,16 +491,27 @@ pub async fn list_device_profiles(
 ) -> Result<Vec<CloudflareDeviceProfile>, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     let client = authorized_client(api_token)?;
-    let response = client
-        .get(format!("{API_ROOT}/accounts/{account_id}/devices/policies"))
-        .send()
-        .await
-        .map_err(|err| format!("failed to list Cloudflare device profiles: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    value_array(payload.result, "Cloudflare device profiles")?
-        .into_iter()
-        .map(device_profile_from_value)
-        .collect()
+    let mut profiles = Vec::new();
+    for page in 1..=MAX_API_PAGES {
+        let response = client
+            .get(format!("{API_ROOT}/accounts/{account_id}/devices/policies"))
+            .query(&[("page", page.to_string()), ("per_page", "50".to_owned())])
+            .send()
+            .await
+            .map_err(|err| format!("failed to list Cloudflare device profiles: {err}"))?;
+        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+        let values = value_array(payload.result, "Cloudflare device profiles")?;
+        let page_count = values.len();
+        for value in values {
+            profiles.push(device_profile_from_value(value)?);
+        }
+        if page_count < 50 {
+            return Ok(profiles);
+        }
+    }
+    Err(format!(
+        "Cloudflare device profile pagination exceeded {MAX_API_PAGES} pages"
+    ))
 }
 
 pub async fn get_device_profile_includes(
@@ -551,17 +562,33 @@ pub async fn list_gateway_rules(
 ) -> Result<Vec<CloudflareGatewayRule>, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     let client = authorized_client(api_token)?;
-    let response = client
-        .get(format!("{API_ROOT}/accounts/{account_id}/gateway/rules"))
-        .query(&[("order_by", "precedence"), ("direction", "asc")])
-        .send()
-        .await
-        .map_err(|err| format!("failed to list Cloudflare Gateway rules: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    value_array(payload.result, "Cloudflare Gateway rules")?
-        .into_iter()
-        .map(gateway_rule_from_value)
-        .collect()
+    let mut rules = Vec::new();
+    for page in 1..=MAX_API_PAGES {
+        let response = client
+            .get(format!("{API_ROOT}/accounts/{account_id}/gateway/rules"))
+            .query(&[
+                ("order_by", "precedence".to_owned()),
+                ("direction", "asc".to_owned()),
+                ("page", page.to_string()),
+                ("per_page", "50".to_owned()),
+            ])
+            .send()
+            .await
+            .map_err(|err| format!("failed to list Cloudflare Gateway rules: {err}"))?;
+        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+        let values = value_array(payload.result, "Cloudflare Gateway rules")?;
+        let page_count = values.len();
+        for value in values {
+            rules.push(gateway_rule_from_value(value)?);
+        }
+        if page_count < 50 {
+            rules.sort_by_key(|rule| rule.precedence.unwrap_or(u64::MAX));
+            return Ok(rules);
+        }
+    }
+    Err(format!(
+        "Cloudflare Gateway rule pagination exceeded {MAX_API_PAGES} pages"
+    ))
 }
 
 pub async fn list_access_applications(
