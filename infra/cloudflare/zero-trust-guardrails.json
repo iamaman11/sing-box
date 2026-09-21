@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "project": "sing-box",
+  "account_id": "4426df1449e417511bc7697d60b7f62f",
+  "canonical_specs": {
+    "dns": "infra/cloudflare/application-acceptance-dns.json",
+    "mesh": "infra/cloudflare/application-acceptance-mesh.json"
+  },
+  "owned_resource_selectors": {
+    "dns_record_name": "stage2-acceptance.alegria.by",
+    "mesh_node_name": "singbox-line3-application-acceptance",
+    "mesh_route_authority": "verified-vultr-vpc-only"
+  },
+  "zero_trust_boundary": {
+    "mode": "external-prerequisite-read-only",
+    "mutate_existing_objects": false,
+    "project_profile_creation_allowed": false,
+    "generic_warp_connector_selector_allowed": false,
+    "generic_warp_connector_selector": "identity.email == \"warp_connector@wispy-fire-124a.cloudflareaccess.com\"",
+    "protected_categories": [
+      "default-device-profile",
+      "preexisting-custom-device-profiles",
+      "preexisting-physical-devices",
+      "preexisting-registrations",
+      "preexisting-warp-connectors"
+    ],
+    "required_client_contract": {
+      "service_mode": "warp",
+      "tunnel_protocol": "masque",
+      "mesh_cidr": "100.96.0.0/12"
+    }
+  },
+  "evidence": {
+    "must_be_outside_repository_worktree": true,
+    "configuration_digest_excludes": [
+      "status",
+      "last_seen_at",
+      "updated_at",
+      "conns_active_at",
+      "conns_inactive_at"
+    ]
+  }
+}
