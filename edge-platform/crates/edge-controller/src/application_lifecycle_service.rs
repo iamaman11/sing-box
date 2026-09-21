@@ -1338,8 +1338,8 @@ mod tests {
         let observed = BundleReleaseView {
             schema: 1,
             bundle_id: "bundle-a".to_owned(),
-            bundle_digest:
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            bundle_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
         };
         assert!(exact_bundle_digest_observed(
             Some(&observed),
