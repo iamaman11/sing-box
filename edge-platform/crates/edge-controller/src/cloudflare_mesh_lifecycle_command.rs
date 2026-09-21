@@ -9,7 +9,9 @@ use crate::cloudflare_mesh_lifecycle_service::{
     plan_mesh_apply, plan_mesh_cleanup, wait_mesh_provider_healthy,
 };
 use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
-use edge_controller_core::cloudflare_mesh_lifecycle::{DesiredMeshState, MeshRouteSpec};
+use edge_controller_core::cloudflare_mesh_lifecycle::{
+    DesiredMeshState, MeshObservation, MeshRouteSpec,
+};
 use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::Ipv4NetworkObservation;
 use serde::Serialize;
@@ -219,9 +221,19 @@ async fn run_runtime_apply_with_desired(
     let authority = resolve_application_authority_from_spec(application_spec).await?;
     let state = converge_mesh_runtime_remote(&authority, node_token).await?;
     if !state.runtime_ready {
+        let provider_summary = observe_mesh(&mut provider, &desired)
+            .await
+            .map(|observation| mesh_observation_summary(&observation))
+            .unwrap_or_else(|err| {
+                format!(
+                    "provider_observation_error={}",
+                    err.chars().take(512).collect::<String>()
+                )
+            });
         return Err(format!(
-            "Mesh runtime convergence completed without READY: {}",
-            state.warnings.join("; ")
+            "Mesh runtime convergence completed without READY: {}; {}",
+            state.warnings.join("; "),
+            provider_summary
         ));
     }
     let provider_observation =
@@ -267,8 +279,9 @@ async fn run_runtime_verify_with_desired(
     let state = verify_mesh_runtime_remote(&authority).await?;
     if !state.runtime_ready {
         return Err(format!(
-            "Mesh runtime verify did not observe READY: {}",
-            state.warnings.join("; ")
+            "Mesh runtime verify did not observe READY: {}; {}",
+            state.warnings.join("; "),
+            mesh_observation_summary(&provider_observation)
         ));
     }
     print_mesh_runtime_result("PASS", &state, Some(provider_observation))
@@ -286,6 +299,25 @@ async fn run_runtime_cleanup(args: &[String]) -> Result<(), String> {
         return Err("Mesh runtime cleanup did not observe exact absence".to_owned());
     }
     print_mesh_runtime_result("ABSENT", &state, None)
+}
+
+fn mesh_observation_summary(observation: &MeshObservation) -> String {
+    let statuses = if observation.nodes.is_empty() {
+        "none".to_owned()
+    } else {
+        observation
+            .nodes
+            .iter()
+            .map(|node| node.status.as_deref().unwrap_or("unknown"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "provider_nodes={} provider_routes={} provider_statuses=[{}]",
+        observation.nodes.len(),
+        observation.routes.len(),
+        statuses
+    )
 }
 
 fn print_mesh_runtime_result(
@@ -523,6 +555,23 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mesh_observation_summary_is_bounded_to_status_and_counts() {
+        let observation = MeshObservation {
+            nodes: vec![edge_controller_core::cloudflare_mesh_lifecycle::ObservedMeshNode {
+                provider_id: "node-1".to_owned(),
+                name: "singbox-line3-test".to_owned(),
+                status: Some("inactive".to_owned()),
+            }],
+            routes: vec![],
+        };
+        assert_eq!(
+            mesh_observation_summary(&observation),
+            "provider_nodes=1 provider_routes=0 provider_statuses=[inactive]"
+        );
+    }
+
+
     use super::*;
     use crate::vultr_vpc_lifecycle_service::TargetInstance;
 
