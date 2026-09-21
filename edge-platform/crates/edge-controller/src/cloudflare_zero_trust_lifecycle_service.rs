@@ -12,8 +12,8 @@ use edge_provider_cloudflare::{
     CloudflareServiceModeWrite, CloudflareSplitTunnelEntry, CloudflareSplitTunnelWrite,
     create_device_profile, create_gateway_rule, get_device_profile_excludes,
     get_device_profile_includes, list_device_posture_rules, list_device_profiles,
-    list_gateway_rules, list_mesh_nodes, set_device_profile_excludes,
-    set_device_profile_includes, update_device_profile, update_gateway_rule,
+    list_gateway_rules, list_mesh_nodes, set_device_profile_excludes, set_device_profile_includes,
+    update_device_profile, update_gateway_rule,
 };
 use ring::digest::{SHA256, digest};
 use std::time::Duration;
@@ -29,7 +29,9 @@ pub struct ZeroTrustRuntimeInputs {
 impl ZeroTrustRuntimeInputs {
     pub fn new(android_profile_id: String, identity_email: String) -> Result<Self, String> {
         if android_profile_id.trim().is_empty() {
-            return Err("Cloudflare Android profile runtime authority must be non-empty".to_owned());
+            return Err(
+                "Cloudflare Android profile runtime authority must be non-empty".to_owned(),
+            );
         }
         validate_identity_email(&identity_email)?;
         let identity = identity_expression(&identity_email);
@@ -100,10 +102,7 @@ pub trait ZeroTrustProvider {
         profile_id: &str,
         entries: &[CloudflareSplitTunnelWrite],
     ) -> Result<(), String>;
-    async fn create_gateway(
-        &mut self,
-        request: &CloudflareGatewayRuleWrite,
-    ) -> Result<(), String>;
+    async fn create_gateway(&mut self, request: &CloudflareGatewayRuleWrite) -> Result<(), String>;
     async fn update_gateway(
         &mut self,
         rule_id: &str,
@@ -201,10 +200,7 @@ impl ZeroTrustProvider for CloudflareZeroTrustApiProvider {
             .map(|_| ())
     }
 
-    async fn create_gateway(
-        &mut self,
-        request: &CloudflareGatewayRuleWrite,
-    ) -> Result<(), String> {
+    async fn create_gateway(&mut self, request: &CloudflareGatewayRuleWrite) -> Result<(), String> {
         create_gateway_rule(&self.api_token, &self.account_id, request)
             .await
             .map(|_| ())
@@ -228,7 +224,10 @@ pub async fn observe_zero_trust<P: ZeroTrustProvider>(
 ) -> Result<ZeroTrustObservation, String> {
     let connectors = provider.list_connectors().await?;
     let profiles = provider.list_profiles().await?;
-    let profile_precedences = profiles.iter().filter_map(|profile| profile.precedence).collect();
+    let profile_precedences = profiles
+        .iter()
+        .filter_map(|profile| profile.precedence)
+        .collect();
 
     let mut mesh_profile_matches = Vec::new();
     let mut android_profile = None;
@@ -435,20 +434,33 @@ fn action_completed(performed: &ZeroTrustAction, next: &ZeroTrustAction) -> bool
             false
         }
         (
-            ZeroTrustAction::UpdateMeshProfile { profile_id: left, .. },
-            ZeroTrustAction::UpdateMeshProfile { profile_id: right, .. },
+            ZeroTrustAction::UpdateMeshProfile {
+                profile_id: left, ..
+            },
+            ZeroTrustAction::UpdateMeshProfile {
+                profile_id: right, ..
+            },
         ) if left == right => false,
         (
-            ZeroTrustAction::SetMeshIncludes { profile_id: left, .. },
-            ZeroTrustAction::SetMeshIncludes { profile_id: right, .. },
+            ZeroTrustAction::SetMeshIncludes {
+                profile_id: left, ..
+            },
+            ZeroTrustAction::SetMeshIncludes {
+                profile_id: right, ..
+            },
         ) if left == right => false,
         (
-            ZeroTrustAction::SetAndroidExcludes { profile_id: left, .. },
-            ZeroTrustAction::SetAndroidExcludes { profile_id: right, .. },
+            ZeroTrustAction::SetAndroidExcludes {
+                profile_id: left, ..
+            },
+            ZeroTrustAction::SetAndroidExcludes {
+                profile_id: right, ..
+            },
         ) if left == right => false,
-        (ZeroTrustAction::CreateGatewayAllow { .. }, ZeroTrustAction::CreateGatewayAllow { .. }) => {
-            false
-        }
+        (
+            ZeroTrustAction::CreateGatewayAllow { .. },
+            ZeroTrustAction::CreateGatewayAllow { .. },
+        ) => false,
         (
             ZeroTrustAction::UpdateGatewayAllow { rule_id: left, .. },
             ZeroTrustAction::UpdateGatewayAllow { rule_id: right, .. },
@@ -544,7 +556,9 @@ fn observed_gateway_rule(rule: CloudflareGatewayRule) -> ObservedGatewayRule {
         filters: rule.filters,
         traffic: rule.traffic.map(|value| normalize_expression(&value)),
         identity_sha256: rule.identity.map(|value| expression_sha256(&value)),
-        device_posture: rule.device_posture.map(|value| normalize_expression(&value)),
+        device_posture: rule
+            .device_posture
+            .map(|value| normalize_expression(&value)),
     }
 }
 
@@ -601,7 +615,9 @@ fn validate_identity_email(value: &str) -> Result<(), String> {
 
 fn validate_policy(policy: ZeroTrustExecutionPolicy) -> Result<(), String> {
     if policy.reobserve_attempts == 0 {
-        return Err("Cloudflare Zero Trust re-observation attempts must be greater than zero".to_owned());
+        return Err(
+            "Cloudflare Zero Trust re-observation attempts must be greater than zero".to_owned(),
+        );
     }
     Ok(())
 }
@@ -631,10 +647,16 @@ mod tests {
         async fn list_profiles(&mut self) -> Result<Vec<CloudflareDeviceProfile>, String> {
             Ok(self.profiles.clone())
         }
-        async fn get_includes(&mut self, _profile_id: &str) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+        async fn get_includes(
+            &mut self,
+            _profile_id: &str,
+        ) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
             Ok(self.includes.clone())
         }
-        async fn get_excludes(&mut self, _profile_id: &str) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+        async fn get_excludes(
+            &mut self,
+            _profile_id: &str,
+        ) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
             Ok(self.excludes.clone())
         }
         async fn list_posture_rules(&mut self) -> Result<Vec<CloudflareDevicePostureRule>, String> {
@@ -643,7 +665,10 @@ mod tests {
         async fn list_gateway_rules(&mut self) -> Result<Vec<CloudflareGatewayRule>, String> {
             Ok(self.gateway.clone())
         }
-        async fn create_profile(&mut self, request: &CloudflareDeviceProfileWrite) -> Result<(), String> {
+        async fn create_profile(
+            &mut self,
+            request: &CloudflareDeviceProfileWrite,
+        ) -> Result<(), String> {
             self.create_profile_calls += 1;
             if self.create_profile_error.is_none() || self.commit_profile_on_error {
                 self.profiles.push(CloudflareDeviceProfile {
@@ -655,36 +680,64 @@ mod tests {
                     service_mode: Some(request.service_mode_v2.mode.clone()),
                     tunnel_protocol: Some(request.tunnel_protocol.clone()),
                 });
-                self.includes = request.include.clone().unwrap_or_default().into_iter().map(|entry| CloudflareSplitTunnelEntry {
-                    address: entry.address,
-                    host: entry.host,
-                    description: entry.description,
-                }).collect();
+                self.includes = request
+                    .include
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|entry| CloudflareSplitTunnelEntry {
+                        address: entry.address,
+                        host: entry.host,
+                        description: entry.description,
+                    })
+                    .collect();
             }
             match self.create_profile_error.clone() {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
         }
-        async fn update_profile(&mut self, _profile_id: &str, _request: &CloudflareDeviceProfileWrite) -> Result<(), String> {
+        async fn update_profile(
+            &mut self,
+            _profile_id: &str,
+            _request: &CloudflareDeviceProfileWrite,
+        ) -> Result<(), String> {
             Ok(())
         }
-        async fn set_includes(&mut self, _profile_id: &str, _entries: &[CloudflareSplitTunnelWrite]) -> Result<(), String> {
+        async fn set_includes(
+            &mut self,
+            _profile_id: &str,
+            _entries: &[CloudflareSplitTunnelWrite],
+        ) -> Result<(), String> {
             Ok(())
         }
-        async fn set_excludes(&mut self, _profile_id: &str, _entries: &[CloudflareSplitTunnelWrite]) -> Result<(), String> {
+        async fn set_excludes(
+            &mut self,
+            _profile_id: &str,
+            _entries: &[CloudflareSplitTunnelWrite],
+        ) -> Result<(), String> {
             Ok(())
         }
-        async fn create_gateway(&mut self, _request: &CloudflareGatewayRuleWrite) -> Result<(), String> {
+        async fn create_gateway(
+            &mut self,
+            _request: &CloudflareGatewayRuleWrite,
+        ) -> Result<(), String> {
             Ok(())
         }
-        async fn update_gateway(&mut self, _rule_id: &str, _request: &CloudflareGatewayRuleWrite) -> Result<(), String> {
+        async fn update_gateway(
+            &mut self,
+            _rule_id: &str,
+            _request: &CloudflareGatewayRuleWrite,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
 
     fn desired() -> DesiredZeroTrustState {
-        DesiredZeroTrustState::parse_json(include_str!("../../../../infra/cloudflare/zero-trust-lifecycle.json")).unwrap()
+        DesiredZeroTrustState::parse_json(include_str!(
+            "../../../../infra/cloudflare/zero-trust-lifecycle.json"
+        ))
+        .unwrap()
     }
 
     fn runtime() -> ZeroTrustRuntimeInputs {
@@ -716,7 +769,9 @@ mod tests {
             }],
             ..FakeProvider::default()
         };
-        let (observed, plan) = plan_zero_trust(&mut provider, &desired, &runtime).await.unwrap();
+        let (observed, plan) = plan_zero_trust(&mut provider, &desired, &runtime)
+            .await
+            .unwrap();
         let authorized =
             authorize_zero_trust_apply(&desired, &runtime.authority, &observed, plan).unwrap();
         provider.connectors.push(CloudflareMeshNode {
@@ -764,7 +819,9 @@ mod tests {
             commit_profile_on_error: true,
             ..FakeProvider::default()
         };
-        let (observed, plan) = plan_zero_trust(&mut provider, &desired, &runtime).await.unwrap();
+        let (observed, plan) = plan_zero_trust(&mut provider, &desired, &runtime)
+            .await
+            .unwrap();
         let authorized =
             authorize_zero_trust_apply(&desired, &runtime.authority, &observed, plan).unwrap();
 
