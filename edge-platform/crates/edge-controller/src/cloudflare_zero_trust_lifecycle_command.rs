@@ -24,14 +24,18 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
 
 async fn run_doctor(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller cloudflare-zero-trust doctor <guardrails-path>".to_owned());
+        return Err(
+            "usage: edge-controller cloudflare-zero-trust doctor <guardrails-path>".to_owned(),
+        );
     }
     cloudflare_zero_trust_doctor::run(Path::new(&args[0])).await
 }
 
 async fn run_inventory(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller cloudflare-zero-trust inventory <spec-path>".to_owned());
+        return Err(
+            "usage: edge-controller cloudflare-zero-trust inventory <spec-path>".to_owned(),
+        );
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let runtime = runtime_inputs(&desired)?;
