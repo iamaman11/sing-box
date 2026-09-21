@@ -558,11 +558,13 @@ mod tests {
     #[test]
     fn mesh_observation_summary_is_bounded_to_status_and_counts() {
         let observation = MeshObservation {
-            nodes: vec![edge_controller_core::cloudflare_mesh_lifecycle::ObservedMeshNode {
-                provider_id: "node-1".to_owned(),
-                name: "singbox-line3-test".to_owned(),
-                status: Some("inactive".to_owned()),
-            }],
+            nodes: vec![
+                edge_controller_core::cloudflare_mesh_lifecycle::ObservedMeshNode {
+                    provider_id: "node-1".to_owned(),
+                    name: "singbox-line3-test".to_owned(),
+                    status: Some("inactive".to_owned()),
+                },
+            ],
             routes: vec![],
         };
         assert_eq!(
@@ -570,7 +572,6 @@ mod tests {
             "provider_nodes=1 provider_routes=0 provider_statuses=[inactive]"
         );
     }
-
 
     use super::*;
     use crate::vultr_vpc_lifecycle_service::TargetInstance;
