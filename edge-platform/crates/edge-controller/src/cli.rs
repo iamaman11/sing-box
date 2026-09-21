@@ -31,6 +31,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: CloudflareDnsCommand,
     },
+    CloudflareZeroTrust {
+        #[command(subcommand)]
+        command: CloudflareZeroTrustCommand,
+    },
     #[command(name = "line3-mesh")]
     Line3Mesh {
         #[command(subcommand)]
@@ -63,6 +67,7 @@ impl Command {
         match self {
             Self::ApplicationLifecycle { .. } => "application-lifecycle",
             Self::CloudflareDns { .. } => "cloudflare-dns",
+            Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Line3Mesh { .. } => "line3-mesh",
             Self::VultrLifecycle { .. } => "vultr-lifecycle",
             Self::VultrVpc { .. } => "vultr-vpc",
@@ -310,6 +315,19 @@ impl CloudflareDnsCommand {
             ],
             Self::CleanupPlan(args) => vec!["cleanup-plan".to_owned(), path(args.spec_path)],
             Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum CloudflareZeroTrustCommand {
+    Doctor(SpecArgs),
+}
+
+impl CloudflareZeroTrustCommand {
+    pub fn spec_path(self) -> PathBuf {
+        match self {
+            Self::Doctor(args) => args.spec_path,
         }
     }
 }
