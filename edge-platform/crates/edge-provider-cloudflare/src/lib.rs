@@ -1381,7 +1381,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(entry.address, "100.96.0.0/12");
+        assert_eq!(entry.address.as_deref(), Some("100.96.0.0/12"));
         assert_eq!(entry.description.as_deref(), Some("Cloudflare Mesh IPs"));
     }
 
