@@ -460,7 +460,6 @@ pub async fn delete_mesh_cidr_route(
     ensure_success(response).await
 }
 
-
 pub async fn get_zero_trust_device_settings(
     api_token: &str,
     account_id: &str,
@@ -478,9 +477,7 @@ pub async fn get_zero_trust_device_settings(
         .as_object()
         .ok_or_else(|| "Cloudflare device settings result must be an object".to_owned())?;
     Ok(CloudflareZeroTrustDeviceSettings {
-        gateway_proxy_enabled: result
-            .get("gateway_proxy_enabled")
-            .and_then(Value::as_bool),
+        gateway_proxy_enabled: result.get("gateway_proxy_enabled").and_then(Value::as_bool),
         gateway_udp_proxy_enabled: result
             .get("gateway_udp_proxy_enabled")
             .and_then(Value::as_bool),
@@ -577,10 +574,7 @@ pub async fn list_access_applications(
     for page in 1..=MAX_API_PAGES {
         let response = client
             .get(format!("{API_ROOT}/accounts/{account_id}/access/apps"))
-            .query(&[
-                ("page", page.to_string()),
-                ("per_page", "50".to_owned()),
-            ])
+            .query(&[("page", page.to_string()), ("per_page", "50".to_owned())])
             .send()
             .await
             .map_err(|err| format!("failed to list Cloudflare Access applications: {err}"))?;
