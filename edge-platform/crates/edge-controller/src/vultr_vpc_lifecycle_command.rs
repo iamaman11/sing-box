@@ -1,7 +1,7 @@
-use crate::vultr_host_bootstrap::verify_operator_key_matches;
+use crate::vultr_host_bootstrap::{strict_ssh_capture, verify_operator_key_matches};
 use crate::vultr_lifecycle_command::{
     observe_guest_boot_id, operator_private_key_path_from_env, read_canonical_ssh_public_key,
-    wait_for_guest_boot_id_change,
+    validate_linux_boot_id,
 };
 use crate::vultr_vpc_lifecycle_service::{
     VpcExecutionPolicy, VultrVpcApiProvider, apply_vpc_attachment_once, apply_vpc_once,
@@ -11,7 +11,9 @@ use crate::vultr_vpc_lifecycle_service::{
 use edge_controller_core::vultr_vpc_lifecycle::{AttachmentAction, DesiredVpcState};
 use std::env;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::Path;
+use std::time::Duration;
 
 pub async fn run(args: Vec<String>) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
@@ -140,21 +142,23 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
                         .to_owned(),
                 );
             }
-            let boot_id_after = wait_for_guest_boot_id_change(
-                &report.target.main_ip,
-                &desired.machine_id,
-                &operator_private_key_path,
-                &canonical_public_key,
-                &boot_id_before,
-                60,
-                std::time::Duration::from_secs(2),
+            let private_ipv4 = report.next_plan.private_ipv4.as_deref().ok_or_else(|| {
+                "Vultr VPC attachment converged to NOOP without provider private IPv4".to_owned()
+            })?;
+            Some(
+                wait_for_guest_vpc_ready(
+                    &report.target.main_ip,
+                    &desired.machine_id,
+                    &operator_private_key_path,
+                    &canonical_public_key,
+                    &boot_id_before,
+                    &report.next_plan.cidr,
+                    private_ipv4,
+                    60,
+                    Duration::from_secs(2),
+                )
+                .await?,
             )
-            .await?;
-            Some(serde_json::json!({
-                "boot_id_before": boot_id_before,
-                "boot_id_after": boot_id_after,
-                "boot_id_changed": true,
-            }))
         } else {
             None
         };
@@ -162,6 +166,113 @@ async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
     let mut value = serde_json::to_value(report).map_err(|err| err.to_string())?;
     value["guest_transition"] = guest_transition.unwrap_or(serde_json::Value::Null);
     print_json(value)
+}
+
+fn validate_guest_vpc_expectation(cidr: &str, private_ipv4: &str) -> Result<u8, String> {
+    let (subnet_text, prefix_text) = cidr
+        .split_once('/')
+        .ok_or_else(|| "verified Vultr VPC CIDR must use IPv4 prefix notation".to_owned())?;
+    let subnet = subnet_text
+        .parse::<Ipv4Addr>()
+        .map_err(|err| format!("verified Vultr VPC CIDR has invalid IPv4 subnet: {err}"))?;
+    let prefix = prefix_text
+        .parse::<u8>()
+        .map_err(|err| format!("verified Vultr VPC CIDR has invalid prefix: {err}"))?;
+    if !(1..=32).contains(&prefix) {
+        return Err("verified Vultr VPC CIDR prefix must be in 1..=32".to_owned());
+    }
+    if !subnet.is_private() {
+        return Err("verified Vultr VPC CIDR must be RFC1918 IPv4".to_owned());
+    }
+    let mask = u32::MAX << (32 - u32::from(prefix));
+    if (u32::from(subnet) & mask) != u32::from(subnet) {
+        return Err("verified Vultr VPC CIDR must be canonical".to_owned());
+    }
+
+    let private_ip = private_ipv4
+        .parse::<Ipv4Addr>()
+        .map_err(|err| format!("verified Vultr private IPv4 is invalid: {err}"))?;
+    if !private_ip.is_private() {
+        return Err("verified Vultr private IPv4 must be RFC1918".to_owned());
+    }
+    if (u32::from(private_ip) & mask) != u32::from(subnet) {
+        return Err("verified Vultr private IPv4 is outside the verified VPC CIDR".to_owned());
+    }
+    Ok(prefix)
+}
+
+fn parse_guest_vpc_probe_output(output: &str) -> Result<(String, String), String> {
+    let line = output.trim();
+    let (boot_id, interface) = line
+        .split_once('\t')
+        .ok_or_else(|| "guest VPC probe output is missing tab-separated fields".to_owned())?;
+    if interface.is_empty()
+        || interface.len() > 64
+        || interface.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err("guest VPC probe returned invalid interface identity".to_owned());
+    }
+    validate_linux_boot_id(boot_id)?;
+    Ok((boot_id.to_owned(), interface.to_owned()))
+}
+
+async fn wait_for_guest_vpc_ready(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    previous_boot_id: &str,
+    cidr: &str,
+    private_ipv4: &str,
+    attempts: usize,
+    delay: Duration,
+) -> Result<serde_json::Value, String> {
+    if attempts == 0 {
+        return Err("guest VPC readiness attempts must be greater than zero".to_owned());
+    }
+    validate_linux_boot_id(previous_boot_id)?;
+    let prefix = validate_guest_vpc_expectation(cidr, private_ipv4)?;
+    let expected_addr = format!("{private_ipv4}/{prefix}");
+    let command = format!(
+        "set -eu; expected_addr='{expected_addr}'; expected_cidr='{cidr}'; expected_ip='{private_ipv4}'; boot_id=$(cat /proc/sys/kernel/random/boot_id); interfaces=$(ip -o -4 addr show scope global | grep -F -- \" $expected_addr \" | awk '{{print $2}}' | sort -u); iface_count=$(printf '%s\\n' \"$interfaces\" | sed '/^$/d' | wc -l | tr -d ' '); test \"$iface_count\" = 1; iface=$(printf '%s\\n' \"$interfaces\" | sed '/^$/d'); route_count=$(ip -o -4 route show | awk -v cidr=\"$expected_cidr\" -v iface=\"$iface\" -v src=\"$expected_ip\" '$1 == cidr {{ dev=0; proto=0; scope=0; source=0; for (i=2; i<=NF; i++) {{ if ($i == \"dev\" && $(i+1) == iface) dev=1; if ($i == \"proto\" && $(i+1) == \"kernel\") proto=1; if ($i == \"scope\" && $(i+1) == \"link\") scope=1; if ($i == \"src\" && $(i+1) == src) source=1; }} if (dev && proto && scope && source) count++ }} END {{ print count+0 }}'); test \"$route_count\" = 1; printf '%s\\t%s\\n' \"$boot_id\" \"$iface\""
+    );
+
+    let mut last_detail = "not-observed".to_owned();
+    for attempt in 0..attempts {
+        match strict_ssh_capture(
+            target_ip,
+            logical_hostname,
+            operator_private_key_path,
+            canonical_operator_public_key,
+            &command,
+        ) {
+            Ok(output) => match parse_guest_vpc_probe_output(&output) {
+                Ok((boot_id_after, interface)) => {
+                    return Ok(serde_json::json!({
+                        "boot_id_before": previous_boot_id,
+                        "boot_id_after": boot_id_after,
+                        "boot_id_changed": boot_id_after != previous_boot_id,
+                        "network_ready": true,
+                        "interface": interface,
+                        "cidr": cidr,
+                        "private_ipv4": private_ipv4,
+                    }));
+                }
+                Err(err) => last_detail = err,
+            },
+            Err(err) => {
+                last_detail = err.chars().take(512).collect();
+            }
+        }
+
+        if attempt + 1 < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Err(format!(
+        "guest VPC readiness was not proven for {logical_hostname} at {target_ip} after {attempts} observations: {last_detail}"
+    ))
 }
 
 async fn run_verify(args: &[String]) -> Result<(), String> {
@@ -255,6 +366,27 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_vpc_expectation_requires_canonical_private_network() {
+        assert_eq!(
+            validate_guest_vpc_expectation("10.0.4.0/24", "10.0.4.2").unwrap(),
+            24
+        );
+        assert!(validate_guest_vpc_expectation("10.0.4.1/24", "10.0.4.2").is_err());
+        assert!(validate_guest_vpc_expectation("203.0.113.0/24", "203.0.113.2").is_err());
+        assert!(validate_guest_vpc_expectation("10.0.4.0/24", "10.0.5.2").is_err());
+    }
+
+    #[test]
+    fn guest_vpc_probe_output_preserves_boot_and_interface_identity() {
+        let (boot_id, interface) =
+            parse_guest_vpc_probe_output("11111111-2222-3333-4444-555555555555\tens7").unwrap();
+        assert_eq!(boot_id, "11111111-2222-3333-4444-555555555555");
+        assert_eq!(interface, "ens7");
+        assert!(parse_guest_vpc_probe_output("not-a-boot-id\tens7").is_err());
+        assert!(parse_guest_vpc_probe_output("11111111-2222-3333-4444-555555555555").is_err());
+    }
 
     #[test]
     fn usage_is_closed_and_has_no_raw_provider_identity_surface() {
