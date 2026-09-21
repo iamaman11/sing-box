@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 pub const CURRENT_SCHEMA: u32 = 1;
 const REQUIRED_MESH_CIDRS: [&str; 2] = ["100.64.0.0/12", "100.96.0.0/12"];
@@ -594,15 +594,16 @@ fn desired_android_excludes(
     let mut result = Vec::new();
     for entry in observed {
         if let Some(address) = entry.address.as_deref() {
-            let canonical = canonical_ipv4_cidr(address)?;
-            if remove.contains(&canonical) {
-                continue;
-            }
-            for target in &required {
-                if ipv4_cidr_contains(&canonical, target)? {
-                    return Err(ZeroTrustLifecycleError::Conflict(format!(
-                        "Android exclusion {canonical} still contains required routed range {target}"
-                    )));
+            if let Some(canonical) = observed_ipv4_cidr(address)? {
+                if remove.contains(&canonical) {
+                    continue;
+                }
+                for target in &required {
+                    if ipv4_cidr_contains(&canonical, target)? {
+                        return Err(ZeroTrustLifecycleError::Conflict(format!(
+                            "Android exclusion {canonical} still contains required routed range {target}"
+                        )));
+                    }
                 }
             }
         }
@@ -670,6 +671,37 @@ fn canonical_cidr_set(values: &[String]) -> Result<BTreeSet<String>, ZeroTrustLi
         }
     }
     Ok(result)
+}
+
+fn observed_ipv4_cidr(value: &str) -> Result<Option<String>, ZeroTrustLifecycleError> {
+    let (address, prefix) = value.split_once('/').ok_or_else(|| {
+        ZeroTrustLifecycleError::Validation(format!("CIDR {value} must use prefix notation"))
+    })?;
+    let address = address.parse::<IpAddr>().map_err(|err| {
+        ZeroTrustLifecycleError::Validation(format!("invalid IP CIDR {value}: {err}"))
+    })?;
+    let prefix = prefix.parse::<u8>().map_err(|err| {
+        ZeroTrustLifecycleError::Validation(format!("invalid IP prefix {value}: {err}"))
+    })?;
+
+    match address {
+        IpAddr::V4(_) => {
+            if prefix > 32 {
+                return Err(ZeroTrustLifecycleError::Validation(format!(
+                    "IPv4 prefix must be <= 32: {value}"
+                )));
+            }
+            canonical_ipv4_cidr(value).map(Some)
+        }
+        IpAddr::V6(_) => {
+            if prefix > 128 {
+                return Err(ZeroTrustLifecycleError::Validation(format!(
+                    "IPv6 prefix must be <= 128: {value}"
+                )));
+            }
+            Ok(None)
+        }
+    }
 }
 
 fn canonical_ipv4_cidr(value: &str) -> Result<String, ZeroTrustLifecycleError> {
@@ -894,6 +926,55 @@ mod tests {
         assert!(!keys.contains("address:100.64.0.0/10"));
         assert!(keys.contains("address:100.80.0.0/12"));
         assert!(keys.contains("address:100.112.0.0/12"));
+    }
+
+    #[test]
+    fn android_preserves_ipv6_exclusions_while_carving_ipv4_parent() {
+        let desired = desired();
+        let observed = vec![
+            SplitTunnelEntry {
+                address: Some("100.64.0.0/10".to_owned()),
+                host: None,
+                description: None,
+            },
+            SplitTunnelEntry {
+                address: Some("ff05::/16".to_owned()),
+                host: None,
+                description: None,
+            },
+            SplitTunnelEntry {
+                address: Some("fe80::/10".to_owned()),
+                host: None,
+                description: Some("IPv6 Link Local".to_owned()),
+            },
+            SplitTunnelEntry {
+                address: Some("fd00::/8".to_owned()),
+                host: None,
+                description: None,
+            },
+        ];
+
+        let result = desired_android_excludes(&desired, &observed).unwrap();
+        let keys = split_tunnel_keyset(&result);
+        assert!(!keys.contains("address:100.64.0.0/10"));
+        assert!(keys.contains("address:100.80.0.0/12"));
+        assert!(keys.contains("address:100.112.0.0/12"));
+        assert!(keys.contains("address:ff05::/16"));
+        assert!(keys.contains("address:fe80::/10"));
+        assert!(keys.contains("address:fd00::/8"));
+    }
+
+    #[test]
+    fn malformed_ipv6_exclusion_fails_closed() {
+        let desired = desired();
+        let observed = vec![SplitTunnelEntry {
+            address: Some("ff05::/129".to_owned()),
+            host: None,
+            description: None,
+        }];
+
+        let error = desired_android_excludes(&desired, &observed).unwrap_err();
+        assert!(error.to_string().contains("IPv6 prefix must be <= 128"));
     }
 
     #[test]
