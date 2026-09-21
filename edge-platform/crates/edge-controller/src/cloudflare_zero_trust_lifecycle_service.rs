@@ -684,7 +684,7 @@ mod tests {
     }
 
     fn desired() -> DesiredZeroTrustState {
-        DesiredZeroTrustState::parse_json(include_str!("../../../../../../infra/cloudflare/zero-trust-lifecycle.json")).unwrap()
+        DesiredZeroTrustState::parse_json(include_str!("../../../../infra/cloudflare/zero-trust-lifecycle.json")).unwrap()
     }
 
     fn runtime() -> ZeroTrustRuntimeInputs {
