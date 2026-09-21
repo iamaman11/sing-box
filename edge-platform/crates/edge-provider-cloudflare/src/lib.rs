@@ -1388,8 +1388,8 @@ mod tests {
             description: "Project Mesh nodes".to_owned(),
             enabled: true,
             precedence: 100,
-            match_expression:
-                "identity.email == \"warp_connector@example.cloudflareaccess.com\"".to_owned(),
+            match_expression: "identity.email == \"warp_connector@example.cloudflareaccess.com\""
+                .to_owned(),
             service_mode_v2: CloudflareServiceModeWrite {
                 mode: "warp".to_owned(),
             },
@@ -1423,16 +1423,24 @@ mod tests {
             filters: vec!["l4".to_owned()],
             traffic: "net.dst.ip in {100.96.0.0/12}".to_owned(),
             identity: "identity.email == \"android@example.com\"".to_owned(),
-            device_posture:
-                "any(device_posture.checks.passed[*] in {\"posture-android\"})".to_owned(),
+            device_posture: "any(device_posture.checks.passed[*] in {\"posture-android\"})"
+                .to_owned(),
         })
         .unwrap();
 
         assert_eq!(value["action"], "allow");
         assert_eq!(value["filters"][0], "l4");
         assert_eq!(value["traffic"], "net.dst.ip in {100.96.0.0/12}");
-        assert_eq!(value["identity"], "identity.email == \"android@example.com\"");
-        assert!(value["device_posture"].as_str().unwrap().contains("posture-android"));
+        assert_eq!(
+            value["identity"],
+            "identity.email == \"android@example.com\""
+        );
+        assert!(
+            value["device_posture"]
+                .as_str()
+                .unwrap()
+                .contains("posture-android")
+        );
     }
 
     #[test]
