@@ -546,6 +546,7 @@ pub async fn list_device_profiles(
     require_non_empty("Cloudflare account ID", account_id)?;
     let client = authorized_client(api_token)?;
     let mut profiles = Vec::new();
+    let mut default_policy_seen = false;
     for page in 1..=MAX_API_PAGES {
         let response = client
             .get(format!("{API_ROOT}/accounts/{account_id}/devices/policies"))
@@ -556,9 +557,10 @@ pub async fn list_device_profiles(
         let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
         let values = value_array(payload.result, "Cloudflare device profiles")?;
         let page_count = values.len();
-        for value in values {
-            profiles.push(device_profile_from_value(value)?);
-        }
+        profiles.extend(device_profiles_from_list_values(
+            values,
+            &mut default_policy_seen,
+        )?);
         if page_count < 50 {
             return Ok(profiles);
         }
@@ -861,6 +863,71 @@ pub async fn list_access_application_policies(
         .into_iter()
         .map(access_policy_from_value)
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ListedDeviceProfile {
+    Default,
+    Custom(CloudflareDeviceProfile),
+}
+
+fn device_profiles_from_list_values(
+    values: Vec<Value>,
+    default_policy_seen: &mut bool,
+) -> Result<Vec<CloudflareDeviceProfile>, String> {
+    let mut profiles = Vec::new();
+    for value in values {
+        match listed_device_profile_from_value(value)? {
+            ListedDeviceProfile::Default => {
+                if *default_policy_seen {
+                    return Err(
+                        "Cloudflare device profile list contained more than one default policy"
+                            .to_owned(),
+                    );
+                }
+                *default_policy_seen = true;
+            }
+            ListedDeviceProfile::Custom(profile) => profiles.push(profile),
+        }
+    }
+    Ok(profiles)
+}
+
+fn listed_device_profile_from_value(value: Value) -> Result<ListedDeviceProfile, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare device profile must be an object".to_owned())?;
+
+    let is_default = match object.get("default") {
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return Err(
+                "Cloudflare device profile field default must be a boolean when present".to_owned(),
+            );
+        }
+        None => false,
+    };
+
+    if is_default {
+        optional_value_string(object, "policy_id")
+            .or_else(|| optional_value_string(object, "id"))
+            .ok_or_else(|| {
+                "Cloudflare default device profile field policy_id/id is required".to_owned()
+            })?;
+
+        if let Some(name) = object.get("name") {
+            name.as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    "Cloudflare default device profile field name must be a non-empty string when present"
+                        .to_owned()
+                })?;
+        }
+
+        return Ok(ListedDeviceProfile::Default);
+    }
+
+    device_profile_from_value(value).map(ListedDeviceProfile::Custom)
 }
 
 fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, String> {
@@ -1460,6 +1527,76 @@ mod tests {
         assert_eq!(profile.precedence, Some(100));
         assert_eq!(profile.service_mode.as_deref(), Some("warp"));
         assert_eq!(profile.tunnel_protocol.as_deref(), Some("masque"));
+    }
+
+    #[test]
+    fn listed_device_profile_accepts_live_default_shape_without_inventing_name() {
+        let mut default_policy_seen = false;
+        let profiles = device_profiles_from_list_values(
+            vec![serde_json::json!({
+                "policy_id": "default-policy",
+                "default": true,
+                "enabled": true,
+                "service_mode_v2": {"mode": "warp"},
+                "tunnel_protocol": "masque"
+            })],
+            &mut default_policy_seen,
+        )
+        .unwrap();
+
+        assert!(profiles.is_empty());
+        assert!(default_policy_seen);
+    }
+
+    #[test]
+    fn listed_device_profile_keeps_custom_name_strict() {
+        let error = listed_device_profile_from_value(serde_json::json!({
+            "policy_id": "custom-profile",
+            "default": false,
+            "enabled": true,
+            "precedence": 100,
+            "service_mode_v2": {"mode": "warp"},
+            "tunnel_protocol": "masque"
+        }))
+        .unwrap_err();
+
+        assert!(error.contains("field name is required"));
+    }
+
+    #[test]
+    fn listed_device_profile_rejects_default_without_provider_id() {
+        let error = listed_device_profile_from_value(serde_json::json!({
+            "default": true,
+            "enabled": true,
+            "service_mode_v2": {"mode": "warp"},
+            "tunnel_protocol": "masque"
+        }))
+        .unwrap_err();
+
+        assert!(error.contains("policy_id/id is required"));
+    }
+
+    #[test]
+    fn listed_device_profile_rejects_multiple_defaults() {
+        let mut default_policy_seen = false;
+        let error = device_profiles_from_list_values(
+            vec![
+                serde_json::json!({
+                    "policy_id": "default-policy-1",
+                    "default": true,
+                    "enabled": true
+                }),
+                serde_json::json!({
+                    "policy_id": "default-policy-2",
+                    "default": true,
+                    "enabled": true
+                }),
+            ],
+            &mut default_policy_seen,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("more than one default policy"));
     }
 
     #[test]
