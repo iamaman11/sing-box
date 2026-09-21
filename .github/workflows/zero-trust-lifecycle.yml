@@ -1,0 +1,295 @@
+name: Cloudflare Zero Trust Lifecycle
+
+on:
+  workflow_call:
+    inputs:
+      command_body:
+        description: Authorized /zero-trust command from the control-plane router
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.parse.outputs.operation }}
+
+    steps:
+      - name: Parse and authorize typed request
+        id: parse
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ inputs.command_body }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+
+          allowed = {
+              "preflight",
+              "doctor",
+              "inventory",
+              "plan",
+              "apply",
+              "converge",
+              "verify",
+          }
+
+          tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+          if len(tokens) != 2 or tokens[0] != "/zero-trust" or tokens[1] not in allowed:
+              raise SystemExit("unsupported /zero-trust command grammar")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"operation={tokens[1]}\n")
+          PY
+
+  verify:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve_release.outputs.release_tag }}
+      release_set_sha256: ${{ steps.resolve_release.outputs.release_set_sha256 }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f infra/cloudflare/zero-trust-guardrails.json
+          test -f infra/cloudflare/zero-trust-lifecycle.json
+
+      - name: Resolve and verify exact durable Edge Platform release
+        id: resolve_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+
+  execute:
+    needs: [authorize, verify]
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      GUARDRAILS_SPEC: infra/cloudflare/zero-trust-guardrails.json
+      LIFECYCLE_SPEC: infra/cloudflare/zero-trust-lifecycle.json
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${GUARDRAILS_SPEC}"
+          test -f "${LIFECYCLE_SPEC}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+
+      - name: Materialize verified Zero Trust controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
+          controller="${dir}/edge-controller-linux-amd64"
+          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
+          chmod 0755 "${controller}"
+          printf 'EDGE_ZERO_TRUST_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+
+      - name: Execute typed Zero Trust lifecycle operation
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ANDROID_PROFILE_ID: ${{ secrets.CLOUDFLARE_ANDROID_PROFILE_ID }}
+          CLOUDFLARE_ANDROID_IDENTITY_EMAIL: ${{ secrets.CLOUDFLARE_ANDROID_IDENTITY_EMAIL }}
+          CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED: ${{ vars.CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED }}
+        run: |
+          set -euo pipefail
+
+          bin="${EDGE_ZERO_TRUST_CONTROLLER}"
+          operation="${REQUESTED_OPERATION}"
+          result="${RUNNER_TEMP}/zero-trust-result.json"
+
+          test -x "${bin}"
+          test -n "${CLOUDFLARE_API_TOKEN}"
+
+          require_runtime_authority() {
+            test -n "${CLOUDFLARE_ANDROID_PROFILE_ID}" || {
+              echo "CLOUDFLARE_ANDROID_PROFILE_ID production secret is required" >&2
+              exit 2
+            }
+            test -n "${CLOUDFLARE_ANDROID_IDENTITY_EMAIL}" || {
+              echo "CLOUDFLARE_ANDROID_IDENTITY_EMAIL production secret is required" >&2
+              exit 2
+            }
+            test "${CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED}" = "1" || {
+              echo "CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED must equal 1" >&2
+              exit 2
+            }
+          }
+
+          lifecycle_plan() {
+            local output="$1"
+            "${bin}" cloudflare-zero-trust plan "${LIFECYCLE_SPEC}" > "${output}"
+            jq -e '.plan.action.kind and .plan_authority.authority_digest' "${output}" >/dev/null
+            jq -er '.plan_authority.authority_digest' "${output}"
+          }
+
+          case "${operation}" in
+            preflight)
+              doctor="${RUNNER_TEMP}/zero-trust-preflight-doctor.json"
+              set +e
+              "${bin}" cloudflare-zero-trust doctor "${GUARDRAILS_SPEC}" > "${doctor}"
+              doctor_rc=$?
+              set -e
+
+              jq -e '
+                .token_read_authority == "PASS" and
+                .device_settings.ready == true and
+                .connectors.ready == true and
+                .enrollment.ready == true and
+                .manual_prerequisites.ready == true
+              ' "${doctor}" >/dev/null
+
+              jq -n                 --argjson doctor_rc "${doctor_rc}"                 --slurpfile doctor "${doctor}"                 '{
+                  status: "PASS",
+                  mutations_performed: 0,
+                  strict_doctor_exit_code: $doctor_rc,
+                  prerequisites: {
+                    token_read_authority: $doctor[0].token_read_authority,
+                    device_settings: $doctor[0].device_settings,
+                    connectors: $doctor[0].connectors,
+                    enrollment: $doctor[0].enrollment,
+                    manual_prerequisites: $doctor[0].manual_prerequisites
+                  },
+                  remaining_target_state: {
+                    mesh_node_profile: $doctor[0].mesh_node_profile,
+                    gateway: $doctor[0].gateway
+                  }
+                }' | tee "${result}"
+              ;;
+            doctor)
+              "${bin}" cloudflare-zero-trust doctor "${GUARDRAILS_SPEC}" | tee "${result}"
+              ;;
+            inventory)
+              require_runtime_authority
+              "${bin}" cloudflare-zero-trust inventory "${LIFECYCLE_SPEC}" | tee "${result}"
+              ;;
+            plan)
+              require_runtime_authority
+              "${bin}" cloudflare-zero-trust plan "${LIFECYCLE_SPEC}" | tee "${result}"
+              ;;
+            apply)
+              require_runtime_authority
+              plan="${RUNNER_TEMP}/zero-trust-apply-plan.json"
+              authority="$(lifecycle_plan "${plan}")"
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" cloudflare-zero-trust apply "${LIFECYCLE_SPEC}" "${authority}"                 | tee "${result}"
+              ;;
+            converge)
+              require_runtime_authority
+              steps="${RUNNER_TEMP}/zero-trust-converge-steps.jsonl"
+              : > "${steps}"
+
+              converged=0
+              for iteration in $(seq 1 8); do
+                plan="${RUNNER_TEMP}/zero-trust-converge-plan-${iteration}.json"
+                authority="$(lifecycle_plan "${plan}")"
+                action="$(jq -er '.plan.action.kind' "${plan}")"
+                if [[ "${action}" = "NOOP" ]]; then
+                  converged=1
+                  break
+                fi
+
+                [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+                apply="${RUNNER_TEMP}/zero-trust-converge-apply-${iteration}.json"
+                "${bin}" cloudflare-zero-trust apply "${LIFECYCLE_SPEC}" "${authority}" > "${apply}"
+                jq -c                   --argjson iteration "${iteration}"                   '{
+                    iteration: $iteration,
+                    performed: .performed.kind,
+                    next: .next_plan.action.kind
+                  }' "${apply}" >> "${steps}"
+              done
+
+              test "${converged}" = "1" || {
+                echo "Zero Trust convergence exceeded the bounded 8-step limit" >&2
+                exit 1
+              }
+
+              verify="${RUNNER_TEMP}/zero-trust-converge-verify.json"
+              "${bin}" cloudflare-zero-trust verify "${LIFECYCLE_SPEC}" > "${verify}"
+              jq -e '.status == "PASS" and .plan.action.kind == "NOOP"' "${verify}" >/dev/null
+
+              jq -s                 --slurpfile verify "${verify}"                 '{
+                  status: "PASS",
+                  convergence_steps: .,
+                  verification: $verify[0]
+                }' "${steps}" | tee "${result}"
+              ;;
+            verify)
+              require_runtime_authority
+              "${bin}" cloudflare-zero-trust verify "${LIFECYCLE_SPEC}" | tee "${result}"
+              ;;
+            *)
+              echo "unsupported authorized Zero Trust operation" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo '### Cloudflare Zero Trust lifecycle result'
+            echo
+            echo "Operation: `${operation}`"
+            echo
+            echo 'Execution used the exact accepted durable Edge Platform controller.'
+            echo
+            echo '~~~json'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
