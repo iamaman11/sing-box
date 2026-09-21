@@ -883,6 +883,7 @@ mod tests {
         let observed = ZeroTrustObservation {
             connector_names: vec!["vultr".to_owned()],
             mesh_profile_matches: vec![mesh_profile()],
+            profile_precedences: vec![10, 100],
             android_profile: Some(android),
             posture_rules: vec![ObservedPostureRule {
                 provider_id: posture_id.clone(),
