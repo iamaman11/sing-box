@@ -1070,4 +1070,82 @@ mod tests {
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].id, "route-1");
     }
+
+    #[test]
+    fn parses_zero_trust_device_profile_contract() {
+        let profile = device_profile_from_value(serde_json::json!({
+            "id": "profile-1",
+            "name": "Cloudflare Mesh nodes",
+            "enabled": true,
+            "precedence": 100,
+            "match": "identity.email == \"warp_connector@example.cloudflareaccess.com\"",
+            "service_mode_v2": {"mode": "warp"},
+            "tunnel_protocol": "masque"
+        }))
+        .unwrap();
+
+        assert_eq!(profile.id, "profile-1");
+        assert_eq!(profile.precedence, Some(100));
+        assert_eq!(profile.service_mode.as_deref(), Some("warp"));
+        assert_eq!(profile.tunnel_protocol.as_deref(), Some("masque"));
+    }
+
+    #[test]
+    fn parses_zero_trust_split_tunnel_contract() {
+        let entry = split_tunnel_from_value(serde_json::json!({
+            "address": "100.96.0.0/12",
+            "description": "Cloudflare Mesh IPs"
+        }))
+        .unwrap();
+
+        assert_eq!(entry.address, "100.96.0.0/12");
+        assert_eq!(entry.description.as_deref(), Some("Cloudflare Mesh IPs"));
+    }
+
+    #[test]
+    fn parses_gateway_rule_without_identity_leakage_requirement() {
+        let rule = gateway_rule_from_value(serde_json::json!({
+            "id": "rule-1",
+            "name": "Mesh allow",
+            "action": "allow",
+            "precedence": 100,
+            "enabled": true,
+            "traffic": "net.dst.ip in {100.96.0.0/12}",
+            "identity": "identity.email == \"redacted@example.com\""
+        }))
+        .unwrap();
+
+        assert_eq!(rule.action, "allow");
+        assert_eq!(rule.precedence, Some(100));
+        assert_eq!(
+            rule.traffic.as_deref(),
+            Some("net.dst.ip in {100.96.0.0/12}")
+        );
+    }
+
+    #[test]
+    fn parses_warp_access_application_and_policy() {
+        let application = access_application_from_value(serde_json::json!({
+            "id": "app-1",
+            "name": "Device enrollment",
+            "type": "warp"
+        }))
+        .unwrap();
+        let policy = access_policy_from_value(serde_json::json!({
+            "id": "policy-1",
+            "name": "Allow enrollment",
+            "decision": "allow"
+        }))
+        .unwrap();
+
+        assert_eq!(application.app_type, "warp");
+        assert_eq!(policy.decision.as_deref(), Some("allow"));
+    }
+
+    #[test]
+    fn malformed_zero_trust_objects_fail_closed() {
+        assert!(device_profile_from_value(serde_json::json!({"name": "missing id"})).is_err());
+        assert!(gateway_rule_from_value(serde_json::json!({"id": "rule-1"})).is_err());
+        assert!(access_application_from_value(serde_json::json!({"id": "app-1"})).is_err());
+    }
 }
