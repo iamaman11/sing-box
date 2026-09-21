@@ -451,6 +451,39 @@ pub fn plan_apply(
         });
     }
 
+    let relevant_blocks = observed
+        .gateway_rules
+        .iter()
+        .filter(|rule| {
+            rule.enabled != Some(false)
+                && rule.action.eq_ignore_ascii_case("block")
+                && rule.traffic.as_deref().is_some_and(|traffic| {
+                    desired
+                        .gateway_allow
+                        .destination_cidrs
+                        .iter()
+                        .any(|cidr| traffic.contains(cidr))
+                })
+        })
+        .collect::<Vec<_>>();
+
+    if relevant_blocks.is_empty() {
+        return Ok(ZeroTrustPlan {
+            action: ZeroTrustAction::Noop,
+        });
+    }
+
+    if relevant_blocks.iter().any(|rule| rule.precedence.is_none()) {
+        return Err(ZeroTrustLifecycleError::Conflict(
+            "an enabled Gateway block affecting Mesh traffic has no precedence".to_owned(),
+        ));
+    }
+    let block_precedence = relevant_blocks
+        .iter()
+        .filter_map(|rule| rule.precedence)
+        .min()
+        .expect("non-empty relevant block set with validated precedence");
+
     let posture_matches = observed
         .posture_rules
         .iter()
@@ -476,34 +509,6 @@ pub fn plan_apply(
             )));
         }
     };
-
-    let block_matches = observed
-        .gateway_rules
-        .iter()
-        .filter(|rule| rule.name == desired.gateway_allow.block_rule_name)
-        .collect::<Vec<_>>();
-    let block = match block_matches.as_slice() {
-        [rule] => *rule,
-        [] => {
-            return Err(ZeroTrustLifecycleError::Conflict(
-                "required private-traffic block rule was not observed".to_owned(),
-            ));
-        }
-        rules => {
-            return Err(ZeroTrustLifecycleError::Ambiguous(format!(
-                "private-traffic block selector matched {} rules",
-                rules.len()
-            )));
-        }
-    };
-    if !block.action.eq_ignore_ascii_case("block") || block.enabled == Some(false) {
-        return Err(ZeroTrustLifecycleError::Conflict(
-            "private-traffic baseline rule is not an enabled block".to_owned(),
-        ));
-    }
-    let block_precedence = block.precedence.ok_or_else(|| {
-        ZeroTrustLifecycleError::Conflict("private-traffic block rule has no precedence".to_owned())
-    })?;
 
     let project_rules = observed
         .gateway_rules
@@ -951,6 +956,90 @@ mod tests {
         };
         let plan = plan_apply(&desired, &observed, &authority()).unwrap();
         assert_eq!(plan.action, ZeroTrustAction::Noop);
+    }
+
+    #[test]
+    fn disabled_private_block_does_not_require_gateway_allow_or_posture() {
+        let desired = desired();
+        let mut android = android_profile();
+        android.excludes = desired_android_excludes(&desired, &android.excludes).unwrap();
+        let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
+            connector_names: vec!["vultr".to_owned()],
+            mesh_profile_matches: vec![mesh_profile()],
+            profile_precedences: vec![10, 100],
+            android_profile: Some(android),
+            posture_rules: vec![],
+            gateway_rules: vec![ObservedGatewayRule {
+                provider_id: "block-disabled".to_owned(),
+                name: desired.gateway_allow.block_rule_name.clone(),
+                action: "block".to_owned(),
+                precedence: Some(10000),
+                enabled: Some(false),
+                filters: vec!["l4".to_owned()],
+                traffic: Some("net.dst.ip in {10.0.0.0/8 100.96.0.0/12}".to_owned()),
+                identity_sha256: None,
+                device_posture: None,
+            }],
+        };
+
+        let plan = plan_apply(&desired, &observed, &authority()).unwrap();
+        assert_eq!(plan.action, ZeroTrustAction::Noop);
+    }
+
+    #[test]
+    fn absent_private_block_does_not_require_gateway_allow_or_posture() {
+        let desired = desired();
+        let mut android = android_profile();
+        android.excludes = desired_android_excludes(&desired, &android.excludes).unwrap();
+        let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
+            connector_names: vec!["vultr".to_owned()],
+            mesh_profile_matches: vec![mesh_profile()],
+            profile_precedences: vec![10, 100],
+            android_profile: Some(android),
+            posture_rules: vec![],
+            gateway_rules: vec![],
+        };
+
+        let plan = plan_apply(&desired, &observed, &authority()).unwrap();
+        assert_eq!(plan.action, ZeroTrustAction::Noop);
+    }
+
+    #[test]
+    fn active_private_block_still_requires_android_posture() {
+        let desired = desired();
+        let mut android = android_profile();
+        android.excludes = desired_android_excludes(&desired, &android.excludes).unwrap();
+        let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
+            connector_names: vec!["vultr".to_owned()],
+            mesh_profile_matches: vec![mesh_profile()],
+            profile_precedences: vec![10, 100],
+            android_profile: Some(android),
+            posture_rules: vec![],
+            gateway_rules: vec![ObservedGatewayRule {
+                provider_id: "block-active".to_owned(),
+                name: desired.gateway_allow.block_rule_name.clone(),
+                action: "block".to_owned(),
+                precedence: Some(10000),
+                enabled: Some(true),
+                filters: vec!["l4".to_owned()],
+                traffic: Some("net.dst.ip in {10.0.0.0/8 100.96.0.0/12}".to_owned()),
+                identity_sha256: None,
+                device_posture: None,
+            }],
+        };
+
+        let error = plan_apply(&desired, &observed, &authority()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("required Android device posture rule is absent")
+        );
     }
 
     #[test]
