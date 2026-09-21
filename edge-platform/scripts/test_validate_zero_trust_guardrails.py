@@ -3,7 +3,7 @@ import copy
 import json
 from pathlib import Path
 
-from validate_zero_trust_guardrails import validate_document
+from validate_zero_trust_guardrails import validate_document, validate_repository
 
 
 def assert_invalid(doc, needle):
@@ -15,6 +15,7 @@ base = json.loads(
     Path("infra/cloudflare/zero-trust-guardrails.json").read_text(encoding="utf-8")
 )
 assert validate_document(base) == []
+assert validate_repository(base, Path(".")) == []
 
 case = copy.deepcopy(base)
 case["zero_trust_boundary"]["generic_warp_connector_selector_allowed"] = True
