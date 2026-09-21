@@ -8,6 +8,8 @@ on:
       - "edge-platform/**"
       - "infra/vultr/**"
       - "infra/application/**"
+      - "infra/cloudflare/**"
+      - "infra/LOCAL_AGENT_EXECUTION_CONTRACT.md"
       - "win/**"
       - ".github/workflows/edge-platform-ci.yml"
       - ".github/workflows/vultr-lifecycle.yml"
@@ -76,6 +78,14 @@ jobs:
       - name: Validate control-plane workflow topology
         shell: bash
         run: python3 edge-platform/scripts/test_control_plane_workflow_topology.py
+
+      - name: Validate Zero Trust ownership guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 edge-platform/scripts/test_validate_zero_trust_guardrails.py
+          python3 edge-platform/scripts/validate_zero_trust_guardrails.py \
+            infra/cloudflare/zero-trust-guardrails.json
 
       - name: Validate VM stack
         shell: bash
