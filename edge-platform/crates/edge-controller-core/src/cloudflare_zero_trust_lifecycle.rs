@@ -1035,9 +1035,11 @@ mod tests {
         };
 
         let error = plan_apply(&desired, &observed, &authority()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("required Android device posture rule is absent"));
+        assert!(
+            error
+                .to_string()
+                .contains("required Android device posture rule is absent")
+        );
     }
 
     #[test]
