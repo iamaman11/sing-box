@@ -249,11 +249,7 @@ impl ApplicationLifecycleCommand {
     pub fn into_legacy_args(self) -> Vec<String> {
         match self {
             Self::Plan(args) => args.into_legacy("plan"),
-            Self::Apply(args) => vec![
-                "apply".to_owned(),
-                path(args.spec_path),
-                args.authorized_plan_sha256,
-            ],
+            Self::Apply(args) => args.into_legacy("apply"),
             Self::Verify(args) => args.into_legacy("verify"),
             Self::Upgrade(args) => args.into_legacy("upgrade"),
             Self::RollbackPlan(args) => vec!["rollback-plan".to_owned(), path(args.spec_path)],
@@ -338,7 +334,11 @@ impl CloudflareZeroTrustCommand {
             Self::Doctor(args) => vec!["doctor".to_owned(), path(args.spec_path)],
             Self::Inventory(args) => vec!["inventory".to_owned(), path(args.spec_path)],
             Self::Plan(args) => vec!["plan".to_owned(), path(args.spec_path)],
-            Self::Apply(args) => args.into_legacy("apply"),
+            Self::Apply(args) => vec![
+                "apply".to_owned(),
+                path(args.spec_path),
+                args.authorized_plan_sha256,
+            ],
             Self::Verify(args) => vec!["verify".to_owned(), path(args.spec_path)],
         }
     }
