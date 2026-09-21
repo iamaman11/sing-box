@@ -286,7 +286,11 @@ pub async fn observe_zero_trust<P: ZeroTrustProvider>(
         } else {
             Vec::new()
         };
-        let observed = observed_profile(profile, includes, excludes);
+        let mut observed = observed_profile(profile, includes, excludes);
+        if is_android && !is_mesh_match {
+            observed.name = "[runtime-authorized-android-profile]".to_owned();
+            observed.match_expression = None;
+        }
         if is_mesh_match {
             mesh_profile_matches.push(observed.clone());
         }
