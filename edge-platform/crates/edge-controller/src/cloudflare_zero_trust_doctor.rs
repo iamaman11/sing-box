@@ -9,8 +9,7 @@ use std::fs;
 use std::path::Path;
 
 const TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
-const REACHABILITY_ATTESTATION_ENV: &str =
-    "CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED";
+const REACHABILITY_ATTESTATION_ENV: &str = "CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED";
 
 #[derive(Debug, Deserialize)]
 struct Guardrails {
@@ -110,8 +109,7 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
     let desired = load_guardrails(spec_path)?;
     validate_guardrails(&desired)?;
 
-    let api_token = env::var(TOKEN_ENV)
-        .map_err(|_| format!("{TOKEN_ENV} is required"))?;
+    let api_token = env::var(TOKEN_ENV).map_err(|_| format!("{TOKEN_ENV} is required"))?;
     if api_token.trim().is_empty() {
         return Err(format!("{TOKEN_ENV} must be non-empty"));
     }
@@ -144,7 +142,12 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
         .into_iter()
         .filter(|profile| {
             profile.match_expression.as_deref()
-                == Some(desired.zero_trust_boundary.generic_warp_connector_selector.as_str())
+                == Some(
+                    desired
+                        .zero_trust_boundary
+                        .generic_warp_connector_selector
+                        .as_str(),
+                )
         })
         .collect::<Vec<_>>();
 
@@ -160,14 +163,14 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
         let includes =
             get_device_profile_includes(&api_token, &desired.account_id, &profile.id).await?;
         mesh_cidr_included = includes.iter().any(|entry| {
-            entry.address == desired.zero_trust_boundary.required_client_contract.mesh_cidr
+            entry.address
+                == desired
+                    .zero_trust_boundary
+                    .required_client_contract
+                    .mesh_cidr
         });
     } else {
-        matching_profile_names.extend(
-            matching_profiles
-                .iter()
-                .map(|profile| profile.name.clone()),
-        );
+        matching_profile_names.extend(matching_profiles.iter().map(|profile| profile.name.clone()));
     }
     let mesh_profile_ready = matching_profiles.len() == 1
         && selected_mode.as_deref()
@@ -201,8 +204,8 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
             warp_apps_with_policy += 1;
         }
     }
-    let enrollment_ready = !desired.zero_trust_boundary.access_enrollment_required
-        || warp_apps_with_policy > 0;
+    let enrollment_ready =
+        !desired.zero_trust_boundary.access_enrollment_required || warp_apps_with_policy > 0;
 
     let rules = list_gateway_rules(&api_token, &desired.account_id).await?;
     let mesh_cidr = desired
@@ -315,8 +318,12 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
 }
 
 fn load_guardrails(path: &Path) -> Result<Guardrails, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read Zero Trust guardrails {}: {err}", path.display()))?;
+    let raw = fs::read_to_string(path).map_err(|err| {
+        format!(
+            "failed to read Zero Trust guardrails {}: {err}",
+            path.display()
+        )
+    })?;
     serde_json::from_str(&raw)
         .map_err(|err| format!("invalid Zero Trust guardrails {}: {err}", path.display()))
 }
