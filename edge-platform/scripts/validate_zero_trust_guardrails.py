@@ -20,7 +20,7 @@ EXPECTED_DIGEST_EXCLUDES = {
     "conns_inactive_at",
 }
 UUID_RE = re.compile(
-    r"(?i)\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b"
+    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
 )
 
 
