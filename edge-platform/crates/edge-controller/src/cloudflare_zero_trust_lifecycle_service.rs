@@ -848,6 +848,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_reobservation_accepts_live_ipv6_android_exclusions() {
+        let desired = desired();
+        let runtime = runtime();
+        let mut provider = FakeProvider {
+            connectors: vec![CloudflareMeshNode {
+                id: "node-vultr".to_owned(),
+                name: "vultr".to_owned(),
+                status: Some("healthy".to_owned()),
+            }],
+            profiles: vec![CloudflareDeviceProfile {
+                id: "android-profile".to_owned(),
+                name: "Android".to_owned(),
+                description: None,
+                enabled: Some(true),
+                precedence: Some(850),
+                match_expression: None,
+                service_mode: Some("warp".to_owned()),
+                tunnel_protocol: Some("masque".to_owned()),
+            }],
+            excludes: vec![
+                CloudflareSplitTunnelEntry {
+                    address: Some("ff05::/16".to_owned()),
+                    host: None,
+                    description: None,
+                },
+                CloudflareSplitTunnelEntry {
+                    address: Some("fe80::/10".to_owned()),
+                    host: None,
+                    description: Some("IPv6 Link Local".to_owned()),
+                },
+                CloudflareSplitTunnelEntry {
+                    address: Some("fd00::/8".to_owned()),
+                    host: None,
+                    description: None,
+                },
+                CloudflareSplitTunnelEntry {
+                    address: Some("100.64.0.0/10".to_owned()),
+                    host: None,
+                    description: None,
+                },
+            ],
+            ..FakeProvider::default()
+        };
+        let (observed, plan) = plan_zero_trust(&mut provider, &desired, &runtime)
+            .await
+            .unwrap();
+        let authorized =
+            authorize_zero_trust_apply(&desired, &runtime.authority, &observed, plan).unwrap();
+
+        let report = apply_zero_trust_once(
+            &mut provider,
+            &desired,
+            &runtime,
+            &authorized.authority.authority_digest,
+            ZeroTrustExecutionPolicy {
+                reobserve_attempts: 1,
+                reobserve_delay: Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.create_profile_calls, 1);
+        assert!(matches!(
+            report.next_plan.action,
+            ZeroTrustAction::SetAndroidExcludes { .. }
+        ));
+        let android = report.observation.android_profile.unwrap();
+        let observed_addresses = android
+            .excludes
+            .iter()
+            .filter_map(|entry| entry.address.as_deref())
+            .collect::<Vec<_>>();
+        assert!(observed_addresses.contains(&"ff05::/16"));
+        assert!(observed_addresses.contains(&"fe80::/10"));
+        assert!(observed_addresses.contains(&"fd00::/8"));
+    }
+
+    #[tokio::test]
     async fn uncertain_create_is_observed_without_replay() {
         let desired = desired();
         let runtime = runtime();
