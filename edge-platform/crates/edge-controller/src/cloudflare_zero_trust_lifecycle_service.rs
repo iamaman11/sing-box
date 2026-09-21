@@ -11,8 +11,9 @@ use edge_provider_cloudflare::{
     CloudflareGatewayRule, CloudflareGatewayRuleWrite, CloudflareMeshNode,
     CloudflareServiceModeWrite, CloudflareSplitTunnelEntry, CloudflareSplitTunnelWrite,
     create_device_profile, create_gateway_rule, get_device_profile_excludes,
-    get_device_profile_includes, list_device_posture_rules, list_device_profiles,
-    list_gateway_rules, list_mesh_nodes, set_device_profile_excludes, set_device_profile_includes,
+    get_device_profile_includes, get_zero_trust_device_settings, list_access_application_policies,
+    list_access_applications, list_device_posture_rules, list_device_profiles, list_gateway_rules,
+    list_mesh_nodes, set_device_profile_excludes, set_device_profile_includes,
     update_device_profile, update_gateway_rule,
 };
 use ring::digest::{SHA256, digest};
@@ -27,7 +28,11 @@ pub struct ZeroTrustRuntimeInputs {
 }
 
 impl ZeroTrustRuntimeInputs {
-    pub fn new(android_profile_id: String, identity_email: String) -> Result<Self, String> {
+    pub fn new(
+        android_profile_id: String,
+        identity_email: String,
+        enrolled_device_reachability_confirmed: bool,
+    ) -> Result<Self, String> {
         if android_profile_id.trim().is_empty() {
             return Err(
                 "Cloudflare Android profile runtime authority must be non-empty".to_owned(),
@@ -38,6 +43,7 @@ impl ZeroTrustRuntimeInputs {
         let authority = RuntimeAuthority {
             android_profile_id: android_profile_id.clone(),
             identity_sha256: expression_sha256(&identity),
+            enrolled_device_reachability_confirmed,
         };
         Ok(Self {
             android_profile_id,
@@ -71,6 +77,8 @@ pub struct ZeroTrustApplyReport {
 
 #[allow(async_fn_in_trait)]
 pub trait ZeroTrustProvider {
+    async fn device_settings_ready(&mut self) -> Result<bool, String>;
+    async fn access_enrollment_ready(&mut self) -> Result<bool, String>;
     async fn list_connectors(&mut self) -> Result<Vec<CloudflareMeshNode>, String>;
     async fn list_profiles(&mut self) -> Result<Vec<CloudflareDeviceProfile>, String>;
     async fn get_includes(
@@ -131,6 +139,32 @@ impl CloudflareZeroTrustApiProvider {
 }
 
 impl ZeroTrustProvider for CloudflareZeroTrustApiProvider {
+    async fn device_settings_ready(&mut self) -> Result<bool, String> {
+        let settings = get_zero_trust_device_settings(&self.api_token, &self.account_id).await?;
+        Ok(settings.gateway_proxy_enabled == Some(true)
+            && settings.gateway_udp_proxy_enabled == Some(true)
+            && settings.use_zt_virtual_ip == Some(true))
+    }
+
+    async fn access_enrollment_ready(&mut self) -> Result<bool, String> {
+        let applications = list_access_applications(&self.api_token, &self.account_id).await?;
+        for application in applications
+            .into_iter()
+            .filter(|application| application.app_type.eq_ignore_ascii_case("warp"))
+        {
+            let policies = list_access_application_policies(
+                &self.api_token,
+                &self.account_id,
+                &application.id,
+            )
+            .await?;
+            if !policies.is_empty() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     async fn list_connectors(&mut self) -> Result<Vec<CloudflareMeshNode>, String> {
         list_mesh_nodes(&self.api_token, &self.account_id, None).await
     }
@@ -222,6 +256,8 @@ pub async fn observe_zero_trust<P: ZeroTrustProvider>(
     desired: &DesiredZeroTrustState,
     runtime: &ZeroTrustRuntimeInputs,
 ) -> Result<ZeroTrustObservation, String> {
+    let device_settings_ready = provider.device_settings_ready().await?;
+    let access_enrollment_ready = provider.access_enrollment_ready().await?;
     let connectors = provider.list_connectors().await?;
     let profiles = provider.list_profiles().await?;
     let profile_precedences = profiles
@@ -281,6 +317,8 @@ pub async fn observe_zero_trust<P: ZeroTrustProvider>(
         .collect();
 
     Ok(ZeroTrustObservation {
+        device_settings_ready,
+        access_enrollment_ready,
         connector_names: connectors.into_iter().map(|node| node.name).collect(),
         mesh_profile_matches,
         profile_precedences,
@@ -641,6 +679,12 @@ mod tests {
     }
 
     impl ZeroTrustProvider for FakeProvider {
+        async fn device_settings_ready(&mut self) -> Result<bool, String> {
+            Ok(true)
+        }
+        async fn access_enrollment_ready(&mut self) -> Result<bool, String> {
+            Ok(true)
+        }
         async fn list_connectors(&mut self) -> Result<Vec<CloudflareMeshNode>, String> {
             Ok(self.connectors.clone())
         }
@@ -745,6 +789,7 @@ mod tests {
         ZeroTrustRuntimeInputs::new(
             "android-profile".to_owned(),
             "android@example.com".to_owned(),
+            true,
         )
         .unwrap()
     }
