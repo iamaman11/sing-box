@@ -918,6 +918,7 @@ async fn apply_bundle_once(
 ) -> Result<(), String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
     let expected_digest = prepared.release.bundle_digest.clone();
+    let recovery_expected_digest = expected_digest.clone();
     execute_bundle_mutation_once(
         "ApplyBundle",
         &expected_digest,
@@ -928,14 +929,17 @@ async fn apply_bundle_once(
                 .map(|response| response.get_ref().active_bundle_digest.clone())
                 .map_err(|err| err.to_string())
         },
-        |err| async {
-            match wait_for_exact_bundle_digest_after_uncertain_mutation(authority, &expected_digest)
-                .await
+        |err| async move {
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(
+                authority,
+                &recovery_expected_digest,
+            )
+            .await
             {
                 Ok(resolution) => {
                     record_bundle_mutation_resolved_by_observation(
                         "ApplyBundle",
-                        &expected_digest,
+                        &recovery_expected_digest,
                         resolution,
                     );
                     Ok(())
@@ -955,6 +959,7 @@ async fn rollback_bundle_once(
 ) -> Result<(), String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
     let expected_digest = plan.previous_release.bundle_digest.clone();
+    let recovery_expected_digest = expected_digest.clone();
     let expected_current_digest = plan.current_release.bundle_digest.clone();
     execute_bundle_mutation_once(
         "RollbackBundle",
@@ -968,14 +973,17 @@ async fn rollback_bundle_once(
                 .map(|response| response.get_ref().active_bundle_digest.clone())
                 .map_err(|err| err.to_string())
         },
-        |err| async {
-            match wait_for_exact_bundle_digest_after_uncertain_mutation(authority, &expected_digest)
-                .await
+        |err| async move {
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(
+                authority,
+                &recovery_expected_digest,
+            )
+            .await
             {
                 Ok(resolution) => {
                     record_bundle_mutation_resolved_by_observation(
                         "RollbackBundle",
-                        &expected_digest,
+                        &recovery_expected_digest,
                         resolution,
                     );
                     Ok(())
