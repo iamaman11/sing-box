@@ -89,8 +89,11 @@ pub struct CloudflareDevicePostureRule {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareSplitTunnelWrite {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
@@ -111,12 +114,6 @@ pub struct CloudflareDeviceProfileWrite {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareServiceModeWrite {
     pub mode: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareDeviceProfileTransportWrite {
-    pub service_mode_v2: CloudflareServiceModeWrite,
-    pub tunnel_protocol: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -605,36 +602,6 @@ pub async fn update_device_profile(
         .send()
         .await
         .map_err(|err| format!("failed to update Cloudflare device profile: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    device_profile_from_value(payload.result)
-}
-
-pub async fn update_device_profile_transport(
-    api_token: &str,
-    account_id: &str,
-    profile_id: &str,
-    service_mode: &str,
-    tunnel_protocol: &str,
-) -> Result<CloudflareDeviceProfile, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare device profile ID", profile_id)?;
-    require_non_empty("Cloudflare device profile service mode", service_mode)?;
-    require_non_empty("Cloudflare device profile tunnel protocol", tunnel_protocol)?;
-    let request = CloudflareDeviceProfileTransportWrite {
-        service_mode_v2: CloudflareServiceModeWrite {
-            mode: service_mode.to_owned(),
-        },
-        tunnel_protocol: tunnel_protocol.to_owned(),
-    };
-    let client = authorized_client(api_token)?;
-    let response = client
-        .patch(format!(
-            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"
-        ))
-        .json(&request)
-        .send()
-        .await
-        .map_err(|err| format!("failed to update Cloudflare device profile transport: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
     device_profile_from_value(payload.result)
 }
@@ -1431,6 +1398,19 @@ mod tests {
         assert_eq!(profile.precedence, Some(100));
         assert_eq!(profile.service_mode.as_deref(), Some("warp"));
         assert_eq!(profile.tunnel_protocol.as_deref(), Some("masque"));
+    }
+
+    #[test]
+    fn split_tunnel_write_omits_inactive_union_fields() {
+        let value = serde_json::to_value(CloudflareSplitTunnelWrite {
+            address: Some("100.96.0.0/12".to_owned()),
+            host: None,
+            description: None,
+        })
+        .unwrap();
+        assert_eq!(value["address"], "100.96.0.0/12");
+        assert!(value.get("host").is_none());
+        assert!(value.get("description").is_none());
     }
 
     #[test]

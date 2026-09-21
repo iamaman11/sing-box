@@ -138,12 +138,8 @@ fn runtime_inputs(desired: &DesiredZeroTrustState) -> Result<ZeroTrustRuntimeInp
     })?;
     let reachability_confirmed = env::var("CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED")
         .ok()
-        .is_some_and(|value| value == "1");
-    ZeroTrustRuntimeInputs::new(
-        android_profile_id,
-        identity_email,
-        reachability_confirmed,
-    )
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"));
+    ZeroTrustRuntimeInputs::new(android_profile_id, identity_email, reachability_confirmed)
 }
 
 fn provider_from_env(
