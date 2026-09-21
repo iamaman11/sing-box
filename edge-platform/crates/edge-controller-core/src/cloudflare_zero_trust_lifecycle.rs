@@ -954,6 +954,62 @@ mod tests {
     }
 
     #[test]
+    fn missing_provider_prerequisites_block_plan() {
+        let observed = ZeroTrustObservation {
+            device_settings_ready: false,
+            access_enrollment_ready: true,
+            connector_names: vec!["vultr".to_owned()],
+            ..ZeroTrustObservation::default()
+        };
+        let error = plan_apply(&desired(), &observed, &authority()).unwrap_err();
+        assert!(error.to_string().contains("device settings"));
+
+        let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: false,
+            connector_names: vec!["vultr".to_owned()],
+            ..ZeroTrustObservation::default()
+        };
+        let error = plan_apply(&desired(), &observed, &authority()).unwrap_err();
+        assert!(error.to_string().contains("enrollment"));
+    }
+
+    #[test]
+    fn unconfirmed_reachability_blocks_plan() {
+        let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
+            connector_names: vec!["vultr".to_owned()],
+            ..ZeroTrustObservation::default()
+        };
+        let mut runtime = authority();
+        runtime.enrolled_device_reachability_confirmed = false;
+        let error = plan_apply(&desired(), &observed, &runtime).unwrap_err();
+        assert!(error.to_string().contains("reachability"));
+    }
+
+    #[test]
+    fn android_authority_cannot_alias_mesh_profile() {
+        let desired = desired();
+        let mut android = android_profile();
+        android.provider_id = "profile-mesh".to_owned();
+        let mut runtime = authority();
+        runtime.android_profile_id = "profile-mesh".to_owned();
+        let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
+            connector_names: vec!["vultr".to_owned()],
+            mesh_profile_matches: vec![mesh_profile()],
+            profile_precedences: vec![10, 100],
+            android_profile: Some(android),
+            posture_rules: vec![],
+            gateway_rules: vec![],
+        };
+        let error = plan_apply(&desired, &observed, &runtime).unwrap_err();
+        assert!(error.to_string().contains("project Mesh profile"));
+    }
+
+    #[test]
     fn broader_remaining_android_exclusion_is_rejected() {
         let desired = desired();
         let observed = vec![SplitTunnelEntry {
