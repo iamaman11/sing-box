@@ -421,6 +421,11 @@ pub fn plan_apply(
     let android = observed.android_profile.as_ref().ok_or_else(|| {
         ZeroTrustLifecycleError::Conflict("Android profile target was not observed".to_owned())
     })?;
+    if android.provider_id == mesh_profile.provider_id {
+        return Err(ZeroTrustLifecycleError::Conflict(
+            "runtime Android profile authority resolves to the project Mesh profile".to_owned(),
+        ));
+    }
     if android.provider_id != authority.android_profile_id {
         return Err(ZeroTrustLifecycleError::Conflict(
             "observed Android profile does not match runtime authority".to_owned(),
