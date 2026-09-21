@@ -285,7 +285,7 @@ jobs:
           {
             echo '### Cloudflare Zero Trust lifecycle result'
             echo
-            echo "Operation: `${operation}`"
+          printf 'Operation: `%s`\n' "${operation}"
             echo
             echo 'Execution used the exact accepted durable Edge Platform controller.'
             echo

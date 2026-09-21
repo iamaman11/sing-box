@@ -133,6 +133,12 @@ def main() -> None:
     )
 
     require(
+        'echo "Operation: `${operation}`"' not in zero_trust
+        and "printf 'Operation: `%s`\\n' \"${operation}\"" in zero_trust,
+        "Zero Trust workflow summary must not execute the operation through shell command substitution",
+    )
+
+    require(
         "cleanup_acceptance() (" in application,
         "acceptance cleanup must run in an isolated subshell",
     )
