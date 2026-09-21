@@ -674,6 +674,7 @@ mod tests {
                 self.profiles.push(CloudflareDeviceProfile {
                     id: "mesh-profile".to_owned(),
                     name: request.name.clone(),
+                    description: Some(request.description.clone()),
                     enabled: Some(request.enabled),
                     precedence: Some(request.precedence),
                     match_expression: Some(request.match_expression.clone()),
@@ -761,6 +762,7 @@ mod tests {
             profiles: vec![CloudflareDeviceProfile {
                 id: "android-profile".to_owned(),
                 name: "Android".to_owned(),
+                description: None,
                 enabled: Some(true),
                 precedence: Some(10),
                 match_expression: None,
@@ -784,7 +786,7 @@ mod tests {
             &mut provider,
             &desired,
             &runtime,
-            &authorized.authority,
+            &authorized.authority.authority_digest,
             ZeroTrustExecutionPolicy {
                 reobserve_attempts: 1,
                 reobserve_delay: Duration::ZERO,
@@ -809,6 +811,7 @@ mod tests {
             profiles: vec![CloudflareDeviceProfile {
                 id: "android-profile".to_owned(),
                 name: "Android".to_owned(),
+                description: None,
                 enabled: Some(true),
                 precedence: Some(10),
                 match_expression: None,
@@ -829,7 +832,7 @@ mod tests {
             &mut provider,
             &desired,
             &runtime,
-            &authorized.authority,
+            &authorized.authority.authority_digest,
             ZeroTrustExecutionPolicy {
                 reobserve_attempts: 1,
                 reobserve_delay: Duration::ZERO,
