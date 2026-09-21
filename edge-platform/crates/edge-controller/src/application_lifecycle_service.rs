@@ -985,22 +985,56 @@ async fn bootstrap_once(
     mode: ApplicationBootstrapMode,
 ) -> Result<(), String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    let response = client
+    let result = client
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest {
             mode: proto_bootstrap_mode(mode) as i32,
         }))
-        .await
-        .map_err(|err| format!("typed BootstrapRuntime RPC failed: {err}"))?
-        .into_inner();
-    if response.success {
-        Ok(())
-    } else {
-        Err(format!(
-            "typed BootstrapRuntime failed with exit_code={} warnings={}",
-            response.exit_code,
-            response.warnings.join("; ")
-        ))
+        .await;
+    match result {
+        Ok(response) => {
+            let response = response.into_inner();
+            if response.success {
+                Ok(())
+            } else {
+                Err(format!(
+                    "typed BootstrapRuntime failed with exit_code={} warnings={}",
+                    response.exit_code,
+                    response.warnings.join("; ")
+                ))
+            }
+        }
+        Err(err) => match wait_for_runtime_ready_after_uncertain_bootstrap(authority, mode).await {
+            Ok(()) => Ok(()),
+            Err(observation) => Err(format!(
+                "BootstrapRuntime outcome is uncertain; RPC was not replayed: {err}; {observation}"
+            )),
+        },
     }
+}
+
+async fn wait_for_runtime_ready_after_uncertain_bootstrap(
+    authority: &ApplicationAuthority,
+    mode: ApplicationBootstrapMode,
+) -> Result<(), String> {
+    let mut last_detail = "not-observed".to_owned();
+    for attempt in 0..READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS {
+        match verify_runtime_ready(authority, mode).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => last_detail = "runtime_ready=false".to_owned(),
+            Err(err) => {
+                last_detail = format!("observation_error={}", bounded_detail(&err, 512));
+            }
+        }
+        if attempt + 1 < READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS {
+            sleep(READ_ONLY_RUNTIME_REOBSERVE_DELAY).await;
+        }
+    }
+    Err(format!(
+        "runtime readiness was not observed after {} bounded read-only observations; last={}; forensic={}",
+        READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS,
+        last_detail,
+        application_agent_forensic_summary(authority)
+    ))
 }
 
 async fn verify_runtime_ready(
@@ -1035,11 +1069,28 @@ pub(crate) async fn converge_mesh_runtime_remote(
     node_token: String,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    client
+    match client
         .converge_mesh_runtime(Request::new(MeshRuntimeConvergeRequest { node_token }))
         .await
-        .map_err(|err| format!("typed ConvergeMeshRuntime RPC failed: {err}"))
-        .map(|response| response.into_inner())
+    {
+        Ok(response) => Ok(response.into_inner()),
+        Err(err) => {
+            let reobserved = verify_mesh_runtime_remote(authority).await.map_err(|observe_err| {
+                format!(
+                    "ConvergeMeshRuntime outcome is uncertain; RPC was not replayed: {err}; read-only re-observation failed: {observe_err}; forensic={}",
+                    application_agent_forensic_summary(authority)
+                )
+            })?;
+            if reobserved.runtime_ready {
+                Ok(reobserved)
+            } else {
+                Err(format!(
+                    "ConvergeMeshRuntime outcome is uncertain; RPC was not replayed: {err}; read-only re-observation did not reach READY: {}",
+                    reobserved.warnings.join("; ")
+                ))
+            }
+        }
+    }
 }
 
 pub(crate) async fn verify_mesh_runtime_remote(
@@ -1086,10 +1137,38 @@ pub(crate) async fn cleanup_mesh_runtime_remote(
     authority: &ApplicationAuthority,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    client
+    match client
         .cleanup_mesh_runtime(Request::new(edge_shared_types::Empty {}))
         .await
-        .map_err(|err| format!("typed CleanupMeshRuntime RPC failed: {err}"))
+    {
+        Ok(response) => Ok(response.into_inner()),
+        Err(err) => {
+            let state = observe_mesh_runtime_remote_once(authority).await.map_err(|observe_err| {
+                format!(
+                    "CleanupMeshRuntime outcome is uncertain; RPC was not replayed: {err}; read-only re-observation failed: {observe_err}; forensic={}",
+                    application_agent_forensic_summary(authority)
+                )
+            })?;
+            if !state.token_store_present && !state.container_running {
+                Ok(state)
+            } else {
+                Err(format!(
+                    "CleanupMeshRuntime outcome is uncertain; RPC was not replayed: {err}; token_store_present={} container_running={}",
+                    state.token_store_present, state.container_running
+                ))
+            }
+        }
+    }
+}
+
+async fn observe_mesh_runtime_remote_once(
+    authority: &ApplicationAuthority,
+) -> Result<MeshRuntimeState, String> {
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    client
+        .verify_mesh_runtime(Request::new(edge_shared_types::Empty {}))
+        .await
+        .map_err(|err| format!("typed VerifyMeshRuntime RPC failed: {err}"))
         .map(|response| response.into_inner())
 }
 
@@ -1250,6 +1329,9 @@ fn unique_temp_file(prefix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use edge_controller_core::application_lifecycle::{
+        ApplicationBootstrapMode, ApplicationRuntimePolicy, Line2RuntimePolicy,
+    };
 
     #[test]
     fn exact_bundle_digest_observation_matches_only_exact_digest() {
@@ -1278,10 +1360,6 @@ mod tests {
         assert_eq!(bounded_detail("abcdef", 4), "abcd");
         assert_eq!(bounded_detail("abc", 4), "abc");
     }
-    use edge_controller_core::application_lifecycle::{
-        ApplicationBootstrapMode, ApplicationRuntimePolicy, Line2RuntimePolicy,
-    };
-
     fn test_desired(bundle_root: &str) -> DesiredApplicationState {
         DesiredApplicationState {
             schema: 2,
