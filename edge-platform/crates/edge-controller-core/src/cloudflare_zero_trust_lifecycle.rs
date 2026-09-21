@@ -110,6 +110,8 @@ pub struct ObservedGatewayRule {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ZeroTrustObservation {
+    pub device_settings_ready: bool,
+    pub access_enrollment_ready: bool,
     #[serde(default)]
     pub connector_names: Vec<String>,
     #[serde(default)]
@@ -127,6 +129,7 @@ pub struct ZeroTrustObservation {
 pub struct RuntimeAuthority {
     pub android_profile_id: String,
     pub identity_sha256: String,
+    pub enrolled_device_reachability_confirmed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,6 +314,23 @@ pub fn plan_apply(
     if authority.android_profile_id.trim().is_empty() || authority.identity_sha256.len() != 64 {
         return Err(ZeroTrustLifecycleError::Validation(
             "runtime Zero Trust authority is incomplete".to_owned(),
+        ));
+    }
+
+    if !authority.enrolled_device_reachability_confirmed {
+        return Err(ZeroTrustLifecycleError::Conflict(
+            "enrolled-device reachability is not confirmed; Zero Trust mutation remains blocked"
+                .to_owned(),
+        ));
+    }
+    if !observed.device_settings_ready {
+        return Err(ZeroTrustLifecycleError::Conflict(
+            "global Zero Trust device settings are not Mesh-ready".to_owned(),
+        ));
+    }
+    if !observed.access_enrollment_ready {
+        return Err(ZeroTrustLifecycleError::Conflict(
+            "no WARP enrollment Access application with policy was proven".to_owned(),
         ));
     }
 
@@ -836,12 +856,15 @@ mod tests {
         RuntimeAuthority {
             android_profile_id: "android-profile".to_owned(),
             identity_sha256: "a".repeat(64),
+            enrolled_device_reachability_confirmed: true,
         }
     }
 
     #[test]
     fn missing_mesh_profile_plans_create() {
         let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
             connector_names: vec!["vultr".to_owned()],
             android_profile: Some(android_profile()),
             ..ZeroTrustObservation::default()
@@ -866,6 +889,8 @@ mod tests {
     #[test]
     fn unexpected_connector_fails_closed() {
         let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
             connector_names: vec!["foreign".to_owned()],
             ..ZeroTrustObservation::default()
         };
@@ -881,6 +906,8 @@ mod tests {
         let posture_id = "posture-android".to_owned();
         let traffic = gateway_traffic_expression(&desired.gateway_allow.destination_cidrs).unwrap();
         let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
             connector_names: vec!["vultr".to_owned()],
             mesh_profile_matches: vec![mesh_profile()],
             profile_precedences: vec![10, 100],
