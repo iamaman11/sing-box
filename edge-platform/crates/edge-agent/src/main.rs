@@ -1314,7 +1314,9 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     let runtime_ready = token_valid
         && container_running
         && exact_image_ready
-        && datapath.as_ref().is_some_and(MeshRuntimeProbeEvidence::ready);
+        && datapath
+            .as_ref()
+            .is_some_and(MeshRuntimeProbeEvidence::ready);
 
     let mut warnings = Vec::new();
     if let Some(err) = docker_error {
@@ -2238,7 +2240,9 @@ impl MeshRuntimeProbeEvidence {
             warnings.push("Mesh runtime IPv4 forwarding is not enabled".to_owned());
         }
         if !self.mesh_network_attached {
-            warnings.push("Mesh runtime container is not attached to the expected mesh network".to_owned());
+            warnings.push(
+                "Mesh runtime container is not attached to the expected mesh network".to_owned(),
+            );
         }
     }
 }
@@ -2268,9 +2272,11 @@ fn probe_mesh_runtime(docker: &DockerObservation) -> MeshRuntimeProbeEvidence {
 }
 
 fn mesh_tunnel_protocol_evidence() -> String {
-    let Some(output) =
-        bounded_command_output("docker", &["exec", MESH_CONTAINER, "warp-cli", "settings"], 8)
-    else {
+    let Some(output) = bounded_command_output(
+        "docker",
+        &["exec", MESH_CONTAINER, "warp-cli", "settings"],
+        8,
+    ) else {
         return "Mesh runtime tunnel protocol evidence: unavailable".to_owned();
     };
     let protocol = output
