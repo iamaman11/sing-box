@@ -5,6 +5,7 @@ WORKFLOWS = Path(".github/workflows")
 ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
+ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 
 
 def require(condition: bool, message: str) -> None:
@@ -16,6 +17,7 @@ def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
+    zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -29,8 +31,10 @@ def main() -> None:
 
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
+    require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
+    require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
@@ -39,6 +43,10 @@ def main() -> None:
     require(
         "uses: ./.github/workflows/vultr-lifecycle.yml" in router,
         "router must call the Vultr backend",
+    )
+    require(
+        "uses: ./.github/workflows/zero-trust-lifecycle.yml" in router,
+        "router must call the Zero Trust backend",
     )
     require(
         "vultr-control-plane-production" not in router,
@@ -54,7 +62,11 @@ def main() -> None:
         "router must not gain write permissions",
     )
 
-    for name, backend in [("application", application), ("vultr", vultr)]:
+    for name, backend in [
+        ("application", application),
+        ("vultr", vultr),
+        ("zero-trust", zero_trust),
+    ]:
         require(
             "COMMENT_BODY: ${{ inputs.command_body }}" in backend,
             f"{name} backend must parse only the router-provided command body",
@@ -75,6 +87,49 @@ def main() -> None:
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
         "Vultr backend must serialize its execute mutation job",
+    )
+    require(
+        zero_trust.count("group: vultr-control-plane-production") == 1,
+        "Zero Trust backend must serialize its execute mutation job",
+    )
+    require(
+        "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
+        "Zero Trust backend must consume the durable accepted ReleaseSet",
+    )
+    require(
+        "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in zero_trust,
+        "Zero Trust backend must use the production Cloudflare token secret",
+    )
+    require(
+        "CLOUDFLARE_ANDROID_PROFILE_ID: ${{ secrets.CLOUDFLARE_ANDROID_PROFILE_ID }}"
+        in zero_trust,
+        "Android profile authority must stay outside Git",
+    )
+    require(
+        "CLOUDFLARE_ANDROID_IDENTITY_EMAIL: ${{ secrets.CLOUDFLARE_ANDROID_IDENTITY_EMAIL }}"
+        in zero_trust,
+        "Android identity authority must stay outside Git",
+    )
+    require(
+        "CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED: ${{ vars.CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED }}"
+        in zero_trust,
+        "dashboard reachability must remain an explicit production attestation",
+    )
+    require(
+        'case "${operation}" in' in zero_trust
+        and "preflight)" in zero_trust
+        and "converge)" in zero_trust
+        and "verify)" in zero_trust,
+        "Zero Trust backend must retain typed preflight/converge/verify operations",
+    )
+    require(
+        'for iteration in $(seq 1 8)' in zero_trust,
+        "Zero Trust convergence must stay bounded",
+    )
+    require(
+        "cloudflare-zero-trust apply" in zero_trust
+        and "plan_authority.authority_digest" in zero_trust,
+        "Zero Trust mutations must consume exact PlanAuthority",
     )
 
     require(
