@@ -1345,6 +1345,7 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
                 err.chars().take(512).collect::<String>()
             )),
         }
+        warnings.push(mesh_tunnel_protocol_evidence());
     }
 
     MeshRuntimeState {
@@ -2266,6 +2267,22 @@ fn probe_mesh_runtime(docker: &DockerObservation) -> MeshRuntimeProbeEvidence {
     }
 }
 
+fn mesh_tunnel_protocol_evidence() -> String {
+    let Some(output) =
+        bounded_command_output("docker", &["exec", MESH_CONTAINER, "warp-cli", "settings"], 8)
+    else {
+        return "Mesh runtime tunnel protocol evidence: unavailable".to_owned();
+    };
+    let protocol = output
+        .lines()
+        .find(|line| line.to_ascii_lowercase().contains("protocol"))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.chars().take(160).collect::<String>())
+        .unwrap_or_else(|| "not-reported".to_owned());
+    format!("Mesh runtime tunnel protocol evidence: {protocol}")
+}
+
 fn bounded_container_runtime_summary(evidence: &ContainerRuntimeEvidence) -> String {
     let exit_code = evidence
         .exit_code
@@ -2786,6 +2803,17 @@ mod tests {
                 "Mesh runtime container is not attached to the expected mesh network",
             ]
         );
+    }
+
+    #[test]
+    fn mesh_tunnel_protocol_evidence_output_is_bounded_to_protocol_line() {
+        let raw = "mode: warp\ntunnel protocol: MASQUE\nother: value\n";
+        let protocol = raw
+            .lines()
+            .find(|line| line.to_ascii_lowercase().contains("protocol"))
+            .map(str::trim)
+            .unwrap();
+        assert_eq!(protocol, "tunnel protocol: MASQUE");
     }
 
     #[test]
