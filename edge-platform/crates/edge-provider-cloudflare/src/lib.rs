@@ -628,7 +628,9 @@ pub async fn update_device_profile_transport(
     };
     let client = authorized_client(api_token)?;
     let response = client
-        .patch(format!("{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"))
+        .patch(format!(
+            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"
+        ))
         .json(&request)
         .send()
         .await
