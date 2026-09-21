@@ -127,6 +127,27 @@ def validate_document(doc):
         "required Mesh client contract changed",
     )
 
+    _expect(
+        errors,
+        boundary.get("project_owned_legacy_warp_connector_names") == ["vultr"],
+        "legacy project-owned WARP Connector ownership changed",
+    )
+    _expect(
+        errors,
+        boundary.get("manual_prerequisites") == ["enrolled-device-reachability"],
+        "manual Mesh prerequisites changed",
+    )
+    _expect(
+        errors,
+        boundary.get("access_enrollment_required") is True,
+        "WARP device enrollment must remain a required prerequisite",
+    )
+    _expect(
+        errors,
+        boundary.get("gateway_mesh_allow_required") is True,
+        "project Mesh Gateway allow must remain a required prerequisite",
+    )
+
     evidence = doc.get("evidence", {})
     _expect(
         errors,

@@ -14,6 +14,7 @@ mod cloudflare_dns_lifecycle_command;
 mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
+mod cloudflare_zero_trust_doctor;
 mod deploy_orchestrator;
 mod error;
 mod vultr_host_bootstrap;
@@ -200,6 +201,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
         }
         Command::CloudflareDns { command } => {
             cloudflare_dns_lifecycle_command::run(command.into_legacy_args())
+                .await
+                .map_err(ControllerError::Command)
+        }
+        Command::CloudflareZeroTrust { command } => {
+            cloudflare_zero_trust_doctor::run(&command.spec_path())
                 .await
                 .map_err(ControllerError::Command)
         }

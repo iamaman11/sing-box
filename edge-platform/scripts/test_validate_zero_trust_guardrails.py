@@ -36,6 +36,14 @@ case["evidence"]["must_be_outside_repository_worktree"] = False
 assert_invalid(case, "evidence must remain outside")
 
 case = copy.deepcopy(base)
+case["zero_trust_boundary"]["project_owned_legacy_warp_connector_names"] = []
+assert_invalid(case, "legacy project-owned WARP Connector ownership changed")
+
+case = copy.deepcopy(base)
+case["zero_trust_boundary"]["manual_prerequisites"] = []
+assert_invalid(case, "manual Mesh prerequisites changed")
+
+case = copy.deepcopy(base)
 case["owned_resource_selectors"]["legacy_connector_id"] = (
     "fbb6086e-8f54-493f-ae7e-c3fcf9bf3a64"
 )

@@ -28,7 +28,15 @@
       "service_mode": "warp",
       "tunnel_protocol": "masque",
       "mesh_cidr": "100.96.0.0/12"
-    }
+    },
+    "project_owned_legacy_warp_connector_names": [
+      "vultr"
+    ],
+    "manual_prerequisites": [
+      "enrolled-device-reachability"
+    ],
+    "access_enrollment_required": true,
+    "gateway_mesh_allow_required": true
   },
   "evidence": {
     "must_be_outside_repository_worktree": true,
