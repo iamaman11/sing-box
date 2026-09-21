@@ -929,11 +929,8 @@ async fn apply_bundle_once(
                 .map_err(|err| err.to_string())
         },
         |err| async {
-            match wait_for_exact_bundle_digest_after_uncertain_mutation(
-                authority,
-                &expected_digest,
-            )
-            .await
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(authority, &expected_digest)
+                .await
             {
                 Ok(resolution) => {
                     record_bundle_mutation_resolved_by_observation(
@@ -972,11 +969,8 @@ async fn rollback_bundle_once(
                 .map_err(|err| err.to_string())
         },
         |err| async {
-            match wait_for_exact_bundle_digest_after_uncertain_mutation(
-                authority,
-                &expected_digest,
-            )
-            .await
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(authority, &expected_digest)
+                .await
             {
                 Ok(resolution) => {
                     record_bundle_mutation_resolved_by_observation(
@@ -1427,8 +1421,7 @@ mod tests {
         let recovery_calls = Arc::new(AtomicUsize::new(0));
         let mutation_counter = Arc::clone(&mutation_calls);
         let recovery_counter = Arc::clone(&recovery_calls);
-        let expected_digest =
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let expected_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
         execute_bundle_mutation_once(
             "ApplyBundle",
