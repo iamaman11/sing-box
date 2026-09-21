@@ -33,6 +33,8 @@ const REMOTE_PREVIOUS_AGENT: &str = "/opt/vultr-edge-stack/bin/edge-agent.previo
 const REMOTE_STACK_RELEASE: &str = "/opt/vultr-edge-stack/stack/.application-release.json";
 const REMOTE_PREVIOUS_STACK_RELEASE: &str =
     "/opt/vultr-edge-stack/stack.previous/.application-release.json";
+const REMOTE_STAGING_STACK_RELEASE: &str =
+    "/opt/vultr-edge-stack/stack.next/.application-release.json";
 const REMOTE_CONTROL_RELEASE: &str = "/opt/vultr-edge-stack/application-release.json";
 const REMOTE_CONTROL_RELEASE_STAGING: &str = "/tmp/singbox-application-release.json.tmp";
 const AGENT_DROPIN_PATH: &str =
@@ -41,6 +43,8 @@ const AGENT_DROPIN_CONTENT: &str =
     "[Service]\nEnvironment=EDGE_AGENT_ADDR=127.0.0.1:50061\nEnvironmentFile=\n";
 const READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS: usize = 45;
 const READ_ONLY_RUNTIME_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
+const UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS: usize = 45;
+const UNCERTAIN_BUNDLE_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ApplicationAuthority {
@@ -676,6 +680,79 @@ fn read_remote_bundle_release(
     Ok(Some(value))
 }
 
+fn exact_bundle_digest_observed(
+    observed: Option<&BundleReleaseView>,
+    expected_digest: &str,
+) -> bool {
+    observed.is_some_and(|value| value.bundle_digest == expected_digest)
+}
+
+fn bounded_detail(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+fn application_agent_forensic_summary(authority: &ApplicationAuthority) -> String {
+    let command = format!(
+        "marker_digest() {{ path=\"$1\"; if sudo test -f \"$path\"; then sudo jq -r '.bundle_digest // \"invalid\"' \"$path\" 2>/dev/null || printf invalid; else printf absent; fi; }}; active=$(marker_digest '{active}'); staging=$(marker_digest '{staging}'); previous=$(marker_digest '{previous}'); unit_active=$(systemctl is-active edge-agent.service 2>/dev/null || true); unit_sub=$(systemctl show edge-agent.service -p SubState --value 2>/dev/null || true); unit_result=$(systemctl show edge-agent.service -p Result --value 2>/dev/null || true); unit_restarts=$(systemctl show edge-agent.service -p NRestarts --value 2>/dev/null || true); unit_status=$(systemctl show edge-agent.service -p ExecMainStatus --value 2>/dev/null || true); listener=$(ss -ltnH 'sport = :50061' 2>/dev/null | wc -l | tr -d ' ' || true); boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true); printf 'active=%s staging=%s previous=%s unit_active=%s unit_sub=%s unit_result=%s unit_restarts=%s unit_status=%s listener=%s boot_id=%s' \"$active\" \"$staging\" \"$previous\" \"$unit_active\" \"$unit_sub\" \"$unit_result\" \"$unit_restarts\" \"$unit_status\" \"$listener\" \"$boot_id\"",
+        active = REMOTE_STACK_RELEASE,
+        staging = REMOTE_STAGING_STACK_RELEASE,
+        previous = REMOTE_PREVIOUS_STACK_RELEASE,
+    );
+    match strict_ssh_capture(
+        &authority.target_ip,
+        &authority.logical_hostname,
+        &authority.operator_private_key_path,
+        &authority.canonical_operator_public_key,
+        &command,
+    ) {
+        Ok(value) => bounded_detail(&value, 1200),
+        Err(err) => format!("forensic_unavailable={}", bounded_detail(&err, 512)),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BundleObservationResolution {
+    observation_attempts: usize,
+}
+
+async fn wait_for_exact_bundle_digest_after_uncertain_mutation(
+    authority: &ApplicationAuthority,
+    expected_digest: &str,
+) -> Result<BundleObservationResolution, String> {
+    validate_lower_hex("expected uncertain bundle digest", expected_digest, 64)?;
+    let mut last_detail = "not-observed".to_owned();
+
+    for attempt in 0..UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS {
+        match read_remote_bundle_release(authority, REMOTE_STACK_RELEASE) {
+            Ok(observed) if exact_bundle_digest_observed(observed.as_ref(), expected_digest) => {
+                return Ok(BundleObservationResolution {
+                    observation_attempts: attempt + 1,
+                });
+            }
+            Ok(Some(observed)) => {
+                last_detail = format!("active_digest={}", observed.bundle_digest);
+            }
+            Ok(None) => {
+                last_detail = "active_digest=absent".to_owned();
+            }
+            Err(err) => {
+                last_detail = format!("observation_error={}", bounded_detail(&err, 512));
+            }
+        }
+
+        if attempt + 1 < UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS {
+            sleep(UNCERTAIN_BUNDLE_REOBSERVE_DELAY).await;
+        }
+    }
+
+    Err(format!(
+        "desired bundle digest was not observed after {} bounded read-only observations; last={}; forensic={}",
+        UNCERTAIN_BUNDLE_REOBSERVE_ATTEMPTS,
+        last_detail,
+        application_agent_forensic_summary(authority)
+    ))
+}
+
 fn read_control_state(
     authority: &ApplicationAuthority,
 ) -> Result<Option<ApplicationControlState>, String> {
@@ -796,38 +873,84 @@ fn ensure_private_agent_service(authority: &ApplicationAuthority) -> Result<(), 
     Ok(())
 }
 
+async fn execute_bundle_mutation_once<M, MFut, R, RFut>(
+    operation: &'static str,
+    expected_digest: &str,
+    mutate: M,
+    recover_uncertain: R,
+) -> Result<(), String>
+where
+    M: FnOnce() -> MFut,
+    MFut: std::future::Future<Output = Result<Option<String>, String>>,
+    R: FnOnce(String) -> RFut,
+    RFut: std::future::Future<Output = Result<(), String>>,
+{
+    match mutate().await {
+        Ok(active_digest) if active_digest.as_deref() == Some(expected_digest) => Ok(()),
+        Ok(active_digest) => Err(format!(
+            "edge-agent {operation} returned unexpected active digest {active_digest:?}"
+        )),
+        Err(err) => recover_uncertain(err).await,
+    }
+}
+
+fn record_bundle_mutation_resolved_by_observation(
+    operation: &'static str,
+    expected_digest: &str,
+    resolution: BundleObservationResolution,
+) {
+    tracing::info!(
+        component = "edge-controller",
+        operation,
+        expected_bundle_digest = %expected_digest,
+        mutation_attempts = 1_u64,
+        observation_attempts = resolution.observation_attempts as u64,
+        rpc_replayed = false,
+        resolution = "resolved_by_observation",
+        event = "application.bundle_mutation.resolved_by_observation",
+        "bundle mutation transport uncertainty resolved by exact read-only observation"
+    );
+}
+
 async fn apply_bundle_once(
     authority: &ApplicationAuthority,
     prepared: &PreparedApplicationBundle,
 ) -> Result<(), String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    let result = client
-        .apply_bundle(Request::new(prepared.request.clone()))
-        .await;
-    match result {
-        Ok(response)
-            if response.get_ref().active_bundle_digest.as_deref()
-                == Some(prepared.release.bundle_digest.as_str()) =>
-        {
-            Ok(())
-        }
-        Ok(response) => Err(format!(
-            "edge-agent ApplyBundle returned unexpected active digest {:?}",
-            response.get_ref().active_bundle_digest
-        )),
-        Err(err) => {
-            let observed = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
-            if observed
-                .as_ref()
-                .is_some_and(|value| value.bundle_digest == prepared.release.bundle_digest)
+    let expected_digest = prepared.release.bundle_digest.clone();
+    let recovery_expected_digest = expected_digest.clone();
+    execute_bundle_mutation_once(
+        "ApplyBundle",
+        &expected_digest,
+        || async {
+            client
+                .apply_bundle(Request::new(prepared.request.clone()))
+                .await
+                .map(|response| response.get_ref().active_bundle_digest.clone())
+                .map_err(|err| err.to_string())
+        },
+        |err| async move {
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(
+                authority,
+                &recovery_expected_digest,
+            )
+            .await
             {
-                return Ok(());
+                Ok(resolution) => {
+                    record_bundle_mutation_resolved_by_observation(
+                        "ApplyBundle",
+                        &recovery_expected_digest,
+                        resolution,
+                    );
+                    Ok(())
+                }
+                Err(observation) => Err(format!(
+                    "ApplyBundle outcome is uncertain; RPC was not replayed: {err}; {observation}"
+                )),
             }
-            Err(format!(
-                "ApplyBundle outcome is uncertain and desired bundle was not observed; RPC was not replayed: {err}"
-            ))
-        }
-    }
+        },
+    )
+    .await
 }
 
 async fn rollback_bundle_once(
@@ -835,35 +958,43 @@ async fn rollback_bundle_once(
     plan: &RollbackPlan,
 ) -> Result<(), String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    let result = client
-        .rollback_bundle(Request::new(RollbackBundleRequest {
-            expected_current_bundle_digest: plan.current_release.bundle_digest.clone(),
-        }))
-        .await;
-    match result {
-        Ok(response)
-            if response.get_ref().active_bundle_digest.as_deref()
-                == Some(plan.previous_release.bundle_digest.as_str()) =>
-        {
-            Ok(())
-        }
-        Ok(response) => Err(format!(
-            "edge-agent RollbackBundle returned unexpected active digest {:?}",
-            response.get_ref().active_bundle_digest
-        )),
-        Err(err) => {
-            let observed = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
-            if observed
-                .as_ref()
-                .is_some_and(|value| value.bundle_digest == plan.previous_release.bundle_digest)
+    let expected_digest = plan.previous_release.bundle_digest.clone();
+    let recovery_expected_digest = expected_digest.clone();
+    let expected_current_digest = plan.current_release.bundle_digest.clone();
+    execute_bundle_mutation_once(
+        "RollbackBundle",
+        &expected_digest,
+        || async {
+            client
+                .rollback_bundle(Request::new(RollbackBundleRequest {
+                    expected_current_bundle_digest: expected_current_digest,
+                }))
+                .await
+                .map(|response| response.get_ref().active_bundle_digest.clone())
+                .map_err(|err| err.to_string())
+        },
+        |err| async move {
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(
+                authority,
+                &recovery_expected_digest,
+            )
+            .await
             {
-                return Ok(());
+                Ok(resolution) => {
+                    record_bundle_mutation_resolved_by_observation(
+                        "RollbackBundle",
+                        &recovery_expected_digest,
+                        resolution,
+                    );
+                    Ok(())
+                }
+                Err(observation) => Err(format!(
+                    "RollbackBundle outcome is uncertain; RPC was not replayed: {err}; {observation}"
+                )),
             }
-            Err(format!(
-                "RollbackBundle outcome is uncertain and previous bundle was not observed; RPC was not replayed: {err}"
-            ))
-        }
-    }
+        },
+    )
+    .await
 }
 
 fn rollback_agent_once(
@@ -913,22 +1044,56 @@ async fn bootstrap_once(
     mode: ApplicationBootstrapMode,
 ) -> Result<(), String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    let response = client
+    let result = client
         .bootstrap_runtime(Request::new(BootstrapRuntimeRequest {
             mode: proto_bootstrap_mode(mode) as i32,
         }))
-        .await
-        .map_err(|err| format!("typed BootstrapRuntime RPC failed: {err}"))?
-        .into_inner();
-    if response.success {
-        Ok(())
-    } else {
-        Err(format!(
-            "typed BootstrapRuntime failed with exit_code={} warnings={}",
-            response.exit_code,
-            response.warnings.join("; ")
-        ))
+        .await;
+    match result {
+        Ok(response) => {
+            let response = response.into_inner();
+            if response.success {
+                Ok(())
+            } else {
+                Err(format!(
+                    "typed BootstrapRuntime failed with exit_code={} warnings={}",
+                    response.exit_code,
+                    response.warnings.join("; ")
+                ))
+            }
+        }
+        Err(err) => match wait_for_runtime_ready_after_uncertain_bootstrap(authority, mode).await {
+            Ok(()) => Ok(()),
+            Err(observation) => Err(format!(
+                "BootstrapRuntime outcome is uncertain; RPC was not replayed: {err}; {observation}"
+            )),
+        },
     }
+}
+
+async fn wait_for_runtime_ready_after_uncertain_bootstrap(
+    authority: &ApplicationAuthority,
+    mode: ApplicationBootstrapMode,
+) -> Result<(), String> {
+    let mut last_detail = "not-observed".to_owned();
+    for attempt in 0..READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS {
+        match verify_runtime_ready(authority, mode).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => last_detail = "runtime_ready=false".to_owned(),
+            Err(err) => {
+                last_detail = format!("observation_error={}", bounded_detail(&err, 512));
+            }
+        }
+        if attempt + 1 < READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS {
+            sleep(READ_ONLY_RUNTIME_REOBSERVE_DELAY).await;
+        }
+    }
+    Err(format!(
+        "runtime readiness was not observed after {} bounded read-only observations; last={}; forensic={}",
+        READ_ONLY_RUNTIME_REOBSERVE_ATTEMPTS,
+        last_detail,
+        application_agent_forensic_summary(authority)
+    ))
 }
 
 async fn verify_runtime_ready(
@@ -963,11 +1128,28 @@ pub(crate) async fn converge_mesh_runtime_remote(
     node_token: String,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    client
+    match client
         .converge_mesh_runtime(Request::new(MeshRuntimeConvergeRequest { node_token }))
         .await
-        .map_err(|err| format!("typed ConvergeMeshRuntime RPC failed: {err}"))
-        .map(|response| response.into_inner())
+    {
+        Ok(response) => Ok(response.into_inner()),
+        Err(err) => {
+            let reobserved = verify_mesh_runtime_remote(authority).await.map_err(|observe_err| {
+                format!(
+                    "ConvergeMeshRuntime outcome is uncertain; RPC was not replayed: {err}; read-only re-observation failed: {observe_err}; forensic={}",
+                    application_agent_forensic_summary(authority)
+                )
+            })?;
+            if reobserved.runtime_ready {
+                Ok(reobserved)
+            } else {
+                Err(format!(
+                    "ConvergeMeshRuntime outcome is uncertain; RPC was not replayed: {err}; read-only re-observation did not reach READY: {}",
+                    reobserved.warnings.join("; ")
+                ))
+            }
+        }
+    }
 }
 
 pub(crate) async fn verify_mesh_runtime_remote(
@@ -1014,10 +1196,38 @@ pub(crate) async fn cleanup_mesh_runtime_remote(
     authority: &ApplicationAuthority,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
-    client
+    match client
         .cleanup_mesh_runtime(Request::new(edge_shared_types::Empty {}))
         .await
-        .map_err(|err| format!("typed CleanupMeshRuntime RPC failed: {err}"))
+    {
+        Ok(response) => Ok(response.into_inner()),
+        Err(err) => {
+            let state = observe_mesh_runtime_remote_once(authority).await.map_err(|observe_err| {
+                format!(
+                    "CleanupMeshRuntime outcome is uncertain; RPC was not replayed: {err}; read-only re-observation failed: {observe_err}; forensic={}",
+                    application_agent_forensic_summary(authority)
+                )
+            })?;
+            if !state.token_store_present && !state.container_running {
+                Ok(state)
+            } else {
+                Err(format!(
+                    "CleanupMeshRuntime outcome is uncertain; RPC was not replayed: {err}; token_store_present={} container_running={}",
+                    state.token_store_present, state.container_running
+                ))
+            }
+        }
+    }
+}
+
+async fn observe_mesh_runtime_remote_once(
+    authority: &ApplicationAuthority,
+) -> Result<MeshRuntimeState, String> {
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    client
+        .verify_mesh_runtime(Request::new(edge_shared_types::Empty {}))
+        .await
+        .map_err(|err| format!("typed VerifyMeshRuntime RPC failed: {err}"))
         .map(|response| response.into_inner())
 }
 
@@ -1182,6 +1392,64 @@ mod tests {
         ApplicationBootstrapMode, ApplicationRuntimePolicy, Line2RuntimePolicy,
     };
 
+    #[test]
+    fn exact_bundle_digest_observation_matches_only_exact_digest() {
+        let observed = BundleReleaseView {
+            schema: 1,
+            bundle_id: "bundle-a".to_owned(),
+            bundle_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+        };
+        assert!(exact_bundle_digest_observed(
+            Some(&observed),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(!exact_bundle_digest_observed(
+            Some(&observed),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ));
+        assert!(!exact_bundle_digest_observed(
+            None,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+    }
+
+    #[test]
+    fn bounded_detail_never_exceeds_requested_character_count() {
+        assert_eq!(bounded_detail("abcdef", 4), "abcd");
+        assert_eq!(bounded_detail("abc", 4), "abc");
+    }
+
+    #[tokio::test]
+    async fn uncertain_bundle_transport_is_mutated_once_and_never_replayed() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mutation_calls = Arc::new(AtomicUsize::new(0));
+        let recovery_calls = Arc::new(AtomicUsize::new(0));
+        let mutation_counter = Arc::clone(&mutation_calls);
+        let recovery_counter = Arc::clone(&recovery_calls);
+        let expected_digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        execute_bundle_mutation_once(
+            "ApplyBundle",
+            expected_digest,
+            || async move {
+                mutation_counter.fetch_add(1, Ordering::SeqCst);
+                Err::<Option<String>, String>("transport reset".to_owned())
+            },
+            |rpc_error| async move {
+                recovery_counter.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(rpc_error, "transport reset");
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(mutation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recovery_calls.load(Ordering::SeqCst), 1);
+    }
     fn test_desired(bundle_root: &str) -> DesiredApplicationState {
         DesiredApplicationState {
             schema: 2,
