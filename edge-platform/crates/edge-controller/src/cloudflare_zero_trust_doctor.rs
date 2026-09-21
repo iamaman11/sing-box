@@ -163,11 +163,14 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
         let includes =
             get_device_profile_includes(&api_token, &desired.account_id, &profile.id).await?;
         mesh_cidr_included = includes.iter().any(|entry| {
-            entry.address
-                == desired
-                    .zero_trust_boundary
-                    .required_client_contract
-                    .mesh_cidr
+            entry.address.as_deref()
+                == Some(
+                    desired
+                        .zero_trust_boundary
+                        .required_client_contract
+                        .mesh_cidr
+                        .as_str(),
+                )
         });
     } else {
         matching_profile_names.extend(matching_profiles.iter().map(|profile| profile.name.clone()));

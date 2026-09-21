@@ -69,6 +69,7 @@ def validate_document(doc):
         specs == {
             "dns": "infra/cloudflare/application-acceptance-dns.json",
             "mesh": "infra/cloudflare/application-acceptance-mesh.json",
+            "zero_trust_lifecycle": "infra/cloudflare/zero-trust-lifecycle.json",
         },
         "canonical Cloudflare spec paths changed",
     )
@@ -87,8 +88,8 @@ def validate_document(doc):
     boundary = doc.get("zero_trust_boundary", {})
     _expect(
         errors,
-        boundary.get("mode") == "external-prerequisite-read-only",
-        "Zero Trust boundary must remain external-prerequisite-read-only",
+        boundary.get("mode") == "controlled-project-prerequisite-lifecycle",
+        "Zero Trust boundary must remain controlled-project-prerequisite-lifecycle",
     )
     _expect(
         errors,
@@ -97,13 +98,13 @@ def validate_document(doc):
     )
     _expect(
         errors,
-        boundary.get("project_profile_creation_allowed") is False,
-        "schema 1 forbids project Zero Trust profile creation",
+        boundary.get("project_profile_creation_allowed") is True,
+        "project Zero Trust profile creation must remain explicitly allowed",
     )
     _expect(
         errors,
-        boundary.get("generic_warp_connector_selector_allowed") is False,
-        "schema 1 forbids a tenant-wide generic WARP Connector selector",
+        boundary.get("generic_warp_connector_selector_allowed") is True,
+        "project-owned WARP Connector selector must remain explicitly allowed",
     )
     _expect(
         errors,
@@ -123,10 +124,22 @@ def validate_document(doc):
             "service_mode": "warp",
             "tunnel_protocol": "masque",
             "mesh_cidr": "100.96.0.0/12",
+            "cloudflare_source_cidr": "100.64.0.0/12",
         },
         "required Mesh client contract changed",
     )
 
+    _expect(
+        errors,
+        boundary.get("controlled_existing_mutations")
+        == ["runtime-authorized-android-profile-split-tunnel-only"],
+        "controlled existing-object mutation exception changed",
+    )
+    _expect(
+        errors,
+        boundary.get("gateway_project_rule_creation_allowed") is True,
+        "project Gateway allow creation must remain explicitly allowed",
+    )
     _expect(
         errors,
         boundary.get("project_owned_legacy_warp_connector_names") == ["vultr"],
@@ -177,6 +190,7 @@ def validate_repository(doc, repo_root):
 
     specs = doc["canonical_specs"]
     selectors = doc["owned_resource_selectors"]
+    boundary = doc["zero_trust_boundary"]
 
     try:
         dns = json.loads((repo_root / specs["dns"]).read_text(encoding="utf-8"))
@@ -188,6 +202,14 @@ def validate_repository(doc, repo_root):
         mesh = json.loads((repo_root / specs["mesh"]).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         errors.append(f"failed to load canonical Mesh spec: {error}")
+        return errors
+
+    try:
+        lifecycle = json.loads(
+            (repo_root / specs["zero_trust_lifecycle"]).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"failed to load canonical Zero Trust lifecycle spec: {error}")
         return errors
 
     _expect(
@@ -215,6 +237,47 @@ def validate_repository(doc, repo_root):
         dns.get("environment") == mesh.get("environment") == "application-acceptance",
         "canonical DNS and Mesh specs must share application-acceptance ownership",
     )
+    _expect(
+        errors,
+        lifecycle.get("account_id") == doc["account_id"],
+        "Zero Trust lifecycle account differs from ownership guardrails",
+    )
+    _expect(
+        errors,
+        lifecycle.get("allowed_connector_names")
+        == ["vultr", selectors["mesh_node_name"]],
+        "Zero Trust lifecycle connector allowlist differs from ownership selectors",
+    )
+    _expect(
+        errors,
+        lifecycle.get("mesh_profile", {}).get("match_expression")
+        == boundary.get("generic_warp_connector_selector"),
+        "Zero Trust lifecycle Mesh selector differs from ownership guardrails",
+    )
+    _expect(
+        errors,
+        lifecycle.get("mesh_profile", {}).get("include_cidrs")
+        == ["100.64.0.0/12", "100.96.0.0/12"],
+        "Zero Trust lifecycle Mesh include contract changed",
+    )
+    _expect(
+        errors,
+        lifecycle.get("android_profile", {}).get("remove_exclusions")
+        == ["100.64.0.0/10"],
+        "Android CGNAT removal contract changed",
+    )
+    _expect(
+        errors,
+        [entry.get("address") for entry in lifecycle.get("android_profile", {}).get("add_exclusions", [])]
+        == ["100.80.0.0/12", "100.112.0.0/12"],
+        "Android CGNAT preservation contract changed",
+    )
+
+    for path, value in _walk_strings(lifecycle):
+        if UUID_RE.search(value):
+            errors.append(
+                f"Zero Trust lifecycle {path} contains a live/provider UUID; runtime IDs must stay outside Git"
+            )
 
     return errors
 

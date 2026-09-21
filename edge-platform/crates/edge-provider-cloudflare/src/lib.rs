@@ -50,6 +50,7 @@ pub struct CloudflareZeroTrustDeviceSettings {
 pub struct CloudflareDeviceProfile {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub enabled: Option<bool>,
     pub precedence: Option<u64>,
     pub match_expression: Option<String>,
@@ -59,7 +60,8 @@ pub struct CloudflareDeviceProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareSplitTunnelEntry {
-    pub address: String,
+    pub address: Option<String>,
+    pub host: Option<String>,
     pub description: Option<String>,
 }
 
@@ -67,12 +69,64 @@ pub struct CloudflareSplitTunnelEntry {
 pub struct CloudflareGatewayRule {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub action: String,
     pub precedence: Option<u64>,
     pub enabled: Option<bool>,
+    pub filters: Vec<String>,
     pub traffic: Option<String>,
     pub identity: Option<String>,
     pub device_posture: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareDevicePostureRule {
+    pub id: String,
+    pub name: String,
+    pub rule_type: String,
+    pub platforms: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareSplitTunnelWrite {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareDeviceProfileWrite {
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+    pub precedence: u64,
+    #[serde(rename = "match")]
+    pub match_expression: String,
+    pub service_mode_v2: CloudflareServiceModeWrite,
+    pub tunnel_protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<CloudflareSplitTunnelWrite>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareServiceModeWrite {
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareGatewayRuleWrite {
+    pub name: String,
+    pub description: String,
+    pub action: String,
+    pub enabled: bool,
+    pub precedence: u64,
+    pub filters: Vec<String>,
+    pub traffic: String,
+    pub identity: String,
+    pub device_posture: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -514,6 +568,44 @@ pub async fn list_device_profiles(
     ))
 }
 
+pub async fn create_device_profile(
+    api_token: &str,
+    account_id: &str,
+    request: &CloudflareDeviceProfileWrite,
+) -> Result<CloudflareDeviceProfile, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!("{API_ROOT}/accounts/{account_id}/devices/policy"))
+        .json(request)
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare device profile: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    device_profile_from_value(payload.result)
+}
+
+pub async fn update_device_profile(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+    request: &CloudflareDeviceProfileWrite,
+) -> Result<CloudflareDeviceProfile, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare device profile ID", profile_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .patch(format!(
+            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"
+        ))
+        .json(request)
+        .send()
+        .await
+        .map_err(|err| format!("failed to update Cloudflare device profile: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    device_profile_from_value(payload.result)
+}
+
 pub async fn get_device_profile_includes(
     api_token: &str,
     account_id: &str,
@@ -556,6 +648,68 @@ async fn get_device_profile_split_tunnels(
         .collect()
 }
 
+pub async fn set_device_profile_includes(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+    entries: &[CloudflareSplitTunnelWrite],
+) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+    set_device_profile_split_tunnels(api_token, account_id, profile_id, "include", entries).await
+}
+
+pub async fn set_device_profile_excludes(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+    entries: &[CloudflareSplitTunnelWrite],
+) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+    set_device_profile_split_tunnels(api_token, account_id, profile_id, "exclude", entries).await
+}
+
+async fn set_device_profile_split_tunnels(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+    kind: &str,
+    entries: &[CloudflareSplitTunnelWrite],
+) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare device profile ID", profile_id)?;
+    if !matches!(kind, "include" | "exclude") {
+        return Err("Cloudflare split tunnel kind must be include or exclude".to_owned());
+    }
+    for entry in entries {
+        if entry.address.is_some() == entry.host.is_some() {
+            return Err(
+                "Cloudflare split tunnel write requires exactly one of address or host".to_owned(),
+            );
+        }
+        if entry
+            .description
+            .as_ref()
+            .is_some_and(|value| value.len() > 100)
+        {
+            return Err(
+                "Cloudflare split tunnel description must be at most 100 characters".to_owned(),
+            );
+        }
+    }
+    let client = authorized_client(api_token)?;
+    let response = client
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}/{kind}"
+        ))
+        .json(entries)
+        .send()
+        .await
+        .map_err(|err| format!("failed to set Cloudflare device profile {kind} list: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    value_array(payload.result, "Cloudflare split tunnel list")?
+        .into_iter()
+        .map(split_tunnel_from_value)
+        .collect()
+}
+
 pub async fn list_gateway_rules(
     api_token: &str,
     account_id: &str,
@@ -589,6 +743,73 @@ pub async fn list_gateway_rules(
     Err(format!(
         "Cloudflare Gateway rule pagination exceeded {MAX_API_PAGES} pages"
     ))
+}
+
+pub async fn list_device_posture_rules(
+    api_token: &str,
+    account_id: &str,
+) -> Result<Vec<CloudflareDevicePostureRule>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let mut rules = Vec::new();
+    for page in 1..=MAX_API_PAGES {
+        let response = client
+            .get(format!("{API_ROOT}/accounts/{account_id}/devices/posture"))
+            .query(&[("page", page.to_string()), ("per_page", "50".to_owned())])
+            .send()
+            .await
+            .map_err(|err| format!("failed to list Cloudflare device posture rules: {err}"))?;
+        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+        let values = value_array(payload.result, "Cloudflare device posture rules")?;
+        let page_count = values.len();
+        for value in values {
+            rules.push(device_posture_rule_from_value(value)?);
+        }
+        if page_count < 50 {
+            return Ok(rules);
+        }
+    }
+    Err(format!(
+        "Cloudflare device posture pagination exceeded {MAX_API_PAGES} pages"
+    ))
+}
+
+pub async fn create_gateway_rule(
+    api_token: &str,
+    account_id: &str,
+    request: &CloudflareGatewayRuleWrite,
+) -> Result<CloudflareGatewayRule, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!("{API_ROOT}/accounts/{account_id}/gateway/rules"))
+        .json(request)
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare Gateway rule: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    gateway_rule_from_value(payload.result)
+}
+
+pub async fn update_gateway_rule(
+    api_token: &str,
+    account_id: &str,
+    rule_id: &str,
+    request: &CloudflareGatewayRuleWrite,
+) -> Result<CloudflareGatewayRule, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Gateway rule ID", rule_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/gateway/rules/{rule_id}"
+        ))
+        .json(request)
+        .send()
+        .await
+        .map_err(|err| format!("failed to update Cloudflare Gateway rule: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    gateway_rule_from_value(payload.result)
 }
 
 pub async fn list_access_applications(
@@ -651,6 +872,10 @@ fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, St
             .or_else(|| optional_value_string(object, "id"))
             .ok_or_else(|| "Cloudflare device profile field policy_id/id is required".to_owned())?,
         name: required_value_string(object, "name", "Cloudflare device profile")?,
+        description: object
+            .get("description")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         enabled: object.get("enabled").and_then(Value::as_bool),
         precedence: object.get("precedence").and_then(Value::as_u64),
         match_expression: object
@@ -674,8 +899,16 @@ fn split_tunnel_from_value(value: Value) -> Result<CloudflareSplitTunnelEntry, S
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare split tunnel entry must be an object".to_owned())?;
+    let address = optional_value_string(object, "address");
+    let host = optional_value_string(object, "host");
+    if address.is_some() == host.is_some() {
+        return Err(
+            "Cloudflare split tunnel entry requires exactly one of address or host".to_owned(),
+        );
+    }
     Ok(CloudflareSplitTunnelEntry {
-        address: required_value_string(object, "address", "Cloudflare split tunnel entry")?,
+        address,
+        host,
         description: object
             .get("description")
             .and_then(Value::as_str)
@@ -690,9 +923,24 @@ fn gateway_rule_from_value(value: Value) -> Result<CloudflareGatewayRule, String
     Ok(CloudflareGatewayRule {
         id: required_value_string(object, "id", "Cloudflare Gateway rule")?,
         name: required_value_string(object, "name", "Cloudflare Gateway rule")?,
+        description: object
+            .get("description")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         action: required_value_string(object, "action", "Cloudflare Gateway rule")?,
         precedence: object.get("precedence").and_then(Value::as_u64),
         enabled: object.get("enabled").and_then(Value::as_bool),
+        filters: object
+            .get("filters")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
         traffic: object
             .get("traffic")
             .and_then(Value::as_str)
@@ -705,6 +953,31 @@ fn gateway_rule_from_value(value: Value) -> Result<CloudflareGatewayRule, String
             .get("device_posture")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+    })
+}
+
+fn device_posture_rule_from_value(value: Value) -> Result<CloudflareDevicePostureRule, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare device posture rule must be an object".to_owned())?;
+    let platforms = object
+        .get("match")
+        .and_then(Value::as_array)
+        .map(|matches| {
+            matches
+                .iter()
+                .filter_map(Value::as_object)
+                .filter_map(|entry| entry.get("platform"))
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(CloudflareDevicePostureRule {
+        id: required_value_string(object, "id", "Cloudflare device posture rule")?,
+        name: required_value_string(object, "name", "Cloudflare device posture rule")?,
+        rule_type: required_value_string(object, "type", "Cloudflare device posture rule")?,
+        platforms,
     })
 }
 
@@ -1109,6 +1382,68 @@ mod tests {
     }
 
     #[test]
+    fn serializes_zero_trust_device_profile_write_contract() {
+        let value = serde_json::to_value(CloudflareDeviceProfileWrite {
+            name: "sing-box Mesh nodes".to_owned(),
+            description: "Project Mesh nodes".to_owned(),
+            enabled: true,
+            precedence: 100,
+            match_expression: "identity.email == \"warp_connector@example.cloudflareaccess.com\""
+                .to_owned(),
+            service_mode_v2: CloudflareServiceModeWrite {
+                mode: "warp".to_owned(),
+            },
+            tunnel_protocol: "masque".to_owned(),
+            include: Some(vec![CloudflareSplitTunnelWrite {
+                address: Some("100.96.0.0/12".to_owned()),
+                host: None,
+                description: Some("Cloudflare Mesh device IPs".to_owned()),
+            }]),
+        })
+        .unwrap();
+
+        assert_eq!(
+            value["match"],
+            "identity.email == \"warp_connector@example.cloudflareaccess.com\""
+        );
+        assert_eq!(value["service_mode_v2"]["mode"], "warp");
+        assert_eq!(value["tunnel_protocol"], "masque");
+        assert_eq!(value["include"][0]["address"], "100.96.0.0/12");
+        assert!(value.get("exclude").is_none());
+    }
+
+    #[test]
+    fn serializes_zero_trust_gateway_write_contract() {
+        let value = serde_json::to_value(CloudflareGatewayRuleWrite {
+            name: "sing-box Mesh Android allow".to_owned(),
+            description: "Project Mesh allow".to_owned(),
+            action: "allow".to_owned(),
+            enabled: true,
+            precedence: 9999,
+            filters: vec!["l4".to_owned()],
+            traffic: "net.dst.ip in {100.96.0.0/12}".to_owned(),
+            identity: "identity.email == \"android@example.com\"".to_owned(),
+            device_posture: "any(device_posture.checks.passed[*] in {\"posture-android\"})"
+                .to_owned(),
+        })
+        .unwrap();
+
+        assert_eq!(value["action"], "allow");
+        assert_eq!(value["filters"][0], "l4");
+        assert_eq!(value["traffic"], "net.dst.ip in {100.96.0.0/12}");
+        assert_eq!(
+            value["identity"],
+            "identity.email == \"android@example.com\""
+        );
+        assert!(
+            value["device_posture"]
+                .as_str()
+                .unwrap()
+                .contains("posture-android")
+        );
+    }
+
+    #[test]
     fn parses_zero_trust_device_profile_contract() {
         let profile = device_profile_from_value(serde_json::json!({
             "policy_id": "profile-1",
@@ -1128,6 +1463,19 @@ mod tests {
     }
 
     #[test]
+    fn split_tunnel_write_omits_inactive_union_fields() {
+        let value = serde_json::to_value(CloudflareSplitTunnelWrite {
+            address: Some("100.96.0.0/12".to_owned()),
+            host: None,
+            description: None,
+        })
+        .unwrap();
+        assert_eq!(value["address"], "100.96.0.0/12");
+        assert!(value.get("host").is_none());
+        assert!(value.get("description").is_none());
+    }
+
+    #[test]
     fn parses_zero_trust_split_tunnel_contract() {
         let entry = split_tunnel_from_value(serde_json::json!({
             "address": "100.96.0.0/12",
@@ -1135,7 +1483,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(entry.address, "100.96.0.0/12");
+        assert_eq!(entry.address.as_deref(), Some("100.96.0.0/12"));
         assert_eq!(entry.description.as_deref(), Some("Cloudflare Mesh IPs"));
     }
 

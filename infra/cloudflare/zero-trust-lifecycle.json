@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "project": "sing-box",
+  "account_id": "4426df1449e417511bc7697d60b7f62f",
+  "allowed_connector_names": [
+    "vultr",
+    "singbox-line3-application-acceptance"
+  ],
+  "mesh_profile": {
+    "name": "sing-box Mesh nodes",
+    "description": "Project Mesh nodes: Traffic and DNS over MASQUE with required Cloudflare Mesh ranges",
+    "match_expression": "identity.email == \"warp_connector@wispy-fire-124a.cloudflareaccess.com\"",
+    "precedence_start": 100,
+    "service_mode": "warp",
+    "tunnel_protocol": "masque",
+    "include_cidrs": [
+      "100.64.0.0/12",
+      "100.96.0.0/12"
+    ]
+  },
+  "android_profile": {
+    "profile_id_env": "CLOUDFLARE_ANDROID_PROFILE_ID",
+    "required_service_mode": "warp",
+    "required_tunnel_protocol": "masque",
+    "remove_exclusions": [
+      "100.64.0.0/10"
+    ],
+    "add_exclusions": [
+      {
+        "address": "100.80.0.0/12",
+        "description": "Preserve non-Cloudflare CGNAT bypass"
+      },
+      {
+        "address": "100.112.0.0/12",
+        "description": "Preserve non-Cloudflare CGNAT bypass"
+      }
+    ],
+    "required_routed_cidrs": [
+      "100.64.0.0/12",
+      "100.96.0.0/12"
+    ]
+  },
+  "gateway_allow": {
+    "name": "sing-box Mesh Android allow",
+    "description": "Allow the authorized Android device to reach project Mesh addresses before the broad private deny",
+    "identity_email_env": "CLOUDFLARE_ANDROID_IDENTITY_EMAIL",
+    "block_rule_name": "Default deny for private traffic",
+    "destination_cidrs": [
+      "100.96.0.0/12"
+    ],
+    "posture": {
+      "type": "os_version",
+      "platform": "android"
+    }
+  }
+}
