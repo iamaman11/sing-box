@@ -249,7 +249,11 @@ impl ApplicationLifecycleCommand {
     pub fn into_legacy_args(self) -> Vec<String> {
         match self {
             Self::Plan(args) => args.into_legacy("plan"),
-            Self::Apply(args) => args.into_legacy("apply"),
+            Self::Apply(args) => vec![
+                "apply".to_owned(),
+                path(args.spec_path),
+                args.authorized_plan_sha256,
+            ],
             Self::Verify(args) => args.into_legacy("verify"),
             Self::Upgrade(args) => args.into_legacy("upgrade"),
             Self::RollbackPlan(args) => vec!["rollback-plan".to_owned(), path(args.spec_path)],
