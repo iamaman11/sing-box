@@ -150,7 +150,7 @@ def validate_document(doc):
 
 
 def validate_repository(doc, repo_root):
-    errors = validate_repository(doc, Path("."))
+    errors = validate_document(doc)
     if errors:
         return errors
 
@@ -205,7 +205,7 @@ def main(argv):
         )
     path = Path(argv[1])
     doc = json.loads(path.read_text(encoding="utf-8"))
-    errors = validate_document(doc)
+    errors = validate_repository(doc, Path("."))
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
