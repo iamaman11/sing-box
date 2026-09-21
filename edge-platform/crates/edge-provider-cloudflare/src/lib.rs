@@ -598,7 +598,9 @@ pub async fn update_device_profile(
     require_non_empty("Cloudflare device profile ID", profile_id)?;
     let client = authorized_client(api_token)?;
     let response = client
-        .patch(format!("{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"))
+        .patch(format!(
+            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"
+        ))
         .json(request)
         .send()
         .await
@@ -709,10 +711,18 @@ async fn set_device_profile_split_tunnels(
     }
     for entry in entries {
         if entry.address.is_some() == entry.host.is_some() {
-            return Err("Cloudflare split tunnel write requires exactly one of address or host".to_owned());
+            return Err(
+                "Cloudflare split tunnel write requires exactly one of address or host".to_owned(),
+            );
         }
-        if entry.description.as_ref().is_some_and(|value| value.len() > 100) {
-            return Err("Cloudflare split tunnel description must be at most 100 characters".to_owned());
+        if entry
+            .description
+            .as_ref()
+            .is_some_and(|value| value.len() > 100)
+        {
+            return Err(
+                "Cloudflare split tunnel description must be at most 100 characters".to_owned(),
+            );
         }
     }
     let client = authorized_client(api_token)?;
@@ -822,7 +832,9 @@ pub async fn update_gateway_rule(
     require_non_empty("Cloudflare Gateway rule ID", rule_id)?;
     let client = authorized_client(api_token)?;
     let response = client
-        .put(format!("{API_ROOT}/accounts/{account_id}/gateway/rules/{rule_id}"))
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/gateway/rules/{rule_id}"
+        ))
         .json(request)
         .send()
         .await
@@ -921,7 +933,9 @@ fn split_tunnel_from_value(value: Value) -> Result<CloudflareSplitTunnelEntry, S
     let address = optional_value_string(object, "address");
     let host = optional_value_string(object, "host");
     if address.is_some() == host.is_some() {
-        return Err("Cloudflare split tunnel entry requires exactly one of address or host".to_owned());
+        return Err(
+            "Cloudflare split tunnel entry requires exactly one of address or host".to_owned(),
+        );
     }
     Ok(CloudflareSplitTunnelEntry {
         address,
