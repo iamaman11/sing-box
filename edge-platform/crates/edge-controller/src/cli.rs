@@ -322,12 +322,20 @@ impl CloudflareDnsCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareZeroTrustCommand {
     Doctor(SpecArgs),
+    Inventory(SpecArgs),
+    Plan(SpecArgs),
+    Apply(AuthorizedSpecArgs),
+    Verify(SpecArgs),
 }
 
 impl CloudflareZeroTrustCommand {
-    pub fn spec_path(self) -> PathBuf {
+    pub fn into_legacy_args(self) -> Vec<String> {
         match self {
-            Self::Doctor(args) => args.spec_path,
+            Self::Doctor(args) => vec!["doctor".to_owned(), path(args.spec_path)],
+            Self::Inventory(args) => vec!["inventory".to_owned(), path(args.spec_path)],
+            Self::Plan(args) => vec!["plan".to_owned(), path(args.spec_path)],
+            Self::Apply(args) => args.into_legacy("apply"),
+            Self::Verify(args) => vec!["verify".to_owned(), path(args.spec_path)],
         }
     }
 }
