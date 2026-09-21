@@ -733,10 +733,7 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
     })
 }
 
-fn optional_value_string(
-    object: &serde_json::Map<String, Value>,
-    key: &str,
-) -> Option<String> {
+fn optional_value_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
     object
         .get(key)
         .and_then(Value::as_str)
