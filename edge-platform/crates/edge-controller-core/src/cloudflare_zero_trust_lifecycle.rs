@@ -114,6 +114,8 @@ pub struct ZeroTrustObservation {
     pub connector_names: Vec<String>,
     #[serde(default)]
     pub mesh_profile_matches: Vec<ObservedDeviceProfile>,
+    #[serde(default)]
+    pub profile_precedences: Vec<u64>,
     pub android_profile: Option<ObservedDeviceProfile>,
     #[serde(default)]
     pub posture_rules: Vec<ObservedPostureRule>,
@@ -313,10 +315,7 @@ pub fn plan_apply(
         [] => {
             let precedence = next_free_precedence(
                 desired.mesh_profile.precedence_start,
-                observed
-                    .mesh_profile_matches
-                    .iter()
-                    .filter_map(|profile| profile.precedence),
+                observed.profile_precedences.iter().copied(),
             )?;
             return Ok(ZeroTrustPlan {
                 action: ZeroTrustAction::CreateMeshProfile { precedence },
