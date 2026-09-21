@@ -18,12 +18,12 @@ assert validate_document(base) == []
 assert validate_repository(base, Path(".")) == []
 
 case = copy.deepcopy(base)
-case["zero_trust_boundary"]["generic_warp_connector_selector_allowed"] = True
-assert_invalid(case, "tenant-wide generic WARP Connector selector")
+case["zero_trust_boundary"]["generic_warp_connector_selector_allowed"] = False
+assert_invalid(case, "WARP Connector selector")
 
 case = copy.deepcopy(base)
-case["zero_trust_boundary"]["project_profile_creation_allowed"] = True
-assert_invalid(case, "forbids project Zero Trust profile creation")
+case["zero_trust_boundary"]["project_profile_creation_allowed"] = False
+assert_invalid(case, "profile creation")
 
 case = copy.deepcopy(base)
 case["zero_trust_boundary"]["protected_categories"].remove(
@@ -34,6 +34,14 @@ assert_invalid(case, "protected Zero Trust categories are incomplete")
 case = copy.deepcopy(base)
 case["evidence"]["must_be_outside_repository_worktree"] = False
 assert_invalid(case, "evidence must remain outside")
+
+case = copy.deepcopy(base)
+case["zero_trust_boundary"]["controlled_existing_mutations"] = []
+assert_invalid(case, "controlled existing-object mutation exception")
+
+case = copy.deepcopy(base)
+case["zero_trust_boundary"]["gateway_project_rule_creation_allowed"] = False
+assert_invalid(case, "Gateway allow creation")
 
 case = copy.deepcopy(base)
 case["zero_trust_boundary"]["project_owned_legacy_warp_connector_names"] = []
