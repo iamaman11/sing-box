@@ -620,7 +620,9 @@ fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, St
         .as_object()
         .ok_or_else(|| "Cloudflare device profile must be an object".to_owned())?;
     Ok(CloudflareDeviceProfile {
-        id: required_value_string(object, "id", "Cloudflare device profile")?,
+        id: optional_value_string(object, "policy_id")
+            .or_else(|| optional_value_string(object, "id"))
+            .ok_or_else(|| "Cloudflare device profile field policy_id/id is required".to_owned())?,
         name: required_value_string(object, "name", "Cloudflare device profile")?,
         enabled: object.get("enabled").and_then(Value::as_bool),
         precedence: object.get("precedence").and_then(Value::as_u64),
@@ -702,6 +704,17 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
     })
+}
+
+fn optional_value_string(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Option<String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn required_value_string(
@@ -1074,7 +1087,7 @@ mod tests {
     #[test]
     fn parses_zero_trust_device_profile_contract() {
         let profile = device_profile_from_value(serde_json::json!({
-            "id": "profile-1",
+            "policy_id": "profile-1",
             "name": "Cloudflare Mesh nodes",
             "enabled": true,
             "precedence": 100,
