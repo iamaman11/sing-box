@@ -133,12 +133,30 @@ pub struct RuntimeAuthority {
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ZeroTrustAction {
     Noop,
-    CreateMeshProfile { precedence: u64 },
-    UpdateMeshProfile { profile_id: String, precedence: u64 },
-    SetMeshIncludes { profile_id: String, entries: Vec<SplitTunnelEntry> },
-    SetAndroidExcludes { profile_id: String, entries: Vec<SplitTunnelEntry> },
-    CreateGatewayAllow { precedence: u64, posture_rule_id: String },
-    UpdateGatewayAllow { rule_id: String, precedence: u64, posture_rule_id: String },
+    CreateMeshProfile {
+        precedence: u64,
+    },
+    UpdateMeshProfile {
+        profile_id: String,
+        precedence: u64,
+    },
+    SetMeshIncludes {
+        profile_id: String,
+        entries: Vec<SplitTunnelEntry>,
+    },
+    SetAndroidExcludes {
+        profile_id: String,
+        entries: Vec<SplitTunnelEntry>,
+    },
+    CreateGatewayAllow {
+        precedence: u64,
+        posture_rule_id: String,
+    },
+    UpdateGatewayAllow {
+        rule_id: String,
+        precedence: u64,
+        posture_rule_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,7 +181,10 @@ impl fmt::Display for ZeroTrustLifecycleError {
             | Self::Ambiguous(message)
             | Self::Conflict(message) => f.write_str(message),
             Self::UnsupportedSchema(schema) => {
-                write!(f, "unsupported Cloudflare Zero Trust lifecycle schema {schema}")
+                write!(
+                    f,
+                    "unsupported Cloudflare Zero Trust lifecycle schema {schema}"
+                )
             }
         }
     }
@@ -173,8 +194,8 @@ impl std::error::Error for ZeroTrustLifecycleError {}
 
 impl DesiredZeroTrustState {
     pub fn parse_json(input: &str) -> Result<Self, ZeroTrustLifecycleError> {
-        let desired: Self =
-            serde_json::from_str(input).map_err(|err| ZeroTrustLifecycleError::Json(err.to_string()))?;
+        let desired: Self = serde_json::from_str(input)
+            .map_err(|err| ZeroTrustLifecycleError::Json(err.to_string()))?;
         desired.validate()?;
         Ok(desired)
     }
@@ -331,7 +352,8 @@ pub fn plan_apply(
     };
 
     if mesh_profile.name != desired.mesh_profile.name
-        || mesh_profile.match_expression.as_deref() != Some(desired.mesh_profile.match_expression.as_str())
+        || mesh_profile.match_expression.as_deref()
+            != Some(desired.mesh_profile.match_expression.as_str())
     {
         return Err(ZeroTrustLifecycleError::Conflict(
             "Mesh profile name/selector collision is not project-owned".to_owned(),
@@ -468,7 +490,10 @@ pub fn plan_apply(
         [] => {
             let precedence = preceding_free_precedence(
                 block_precedence,
-                observed.gateway_rules.iter().filter_map(|rule| rule.precedence),
+                observed
+                    .gateway_rules
+                    .iter()
+                    .filter_map(|rule| rule.precedence),
             )?;
             Ok(ZeroTrustPlan {
                 action: ZeroTrustAction::CreateGatewayAllow {
@@ -641,10 +666,7 @@ fn canonical_ipv4_cidr(value: &str) -> Result<String, ZeroTrustLifecycleError> {
     Ok(format!("{network}/{prefix}"))
 }
 
-fn ipv4_cidr_contains(
-    parent: &str,
-    child: &str,
-) -> Result<bool, ZeroTrustLifecycleError> {
+fn ipv4_cidr_contains(parent: &str, child: &str) -> Result<bool, ZeroTrustLifecycleError> {
     let (parent_addr, parent_prefix) = parse_ipv4_cidr(parent)?;
     let (child_addr, child_prefix) = parse_ipv4_cidr(child)?;
     if parent_prefix > child_prefix {
@@ -660,7 +682,9 @@ fn ipv4_cidr_contains(
 
 fn parse_ipv4_cidr(value: &str) -> Result<(Ipv4Addr, u8), ZeroTrustLifecycleError> {
     let canonical = canonical_ipv4_cidr(value)?;
-    let (address, prefix) = canonical.split_once('/').expect("canonical CIDR contains slash");
+    let (address, prefix) = canonical
+        .split_once('/')
+        .expect("canonical CIDR contains slash");
     Ok((
         address.parse::<Ipv4Addr>().expect("canonical IPv4 parses"),
         prefix.parse::<u8>().expect("canonical prefix parses"),
@@ -710,10 +734,7 @@ fn validate_env_name(value: &str) -> Result<(), ZeroTrustLifecycleError> {
     Ok(())
 }
 
-fn ensure_unique_nonempty(
-    label: &str,
-    values: &[String],
-) -> Result<(), ZeroTrustLifecycleError> {
+fn ensure_unique_nonempty(label: &str, values: &[String]) -> Result<(), ZeroTrustLifecycleError> {
     let mut seen = BTreeSet::new();
     for value in values {
         if value.trim().is_empty() || !seen.insert(value) {
