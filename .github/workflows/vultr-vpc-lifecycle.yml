@@ -226,12 +226,9 @@ jobs:
             if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
               return 0
             fi
-            local release_plan="${RUNNER_TEMP}/vpc-access-release-plan.json"
-            local release_authority
-            "${bin}" vultr-lifecycle release-access-plan "${VULTR_SPEC_PATH}"               "$(jq -er '.machine_id' "${SPEC_PATH}")" > "${release_plan}"
-            release_authority="$(plan_authority "${release_plan}")"
-            [[ "${release_authority}" =~ ^[0-9a-f]{64}$ ]]
-            "${bin}" vultr-lifecycle release-access "${VULTR_SPEC_PATH}"               "$(jq -er '.machine_id' "${SPEC_PATH}")" "${release_authority}"               > "${RUNNER_TEMP}/vpc-access-release.json"
+            "${bin}" vultr-lifecycle lease-release "${VULTR_SPEC_PATH}" \
+              "$(jq -er '.machine_id' "${SPEC_PATH}")" \
+              > "${RUNNER_TEMP}/vpc-access-release.json"
           }
 
           finish() {
@@ -267,11 +264,10 @@ jobs:
               trap finish EXIT
               machine="$(jq -er '.machine_id' "${SPEC_PATH}")"
 
-              "${bin}" vultr-lifecycle acquire-access-plan "${VULTR_SPEC_PATH}" "${machine}"                 > "${RUNNER_TEMP}/vpc-access-acquire-plan.json"
-              access_authority="$(plan_authority "${RUNNER_TEMP}/vpc-access-acquire-plan.json")"
-              [[ "${access_authority}" =~ ^[0-9a-f]{64}$ ]]
               ACCESS_CLEANUP_ARMED=1
-              "${bin}" vultr-lifecycle acquire-access "${VULTR_SPEC_PATH}" "${machine}" "${access_authority}"                 > "${RUNNER_TEMP}/vpc-access-acquire.json"
+              "${bin}" vultr-lifecycle lease-acquire "${VULTR_SPEC_PATH}" "${machine}" \
+                > "${RUNNER_TEMP}/vpc-access-acquire.json"
+              jq -e '.status == "READY"' "${RUNNER_TEMP}/vpc-access-acquire.json" >/dev/null
 
               "${bin}" vultr-lifecycle substrate-verify "${VULTR_SPEC_PATH}" "${machine}"                 > "${RUNNER_TEMP}/vpc-access-ready.json"
               jq -e '.status == "PASS" and .plan.action == "NOOP"'                 "${RUNNER_TEMP}/vpc-access-ready.json" >/dev/null
