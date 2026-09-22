@@ -266,6 +266,33 @@ jobs:
             jq -er '.authorized_plans[0].authority.authority_digest' "$1"
           }
 
+          acquire_controller_access() {
+            local spec="$1"
+            local machine="$2"
+            local prefix="$3"
+            local plan="${RUNNER_TEMP}/${prefix}-access-acquire-plan.json"
+            local result="${RUNNER_TEMP}/${prefix}-access-acquire.json"
+            local authority
+            run_lifecycle acquire-access-plan "${spec}" "${machine}" > "${plan}"
+            authority="$(plan_authority "${plan}")"
+            [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+            run_lifecycle acquire-access "${spec}" "${machine}" "${authority}" > "${result}"
+          }
+
+          release_controller_access() {
+            local spec="$1"
+            local machine="$2"
+            local prefix="$3"
+            local plan="${RUNNER_TEMP}/${prefix}-access-release-plan.json"
+            local result="${RUNNER_TEMP}/${prefix}-access-release.json"
+            local authority
+            run_lifecycle release-access-plan "${spec}" "${machine}" > "${plan}"
+            authority="$(plan_authority "${plan}")"
+            [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+            run_lifecycle release-access "${spec}" "${machine}" "${authority}" > "${result}"
+            jq -e '.verified_absent == true or .mutations_performed == 0' "${result}" >/dev/null
+          }
+
           converge_host_substrate() {
             local spec="$1"
             local machine="$2"
@@ -358,9 +385,36 @@ jobs:
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-authority-plan.json"
               authority="$(machine_authority "${RUNNER_TEMP}/apply-authority-plan.json")"
               run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/apply-provider.json"
+
+              APPLY_ACCESS_ARMED=0
+              finish_apply_access() {
+                local operation_rc=$?
+                trap - EXIT
+                if [[ "${APPLY_ACCESS_ARMED}" == "1" ]]; then
+                  set +e
+                  release_controller_access "${spec}" "${machine}" "apply"
+                  local release_rc=$?
+                  set -e
+                  if [[ ${release_rc} -ne 0 && ${operation_rc} -eq 0 ]]; then
+                    operation_rc=${release_rc}
+                  fi
+                fi
+                exit "${operation_rc}"
+              }
+              trap finish_apply_access EXIT
+
+              acquire_controller_access "${spec}" "${machine}" "apply"
+              APPLY_ACCESS_ARMED=1
               converge_host_substrate "${spec}" "${machine}" "apply" "${RUNNER_TEMP}/apply-substrate-verify.json"
-              jq -s '.[0] + {host_substrate: .[1]}' \
-                "${RUNNER_TEMP}/apply-provider.json" "${RUNNER_TEMP}/apply-substrate-verify.json" \
+              release_controller_access "${spec}" "${machine}" "apply"
+              APPLY_ACCESS_ARMED=0
+              trap - EXIT
+
+              jq -s '.[0] + {host_substrate: .[1], support_access: {acquire: .[2], release: .[3]}}' \
+                "${RUNNER_TEMP}/apply-provider.json" \
+                "${RUNNER_TEMP}/apply-substrate-verify.json" \
+                "${RUNNER_TEMP}/apply-access-acquire.json" \
+                "${RUNNER_TEMP}/apply-access-release.json" \
                 | tee "${RUNNER_TEMP}/result.json"
               ;;
             action)
