@@ -82,10 +82,7 @@ pub async fn observe_host_substrate<P: OperationalProvider>(
             strict_ssh_state: StrictSshState::OtherSsh,
             strict_ssh_evidence: format!(
                 "provider_not_ready:status={};power_status={};server_status={};main_ip_present={}",
-                instance.status,
-                instance.power_status,
-                instance.server_status,
-                main_ip_present
+                instance.status, instance.power_status, instance.server_status, main_ip_present
             ),
             user_data_scrubbed: None,
             host_certificate_serial: None,
