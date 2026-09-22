@@ -68,6 +68,21 @@ jobs:
       command_body: ${{ github.event.comment.body }}
     secrets: inherit
 
+  mesh:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1 &&
+      startsWith(github.event.comment.body, '/mesh ')
+    uses: ./.github/workflows/cloudflare-mesh-lifecycle.yml
+    with:
+      command_body: ${{ github.event.comment.body }}
+    secrets: inherit
+
   zero-trust:
     if: >-
       github.event_name == 'issue_comment' &&
