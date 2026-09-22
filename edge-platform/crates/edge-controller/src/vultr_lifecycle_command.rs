@@ -754,7 +754,8 @@ async fn build_access_authority(
             // Machine identity is checked only against the persistent firewall projection.
             // Current runner /32 presence is owned exclusively by this support-access authority.
             let verified_firewalls =
-                observe_verified_firewall_bindings(support_provider, desired, &raw_profiles).await?;
+                observe_verified_firewall_bindings(support_provider, desired, &raw_profiles)
+                    .await?;
             let report = plan_desired_state_with_firewall_profiles(
                 lifecycle_provider,
                 desired,
@@ -1928,7 +1929,6 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("does not match desired profile"));
     }
-
 
     fn operational_instance(
         power_status: &str,
