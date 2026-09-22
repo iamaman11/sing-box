@@ -1,0 +1,312 @@
+name: Vultr VPC Lifecycle
+
+on:
+  workflow_call:
+    inputs:
+      command_body:
+        description: Authorized /vpc command from the control-plane router
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.parse.outputs.operation }}
+      spec_path: ${{ steps.parse.outputs.spec_path }}
+      vultr_spec_path: ${{ steps.parse.outputs.vultr_spec_path }}
+
+    steps:
+      - name: Parse and authorize typed request
+        id: parse
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ inputs.command_body }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import re
+
+          vpc_spec_re = re.compile(r"^infra/vultr/[A-Za-z0-9._/-]+-vpc\.json$")
+          vultr_spec_re = re.compile(r"^infra/vultr/[A-Za-z0-9._/-]+\.json$")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+          operation = ""
+          spec_path = ""
+          vultr_spec_path = ""
+
+          if len(tokens) == 3 and tokens[0] == "/vpc" and tokens[1] in {
+              "inventory", "plan", "apply", "attachment-plan", "verify"
+          }:
+              operation = tokens[1]
+              spec_path = tokens[2]
+          elif (
+              len(tokens) == 4
+              and tokens[0] == "/vpc"
+              and tokens[1] == "attachment-apply"
+          ):
+              operation = "attachment-apply"
+              spec_path = tokens[2]
+              vultr_spec_path = tokens[3]
+          else:
+              fail("unsupported /vpc command grammar")
+
+          if not vpc_spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
+              fail("invalid VPC spec path")
+          if operation == "attachment-apply":
+              if (
+                  not vultr_spec_re.fullmatch(vultr_spec_path)
+                  or ".." in vultr_spec_path
+                  or "//" in vultr_spec_path
+                  or vultr_spec_path.endswith("-vpc.json")
+              ):
+                  fail("invalid Vultr machine spec path")
+          elif vultr_spec_path:
+              fail("Vultr machine spec path is only valid for attachment-apply")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"operation={operation}\n")
+              handle.write(f"spec_path={spec_path}\n")
+              handle.write(f"vultr_spec_path={vultr_spec_path}\n")
+          PY
+
+  verify:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve_release.outputs.release_tag }}
+      release_set_sha256: ${{ steps.resolve_release.outputs.release_set_sha256 }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+          VULTR_SPEC_PATH: ${{ needs.authorize.outputs.vultr_spec_path }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+          if [[ -n "${VULTR_SPEC_PATH}" ]]; then
+            test -f "${VULTR_SPEC_PATH}"
+            test "$(jq -er '.environment' "${SPEC_PATH}")" = "$(jq -er '.environment' "${VULTR_SPEC_PATH}")"
+            test "$(jq -er '.machine_id' "${SPEC_PATH}")" = "$(jq -er '.machines[0].id' "${VULTR_SPEC_PATH}")"
+          fi
+
+      - name: Resolve and verify exact durable Edge Platform release
+        id: resolve_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+
+  execute:
+    needs: [authorize, verify]
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+      VULTR_SPEC_PATH: ${{ needs.authorize.outputs.vultr_spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+          if [[ -n "${VULTR_SPEC_PATH}" ]]; then
+            test -f "${VULTR_SPEC_PATH}"
+          fi
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${RUNNER_TEMP}/edge-platform-release/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          controller="${RUNNER_TEMP}/edge-platform-release/edge-controller-linux-amd64"
+          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
+          chmod 0755 "${controller}"
+          printf 'EDGE_VPC_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+
+      - name: Materialize strict SSH authority
+        if: needs.authorize.outputs.operation == 'attachment-apply'
+        shell: bash
+        env:
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
+          test -s "${key_path}"
+          chmod 600 "${key_path}"
+          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
+
+      - name: Discover controller egress IPv4
+        if: needs.authorize.outputs.operation == 'attachment-apply'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          python3 - "${ip}" <<'PY'
+          import ipaddress
+          import sys
+          value = ipaddress.ip_address(sys.argv[1].strip())
+          if value.version != 4 or not value.is_global:
+              raise SystemExit("controller egress is not a global IPv4 address")
+          print(value)
+          PY
+          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
+
+      - name: Execute typed VPC lifecycle operation
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          bin="${EDGE_VPC_CONTROLLER}"
+          result="${RUNNER_TEMP}/vpc-result.json"
+
+          plan_authority() {
+            jq -er '.plan_authority.authority_digest' "$1"
+          }
+
+          ACCESS_CLEANUP_ARMED=0
+
+          cleanup_access() {
+            if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
+              return 0
+            fi
+            local release_plan="${RUNNER_TEMP}/vpc-access-release-plan.json"
+            local release_authority
+            "${bin}" vultr-lifecycle release-access-plan "${VULTR_SPEC_PATH}"               "$(jq -er '.machine_id' "${SPEC_PATH}")" > "${release_plan}"
+            release_authority="$(plan_authority "${release_plan}")"
+            [[ "${release_authority}" =~ ^[0-9a-f]{64}$ ]]
+            "${bin}" vultr-lifecycle release-access "${VULTR_SPEC_PATH}"               "$(jq -er '.machine_id' "${SPEC_PATH}")" "${release_authority}"               > "${RUNNER_TEMP}/vpc-access-release.json"
+          }
+
+          finish() {
+            local operation_rc=$?
+            trap - EXIT
+            set +e
+            cleanup_access
+            local cleanup_rc=$?
+            set -e
+            if [[ "${cleanup_rc}" -ne 0 && "${operation_rc}" -eq 0 ]]; then
+              operation_rc="${cleanup_rc}"
+            fi
+            exit "${operation_rc}"
+          }
+
+          case "${REQUESTED_OPERATION}" in
+            inventory)
+              "${bin}" vultr-vpc inventory "${SPEC_PATH}" | tee "${result}"
+              ;;
+            plan)
+              "${bin}" vultr-vpc plan "${SPEC_PATH}" | tee "${result}"
+              ;;
+            apply)
+              "${bin}" vultr-vpc plan "${SPEC_PATH}" > "${RUNNER_TEMP}/vpc-plan.json"
+              authority="$(plan_authority "${RUNNER_TEMP}/vpc-plan.json")"
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" vultr-vpc apply "${SPEC_PATH}" "${authority}" | tee "${result}"
+              ;;
+            attachment-plan)
+              "${bin}" vultr-vpc attachment-plan "${SPEC_PATH}" | tee "${result}"
+              ;;
+            attachment-apply)
+              trap finish EXIT
+              machine="$(jq -er '.machine_id' "${SPEC_PATH}")"
+
+              "${bin}" vultr-lifecycle acquire-access-plan "${VULTR_SPEC_PATH}" "${machine}"                 > "${RUNNER_TEMP}/vpc-access-acquire-plan.json"
+              access_authority="$(plan_authority "${RUNNER_TEMP}/vpc-access-acquire-plan.json")"
+              [[ "${access_authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" vultr-lifecycle acquire-access "${VULTR_SPEC_PATH}" "${machine}" "${access_authority}"                 > "${RUNNER_TEMP}/vpc-access-acquire.json"
+              ACCESS_CLEANUP_ARMED=1
+
+              "${bin}" vultr-vpc attachment-plan "${SPEC_PATH}" > "${RUNNER_TEMP}/vpc-attachment-plan.json"
+              action="$(jq -er '.plan.action.kind' "${RUNNER_TEMP}/vpc-attachment-plan.json")"
+              if [[ "${action}" == "NOOP" ]]; then
+                "${bin}" vultr-vpc verify "${SPEC_PATH}" > "${RUNNER_TEMP}/vpc-verify.json"
+                jq -s '{attachment_plan:.[0],verify:.[1]}'                   "${RUNNER_TEMP}/vpc-attachment-plan.json" "${RUNNER_TEMP}/vpc-verify.json"                   | tee "${result}"
+              elif [[ "${action}" == "ATTACH_INSTANCE" ]]; then
+                authority="$(plan_authority "${RUNNER_TEMP}/vpc-attachment-plan.json")"
+                [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+                "${bin}" vultr-vpc attachment-apply "${SPEC_PATH}" "${authority}"                   > "${RUNNER_TEMP}/vpc-attachment-apply.json"
+                "${bin}" vultr-vpc verify "${SPEC_PATH}" > "${RUNNER_TEMP}/vpc-verify.json"
+                jq -e '.performed.kind == "ATTACH_INSTANCE" and
+                       .next_plan.action.kind == "NOOP" and
+                       .guest_transition.network_ready == true and
+                       (.guest_transition.boot_id_changed | type == "boolean") and
+                       (.guest_transition.interface | type == "string") and
+                       .guest_transition.cidr == .next_plan.cidr and
+                       .guest_transition.private_ipv4 == .next_plan.private_ipv4'                   "${RUNNER_TEMP}/vpc-attachment-apply.json" >/dev/null
+                jq -e '.status == "PASS"' "${RUNNER_TEMP}/vpc-verify.json" >/dev/null
+                jq -s '{attachment:.[0],verify:.[1]}'                   "${RUNNER_TEMP}/vpc-attachment-apply.json" "${RUNNER_TEMP}/vpc-verify.json"                   | tee "${result}"
+              else
+                cat "${RUNNER_TEMP}/vpc-attachment-plan.json" >&2
+                echo "attachment-apply requires ATTACH_INSTANCE or NOOP, got ${action}" >&2
+                exit 1
+              fi
+              ;;
+            verify)
+              "${bin}" vultr-vpc verify "${SPEC_PATH}" | tee "${result}"
+              ;;
+            *)
+              echo "unreachable VPC operation" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Scrub SSH authority
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-${RUNNER_TEMP}/singbox-vultr-ops}"
