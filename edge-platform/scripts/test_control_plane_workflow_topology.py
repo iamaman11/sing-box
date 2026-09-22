@@ -360,15 +360,20 @@ def main() -> None:
     )
     require(
         'tokens[0] != "/mesh"' in mesh
-        and 'tokens[1] not in {"plan", "apply"}' in mesh,
-        "Mesh backend must expose only the bounded CP3 plan/apply grammar",
+        and 'tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify"}' in mesh,
+        "Mesh backend must expose only the bounded provider/runtime grammar",
     )
     require(
-        "line3-mesh vpc-runtime-" not in mesh
+        "line3-mesh vpc-runtime-apply" in mesh
+        and "line3-mesh vpc-runtime-verify" in mesh
         and "line3-mesh runtime-" not in mesh
         and "line3-mesh cleanup-" not in mesh
         and "MESH_NODE_TOKEN" not in mesh,
-        "CP3 Mesh backend must not expose runtime, token, or cleanup operations",
+        "Mesh backend must expose only VPC-composed runtime operations without raw token or cleanup surfaces",
+    )
+    require(
+        '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' in mesh,
+        "Mesh runtime operations must fail closed unless provider state is already NOOP",
     )
     require(
         "MESH_CIDR" not in mesh
@@ -384,6 +389,11 @@ def main() -> None:
     require(
         mesh.count("line3-mesh vpc-apply") == 1,
         "one Mesh workflow invocation must contain at most one provider apply call",
+    )
+    require(
+        mesh.count("line3-mesh vpc-runtime-apply") == 1
+        and mesh.count("line3-mesh vpc-runtime-verify") == 1,
+        "one Mesh workflow invocation must contain at most one typed runtime converge and one typed runtime verify call",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
