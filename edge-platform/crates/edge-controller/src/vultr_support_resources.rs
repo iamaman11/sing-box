@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tokio::time::sleep;
 
 const FIREWALL_PROFILE_SCHEMA: u64 = 1;
+const CONTROLLER_IPV4_PLACEHOLDER: &str = "@controller-ipv4";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirewallProfileSet {
@@ -244,11 +245,13 @@ impl FirewallProfileSet {
         profile_names: &[String],
         controller_ipv4: Option<&str>,
     ) -> Result<(), String> {
-        const PLACEHOLDER: &str = "@controller-ipv4";
         let needs_controller_ip = profile_names.iter().any(|name| {
-            self.profiles
-                .get(name)
-                .is_some_and(|profile| profile.rules.iter().any(|rule| rule.subnet == PLACEHOLDER))
+            self.profiles.get(name).is_some_and(|profile| {
+                profile
+                    .rules
+                    .iter()
+                    .any(|rule| rule.subnet == CONTROLLER_IPV4_PLACEHOLDER)
+            })
         });
         if !needs_controller_ip {
             return Ok(());
@@ -267,10 +270,10 @@ impl FirewallProfileSet {
                 .get_mut(name)
                 .ok_or_else(|| format!("firewall profile {name} is not defined"))?;
             for rule in &mut profile.rules {
-                if rule.subnet == PLACEHOLDER {
+                if rule.subnet == CONTROLLER_IPV4_PLACEHOLDER {
                     if rule.ip_type != "v4" || rule.subnet_size != 32 {
                         return Err(format!(
-                            "firewall profile {} uses {PLACEHOLDER} but is not an exact IPv4 /32",
+                            "firewall profile {} uses {CONTROLLER_IPV4_PLACEHOLDER} but is not an exact IPv4 /32",
                             profile.name
                         ));
                     }
@@ -505,6 +508,52 @@ pub async fn ensure_firewall_profile<P: SupportResourceProvider>(
     })
 }
 
+pub async fn ensure_persistent_firewall_profile<P: SupportResourceProvider>(
+    provider: &mut P,
+    environment: &str,
+    profile: &FirewallProfile,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<ResolvedFirewallProfile, String> {
+    validate_controller_access_templates(profile)?;
+    let description = firewall_group_description(environment, &profile.name);
+    let mut group = observe_firewall_group(provider, &description).await?;
+    if group.is_none() {
+        let mutation = provider.create_firewall_group(&description).await;
+        match &mutation {
+            Ok(_) => {}
+            Err(err) if err.requires_mutation_reobservation() => {}
+            Err(err) => return Err(err.to_string()),
+        }
+
+        for attempt in 0..policy.create_reobserve_attempts {
+            group = observe_firewall_group(provider, &description).await?;
+            if group.is_some() {
+                break;
+            }
+            if attempt + 1 < policy.create_reobserve_attempts {
+                sleep(policy.reobserve_delay).await;
+            }
+        }
+        if group.is_none() {
+            return match mutation {
+                Ok(_) => Err(format!(
+                    "Vultr firewall group {description} was created but did not become observable"
+                )),
+                Err(err) => Err(format!(
+                    "{err}; firewall-group CREATE was not replayed and exact re-observation remained absent"
+                )),
+            };
+        }
+    }
+
+    let group = group.expect("checked above");
+    reconcile_persistent_firewall_rules(provider, &group.id, profile, policy).await?;
+    Ok(ResolvedFirewallProfile {
+        id: group.id,
+        profile_name: profile.name.clone(),
+    })
+}
+
 pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
     provider: &mut P,
     environment: &str,
@@ -512,8 +561,13 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
     controller_ipv4: &str,
     policy: &LifecycleExecutionPolicy,
 ) -> Result<ControllerAccessReleaseReport, String> {
-    let target_specs = controller_ipv4_access_specs(unresolved_profile, controller_ipv4)?;
-    if target_specs.is_empty() {
+    let _ = controller_ipv4;
+    validate_controller_access_templates(unresolved_profile)?;
+    if !unresolved_profile
+        .rules
+        .iter()
+        .any(|rule| rule.subnet == CONTROLLER_IPV4_PLACEHOLDER)
+    {
         return Err(format!(
             "firewall profile {} has no @controller-ipv4 access rule",
             unresolved_profile.name
@@ -537,10 +591,7 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
 
     for rule in observed {
         let spec = firewall_rule_spec(&rule)?;
-        if target_specs
-            .iter()
-            .any(|target| same_firewall_access_semantics(&spec, target))
-        {
+        if controller_access_projection_matches(unresolved_profile, &spec)? {
             delete_firewall_rule_and_observe(provider, &group.id, rule.id, policy).await?;
             removed_rule_ids.push(rule.id);
         }
@@ -555,11 +606,13 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
         .map(firewall_rule_spec)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
-        .filter(|spec| {
-            target_specs
-                .iter()
-                .any(|target| same_firewall_access_semantics(spec, target))
+        .map(|spec| {
+            let matches = controller_access_projection_matches(unresolved_profile, &spec)?;
+            Ok((spec, matches))
         })
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .filter_map(|(spec, matches)| matches.then_some(spec))
         .collect::<Vec<_>>();
     if !remaining.is_empty() {
         return Err(format!(
@@ -592,7 +645,6 @@ pub(crate) fn controller_ipv4_access_specs(
     unresolved_profile: &FirewallProfile,
     controller_ipv4: &str,
 ) -> Result<BTreeSet<FirewallRuleSpec>, String> {
-    const PLACEHOLDER: &str = "@controller-ipv4";
     let ipv4 = controller_ipv4
         .parse::<std::net::Ipv4Addr>()
         .map_err(|_| "EDGE_CONTROLLER_IPV4 must be a valid IPv4 address".to_owned())?
@@ -600,12 +652,12 @@ pub(crate) fn controller_ipv4_access_specs(
     let mut targets = BTreeSet::new();
 
     for rule in &unresolved_profile.rules {
-        if rule.subnet != PLACEHOLDER {
+        if rule.subnet != CONTROLLER_IPV4_PLACEHOLDER {
             continue;
         }
         if rule.ip_type != "v4" || rule.subnet_size != 32 {
             return Err(format!(
-                "firewall profile {} uses {PLACEHOLDER} but is not an exact IPv4 /32",
+                "firewall profile {} uses {CONTROLLER_IPV4_PLACEHOLDER} but is not an exact IPv4 /32",
                 unresolved_profile.name
             ));
         }
@@ -762,6 +814,122 @@ async fn delete_ssh_key_and_observe<P: SupportResourceProvider>(
     Err(format!(
         "SSH-key DELETE for {} was not proven absent and was not replayed",
         key.id
+    ))
+}
+
+fn validate_controller_access_templates(profile: &FirewallProfile) -> Result<(), String> {
+    for rule in &profile.rules {
+        if rule.subnet != CONTROLLER_IPV4_PLACEHOLDER {
+            continue;
+        }
+        if rule.ip_type != "v4" || rule.subnet_size != 32 {
+            return Err(format!(
+                "firewall profile {} uses {} but is not an exact IPv4 /32",
+                profile.name, CONTROLLER_IPV4_PLACEHOLDER
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn persistent_firewall_rules(profile: &FirewallProfile) -> BTreeSet<FirewallRuleSpec> {
+    profile
+        .rules
+        .iter()
+        .filter(|rule| rule.subnet != CONTROLLER_IPV4_PLACEHOLDER)
+        .cloned()
+        .collect()
+}
+
+pub(crate) fn controller_access_projection_matches(
+    profile: &FirewallProfile,
+    observed: &FirewallRuleSpec,
+) -> Result<bool, String> {
+    validate_controller_access_templates(profile)?;
+    if observed.ip_type != "v4"
+        || observed.subnet_size != 32
+        || observed.subnet.parse::<std::net::Ipv4Addr>().is_err()
+    {
+        return Ok(false);
+    }
+    Ok(profile.rules.iter().any(|template| {
+        template.subnet == CONTROLLER_IPV4_PLACEHOLDER
+            && template.ip_type == observed.ip_type
+            && template.protocol == observed.protocol
+            && template.subnet_size == observed.subnet_size
+            && template.port == observed.port
+            && template.source == observed.source
+    }))
+}
+
+fn persistent_rule_map(
+    profile: &FirewallProfile,
+    observed: &[VultrFirewallRule],
+) -> Result<BTreeMap<FirewallRuleSpec, Vec<u64>>, String> {
+    let current = current_rule_map(observed)?;
+    let mut persistent = BTreeMap::new();
+    for (spec, ids) in current {
+        if controller_access_projection_matches(profile, &spec)? {
+            continue;
+        }
+        persistent.insert(spec, ids);
+    }
+    Ok(persistent)
+}
+
+async fn reconcile_persistent_firewall_rules<P: SupportResourceProvider>(
+    provider: &mut P,
+    group_id: &str,
+    profile: &FirewallProfile,
+    policy: &LifecycleExecutionPolicy,
+) -> Result<(), String> {
+    validate_controller_access_templates(profile)?;
+    let desired = persistent_firewall_rules(profile);
+    let max_mutations = desired.len().saturating_mul(2).saturating_add(32);
+
+    for mutation_index in 0..=max_mutations {
+        let current = provider
+            .list_firewall_rules(group_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        let current_by_spec = persistent_rule_map(profile, &current)?;
+
+        if current_by_spec.keys().cloned().collect::<BTreeSet<_>>() == desired
+            && current_by_spec.values().all(|ids| ids.len() == 1)
+        {
+            return Ok(());
+        }
+        if mutation_index == max_mutations {
+            break;
+        }
+
+        if let Some((spec, ids)) = current_by_spec
+            .iter()
+            .find(|(spec, ids)| !desired.contains(*spec) || ids.len() > 1)
+        {
+            let rule_id = *ids
+                .last()
+                .ok_or_else(|| format!("firewall rule map for {spec:?} is unexpectedly empty"))?;
+            delete_firewall_rule_and_observe(provider, group_id, rule_id, policy).await?;
+            continue;
+        }
+
+        if let Some(missing) = desired
+            .iter()
+            .find(|spec| !current_by_spec.contains_key(*spec))
+        {
+            create_firewall_rule_and_observe(provider, group_id, missing, policy).await?;
+            continue;
+        }
+    }
+
+    let observed = provider
+        .list_firewall_rules(group_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    Err(format!(
+        "persistent firewall profile {} did not converge after bounded reconciliation; desired={:?} observed={:?}",
+        profile.name, desired, observed
     ))
 }
 
@@ -976,8 +1144,21 @@ fn firewall_rules_match(
     profile: &FirewallProfile,
     observed: &[VultrFirewallRule],
 ) -> Result<bool, String> {
-    let map = current_rule_map(observed)?;
-    let desired = profile.rules.iter().cloned().collect::<BTreeSet<_>>();
+    validate_controller_access_templates(profile)?;
+    let has_controller_access = profile
+        .rules
+        .iter()
+        .any(|rule| rule.subnet == CONTROLLER_IPV4_PLACEHOLDER);
+    let map = if has_controller_access {
+        persistent_rule_map(profile, observed)?
+    } else {
+        current_rule_map(observed)?
+    };
+    let desired = if has_controller_access {
+        persistent_firewall_rules(profile)
+    } else {
+        profile.rules.iter().cloned().collect()
+    };
     Ok(map.keys().cloned().collect::<BTreeSet<_>>() == desired
         && map.values().all(|ids| ids.len() == 1))
 }
@@ -1818,6 +1999,222 @@ mod tests {
             profile_set.profile("acceptance-ssh").unwrap().rules[0].subnet,
             "203.0.113.25"
         );
+    }
+
+    #[test]
+    fn persistent_firewall_match_ignores_only_typed_controller_access() {
+        let profile_set = FirewallProfileSet::parse_json(
+            r#"{
+              "schema":1,
+              "profiles":[{
+                "name":"edge-access",
+                "rules":[
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"@controller-ipv4",
+                    "subnet_size":32,
+                    "port":"22",
+                    "notes":"ephemeral controller SSH"
+                  },
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"0.0.0.0",
+                    "subnet_size":0,
+                    "port":"443",
+                    "notes":"public service"
+                  }
+                ]
+              }]
+            }"#,
+        )
+        .unwrap();
+        let profile = profile_set.profile("edge-access").unwrap();
+        let persistent = VultrFirewallRule {
+            id: 1,
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "0.0.0.0".to_owned(),
+            subnet_size: 0,
+            port: "443".to_owned(),
+            source: String::new(),
+            notes: "public service".to_owned(),
+        };
+        let transient = VultrFirewallRule {
+            id: 2,
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "203.0.113.25".to_owned(),
+            subnet_size: 32,
+            port: "22".to_owned(),
+            source: String::new(),
+            notes: "runner note may drift".to_owned(),
+        };
+        assert!(firewall_rules_match(profile, &[persistent.clone(), transient]).unwrap());
+
+        let unrelated = VultrFirewallRule {
+            id: 3,
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "0.0.0.0".to_owned(),
+            subnet_size: 0,
+            port: "8443".to_owned(),
+            source: String::new(),
+            notes: "unexpected".to_owned(),
+        };
+        assert!(!firewall_rules_match(profile, &[persistent, unrelated]).unwrap());
+    }
+
+    #[tokio::test]
+    async fn persistent_reconcile_preserves_transient_controller_access() {
+        let profile_set = FirewallProfileSet::parse_json(
+            r#"{
+              "schema":1,
+              "profiles":[{
+                "name":"edge-access",
+                "rules":[
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"@controller-ipv4",
+                    "subnet_size":32,
+                    "port":"22"
+                  },
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"0.0.0.0",
+                    "subnet_size":0,
+                    "port":"443"
+                  }
+                ]
+              }]
+            }"#,
+        )
+        .unwrap();
+        let profile = profile_set.profile("edge-access").unwrap();
+        let transient = VultrFirewallRule {
+            id: 11,
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "203.0.113.25".to_owned(),
+            subnet_size: 32,
+            port: "22".to_owned(),
+            source: String::new(),
+            notes: String::new(),
+        };
+        let mut provider = FakeSupportProvider {
+            firewall_groups: vec![VultrFirewallGroup {
+                id: "fw-1".to_owned(),
+                description: "singbox-production-fw-edge-access".to_owned(),
+                date_created: String::new(),
+                date_modified: String::new(),
+            }],
+            firewall_rules: BTreeMap::from([("fw-1".to_owned(), vec![transient])]),
+            next_rule_id: 11,
+            ..FakeSupportProvider::default()
+        };
+
+        ensure_persistent_firewall_profile(&mut provider, "production", profile, &policy())
+            .await
+            .unwrap();
+
+        let rules = provider.firewall_rules.get("fw-1").unwrap();
+        assert!(rules.iter().any(|rule| rule.id == 11));
+        assert!(rules.iter().any(|rule| rule.port == "443"));
+        assert_eq!(provider.firewall_rule_delete_calls, 0);
+        assert_eq!(provider.firewall_rule_create_calls, 1);
+        assert!(firewall_rules_match(profile, rules).unwrap());
+    }
+
+    #[tokio::test]
+    async fn controller_access_release_removes_all_transient_projections() {
+        let profile_set = FirewallProfileSet::parse_json(
+            r#"{
+              "schema":1,
+              "profiles":[{
+                "name":"edge-access",
+                "rules":[
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"@controller-ipv4",
+                    "subnet_size":32,
+                    "port":"22"
+                  },
+                  {
+                    "ip_type":"v4",
+                    "protocol":"tcp",
+                    "subnet":"0.0.0.0",
+                    "subnet_size":0,
+                    "port":"443"
+                  }
+                ]
+              }]
+            }"#,
+        )
+        .unwrap();
+        let profile = profile_set.profile("edge-access").unwrap();
+        let mut provider = FakeSupportProvider {
+            firewall_groups: vec![VultrFirewallGroup {
+                id: "fw-1".to_owned(),
+                description: "singbox-production-fw-edge-access".to_owned(),
+                date_created: String::new(),
+                date_modified: String::new(),
+            }],
+            firewall_rules: BTreeMap::from([(
+                "fw-1".to_owned(),
+                vec![
+                    VultrFirewallRule {
+                        id: 21,
+                        ip_type: "v4".to_owned(),
+                        protocol: "tcp".to_owned(),
+                        subnet: "203.0.113.25".to_owned(),
+                        subnet_size: 32,
+                        port: "22".to_owned(),
+                        source: String::new(),
+                        notes: "old runner".to_owned(),
+                    },
+                    VultrFirewallRule {
+                        id: 22,
+                        ip_type: "v4".to_owned(),
+                        protocol: "tcp".to_owned(),
+                        subnet: "198.51.100.44".to_owned(),
+                        subnet_size: 32,
+                        port: "22".to_owned(),
+                        source: String::new(),
+                        notes: "current runner".to_owned(),
+                    },
+                    VultrFirewallRule {
+                        id: 23,
+                        ip_type: "v4".to_owned(),
+                        protocol: "tcp".to_owned(),
+                        subnet: "0.0.0.0".to_owned(),
+                        subnet_size: 0,
+                        port: "443".to_owned(),
+                        source: String::new(),
+                        notes: String::new(),
+                    },
+                ],
+            )]),
+            ..FakeSupportProvider::default()
+        };
+
+        let report = release_controller_ipv4_access(
+            &mut provider,
+            "production",
+            profile,
+            "198.51.100.44",
+            &policy(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.removed_rule_ids, vec![21, 22]);
+        let remaining = provider.firewall_rules.get("fw-1").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, 23);
     }
 
     #[tokio::test]
