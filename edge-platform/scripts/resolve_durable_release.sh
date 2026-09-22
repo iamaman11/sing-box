@@ -227,13 +227,24 @@ mesh_image="$(extract_single mesh_image)"
 docker_engine_version="$(extract_single docker_engine_version)"
 containerd_version="$(extract_single containerd_version)"
 compose_version="$(extract_single compose_version)"
+runtime_source_revision="$verified_source_revision"
+runtime_input_sha=""
+if [[ "$schema_version" = "4" ]]; then
+  runtime_source_revision="$(extract_single runtime_source_revision)"
+  runtime_input_sha="$(extract_single runtime_input_sha256)"
+  [[ "$runtime_source_revision" =~ ^[0-9a-f]{40}$ ]]
+  [[ "$runtime_input_sha" =~ ^[0-9a-f]{64}$ ]]
+fi
 
 for package_version in "$docker_engine_version" "$containerd_version" "$compose_version"; do
   [[ "$package_version" =~ ^[A-Za-z0-9.+:~_-]+$ ]]
 done
 
 test "$verified_release_set_sha" = "$release_set_sha"
-test "$schema_version" = "3"
+case "$schema_version" in
+  3|4) ;;
+  *) echo "unsupported durable ReleaseSet schema_version=$schema_version" >&2; exit 1 ;;
+esac
 test "$verified_source_revision" = "$candidate_revision"
 [[ "$agent_sha" =~ ^[0-9a-f]{64}$ ]]
 [[ "$controller_sha" =~ ^[0-9a-f]{64}$ ]]
@@ -252,6 +263,9 @@ EDGE_SOURCE_TREE=$source_tree
 EDGE_RELEASE_ID=$release_id
 EDGE_RELEASE_TAG=$release_tag
 EDGE_RELEASE_SET_SHA256=$release_set_sha
+EDGE_RELEASE_SCHEMA_VERSION=$schema_version
+EDGE_RUNTIME_SOURCE_REVISION=$runtime_source_revision
+EDGE_RUNTIME_INPUT_SHA256=$runtime_input_sha
 EDGE_CONTROLLER_SHA256=$controller_sha
 EDGE_ORCHESTRATOR_SHA256=$orchestrator_sha
 EDGE_AGENT_SHA256=$agent_sha
@@ -270,6 +284,9 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf 'release_tag=%s\n' "$release_tag"
     printf 'release_set_sha256=%s\n' "$release_set_sha"
     printf 'candidate_revision=%s\n' "$candidate_revision"
+printf 'schema_version=%s\n' "$schema_version"
+printf 'runtime_source_revision=%s\n' "$runtime_source_revision"
+printf 'runtime_input_sha256=%s\n' "$runtime_input_sha"
   } >> "$GITHUB_OUTPUT"
 fi
 
