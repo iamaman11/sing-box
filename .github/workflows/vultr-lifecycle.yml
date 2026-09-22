@@ -266,6 +266,51 @@ jobs:
             jq -er '.authorized_plans[0].authority.authority_digest' "$1"
           }
 
+          converge_host_substrate() {
+            local spec="$1"
+            local machine="$2"
+            local prefix="$3"
+            local verify_output="$4"
+            local converged=0
+
+            for iteration in 1 2 3 4; do
+              local plan="${RUNNER_TEMP}/${prefix}-substrate-plan-${iteration}.json"
+              run_lifecycle substrate-plan "${spec}" "${machine}" > "${plan}"
+              local action
+              action="$(jq -er '.plan.action' "${plan}")"
+              case "${action}" in
+                NOOP)
+                  converged=1
+                  break
+                  ;;
+                SCRUB_USER_DATA|ROTATE_HOST_CERTIFICATE)
+                  local authority
+                  authority="$(plan_authority "${plan}")"
+                  [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+                  run_lifecycle substrate-apply "${spec}" "${machine}" "${authority}" \
+                    > "${RUNNER_TEMP}/${prefix}-substrate-apply-${iteration}.json"
+                  ;;
+                BLOCKED_PROVIDER|BLOCKED_STRICT_SSH|BLOCKED_SUBSTRATE)
+                  cat "${plan}" >&2
+                  echo "host substrate convergence is blocked: ${action}" >&2
+                  return 1
+                  ;;
+                *)
+                  cat "${plan}" >&2
+                  echo "unexpected host substrate action: ${action}" >&2
+                  return 1
+                  ;;
+              esac
+            done
+
+            test "${converged}" = "1" || {
+              echo "host substrate convergence exceeded bounded mutation steps" >&2
+              return 1
+            }
+            run_lifecycle substrate-verify "${spec}" "${machine}" > "${verify_output}"
+            jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
+          }
+
           emit_result() {
             local file="$1"
             echo '### Vultr lifecycle result' >> "${GITHUB_STEP_SUMMARY}"
@@ -312,7 +357,11 @@ jobs:
             apply)
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-authority-plan.json"
               authority="$(machine_authority "${RUNNER_TEMP}/apply-authority-plan.json")"
-              run_lifecycle apply "${spec}" "${machine}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
+              run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/apply-provider.json"
+              converge_host_substrate "${spec}" "${machine}" "apply" "${RUNNER_TEMP}/apply-substrate-verify.json"
+              jq -s '.[0] + {host_substrate: .[1]}' \
+                "${RUNNER_TEMP}/apply-provider.json" "${RUNNER_TEMP}/apply-substrate-verify.json" \
+                | tee "${RUNNER_TEMP}/result.json"
               ;;
             action)
               run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" > "${RUNNER_TEMP}/action-authority-plan.json"
@@ -350,12 +399,16 @@ jobs:
               trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
 
               run_lifecycle apply "${spec}" "${machine}" "${create_authority}" > "${RUNNER_TEMP}/apply-first.json"
-              jq -e '.action == "CREATED"' "${RUNNER_TEMP}/apply-first.json" >/dev/null
+              jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
+                "${RUNNER_TEMP}/apply-first.json" >/dev/null
+              converge_host_substrate "${spec}" "${machine}" "acceptance-first" "${RUNNER_TEMP}/substrate-first-verify.json"
 
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-plan.json"
               noop_authority="$(machine_authority "${RUNNER_TEMP}/apply-noop-plan.json")"
               run_lifecycle apply "${spec}" "${machine}" "${noop_authority}" > "${RUNNER_TEMP}/apply-noop.json"
-              jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS" and .user_data_scrubbed == true'                 "${RUNNER_TEMP}/apply-noop.json" >/dev/null
+              jq -e '.action == "NOOP" and .provider_ready == true' "${RUNNER_TEMP}/apply-noop.json" >/dev/null
+              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-substrate.json"
+              jq -e '.status == "PASS" and .plan.action == "NOOP"' "${RUNNER_TEMP}/apply-noop-substrate.json" >/dev/null
 
               run_lifecycle action-plan "${spec}" "${machine}" halt > "${RUNNER_TEMP}/halt-plan.json"
               halt_authority="$(plan_authority "${RUNNER_TEMP}/halt-plan.json")"
@@ -365,18 +418,16 @@ jobs:
               start_authority="$(plan_authority "${RUNNER_TEMP}/start-plan.json")"
               run_lifecycle action "${spec}" "${machine}" start "${start_authority}" > "${RUNNER_TEMP}/start.json"
               jq -e '.power_status == "running"' "${RUNNER_TEMP}/start.json" >/dev/null
-              run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/post-start-plan.json"
-              post_start_authority="$(machine_authority "${RUNNER_TEMP}/post-start-plan.json")"
-              run_lifecycle apply "${spec}" "${machine}" "${post_start_authority}" > "${RUNNER_TEMP}/post-start-apply.json"
-              jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"'                 "${RUNNER_TEMP}/post-start-apply.json" >/dev/null
+              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-start-substrate.json"
+              jq -e '.status == "PASS" and .plan.action == "NOOP"' \
+                "${RUNNER_TEMP}/post-start-substrate.json" >/dev/null
 
               run_lifecycle action-plan "${spec}" "${machine}" reboot > "${RUNNER_TEMP}/reboot-plan.json"
               reboot_authority="$(plan_authority "${RUNNER_TEMP}/reboot-plan.json")"
               run_lifecycle action "${spec}" "${machine}" reboot "${reboot_authority}" > "${RUNNER_TEMP}/reboot.json"
-              run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-plan.json"
-              post_reboot_authority="$(machine_authority "${RUNNER_TEMP}/post-reboot-plan.json")"
-              run_lifecycle apply "${spec}" "${machine}" "${post_reboot_authority}" > "${RUNNER_TEMP}/post-reboot-apply.json"
-              jq -e '.action == "NOOP" and .strict_ssh_acceptance == "PASS"'                 "${RUNNER_TEMP}/post-reboot-apply.json" >/dev/null
+              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-substrate.json"
+              jq -e '.status == "PASS" and .plan.action == "NOOP"' \
+                "${RUNNER_TEMP}/post-reboot-substrate.json" >/dev/null
 
               run_lifecycle destroy-plan "${spec}" "${machine}" "${source_revision}" > "${RUNNER_TEMP}/destroy-plan.json"
               digest="$(jq -r '.destroy_digest' "${RUNNER_TEMP}/destroy-plan.json")"
