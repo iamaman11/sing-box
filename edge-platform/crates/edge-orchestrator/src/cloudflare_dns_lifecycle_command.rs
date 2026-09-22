@@ -2,7 +2,12 @@ use crate::cloudflare_dns_lifecycle_service::{
     CloudflareDnsApiProvider, DnsExecutionPolicy, apply_dns_once, authorize_dns_apply,
     authorize_dns_cleanup, cleanup_dns_once, observe_dns, plan_dns_apply, plan_dns_cleanup,
 };
+use crate::vultr_lifecycle_command::{
+    exact_existing_machine_observation, load_desired_state as load_vultr_desired_state,
+};
+use edge_controller_core::application_lifecycle::DesiredApplicationState;
 use edge_controller_core::cloudflare_dns_lifecycle::DesiredDnsState;
+use edge_controller_core::orchestration::{MachineObservation, derive_dns_target};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -36,14 +41,19 @@ async fn run_inventory(args: &[String]) -> Result<(), String> {
 async fn run_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-orchestrator cloudflare-dns plan <spec-path> <target-ipv4>".to_owned(),
+            "usage: edge-orchestrator cloudflare-dns plan <spec-path> <application-spec-path>"
+                .to_owned(),
         );
     }
     let desired = load_desired(Path::new(&args[0]))?;
+    let derived = derive_target_from_application(Path::new(&args[1])).await?;
     let mut provider = provider_from_env()?;
-    let (observed, plan) = plan_dns_apply(&mut provider, &desired, &args[1]).await?;
-    let authorized = authorize_dns_apply(&desired, &args[1], &observed, plan.clone())?;
+    let (observed, plan) =
+        plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
+    let authorized =
+        authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan.clone())?;
     print_json(serde_json::json!({
+        "derived_target": derived,
         "observation": observed,
         "plan": plan,
         "plan_authority": authorized.authority,
@@ -55,21 +65,23 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 async fn run_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-orchestrator cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>"
+            "usage: edge-orchestrator cloudflare-dns apply <spec-path> <application-spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
     let desired = load_desired(Path::new(&args[0]))?;
+    let derived = derive_target_from_application(Path::new(&args[1])).await?;
     let mut provider = provider_from_env()?;
     let report = apply_dns_once(
         &mut provider,
         &desired,
-        &args[1],
+        &derived.target_ipv4,
         &args[2],
         DnsExecutionPolicy::default(),
     )
     .await?;
     print_json(serde_json::json!({
+        "derived_target": derived,
         "performed": report.performed,
         "observation": report.observation,
         "next_plan": report.next_plan,
@@ -127,6 +139,38 @@ fn load_desired(path: &Path) -> Result<DesiredDnsState, String> {
     DesiredDnsState::parse_json(&raw).map_err(|err| err.to_string())
 }
 
+async fn derive_target_from_application(
+    application_spec_path: &Path,
+) -> Result<edge_controller_core::orchestration::DerivedDnsTarget, String> {
+    let raw = fs::read_to_string(application_spec_path).map_err(|err| {
+        format!(
+            "failed to read application spec {} for DNS derivation: {err}",
+            application_spec_path.display()
+        )
+    })?;
+    let application =
+        DesiredApplicationState::parse_json(&raw).map_err(|err| err.to_string())?;
+    let vultr_desired = load_vultr_desired_state(Path::new(&application.vultr_spec_path))?;
+    if vultr_desired.environment != application.environment {
+        return Err(format!(
+            "application/Vultr environment mismatch during DNS derivation: {} != {}",
+            application.environment, vultr_desired.environment
+        ));
+    }
+    let observed =
+        exact_existing_machine_observation(&vultr_desired, &application.machine_id).await?;
+    let main_ipv4 = observed.main_ip.ok_or_else(|| {
+        format!(
+            "exact machine {} has no observed public IPv4",
+            application.machine_id
+        )
+    })?;
+    derive_dns_target(&MachineObservation {
+        provider_id: observed.provider_id,
+        main_ipv4,
+    })
+}
+
 fn provider_from_env() -> Result<CloudflareDnsApiProvider, String> {
     let api_token = env::var("CLOUDFLARE_API_TOKEN")
         .map_err(|_| "CLOUDFLARE_API_TOKEN is required".to_owned())?;
@@ -144,8 +188,8 @@ fn usage() -> String {
     [
         "usage:",
         "  edge-orchestrator cloudflare-dns inventory <spec-path>",
-        "  edge-orchestrator cloudflare-dns plan <spec-path> <target-ipv4>",
-        "  edge-orchestrator cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>",
+        "  edge-orchestrator cloudflare-dns plan <spec-path> <application-spec-path>",
+        "  edge-orchestrator cloudflare-dns apply <spec-path> <application-spec-path> <authorized-plan-sha256>",
         "  edge-orchestrator cloudflare-dns cleanup-plan <spec-path>",
         "  edge-orchestrator cloudflare-dns cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
     ]
