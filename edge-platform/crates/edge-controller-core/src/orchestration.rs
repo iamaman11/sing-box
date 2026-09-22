@@ -139,8 +139,11 @@ impl SupportAccessLeaseState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseContext {
+    pub accepted_revision: String,
     pub source_revision: String,
     pub release_set_sha256: String,
+    pub orchestrator_sha256: String,
+    pub agent_sha256: String,
     pub docker_engine_version: String,
     pub containerd_version: String,
     pub compose_version: String,
@@ -151,8 +154,11 @@ pub struct ReleaseContext {
 
 impl ReleaseContext {
     pub fn validate(&self) -> Result<(), String> {
+        validate_lower_hex("accepted_revision", &self.accepted_revision, 40)?;
         validate_lower_hex("source_revision", &self.source_revision, 40)?;
         validate_lower_hex("release_set_sha256", &self.release_set_sha256, 64)?;
+        validate_lower_hex("orchestrator_sha256", &self.orchestrator_sha256, 64)?;
+        validate_lower_hex("agent_sha256", &self.agent_sha256, 64)?;
         validate_package_version("docker_engine_version", &self.docker_engine_version)?;
         validate_package_version("containerd_version", &self.containerd_version)?;
         validate_package_version("compose_version", &self.compose_version)?;
@@ -331,8 +337,11 @@ mod tests {
     #[test]
     fn release_context_requires_exact_immutable_inputs() {
         let context = ReleaseContext {
+            accepted_revision: "f".repeat(40),
             source_revision: "a".repeat(40),
             release_set_sha256: "b".repeat(64),
+            orchestrator_sha256: "1".repeat(64),
+            agent_sha256: "2".repeat(64),
             docker_engine_version: "5:28.4.0-1~debian.13~trixie".to_owned(),
             containerd_version: "1.7.27-1".to_owned(),
             compose_version: "2.39.4-1~debian.13~trixie".to_owned(),
