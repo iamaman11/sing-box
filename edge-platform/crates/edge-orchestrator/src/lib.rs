@@ -27,8 +27,9 @@ impl OrchestrationContext {
                 "EDGE_RELEASE_CONTEXT_PATH is required for edge-orchestrator".to_owned()
             })?;
         let expected_accepted_revision = env::var("GITHUB_SHA").ok();
-        let executable = env::current_exe()
-            .map_err(|err| format!("failed to resolve current edge-orchestrator executable: {err}"))?;
+        let executable = env::current_exe().map_err(|err| {
+            format!("failed to resolve current edge-orchestrator executable: {err}")
+        })?;
         Self::from_resolved_env_file(
             &context_path,
             expected_accepted_revision.as_deref(),
@@ -124,7 +125,11 @@ fn parse_resolved_env(path: &Path) -> Result<BTreeMap<String, String>, String> {
                 path.display()
             )
         })?;
-        if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_') {
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
             return Err(format!("invalid release context key {key:?}"));
         }
         if value.is_empty() {
