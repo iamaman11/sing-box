@@ -165,9 +165,9 @@ jobs:
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
-          controller="${dir}/edge-controller-linux-amd64"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
           agent="${dir}/edge-agent-linux-amd64"
-          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
           test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
           gateway_image="${EDGE_GATEWAY_IMAGE}"
           warp_image="${EDGE_WARP_EGRESS_IMAGE}"
@@ -180,7 +180,7 @@ jobs:
           printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\nCLOUDFLARE_MESH_IMAGE=%s\n' \
             "${gateway_image}" "${warp_image}" "${mesh_image}" > "${bundle_root}/.images.env"
           chmod 0644 "${bundle_root}/.images.env"
-          chmod 0755 "${controller}" "${agent}"
+          chmod 0755 "${orchestrator}" "${agent}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
@@ -191,7 +191,7 @@ jobs:
             '{schema:1,source_revision:$source_revision,sha256:$sha256}' \
             > "${agent_manifest}"
           chmod 600 "${agent_manifest}"
-          printf 'EDGE_APPLICATION_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
 
@@ -229,7 +229,7 @@ jobs:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          bin="${EDGE_APPLICATION_CONTROLLER}"
+          bin="${EDGE_APPLICATION_ORCHESTRATOR}"
           result="${RUNNER_TEMP}/application-result.json"
           access_acquire="${RUNNER_TEMP}/application-access-acquire.json"
           access_release="${RUNNER_TEMP}/application-access-release.json"
@@ -376,9 +376,9 @@ jobs:
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
-          controller="${dir}/edge-controller-linux-amd64"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
           agent="${dir}/edge-agent-linux-amd64"
-          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
           test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
           gateway_image="${EDGE_GATEWAY_IMAGE}"
           warp_image="${EDGE_WARP_EGRESS_IMAGE}"
@@ -391,7 +391,7 @@ jobs:
           printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\nCLOUDFLARE_MESH_IMAGE=%s\n' \
             "${gateway_image}" "${warp_image}" "${mesh_image}" > "${bundle_root}/.images.env"
           chmod 0644 "${bundle_root}/.images.env"
-          chmod 0755 "${controller}" "${agent}"
+          chmod 0755 "${orchestrator}" "${agent}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
@@ -402,7 +402,7 @@ jobs:
             '{schema:1,source_revision:$source_revision,sha256:$sha256}' \
             > "${agent_manifest}"
           chmod 600 "${agent_manifest}"
-          printf 'EDGE_APPLICATION_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
 
@@ -431,7 +431,7 @@ jobs:
           test -n "${CLOUDFLARE_API_TOKEN}"
           test -s "${EDGE_SSH_PRIVATE_KEY_PATH}"
 
-          bin="${EDGE_APPLICATION_CONTROLLER}"
+          bin="${EDGE_APPLICATION_ORCHESTRATOR}"
           vultr_spec="$(jq -er '.vultr_spec_path' "${SPEC_PATH}")"
           test -f "${vultr_spec}"
 
@@ -502,7 +502,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          bin="${EDGE_APPLICATION_CONTROLLER}"
+          bin="${EDGE_APPLICATION_ORCHESTRATOR}"
           app_spec="${SPEC_PATH}"
           vultr_spec="$(jq -er '.vultr_spec_path' "${app_spec}")"
           machine="$(jq -er '.machine_id' "${app_spec}")"
@@ -739,7 +739,6 @@ jobs:
             > "${RUNNER_TEMP}/acceptance-vm-apply.json"
           jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
             "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
-          vm_ip="$(jq -er '.main_ip' "${RUNNER_TEMP}/acceptance-vm-apply.json")"
 
           "${bin}" vultr-lifecycle acquire-access-plan "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-access-acquire-plan.json"
@@ -776,12 +775,12 @@ jobs:
           jq -e '.status == "PASS" and (.cidr | type == "string") and (.private_ipv4 | type == "string")' \
             "${RUNNER_TEMP}/acceptance-vpc-verify.json" >/dev/null
 
-          "${bin}" cloudflare-dns plan "${dns_spec}" "${vm_ip}" \
+          "${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}" \
             > "${RUNNER_TEMP}/acceptance-dns-plan.json"
           jq -e '.plan.action.kind == "CREATE"' \
             "${RUNNER_TEMP}/acceptance-dns-plan.json" >/dev/null
           dns_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-dns-plan.json")"
-          "${bin}" cloudflare-dns apply "${dns_spec}" "${vm_ip}" "${dns_authority}" \
+          "${bin}" cloudflare-dns apply "${dns_spec}" "${app_spec}" "${dns_authority}" \
             > "${RUNNER_TEMP}/acceptance-dns-apply.json"
           jq -e '.next_plan.action.kind == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-dns-apply.json" >/dev/null
@@ -840,7 +839,7 @@ jobs:
           jq -e '.status == "PASS" and .plan.class == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-verify-v1.json" >/dev/null
 
-          "${bin}" cloudflare-dns plan "${dns_spec}" "${vm_ip}" \
+          "${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}" \
             > "${RUNNER_TEMP}/acceptance-dns-noop.json"
           jq -e '.plan.action.kind == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-dns-noop.json" >/dev/null
@@ -913,7 +912,7 @@ jobs:
           jq -e '.status == "PASS" and .runtime.runtime_ready == true' \
             "${RUNNER_TEMP}/acceptance-post-reboot-mesh.json" >/dev/null
 
-          "${bin}" cloudflare-dns plan "${dns_spec}" "${vm_ip}" \
+          "${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}" \
             > "${RUNNER_TEMP}/acceptance-post-reboot-dns.json"
           jq -e '.plan.action.kind == "NOOP"' \
             "${RUNNER_TEMP}/acceptance-post-reboot-dns.json" >/dev/null

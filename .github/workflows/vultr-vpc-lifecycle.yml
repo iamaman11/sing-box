@@ -169,10 +169,10 @@ jobs:
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${RUNNER_TEMP}/edge-platform-release/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          controller="${RUNNER_TEMP}/edge-platform-release/edge-controller-linux-amd64"
-          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
-          chmod 0755 "${controller}"
-          printf 'EDGE_VPC_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+          orchestrator="${RUNNER_TEMP}/edge-platform-release/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_VPC_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
@@ -213,7 +213,7 @@ jobs:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          bin="${EDGE_VPC_CONTROLLER}"
+          bin="${EDGE_VPC_ORCHESTRATOR}"
           result="${RUNNER_TEMP}/vpc-result.json"
 
           plan_authority() {

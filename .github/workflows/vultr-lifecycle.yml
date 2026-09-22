@@ -207,10 +207,10 @@ jobs:
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
-          controller="${dir}/edge-controller-linux-amd64"
-          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
-          chmod 0755 "${controller}"
-          printf 'EDGE_LIFECYCLE_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_LIFECYCLE_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
@@ -249,7 +249,7 @@ jobs:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          bin="${EDGE_LIFECYCLE_CONTROLLER}"
+          bin="${EDGE_LIFECYCLE_ORCHESTRATOR}"
           spec="${SPEC_PATH}"
           machine="${MACHINE_ID}"
           source_revision="${GITHUB_SHA}"

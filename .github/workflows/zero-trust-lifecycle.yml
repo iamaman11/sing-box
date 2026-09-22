@@ -137,10 +137,10 @@ jobs:
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
-          controller="${dir}/edge-controller-linux-amd64"
-          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
-          chmod 0755 "${controller}"
-          printf 'EDGE_ZERO_TRUST_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_ZERO_TRUST_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
 
       - name: Execute typed Zero Trust lifecycle operation
         shell: bash
@@ -152,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          bin="${EDGE_ZERO_TRUST_CONTROLLER}"
+          bin="${EDGE_ZERO_TRUST_ORCHESTRATOR}"
           operation="${REQUESTED_OPERATION}"
           result="${RUNNER_TEMP}/zero-trust-result.json"
 
