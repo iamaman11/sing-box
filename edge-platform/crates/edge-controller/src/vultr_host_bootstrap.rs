@@ -807,9 +807,8 @@ fn run_strict_ssh_attempt(args: &[String]) -> Result<(), StrictSshAttemptEvidenc
 
 fn transport_stage_evidence(stderr: &[u8], success: bool) -> String {
     let lowered = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    let tcp_connected = lowered.contains("connection established")
-        || lowered.contains("connected to ")
-        || success;
+    let tcp_connected =
+        lowered.contains("connection established") || lowered.contains("connected to ") || success;
     let remote_banner = lowered.contains("remote protocol version") || success;
     let kex_reached = lowered.contains("ssh2_msg_kexinit")
         || lowered.contains("kex: algorithm:")
@@ -1815,7 +1814,8 @@ mod tests {
             format!("@cert-authority {} {}\n", "edge-1", material),
             "@cert-authority edge-1 ssh-ed25519 AAAACanonical\n"
         );
-    }    #[test]
+    }
+    #[test]
     fn transport_stage_evidence_is_structured_and_bounded() {
         let stderr = b"debug1: Connection established.\ndebug1: Remote protocol version 2.0\ndebug1: SSH2_MSG_KEXINIT sent\ndebug1: Server host key: ssh-ed25519 SHA256:redacted\ndebug1: Authentications that can continue: publickey\n";
         let evidence = transport_stage_evidence(stderr, false);
@@ -1848,6 +1848,4 @@ mod tests {
         assert!(error.contains("outcome is uncertain"));
         assert!(error.contains("mutation was not replayed"));
     }
-
-
 }
