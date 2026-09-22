@@ -18,7 +18,7 @@ use crate::vultr_support_resources::{
     controller_ipv4_access_specs, ensure_firewall_profile, ensure_persistent_firewall_profile,
     firewall_group_description, firewall_rule_spec, observe_verified_firewall_bindings,
     public_key_material, release_controller_ipv4_access, resolve_managed_ssh_key,
-    same_firewall_access_semantics, validate_machine_catalog,
+    validate_machine_catalog,
 };
 use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
 use edge_controller_core::lifecycle::{
