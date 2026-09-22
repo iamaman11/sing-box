@@ -22,7 +22,6 @@ REQUIRED_INPUT_KEYS = {
     "compose_version",
 }
 TRACKED_PATHS = (
-    ".github/workflows/edge-platform-ci.yml",
     "edge-platform/Cargo.toml",
     "edge-platform/Cargo.lock",
     "edge-platform/crates/edge-agent",
