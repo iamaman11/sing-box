@@ -270,6 +270,9 @@ jobs:
               ACCESS_CLEANUP_ARMED=1
               "${bin}" vultr-lifecycle acquire-access "${VULTR_SPEC_PATH}" "${machine}" "${access_authority}"                 > "${RUNNER_TEMP}/vpc-access-acquire.json"
 
+              "${bin}" vultr-lifecycle substrate-verify "${VULTR_SPEC_PATH}" "${machine}"                 > "${RUNNER_TEMP}/vpc-access-ready.json"
+              jq -e '.status == "PASS" and .plan.action == "NOOP"'                 "${RUNNER_TEMP}/vpc-access-ready.json" >/dev/null
+
               "${bin}" vultr-vpc attachment-plan "${SPEC_PATH}" > "${RUNNER_TEMP}/vpc-attachment-plan.json"
               action="$(jq -er '.plan.action.kind' "${RUNNER_TEMP}/vpc-attachment-plan.json")"
               if [[ "${action}" == "NOOP" ]]; then
