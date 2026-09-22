@@ -536,46 +536,81 @@ jobs:
           converge_host_substrate() {
             local prefix="$1"
             local verify_output="$2"
-            local converged=0
+            local acquire_plan="${RUNNER_TEMP}/${prefix}-access-acquire-plan.json"
+            local acquire_result="${RUNNER_TEMP}/${prefix}-access-acquire.json"
+            local release_plan="${RUNNER_TEMP}/${prefix}-access-release-plan.json"
+            local release_result="${RUNNER_TEMP}/${prefix}-access-release.json"
+            local authority
 
-            for iteration in 1 2 3 4; do
-              local plan="${RUNNER_TEMP}/${prefix}-substrate-plan-${iteration}.json"
-              "${bin}" vultr-lifecycle substrate-plan "${vultr_spec}" "${machine}" > "${plan}"
-              local action
-              action="$(jq -er '.plan.action' "${plan}")"
-              case "${action}" in
-                NOOP)
-                  converged=1
-                  break
-                  ;;
-                SCRUB_USER_DATA|ROTATE_HOST_CERTIFICATE)
-                  local authority
-                  authority="$(plan_authority "${plan}")"
-                  [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
-                  "${bin}" vultr-lifecycle substrate-apply "${vultr_spec}" "${machine}" "${authority}" \
-                    > "${RUNNER_TEMP}/${prefix}-substrate-apply-${iteration}.json"
-                  ;;
-                BLOCKED_PROVIDER|BLOCKED_STRICT_SSH|BLOCKED_SUBSTRATE)
-                  cat "${plan}" >&2
-                  echo "host substrate convergence is blocked: ${action}" >&2
-                  return 1
-                  ;;
-                *)
-                  cat "${plan}" >&2
-                  echo "unexpected host substrate action: ${action}" >&2
-                  return 1
-                  ;;
-              esac
-            done
+            "${bin}" vultr-lifecycle acquire-access-plan "${vultr_spec}" "${machine}" > "${acquire_plan}"
+            authority="$(plan_authority "${acquire_plan}")"
+            [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+            "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}" "${authority}" > "${acquire_result}"
 
-            test "${converged}" = "1" || {
-              echo "host substrate convergence exceeded bounded mutation steps" >&2
-              return 1
-            }
-            "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" > "${verify_output}"
-            jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
+            local substrate_rc=0
+            set +e
+            (
+              set -euo pipefail
+              local converged=0
+              for iteration in 1 2 3 4; do
+                local plan="${RUNNER_TEMP}/${prefix}-substrate-plan-${iteration}.json"
+                "${bin}" vultr-lifecycle substrate-plan "${vultr_spec}" "${machine}" > "${plan}"
+                local action
+                action="$(jq -er '.plan.action' "${plan}")"
+                case "${action}" in
+                  NOOP)
+                    converged=1
+                    break
+                    ;;
+                  SCRUB_USER_DATA|ROTATE_HOST_CERTIFICATE)
+                    local substrate_authority
+                    substrate_authority="$(plan_authority "${plan}")"
+                    [[ "${substrate_authority}" =~ ^[0-9a-f]{64}$ ]]
+                    "${bin}" vultr-lifecycle substrate-apply "${vultr_spec}" "${machine}" "${substrate_authority}" \
+                      > "${RUNNER_TEMP}/${prefix}-substrate-apply-${iteration}.json"
+                    ;;
+                  BLOCKED_PROVIDER|BLOCKED_STRICT_SSH|BLOCKED_SUBSTRATE)
+                    cat "${plan}" >&2
+                    echo "host substrate convergence is blocked: ${action}" >&2
+                    exit 1
+                    ;;
+                  *)
+                    cat "${plan}" >&2
+                    echo "unexpected host substrate action: ${action}" >&2
+                    exit 1
+                    ;;
+                esac
+              done
+              test "${converged}" = "1"
+              "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" > "${verify_output}"
+              jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
+            )
+            substrate_rc=$?
+            set -e
+
+            local release_rc=0
+            set +e
+            "${bin}" vultr-lifecycle release-access-plan "${vultr_spec}" "${machine}" > "${release_plan}"
+            release_rc=$?
+            if [[ "${release_rc}" -eq 0 ]]; then
+              authority="$(plan_authority "${release_plan}")"
+              if [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]; then
+                "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" "${authority}" > "${release_result}"
+                release_rc=$?
+              else
+                release_rc=1
+              fi
+            fi
+            set -e
+
+            if [[ "${substrate_rc}" -ne 0 ]]; then
+              return "${substrate_rc}"
+            fi
+            if [[ "${release_rc}" -ne 0 ]]; then
+              echo "host substrate passed but transient SSH access release failed" >&2
+              return "${release_rc}"
+            fi
           }
-
           cleanup_mesh_provider() {
             local plan="${RUNNER_TEMP}/acceptance-emergency-mesh-plan.json"
             local digest authority
@@ -760,10 +795,7 @@ jobs:
             "${RUNNER_TEMP}/acceptance-vpc-attachment-apply.json" >/dev/null
 
           # VPC attachment owns the guest transition; substrate verification proves the host remains accepted.
-          "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-post-attachment-substrate.json"
-          jq -e '.status == "PASS" and .plan.action == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-vpc-post-attachment-substrate.json" >/dev/null
+          converge_host_substrate "acceptance-vpc-post-attachment" "${RUNNER_TEMP}/acceptance-vpc-post-attachment-substrate.json"
 
           "${bin}" vultr-vpc verify "${vpc_spec}" \
             > "${RUNNER_TEMP}/acceptance-vpc-verify.json"
@@ -892,10 +924,7 @@ jobs:
                  .reboot_observation.boot_id_changed == true and
                  .reboot_observation.boot_id_before != .reboot_observation.boot_id_after' \
             "${RUNNER_TEMP}/acceptance-reboot.json" >/dev/null
-          "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-post-reboot-substrate.json"
-          jq -e '.status == "PASS" and .plan.action == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-post-reboot-substrate.json" >/dev/null
+          converge_host_substrate "acceptance-post-reboot" "${RUNNER_TEMP}/acceptance-post-reboot-substrate.json"
 
           "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}" \
             > "${RUNNER_TEMP}/acceptance-post-reboot-app.json"
