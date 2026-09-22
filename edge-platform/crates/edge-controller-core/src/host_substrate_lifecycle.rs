@@ -44,7 +44,6 @@ pub struct HostSubstratePlan {
     pub reasons: Vec<String>,
 }
 
-
 pub fn plan_host_substrate(
     observed: &HostSubstrateObservation,
     minimum_certificate_serial: u64,
