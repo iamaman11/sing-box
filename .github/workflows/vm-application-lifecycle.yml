@@ -192,6 +192,7 @@ jobs:
             > "${agent_manifest}"
           chmod 600 "${agent_manifest}"
           printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
 
@@ -395,6 +396,7 @@ jobs:
             > "${agent_manifest}"
           chmod 600 "${agent_manifest}"
           printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
 
