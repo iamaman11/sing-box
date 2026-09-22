@@ -403,8 +403,8 @@ jobs:
               }
               trap finish_apply_access EXIT
 
-              acquire_controller_access "${spec}" "${machine}" "apply"
               APPLY_ACCESS_ARMED=1
+              acquire_controller_access "${spec}" "${machine}" "apply"
               converge_host_substrate "${spec}" "${machine}" "apply" "${RUNNER_TEMP}/apply-substrate-verify.json"
               release_controller_access "${spec}" "${machine}" "apply"
               APPLY_ACCESS_ARMED=0
