@@ -141,6 +141,7 @@ jobs:
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
           chmod 0755 "${orchestrator}"
           printf 'EDGE_ZERO_TRUST_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
 
       - name: Execute typed Zero Trust lifecycle operation
         shell: bash
