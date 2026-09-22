@@ -905,8 +905,8 @@ async fn observe_support_access_diagnostic(
     let attachment_matches_owned_group = owned_group_id
         .as_deref()
         .is_some_and(|group_id| instance.firewall_group_id == group_id);
-    let exact_controller_rules_match = groups.len() == 1
-        && exact_controller_rule_count == expected_controller_rules.len();
+    let exact_controller_rules_match =
+        groups.len() == 1 && exact_controller_rule_count == expected_controller_rules.len();
 
     Ok(serde_json::json!({
         "controller_ipv4": controller_ipv4,
