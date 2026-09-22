@@ -93,6 +93,38 @@ def main() -> None:
         "Zero Trust backend must serialize its execute mutation job",
     )
     require(
+        "acquire_controller_access()" in vultr
+        and "release_controller_access()" in vultr,
+        "Vultr apply must own explicit ephemeral controller-access helpers",
+    )
+    apply_case = vultr[vultr.index("            apply)") : vultr.index("            action)")]
+    require(
+        'run_lifecycle apply "${spec}" "${machine}" "${authority}"' in apply_case
+        and 'acquire_controller_access "${spec}" "${machine}" "apply"' in apply_case
+        and 'converge_host_substrate "${spec}" "${machine}" "apply"' in apply_case
+        and 'release_controller_access "${spec}" "${machine}" "apply"' in apply_case,
+        "Vultr apply must bracket SSH-dependent substrate convergence with support access",
+    )
+    require(
+        apply_case.index('run_lifecycle apply "${spec}" "${machine}" "${authority}"')
+        < apply_case.index('acquire_controller_access "${spec}" "${machine}" "apply"')
+        < apply_case.index('converge_host_substrate "${spec}" "${machine}" "apply"')
+        < apply_case.index('release_controller_access "${spec}" "${machine}" "apply"'),
+        "Vultr apply access ordering must remain provider -> acquire -> substrate -> release",
+    )
+    require(
+        "APPLY_ACCESS_ARMED=1" in apply_case
+        and apply_case.index("APPLY_ACCESS_ARMED=1")
+        < apply_case.index('acquire_controller_access "${spec}" "${machine}" "apply"'),
+        "Vultr apply must arm access cleanup before acquisition",
+    )
+    require(
+        "acquire-access-plan" in application
+        and "release-access-plan" in application,
+        "application lifecycle must retain explicit support-access acquisition and release",
+    )
+
+    require(
         "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
         "Zero Trust backend must consume the durable accepted ReleaseSet",
     )
