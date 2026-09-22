@@ -101,15 +101,24 @@ impl SupportAccessLeaseState {
     }
 
     pub fn acquired(&mut self) -> Result<(), String> {
-        self.transition(SupportAccessLeasePhase::Absent, SupportAccessLeasePhase::Acquired)
+        self.transition(
+            SupportAccessLeasePhase::Absent,
+            SupportAccessLeasePhase::Acquired,
+        )
     }
 
     pub fn ready(&mut self) -> Result<(), String> {
-        self.transition(SupportAccessLeasePhase::Acquired, SupportAccessLeasePhase::Ready)
+        self.transition(
+            SupportAccessLeasePhase::Acquired,
+            SupportAccessLeasePhase::Ready,
+        )
     }
 
     pub fn released(&mut self) -> Result<(), String> {
-        self.transition(SupportAccessLeasePhase::Ready, SupportAccessLeasePhase::Released)
+        self.transition(
+            SupportAccessLeasePhase::Ready,
+            SupportAccessLeasePhase::Released,
+        )
     }
 
     fn transition(
@@ -155,8 +164,7 @@ impl ReleaseContext {
 }
 
 fn parse_ipv4(label: &str, value: &str) -> Result<Ipv4Addr, String> {
-    Ipv4Addr::from_str(value.trim())
-        .map_err(|_| format!("{label} must be an exact IPv4 address"))
+    Ipv4Addr::from_str(value.trim()).map_err(|_| format!("{label} must be an exact IPv4 address"))
 }
 
 fn canonical_ipv4_cidr(value: &str) -> Result<String, String> {
