@@ -6,6 +6,8 @@ ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
+VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
+DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
 
 
 def require(condition: bool, message: str) -> None:
@@ -18,6 +20,8 @@ def main() -> None:
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
+    vpc = VPC.read_text(encoding="utf-8")
+    dns = DNS.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -32,9 +36,13 @@ def main() -> None:
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
+    require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
+    require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
+    require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
+    require("issue_comment:" not in dns, "DNS backend must not listen to comments")
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
@@ -47,6 +55,14 @@ def main() -> None:
     require(
         "uses: ./.github/workflows/zero-trust-lifecycle.yml" in router,
         "router must call the Zero Trust backend",
+    )
+    require(
+        "uses: ./.github/workflows/vultr-vpc-lifecycle.yml" in router,
+        "router must call the VPC backend",
+    )
+    require(
+        "uses: ./.github/workflows/cloudflare-dns-lifecycle.yml" in router,
+        "router must call the DNS backend",
     )
     require(
         "vultr-control-plane-production" not in router,
@@ -66,6 +82,8 @@ def main() -> None:
         ("application", application),
         ("vultr", vultr),
         ("zero-trust", zero_trust),
+        ("vpc", vpc),
+        ("dns", dns),
     ]:
         require(
             "COMMENT_BODY: ${{ inputs.command_body }}" in backend,
@@ -91,6 +109,14 @@ def main() -> None:
     require(
         zero_trust.count("group: vultr-control-plane-production") == 1,
         "Zero Trust backend must serialize its execute mutation job",
+    )
+    require(
+        vpc.count("group: vultr-control-plane-production") == 1,
+        "VPC backend must serialize its execute mutation job",
+    )
+    require(
+        dns.count("group: vultr-control-plane-production") == 1,
+        "DNS backend must serialize its execute mutation job",
     )
     require(
         "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
@@ -136,6 +162,36 @@ def main() -> None:
         'echo "Operation: `${operation}`"' not in zero_trust
         and "printf 'Operation: `%s`\\n' \"${operation}\"" in zero_trust,
         "Zero Trust workflow summary must not execute the operation through shell command substitution",
+    )
+
+    require(
+        "edge-platform/scripts/resolve_durable_release.sh" in vpc
+        and "edge-platform/scripts/resolve_durable_release.sh" in dns,
+        "staged substrate backends must consume the durable accepted ReleaseSet",
+    )
+    require(
+        '"attachment-apply"' in vpc
+        and "vultr-vpc attachment-plan" in vpc
+        and "vultr-vpc attachment-apply" in vpc
+        and "vultr-vpc verify" in vpc,
+        "VPC backend must retain staged attachment authority and verification",
+    )
+    require(
+        "acquire-access-plan" in vpc
+        and "release-access-plan" in vpc
+        and "ACCESS_CLEANUP_ARMED=1" in vpc,
+        "VPC guest mutation must use transient SSH access with armed cleanup",
+    )
+    require(
+        '"apply"' in dns
+        and "cloudflare-dns plan" in dns
+        and "cloudflare-dns apply" in dns
+        and "plan_authority.authority_digest" in dns,
+        "DNS backend mutations must consume fresh exact PlanAuthority",
+    )
+    require(
+        "cleanup-apply" not in vpc and "cleanup-apply" not in dns,
+        "staged Checkpoint 1 backends must not expose destructive cleanup",
     )
 
     require(
