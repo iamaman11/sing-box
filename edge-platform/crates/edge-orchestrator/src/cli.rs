@@ -365,8 +365,10 @@ pub(crate) enum VultrLifecycleCommand {
     SubstrateVerify(VultrMachineArgs),
     AcquireAccessPlan(VultrMachineArgs),
     AcquireAccess(VultrAuthorizedMachineArgs),
+    LeaseAcquire(VultrMachineArgs),
     ReleaseAccessPlan(VultrMachineArgs),
     ReleaseAccess(VultrAuthorizedMachineArgs),
+    LeaseRelease(VultrMachineArgs),
     ActionPlan(VultrActionArgs),
     Action(VultrAuthorizedActionArgs),
     DestroyPlan(VultrDestroyPlanArgs),
@@ -408,6 +410,7 @@ impl VultrLifecycleCommand {
                 args.machine_id,
                 args.authorized_plan_sha256,
             ],
+            Self::LeaseAcquire(args) => machine("lease-acquire", args),
             Self::ReleaseAccessPlan(args) => machine("release-access-plan", args),
             Self::ReleaseAccess(args) => vec![
                 "release-access".to_owned(),
@@ -415,6 +418,7 @@ impl VultrLifecycleCommand {
                 args.machine_id,
                 args.authorized_plan_sha256,
             ],
+            Self::LeaseRelease(args) => machine("lease-release", args),
             Self::ActionPlan(args) => vec![
                 "action-plan".to_owned(),
                 path(args.spec_path),
@@ -615,6 +619,20 @@ mod tests {
                 "infra/vultr/production.json",
                 "primary",
                 &digest,
+            ],
+            vec![
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "lease-acquire",
+                "infra/vultr/production.json",
+                "primary",
+            ],
+            vec![
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "lease-release",
+                "infra/vultr/production.json",
+                "primary",
             ],
             vec![
                 "edge-orchestrator",
