@@ -2072,6 +2072,42 @@ mod tests {
     }
 
     #[test]
+    fn stale_support_access_authority_is_rejected_before_mutation() {
+        let desired = serde_json::json!({
+            "environment": "production",
+            "machine_id": "edge-1",
+            "operation": "ACQUIRE",
+            "controller_ipv4": "203.0.113.50"
+        });
+        let plan = serde_json::json!({
+            "action": "ACQUIRE",
+            "machine_id": "edge-1",
+            "firewall_profile": "edge"
+        });
+        let before = authorize_plan(
+            "vultr_support_access",
+            &desired,
+            &serde_json::json!({"rules": []}),
+            plan.clone(),
+            PlanDisposition::Mutate,
+        )
+        .unwrap();
+        let changed = authorize_plan(
+            "vultr_support_access",
+            &desired,
+            &serde_json::json!({"rules": [{"id": 42, "subnet": "203.0.113.50/32"}]}),
+            plan,
+            PlanDisposition::Mutate,
+        )
+        .unwrap();
+
+        let error =
+            verify_exact_authority(&before.authority.authority_digest, &changed.authority)
+                .unwrap_err();
+        assert!(error.to_string().contains("stale"));
+    }
+
+    #[test]
     fn access_reconcile_allows_only_firewall_only_update() {
         use edge_controller_core::vultr_lifecycle::MachinePlan;
 
