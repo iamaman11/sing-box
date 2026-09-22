@@ -399,6 +399,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "edge-controller-core",
+ "serde",
+]
+
+[[package]]
 name = "edge-local-runtime"
 version = "0.1.0"
 dependencies = [
