@@ -314,7 +314,16 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
 }
 
 fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
-    require_allowed(flags, VERIFY_VM_FLAGS)?;
+    for name in flags.keys() {
+        if !VERIFY_VM_FLAGS.contains(&name.as_str()) && name != "edge-orchestrator" {
+            return Err(format!("unsupported --{name}"));
+        }
+    }
+    for name in VERIFY_VM_FLAGS {
+        if !flags.contains_key(*name) {
+            return Err(format!("missing required --{name}"));
+        }
+    }
     let (release, digest) = load_verified_release_set(flags)?;
 
     if release.schema_version < 2 {
@@ -335,6 +344,15 @@ fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String>
         Path::new(flag(flags, "edge-controller")?),
         &vm.edge_controller_sha256,
     )?;
+    if release.schema_version >= 3 {
+        verify_file_digest(
+            "edge-orchestrator",
+            Path::new(flag(flags, "edge-orchestrator")?),
+            &vm.edge_orchestrator_sha256,
+        )?;
+    } else if flags.contains_key("edge-orchestrator") {
+        return Err("schema v2 verify-vm must not receive --edge-orchestrator".to_owned());
+    }
 
     print_vm_evidence(&release, &digest)
 }
