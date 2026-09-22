@@ -1146,7 +1146,8 @@ jobs:
             --sha256-file "${authority}/release-set.pb.sha256" \
             --source-revision "${CANDIDATE_REVISION}" \
             --edge-agent "${linux}/edge-agent" \
-            --edge-controller "${linux}/edge-controller")"
+            --edge-controller "${linux}/edge-controller" \
+            --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${vm_verify_output}"
           test "$(sed -n 's/^release_set_sha256=//p' <<<"${vm_verify_output}")" = "${release_set_sha}"
           test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "3"
