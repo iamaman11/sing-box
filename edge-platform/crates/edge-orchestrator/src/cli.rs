@@ -703,7 +703,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn rejects_unknown_command_before_mutation() {
         assert!(Cli::try_parse_from(["edge-orchestrator", "shell"]).is_err());
