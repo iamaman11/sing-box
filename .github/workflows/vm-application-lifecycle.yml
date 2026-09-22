@@ -575,7 +575,6 @@ jobs:
             "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" > "${verify_output}"
             jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
           }
-
           cleanup_mesh_provider() {
             local plan="${RUNNER_TEMP}/acceptance-emergency-mesh-plan.json"
             local digest authority
@@ -741,6 +740,13 @@ jobs:
           jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
             "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
           vm_ip="$(jq -er '.main_ip' "${RUNNER_TEMP}/acceptance-vm-apply.json")"
+
+          "${bin}" vultr-lifecycle acquire-access-plan "${vultr_spec}" "${machine}" \
+            > "${RUNNER_TEMP}/acceptance-access-acquire-plan.json"
+          access_acquire_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-access-acquire-plan.json")"
+          "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}" "${access_acquire_authority}" \
+            > "${RUNNER_TEMP}/acceptance-access-acquire.json"
+
           converge_host_substrate "acceptance-initial" "${RUNNER_TEMP}/acceptance-substrate-initial.json"
 
           "${bin}" vultr-vpc attachment-plan "${vpc_spec}" \

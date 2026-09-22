@@ -310,6 +310,31 @@ jobs:
             run_lifecycle substrate-verify "${spec}" "${machine}" > "${verify_output}"
             jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
           }
+          acquire_host_access() {
+            local spec="$1"
+            local machine="$2"
+            local prefix="$3"
+            local plan="${RUNNER_TEMP}/${prefix}-access-acquire-plan.json"
+            local authority
+            run_lifecycle acquire-access-plan "${spec}" "${machine}" > "${plan}"
+            authority="$(plan_authority "${plan}")"
+            [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+            run_lifecycle acquire-access "${spec}" "${machine}" "${authority}" \
+              > "${RUNNER_TEMP}/${prefix}-access-acquire.json"
+          }
+
+          release_host_access() {
+            local spec="$1"
+            local machine="$2"
+            local prefix="$3"
+            local plan="${RUNNER_TEMP}/${prefix}-access-release-plan.json"
+            local authority
+            run_lifecycle release-access-plan "${spec}" "${machine}" > "${plan}"
+            authority="$(plan_authority "${plan}")"
+            [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+            run_lifecycle release-access "${spec}" "${machine}" "${authority}" \
+              > "${RUNNER_TEMP}/${prefix}-access-release.json"
+          }
 
           emit_result() {
             local file="$1"
@@ -321,6 +346,7 @@ jobs:
 
           cleanup_acceptance() {
             set +e
+            release_host_access "${spec}" "${machine}" "acceptance-emergency" >/dev/null 2>&1 || true
             local destroy_json="${RUNNER_TEMP}/acceptance-emergency-destroy.json"
             if run_lifecycle destroy-plan "${spec}" "${machine}" "${source_revision}" > "${destroy_json}" 2>/dev/null; then
               local digest authority
@@ -358,7 +384,28 @@ jobs:
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-authority-plan.json"
               authority="$(machine_authority "${RUNNER_TEMP}/apply-authority-plan.json")"
               run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/apply-provider.json"
+              acquire_host_access "${spec}" "${machine}" "apply"
+
+              substrate_rc=0
+              set +e
               converge_host_substrate "${spec}" "${machine}" "apply" "${RUNNER_TEMP}/apply-substrate-verify.json"
+              substrate_rc=$?
+              set -e
+
+              release_rc=0
+              set +e
+              release_host_access "${spec}" "${machine}" "apply"
+              release_rc=$?
+              set -e
+
+              if [[ "${substrate_rc}" -ne 0 ]]; then
+                exit "${substrate_rc}"
+              fi
+              if [[ "${release_rc}" -ne 0 ]]; then
+                echo "host substrate passed but transient SSH access release failed" >&2
+                exit "${release_rc}"
+              fi
+
               jq -s '.[0] + {host_substrate: .[1]}' \
                 "${RUNNER_TEMP}/apply-provider.json" "${RUNNER_TEMP}/apply-substrate-verify.json" \
                 | tee "${RUNNER_TEMP}/result.json"
@@ -366,7 +413,29 @@ jobs:
             action)
               run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" > "${RUNNER_TEMP}/action-authority-plan.json"
               authority="$(plan_authority "${RUNNER_TEMP}/action-authority-plan.json")"
-              run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
+              if [[ "${INSTANCE_ACTION}" == "reboot" ]]; then
+                acquire_host_access "${spec}" "${machine}" "action-reboot"
+                action_rc=0
+                set +e
+                run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" \
+                  > "${RUNNER_TEMP}/action-result.json"
+                action_rc=$?
+                set -e
+                release_rc=0
+                set +e
+                release_host_access "${spec}" "${machine}" "action-reboot"
+                release_rc=$?
+                set -e
+                if [[ "${action_rc}" -ne 0 ]]; then
+                  exit "${action_rc}"
+                fi
+                if [[ "${release_rc}" -ne 0 ]]; then
+                  exit "${release_rc}"
+                fi
+                cat "${RUNNER_TEMP}/action-result.json" | tee "${RUNNER_TEMP}/result.json"
+              else
+                run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
+              fi
               ;;
             destroy-plan)
               run_lifecycle destroy-plan "${spec}" "${machine}" "${source_revision}" | tee "${RUNNER_TEMP}/result.json"
@@ -401,6 +470,7 @@ jobs:
               run_lifecycle apply "${spec}" "${machine}" "${create_authority}" > "${RUNNER_TEMP}/apply-first.json"
               jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
                 "${RUNNER_TEMP}/apply-first.json" >/dev/null
+              acquire_host_access "${spec}" "${machine}" "acceptance"
               converge_host_substrate "${spec}" "${machine}" "acceptance-first" "${RUNNER_TEMP}/substrate-first-verify.json"
 
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-plan.json"
@@ -428,6 +498,8 @@ jobs:
               run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-substrate.json"
               jq -e '.status == "PASS" and .plan.action == "NOOP"' \
                 "${RUNNER_TEMP}/post-reboot-substrate.json" >/dev/null
+
+              release_host_access "${spec}" "${machine}" "acceptance"
 
               run_lifecycle destroy-plan "${spec}" "${machine}" "${source_revision}" > "${RUNNER_TEMP}/destroy-plan.json"
               digest="$(jq -r '.destroy_digest' "${RUNNER_TEMP}/destroy-plan.json")"
