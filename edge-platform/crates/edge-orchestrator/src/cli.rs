@@ -476,7 +476,6 @@ impl VultrVpcCommand {
     }
 }
 
-
 fn one(operation: &str, args: SpecArgs) -> Vec<String> {
     vec![operation.to_owned(), path(args.spec_path)]
 }
@@ -514,7 +513,6 @@ fn mesh_vpc(operation: &str, args: MeshVpcArgs) -> Vec<String> {
 fn path(value: PathBuf) -> String {
     value.to_string_lossy().into_owned()
 }
-
 
 #[cfg(test)]
 mod tests {
