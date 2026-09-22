@@ -63,6 +63,7 @@ assert d["source-revision"]=="{candidate}"
 def h(p): return hashlib.sha256(open(p,"rb").read()).hexdigest()
 assert h(d["edge-agent"])=="{asha}"
 assert h(d["edge-controller"])=="{csha}"
+assert h(d["edge-orchestrator"])=="{osha}"
 assert h(d["input"])=="{pbsha}"
 print("release_set_sha256={pbsha}")
 print("schema_version=3")
