@@ -660,7 +660,6 @@ async fn acquire_access_with_authority(
     }))
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TcpReadinessPolicy {
     max_attempts: usize,
