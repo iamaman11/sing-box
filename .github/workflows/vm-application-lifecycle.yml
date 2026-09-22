@@ -243,12 +243,7 @@ jobs:
             if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
               return 0
             fi
-            local release_plan="${RUNNER_TEMP}/application-access-release-plan.json"
-            local release_authority
-            "${bin}" vultr-lifecycle release-access-plan "${vultr_spec}" "${machine}" > "${release_plan}"
-            release_authority="$(jq -er '.plan_authority.authority_digest' "${release_plan}")"
-            [[ "${release_authority}" =~ ^[0-9a-f]{64}$ ]]
-            "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" "${release_authority}" \
+            "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
               | tee "${access_release}"
           }
 
@@ -271,12 +266,9 @@ jobs:
           trap finish EXIT
           ACCESS_CLEANUP_ARMED=1
 
-          access_acquire_plan="${RUNNER_TEMP}/application-access-acquire-plan.json"
-          "${bin}" vultr-lifecycle acquire-access-plan "${vultr_spec}" "${machine}" > "${access_acquire_plan}"
-          access_acquire_authority="$(jq -er '.plan_authority.authority_digest' "${access_acquire_plan}")"
-          [[ "${access_acquire_authority}" =~ ^[0-9a-f]{64}$ ]]
-          "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}" "${access_acquire_authority}" \
+          "${bin}" vultr-lifecycle lease-acquire "${vultr_spec}" "${machine}" \
             | tee "${access_acquire}"
+          jq -e '.status == "READY"' "${access_acquire}" >/dev/null
 
           case "${REQUESTED_OPERATION}" in
             plan|verify)
@@ -662,16 +654,8 @@ jobs:
             cleanup_mesh_provider
             cleanup_dns_provider
             cleanup_vpc_provider
-            local access_release_plan="${RUNNER_TEMP}/acceptance-emergency-release-plan.json"
-            if "${bin}" vultr-lifecycle release-access-plan "${vultr_spec}" "${machine}" \
-                > "${access_release_plan}" 2>/dev/null; then
-              local access_release_authority
-              access_release_authority="$(plan_authority "${access_release_plan}" 2>/dev/null || true)"
-              if [[ "${access_release_authority}" =~ ^[0-9a-f]{64}$ ]]; then
-                "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" "${access_release_authority}" \
-                  > "${RUNNER_TEMP}/acceptance-emergency-release.json" 2>&1 || true
-              fi
-            fi
+            "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
+              > "${RUNNER_TEMP}/acceptance-emergency-release.json" 2>&1 || true
 
             local destroy_json="${RUNNER_TEMP}/acceptance-emergency-destroy.json"
             if "${bin}" vultr-lifecycle destroy-plan \
@@ -740,11 +724,9 @@ jobs:
           jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
             "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
 
-          "${bin}" vultr-lifecycle acquire-access-plan "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-access-acquire-plan.json"
-          access_acquire_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-access-acquire-plan.json")"
-          "${bin}" vultr-lifecycle acquire-access "${vultr_spec}" "${machine}" "${access_acquire_authority}" \
+          "${bin}" vultr-lifecycle lease-acquire "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-access-acquire.json"
+          jq -e '.status == "READY"' "${RUNNER_TEMP}/acceptance-access-acquire.json" >/dev/null
 
           converge_host_substrate "acceptance-initial" "${RUNNER_TEMP}/acceptance-substrate-initial.json"
 
@@ -984,12 +966,9 @@ jobs:
           done
           test "${vpc_absent}" = "1"
 
-          "${bin}" vultr-lifecycle release-access-plan "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-access-release-plan.json"
-          access_release_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-access-release-plan.json")"
-          "${bin}" vultr-lifecycle release-access "${vultr_spec}" "${machine}" "${access_release_authority}" \
+          "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
             | tee "${access_release}"
-          jq -e '.verified_absent == true or .action == "NOOP"' "${access_release}" >/dev/null
+          jq -e '.status == "RELEASED"' "${access_release}" >/dev/null
 
           "${bin}" vultr-lifecycle destroy-plan \
             "${vultr_spec}" "${machine}" "${source_revision}" \
