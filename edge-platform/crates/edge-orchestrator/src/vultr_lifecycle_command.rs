@@ -1126,6 +1126,34 @@ async fn run_lease_release(args: &[String]) -> Result<(), String> {
     }))
 }
 
+fn instance_action_disposition(
+    action: InstanceAction,
+    observed: &VultrInstance,
+) -> (PlanDisposition, &'static str) {
+    match action {
+        InstanceAction::Start => match observed.power_status.as_str() {
+            "running" => (PlanDisposition::Noop, "NOOP"),
+            "stopped" => (PlanDisposition::Mutate, "START"),
+            _ => (PlanDisposition::Blocked, "BLOCKED"),
+        },
+        InstanceAction::Halt => match observed.power_status.as_str() {
+            "stopped" => (PlanDisposition::Noop, "NOOP"),
+            "running" => (PlanDisposition::Mutate, "HALT"),
+            _ => (PlanDisposition::Blocked, "BLOCKED"),
+        },
+        InstanceAction::Reboot => {
+            if observed.power_status == "running"
+                && observed.status == "active"
+                && observed.server_status == "ok"
+            {
+                (PlanDisposition::Mutate, "REBOOT")
+            } else {
+                (PlanDisposition::Blocked, "BLOCKED")
+            }
+        }
+    }
+}
+
 async fn build_instance_action_authority(
     desired: &DesiredState,
     machine_id: &str,
