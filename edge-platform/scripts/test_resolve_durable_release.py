@@ -57,7 +57,7 @@ def make_state(accepted_override=None, ambiguous=False, schema=3):
     runtime_input="d"*64
     runtime_source="e"*40
     runtime_lines=(
-      f'print("runtime_input_sha256={runtime_input}")\\nprint("runtime_source_revision={runtime_source}")'
+      f'print("runtime_input_sha256={runtime_input}")\nprint("runtime_source_revision={runtime_source}")'
       if schema == 4 else ""
     )
     pb=b"release-set-v2"; pbsha=sha(pb); tag="edge-release-"+pbsha
