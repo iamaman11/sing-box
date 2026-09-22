@@ -43,7 +43,7 @@ jobs:
           if (
               len(tokens) != 5
               or tokens[0] != "/mesh"
-              or tokens[1] not in {"plan", "apply"}
+              or tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify"}
           ):
               fail("unsupported /mesh command grammar")
 
@@ -254,6 +254,24 @@ jobs:
               "${bin}" line3-mesh vpc-apply                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}" "${authority}"                 > "${apply}"
               jq -s '{plan:.[0],apply:.[1]}' "${plan}" "${apply}" | tee "${result}"
               ;;
+            runtime-apply)
+              provider_plan="${RUNNER_TEMP}/mesh-runtime-provider-plan.json"
+              runtime="${RUNNER_TEMP}/mesh-runtime-apply.json"
+              "${bin}" line3-mesh vpc-plan                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${provider_plan}"
+              jq -e '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' "${provider_plan}" >/dev/null
+              "${bin}" line3-mesh vpc-runtime-apply                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${runtime}"
+              jq -e '.status == "READY" and .runtime.token_store_present == true and .runtime.container_running == true and .runtime.exact_image_ready == true and .runtime.runtime_ready == true' "${runtime}" >/dev/null
+              jq -s '{provider_plan:.[0],runtime:.[1]}' "${provider_plan}" "${runtime}" | tee "${result}"
+              ;;
+            runtime-verify)
+              provider_plan="${RUNNER_TEMP}/mesh-runtime-provider-plan.json"
+              runtime="${RUNNER_TEMP}/mesh-runtime-verify.json"
+              "${bin}" line3-mesh vpc-plan                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${provider_plan}"
+              jq -e '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' "${provider_plan}" >/dev/null
+              "${bin}" line3-mesh vpc-runtime-verify                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${runtime}"
+              jq -e '.status == "PASS" and .runtime.token_store_present == true and .runtime.container_running == true and .runtime.exact_image_ready == true and .runtime.runtime_ready == true' "${runtime}" >/dev/null
+              jq -s '{provider_plan:.[0],runtime:.[1]}' "${provider_plan}" "${runtime}" | tee "${result}"
+              ;;
             *)
               echo "unreachable Mesh operation" >&2
               exit 1
@@ -264,7 +282,7 @@ jobs:
             echo '### Cloudflare Mesh provider lifecycle result'
             echo
             echo 'The typed orchestrator derives the effective Mesh route from verified Vultr VPC and guest-network observations.'
-            echo 'This backend exposes provider plan/apply only; Mesh token and runtime operations are not available here.'
+            echo 'Provider and runtime operations stay inside the typed orchestrator; the Mesh node token is transient and is never rendered by this workflow.'
             echo 'Ephemeral SSH ingress is released by the EXIT trap.'
             echo
             echo '~~~json'
