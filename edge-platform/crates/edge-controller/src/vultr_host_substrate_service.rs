@@ -299,7 +299,12 @@ pub async fn apply_host_substrate_once<P: OperationalProvider>(
 
 #[cfg(test)]
 mod tests {
-    use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
+    use super::authorize_host_substrate;
+    use edge_controller_core::host_substrate_lifecycle::{
+        HostSubstrateAction, HostSubstrateObservation, StrictSshState,
+    };
+    use edge_controller_core::lifecycle::verify_exact_authority;
+    use edge_controller_core::vultr_lifecycle::DesiredState;
 
     #[test]
     fn action_disposition_allows_only_one_mutation_kind() {
@@ -312,5 +317,55 @@ mod tests {
                 HostSubstrateAction::ScrubUserData | HostSubstrateAction::RotateHostCertificate
             ));
         }
+    }
+
+    #[test]
+    fn changed_live_observation_invalidates_substrate_authority() {
+        let desired = DesiredState::parse_json(
+            r#"{
+  "schema": 1,
+  "environment": "production",
+  "machines": [
+    {
+      "id": "edge-1",
+      "role": "edge",
+      "provider": {
+        "region": "waw",
+        "plan": "vc2-1c-1gb",
+        "os_id": 2625,
+        "enable_ipv6": false
+      },
+      "bootstrap_profile": "singbox-host-v2"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let machine = &desired.machines[0];
+        let before = HostSubstrateObservation {
+            machine_id: machine.id.clone(),
+            provider_id: "instance-1".to_owned(),
+            main_ip: "203.0.113.10".to_owned(),
+            provider_ready: true,
+            strict_ssh_state: StrictSshState::Pass,
+            strict_ssh_evidence: "PASS".to_owned(),
+            user_data_scrubbed: Some(false),
+            host_certificate_serial: Some(1),
+        };
+        let first = authorize_host_substrate(&desired, machine, &before).unwrap();
+        assert_eq!(first.plan.action, HostSubstrateAction::ScrubUserData);
+
+        let mut after = before;
+        after.user_data_scrubbed = Some(true);
+        let changed = authorize_host_substrate(&desired, machine, &after).unwrap();
+        assert_eq!(
+            changed.plan.action,
+            HostSubstrateAction::RotateHostCertificate
+        );
+        assert!(verify_exact_authority(
+            &first.authority.authority_digest,
+            &changed.authority
+        )
+        .is_err());
     }
 }
