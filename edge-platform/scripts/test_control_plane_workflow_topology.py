@@ -261,21 +261,25 @@ def main() -> None:
     )
 
     require(
-        "cleanup_acceptance() (" in application,
-        "acceptance cleanup must run in an isolated subshell",
+        "cleanup_acceptance" not in application
+        and "acceptance-emergency-" not in application
+        and "if [[ $rc -ne 0 ]]; then cleanup" not in application,
+        "acceptance failure must preserve provider/guest state for diagnosis, never auto-clean",
     )
-    preflight_marker = (
-        "# Recover any exact acceptance-owned residue from a previous failed run."
+    require(
+        "require_vpc_clean_room()" in application,
+        "acceptance must require a read-only VPC clean-room proof",
     )
+    preflight_marker = "# Fail closed on any acceptance-owned residue."
     support_marker = 'acceptance-support-before.json'
     vm_marker = 'acceptance-plan-before.json'
-    require(preflight_marker in application, "acceptance must retain residue-recovery preflight")
+    require(preflight_marker in application, "acceptance must fail closed on residue")
     preflight_pos = application.index(preflight_marker)
     support_pos = application.index(support_marker, preflight_pos)
     vm_pos = application.index(vm_marker, support_pos)
     require(
         preflight_pos < support_pos < vm_pos,
-        "strict support clean-room proof must precede fresh VM planning",
+        "strict read-only clean-room proof must precede fresh VM planning",
     )
     require(
         '.plan.action == "NOOP" and .plan.environment_in_use == false' in application,
