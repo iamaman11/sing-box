@@ -20,7 +20,7 @@ pub use release::v1::{
 };
 
 pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
-pub const RELEASE_SET_SCHEMA_VERSION: u32 = 2;
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 3;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 
@@ -107,11 +107,33 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                     "schema v1 must not contain vm_runtime.edge_controller_sha256".to_owned(),
                 );
             }
+            if !vm.edge_orchestrator_sha256.is_empty() {
+                return Err(
+                    "schema v1 must not contain vm_runtime.edge_orchestrator_sha256".to_owned(),
+                );
+            }
         }
-        2 => validate_sha256_bytes(
-            "vm_runtime.edge_controller_sha256",
-            &vm.edge_controller_sha256,
-        )?,
+        2 => {
+            validate_sha256_bytes(
+                "vm_runtime.edge_controller_sha256",
+                &vm.edge_controller_sha256,
+            )?;
+            if !vm.edge_orchestrator_sha256.is_empty() {
+                return Err(
+                    "schema v2 must not contain vm_runtime.edge_orchestrator_sha256".to_owned(),
+                );
+            }
+        }
+        3 => {
+            validate_sha256_bytes(
+                "vm_runtime.edge_controller_sha256",
+                &vm.edge_controller_sha256,
+            )?;
+            validate_sha256_bytes(
+                "vm_runtime.edge_orchestrator_sha256",
+                &vm.edge_orchestrator_sha256,
+            )?;
+        }
         _ => unreachable!("release-set schema range was validated above"),
     }
     validate_oci_image(
@@ -549,6 +571,7 @@ mod release_set_tests {
             vm_runtime: Some(VmRuntime {
                 edge_agent_sha256: digest(7),
                 edge_controller_sha256: digest(11),
+                edge_orchestrator_sha256: digest(12),
                 sing_box_image: Some(image("ghcr.io/iamaman11/sing-box-runtime", 8)),
                 warp_egress_image: Some(image("ghcr.io/iamaman11/warp-egress", 9)),
                 docker_engine_version: "29.0.1".to_owned(),
@@ -601,6 +624,12 @@ mod release_set_tests {
             .unwrap()
             .edge_controller_sha256
             .clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_orchestrator_sha256
+            .clear();
         let bytes = encode_release_set(&release).unwrap();
         assert_eq!(decode_release_set(&bytes).unwrap(), release);
     }
@@ -615,11 +644,51 @@ mod release_set_tests {
     #[test]
     fn release_set_rejects_missing_v2_controller_hash() {
         let mut release = valid_release();
+        release.schema_version = 2;
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_orchestrator_sha256
+            .clear();
         release
             .vm_runtime
             .as_mut()
             .unwrap()
             .edge_controller_sha256
+            .clear();
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_accepts_legacy_v2_without_orchestrator_hash() {
+        let mut release = valid_release();
+        release.schema_version = 2;
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_orchestrator_sha256
+            .clear();
+        let bytes = encode_release_set(&release).unwrap();
+        assert_eq!(decode_release_set(&bytes).unwrap(), release);
+    }
+
+    #[test]
+    fn release_set_rejects_v2_with_v3_orchestrator_hash() {
+        let mut release = valid_release();
+        release.schema_version = 2;
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_missing_v3_orchestrator_hash() {
+        let mut release = valid_release();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_orchestrator_sha256
             .clear();
         assert!(validate_release_set(&release).is_err());
     }

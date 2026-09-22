@@ -36,6 +36,7 @@ verify_dir="${stage}.verify"
 test -f "${windows}/edge-platform-windows.zip"
 test -f "${linux}/edge-agent"
 test -f "${linux}/edge-controller"
+test -f "${linux}/edge-orchestrator"
 test -f "${linux}/edge-release-set"
 test -f "${authority}/release-set.pb"
 test -f "${authority}/release-set.pb.sha256"
@@ -63,6 +64,7 @@ install -m 0644 "${authority}/acceptance.json" "${stage}/acceptance.json"
 install -m 0644 "${windows}/edge-platform-windows.zip" "${stage}/edge-platform-windows.zip"
 install -m 0644 "${linux}/edge-agent" "${stage}/edge-agent-linux-amd64"
 install -m 0644 "${linux}/edge-controller" "${stage}/edge-controller-linux-amd64"
+install -m 0644 "${linux}/edge-orchestrator" "${stage}/edge-orchestrator-linux-amd64"
 install -m 0644 "${linux}/edge-release-set" "${stage}/edge-release-set-linux-amd64"
 
 (
@@ -70,6 +72,7 @@ install -m 0644 "${linux}/edge-release-set" "${stage}/edge-release-set-linux-amd
   sha256sum edge-platform-windows.zip > edge-platform-windows.zip.sha256
   sha256sum edge-agent-linux-amd64 > edge-agent-linux-amd64.sha256
   sha256sum edge-controller-linux-amd64 > edge-controller-linux-amd64.sha256
+  sha256sum edge-orchestrator-linux-amd64 > edge-orchestrator-linux-amd64.sha256
   sha256sum edge-release-set-linux-amd64 > edge-release-set-linux-amd64.sha256
 )
 
@@ -79,6 +82,8 @@ expected_assets=(
   edge-agent-linux-amd64.sha256
   edge-controller-linux-amd64
   edge-controller-linux-amd64.sha256
+  edge-orchestrator-linux-amd64
+  edge-orchestrator-linux-amd64.sha256
   edge-platform-windows.zip
   edge-platform-windows.zip.sha256
   edge-release-set-linux-amd64

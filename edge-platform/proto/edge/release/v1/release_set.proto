@@ -36,6 +36,7 @@ message VmRuntime {
   string containerd_version = 5;
   string compose_version = 6;
   bytes edge_controller_sha256 = 7;
+  bytes edge_orchestrator_sha256 = 8;
 }
 
 message CloudflareRuntime {

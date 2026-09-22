@@ -54,7 +54,8 @@ def exe(path, content):
 def make_state(accepted_override=None, ambiguous=False):
     accepted="a"*40; candidate="b"*40; tree="c"*40
     pb=b"release-set-v2"; pbsha=sha(pb); tag="edge-release-"+pbsha
-    agent=b"agent"; controller=b"controller"; asha=sha(agent); csha=sha(controller)
+    agent=b"agent"; controller=b"controller"; orchestrator=b"orchestrator"
+    asha=sha(agent); csha=sha(controller); osha=sha(orchestrator)
     verifier=f"""#!/usr/bin/env python3
 import hashlib,sys
 a=sys.argv[1:]; assert a[0]=="verify-vm"; d=dict(zip([x[2:] for x in a[1::2]],a[2::2]))
@@ -64,10 +65,11 @@ assert h(d["edge-agent"])=="{asha}"
 assert h(d["edge-controller"])=="{csha}"
 assert h(d["input"])=="{pbsha}"
 print("release_set_sha256={pbsha}")
-print("schema_version=2")
+print("schema_version=3")
 print("source_revision={candidate}")
 print("edge_agent_sha256={asha}")
 print("edge_controller_sha256={csha}")
+print("edge_orchestrator_sha256={osha}")
 print("sing_box_image=ghcr.io/iamaman11/vultr-edge-gateway@sha256:"+"1"*64)
 print("warp_egress_image=ghcr.io/iamaman11/vultr-warp-egress@sha256:"+"2"*64)
 print("mesh_image=docker.io/cloudflare/mesh@sha256:"+"3"*64)
@@ -83,6 +85,8 @@ print("compose_version=5.5.1-1~debian.13~trixie")
       "edge-agent-linux-amd64.sha256":f"{asha}  edge-agent-linux-amd64\n".encode(),
       "edge-controller-linux-amd64":controller,
       "edge-controller-linux-amd64.sha256":f"{csha}  edge-controller-linux-amd64\n".encode(),
+      "edge-orchestrator-linux-amd64":orchestrator,
+      "edge-orchestrator-linux-amd64.sha256":f"{osha}  edge-orchestrator-linux-amd64\n".encode(),
       "edge-platform-windows.zip":b"w",
       "edge-platform-windows.zip.sha256":f"{sha(b'w')}  edge-platform-windows.zip\n".encode(),
       "edge-release-set-linux-amd64":verifier,
@@ -101,7 +105,7 @@ print("compose_version=5.5.1-1~debian.13~trixie")
       releases.append({"id":500000002,"tag_name":tag2,"draft":False,"prerelease":False,"assets":assets})
       refs[tag2]=accepted
     state={"releases":releases,"tag_refs":refs,"commit_trees":{accepted:tree,candidate:tree},"asset_bytes":blobs}
-    meta={"accepted":accepted,"candidate":candidate,"tree":tree,"tag":tag,"pbsha":pbsha,"asha":asha,"csha":csha,
+    meta={"accepted":accepted,"candidate":candidate,"tree":tree,"tag":tag,"pbsha":pbsha,"asha":asha,"csha":csha,"osha":osha,
       "controller_id":next(x["id"] for x in assets if x["name"]=="edge-controller-linux-amd64")}
     return state,meta
 
@@ -121,6 +125,7 @@ def run(state,meta,expected=None,ok=False):
         assert vals["EDGE_RELEASE_TAG"]==meta["tag"]
         assert vals["EDGE_RELEASE_SET_SHA256"]==meta["pbsha"]
         assert vals["EDGE_CONTROLLER_SHA256"]==meta["csha"]
+        assert vals["EDGE_ORCHESTRATOR_SHA256"]==meta["osha"]
         assert vals["EDGE_AGENT_SHA256"]==meta["asha"]
         assert vals["EDGE_DOCKER_ENGINE_VERSION"]=="5:29.8.1-1~debian.13~trixie"
         assert vals["EDGE_CONTAINERD_VERSION"]=="2.3.5-1~debian.13~trixie"

@@ -228,6 +228,7 @@ def prepare_inputs(root: Path, accepted: str, candidate: str, run_id: str) -> di
     (windows / "edge-platform-windows.zip").write_bytes(b"windows-runtime")
     (linux / "edge-agent").write_bytes(b"edge-agent")
     (linux / "edge-controller").write_bytes(b"edge-controller")
+    (linux / "edge-orchestrator").write_bytes(b"edge-orchestrator")
     (linux / "edge-release-set").write_bytes(b"release-set-verifier")
 
     release_bytes = b"canonical-release-set"
@@ -309,9 +310,9 @@ def scenario(existing_draft: bool) -> None:
         state = json.loads(state_path.read_text())
         assert state["release"]["draft"] is False
         assert state["release"]["prerelease"] is False
-        assert len(state["release"]["assets"]) == 11
+        assert len(state["release"]["assets"]) == 13
         assert f"release_id={state['release']['id']}" in first.stdout
-        assert "durable_assets=11" in first.stdout
+        assert "durable_assets=13" in first.stdout
 
         asset_ids = {asset["name"]: asset["id"] for asset in state["release"]["assets"]}
         second = run_publisher(env)
@@ -319,7 +320,7 @@ def scenario(existing_draft: bool) -> None:
         assert state_again["release"]["draft"] is False
         assert len(state_again["release"]["assets"]) == 11
         assert {asset["name"]: asset["id"] for asset in state_again["release"]["assets"]} == asset_ids
-        assert "durable_assets=11" in second.stdout
+        assert "durable_assets=13" in second.stdout
 
 
 def main() -> None:

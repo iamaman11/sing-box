@@ -790,6 +790,7 @@ jobs:
       sing_box_binary_sha256: ${{ steps.images.outputs.sing_box_binary_sha256 }}
       edge_agent_sha256: ${{ steps.package.outputs.edge_agent_sha256 }}
       edge_controller_sha256: ${{ steps.package.outputs.edge_controller_sha256 }}
+      edge_orchestrator_sha256: ${{ steps.package.outputs.edge_orchestrator_sha256 }}
     steps:
       - name: Checkout exact candidate revision
         shell: bash
@@ -819,6 +820,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked --release -p edge-controller --bin edge-controller
+          cargo build --locked --release -p edge-orchestrator --bin edge-orchestrator
           cargo build --locked --release -p edge-agent --bin edge-agent
           cargo build --locked --release -p edge-shared-types --bin edge-release-set
 
@@ -960,11 +962,13 @@ jobs:
           out="${RUNNER_TEMP}/edge-platform-release"
           install -d -m 0755 "${out}"
           install -m 0755 edge-platform/target/release/edge-controller "${out}/edge-controller"
+          install -m 0755 edge-platform/target/release/edge-orchestrator "${out}/edge-orchestrator"
           install -m 0755 edge-platform/target/release/edge-agent "${out}/edge-agent"
           install -m 0755 edge-platform/target/release/edge-release-set "${out}/edge-release-set"
           install -m 0755 "${RUNNER_TEMP}/sing-box-linux" "${out}/sing-box-linux"
 
           controller_sha="$(sha256sum "${out}/edge-controller" | awk '{print $1}')"
+          orchestrator_sha="$(sha256sum "${out}/edge-orchestrator" | awk '{print $1}')"
           agent_sha="$(sha256sum "${out}/edge-agent" | awk '{print $1}')"
           sing_box_binary_sha="$(sha256sum "${out}/sing-box-linux" | awk '{print $1}')"
           test "${sing_box_binary_sha}" = "${SING_BOX_BINARY_SHA256}"
@@ -977,6 +981,7 @@ jobs:
             --arg source_revision "${CANDIDATE_REVISION}" \
             --arg source_tree "${source_tree}" \
             --arg controller_sha256 "${controller_sha}" \
+            --arg orchestrator_sha256 "${orchestrator_sha}" \
             --arg agent_sha256 "${agent_sha}" \
             --arg edge_gateway_image "${EDGE_GATEWAY_IMAGE}" \
             --arg edge_warp_egress_image "${EDGE_WARP_EGRESS_IMAGE}" \
@@ -992,10 +997,11 @@ jobs:
             --arg ubuntu_base_image "${UBUNTU_BASE_IMAGE}" \
             --arg mesh_image "${MESH_IMAGE}" \
             '{
-              schema:2,
+              schema:3,
               source_revision:$source_revision,
               source_tree:$source_tree,
               controller_sha256:$controller_sha256,
+              orchestrator_sha256:$orchestrator_sha256,
               agent_sha256:$agent_sha256,
               edge_gateway_image:$edge_gateway_image,
               edge_warp_egress_image:$edge_warp_egress_image,
@@ -1013,6 +1019,7 @@ jobs:
             }' > "${out}/manifest.json"
           printf 'edge_agent_sha256=%s\n' "${agent_sha}" >> "${GITHUB_OUTPUT}"
           printf 'edge_controller_sha256=%s\n' "${controller_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'edge_orchestrator_sha256=%s\n' "${orchestrator_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Store exact Linux candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1066,6 +1073,7 @@ jobs:
           LINUX_SING_BOX_SHA256: ${{ needs.linux_candidate.outputs.sing_box_binary_sha256 }}
           EDGE_AGENT_SHA256: ${{ needs.linux_candidate.outputs.edge_agent_sha256 }}
           EDGE_CONTROLLER_SHA256: ${{ needs.linux_candidate.outputs.edge_controller_sha256 }}
+          EDGE_ORCHESTRATOR_SHA256: ${{ needs.linux_candidate.outputs.edge_orchestrator_sha256 }}
           EDGE_GATEWAY_IMAGE: ${{ needs.linux_candidate.outputs.gateway_ref }}
           EDGE_WARP_EGRESS_IMAGE: ${{ needs.linux_candidate.outputs.warp_ref }}
           DOCKER_ENGINE_VERSION: ${{ needs.dependencies.outputs.docker_engine_version }}
@@ -1091,6 +1099,7 @@ jobs:
           test "$(sha256sum "${linux}/sing-box-linux" | awk '{print $1}')" = "${LINUX_SING_BOX_SHA256}"
           test "$(sha256sum "${linux}/edge-agent" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
           test "$(sha256sum "${linux}/edge-controller" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
+          test "$(sha256sum "${linux}/edge-orchestrator" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
 
           "${tool}" create \
             --output "${authority}/release-set.pb" \
@@ -1104,6 +1113,7 @@ jobs:
             --windows-console-sha256 "${WINDOWS_CONSOLE_SHA256}" \
             --edge-agent-sha256 "${EDGE_AGENT_SHA256}" \
             --edge-controller-sha256 "${EDGE_CONTROLLER_SHA256}" \
+            --edge-orchestrator-sha256 "${EDGE_ORCHESTRATOR_SHA256}" \
             --sing-box-image "${EDGE_GATEWAY_IMAGE}" \
             --warp-egress-image "${EDGE_WARP_EGRESS_IMAGE}" \
             --docker-engine-version "${DOCKER_ENGINE_VERSION}" \
@@ -1122,7 +1132,8 @@ jobs:
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
-            --edge-controller "${linux}/edge-controller")"
+            --edge-controller "${linux}/edge-controller" \
+            --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${verify_output}"
 
           release_set_sha="$(sed -n 's/^release_set_sha256=//p' <<<"${verify_output}")"
@@ -1138,10 +1149,11 @@ jobs:
             --edge-controller "${linux}/edge-controller")"
           printf '%s\n' "${vm_verify_output}"
           test "$(sed -n 's/^release_set_sha256=//p' <<<"${vm_verify_output}")" = "${release_set_sha}"
-          test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "2"
+          test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "3"
           test "$(sed -n 's/^source_revision=//p' <<<"${vm_verify_output}")" = "${CANDIDATE_REVISION}"
           test "$(sed -n 's/^edge_agent_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_AGENT_SHA256}"
           test "$(sed -n 's/^edge_controller_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_CONTROLLER_SHA256}"
+          test "$(sed -n 's/^edge_orchestrator_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_ORCHESTRATOR_SHA256}"
           test "$(sed -n 's/^sing_box_image=//p' <<<"${vm_verify_output}")" = "${EDGE_GATEWAY_IMAGE}"
           test "$(sed -n 's/^warp_egress_image=//p' <<<"${vm_verify_output}")" = "${EDGE_WARP_EGRESS_IMAGE}"
           test "$(sed -n 's/^mesh_image=//p' <<<"${vm_verify_output}")" = "${MESH_IMAGE}"
@@ -1306,7 +1318,8 @@ jobs:
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
-            --edge-controller "${linux}/edge-controller")"
+            --edge-controller "${linux}/edge-controller" \
+            --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${verify_output}"
 
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"

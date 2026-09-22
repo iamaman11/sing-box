@@ -29,6 +29,8 @@ expected_assets=(
   edge-agent-linux-amd64.sha256
   edge-controller-linux-amd64
   edge-controller-linux-amd64.sha256
+  edge-orchestrator-linux-amd64
+  edge-orchestrator-linux-amd64.sha256
   edge-platform-windows.zip
   edge-platform-windows.zip.sha256
   edge-release-set-linux-amd64
@@ -149,6 +151,8 @@ for name in \
   edge-agent-linux-amd64.sha256 \
   edge-controller-linux-amd64 \
   edge-controller-linux-amd64.sha256 \
+  edge-orchestrator-linux-amd64 \
+  edge-orchestrator-linux-amd64.sha256 \
   edge-release-set-linux-amd64 \
   edge-release-set-linux-amd64.sha256 \
   release-set.pb \
@@ -170,6 +174,7 @@ verify_sidecar() {
 
 verify_sidecar "${out}/edge-agent-linux-amd64" "${out}/edge-agent-linux-amd64.sha256" "edge-agent-linux-amd64"
 verify_sidecar "${out}/edge-controller-linux-amd64" "${out}/edge-controller-linux-amd64.sha256" "edge-controller-linux-amd64"
+verify_sidecar "${out}/edge-orchestrator-linux-amd64" "${out}/edge-orchestrator-linux-amd64.sha256" "edge-orchestrator-linux-amd64"
 verify_sidecar "${out}/edge-release-set-linux-amd64" "${out}/edge-release-set-linux-amd64.sha256" "edge-release-set-linux-amd64"
 
 test "$(cat "${out}/release-set.pb.sha256")" = "${release_set_sha}  release-set.pb"
@@ -214,6 +219,7 @@ schema_version="$(extract_single schema_version)"
 verified_source_revision="$(extract_single source_revision)"
 agent_sha="$(extract_single edge_agent_sha256)"
 controller_sha="$(extract_single edge_controller_sha256)"
+orchestrator_sha="$(extract_single edge_orchestrator_sha256)"
 gateway_image="$(extract_single sing_box_image)"
 warp_image="$(extract_single warp_egress_image)"
 mesh_image="$(extract_single mesh_image)"
@@ -226,12 +232,14 @@ for package_version in "$docker_engine_version" "$containerd_version" "$compose_
 done
 
 test "$verified_release_set_sha" = "$release_set_sha"
-test "$schema_version" = "2"
+test "$schema_version" = "3"
 test "$verified_source_revision" = "$candidate_revision"
 [[ "$agent_sha" =~ ^[0-9a-f]{64}$ ]]
 [[ "$controller_sha" =~ ^[0-9a-f]{64}$ ]]
+[[ "$orchestrator_sha" =~ ^[0-9a-f]{64}$ ]]
 test "$agent_sha" = "$(sha256sum "${out}/edge-agent-linux-amd64" | awk '{print $1}')"
 test "$controller_sha" = "$(sha256sum "${out}/edge-controller-linux-amd64" | awk '{print $1}')"
+test "$orchestrator_sha" = "$(sha256sum "${out}/edge-orchestrator-linux-amd64" | awk '{print $1}')"
 [[ "$gateway_image" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
 [[ "$warp_image" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
 [[ "$mesh_image" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
@@ -244,6 +252,7 @@ EDGE_RELEASE_ID=$release_id
 EDGE_RELEASE_TAG=$release_tag
 EDGE_RELEASE_SET_SHA256=$release_set_sha
 EDGE_CONTROLLER_SHA256=$controller_sha
+EDGE_ORCHESTRATOR_SHA256=$orchestrator_sha
 EDGE_AGENT_SHA256=$agent_sha
 EDGE_GATEWAY_IMAGE=$gateway_image
 EDGE_WARP_EGRESS_IMAGE=$warp_image
