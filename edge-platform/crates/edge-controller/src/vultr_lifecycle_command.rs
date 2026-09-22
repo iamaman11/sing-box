@@ -14,7 +14,7 @@ use crate::vultr_lifecycle_service::{
 };
 use crate::vultr_support_resources::{
     FirewallProfileSet, ResolvedFirewallProfile, SupportResourceProvider, VultrSupportApiProvider,
-    cleanup_environment_support_resources, controller_access_projection_matches,
+    cleanup_environment_support_resources, controller_access_cleanup_projection_matches,
     controller_ipv4_access_specs, ensure_firewall_profile, ensure_persistent_firewall_profile,
     firewall_group_description, firewall_rule_spec, observe_verified_firewall_bindings,
     public_key_material, release_controller_ipv4_access, resolve_managed_ssh_key,
@@ -821,7 +821,7 @@ async fn build_access_authority(
             let mut matching_rule_ids = Vec::new();
             for rule in &observed_rules {
                 let spec = firewall_rule_spec(rule)?;
-                if controller_access_projection_matches(raw_profile, &spec)? {
+                if controller_access_cleanup_projection_matches(raw_profile, &spec)? {
                     matching_rule_ids.push(rule.id);
                 }
             }
