@@ -260,6 +260,17 @@ pub async fn apply_instance_action<P: OperationalProvider>(
     ))
 }
 
+pub async fn observe_user_data_scrubbed<P: OperationalProvider>(
+    provider: &mut P,
+    instance_id: &str,
+) -> Result<bool, String> {
+    let observed = provider
+        .get_user_data(instance_id)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(observed == SCRUBBED_USER_DATA)
+}
+
 pub async fn verify_user_data_scrubbed<P: OperationalProvider>(
     provider: &mut P,
     instance_id: &str,
@@ -598,7 +609,7 @@ pub fn verify_operator_key_matches(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StrictSshFailureClass {
+pub(crate) enum StrictSshFailureClass {
     Transport,
     HostTrust,
     Authentication,
@@ -607,7 +618,7 @@ enum StrictSshFailureClass {
 }
 
 impl StrictSshFailureClass {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Transport => "TRANSPORT",
             Self::HostTrust => "HOST_TRUST",
@@ -653,6 +664,40 @@ impl StrictSshFailureCounts {
             self.authentication,
             self.remote_acceptance,
             self.other_ssh
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StrictSshAcceptanceObservation {
+    pub passed: bool,
+    pub attempts: usize,
+    pub counts: String,
+    pub last_class: Option<StrictSshFailureClass>,
+    pub last_exit_code: Option<i32>,
+    pub last_detail: String,
+    pub forensic: String,
+    pub transport_stage: String,
+}
+
+impl StrictSshAcceptanceObservation {
+    pub(crate) fn evidence(&self) -> String {
+        if self.passed {
+            return "PASS".to_owned();
+        }
+        format!(
+            "attempts={} counts=[{}] last_class={} last_exit_code={} last_detail={} forensic={} transport_stage={}",
+            self.attempts,
+            self.counts,
+            self.last_class
+                .map(StrictSshFailureClass::label)
+                .unwrap_or("NONE"),
+            self.last_exit_code
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+            self.last_detail,
+            self.forensic,
+            self.transport_stage,
         )
     }
 }
@@ -760,7 +805,55 @@ fn run_strict_ssh_attempt(args: &[String]) -> Result<(), StrictSshAttemptEvidenc
     }
 }
 
-pub async fn strict_ssh_accept(
+fn transport_stage_evidence(stderr: &[u8], success: bool) -> String {
+    let lowered = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let tcp_connected = lowered.contains("connection established")
+        || lowered.contains("connected to ")
+        || success;
+    let remote_banner = lowered.contains("remote protocol version") || success;
+    let kex_reached = lowered.contains("ssh2_msg_kexinit")
+        || lowered.contains("kex: algorithm:")
+        || lowered.contains("server host key:")
+        || success;
+    let host_trust_reached = lowered.contains("host '")
+        || lowered.contains("host key verification")
+        || lowered.contains("server host key:")
+        || success;
+    let authentication_reached = lowered.contains("authentications that can continue")
+        || lowered.contains("authenticated to ")
+        || success;
+    let remote_command_reached = lowered.contains("sending command") || success;
+    format!(
+        "tcp_connected={tcp_connected};remote_banner={remote_banner};kex_reached={kex_reached};host_trust_reached={host_trust_reached};authentication_reached={authentication_reached};remote_command_reached={remote_command_reached}"
+    )
+}
+
+fn capture_transport_stage(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    known_hosts_path: &Path,
+) -> String {
+    let mut args = strict_ssh_args(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        known_hosts_path,
+        "true",
+    );
+    args.insert(0, "-vvv".to_owned());
+    match Command::new("ssh")
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(output) => transport_stage_evidence(&output.stderr, output.status.success()),
+        Err(_) => "diagnostic_unavailable=true".to_owned(),
+    }
+}
+
+pub(crate) async fn observe_strict_ssh_acceptance(
     target_ip: &str,
     logical_hostname: &str,
     operator_private_key_path: &Path,
@@ -768,7 +861,7 @@ pub async fn strict_ssh_accept(
     substrate: &HostSubstrateVersions,
     attempts: usize,
     delay: Duration,
-) -> Result<(), String> {
+) -> Result<StrictSshAcceptanceObservation, String> {
     if attempts == 0 {
         return Err("strict SSH attempts must be greater than zero".to_owned());
     }
@@ -788,7 +881,16 @@ pub async fn strict_ssh_accept(
         match run_strict_ssh_attempt(&args) {
             Ok(()) => {
                 let _ = fs::remove_file(&trust);
-                return Ok(());
+                return Ok(StrictSshAcceptanceObservation {
+                    passed: true,
+                    attempts: attempt + 1,
+                    counts: counts.summary(),
+                    last_class: None,
+                    last_exit_code: Some(0),
+                    last_detail: "PASS".to_owned(),
+                    forensic: "not-required".to_owned(),
+                    transport_stage: "not-required".to_owned(),
+                });
             }
             Err(evidence) => {
                 if evidence.class == StrictSshFailureClass::RemoteAcceptance
@@ -814,18 +916,57 @@ pub async fn strict_ssh_accept(
         exit_code: None,
         detail: "no SSH attempt was made".to_owned(),
     });
-    let forensic = forensic.unwrap_or_else(|| "not-collected".to_owned());
+    let transport_stage = if last.class == StrictSshFailureClass::Transport {
+        capture_transport_stage(
+            target_ip,
+            logical_hostname,
+            operator_private_key_path,
+            &trust,
+        )
+    } else {
+        "not-required".to_owned()
+    };
+    let observation = StrictSshAcceptanceObservation {
+        passed: false,
+        attempts,
+        counts: counts.summary(),
+        last_class: Some(last.class),
+        last_exit_code: last.exit_code,
+        last_detail: last.detail,
+        forensic: forensic.unwrap_or_else(|| "not-collected".to_owned()),
+        transport_stage,
+    };
     let _ = fs::remove_file(&trust);
-    Err(format!(
-        "strict SSH acceptance failed for {logical_hostname} at {target_ip}: attempts={attempts} counts=[{}] last_class={} last_exit_code={} last_detail={} forensic={}",
-        counts.summary(),
-        last.class.label(),
-        last.exit_code
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_owned()),
-        last.detail,
-        forensic
-    ))
+    Ok(observation)
+}
+
+pub async fn strict_ssh_accept(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    substrate: &HostSubstrateVersions,
+    attempts: usize,
+    delay: Duration,
+) -> Result<(), String> {
+    let observed = observe_strict_ssh_acceptance(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        canonical_operator_public_key,
+        substrate,
+        attempts,
+        delay,
+    )
+    .await?;
+    if observed.passed {
+        Ok(())
+    } else {
+        Err(format!(
+            "strict SSH acceptance failed for {logical_hostname} at {target_ip}: {}",
+            observed.evidence()
+        ))
+    }
 }
 
 pub fn verify_host_certificate_rotated(
@@ -871,28 +1012,46 @@ pub fn ensure_host_certificate_rotated(
     if current >= minimum_serial {
         return Ok(false);
     }
-    rotate_host_certificate(
+
+    let mutation = rotate_host_certificate(
         target_ip,
         logical_hostname,
         operator_private_key_path,
         canonical_operator_public_key,
         minimum_serial,
-    )?;
-    let observed = read_host_certificate_serial(
+    );
+    let reobserved = read_host_certificate_serial(
         target_ip,
         logical_hostname,
         operator_private_key_path,
         canonical_operator_public_key,
-    )?;
-    if observed < minimum_serial {
-        return Err(format!(
-            "host certificate rotation did not reach required serial {minimum_serial}: observed {observed}"
-        ));
-    }
-    Ok(true)
+    );
+    resolve_host_certificate_rotation_outcome(minimum_serial, mutation, reobserved)
 }
 
-fn read_host_certificate_serial(
+fn resolve_host_certificate_rotation_outcome(
+    minimum_serial: u64,
+    mutation: Result<(), String>,
+    reobserved: Result<u64, String>,
+) -> Result<bool, String> {
+    match (mutation, reobserved) {
+        (_, Ok(serial)) if serial >= minimum_serial => Ok(true),
+        (Ok(()), Ok(serial)) => Err(format!(
+            "host certificate rotation was accepted but serial remained below required minimum {minimum_serial}: observed {serial}; mutation was not replayed"
+        )),
+        (Err(mutation_error), Ok(serial)) => Err(format!(
+            "{mutation_error}; host certificate serial re-observed at {serial}, below required minimum {minimum_serial}; mutation was not replayed"
+        )),
+        (Ok(()), Err(observe_error)) => Err(format!(
+            "host certificate rotation was accepted but outcome is uncertain because re-observation failed: {observe_error}; mutation was not replayed"
+        )),
+        (Err(mutation_error), Err(observe_error)) => Err(format!(
+            "{mutation_error}; host certificate rotation outcome is uncertain because re-observation failed: {observe_error}; mutation was not replayed"
+        )),
+    }
+}
+
+pub(crate) fn read_host_certificate_serial(
     target_ip: &str,
     logical_hostname: &str,
     operator_private_key_path: &Path,
@@ -1656,5 +1815,39 @@ mod tests {
             format!("@cert-authority {} {}\n", "edge-1", material),
             "@cert-authority edge-1 ssh-ed25519 AAAACanonical\n"
         );
+    }    #[test]
+    fn transport_stage_evidence_is_structured_and_bounded() {
+        let stderr = b"debug1: Connection established.\ndebug1: Remote protocol version 2.0\ndebug1: SSH2_MSG_KEXINIT sent\ndebug1: Server host key: ssh-ed25519 SHA256:redacted\ndebug1: Authentications that can continue: publickey\n";
+        let evidence = transport_stage_evidence(stderr, false);
+        assert!(evidence.contains("tcp_connected=true"));
+        assert!(evidence.contains("remote_banner=true"));
+        assert!(evidence.contains("kex_reached=true"));
+        assert!(evidence.contains("authentication_reached=true"));
+        assert!(!evidence.contains("SHA256:redacted"));
     }
+
+    #[test]
+    fn committed_certificate_rotation_is_accepted_after_uncertain_mutation() {
+        let result = resolve_host_certificate_rotation_outcome(
+            2,
+            Err("simulated response loss".to_owned()),
+            Ok(2),
+        )
+        .unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn uncertain_certificate_rotation_never_replays() {
+        let error = resolve_host_certificate_rotation_outcome(
+            2,
+            Err("simulated response loss".to_owned()),
+            Err("re-observation unavailable".to_owned()),
+        )
+        .unwrap_err();
+        assert!(error.contains("outcome is uncertain"));
+        assert!(error.contains("mutation was not replayed"));
+    }
+
+
 }
