@@ -170,11 +170,13 @@ jobs:
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
           chmod 0755 "${orchestrator}"
           printf 'EDGE_DNS_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${RUNNER_TEMP}/edge-platform-release/resolved.env" >> "${GITHUB_ENV}"
 
       - name: Execute typed DNS lifecycle operation
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
           bin="${EDGE_DNS_ORCHESTRATOR}"
