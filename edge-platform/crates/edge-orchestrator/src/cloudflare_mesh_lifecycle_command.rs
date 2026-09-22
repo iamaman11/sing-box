@@ -290,7 +290,8 @@ async fn run_runtime_verify_with_desired(
 async fn run_runtime_cleanup(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
         return Err(
-            "usage: edge-orchestrator line3-mesh runtime-cleanup <application-spec-path>".to_owned(),
+            "usage: edge-orchestrator line3-mesh runtime-cleanup <application-spec-path>"
+                .to_owned(),
         );
     }
     let authority = resolve_application_authority_from_spec(Path::new(&args[0])).await?;
