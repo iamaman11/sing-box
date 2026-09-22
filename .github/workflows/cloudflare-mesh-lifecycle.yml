@@ -1,0 +1,273 @@
+name: Cloudflare Mesh Lifecycle
+
+on:
+  workflow_call:
+    inputs:
+      command_body:
+        description: Authorized /mesh command from the control-plane router
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.parse.outputs.operation }}
+      mesh_spec_path: ${{ steps.parse.outputs.mesh_spec_path }}
+      vpc_spec_path: ${{ steps.parse.outputs.vpc_spec_path }}
+      application_spec_path: ${{ steps.parse.outputs.application_spec_path }}
+
+    steps:
+      - name: Parse and authorize typed request
+        id: parse
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ inputs.command_body }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import re
+
+          mesh_re = re.compile(r"^infra/cloudflare/[A-Za-z0-9._/-]+-mesh\.json$")
+          vpc_re = re.compile(r"^infra/vultr/[A-Za-z0-9._/-]+-vpc\.json$")
+          application_re = re.compile(r"^infra/application/[A-Za-z0-9._/-]+\.json$")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+          if (
+              len(tokens) != 5
+              or tokens[0] != "/mesh"
+              or tokens[1] not in {"plan", "apply"}
+          ):
+              fail("unsupported /mesh command grammar")
+
+          operation = tokens[1]
+          mesh_spec_path = tokens[2]
+          vpc_spec_path = tokens[3]
+          application_spec_path = tokens[4]
+
+          for label, value, pattern in (
+              ("Mesh", mesh_spec_path, mesh_re),
+              ("VPC", vpc_spec_path, vpc_re),
+              ("application", application_spec_path, application_re),
+          ):
+              if not pattern.fullmatch(value) or ".." in value or "//" in value:
+                  fail(f"invalid {label} spec path")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"operation={operation}\n")
+              handle.write(f"mesh_spec_path={mesh_spec_path}\n")
+              handle.write(f"vpc_spec_path={vpc_spec_path}\n")
+              handle.write(f"application_spec_path={application_spec_path}\n")
+          PY
+
+  verify:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve_release.outputs.release_tag }}
+      release_set_sha256: ${{ steps.resolve_release.outputs.release_set_sha256 }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
+          VPC_SPEC_PATH: ${{ needs.authorize.outputs.vpc_spec_path }}
+          APPLICATION_SPEC_PATH: ${{ needs.authorize.outputs.application_spec_path }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${MESH_SPEC_PATH}"
+          test -f "${VPC_SPEC_PATH}"
+          test -f "${APPLICATION_SPEC_PATH}"
+
+      - name: Resolve and verify exact durable Edge Platform release
+        id: resolve_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+
+  execute:
+    needs: [authorize, verify]
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
+      VPC_SPEC_PATH: ${{ needs.authorize.outputs.vpc_spec_path }}
+      APPLICATION_SPEC_PATH: ${{ needs.authorize.outputs.application_spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${MESH_SPEC_PATH}"
+          test -f "${VPC_SPEC_PATH}"
+          test -f "${APPLICATION_SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${RUNNER_TEMP}/edge-platform-release/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          orchestrator="${RUNNER_TEMP}/edge-platform-release/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_MESH_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${RUNNER_TEMP}/edge-platform-release/resolved.env" >> "${GITHUB_ENV}"
+          printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Materialize strict SSH authority
+        shell: bash
+        env:
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
+          test -s "${key_path}"
+          chmod 600 "${key_path}"
+          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
+
+      - name: Discover controller egress IPv4
+        shell: bash
+        run: |
+          set -euo pipefail
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          python3 - "${ip}" <<'PY'
+          import ipaddress
+          import sys
+          value = ipaddress.ip_address(sys.argv[1].strip())
+          if value.version != 4 or not value.is_global:
+              raise SystemExit("controller egress is not a global IPv4 address")
+          print(value)
+          PY
+          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
+
+      - name: Execute typed Mesh provider lifecycle operation
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          bin="${EDGE_MESH_ORCHESTRATOR}"
+          result="${RUNNER_TEMP}/mesh-result.json"
+          access_acquire="${RUNNER_TEMP}/mesh-access-acquire.json"
+          access_release="${RUNNER_TEMP}/mesh-access-release.json"
+          vultr_spec="$(jq -er '.vultr_spec_path' "${APPLICATION_SPEC_PATH}")"
+          machine="$(jq -er '.machine_id' "${APPLICATION_SPEC_PATH}")"
+          test -f "${vultr_spec}"
+
+          plan_authority() {
+            jq -er '.plan_authority.authority_digest' "$1"
+          }
+
+          ACCESS_CLEANUP_ARMED=0
+
+          cleanup_access() {
+            if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
+              return 0
+            fi
+            "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}"               | tee "${access_release}"
+          }
+
+          finish() {
+            local operation_rc=$?
+            trap - EXIT
+            set +e
+            cleanup_access
+            local cleanup_rc=$?
+            set -e
+            if [[ "${cleanup_rc}" -ne 0 && "${operation_rc}" -eq 0 ]]; then
+              operation_rc="${cleanup_rc}"
+            fi
+            exit "${operation_rc}"
+          }
+
+          trap finish EXIT
+          ACCESS_CLEANUP_ARMED=1
+
+          "${bin}" vultr-lifecycle lease-acquire "${vultr_spec}" "${machine}"             | tee "${access_acquire}"
+          jq -e '.status == "READY"' "${access_acquire}" >/dev/null
+
+          case "${REQUESTED_OPERATION}" in
+            plan)
+              "${bin}" line3-mesh vpc-plan                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 | tee "${result}"
+              ;;
+            apply)
+              plan="${RUNNER_TEMP}/mesh-authority-plan.json"
+              apply="${RUNNER_TEMP}/mesh-apply.json"
+              "${bin}" line3-mesh vpc-plan                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${plan}"
+              authority="$(plan_authority "${plan}")"
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" line3-mesh vpc-apply                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}" "${authority}"                 > "${apply}"
+              jq -s '{plan:.[0],apply:.[1]}' "${plan}" "${apply}" | tee "${result}"
+              ;;
+            *)
+              echo "unreachable Mesh operation" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo '### Cloudflare Mesh provider lifecycle result'
+            echo
+            echo 'The typed orchestrator derives the effective Mesh route from verified Vultr VPC and guest-network observations.'
+            echo 'This backend exposes provider plan/apply only; Mesh token and runtime operations are not available here.'
+            echo 'Ephemeral SSH ingress is released by the EXIT trap.'
+            echo
+            echo '~~~json'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
