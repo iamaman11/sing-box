@@ -955,6 +955,7 @@ jobs:
             docker pull "${warp_ref}" >/dev/null
             evidence_image="${gateway_ref}"
           else
+            # VM_RUNTIME_BUILD_CONTRACT_BEGIN
             build_tag="candidate-${CANDIDATE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             gateway_tag="${registry}/${owner}/vultr-edge-gateway:${build_tag}"
             warp_tag="${registry}/${owner}/vultr-warp-egress:${build_tag}"
@@ -980,6 +981,7 @@ jobs:
               -t "${warp_tag}" \
               win/vultr-waw/stack/warp-egress
             docker push "${warp_tag}"
+            # VM_RUNTIME_BUILD_CONTRACT_END
 
             gateway_digest="$(docker buildx imagetools inspect "${gateway_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
             warp_digest="$(docker buildx imagetools inspect "${warp_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
