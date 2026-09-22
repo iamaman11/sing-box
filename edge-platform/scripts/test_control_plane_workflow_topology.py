@@ -402,8 +402,10 @@ def main() -> None:
         "runtime reuse must prove deterministic edge-agent bytes and preserve original runtime provenance",
     )
     require(
-        '".github/workflows/edge-platform-ci.yml"' not in runtime_input,
-        "control-plane CI workflow text must not itself be a VM runtime input",
+        '    ".github/workflows/edge-platform-ci.yml",' not in runtime_input
+        and 'RUNTIME_BUILD_CONTRACT_PATH = ".github/workflows/edge-platform-ci.yml"' in runtime_input
+        and "_runtime_build_contract(repo_root)" in runtime_input,
+        "runtime identity must hash only the marked VM build contract, not the whole CI workflow",
     )
     require(
         '"edge-platform/crates/edge-agent"' in runtime_input
