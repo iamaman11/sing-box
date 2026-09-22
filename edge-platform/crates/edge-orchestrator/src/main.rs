@@ -34,6 +34,29 @@ async fn main() -> ExitCode {
         }
     };
     let command = parsed.command_name();
+    let release_context = match edge_orchestrator::OrchestrationContext::from_process_env() {
+        Ok(context) => context,
+        Err(err) => {
+            tracing::error!(
+                component = "edge-orchestrator",
+                correlation_id = %telemetry.id(),
+                command,
+                event = "release_context.failure",
+                "release context validation failed"
+            );
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    tracing::info!(
+        component = "edge-orchestrator",
+        correlation_id = %telemetry.id(),
+        command,
+        release_set_sha256 = %release_context.release().release_set_sha256,
+        source_revision = %release_context.release().source_revision,
+        event = "release_context.accepted",
+        "exact durable release context accepted"
+    );
     tracing::info!(
         component = "edge-orchestrator",
         correlation_id = %telemetry.id(),
