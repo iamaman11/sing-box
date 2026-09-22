@@ -551,17 +551,13 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
         .list_firewall_rules(&group.id)
         .await
         .map_err(|err| err.to_string())?;
-    let remaining = final_rules
-        .iter()
-        .map(firewall_rule_spec)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter_map(|spec| {
-            controller_access_rule_matches_profile(unresolved_profile, &spec)
-                .transpose()
-                .map(|matches| matches.then_some(spec))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut remaining = Vec::new();
+    for rule in &final_rules {
+        let spec = firewall_rule_spec(rule)?;
+        if controller_access_rule_matches_profile(unresolved_profile, &spec)? {
+            remaining.push(spec);
+        }
+    }
     if !remaining.is_empty() {
         return Err(format!(
             "controller SSH access cleanup did not prove managed transient /32 absence in firewall group {}: {:?}",
