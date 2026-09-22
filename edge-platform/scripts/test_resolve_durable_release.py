@@ -51,8 +51,15 @@ def sha(data):
 def exe(path, content):
     path.write_text(content); path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-def make_state(accepted_override=None, ambiguous=False):
+def make_state(accepted_override=None, ambiguous=False, schema=3):
     accepted="a"*40; candidate="b"*40; tree="c"*40
+    assert schema in (3, 4)
+    runtime_input="d"*64
+    runtime_source="e"*40
+    runtime_lines=(
+      f'print("runtime_input_sha256={runtime_input}")\nprint("runtime_source_revision={runtime_source}")'
+      if schema == 4 else ""
+    )
     pb=b"release-set-v2"; pbsha=sha(pb); tag="edge-release-"+pbsha
     agent=b"agent"; controller=b"controller"; orchestrator=b"orchestrator"
     asha=sha(agent); csha=sha(controller); osha=sha(orchestrator)
@@ -66,7 +73,7 @@ assert h(d["edge-controller"])=="{csha}"
 assert h(d["edge-orchestrator"])=="{osha}"
 assert h(d["input"])=="{pbsha}"
 print("release_set_sha256={pbsha}")
-print("schema_version=3")
+print("schema_version={schema}")
 print("source_revision={candidate}")
 print("edge_agent_sha256={asha}")
 print("edge_controller_sha256={csha}")
@@ -77,6 +84,7 @@ print("mesh_image=docker.io/cloudflare/mesh@sha256:"+"3"*64)
 print("docker_engine_version=5:29.8.1-1~debian.13~trixie")
 print("containerd_version=2.3.5-1~debian.13~trixie")
 print("compose_version=5.5.1-1~debian.13~trixie")
+{runtime_lines}
 """.encode()
     acceptance=(json.dumps({"schema":1,"accepted_revision":accepted_override or accepted,
       "candidate_revision":candidate,"source_tree":tree,"candidate_run_id":123})+"\n").encode()
@@ -107,6 +115,8 @@ print("compose_version=5.5.1-1~debian.13~trixie")
       refs[tag2]=accepted
     state={"releases":releases,"tag_refs":refs,"commit_trees":{accepted:tree,candidate:tree},"asset_bytes":blobs}
     meta={"accepted":accepted,"candidate":candidate,"tree":tree,"tag":tag,"pbsha":pbsha,"asha":asha,"csha":csha,"osha":osha,
+      "schema":schema,"runtime_input":runtime_input if schema == 4 else "",
+      "runtime_source":runtime_source if schema == 4 else candidate,
       "controller_id":next(x["id"] for x in assets if x["name"]=="edge-controller-linux-amd64")}
     return state,meta
 
@@ -128,6 +138,9 @@ def run(state,meta,expected=None,ok=False):
         assert vals["EDGE_CONTROLLER_SHA256"]==meta["csha"]
         assert vals["EDGE_ORCHESTRATOR_SHA256"]==meta["osha"]
         assert vals["EDGE_AGENT_SHA256"]==meta["asha"]
+        assert vals["EDGE_RELEASE_SCHEMA_VERSION"]==str(meta["schema"])
+        assert vals["EDGE_RUNTIME_SOURCE_REVISION"]==meta["runtime_source"]
+        assert vals["EDGE_RUNTIME_INPUT_SHA256"]==meta["runtime_input"]
         assert vals["EDGE_DOCKER_ENGINE_VERSION"]=="5:29.8.1-1~debian.13~trixie"
         assert vals["EDGE_CONTAINERD_VERSION"]=="2.3.5-1~debian.13~trixie"
         assert vals["EDGE_COMPOSE_VERSION"]=="5.5.1-1~debian.13~trixie"
@@ -135,7 +148,8 @@ def run(state,meta,expected=None,ok=False):
         assert p.returncode!=0,p.stdout
 
 def main():
-    s,m=make_state(); run(s,m,expected=m["tag"],ok=True)
+    s,m=make_state(schema=3); run(s,m,expected=m["tag"],ok=True)
+    s,m=make_state(schema=4); run(s,m,expected=m["tag"],ok=True)
     s,m=make_state(ambiguous=True); run(s,m)
     s,m=make_state(accepted_override="e"*40); run(s,m)
     s,m=make_state(); run(s,m,expected="edge-release-"+"f"*64)

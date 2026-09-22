@@ -23,6 +23,8 @@ const CREATE_FLAGS: &[&str] = &[
     "edge-agent-sha256",
     "edge-controller-sha256",
     "edge-orchestrator-sha256",
+    "runtime-input-sha256",
+    "runtime-source-revision",
     "sing-box-image",
     "warp-egress-image",
     "docker-engine-version",
@@ -165,6 +167,11 @@ fn create_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
                 "edge-orchestrator-sha256",
                 flag(flags, "edge-orchestrator-sha256")?,
             )?,
+            runtime_input_sha256: digest_from_hex(
+                "runtime-input-sha256",
+                flag(flags, "runtime-input-sha256")?,
+            )?,
+            runtime_source_revision: flag(flags, "runtime-source-revision")?.to_owned(),
             sing_box_image: Some(parse_image_ref(
                 "sing-box-image",
                 flag(flags, "sing-box-image")?,
@@ -382,6 +389,13 @@ fn print_vm_evidence(release: &ReleaseSet, digest: &str) -> Result<(), String> {
             "edge_orchestrator_sha256={}",
             digest_to_hex(&vm.edge_orchestrator_sha256)
         );
+    }
+    if release.schema_version >= 4 {
+        println!(
+            "runtime_input_sha256={}",
+            digest_to_hex(&vm.runtime_input_sha256)
+        );
+        println!("runtime_source_revision={}", vm.runtime_source_revision);
     }
     println!(
         "sing_box_image={}",

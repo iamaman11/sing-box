@@ -165,6 +165,9 @@ jobs:
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
+          test "${EDGE_RELEASE_SCHEMA_VERSION}" = "4"
+          [[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           orchestrator="${dir}/edge-orchestrator-linux-amd64"
           agent="${dir}/edge-agent-linux-amd64"
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
@@ -186,7 +189,7 @@ jobs:
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
           agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           jq -n \
-            --arg source_revision "${GITHUB_SHA}" \
+            --arg source_revision "${EDGE_RUNTIME_SOURCE_REVISION}" \
             --arg sha256 "${EDGE_AGENT_SHA256}" \
             '{schema:1,source_revision:$source_revision,sha256:$sha256}' \
             > "${agent_manifest}"
@@ -369,6 +372,9 @@ jobs:
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
+          test "${EDGE_RELEASE_SCHEMA_VERSION}" = "4"
+          [[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           orchestrator="${dir}/edge-orchestrator-linux-amd64"
           agent="${dir}/edge-agent-linux-amd64"
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
@@ -390,7 +396,7 @@ jobs:
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
           agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           jq -n \
-            --arg source_revision "${GITHUB_SHA}" \
+            --arg source_revision "${EDGE_RUNTIME_SOURCE_REVISION}" \
             --arg sha256 "${EDGE_AGENT_SHA256}" \
             '{schema:1,source_revision:$source_revision,sha256:$sha256}' \
             > "${agent_manifest}"

@@ -9,6 +9,8 @@ ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
 MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
+EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
+RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 
 
 def require(condition: bool, message: str) -> None:
@@ -24,6 +26,8 @@ def main() -> None:
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
     mesh = MESH.read_text(encoding="utf-8")
+    edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -222,6 +226,17 @@ def main() -> None:
         "application workflow must not own transient-access PlanAuthority plumbing",
     )
     require(
+        application.count('test "${EDGE_RELEASE_SCHEMA_VERSION}" = "4"') == 2
+        and application.count('[[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]') == 2
+        and application.count('[[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]') == 2,
+        "application lifecycle must require exact ReleaseSet v4 runtime identity in both materialization paths",
+    )
+    require(
+        application.count('--arg source_revision "${EDGE_RUNTIME_SOURCE_REVISION}"') == 2
+        and '--arg source_revision "${GITHUB_SHA}"' not in application,
+        "application release provenance must come from VM runtime authority, not control-plane main SHA",
+    )
+    require(
         "EDGE_DOCKER_ENGINE_VERSION" in vpc
         and "EDGE_CONTAINERD_VERSION" in vpc
         and "EDGE_COMPOSE_VERSION" in vpc,
@@ -374,6 +389,32 @@ def main() -> None:
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
         encoding="utf-8"
     )
+    require(
+        "runtime_input_sha256" in edge_platform_ci
+        and "runtime_input_digest.py compute" in edge_platform_ci
+        and "runtime_input_digest.py decide" in edge_platform_ci
+        and "Resolve exact accepted VM runtime reuse" in edge_platform_ci,
+        "candidate CI must derive and consume one conservative VM runtime input identity",
+    )
+    require(
+        'test "${candidate_agent_sha}" = "${EDGE_AGENT_SHA256}"' in edge_platform_ci
+        and 'runtime_source_revision="${EDGE_RUNTIME_SOURCE_REVISION}"' in edge_platform_ci,
+        "runtime reuse must prove deterministic edge-agent bytes and preserve original runtime provenance",
+    )
+    require(
+        '    ".github/workflows/edge-platform-ci.yml",' not in runtime_input
+        and 'RUNTIME_BUILD_CONTRACT_PATH = ".github/workflows/edge-platform-ci.yml"' in runtime_input
+        and "_runtime_build_contract(repo_root)" in runtime_input,
+        "runtime identity must hash only the marked VM build contract, not the whole CI workflow",
+    )
+    require(
+        '"edge-platform/crates/edge-agent"' in runtime_input
+        and '"win/vultr-waw/stack/edge-gateway"' in runtime_input
+        and '"win/vultr-waw/stack/warp-egress"' in runtime_input
+        and "base_schema != \"4\"" in runtime_input,
+        "runtime identity must cover runtime sources and fail closed for legacy ReleaseSets",
+    )
+
     require(
         "edge-state" not in orchestrator_manifest,
         "GitHub-only edge-orchestrator must not introduce a second persistent desired-state store",
