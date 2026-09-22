@@ -267,8 +267,8 @@ jobs:
               "${bin}" vultr-lifecycle acquire-access-plan "${VULTR_SPEC_PATH}" "${machine}"                 > "${RUNNER_TEMP}/vpc-access-acquire-plan.json"
               access_authority="$(plan_authority "${RUNNER_TEMP}/vpc-access-acquire-plan.json")"
               [[ "${access_authority}" =~ ^[0-9a-f]{64}$ ]]
-              "${bin}" vultr-lifecycle acquire-access "${VULTR_SPEC_PATH}" "${machine}" "${access_authority}"                 > "${RUNNER_TEMP}/vpc-access-acquire.json"
               ACCESS_CLEANUP_ARMED=1
+              "${bin}" vultr-lifecycle acquire-access "${VULTR_SPEC_PATH}" "${machine}" "${access_authority}"                 > "${RUNNER_TEMP}/vpc-access-acquire.json"
 
               "${bin}" vultr-vpc attachment-plan "${SPEC_PATH}" > "${RUNNER_TEMP}/vpc-attachment-plan.json"
               action="$(jq -er '.plan.action.kind' "${RUNNER_TEMP}/vpc-attachment-plan.json")"
