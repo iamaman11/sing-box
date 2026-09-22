@@ -318,7 +318,7 @@ def scenario(existing_draft: bool) -> None:
         second = run_publisher(env)
         state_again = json.loads(state_path.read_text())
         assert state_again["release"]["draft"] is False
-        assert len(state_again["release"]["assets"]) == 11
+        assert len(state_again["release"]["assets"]) == 13
         assert {asset["name"]: asset["id"] for asset in state_again["release"]["assets"]} == asset_ids
         assert "durable_assets=13" in second.stdout
 
