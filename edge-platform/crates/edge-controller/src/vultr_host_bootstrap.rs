@@ -1841,10 +1841,12 @@ mod tests {
     fn served_host_certificate_serial_is_read_from_strict_handshake() {
         let stderr = b"debug1: Server host certificate: ssh-ed25519-cert-v01@openssh.com SHA256:redacted, serial 2 ID \"edge-1-rotated\" CA ssh-ed25519 SHA256:redacted valid forever\n";
         assert_eq!(parse_served_host_certificate_serial(stderr).unwrap(), 2);
-        assert!(parse_served_host_certificate_serial(
-            b"debug1: Server host key: ssh-ed25519 SHA256:redacted\n"
-        )
-        .is_err());
+        assert!(
+            parse_served_host_certificate_serial(
+                b"debug1: Server host key: ssh-ed25519 SHA256:redacted\n"
+            )
+            .is_err()
+        );
         assert!(parse_served_host_certificate_serial(
             b"debug1: Server host certificate: ssh-ed25519-cert-v01@openssh.com SHA256:redacted, serial nope ID \"bad\"\n"
         )
