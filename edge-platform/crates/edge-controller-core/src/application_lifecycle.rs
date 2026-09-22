@@ -321,7 +321,7 @@ pub fn desired_bundle_id(
     Ok(format!(
         "{}-{}-{}",
         desired.machine_id,
-        &artifact.source_revision[..12],
+        &artifact.sha256[..12],
         &desired_digest[..12]
     ))
 }
@@ -384,7 +384,10 @@ pub fn plan_application(
         observation.observed_agent_sha256.as_deref() == Some(release.agent_sha256.as_str());
     let bundle_matches =
         observation.observed_bundle_digest.as_deref() == Some(release.bundle_digest.as_str());
-    let release_matches = observation.current_release.as_ref() == Some(&release);
+    let release_matches = observation
+        .current_release
+        .as_ref()
+        .is_some_and(|current| release_runtime_identity_matches(current, &release));
 
     if agent_matches && bundle_matches && release_matches && observation.runtime_ready {
         return Ok(ApplicationPlan {
@@ -494,6 +497,16 @@ fn rollback_digest(
     let canonical = serde_json::to_vec(&value)
         .map_err(|err| ApplicationSpecError::Serialization(err.to_string()))?;
     Ok(sha256_hex(&canonical))
+}
+
+fn release_runtime_identity_matches(
+    current: &PublishedApplicationRelease,
+    desired: &PublishedApplicationRelease,
+) -> bool {
+    current.release_id == desired.release_id
+        && current.agent_sha256 == desired.agent_sha256
+        && current.bundle_digest == desired.bundle_digest
+        && current.bootstrap_mode == desired.bootstrap_mode
 }
 
 fn blocked_plan(
@@ -688,6 +701,44 @@ mod tests {
     #[test]
     fn desired_digest_is_deterministic() {
         assert_eq!(desired().digest().unwrap(), desired().digest().unwrap());
+    }
+
+    #[test]
+    fn bundle_identity_uses_agent_bytes_not_source_provenance() {
+        let first = artifact();
+        let mut source_only = first.clone();
+        source_only.source_revision = "9".repeat(40);
+        assert_eq!(
+            desired_bundle_id(&desired(), &first).unwrap(),
+            desired_bundle_id(&desired(), &source_only).unwrap()
+        );
+
+        let mut changed_agent = source_only;
+        changed_agent.sha256 = "8".repeat(64);
+        assert_ne!(
+            desired_bundle_id(&desired(), &first).unwrap(),
+            desired_bundle_id(&desired(), &changed_agent).unwrap()
+        );
+    }
+
+    #[test]
+    fn source_provenance_only_drift_is_runtime_noop() {
+        let desired_release = release();
+        let mut observed_release = desired_release.clone();
+        observed_release.source_revision = "9".repeat(40);
+        let observation = ApplicationObservation {
+            observed_agent_sha256: Some(desired_release.agent_sha256.clone()),
+            observed_bundle_digest: Some(desired_release.bundle_digest.clone()),
+            runtime_ready: true,
+            current_release: Some(observed_release),
+            previous_release: None,
+        };
+
+        let plan =
+            plan_application(&desired(), &artifact(), &"3".repeat(64), &observation).unwrap();
+        assert_eq!(plan.class, ApplicationPlanClass::Noop);
+        assert!(plan.actions.is_empty());
+        assert_eq!(plan.desired_release.source_revision, artifact().source_revision);
     }
 
     #[test]
