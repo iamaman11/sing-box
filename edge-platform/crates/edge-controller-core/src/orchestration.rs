@@ -282,8 +282,8 @@ mod tests {
         };
         let observed_dns = DnsObservation {
             records: vec![ObservedDnsRecord {
-                id: "record-1".to_owned(),
-                name: "edge.example.com".to_owned(),
+                provider_id: "record-1".to_owned(),
+                record_name: "edge.example.com".to_owned(),
                 ip: "203.0.113.10".to_owned(),
             }],
         };
