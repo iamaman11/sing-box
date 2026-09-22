@@ -1,8 +1,10 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
-    apply_instance_action, ensure_host_certificate_rotated, prepare_strict_bootstrap,
-    scrub_user_data, strict_ssh_accept, strict_ssh_capture, verify_host_certificate_rotated,
-    verify_operator_key_matches, verify_user_data_scrubbed, wait_provider_ready,
+    apply_instance_action, prepare_strict_bootstrap, strict_ssh_capture,
+    verify_operator_key_matches, wait_provider_ready,
+};
+use crate::vultr_host_substrate_service::{
+    HostSubstrateExecutionPolicy, apply_host_substrate_once, build_host_substrate_authority,
 };
 use crate::vultr_lifecycle_service::{
     ApplyAction, ApplyReport, CreatePrerequisites, LifecycleExecutionPolicy, LifecycleProvider,
@@ -17,6 +19,7 @@ use crate::vultr_support_resources::{
     public_key_material, release_controller_ipv4_access, resolve_managed_ssh_key,
     same_firewall_access_semantics, validate_machine_catalog,
 };
+use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
@@ -40,6 +43,9 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         "inventory" => run_inventory(&args[1..]).await,
         "plan" => run_plan(&args[1..]).await,
         "apply" => run_apply(&args[1..]).await,
+        "substrate-plan" => run_substrate_plan(&args[1..]).await,
+        "substrate-apply" => run_substrate_apply(&args[1..]).await,
+        "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
         "release-access-plan" => run_release_access_plan(&args[1..]).await,
@@ -324,59 +330,172 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    strict_ssh_accept(
-        &ready.main_ip,
-        &machine.id,
-        &operator_private_key_path,
-        &canonical_public_key,
-        &substrate,
-        60,
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
-
-    let (scrub_changed, rotated) = match report.action {
-        ApplyAction::Created => {
-            let scrub_changed = scrub_user_data(
-                &mut operational_provider,
-                &report.provider_id,
-                30,
-                std::time::Duration::from_secs(2),
-            )
-            .await?;
-            let rotated = ensure_host_certificate_rotated(
-                &ready.main_ip,
-                &machine.id,
-                &operator_private_key_path,
-                &canonical_public_key,
-                2,
-            )?;
-            (scrub_changed, rotated)
-        }
-        ApplyAction::Noop => {
-            verify_user_data_scrubbed(&mut operational_provider, &report.provider_id).await?;
-            verify_host_certificate_rotated(
-                &ready.main_ip,
-                &machine.id,
-                &operator_private_key_path,
-                &canonical_public_key,
-                2,
-            )?;
-            (false, false)
-        }
-    };
-
     print_json_value(serde_json::json!({
         "action": report.action.as_str(),
         "machine_id": report.machine_id,
         "provider_id": report.provider_id,
         "main_ip": ready.main_ip,
         "final_plan": report.final_plan,
-        "strict_ssh_acceptance": "PASS",
-        "user_data_scrubbed": true,
-        "user_data_scrub_changed": scrub_changed,
-        "host_certificate_rotated": rotated,
+        "provider_ready": true,
+        "host_substrate_required": true,
         "support_reconciled": support_reconciled,
+    }))
+}
+
+async fn exact_existing_machine_provider_id(
+    desired: &DesiredState,
+    machine_id: &str,
+) -> Result<String, String> {
+    let profiles = load_firewall_profiles(desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        desired,
+        Some(machine_id),
+        &verified_firewalls,
+    )
+    .await?;
+    let plan = report
+        .plans
+        .first()
+        .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
+    if plan.class != PlanClass::Noop {
+        return Err(format!(
+            "host substrate lifecycle requires an exact existing machine; machine {machine_id} plan is {:?}: {}",
+            plan.class,
+            plan.reasons.join("; ")
+        ));
+    }
+    plan.provider_id
+        .clone()
+        .ok_or_else(|| format!("NOOP machine plan for {machine_id} is missing provider id"))
+}
+
+async fn run_substrate_plan(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller vultr-lifecycle substrate-plan <spec-path> <machine-id>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == args[1])
+        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+    let provider_id = exact_existing_machine_provider_id(&desired, &args[1]).await?;
+    let substrate = host_substrate_versions_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let mut provider = operational_provider_from_env()?;
+    let (observation, authorized) = build_host_substrate_authority(
+        &mut provider,
+        &desired,
+        machine,
+        &provider_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &substrate,
+        HostSubstrateExecutionPolicy::default(),
+    )
+    .await?;
+
+    print_json_value(serde_json::json!({
+        "observation": observation,
+        "plan": authorized.plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
+        "mutations_performed": 0,
+    }))
+}
+
+async fn run_substrate_apply(args: &[String]) -> Result<(), String> {
+    if args.len() != 3 {
+        return Err(
+            "usage: edge-controller vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == args[1])
+        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+    let provider_id = exact_existing_machine_provider_id(&desired, &args[1]).await?;
+    let substrate = host_substrate_versions_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let mut provider = operational_provider_from_env()?;
+    let report = apply_host_substrate_once(
+        &mut provider,
+        &desired,
+        machine,
+        &provider_id,
+        &args[2],
+        &operator_private_key_path,
+        &canonical_public_key,
+        &substrate,
+        HostSubstrateExecutionPolicy::default(),
+    )
+    .await?;
+
+    print_json_value(serde_json::json!({
+        "performed": report.performed,
+        "observation": report.observation,
+        "next_plan": report.next_plan,
+    }))
+}
+
+async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-controller vultr-lifecycle substrate-verify <spec-path> <machine-id>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == args[1])
+        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+    let provider_id = exact_existing_machine_provider_id(&desired, &args[1]).await?;
+    let substrate = host_substrate_versions_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let mut provider = operational_provider_from_env()?;
+    let (observation, authorized) = build_host_substrate_authority(
+        &mut provider,
+        &desired,
+        machine,
+        &provider_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &substrate,
+        HostSubstrateExecutionPolicy::default(),
+    )
+    .await?;
+    if authorized.plan.action != HostSubstrateAction::Noop {
+        return Err(format!(
+            "host substrate verify is BLOCKED; next action is {:?}: {}",
+            authorized.plan.action,
+            authorized.plan.reasons.join("; ")
+        ));
+    }
+
+    print_json_value(serde_json::json!({
+        "status": "PASS",
+        "observation": observation,
+        "plan": authorized.plan,
+        "plan_authority": authorized.authority,
     }))
 }
 
@@ -1751,6 +1870,9 @@ fn usage() -> String {
         "  edge-controller vultr-lifecycle inventory <spec-path>",
         "  edge-controller vultr-lifecycle plan <spec-path> [machine-id]",
         "  edge-controller vultr-lifecycle apply <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-controller vultr-lifecycle substrate-plan <spec-path> <machine-id>",
+        "  edge-controller vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-controller vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-controller vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-controller vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-controller vultr-lifecycle release-access-plan <spec-path> <machine-id>",

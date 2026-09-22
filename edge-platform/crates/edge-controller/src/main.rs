@@ -20,6 +20,7 @@ mod cloudflare_zero_trust_lifecycle_service;
 mod deploy_orchestrator;
 mod error;
 mod vultr_host_bootstrap;
+mod vultr_host_substrate_service;
 mod vultr_lifecycle_adapter;
 mod vultr_lifecycle_command;
 mod vultr_lifecycle_service;
