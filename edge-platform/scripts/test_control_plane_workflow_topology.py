@@ -105,11 +105,21 @@ def main() -> None:
         and 'release_controller_access "${spec}" "${machine}" "apply"' in apply_case,
         "Vultr apply must bracket SSH-dependent substrate convergence with support access",
     )
+    provider_pos = apply_case.index(
+        'run_lifecycle apply "${spec}" "${machine}" "${authority}"'
+    )
+    acquire_pos = apply_case.index(
+        'acquire_controller_access "${spec}" "${machine}" "apply"'
+    )
+    substrate_pos = apply_case.index(
+        'converge_host_substrate "${spec}" "${machine}" "apply"'
+    )
+    release_pos = apply_case.index(
+        'release_controller_access "${spec}" "${machine}" "apply"',
+        substrate_pos,
+    )
     require(
-        apply_case.index('run_lifecycle apply "${spec}" "${machine}" "${authority}"')
-        < apply_case.index('acquire_controller_access "${spec}" "${machine}" "apply"')
-        < apply_case.index('converge_host_substrate "${spec}" "${machine}" "apply"')
-        < apply_case.index('release_controller_access "${spec}" "${machine}" "apply"'),
+        provider_pos < acquire_pos < substrate_pos < release_pos,
         "Vultr apply access ordering must remain provider -> acquire -> substrate -> release",
     )
     require(
