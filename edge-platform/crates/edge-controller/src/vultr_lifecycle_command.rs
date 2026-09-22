@@ -14,10 +14,10 @@ use crate::vultr_lifecycle_service::{
 };
 use crate::vultr_support_resources::{
     FirewallProfileSet, ResolvedFirewallProfile, SupportResourceProvider, VultrSupportApiProvider,
-    cleanup_environment_support_resources, controller_ipv4_access_specs, ensure_firewall_profile,
-    firewall_group_description, firewall_rule_spec, observe_verified_firewall_bindings,
-    public_key_material, release_controller_ipv4_access, resolve_managed_ssh_key,
-    same_firewall_access_semantics, validate_machine_catalog,
+    cleanup_environment_support_resources, controller_access_rule_matches_profile,
+    ensure_firewall_profile, firewall_group_description, firewall_rule_spec, firewall_rules_match,
+    observe_verified_firewall_bindings, public_key_material, release_controller_ipv4_access,
+    resolve_managed_ssh_key, validate_machine_catalog,
 };
 use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
 use edge_controller_core::lifecycle::{
@@ -172,6 +172,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .find(|machine| machine.id == args[1])
         .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
     let profiles = load_firewall_profiles(&desired)?;
+    let resolved_profiles = load_resolved_firewall_profiles(&desired)?;
     let substrate = host_substrate_versions_from_env()?;
     let policy = LifecycleExecutionPolicy::default();
     let canonical_public_key = read_canonical_ssh_public_key()?;
@@ -213,7 +214,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
 
     let firewall = if matches!(initial_class, PlanClass::Create | PlanClass::UpdateInPlace) {
         if let Some(profile_name) = machine.provider.firewall_profile.as_deref() {
-            let profile_set = profiles.as_ref().ok_or_else(|| {
+            let profile_set = resolved_profiles.as_ref().ok_or_else(|| {
                 format!(
                     "machine {} references firewall profile {profile_name}, but no profile registry is loaded",
                     machine.id
@@ -227,7 +228,9 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
                 &policy,
             )
             .await?;
-            verified_firewalls.insert(resolved.id.clone(), resolved.profile_name.clone());
+            verified_firewalls =
+                verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref())
+                    .await?;
             Some(resolved)
         } else {
             None
@@ -613,30 +616,6 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AccessReconcileClass {
-    Noop,
-    FirewallOnly,
-    Blocked,
-}
-
-fn access_reconcile_class(
-    plan: &edge_controller_core::vultr_lifecycle::MachinePlan,
-) -> AccessReconcileClass {
-    match plan.class {
-        PlanClass::Noop => AccessReconcileClass::Noop,
-        PlanClass::UpdateInPlace
-            if !plan.reasons.is_empty()
-                && plan.reasons.iter().all(|reason| {
-                    reason == "firewall profile differs or is not provider-verified"
-                }) =>
-        {
-            AccessReconcileClass::FirewallOnly
-        }
-        _ => AccessReconcileClass::Blocked,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccessAuthorityMode {
     Acquire,
     Release,
@@ -748,6 +727,7 @@ async fn build_access_authority(
     let (raw_profiles, resolved_profiles, profile_material, controller_ipv4) =
         load_access_authority_profiles(desired)?;
     let raw_profile = raw_profiles.profile(profile_name)?;
+    let resolved_profile = resolved_profiles.profile(profile_name)?;
     if !raw_profile
         .rules
         .iter()
@@ -771,9 +751,10 @@ async fn build_access_authority(
 
     match mode {
         AccessAuthorityMode::Acquire => {
+            // Machine identity is checked only against the persistent firewall projection.
+            // Current runner /32 presence is owned exclusively by this support-access authority.
             let verified_firewalls =
-                observe_verified_firewall_bindings(support_provider, desired, &resolved_profiles)
-                    .await?;
+                observe_verified_firewall_bindings(support_provider, desired, &raw_profiles).await?;
             let report = plan_desired_state_with_firewall_profiles(
                 lifecycle_provider,
                 desired,
@@ -786,11 +767,15 @@ async fn build_access_authority(
                 .first()
                 .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?
                 .clone();
-            let (action, disposition) = match access_reconcile_class(&machine_plan) {
-                AccessReconcileClass::Noop => ("NOOP", PlanDisposition::Noop),
-                AccessReconcileClass::FirewallOnly => ("ACQUIRE", PlanDisposition::Mutate),
-                AccessReconcileClass::Blocked => ("BLOCKED", PlanDisposition::Blocked),
+
+            let (action, disposition) = if machine_plan.class != PlanClass::Noop {
+                ("BLOCKED", PlanDisposition::Blocked)
+            } else if firewall_rules_match(resolved_profile, &observed_rules)? {
+                ("NOOP", PlanDisposition::Noop)
+            } else {
+                ("ACQUIRE", PlanDisposition::Mutate)
             };
+
             let observed = serde_json::json!({
                 "machine_inventory": report.inventory,
                 "support": support_observation,
@@ -811,19 +796,10 @@ async fn build_access_authority(
             .map_err(|err| err.to_string())
         }
         AccessAuthorityMode::Release => {
-            let targets = controller_ipv4_access_specs(raw_profile, &controller_ipv4)?;
-            if targets.is_empty() {
-                return Err(format!(
-                    "firewall profile {profile_name} has no @controller-ipv4 access rule"
-                ));
-            }
             let mut matching_rule_ids = Vec::new();
             for rule in &observed_rules {
                 let spec = firewall_rule_spec(rule)?;
-                if targets
-                    .iter()
-                    .any(|target| same_firewall_access_semantics(&spec, target))
-                {
+                if controller_access_rule_matches_profile(raw_profile, &spec)? {
                     matching_rule_ids.push(rule.id);
                 }
             }
@@ -1673,6 +1649,22 @@ pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
 pub(crate) fn load_firewall_profiles(
     desired: &DesiredState,
 ) -> Result<Option<FirewallProfileSet>, String> {
+    let profiles = load_firewall_profiles_raw(desired)?;
+    if let Some(profiles) = profiles.as_ref() {
+        for profile_name in desired
+            .machines
+            .iter()
+            .filter_map(|machine| machine.provider.firewall_profile.as_deref())
+        {
+            profiles.profile(profile_name)?;
+        }
+    }
+    Ok(profiles)
+}
+
+fn load_resolved_firewall_profiles(
+    desired: &DesiredState,
+) -> Result<Option<FirewallProfileSet>, String> {
     let Some(mut profiles) = load_firewall_profiles_raw(desired)? else {
         return Ok(None);
     };
@@ -1937,37 +1929,6 @@ mod tests {
         assert!(error.contains("does not match desired profile"));
     }
 
-    #[test]
-    fn access_reconcile_allows_only_firewall_only_update() {
-        use edge_controller_core::vultr_lifecycle::MachinePlan;
-
-        let firewall_only = MachinePlan {
-            machine_id: "edge-1".to_owned(),
-            class: PlanClass::UpdateInPlace,
-            provider_id: Some("provider-1".to_owned()),
-            desired_spec_digest: "0".repeat(64),
-            reasons: vec!["firewall profile differs or is not provider-verified".to_owned()],
-        };
-        assert_eq!(
-            access_reconcile_class(&firewall_only),
-            AccessReconcileClass::FirewallOnly
-        );
-
-        let mut mixed = firewall_only.clone();
-        mixed.reasons.push("managed tags differ".to_owned());
-        assert_eq!(
-            access_reconcile_class(&mixed),
-            AccessReconcileClass::Blocked
-        );
-
-        let mut create = firewall_only;
-        create.class = PlanClass::Create;
-        create.reasons = vec!["no exact owned provider resource exists".to_owned()];
-        assert_eq!(
-            access_reconcile_class(&create),
-            AccessReconcileClass::Blocked
-        );
-    }
 
     fn operational_instance(
         power_status: &str,
