@@ -810,19 +810,130 @@ async fn observe_tcp_readiness(
     .await
 }
 
-async fn wait_for_tcp_readiness(
-    target_ip: &str,
-    policy: TcpReadinessPolicy,
-) -> Result<TcpReadinessObservation, String> {
-    let observation = observe_tcp_readiness(target_ip, policy).await?;
-    if observation.final_state == TcpReadinessState::Ready {
-        Ok(observation)
-    } else {
-        Err(format!(
-            "support-access TCP readiness failed for {target_ip}:22: {}",
-            observation.evidence()
-        ))
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct SupportAccessProviderEvidence {
+    controller_ipv4: String,
+    firewall_group_id: Option<String>,
+    matching_rule_ids: Vec<u64>,
+    exact_controller_rules_present_once: bool,
+    machine_firewall_group_id: Option<String>,
+    firewall_group_attached_to_machine: bool,
+    acquire_plan_disposition: String,
+}
+
+fn classify_support_access_provider_evidence(
+    controller_ipv4: String,
+    firewall_group_id: Option<String>,
+    observed_rules: &[VultrFirewallRule],
+    target_rules: &std::collections::BTreeSet<crate::vultr_support_resources::FirewallRuleSpec>,
+    machine_firewall_group_id: Option<String>,
+    acquire_disposition: PlanDisposition,
+) -> Result<SupportAccessProviderEvidence, String> {
+    let mut matching_rule_ids = Vec::new();
+    let mut matching_counts = BTreeMap::new();
+    for rule in observed_rules {
+        let spec = firewall_rule_spec(rule)?;
+        if target_rules.contains(&spec) {
+            matching_rule_ids.push(rule.id);
+            *matching_counts.entry(spec).or_insert(0usize) += 1;
+        }
     }
+    matching_rule_ids.sort_unstable();
+
+    let exact_controller_rules_present_once = !target_rules.is_empty()
+        && target_rules
+            .iter()
+            .all(|target| matching_counts.get(target) == Some(&1usize));
+    let firewall_group_attached_to_machine = firewall_group_id
+        .as_ref()
+        .is_some_and(|group_id| machine_firewall_group_id.as_ref() == Some(group_id));
+    let acquire_plan_disposition = match acquire_disposition {
+        PlanDisposition::Noop => "NOOP",
+        PlanDisposition::Mutate => "MUTATE",
+        PlanDisposition::Blocked => "BLOCKED",
+    }
+    .to_owned();
+
+    Ok(SupportAccessProviderEvidence {
+        controller_ipv4,
+        firewall_group_id,
+        matching_rule_ids,
+        exact_controller_rules_present_once,
+        machine_firewall_group_id,
+        firewall_group_attached_to_machine,
+        acquire_plan_disposition,
+    })
+}
+
+async fn capture_support_access_provider_evidence(
+    desired: &DesiredState,
+    machine_id: &str,
+    lifecycle_provider: &mut VultrApiProvider,
+    support_provider: &mut VultrSupportApiProvider,
+) -> Result<SupportAccessProviderEvidence, String> {
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
+    let profile_name = machine.provider.firewall_profile.as_deref().ok_or_else(|| {
+        format!(
+            "machine {} has no firewall_profile; timeout evidence requires support access",
+            machine.id
+        )
+    })?;
+
+    let (raw_profiles, _, _, controller_ipv4) = load_access_authority_profiles(desired)?;
+    let raw_profile = raw_profiles.profile(profile_name)?;
+    let target_rules = controller_ipv4_access_specs(raw_profile, &controller_ipv4)?;
+    let (support_observation, observed_rules) =
+        observe_firewall_access_authority(support_provider, &desired.environment, profile_name)
+            .await?;
+    let firewall_group_id = support_observation
+        .get("group")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|group| group.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+
+    let fresh_machine = exact_existing_machine_observation(desired, machine_id).await?;
+    let fresh_authority = build_access_authority(
+        desired,
+        machine_id,
+        AccessAuthorityMode::Acquire,
+        lifecycle_provider,
+        support_provider,
+    )
+    .await?;
+
+    classify_support_access_provider_evidence(
+        controller_ipv4,
+        firewall_group_id,
+        &observed_rules,
+        &target_rules,
+        fresh_machine.firewall_group_id,
+        fresh_authority.disposition,
+    )
+}
+
+fn support_access_timeout_error(
+    target_ip: &str,
+    tcp_readiness: &TcpReadinessObservation,
+    provider_evidence: Result<SupportAccessProviderEvidence, String>,
+) -> String {
+    let evidence_json = match provider_evidence {
+        Ok(evidence) => serde_json::to_string(&evidence)
+            .unwrap_or_else(|err| format!(r#"{{"status":"SERIALIZATION_ERROR","detail":"{err}"}}"#)),
+        Err(error) => serde_json::to_string(&serde_json::json!({
+            "status": "OBSERVATION_ERROR",
+            "detail": error,
+        }))
+        .unwrap_or_else(|err| format!(r#"{{"status":"SERIALIZATION_ERROR","detail":"{err}"}}"#)),
+    };
+    format!(
+        "support-access TCP readiness failed for {target_ip}:22: {}; provider_evidence={evidence_json}",
+        tcp_readiness.evidence()
+    )
 }
 
 fn strict_ssh_error_after_tcp_ready(
@@ -874,7 +985,21 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
     verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
     let substrate = host_substrate_versions_from_env()?;
     let tcp_readiness =
-        wait_for_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
+        observe_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
+    if tcp_readiness.final_state == TcpReadinessState::Timeout {
+        let provider_evidence = capture_support_access_provider_evidence(
+            &desired,
+            &args[1],
+            &mut lifecycle_provider,
+            &mut support_provider,
+        )
+        .await;
+        return Err(support_access_timeout_error(
+            target_ip,
+            &tcp_readiness,
+            provider_evidence,
+        ));
+    }
     strict_ssh_accept(
         target_ip,
         &args[1],
@@ -2399,6 +2524,74 @@ mod tests {
             instance_action_disposition(InstanceAction::Reboot, &stopped),
             (PlanDisposition::Blocked, "BLOCKED")
         );
+    }
+
+    #[test]
+    fn timeout_provider_evidence_requires_exact_rule_and_attachment() {
+        let target = crate::vultr_support_resources::FirewallRuleSpec {
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "203.0.113.25".to_owned(),
+            subnet_size: 32,
+            port: "22".to_owned(),
+            source: String::new(),
+            notes: "application acceptance controller SSH".to_owned(),
+        };
+        let targets = std::collections::BTreeSet::from([target.clone()]);
+        let observed = VultrFirewallRule {
+            id: 41,
+            ip_type: target.ip_type.clone(),
+            protocol: target.protocol.clone(),
+            subnet: target.subnet.clone(),
+            subnet_size: target.subnet_size,
+            port: target.port.clone(),
+            source: target.source.clone(),
+            notes: target.notes.clone(),
+        };
+
+        let evidence = classify_support_access_provider_evidence(
+            "203.0.113.25".to_owned(),
+            Some("fw-1".to_owned()),
+            &[observed],
+            &targets,
+            Some("fw-1".to_owned()),
+            PlanDisposition::Noop,
+        )
+        .unwrap();
+
+        assert_eq!(evidence.matching_rule_ids, vec![41]);
+        assert!(evidence.exact_controller_rules_present_once);
+        assert!(evidence.firewall_group_attached_to_machine);
+        assert_eq!(evidence.acquire_plan_disposition, "NOOP");
+    }
+
+    #[test]
+    fn timeout_provider_evidence_exposes_missing_rule_and_detached_group() {
+        let target = crate::vultr_support_resources::FirewallRuleSpec {
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "203.0.113.25".to_owned(),
+            subnet_size: 32,
+            port: "22".to_owned(),
+            source: String::new(),
+            notes: "application acceptance controller SSH".to_owned(),
+        };
+        let targets = std::collections::BTreeSet::from([target]);
+
+        let evidence = classify_support_access_provider_evidence(
+            "203.0.113.25".to_owned(),
+            Some("fw-1".to_owned()),
+            &[],
+            &targets,
+            Some("fw-other".to_owned()),
+            PlanDisposition::Mutate,
+        )
+        .unwrap();
+
+        assert!(evidence.matching_rule_ids.is_empty());
+        assert!(!evidence.exact_controller_rules_present_once);
+        assert!(!evidence.firewall_group_attached_to_machine);
+        assert_eq!(evidence.acquire_plan_disposition, "MUTATE");
     }
 
     #[tokio::test]
