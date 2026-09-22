@@ -14,7 +14,8 @@ use crate::vultr_lifecycle_service::{
 };
 use crate::vultr_support_resources::{
     FirewallProfileSet, ResolvedFirewallProfile, SupportResourceProvider, VultrSupportApiProvider,
-    cleanup_environment_support_resources, controller_ipv4_access_specs, ensure_firewall_profile,
+    cleanup_environment_support_resources, controller_access_projection_matches,
+    controller_ipv4_access_specs, ensure_firewall_profile, ensure_persistent_firewall_profile,
     firewall_group_description, firewall_rule_spec, observe_verified_firewall_bindings,
     public_key_material, release_controller_ipv4_access, resolve_managed_ssh_key,
     same_firewall_access_semantics, validate_machine_catalog,
@@ -220,7 +221,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
                 )
             })?;
             let profile = profile_set.profile(profile_name)?;
-            let resolved = ensure_firewall_profile(
+            let resolved = ensure_persistent_firewall_profile(
                 &mut support_provider,
                 &desired.environment,
                 profile,
@@ -820,10 +821,7 @@ async fn build_access_authority(
             let mut matching_rule_ids = Vec::new();
             for rule in &observed_rules {
                 let spec = firewall_rule_spec(rule)?;
-                if targets
-                    .iter()
-                    .any(|target| same_firewall_access_semantics(&spec, target))
-                {
+                if controller_access_projection_matches(raw_profile, &spec)? {
                     matching_rule_ids.push(rule.id);
                 }
             }
@@ -1673,7 +1671,7 @@ pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
 pub(crate) fn load_firewall_profiles(
     desired: &DesiredState,
 ) -> Result<Option<FirewallProfileSet>, String> {
-    let Some(mut profiles) = load_firewall_profiles_raw(desired)? else {
+    let Some(profiles) = load_firewall_profiles_raw(desired)? else {
         return Ok(None);
     };
     let profile_names = desired
@@ -1681,8 +1679,6 @@ pub(crate) fn load_firewall_profiles(
         .iter()
         .filter_map(|machine| machine.provider.firewall_profile.clone())
         .collect::<Vec<_>>();
-    let controller_ipv4 = env::var("EDGE_CONTROLLER_IPV4").ok();
-    profiles.resolve_controller_ipv4_for_profiles(&profile_names, controller_ipv4.as_deref())?;
     for profile_name in &profile_names {
         profiles.profile(profile_name)?;
     }
