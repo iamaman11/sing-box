@@ -13,11 +13,12 @@ use crate::vultr_lifecycle_service::{
     inventory_desired_state_with_firewall_profiles, plan_desired_state_with_firewall_profiles,
 };
 use crate::vultr_support_resources::{
-    FirewallProfileSet, ResolvedFirewallProfile, SupportResourceProvider, VultrSupportApiProvider,
-    cleanup_environment_support_resources, controller_access_cleanup_projection_matches,
-    controller_ipv4_access_specs, ensure_firewall_profile, ensure_persistent_firewall_profile,
-    firewall_group_description, firewall_rule_spec, observe_verified_firewall_bindings,
-    public_key_material, release_controller_ipv4_access, resolve_managed_ssh_key,
+    FirewallProfileSet, FirewallRuleSpec, ResolvedFirewallProfile, SupportResourceProvider,
+    VultrSupportApiProvider, cleanup_environment_support_resources,
+    controller_access_cleanup_projection_matches, controller_ipv4_access_specs,
+    ensure_firewall_profile, ensure_persistent_firewall_profile, firewall_group_description,
+    firewall_rule_spec, observe_verified_firewall_bindings, public_key_material,
+    release_controller_ipv4_access, resolve_managed_ssh_key, same_firewall_access_semantics,
     validate_machine_catalog,
 };
 use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
@@ -810,19 +811,134 @@ async fn observe_tcp_readiness(
     .await
 }
 
-async fn wait_for_tcp_readiness(
+fn firewall_rule_matches_expected_controller_access(
+    rule: &VultrFirewallRule,
+    expected: &std::collections::BTreeSet<FirewallRuleSpec>,
+) -> Result<bool, String> {
+    let observed = firewall_rule_spec(rule)?;
+    Ok(expected
+        .iter()
+        .any(|candidate| same_firewall_access_semantics(candidate, &observed)))
+}
+
+fn firewall_rule_spec_evidence(spec: &FirewallRuleSpec) -> serde_json::Value {
+    serde_json::json!({
+        "ip_type": spec.ip_type,
+        "protocol": spec.protocol,
+        "subnet": spec.subnet,
+        "subnet_size": spec.subnet_size,
+        "port": spec.port,
+        "source": spec.source,
+        "notes": spec.notes,
+    })
+}
+
+async fn observe_support_access_diagnostic(
+    desired: &DesiredState,
+    machine_id: &str,
+    observed: &ObservedMachine,
     target_ip: &str,
-    policy: TcpReadinessPolicy,
-) -> Result<TcpReadinessObservation, String> {
-    let observation = observe_tcp_readiness(target_ip, policy).await?;
-    if observation.final_state == TcpReadinessState::Ready {
-        Ok(observation)
-    } else {
-        Err(format!(
-            "support-access TCP readiness failed for {target_ip}:22: {}",
-            observation.evidence()
-        ))
+    tcp_readiness: &TcpReadinessObservation,
+    lifecycle_provider: &mut VultrApiProvider,
+    support_provider: &mut VultrSupportApiProvider,
+) -> Result<serde_json::Value, String> {
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
+    let profile_name = machine.provider.firewall_profile.as_deref().ok_or_else(|| {
+        format!(
+            "machine {} has no firewall_profile; support-access diagnostic requires provider-owned SSH ingress",
+            machine.id
+        )
+    })?;
+
+    let (raw_profiles, _, _, controller_ipv4) = load_access_authority_profiles(desired)?;
+    let profile = raw_profiles.profile(profile_name)?;
+    let expected_controller_rules = controller_ipv4_access_specs(profile, &controller_ipv4)?;
+    let expected_description = firewall_group_description(&desired.environment, profile_name);
+
+    let instance = lifecycle_provider
+        .get_instance(&observed.provider_id)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let mut groups = support_provider
+        .list_firewall_groups()
+        .await
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .filter(|group| group.description == expected_description)
+        .collect::<Vec<_>>();
+    groups.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut group_evidence = Vec::new();
+    let mut exact_controller_rule_count = 0usize;
+    for group in &groups {
+        let mut rules = support_provider
+            .list_firewall_rules(&group.id)
+            .await
+            .map_err(|err| err.to_string())?;
+        rules.sort_by_key(|rule| rule.id);
+
+        let mut controller_rules = Vec::new();
+        for rule in &rules {
+            if firewall_rule_matches_expected_controller_access(rule, &expected_controller_rules)? {
+                controller_rules.push(rule.clone());
+            }
+        }
+        exact_controller_rule_count += controller_rules.len();
+
+        group_evidence.push(serde_json::json!({
+            "id": group.id,
+            "description": group.description,
+            "date_created": group.date_created,
+            "date_modified": group.date_modified,
+            "rule_count": rules.len(),
+            "rules": rules,
+            "exact_controller_rules": controller_rules,
+        }));
     }
+
+    let owned_group_id = (groups.len() == 1).then(|| groups[0].id.clone());
+    let attachment_matches_owned_group = owned_group_id
+        .as_deref()
+        .is_some_and(|group_id| instance.firewall_group_id == group_id);
+    let exact_controller_rules_match = groups.len() == 1
+        && exact_controller_rule_count == expected_controller_rules.len();
+
+    Ok(serde_json::json!({
+        "controller_ipv4": controller_ipv4,
+        "target": {
+            "ipv4": target_ip,
+            "port": 22,
+        },
+        "tcp_readiness": tcp_readiness,
+        "machine": {
+            "provider_id": observed.provider_id,
+            "observed_main_ip": observed.main_ip,
+            "provider_main_ip": instance.main_ip,
+            "provider_status": instance.status,
+            "provider_server_status": instance.server_status,
+            "provider_power_status": instance.power_status,
+            "observed_firewall_group_id": observed.firewall_group_id,
+            "provider_firewall_group_id": instance.firewall_group_id,
+        },
+        "firewall": {
+            "profile": profile_name,
+            "expected_description": expected_description,
+            "owned_group_count": groups.len(),
+            "owned_groups": group_evidence,
+            "expected_controller_rules": expected_controller_rules
+                .iter()
+                .map(firewall_rule_spec_evidence)
+                .collect::<Vec<_>>(),
+            "exact_controller_rule_count": exact_controller_rule_count,
+            "exact_controller_rules_match": exact_controller_rules_match,
+            "attachment_matches_owned_group": attachment_matches_owned_group,
+        },
+    }))
 }
 
 fn strict_ssh_error_after_tcp_ready(
@@ -874,7 +990,54 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
     verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
     let substrate = host_substrate_versions_from_env()?;
     let tcp_readiness =
-        wait_for_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
+        observe_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
+    let mutations_performed = access
+        .get("mutations_performed")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if tcp_readiness.final_state != TcpReadinessState::Ready {
+        let diagnostic = observe_support_access_diagnostic(
+            &desired,
+            &args[1],
+            &observed,
+            target_ip,
+            &tcp_readiness,
+            &mut lifecycle_provider,
+            &mut support_provider,
+        )
+        .await;
+
+        let diagnostic = match diagnostic {
+            Ok(evidence) => serde_json::json!({
+                "status": "TCP_TIMEOUT",
+                "machine_id": args[1],
+                "lease_phase": lease.phase(),
+                "access": access,
+                "provider_id": observed.provider_id,
+                "tcp_readiness": tcp_readiness,
+                "support_access_diagnostic": evidence,
+                "mutations_performed": mutations_performed,
+            }),
+            Err(error) => serde_json::json!({
+                "status": "TCP_TIMEOUT",
+                "machine_id": args[1],
+                "lease_phase": lease.phase(),
+                "access": access,
+                "provider_id": observed.provider_id,
+                "tcp_readiness": tcp_readiness,
+                "support_access_diagnostic": {
+                    "observation_error": error,
+                },
+                "mutations_performed": mutations_performed,
+            }),
+        };
+        print_json_value(diagnostic)?;
+        return Err(format!(
+            "support-access TCP readiness failed for {target_ip}:22: {}; provider diagnostic emitted before cleanup",
+            tcp_readiness.evidence()
+        ));
+    }
+
     strict_ssh_accept(
         target_ip,
         &args[1],
@@ -887,10 +1050,6 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
     .await
     .map_err(|error| strict_ssh_error_after_tcp_ready(&tcp_readiness, error))?;
     lease.ready()?;
-    let mutations_performed = access
-        .get("mutations_performed")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
 
     print_json_value(serde_json::json!({
         "status": "READY",
@@ -2452,6 +2611,39 @@ mod tests {
         assert_eq!(
             observation.last_error_class,
             Some(TcpReadinessFailureClass::ConnectTimeout)
+        );
+    }
+
+    #[test]
+    fn controller_access_diagnostic_matches_only_exact_expected_rule() {
+        let expected = std::collections::BTreeSet::from([FirewallRuleSpec {
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "203.0.113.50".to_owned(),
+            subnet_size: 32,
+            port: "22".to_owned(),
+            source: String::new(),
+            notes: "controller".to_owned(),
+        }]);
+        let exact = VultrFirewallRule {
+            id: 42,
+            ip_type: "v4".to_owned(),
+            protocol: "tcp".to_owned(),
+            subnet: "203.0.113.50".to_owned(),
+            subnet_size: 32,
+            port: "22".to_owned(),
+            source: String::new(),
+            notes: "different-note".to_owned(),
+        };
+        let wrong_source = VultrFirewallRule {
+            id: 43,
+            subnet: "203.0.113.51".to_owned(),
+            ..exact.clone()
+        };
+
+        assert!(firewall_rule_matches_expected_controller_access(&exact, &expected).unwrap());
+        assert!(
+            !firewall_rule_matches_expected_controller_access(&wrong_source, &expected).unwrap()
         );
     }
 
