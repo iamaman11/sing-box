@@ -240,6 +240,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_bootstrap_mode() {
-        assert!(Cli::try_parse_from(["edge-controller", "bootstrap-runtime", "arbitrary"]).is_err());
+        assert!(
+            Cli::try_parse_from(["edge-controller", "bootstrap-runtime", "arbitrary"]).is_err()
+        );
     }
 }
