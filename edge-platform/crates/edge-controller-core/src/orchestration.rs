@@ -263,6 +263,35 @@ mod tests {
     }
 
     #[test]
+    fn changed_machine_observation_changes_dns_plan_without_source_edit() {
+        use crate::cloudflare_dns_lifecycle::{
+            ApplyAction, DesiredDnsState, DnsObservation, ObservedDnsRecord, plan_apply,
+        };
+
+        let desired = DesiredDnsState {
+            schema: 1,
+            environment: "acceptance".to_owned(),
+            zone_name: "example.com".to_owned(),
+            record_name: "edge.example.com".to_owned(),
+        };
+        let observed_dns = DnsObservation {
+            records: vec![ObservedDnsRecord {
+                id: "record-1".to_owned(),
+                name: "edge.example.com".to_owned(),
+                ip: "203.0.113.10".to_owned(),
+            }],
+        };
+
+        let first = derive_dns_target(&machine("203.0.113.10")).unwrap();
+        let second = derive_dns_target(&machine("203.0.113.11")).unwrap();
+        let first_plan = plan_apply(&desired, &first.target_ipv4, &observed_dns).unwrap();
+        let second_plan = plan_apply(&desired, &second.target_ipv4, &observed_dns).unwrap();
+
+        assert!(matches!(first_plan.action, ApplyAction::Noop));
+        assert!(matches!(second_plan.action, ApplyAction::Update { .. }));
+    }
+
+    #[test]
     fn mesh_route_is_derived_only_from_verified_vpc_observation() {
         let first = derive_mesh_route(&vpc("10.27.96.0/20")).unwrap();
         let second = derive_mesh_route(&vpc("10.28.0.0/20")).unwrap();
