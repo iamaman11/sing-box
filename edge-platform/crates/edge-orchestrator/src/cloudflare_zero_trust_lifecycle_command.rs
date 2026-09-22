@@ -25,7 +25,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
 async fn run_doctor(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
         return Err(
-            "usage: edge-controller cloudflare-zero-trust doctor <guardrails-path>".to_owned(),
+            "usage: edge-orchestrator cloudflare-zero-trust doctor <guardrails-path>".to_owned(),
         );
     }
     cloudflare_zero_trust_doctor::run(Path::new(&args[0])).await
@@ -34,7 +34,7 @@ async fn run_doctor(args: &[String]) -> Result<(), String> {
 async fn run_inventory(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
         return Err(
-            "usage: edge-controller cloudflare-zero-trust inventory <spec-path>".to_owned(),
+            "usage: edge-orchestrator cloudflare-zero-trust inventory <spec-path>".to_owned(),
         );
     }
     let desired = load_desired(Path::new(&args[0]))?;
@@ -50,7 +50,7 @@ async fn run_inventory(args: &[String]) -> Result<(), String> {
 
 async fn run_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller cloudflare-zero-trust plan <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator cloudflare-zero-trust plan <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let runtime = runtime_inputs(&desired)?;
@@ -69,7 +69,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 async fn run_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller cloudflare-zero-trust apply <spec-path> <authorized-plan-sha256>"
+            "usage: edge-orchestrator cloudflare-zero-trust apply <spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -93,7 +93,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
 
 async fn run_verify(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller cloudflare-zero-trust verify <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator cloudflare-zero-trust verify <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let runtime = runtime_inputs(&desired)?;
@@ -160,11 +160,11 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
-        "  edge-controller cloudflare-zero-trust doctor <guardrails-path>",
-        "  edge-controller cloudflare-zero-trust inventory <spec-path>",
-        "  edge-controller cloudflare-zero-trust plan <spec-path>",
-        "  edge-controller cloudflare-zero-trust apply <spec-path> <authorized-plan-sha256>",
-        "  edge-controller cloudflare-zero-trust verify <spec-path>",
+        "  edge-orchestrator cloudflare-zero-trust doctor <guardrails-path>",
+        "  edge-orchestrator cloudflare-zero-trust inventory <spec-path>",
+        "  edge-orchestrator cloudflare-zero-trust plan <spec-path>",
+        "  edge-orchestrator cloudflare-zero-trust apply <spec-path> <authorized-plan-sha256>",
+        "  edge-orchestrator cloudflare-zero-trust verify <spec-path>",
     ]
     .join("\n")
 }

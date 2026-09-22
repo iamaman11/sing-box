@@ -4,6 +4,7 @@ pub mod cloudflare_mesh_lifecycle;
 pub mod cloudflare_zero_trust_lifecycle;
 pub mod host_substrate_lifecycle;
 pub mod lifecycle;
+pub mod orchestration;
 pub mod vultr_lifecycle;
 pub mod vultr_vpc_lifecycle;
 

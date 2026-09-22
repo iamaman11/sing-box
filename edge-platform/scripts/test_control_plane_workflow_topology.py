@@ -86,6 +86,19 @@ def main() -> None:
         ("dns", dns),
     ]:
         require(
+            "edge-orchestrator-linux-amd64" in backend
+            and "EDGE_ORCHESTRATOR_SHA256" in backend,
+            f"{name} backend must execute the exact immutable edge-orchestrator",
+        )
+        require(
+            "edge-controller-linux-amd64" not in backend,
+            f"{name} backend must not execute Linux edge-controller as provider owner",
+        )
+        require(
+            "EDGE_RELEASE_CONTEXT_PATH" in backend,
+            f"{name} backend must pass one exact resolved ReleaseSet context into edge-orchestrator",
+        )
+        require(
             "COMMENT_BODY: ${{ inputs.command_body }}" in backend,
             f"{name} backend must parse only the router-provided command body",
         )
@@ -177,10 +190,23 @@ def main() -> None:
         "VPC backend must retain staged attachment authority and verification",
     )
     require(
-        "acquire-access-plan" in vpc
-        and "release-access-plan" in vpc
+        "vultr-lifecycle lease-acquire" in vpc
+        and "vultr-lifecycle lease-release" in vpc
         and "ACCESS_CLEANUP_ARMED=1" in vpc,
-        "VPC guest mutation must use transient SSH access with armed cleanup",
+        "VPC guest mutation must use the typed transient SSH lease with armed cleanup",
+    )
+    require(
+        "acquire-access-plan" not in vpc and "release-access-plan" not in vpc,
+        "VPC workflow must not own transient-access PlanAuthority plumbing",
+    )
+    require(
+        "vultr-lifecycle lease-acquire" in application
+        and "vultr-lifecycle lease-release" in application,
+        "application workflow must use the typed transient SSH lease",
+    )
+    require(
+        "acquire-access-plan" not in application and "release-access-plan" not in application,
+        "application workflow must not own transient-access PlanAuthority plumbing",
     )
     require(
         "EDGE_DOCKER_ENGINE_VERSION" in vpc
@@ -194,6 +220,27 @@ def main() -> None:
         and "cloudflare-dns apply" in dns
         and "plan_authority.authority_digest" in dns,
         "DNS backend mutations must consume fresh exact PlanAuthority",
+    )
+    require(
+        "TARGET_IPV4" not in dns and "target_ipv4" not in dns,
+        "DNS workflow must not accept or transport a manually derived target IPv4",
+    )
+    require(
+        "APPLICATION_SPEC_PATH" in dns,
+        "DNS workflow must delegate target derivation to the typed orchestrator from application/Vultr observation",
+    )
+    require(
+        "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in dns,
+        "DNS composition must have bounded Vultr read authority for current VM observation",
+    )
+    require(
+        '"${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}"' in application
+        and '"${bin}" cloudflare-dns apply "${dns_spec}" "${app_spec}"' in application,
+        "application acceptance must not manually copy VM public IPv4 into DNS commands",
+    )
+    require(
+        "vm_ip=" not in application,
+        "application acceptance must not own derived VM public-IP plumbing",
     )
     require(
         "cleanup-apply" not in vpc and "cleanup-apply" not in dns,
@@ -214,21 +261,25 @@ def main() -> None:
     )
 
     require(
-        "cleanup_acceptance() (" in application,
-        "acceptance cleanup must run in an isolated subshell",
+        "cleanup_acceptance" not in application
+        and "acceptance-emergency-" not in application
+        and "if [[ $rc -ne 0 ]]; then cleanup" not in application,
+        "acceptance failure must preserve provider/guest state for diagnosis, never auto-clean",
     )
-    preflight_marker = (
-        "# Recover any exact acceptance-owned residue from a previous failed run."
+    require(
+        "require_vpc_clean_room()" in application,
+        "acceptance must require a read-only VPC clean-room proof",
     )
+    preflight_marker = "# Fail closed on any acceptance-owned residue."
     support_marker = 'acceptance-support-before.json'
     vm_marker = 'acceptance-plan-before.json'
-    require(preflight_marker in application, "acceptance must retain residue-recovery preflight")
+    require(preflight_marker in application, "acceptance must fail closed on residue")
     preflight_pos = application.index(preflight_marker)
     support_pos = application.index(support_marker, preflight_pos)
     vm_pos = application.index(vm_marker, support_pos)
     require(
         preflight_pos < support_pos < vm_pos,
-        "strict support clean-room proof must precede fresh VM planning",
+        "strict read-only clean-room proof must precede fresh VM planning",
     )
     require(
         '.plan.action == "NOOP" and .plan.environment_in_use == false' in application,
@@ -251,6 +302,21 @@ def main() -> None:
     require(
         application.count(reboot_action) == 1,
         "application acceptance must retain exactly one explicit reboot for final persistence verification",
+    )
+
+    orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "edge-state" not in orchestrator_manifest,
+        "GitHub-only edge-orchestrator must not introduce a second persistent desired-state store",
+    )
+    orchestrator_main = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "OrchestrationContext::from_process_env()" in orchestrator_main,
+        "edge-orchestrator must validate exact ReleaseSet context before lifecycle dispatch",
     )
 
 

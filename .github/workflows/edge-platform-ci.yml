@@ -144,8 +144,8 @@ jobs:
           grep -Fq 'ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env"' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'run_mesh_compose(' edge-platform/crates/edge-agent/src/main.rs
-          grep -Fq 'runtime-apply <mesh-spec-path> <application-spec-path>' edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs
-          grep -Fq 'runtime-cleanup <application-spec-path>' edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq 'runtime-apply <mesh-spec-path> <application-spec-path>' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq 'runtime-cleanup <application-spec-path>' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
           grep -Fq '../mesh-state:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml
           if grep -Fq -- '- ./mesh-state:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml; then
             echo "Mesh runtime state must not live inside release-swapped application stack" >&2
@@ -219,7 +219,7 @@ jobs:
           assert 'format!("{API_ROOT}/vpcs")' in vpc_provider
           assert "/vpc2" not in vpc_provider
           vpc_command = Path(
-              "edge-platform/crates/edge-controller/src/vultr_vpc_lifecycle_command.rs"
+              "edge-platform/crates/edge-orchestrator/src/vultr_vpc_lifecycle_command.rs"
           ).read_text()
           assert "vultr-vpc verify <spec-path>" in vpc_command
           assert "vultr-vpc cleanup-apply <spec-path> <destructive-digest>" in vpc_command
@@ -282,9 +282,11 @@ jobs:
           )
           agent_manifest = Path("edge-platform/crates/edge-agent/Cargo.toml").read_text()
           controller_main = Path("edge-platform/crates/edge-controller/src/main.rs").read_text()
+          orchestrator_main = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text()
           console_main = Path("edge-platform/crates/edge-console/src/main.rs").read_text()
           agent_main = Path("edge-platform/crates/edge-agent/src/main.rs").read_text()
           controller_cli = Path("edge-platform/crates/edge-controller/src/cli.rs").read_text()
+          orchestrator_cli = Path("edge-platform/crates/edge-orchestrator/src/cli.rs").read_text()
           console_cli = Path("edge-platform/crates/edge-console/src/cli.rs").read_text()
           agent_cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text()
           observability = Path("edge-platform/crates/edge-observability/src/lib.rs").read_text()
@@ -300,10 +302,10 @@ jobs:
               "edge-platform/crates/edge-agent/src/docker_observation.rs"
           ).read_text()
           application_service = Path(
-              "edge-platform/crates/edge-controller/src/application_lifecycle_service.rs"
+              "edge-platform/crates/edge-orchestrator/src/application_lifecycle_service.rs"
           ).read_text()
           mesh_command = Path(
-              "edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_command.rs"
+              "edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs"
           ).read_text()
 
           assert not Path("edge-platform/proto/edge_platform.proto").exists()
@@ -325,14 +327,14 @@ jobs:
           assert "PLAN_AUTHORITY_SCHEMA" in lifecycle_core
           assert "verify_exact_authority" in lifecycle_core
           assert "PlanDisposition::Noop" in lifecycle_core
-          application_command = Path("edge-platform/crates/edge-controller/src/application_lifecycle_command.rs").read_text()
-          dns_command = Path("edge-platform/crates/edge-controller/src/cloudflare_dns_lifecycle_command.rs").read_text()
-          vpc_command_authority = Path("edge-platform/crates/edge-controller/src/vultr_vpc_lifecycle_command.rs").read_text()
-          vultr_command_authority = Path("edge-platform/crates/edge-controller/src/vultr_lifecycle_command.rs").read_text()
-          dns_service = Path("edge-platform/crates/edge-controller/src/cloudflare_dns_lifecycle_service.rs").read_text()
-          mesh_service = Path("edge-platform/crates/edge-controller/src/cloudflare_mesh_lifecycle_service.rs").read_text()
-          vpc_service = Path("edge-platform/crates/edge-controller/src/vultr_vpc_lifecycle_service.rs").read_text()
-          vultr_service = Path("edge-platform/crates/edge-controller/src/vultr_lifecycle_service.rs").read_text()
+          application_command = Path("edge-platform/crates/edge-orchestrator/src/application_lifecycle_command.rs").read_text()
+          dns_command = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_dns_lifecycle_command.rs").read_text()
+          vpc_command_authority = Path("edge-platform/crates/edge-orchestrator/src/vultr_vpc_lifecycle_command.rs").read_text()
+          vultr_command_authority = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text()
+          dns_service = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_dns_lifecycle_service.rs").read_text()
+          mesh_service = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_service.rs").read_text()
+          vpc_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_vpc_lifecycle_service.rs").read_text()
+          vultr_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_service.rs").read_text()
           for planner in [application_command, dns_command, mesh_command, vpc_command_authority, vultr_command_authority]:
               assert "plan_authority" in planner
           for mutation_boundary in [application_service, dns_service, mesh_service, vpc_service, vultr_service]:
@@ -347,13 +349,23 @@ jobs:
           assert ".destroy_digest // empty" in vultr_workflow
           assert "plan_authority" in vultr_workflow
           assert "plan_authority" in application_workflow
-          for process_root in [controller_main, console_main, agent_main]:
+          for process_root in [controller_main, orchestrator_main, console_main, agent_main]:
               assert "env::args()" not in process_root
               assert "_ARG_INDEX" not in process_root
               assert "init_observability" in process_root
-          for typed_cli in [controller_cli, console_cli, agent_cli]:
+          for typed_cli in [controller_cli, orchestrator_cli, console_cli, agent_cli]:
               assert "derive(Debug, Parser)" in typed_cli
               assert "Subcommand" in typed_cli
+          assert "ApplicationLifecycle" not in controller_cli
+          assert "VultrLifecycle" not in controller_cli
+          assert "CloudflareDns" not in controller_cli
+          assert "CloudflareZeroTrust" not in controller_cli
+          assert "Line3Mesh" not in controller_cli
+          assert "VultrVpc" not in controller_cli
+          assert "ApplicationLifecycle" in orchestrator_cli
+          assert "VultrLifecycle" in orchestrator_cli
+          assert "cloudflare-dns" in orchestrator_cli
+          assert "line3-mesh" in orchestrator_cli
           assert "EDGE_CORRELATION_ID" in observability
           assert "with_max_level(Level::INFO)" in observability
           assert 'clap = { version = "=4.6.7"' in agent_manifest
@@ -778,6 +790,7 @@ jobs:
       sing_box_binary_sha256: ${{ steps.images.outputs.sing_box_binary_sha256 }}
       edge_agent_sha256: ${{ steps.package.outputs.edge_agent_sha256 }}
       edge_controller_sha256: ${{ steps.package.outputs.edge_controller_sha256 }}
+      edge_orchestrator_sha256: ${{ steps.package.outputs.edge_orchestrator_sha256 }}
     steps:
       - name: Checkout exact candidate revision
         shell: bash
@@ -807,6 +820,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked --release -p edge-controller --bin edge-controller
+          cargo build --locked --release -p edge-orchestrator --bin edge-orchestrator
           cargo build --locked --release -p edge-agent --bin edge-agent
           cargo build --locked --release -p edge-shared-types --bin edge-release-set
 
@@ -948,11 +962,13 @@ jobs:
           out="${RUNNER_TEMP}/edge-platform-release"
           install -d -m 0755 "${out}"
           install -m 0755 edge-platform/target/release/edge-controller "${out}/edge-controller"
+          install -m 0755 edge-platform/target/release/edge-orchestrator "${out}/edge-orchestrator"
           install -m 0755 edge-platform/target/release/edge-agent "${out}/edge-agent"
           install -m 0755 edge-platform/target/release/edge-release-set "${out}/edge-release-set"
           install -m 0755 "${RUNNER_TEMP}/sing-box-linux" "${out}/sing-box-linux"
 
           controller_sha="$(sha256sum "${out}/edge-controller" | awk '{print $1}')"
+          orchestrator_sha="$(sha256sum "${out}/edge-orchestrator" | awk '{print $1}')"
           agent_sha="$(sha256sum "${out}/edge-agent" | awk '{print $1}')"
           sing_box_binary_sha="$(sha256sum "${out}/sing-box-linux" | awk '{print $1}')"
           test "${sing_box_binary_sha}" = "${SING_BOX_BINARY_SHA256}"
@@ -965,6 +981,7 @@ jobs:
             --arg source_revision "${CANDIDATE_REVISION}" \
             --arg source_tree "${source_tree}" \
             --arg controller_sha256 "${controller_sha}" \
+            --arg orchestrator_sha256 "${orchestrator_sha}" \
             --arg agent_sha256 "${agent_sha}" \
             --arg edge_gateway_image "${EDGE_GATEWAY_IMAGE}" \
             --arg edge_warp_egress_image "${EDGE_WARP_EGRESS_IMAGE}" \
@@ -980,10 +997,11 @@ jobs:
             --arg ubuntu_base_image "${UBUNTU_BASE_IMAGE}" \
             --arg mesh_image "${MESH_IMAGE}" \
             '{
-              schema:2,
+              schema:3,
               source_revision:$source_revision,
               source_tree:$source_tree,
               controller_sha256:$controller_sha256,
+              orchestrator_sha256:$orchestrator_sha256,
               agent_sha256:$agent_sha256,
               edge_gateway_image:$edge_gateway_image,
               edge_warp_egress_image:$edge_warp_egress_image,
@@ -1001,6 +1019,7 @@ jobs:
             }' > "${out}/manifest.json"
           printf 'edge_agent_sha256=%s\n' "${agent_sha}" >> "${GITHUB_OUTPUT}"
           printf 'edge_controller_sha256=%s\n' "${controller_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'edge_orchestrator_sha256=%s\n' "${orchestrator_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Store exact Linux candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1054,6 +1073,7 @@ jobs:
           LINUX_SING_BOX_SHA256: ${{ needs.linux_candidate.outputs.sing_box_binary_sha256 }}
           EDGE_AGENT_SHA256: ${{ needs.linux_candidate.outputs.edge_agent_sha256 }}
           EDGE_CONTROLLER_SHA256: ${{ needs.linux_candidate.outputs.edge_controller_sha256 }}
+          EDGE_ORCHESTRATOR_SHA256: ${{ needs.linux_candidate.outputs.edge_orchestrator_sha256 }}
           EDGE_GATEWAY_IMAGE: ${{ needs.linux_candidate.outputs.gateway_ref }}
           EDGE_WARP_EGRESS_IMAGE: ${{ needs.linux_candidate.outputs.warp_ref }}
           DOCKER_ENGINE_VERSION: ${{ needs.dependencies.outputs.docker_engine_version }}
@@ -1079,6 +1099,7 @@ jobs:
           test "$(sha256sum "${linux}/sing-box-linux" | awk '{print $1}')" = "${LINUX_SING_BOX_SHA256}"
           test "$(sha256sum "${linux}/edge-agent" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
           test "$(sha256sum "${linux}/edge-controller" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
+          test "$(sha256sum "${linux}/edge-orchestrator" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
 
           "${tool}" create \
             --output "${authority}/release-set.pb" \
@@ -1092,6 +1113,7 @@ jobs:
             --windows-console-sha256 "${WINDOWS_CONSOLE_SHA256}" \
             --edge-agent-sha256 "${EDGE_AGENT_SHA256}" \
             --edge-controller-sha256 "${EDGE_CONTROLLER_SHA256}" \
+            --edge-orchestrator-sha256 "${EDGE_ORCHESTRATOR_SHA256}" \
             --sing-box-image "${EDGE_GATEWAY_IMAGE}" \
             --warp-egress-image "${EDGE_WARP_EGRESS_IMAGE}" \
             --docker-engine-version "${DOCKER_ENGINE_VERSION}" \
@@ -1110,7 +1132,8 @@ jobs:
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
-            --edge-controller "${linux}/edge-controller")"
+            --edge-controller "${linux}/edge-controller" \
+            --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${verify_output}"
 
           release_set_sha="$(sed -n 's/^release_set_sha256=//p' <<<"${verify_output}")"
@@ -1123,13 +1146,15 @@ jobs:
             --sha256-file "${authority}/release-set.pb.sha256" \
             --source-revision "${CANDIDATE_REVISION}" \
             --edge-agent "${linux}/edge-agent" \
-            --edge-controller "${linux}/edge-controller")"
+            --edge-controller "${linux}/edge-controller" \
+            --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${vm_verify_output}"
           test "$(sed -n 's/^release_set_sha256=//p' <<<"${vm_verify_output}")" = "${release_set_sha}"
-          test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "2"
+          test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "3"
           test "$(sed -n 's/^source_revision=//p' <<<"${vm_verify_output}")" = "${CANDIDATE_REVISION}"
           test "$(sed -n 's/^edge_agent_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_AGENT_SHA256}"
           test "$(sed -n 's/^edge_controller_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_CONTROLLER_SHA256}"
+          test "$(sed -n 's/^edge_orchestrator_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_ORCHESTRATOR_SHA256}"
           test "$(sed -n 's/^sing_box_image=//p' <<<"${vm_verify_output}")" = "${EDGE_GATEWAY_IMAGE}"
           test "$(sed -n 's/^warp_egress_image=//p' <<<"${vm_verify_output}")" = "${EDGE_WARP_EGRESS_IMAGE}"
           test "$(sed -n 's/^mesh_image=//p' <<<"${vm_verify_output}")" = "${MESH_IMAGE}"
@@ -1294,7 +1319,8 @@ jobs:
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
-            --edge-controller "${linux}/edge-controller")"
+            --edge-controller "${linux}/edge-controller" \
+            --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${verify_output}"
 
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"

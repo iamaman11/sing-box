@@ -399,6 +399,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "edge-controller-core",
+ "edge-observability",
+ "edge-provider-cloudflare",
+ "edge-provider-vultr",
+ "edge-shared-types",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "edge-local-runtime"
 version = "0.1.0"
 dependencies = [

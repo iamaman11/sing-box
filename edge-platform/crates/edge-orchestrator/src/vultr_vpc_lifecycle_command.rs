@@ -58,7 +58,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 async fn run_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-vpc apply <spec-path> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-vpc apply <spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -95,7 +95,7 @@ async fn run_attachment_plan(args: &[String]) -> Result<(), String> {
 async fn run_attachment_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-vpc attachment-apply <spec-path> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-vpc attachment-apply <spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -300,7 +300,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
 async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-vpc cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-vpc cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -320,7 +320,7 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
 fn one_spec_arg(args: &[String], command: &str) -> Result<DesiredVpcState, String> {
     if args.len() != 1 {
         return Err(format!(
-            "usage: edge-controller vultr-vpc {command} <spec-path>"
+            "usage: edge-orchestrator vultr-vpc {command} <spec-path>"
         ));
     }
     load_desired(Path::new(&args[0]))
@@ -351,14 +351,14 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
-        "  edge-controller vultr-vpc inventory <spec-path>",
-        "  edge-controller vultr-vpc plan <spec-path>",
-        "  edge-controller vultr-vpc apply <spec-path> <authorized-plan-sha256>",
-        "  edge-controller vultr-vpc attachment-plan <spec-path>",
-        "  edge-controller vultr-vpc attachment-apply <spec-path> <authorized-plan-sha256>",
-        "  edge-controller vultr-vpc verify <spec-path>",
-        "  edge-controller vultr-vpc cleanup-plan <spec-path>",
-        "  edge-controller vultr-vpc cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-vpc inventory <spec-path>",
+        "  edge-orchestrator vultr-vpc plan <spec-path>",
+        "  edge-orchestrator vultr-vpc apply <spec-path> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-vpc attachment-plan <spec-path>",
+        "  edge-orchestrator vultr-vpc attachment-apply <spec-path> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-vpc verify <spec-path>",
+        "  edge-orchestrator vultr-vpc cleanup-plan <spec-path>",
+        "  edge-orchestrator vultr-vpc cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
     ]
     .join("\n")
 }

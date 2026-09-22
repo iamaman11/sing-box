@@ -41,7 +41,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
 
 async fn run_inventory(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller line3-mesh inventory <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator line3-mesh inventory <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
@@ -54,7 +54,7 @@ async fn run_inventory(args: &[String]) -> Result<(), String> {
 
 async fn run_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller line3-mesh plan <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator line3-mesh plan <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
@@ -71,7 +71,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 async fn run_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller line3-mesh apply <spec-path> <authorized-plan-sha256>"
+            "usage: edge-orchestrator line3-mesh apply <spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -94,7 +94,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
 async fn run_vpc_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>"
+            "usage: edge-orchestrator line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>"
                 .to_owned(),
         );
     }
@@ -119,7 +119,7 @@ async fn run_vpc_plan(args: &[String]) -> Result<(), String> {
 async fn run_vpc_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 4 {
         return Err(
-            "usage: edge-controller line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path> <authorized-plan-sha256>"
+            "usage: edge-orchestrator line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -147,7 +147,7 @@ async fn run_vpc_apply(args: &[String]) -> Result<(), String> {
 
 async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller line3-mesh cleanup-plan <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator line3-mesh cleanup-plan <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env(&desired)?;
@@ -164,7 +164,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
 async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller line3-mesh cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
+            "usage: edge-orchestrator line3-mesh cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -188,7 +188,7 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
 async fn run_runtime_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller line3-mesh runtime-apply <mesh-spec-path> <application-spec-path>"
+            "usage: edge-orchestrator line3-mesh runtime-apply <mesh-spec-path> <application-spec-path>"
                 .to_owned(),
         );
     }
@@ -199,7 +199,7 @@ async fn run_runtime_apply(args: &[String]) -> Result<(), String> {
 async fn run_vpc_runtime_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>"
+            "usage: edge-orchestrator line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>"
                 .to_owned(),
         );
     }
@@ -244,7 +244,7 @@ async fn run_runtime_apply_with_desired(
 async fn run_runtime_verify(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>"
+            "usage: edge-orchestrator line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>"
                 .to_owned(),
         );
     }
@@ -255,7 +255,7 @@ async fn run_runtime_verify(args: &[String]) -> Result<(), String> {
 async fn run_vpc_runtime_verify(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>"
+            "usage: edge-orchestrator line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>"
                 .to_owned(),
         );
     }
@@ -290,7 +290,8 @@ async fn run_runtime_verify_with_desired(
 async fn run_runtime_cleanup(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
         return Err(
-            "usage: edge-controller line3-mesh runtime-cleanup <application-spec-path>".to_owned(),
+            "usage: edge-orchestrator line3-mesh runtime-cleanup <application-spec-path>"
+                .to_owned(),
         );
     }
     let authority = resolve_application_authority_from_spec(Path::new(&args[0])).await?;
@@ -537,18 +538,18 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
-        "  edge-controller line3-mesh inventory <spec-path>",
-        "  edge-controller line3-mesh plan <spec-path>",
-        "  edge-controller line3-mesh apply <spec-path> <authorized-plan-sha256>",
-        "  edge-controller line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-        "  edge-controller line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path> <authorized-plan-sha256>",
-        "  edge-controller line3-mesh cleanup-plan <spec-path>",
-        "  edge-controller line3-mesh cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
-        "  edge-controller line3-mesh runtime-apply <mesh-spec-path> <application-spec-path>",
-        "  edge-controller line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-        "  edge-controller line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>",
-        "  edge-controller line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-        "  edge-controller line3-mesh runtime-cleanup <application-spec-path>",
+        "  edge-orchestrator line3-mesh inventory <spec-path>",
+        "  edge-orchestrator line3-mesh plan <spec-path>",
+        "  edge-orchestrator line3-mesh apply <spec-path> <authorized-plan-sha256>",
+        "  edge-orchestrator line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
+        "  edge-orchestrator line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path> <authorized-plan-sha256>",
+        "  edge-orchestrator line3-mesh cleanup-plan <spec-path>",
+        "  edge-orchestrator line3-mesh cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
+        "  edge-orchestrator line3-mesh runtime-apply <mesh-spec-path> <application-spec-path>",
+        "  edge-orchestrator line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
+        "  edge-orchestrator line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>",
+        "  edge-orchestrator line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
+        "  edge-orchestrator line3-mesh runtime-cleanup <application-spec-path>",
     ]
     .join("\n")
 }
@@ -778,6 +779,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn changed_verified_vpc_cidr_changes_effective_mesh_route_without_source_edit() {
+        let first = compose_verified_vpc_route(
+            mesh_base(),
+            &vpc_desired(),
+            ready_report("10.0.4.0/24", "10.0.4.2"),
+        )
+        .unwrap();
+        let second = compose_verified_vpc_route(
+            mesh_base(),
+            &vpc_desired(),
+            ready_report("10.0.5.0/24", "10.0.5.2"),
+        )
+        .unwrap();
+
+        assert_eq!(first.routes[0].network, "10.0.4.0/24");
+        assert_eq!(second.routes[0].network, "10.0.5.0/24");
+        assert_ne!(first.routes, second.routes);
     }
 
     #[test]

@@ -7,26 +7,9 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-mod application_lifecycle_command;
-mod application_lifecycle_service;
 mod cli;
-mod cloudflare_dns_lifecycle_command;
-mod cloudflare_dns_lifecycle_service;
-mod cloudflare_mesh_lifecycle_command;
-mod cloudflare_mesh_lifecycle_service;
-mod cloudflare_zero_trust_doctor;
-mod cloudflare_zero_trust_lifecycle_command;
-mod cloudflare_zero_trust_lifecycle_service;
 mod deploy_orchestrator;
 mod error;
-mod vultr_host_bootstrap;
-mod vultr_host_substrate_service;
-mod vultr_lifecycle_adapter;
-mod vultr_lifecycle_command;
-mod vultr_lifecycle_service;
-mod vultr_support_resources;
-mod vultr_vpc_lifecycle_command;
-mod vultr_vpc_lifecycle_service;
 
 use clap::Parser;
 use edge_bundle::{
@@ -197,36 +180,6 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
         .command
         .unwrap_or_else(|| Command::Serve(cli::ServeArgs::default()))
     {
-        Command::ApplicationLifecycle { command } => {
-            application_lifecycle_command::run(command.into_legacy_args())
-                .await
-                .map_err(ControllerError::Command)
-        }
-        Command::CloudflareDns { command } => {
-            cloudflare_dns_lifecycle_command::run(command.into_legacy_args())
-                .await
-                .map_err(ControllerError::Command)
-        }
-        Command::CloudflareZeroTrust { command } => {
-            cloudflare_zero_trust_lifecycle_command::run(command.into_legacy_args())
-                .await
-                .map_err(ControllerError::Command)
-        }
-        Command::Line3Mesh { command } => {
-            cloudflare_mesh_lifecycle_command::run(command.into_legacy_args())
-                .await
-                .map_err(ControllerError::Command)
-        }
-        Command::VultrLifecycle { command } => {
-            vultr_lifecycle_command::run(command.into_legacy_args())
-                .await
-                .map_err(ControllerError::Command)
-        }
-        Command::VultrVpc { command } => {
-            vultr_vpc_lifecycle_command::run(command.into_legacy_args())
-                .await
-                .map_err(ControllerError::Command)
-        }
         Command::Serve(args) => {
             let repo_root = resolve_repo_root(args.repo_root)?;
             let addr = match args.addr {
