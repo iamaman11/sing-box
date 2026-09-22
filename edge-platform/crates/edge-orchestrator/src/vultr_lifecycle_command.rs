@@ -63,7 +63,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
 
 async fn run_doctor(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller vultr-lifecycle doctor <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator vultr-lifecycle doctor <spec-path>".to_owned());
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let profiles = load_firewall_profiles(&desired)?;
@@ -102,7 +102,7 @@ async fn run_doctor(args: &[String]) -> Result<(), String> {
 
 async fn run_inventory(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller vultr-lifecycle inventory <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator vultr-lifecycle inventory <spec-path>".to_owned());
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let profiles = load_firewall_profiles(&desired)?;
@@ -128,7 +128,7 @@ async fn run_inventory(args: &[String]) -> Result<(), String> {
 async fn run_plan(args: &[String]) -> Result<(), String> {
     if !(args.len() == 1 || args.len() == 2) {
         return Err(
-            "usage: edge-controller vultr-lifecycle plan <spec-path> [machine-id]".to_owned(),
+            "usage: edge-orchestrator vultr-lifecycle plan <spec-path> [machine-id]".to_owned(),
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
@@ -162,7 +162,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 async fn run_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle apply <spec-path> <machine-id> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-lifecycle apply <spec-path> <machine-id> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -378,7 +378,7 @@ async fn exact_existing_machine_provider_id(
 async fn run_substrate_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-lifecycle substrate-plan <spec-path> <machine-id>"
+            "usage: edge-orchestrator vultr-lifecycle substrate-plan <spec-path> <machine-id>"
                 .to_owned(),
         );
     }
@@ -418,7 +418,7 @@ async fn run_substrate_plan(args: &[String]) -> Result<(), String> {
 async fn run_substrate_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -457,7 +457,7 @@ async fn run_substrate_apply(args: &[String]) -> Result<(), String> {
 async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-lifecycle substrate-verify <spec-path> <machine-id>"
+            "usage: edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>"
                 .to_owned(),
         );
     }
@@ -503,7 +503,7 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
 async fn run_acquire_access_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-lifecycle acquire-access-plan <spec-path> <machine-id>"
+            "usage: edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>"
                 .to_owned(),
         );
     }
@@ -529,7 +529,7 @@ async fn run_acquire_access_plan(args: &[String]) -> Result<(), String> {
 async fn run_acquire_access(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -852,7 +852,7 @@ async fn build_access_authority(
 async fn run_release_access_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-lifecycle release-access-plan <spec-path> <machine-id>"
+            "usage: edge-orchestrator vultr-lifecycle release-access-plan <spec-path> <machine-id>"
                 .to_owned(),
         );
     }
@@ -878,7 +878,7 @@ async fn run_release_access_plan(args: &[String]) -> Result<(), String> {
 async fn run_release_access(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle release-access <spec-path> <machine-id> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-lifecycle release-access <spec-path> <machine-id> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -1069,7 +1069,7 @@ async fn build_instance_action_authority(
 async fn run_action_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle action-plan <spec-path> <machine-id> <start|halt|reboot>"
+            "usage: edge-orchestrator vultr-lifecycle action-plan <spec-path> <machine-id> <start|halt|reboot>"
                 .to_owned(),
         );
     }
@@ -1180,7 +1180,7 @@ pub(crate) async fn wait_for_guest_boot_id_change(
 async fn run_action(args: &[String]) -> Result<(), String> {
     if args.len() != 4 {
         return Err(
-            "usage: edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -1313,7 +1313,7 @@ async fn run_action(args: &[String]) -> Result<(), String> {
 async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>"
+            "usage: edge-orchestrator vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>"
                 .to_owned(),
         );
     }
@@ -1359,7 +1359,7 @@ async fn run_destroy_plan(args: &[String]) -> Result<(), String> {
 async fn run_destroy_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 5 {
         return Err(
-            "usage: edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -1568,7 +1568,7 @@ async fn build_support_cleanup_authority(
 
 async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller vultr-lifecycle cleanup-plan <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator vultr-lifecycle cleanup-plan <spec-path>".to_owned());
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let canonical_public_key = read_canonical_ssh_public_key()?;
@@ -1592,7 +1592,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
 async fn run_cleanup(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller vultr-lifecycle cleanup <spec-path> <authorized-plan-sha256>"
+            "usage: edge-orchestrator vultr-lifecycle cleanup <spec-path> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -1862,23 +1862,23 @@ fn print_json_value(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
-        "  edge-controller vultr-lifecycle doctor <spec-path>",
-        "  edge-controller vultr-lifecycle inventory <spec-path>",
-        "  edge-controller vultr-lifecycle plan <spec-path> [machine-id]",
-        "  edge-controller vultr-lifecycle apply <spec-path> <machine-id> <authorized-plan-sha256>",
-        "  edge-controller vultr-lifecycle substrate-plan <spec-path> <machine-id>",
-        "  edge-controller vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
-        "  edge-controller vultr-lifecycle substrate-verify <spec-path> <machine-id>",
-        "  edge-controller vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
-        "  edge-controller vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
-        "  edge-controller vultr-lifecycle release-access-plan <spec-path> <machine-id>",
-        "  edge-controller vultr-lifecycle release-access <spec-path> <machine-id> <authorized-plan-sha256>",
-        "  edge-controller vultr-lifecycle action-plan <spec-path> <machine-id> <start|halt|reboot>",
-        "  edge-controller vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot> <authorized-plan-sha256>",
-        "  edge-controller vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>",
-        "  edge-controller vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest> <authorized-plan-sha256>",
-        "  edge-controller vultr-lifecycle cleanup-plan <spec-path>",
-        "  edge-controller vultr-lifecycle cleanup <spec-path> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle doctor <spec-path>",
+        "  edge-orchestrator vultr-lifecycle inventory <spec-path>",
+        "  edge-orchestrator vultr-lifecycle plan <spec-path> [machine-id]",
+        "  edge-orchestrator vultr-lifecycle apply <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle substrate-plan <spec-path> <machine-id>",
+        "  edge-orchestrator vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
+        "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
+        "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle release-access-plan <spec-path> <machine-id>",
+        "  edge-orchestrator vultr-lifecycle release-access <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle action-plan <spec-path> <machine-id> <start|halt|reboot>",
+        "  edge-orchestrator vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>",
+        "  edge-orchestrator vultr-lifecycle destroy-apply <spec-path> <machine-id> <source-revision> <destroy-digest> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle cleanup-plan <spec-path>",
+        "  edge-orchestrator vultr-lifecycle cleanup <spec-path> <authorized-plan-sha256>",
     ]
     .join("\n")
 }

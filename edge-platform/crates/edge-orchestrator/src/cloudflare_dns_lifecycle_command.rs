@@ -21,7 +21,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
 
 async fn run_inventory(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller cloudflare-dns inventory <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator cloudflare-dns inventory <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
@@ -36,7 +36,7 @@ async fn run_inventory(args: &[String]) -> Result<(), String> {
 async fn run_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
-            "usage: edge-controller cloudflare-dns plan <spec-path> <target-ipv4>".to_owned(),
+            "usage: edge-orchestrator cloudflare-dns plan <spec-path> <target-ipv4>".to_owned(),
         );
     }
     let desired = load_desired(Path::new(&args[0]))?;
@@ -55,7 +55,7 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
 async fn run_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>"
+            "usage: edge-orchestrator cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -78,7 +78,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
 
 async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
-        return Err("usage: edge-controller cloudflare-dns cleanup-plan <spec-path>".to_owned());
+        return Err("usage: edge-orchestrator cloudflare-dns cleanup-plan <spec-path>".to_owned());
     }
     let desired = load_desired(Path::new(&args[0]))?;
     let mut provider = provider_from_env()?;
@@ -96,7 +96,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
 async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller cloudflare-dns cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
+            "usage: edge-orchestrator cloudflare-dns cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -143,11 +143,11 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
-        "  edge-controller cloudflare-dns inventory <spec-path>",
-        "  edge-controller cloudflare-dns plan <spec-path> <target-ipv4>",
-        "  edge-controller cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>",
-        "  edge-controller cloudflare-dns cleanup-plan <spec-path>",
-        "  edge-controller cloudflare-dns cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
+        "  edge-orchestrator cloudflare-dns inventory <spec-path>",
+        "  edge-orchestrator cloudflare-dns plan <spec-path> <target-ipv4>",
+        "  edge-orchestrator cloudflare-dns apply <spec-path> <target-ipv4> <authorized-plan-sha256>",
+        "  edge-orchestrator cloudflare-dns cleanup-plan <spec-path>",
+        "  edge-orchestrator cloudflare-dns cleanup-apply <spec-path> <destructive-digest> <authorized-plan-sha256>",
     ]
     .join("\n")
 }

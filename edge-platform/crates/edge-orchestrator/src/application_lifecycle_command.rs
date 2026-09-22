@@ -75,7 +75,7 @@ async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), 
     };
     if args.len() != 4 {
         return Err(format!(
-            "usage: edge-controller application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>"
+            "usage: edge-orchestrator application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>"
         ));
     }
     let spec_path = PathBuf::from(&args[0]);
@@ -147,7 +147,7 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
 async fn run_rollback_plan(args: &[String]) -> Result<(), String> {
     if args.len() != 1 {
         return Err(
-            "usage: edge-controller application-lifecycle rollback-plan <spec-path>".to_owned(),
+            "usage: edge-orchestrator application-lifecycle rollback-plan <spec-path>".to_owned(),
         );
     }
     let desired = load_application_desired(Path::new(&args[0]))?;
@@ -165,7 +165,7 @@ async fn run_rollback_plan(args: &[String]) -> Result<(), String> {
 async fn run_rollback_apply(args: &[String]) -> Result<(), String> {
     if args.len() != 3 {
         return Err(
-            "usage: edge-controller application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>"
+            "usage: edge-orchestrator application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>"
                 .to_owned(),
         );
     }
@@ -183,7 +183,7 @@ async fn run_rollback_apply(args: &[String]) -> Result<(), String> {
 fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     if args.len() != 3 {
         return Err(format!(
-            "usage: edge-controller application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>"
+            "usage: edge-orchestrator application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>"
         ));
     }
     Ok((
@@ -342,12 +342,12 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
-        "  edge-controller application-lifecycle plan <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
-        "  edge-controller application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
-        "  edge-controller application-lifecycle verify <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
-        "  edge-controller application-lifecycle upgrade <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
-        "  edge-controller application-lifecycle rollback-plan <spec-path>",
-        "  edge-controller application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>",
+        "  edge-orchestrator application-lifecycle plan <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
+        "  edge-orchestrator application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
+        "  edge-orchestrator application-lifecycle verify <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
+        "  edge-orchestrator application-lifecycle upgrade <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
+        "  edge-orchestrator application-lifecycle rollback-plan <spec-path>",
+        "  edge-orchestrator application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>",
     ]
     .join("\n")
 }
