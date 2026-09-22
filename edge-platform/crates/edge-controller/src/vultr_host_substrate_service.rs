@@ -232,8 +232,7 @@ pub async fn apply_host_substrate_once<P: OperationalProvider>(
                 },
             )
             .await?;
-            let next_plan =
-                plan_host_substrate(&observation, HOST_CERTIFICATE_MINIMUM_SERIAL);
+            let next_plan = plan_host_substrate(&observation, HOST_CERTIFICATE_MINIMUM_SERIAL);
             return Ok(HostSubstrateApplyReport {
                 performed: HostSubstrateAction::Noop,
                 observation,
@@ -273,7 +272,9 @@ pub async fn apply_host_substrate_once<P: OperationalProvider>(
         | HostSubstrateAction::BlockedProvider
         | HostSubstrateAction::BlockedStrictSsh
         | HostSubstrateAction::BlockedSubstrate => {
-            return Err("host substrate authority did not resolve to exactly one mutation".to_owned());
+            return Err(
+                "host substrate authority did not resolve to exactly one mutation".to_owned(),
+            );
         }
     }
 
@@ -311,8 +312,7 @@ mod tests {
         ] {
             assert!(matches!(
                 action,
-                HostSubstrateAction::ScrubUserData
-                    | HostSubstrateAction::RotateHostCertificate
+                HostSubstrateAction::ScrubUserData | HostSubstrateAction::RotateHostCertificate
             ));
         }
     }
