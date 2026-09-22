@@ -1,6 +1,6 @@
 use edge_controller_core::orchestration::{
-    DerivedDnsTarget, DerivedMeshRoute, MachineObservation, ReleaseContext, SupportAccessLeaseState,
-    VpcObservation, derive_dns_target, derive_mesh_route,
+    DerivedDnsTarget, DerivedMeshRoute, MachineObservation, ReleaseContext,
+    SupportAccessLeaseState, VpcObservation, derive_dns_target, derive_mesh_route,
 };
 
 #[derive(Debug, Clone)]
