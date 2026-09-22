@@ -1,6 +1,6 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
-    apply_instance_action, prepare_strict_bootstrap, strict_ssh_capture,
+    apply_instance_action, prepare_strict_bootstrap, strict_ssh_accept, strict_ssh_capture,
     verify_operator_key_matches, wait_provider_ready,
 };
 use crate::vultr_host_substrate_service::{
@@ -24,6 +24,7 @@ use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
+use edge_controller_core::orchestration::SupportAccessLeaseState;
 use edge_controller_core::vultr_lifecycle::{
     DesiredState, MANAGED_BY_IDENTITY, MachineSpec, ObservedMachine, PlanClass,
     decode_provider_tags, destroy_plan,
@@ -33,6 +34,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
@@ -50,8 +52,10 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
+        "lease-acquire" => run_lease_acquire(&args[1..]).await,
         "release-access-plan" => run_release_access_plan(&args[1..]).await,
         "release-access" => run_release_access(&args[1..]).await,
+        "lease-release" => run_lease_release(&args[1..]).await,
         "action-plan" => run_action_plan(&args[1..]).await,
         "action" => run_action(&args[1..]).await,
         "destroy-plan" => run_destroy_plan(&args[1..]).await,
@@ -566,13 +570,21 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
                 .to_owned(),
         );
     }
-
     let desired = load_desired_state(Path::new(&args[0]))?;
+    let result = acquire_access_with_authority(&desired, &args[1], &args[2]).await?;
+    print_json_value(result)
+}
+
+async fn acquire_access_with_authority(
+    desired: &DesiredState,
+    machine_id: &str,
+    authorized_plan_digest: &str,
+) -> Result<serde_json::Value, String> {
     let machine = desired
         .machines
         .iter()
-        .find(|machine| machine.id == args[1])
-        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
     let profile_name = machine.provider.firewall_profile.as_deref().ok_or_else(|| {
         format!(
             "machine {} has no firewall_profile; acquire-access requires provider-owned SSH ingress",
@@ -583,18 +595,19 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
     let authorized = build_access_authority(
-        &desired,
-        &args[1],
+        desired,
+        machine_id,
         AccessAuthorityMode::Acquire,
         &mut lifecycle_provider,
         &mut support_provider,
     )
     .await?;
-    verify_exact_authority(&args[2], &authorized.authority).map_err(|err| err.to_string())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
 
     match authorized.disposition {
         PlanDisposition::Noop => {
-            return print_json_value(serde_json::json!({
+            return Ok(serde_json::json!({
                 "action": "NOOP",
                 "machine_id": machine.id,
                 "firewall_profile": profile_name,
@@ -611,7 +624,7 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
         PlanDisposition::Mutate => {}
     }
 
-    let (_, resolved_profiles, _, _) = load_access_authority_profiles(&desired)?;
+    let (_, resolved_profiles, _, _) = load_access_authority_profiles(desired)?;
     let profile = resolved_profiles.profile(profile_name)?;
     let policy = LifecycleExecutionPolicy::default();
     let resolved = ensure_firewall_profile(
@@ -623,8 +636,8 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
     .await?;
 
     let next = build_access_authority(
-        &desired,
-        &args[1],
+        desired,
+        machine_id,
         AccessAuthorityMode::Acquire,
         &mut lifecycle_provider,
         &mut support_provider,
@@ -637,12 +650,76 @@ async fn run_acquire_access(args: &[String]) -> Result<(), String> {
         ));
     }
 
-    print_json_value(serde_json::json!({
+    Ok(serde_json::json!({
         "action": "ACQUIRED",
         "machine_id": machine.id,
         "firewall_group_id": resolved.id,
         "firewall_profile": resolved.profile_name,
         "next_plan": next.plan,
+        "mutations_performed": 1,
+    }))
+}
+
+async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-orchestrator vultr-lifecycle lease-acquire <spec-path> <machine-id>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let planned = build_access_authority(
+        &desired,
+        &args[1],
+        AccessAuthorityMode::Acquire,
+        &mut lifecycle_provider,
+        &mut support_provider,
+    )
+    .await?;
+    if planned.disposition == PlanDisposition::Blocked {
+        return Err(format!(
+            "lease-acquire is blocked for machine {} by exact plan",
+            args[1]
+        ));
+    }
+    let authority_digest = planned.authority.authority_digest.clone();
+    let access = acquire_access_with_authority(&desired, &args[1], &authority_digest).await?;
+
+    let mut lease = SupportAccessLeaseState::default();
+    lease.acquired()?;
+    let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| format!("exact machine {} has no observed public IPv4", args[1]))?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let substrate = host_substrate_versions_from_env()?;
+    strict_ssh_accept(
+        target_ip,
+        &args[1],
+        &operator_private_key_path,
+        &canonical_public_key,
+        &substrate,
+        15,
+        Duration::from_secs(2),
+    )
+    .await?;
+    lease.ready()?;
+
+    print_json_value(serde_json::json!({
+        "status": "READY",
+        "machine_id": args[1],
+        "lease_phase": lease.phase(),
+        "access": access,
+        "provider_id": observed.provider_id,
+        "mutations_performed": access
+            .get("mutations_performed")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
     }))
 }
 
@@ -915,36 +992,45 @@ async fn run_release_access(args: &[String]) -> Result<(), String> {
                 .to_owned(),
         );
     }
-
     let desired = load_desired_state(Path::new(&args[0]))?;
+    let result = release_access_with_authority(&desired, &args[1], &args[2]).await?;
+    print_json_value(result)
+}
+
+async fn release_access_with_authority(
+    desired: &DesiredState,
+    machine_id: &str,
+    authorized_plan_digest: &str,
+) -> Result<serde_json::Value, String> {
     let machine = desired
         .machines
         .iter()
-        .find(|machine| machine.id == args[1])
-        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
     let profile_name = machine.provider.firewall_profile.as_deref().ok_or_else(|| {
         format!(
             "machine {} has no firewall_profile; release-access requires provider-owned SSH ingress",
             machine.id
         )
     })?;
-    let (raw_profiles, _, _, controller_ipv4) = load_access_authority_profiles(&desired)?;
+    let (raw_profiles, _, _, controller_ipv4) = load_access_authority_profiles(desired)?;
     let profile = raw_profiles.profile(profile_name)?;
     let policy = LifecycleExecutionPolicy::default();
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
     let authorized = build_access_authority(
-        &desired,
-        &args[1],
+        desired,
+        machine_id,
         AccessAuthorityMode::Release,
         &mut lifecycle_provider,
         &mut support_provider,
     )
     .await?;
-    verify_exact_authority(&args[2], &authorized.authority).map_err(|err| err.to_string())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
 
     if authorized.disposition == PlanDisposition::Noop {
-        return print_json_value(serde_json::json!({
+        return Ok(serde_json::json!({
             "action": "NOOP",
             "machine_id": machine.id,
             "firewall_profile": profile_name,
@@ -972,8 +1058,8 @@ async fn run_release_access(args: &[String]) -> Result<(), String> {
     }
 
     let next = build_access_authority(
-        &desired,
-        &args[1],
+        desired,
+        machine_id,
         AccessAuthorityMode::Release,
         &mut lifecycle_provider,
         &mut support_provider,
@@ -983,43 +1069,60 @@ async fn run_release_access(args: &[String]) -> Result<(), String> {
         return Err("controller SSH access cleanup did not converge to NOOP".to_owned());
     }
 
-    print_json_value(serde_json::json!({
+    Ok(serde_json::json!({
         "action": "RELEASED",
         "machine_id": machine.id,
         "firewall_profile": profile_name,
         "firewall_group_id": report.firewall_group_id,
-        "removed_rule_ids": report.removed_rule_ids,
         "verified_absent": report.verified_absent,
         "next_plan": next.plan,
+        "mutations_performed": 1,
     }))
 }
 
-fn instance_action_disposition(
-    action: InstanceAction,
-    observed: &VultrInstance,
-) -> (PlanDisposition, &'static str) {
-    match action {
-        InstanceAction::Start => match observed.power_status.as_str() {
-            "running" => (PlanDisposition::Noop, "NOOP"),
-            "stopped" => (PlanDisposition::Mutate, "START"),
-            _ => (PlanDisposition::Blocked, "BLOCKED"),
-        },
-        InstanceAction::Halt => match observed.power_status.as_str() {
-            "stopped" => (PlanDisposition::Noop, "NOOP"),
-            "running" => (PlanDisposition::Mutate, "HALT"),
-            _ => (PlanDisposition::Blocked, "BLOCKED"),
-        },
-        InstanceAction::Reboot => {
-            if observed.power_status == "running"
-                && observed.status == "active"
-                && observed.server_status == "ok"
-            {
-                (PlanDisposition::Mutate, "REBOOT")
-            } else {
-                (PlanDisposition::Blocked, "BLOCKED")
-            }
-        }
+async fn run_lease_release(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-orchestrator vultr-lifecycle lease-release <spec-path> <machine-id>"
+                .to_owned(),
+        );
     }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let planned = build_access_authority(
+        &desired,
+        &args[1],
+        AccessAuthorityMode::Release,
+        &mut lifecycle_provider,
+        &mut support_provider,
+    )
+    .await?;
+    if planned.disposition == PlanDisposition::Blocked {
+        return Err(format!(
+            "lease-release is blocked for machine {} by exact plan",
+            args[1]
+        ));
+    }
+    let authority_digest = planned.authority.authority_digest.clone();
+    let access = release_access_with_authority(&desired, &args[1], &authority_digest).await?;
+    let verified_absent = access
+        .get("verified_absent")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            access
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|action| action == "NOOP")
+        });
+    if !verified_absent {
+        return Err("lease-release did not prove transient SSH access absent".to_owned());
+    }
+    print_json_value(serde_json::json!({
+        "status": "RELEASED",
+        "machine_id": args[1],
+        "access": access,
+    }))
 }
 
 async fn build_instance_action_authority(
@@ -1904,8 +2007,10 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle lease-acquire <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle release-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle release-access <spec-path> <machine-id> <authorized-plan-sha256>",
+        "  edge-orchestrator vultr-lifecycle lease-release <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle action-plan <spec-path> <machine-id> <start|halt|reboot>",
         "  edge-orchestrator vultr-lifecycle action <spec-path> <machine-id> <start|halt|reboot> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle destroy-plan <spec-path> <machine-id> <source-revision>",
