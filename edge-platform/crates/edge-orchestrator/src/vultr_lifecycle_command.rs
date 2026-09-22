@@ -2101,9 +2101,8 @@ mod tests {
         )
         .unwrap();
 
-        let error =
-            verify_exact_authority(&before.authority.authority_digest, &changed.authority)
-                .unwrap_err();
+        let error = verify_exact_authority(&before.authority.authority_digest, &changed.authority)
+            .unwrap_err();
         assert!(error.to_string().contains("stale"));
     }
 
