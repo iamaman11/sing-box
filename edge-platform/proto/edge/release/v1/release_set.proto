@@ -37,6 +37,12 @@ message VmRuntime {
   string compose_version = 6;
   bytes edge_controller_sha256 = 7;
   bytes edge_orchestrator_sha256 = 8;
+  // Versioned digest of every source/build/dependency input that can change the
+  // reusable VM application runtime artifact set. Present from ReleaseSet v4.
+  bytes runtime_input_sha256 = 9;
+  // Source revision that originally produced the reusable VM runtime artifact
+  // set. This remains stable when a later control-plane-only release reuses it.
+  string runtime_source_revision = 10;
 }
 
 message CloudflareRuntime {
