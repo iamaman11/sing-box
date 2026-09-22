@@ -6,6 +6,9 @@ import re
 from pathlib import Path
 
 RUNTIME_INPUT_SCHEMA = 1
+RUNTIME_BUILD_CONTRACT_PATH = ".github/workflows/edge-platform-ci.yml"
+RUNTIME_BUILD_CONTRACT_BEGIN = "# VM_RUNTIME_BUILD_CONTRACT_BEGIN"
+RUNTIME_BUILD_CONTRACT_END = "# VM_RUNTIME_BUILD_CONTRACT_END"
 REQUIRED_INPUT_KEYS = {
     "rust_toolchain",
     "sing_box_version",
@@ -69,6 +72,18 @@ def _tracked_files(repo_root: Path) -> list[Path]:
     return sorted(files, key=lambda path: path.relative_to(repo_root).as_posix())
 
 
+def _runtime_build_contract(repo_root: Path) -> bytes:
+    path = repo_root / RUNTIME_BUILD_CONTRACT_PATH
+    raw = path.read_text(encoding="utf-8")
+    if raw.count(RUNTIME_BUILD_CONTRACT_BEGIN) != 1 or raw.count(RUNTIME_BUILD_CONTRACT_END) != 1:
+        raise ValueError("VM runtime build contract markers must occur exactly once")
+    start = raw.index(RUNTIME_BUILD_CONTRACT_BEGIN)
+    end = raw.index(RUNTIME_BUILD_CONTRACT_END, start)
+    if end <= start:
+        raise ValueError("VM runtime build contract markers are out of order")
+    return raw[start : end + len(RUNTIME_BUILD_CONTRACT_END)].encode()
+
+
 def _validated_inputs(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError("resolved runtime inputs must be a JSON object")
@@ -97,6 +112,8 @@ def compute_digest(repo_root: Path, resolved_inputs: object) -> str:
     context = hashlib.sha256()
     context.update(b"sing-box-vm-runtime-input\0")
     context.update(RUNTIME_INPUT_SCHEMA.to_bytes(4, "big"))
+    context.update(b"build-contract\0")
+    _feed_field(context, _runtime_build_contract(repo_root))
     for path in _tracked_files(repo_root):
         relative = path.relative_to(repo_root).as_posix().encode()
         content = path.read_bytes()
