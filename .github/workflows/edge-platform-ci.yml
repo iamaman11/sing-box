@@ -47,7 +47,10 @@ jobs:
 
       - name: Test exact dependency resolver
         shell: bash
-        run: python3 edge-platform/scripts/test_resolve_release_dependencies.py
+        run: |
+          set -euo pipefail
+          python3 edge-platform/scripts/test_resolve_release_dependencies.py
+          python3 edge-platform/scripts/test_runtime_input_digest.py
 
       - name: Validate durable release publisher
         shell: bash
@@ -791,6 +794,10 @@ jobs:
       edge_agent_sha256: ${{ steps.package.outputs.edge_agent_sha256 }}
       edge_controller_sha256: ${{ steps.package.outputs.edge_controller_sha256 }}
       edge_orchestrator_sha256: ${{ steps.package.outputs.edge_orchestrator_sha256 }}
+      gateway_runtime_input_digest: ${{ steps.images.outputs.gateway_runtime_input_digest }}
+      warp_runtime_input_digest: ${{ steps.images.outputs.warp_runtime_input_digest }}
+      gateway_reused: ${{ steps.images.outputs.gateway_reused }}
+      warp_reused: ${{ steps.images.outputs.warp_reused }}
     steps:
       - name: Checkout exact candidate revision
         shell: bash
@@ -804,6 +811,39 @@ jobs:
           git fetch --no-tags --depth=1 origin "${REVISION}"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
+
+      - name: Resolve accepted base runtime authority
+        id: base_runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/accepted-base-runtime"
+          if GH_TOKEN="${GH_TOKEN}" REPOSITORY="${REPOSITORY}" \
+            ACCEPTED_REVISION="${BASE_REVISION}" OUTPUT_DIR="${out}" \
+            bash edge-platform/scripts/resolve_durable_release.sh; then
+            # resolved.env is produced only after the durable release, sidecars,
+            # candidate/accepted tree identity and exact ReleaseSet are verified.
+            source "${out}/resolved.env"
+            {
+              printf 'available=true\n'
+              printf 'gateway_ref=%s\n' "${EDGE_GATEWAY_IMAGE}"
+              printf 'warp_ref=%s\n' "${EDGE_WARP_EGRESS_IMAGE}"
+              printf 'release_tag=%s\n' "${EDGE_RELEASE_TAG}"
+            } >> "${GITHUB_OUTPUT}"
+          else
+            rm -rf "${out}"
+            {
+              printf 'available=false\n'
+              printf 'gateway_ref=\n'
+              printf 'warp_ref=\n'
+              printf 'release_tag=\n'
+            } >> "${GITHUB_OUTPUT}"
+            echo "::notice::No exact reusable accepted base runtime authority; runtime images will be built."
+          fi
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -824,12 +864,16 @@ jobs:
           cargo build --locked --release -p edge-agent --bin edge-agent
           cargo build --locked --release -p edge-shared-types --bin edge-release-set
 
-      - name: Build and publish exact candidate images
+      - name: Build or reuse exact candidate images
         id: images
         shell: bash
         env:
           GHCR_TOKEN: ${{ github.token }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          BASE_RUNTIME_AVAILABLE: ${{ steps.base_runtime.outputs.available }}
+          BASE_GATEWAY_IMAGE: ${{ steps.base_runtime.outputs.gateway_ref }}
+          BASE_WARP_EGRESS_IMAGE: ${{ steps.base_runtime.outputs.warp_ref }}
+          BASE_RELEASE_TAG: ${{ steps.base_runtime.outputs.release_tag }}
           SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
           SING_BOX_URL: ${{ needs.dependencies.outputs.sing_box_linux_url }}
           SING_BOX_SHA256: ${{ needs.dependencies.outputs.sing_box_linux_sha256 }}
@@ -845,21 +889,69 @@ jobs:
           build_tag="candidate-${CANDIDATE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           gateway_tag="${registry}/${owner}/vultr-edge-gateway:${build_tag}"
           warp_tag="${registry}/${owner}/vultr-warp-egress:${build_tag}"
+          identity="edge-platform/scripts/runtime_input_digest.py"
+
+          gateway_input_digest="$(python3 "${identity}" digest \
+            --component gateway \
+            --root win/vultr-waw/stack/edge-gateway \
+            --input "BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+            --input "SING_BOX_VERSION=${SING_BOX_VERSION}" \
+            --input "SING_BOX_URL=${SING_BOX_URL}" \
+            --input "SING_BOX_SHA256=${SING_BOX_SHA256}")"
+          warp_input_digest="$(python3 "${identity}" digest \
+            --component warp \
+            --root win/vultr-waw/stack/warp-egress \
+            --input "BASE_IMAGE=${UBUNTU_BASE_IMAGE}" \
+            --input "WARP_VERSION=${WARP_VERSION}" \
+            --input "WARP_URL=${WARP_URL}" \
+            --input "WARP_SHA256=${WARP_SHA256}")"
+          [[ "${gateway_input_digest}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${warp_input_digest}" =~ ^[0-9a-f]{64}$ ]]
 
           printf '%s' "${GHCR_TOKEN}" | docker login "${registry}" -u "${GITHUB_ACTOR}" --password-stdin
 
-          docker build \
-            --label "org.opencontainers.image.revision=${CANDIDATE_REVISION}" \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --build-arg "BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
-            --build-arg "SING_BOX_VERSION=${SING_BOX_VERSION}" \
-            --build-arg "SING_BOX_URL=${SING_BOX_URL}" \
-            --build-arg "SING_BOX_SHA256=${SING_BOX_SHA256}" \
-            -t "${gateway_tag}" \
-            win/vultr-waw/stack/edge-gateway
+          reusable_image() {
+            local component="$1"
+            local expected_digest="$2"
+            local expected_repository="$3"
+            local base_ref="$4"
+            [[ "${BASE_RUNTIME_AVAILABLE}" = "true" ]] || return 1
+            [[ "${base_ref}" =~ ^${expected_repository}@sha256:[0-9a-f]{64}$ ]] || return 1
+            docker pull "${base_ref}" >/dev/null
+            local labels
+            labels="$(docker image inspect "${base_ref}" --format '{{json .Config.Labels}}')"
+            python3 "${identity}" verify-labels \
+              --component "${component}" \
+              --digest "${expected_digest}" \
+              --labels-json "${labels}" >/dev/null
+          }
+
+          gateway_reused=false
+          if reusable_image gateway "${gateway_input_digest}" \
+            "ghcr.io/iamaman11/vultr-edge-gateway" "${BASE_GATEWAY_IMAGE}"; then
+            gateway_ref="${BASE_GATEWAY_IMAGE}"
+            gateway_reused=true
+          else
+            docker build \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --label "io.alegria.runtime-input.schema=1" \
+              --label "io.alegria.runtime-input.component=gateway" \
+              --label "io.alegria.runtime-input.digest=${gateway_input_digest}" \
+              --build-arg "BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
+              --build-arg "SING_BOX_VERSION=${SING_BOX_VERSION}" \
+              --build-arg "SING_BOX_URL=${SING_BOX_URL}" \
+              --build-arg "SING_BOX_SHA256=${SING_BOX_SHA256}" \
+              -t "${gateway_tag}" \
+              win/vultr-waw/stack/edge-gateway
+            docker push "${gateway_tag}"
+            gateway_digest="$(docker buildx imagetools inspect "${gateway_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
+            [[ "${gateway_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            gateway_ref="${registry}/${owner}/vultr-edge-gateway@${gateway_digest}"
+          fi
+          docker pull "${gateway_ref}" >/dev/null
 
           sing_box_evidence="${RUNNER_TEMP}/sing-box-linux"
-          gateway_container="$(docker create "${gateway_tag}")"
+          gateway_container="$(docker create "${gateway_ref}")"
           docker cp "${gateway_container}:/usr/local/bin/sing-box" "${sing_box_evidence}"
           docker rm "${gateway_container}" >/dev/null
           chmod 0755 "${sing_box_evidence}"
@@ -917,27 +1009,56 @@ jobs:
           "${sing_box_evidence}" check -c "${config_check}/line1-gateway.json"
           "${sing_box_evidence}" check -c "${config_check}/line2-proxy.json"
 
-          docker push "${gateway_tag}"
+          warp_reused=false
+          if reusable_image warp "${warp_input_digest}" \
+            "ghcr.io/iamaman11/vultr-warp-egress" "${BASE_WARP_EGRESS_IMAGE}"; then
+            warp_ref="${BASE_WARP_EGRESS_IMAGE}"
+            warp_reused=true
+          else
+            docker build \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --label "io.alegria.runtime-input.schema=1" \
+              --label "io.alegria.runtime-input.component=warp" \
+              --label "io.alegria.runtime-input.digest=${warp_input_digest}" \
+              --build-arg "BASE_IMAGE=${UBUNTU_BASE_IMAGE}" \
+              --build-arg "WARP_VERSION=${WARP_VERSION}" \
+              --build-arg "WARP_URL=${WARP_URL}" \
+              --build-arg "WARP_SHA256=${WARP_SHA256}" \
+              -t "${warp_tag}" \
+              win/vultr-waw/stack/warp-egress
+            docker push "${warp_tag}"
+            warp_digest="$(docker buildx imagetools inspect "${warp_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
+            [[ "${warp_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            warp_ref="${registry}/${owner}/vultr-warp-egress@${warp_digest}"
+          fi
+          docker pull "${warp_ref}" >/dev/null
 
-          docker build \
-            --label "org.opencontainers.image.revision=${CANDIDATE_REVISION}" \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --build-arg "BASE_IMAGE=${UBUNTU_BASE_IMAGE}" \
-            --build-arg "WARP_VERSION=${WARP_VERSION}" \
-            --build-arg "WARP_URL=${WARP_URL}" \
-            --build-arg "WARP_SHA256=${WARP_SHA256}" \
-            -t "${warp_tag}" \
-            win/vultr-waw/stack/warp-egress
-          docker push "${warp_tag}"
+          # Re-observe labels on every selected exact image. Reuse and fresh build
+          # must both end with the same versioned runtime-input contract.
+          gateway_labels="$(docker image inspect "${gateway_ref}" --format '{{json .Config.Labels}}')"
+          warp_labels="$(docker image inspect "${warp_ref}" --format '{{json .Config.Labels}}')"
+          python3 "${identity}" verify-labels \
+            --component gateway --digest "${gateway_input_digest}" --labels-json "${gateway_labels}" >/dev/null
+          python3 "${identity}" verify-labels \
+            --component warp --digest "${warp_input_digest}" --labels-json "${warp_labels}" >/dev/null
 
-          gateway_digest="$(docker buildx imagetools inspect "${gateway_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
-          warp_digest="$(docker buildx imagetools inspect "${warp_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
-          [[ "${gateway_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "${warp_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
-
-          printf 'gateway_ref=%s\n' "${registry}/${owner}/vultr-edge-gateway@${gateway_digest}" >> "${GITHUB_OUTPUT}"
-          printf 'warp_ref=%s\n' "${registry}/${owner}/vultr-warp-egress@${warp_digest}" >> "${GITHUB_OUTPUT}"
+          printf 'gateway_ref=%s\n' "${gateway_ref}" >> "${GITHUB_OUTPUT}"
+          printf 'warp_ref=%s\n' "${warp_ref}" >> "${GITHUB_OUTPUT}"
           printf 'sing_box_binary_sha256=%s\n' "${sing_box_binary_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'gateway_runtime_input_digest=%s\n' "${gateway_input_digest}" >> "${GITHUB_OUTPUT}"
+          printf 'warp_runtime_input_digest=%s\n' "${warp_input_digest}" >> "${GITHUB_OUTPUT}"
+          printf 'gateway_reused=%s\n' "${gateway_reused}" >> "${GITHUB_OUTPUT}"
+          printf 'warp_reused=%s\n' "${warp_reused}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo '### Runtime OCI input authority'
+            echo
+            echo "- accepted base release: `${BASE_RELEASE_TAG:-unavailable}`"
+            echo "- gateway runtime input: `${gateway_input_digest}` / reused=`${gateway_reused}`"
+            echo "- WARP runtime input: `${warp_input_digest}` / reused=`${warp_reused}`"
+            echo "- gateway exact ref: `${gateway_ref}`"
+            echo "- WARP exact ref: `${warp_ref}`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Package exact Linux candidate
         id: package
