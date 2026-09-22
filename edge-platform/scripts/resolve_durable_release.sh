@@ -202,7 +202,8 @@ verify_output="$("$verifier" verify-vm \
   --sha256-file "${out}/release-set.pb.sha256" \
   --source-revision "$candidate_revision" \
   --edge-agent "${out}/edge-agent-linux-amd64" \
-  --edge-controller "${out}/edge-controller-linux-amd64")"
+  --edge-controller "${out}/edge-controller-linux-amd64" \
+  --edge-orchestrator "${out}/edge-orchestrator-linux-amd64")"
 printf '%s\n' "$verify_output"
 
 extract_single() {
