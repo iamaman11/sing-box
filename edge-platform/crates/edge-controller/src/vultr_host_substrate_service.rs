@@ -362,10 +362,8 @@ mod tests {
             changed.plan.action,
             HostSubstrateAction::RotateHostCertificate
         );
-        assert!(verify_exact_authority(
-            &first.authority.authority_digest,
-            &changed.authority
-        )
-        .is_err());
+        assert!(
+            verify_exact_authority(&first.authority.authority_digest, &changed.authority).is_err()
+        );
     }
 }
