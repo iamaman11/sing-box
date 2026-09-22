@@ -25,7 +25,8 @@ use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
 use edge_controller_core::vultr_lifecycle::{
-    DesiredState, MANAGED_BY_IDENTITY, MachineSpec, PlanClass, decode_provider_tags, destroy_plan,
+    DesiredState, MANAGED_BY_IDENTITY, MachineSpec, ObservedMachine, PlanClass,
+    decode_provider_tags, destroy_plan,
 };
 use edge_provider_vultr::{VultrFirewallRule, VultrInstance};
 use std::collections::BTreeMap;
@@ -343,10 +344,10 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     }))
 }
 
-async fn exact_existing_machine_provider_id(
+pub(crate) async fn exact_existing_machine_observation(
     desired: &DesiredState,
     machine_id: &str,
-) -> Result<String, String> {
+) -> Result<ObservedMachine, String> {
     let profiles = load_firewall_profiles(desired)?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
@@ -359,20 +360,52 @@ async fn exact_existing_machine_provider_id(
         &verified_firewalls,
     )
     .await?;
-    let plan = report
-        .plans
-        .first()
-        .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
+    if report.plans.len() != 1 {
+        return Err(format!(
+            "expected exactly one lifecycle plan for {machine_id}, got {}",
+            report.plans.len()
+        ));
+    }
+    let plan = &report.plans[0];
     if plan.class != PlanClass::Noop {
         return Err(format!(
-            "host substrate lifecycle requires an exact existing machine; machine {machine_id} plan is {:?}: {}",
+            "exact machine observation requires NOOP; machine {machine_id} plan is {:?}: {}",
             plan.class,
             plan.reasons.join("; ")
         ));
     }
-    plan.provider_id
-        .clone()
-        .ok_or_else(|| format!("NOOP machine plan for {machine_id} is missing provider id"))
+    let provider_id = plan
+        .provider_id
+        .as_deref()
+        .ok_or_else(|| format!("NOOP machine plan for {machine_id} is missing provider id"))?;
+    let mut matches = report
+        .inventory
+        .resources
+        .iter()
+        .filter(|resource| resource.provider_id == provider_id);
+    let observed = matches
+        .next()
+        .ok_or_else(|| format!("NOOP machine {machine_id} is absent from observed inventory"))?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "provider inventory is ambiguous for exact machine {machine_id} ({provider_id})"
+        ));
+    }
+    if observed.ownership.logical_id.as_deref() != Some(machine_id) {
+        return Err(format!(
+            "observed provider resource {provider_id} is not owned by logical machine {machine_id}"
+        ));
+    }
+    Ok(observed.clone())
+}
+
+async fn exact_existing_machine_provider_id(
+    desired: &DesiredState,
+    machine_id: &str,
+) -> Result<String, String> {
+    Ok(exact_existing_machine_observation(desired, machine_id)
+        .await?
+        .provider_id)
 }
 
 async fn run_substrate_plan(args: &[String]) -> Result<(), String> {
