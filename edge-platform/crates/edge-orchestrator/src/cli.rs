@@ -514,6 +514,19 @@ fn path(value: PathBuf) -> String {
     value.to_string_lossy().into_owned()
 }
 
+fn normalized(value: Option<String>) -> Option<String> {
+    value.and_then(non_blank)
+}
+
+fn non_blank(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
