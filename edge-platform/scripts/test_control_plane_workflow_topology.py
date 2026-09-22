@@ -194,6 +194,19 @@ def main() -> None:
         "staged Checkpoint 1 backends must not expose destructive cleanup",
     )
 
+    acquire_pos = vpc.index("vpc-access-acquire.json")
+    ready_pos = vpc.index("vpc-access-ready.json")
+    attachment_plan_pos = vpc.index("vpc-attachment-plan.json")
+    require(
+        acquire_pos < ready_pos < attachment_plan_pos,
+        "VPC backend must prove host substrate readiness after access acquisition and before attachment planning",
+    )
+    require(
+        "vultr-lifecycle substrate-verify" in vpc
+        and '.status == "PASS" and .plan.action == "NOOP"' in vpc,
+        "VPC access readiness must use canonical read-only substrate verification",
+    )
+
     require(
         "cleanup_acceptance() (" in application,
         "acceptance cleanup must run in an isolated subshell",
