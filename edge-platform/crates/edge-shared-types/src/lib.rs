@@ -706,6 +706,8 @@ mod release_set_tests {
             .unwrap()
             .edge_orchestrator_sha256
             .clear();
+        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
+        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
         let bytes = encode_release_set(&release).unwrap();
         assert_eq!(decode_release_set(&bytes).unwrap(), release);
     }
@@ -746,6 +748,21 @@ mod release_set_tests {
 
     #[test]
     fn release_set_rejects_missing_v3_orchestrator_hash() {
+        let mut release = valid_release();
+        release.schema_version = 3;
+        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
+        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .edge_orchestrator_sha256
+            .clear();
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_missing_v4_orchestrator_hash() {
         let mut release = valid_release();
         release
             .vm_runtime
