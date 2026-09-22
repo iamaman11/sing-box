@@ -968,30 +968,6 @@ pub async fn strict_ssh_accept(
     }
 }
 
-pub fn verify_host_certificate_rotated(
-    target_ip: &str,
-    logical_hostname: &str,
-    operator_private_key_path: &Path,
-    canonical_operator_public_key: &str,
-    minimum_serial: u64,
-) -> Result<(), String> {
-    if minimum_serial == 0 {
-        return Err("minimum host certificate serial must be greater than zero".to_owned());
-    }
-    let observed = read_host_certificate_serial(
-        target_ip,
-        logical_hostname,
-        operator_private_key_path,
-        canonical_operator_public_key,
-    )?;
-    if observed < minimum_serial {
-        return Err(format!(
-            "host certificate serial is stale: required at least {minimum_serial}, observed {observed}"
-        ));
-    }
-    Ok(())
-}
-
 pub fn ensure_host_certificate_rotated(
     target_ip: &str,
     logical_hostname: &str,
