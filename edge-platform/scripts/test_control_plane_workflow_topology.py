@@ -86,6 +86,15 @@ def main() -> None:
         ("dns", dns),
     ]:
         require(
+            "edge-orchestrator-linux-amd64" in backend
+            and "EDGE_ORCHESTRATOR_SHA256" in backend,
+            f"{name} backend must execute the exact immutable edge-orchestrator",
+        )
+        require(
+            "edge-controller-linux-amd64" not in backend,
+            f"{name} backend must not execute Linux edge-controller as provider owner",
+        )
+        require(
             "COMMENT_BODY: ${{ inputs.command_body }}" in backend,
             f"{name} backend must parse only the router-provided command body",
         )
@@ -177,10 +186,23 @@ def main() -> None:
         "VPC backend must retain staged attachment authority and verification",
     )
     require(
-        "acquire-access-plan" in vpc
-        and "release-access-plan" in vpc
+        "vultr-lifecycle lease-acquire" in vpc
+        and "vultr-lifecycle lease-release" in vpc
         and "ACCESS_CLEANUP_ARMED=1" in vpc,
-        "VPC guest mutation must use transient SSH access with armed cleanup",
+        "VPC guest mutation must use the typed transient SSH lease with armed cleanup",
+    )
+    require(
+        "acquire-access-plan" not in vpc and "release-access-plan" not in vpc,
+        "VPC workflow must not own transient-access PlanAuthority plumbing",
+    )
+    require(
+        "vultr-lifecycle lease-acquire" in application
+        and "vultr-lifecycle lease-release" in application,
+        "application workflow must use the typed transient SSH lease",
+    )
+    require(
+        "acquire-access-plan" not in application and "release-access-plan" not in application,
+        "application workflow must not own transient-access PlanAuthority plumbing",
     )
     require(
         "EDGE_DOCKER_ENGINE_VERSION" in vpc
@@ -194,6 +216,23 @@ def main() -> None:
         and "cloudflare-dns apply" in dns
         and "plan_authority.authority_digest" in dns,
         "DNS backend mutations must consume fresh exact PlanAuthority",
+    )
+    require(
+        "TARGET_IPV4" not in dns and "target_ipv4" not in dns,
+        "DNS workflow must not accept or transport a manually derived target IPv4",
+    )
+    require(
+        "APPLICATION_SPEC_PATH" in dns,
+        "DNS workflow must delegate target derivation to the typed orchestrator from application/Vultr observation",
+    )
+    require(
+        '"${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}"' in application
+        and '"${bin}" cloudflare-dns apply "${dns_spec}" "${app_spec}"' in application,
+        "application acceptance must not manually copy VM public IPv4 into DNS commands",
+    )
+    require(
+        "vm_ip=" not in application,
+        "application acceptance must not own derived VM public-IP plumbing",
     )
     require(
         "cleanup-apply" not in vpc and "cleanup-apply" not in dns,
