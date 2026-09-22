@@ -827,12 +827,18 @@ fn transport_stage_evidence(stderr: &[u8], success: bool) -> String {
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransportStageObservation {
+    evidence: String,
+    passed: bool,
+}
+
 fn capture_transport_stage(
     target_ip: &str,
     logical_hostname: &str,
     operator_private_key_path: &Path,
     known_hosts_path: &Path,
-) -> String {
+) -> TransportStageObservation {
     let mut args = strict_ssh_args(
         target_ip,
         logical_hostname,
@@ -847,9 +853,22 @@ fn capture_transport_stage(
         .stderr(Stdio::piped())
         .output()
     {
-        Ok(output) => transport_stage_evidence(&output.stderr, output.status.success()),
-        Err(_) => "diagnostic_unavailable=true".to_owned(),
+        Ok(output) => TransportStageObservation {
+            evidence: transport_stage_evidence(&output.stderr, output.status.success()),
+            passed: output.status.success(),
+        },
+        Err(_) => TransportStageObservation {
+            evidence: "diagnostic_unavailable=true".to_owned(),
+            passed: false,
+        },
     }
+}
+
+fn should_retry_acceptance_after_transport_probe(
+    last_class: StrictSshFailureClass,
+    transport_probe_passed: bool,
+) -> bool {
+    last_class == StrictSshFailureClass::Transport && transport_probe_passed
 }
 
 pub(crate) async fn observe_strict_ssh_acceptance(
@@ -910,24 +929,58 @@ pub(crate) async fn observe_strict_ssh_acceptance(
             sleep(delay).await;
         }
     }
-    let last = last.unwrap_or(StrictSshAttemptEvidence {
+    let mut last = last.unwrap_or(StrictSshAttemptEvidence {
         class: StrictSshFailureClass::OtherSsh,
         exit_code: None,
         detail: "no SSH attempt was made".to_owned(),
     });
-    let transport_stage = if last.class == StrictSshFailureClass::Transport {
-        capture_transport_stage(
+    let mut total_attempts = attempts;
+    let mut transport_stage = "not-required".to_owned();
+
+    if last.class == StrictSshFailureClass::Transport {
+        let stage = capture_transport_stage(
             target_ip,
             logical_hostname,
             operator_private_key_path,
             &trust,
-        )
-    } else {
-        "not-required".to_owned()
-    };
+        );
+        transport_stage = stage.evidence;
+
+        if should_retry_acceptance_after_transport_probe(last.class, stage.passed) {
+            total_attempts += 1;
+            match run_strict_ssh_attempt(&args) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&trust);
+                    return Ok(StrictSshAcceptanceObservation {
+                        passed: true,
+                        attempts: total_attempts,
+                        counts: counts.summary(),
+                        last_class: None,
+                        last_exit_code: Some(0),
+                        last_detail: "PASS_AFTER_TRANSPORT_READINESS".to_owned(),
+                        forensic: forensic.unwrap_or_else(|| "not-collected".to_owned()),
+                        transport_stage,
+                    });
+                }
+                Err(evidence) => {
+                    if evidence.class == StrictSshFailureClass::RemoteAcceptance {
+                        forensic = Some(capture_substrate_forensics(
+                            target_ip,
+                            logical_hostname,
+                            operator_private_key_path,
+                            &trust,
+                        ));
+                    }
+                    counts.record(evidence.class);
+                    last = evidence;
+                }
+            }
+        }
+    }
+
     let observation = StrictSshAcceptanceObservation {
         passed: false,
-        attempts,
+        attempts: total_attempts,
         counts: counts.summary(),
         last_class: Some(last.class),
         last_exit_code: last.exit_code,
@@ -1838,6 +1891,22 @@ mod tests {
         assert!(evidence.contains("kex_reached=true"));
         assert!(evidence.contains("authentication_reached=true"));
         assert!(!evidence.contains("SHA256:redacted"));
+    }
+
+    #[test]
+    fn successful_late_transport_probe_allows_one_final_acceptance_observation() {
+        assert!(should_retry_acceptance_after_transport_probe(
+            StrictSshFailureClass::Transport,
+            true,
+        ));
+        assert!(!should_retry_acceptance_after_transport_probe(
+            StrictSshFailureClass::Transport,
+            false,
+        ));
+        assert!(!should_retry_acceptance_after_transport_probe(
+            StrictSshFailureClass::RemoteAcceptance,
+            true,
+        ));
     }
 
     #[test]
