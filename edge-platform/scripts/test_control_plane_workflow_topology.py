@@ -95,6 +95,10 @@ def main() -> None:
             f"{name} backend must not execute Linux edge-controller as provider owner",
         )
         require(
+            "EDGE_RELEASE_CONTEXT_PATH" in backend,
+            f"{name} backend must pass one exact resolved ReleaseSet context into edge-orchestrator",
+        )
+        require(
             "COMMENT_BODY: ${{ inputs.command_body }}" in backend,
             f"{name} backend must parse only the router-provided command body",
         )
@@ -226,6 +230,10 @@ def main() -> None:
         "DNS workflow must delegate target derivation to the typed orchestrator from application/Vultr observation",
     )
     require(
+        "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in dns,
+        "DNS composition must have bounded Vultr read authority for current VM observation",
+    )
+    require(
         '"${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}"' in application
         and '"${bin}" cloudflare-dns apply "${dns_spec}" "${app_spec}"' in application,
         "application acceptance must not manually copy VM public IPv4 into DNS commands",
@@ -290,6 +298,21 @@ def main() -> None:
     require(
         application.count(reboot_action) == 1,
         "application acceptance must retain exactly one explicit reboot for final persistence verification",
+    )
+
+    orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "edge-state" not in orchestrator_manifest,
+        "GitHub-only edge-orchestrator must not introduce a second persistent desired-state store",
+    )
+    orchestrator_main = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "OrchestrationContext::from_process_env()" in orchestrator_main,
+        "edge-orchestrator must validate exact ReleaseSet context before lifecycle dispatch",
     )
 
 
