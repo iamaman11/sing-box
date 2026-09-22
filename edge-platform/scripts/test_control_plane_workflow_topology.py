@@ -8,6 +8,7 @@ VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
+MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
 
 
 def require(condition: bool, message: str) -> None:
@@ -22,6 +23,7 @@ def main() -> None:
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
+    mesh = MESH.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -38,11 +40,13 @@ def main() -> None:
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
+    require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
+    require("issue_comment:" not in mesh, "Mesh backend must not listen to comments")
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
@@ -65,6 +69,10 @@ def main() -> None:
         "router must call the DNS backend",
     )
     require(
+        "uses: ./.github/workflows/cloudflare-mesh-lifecycle.yml" in router,
+        "router must call the Mesh backend",
+    )
+    require(
         "vultr-control-plane-production" not in router,
         "router and skipped comments must never occupy production concurrency",
     )
@@ -84,6 +92,7 @@ def main() -> None:
         ("zero-trust", zero_trust),
         ("vpc", vpc),
         ("dns", dns),
+        ("mesh", mesh),
     ]:
         require(
             "edge-orchestrator-linux-amd64" in backend
@@ -130,6 +139,10 @@ def main() -> None:
     require(
         dns.count("group: vultr-control-plane-production") == 1,
         "DNS backend must serialize its execute mutation job",
+    )
+    require(
+        mesh.count("group: vultr-control-plane-production") == 1,
+        "Mesh backend must serialize its execute mutation job",
     )
     require(
         "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
@@ -302,6 +315,59 @@ def main() -> None:
     require(
         application.count(reboot_action) == 1,
         "application acceptance must retain exactly one explicit reboot for final persistence verification",
+    )
+
+    require(
+        "edge-platform/scripts/resolve_durable_release.sh" in mesh,
+        "Mesh backend must consume the exact durable accepted ReleaseSet",
+    )
+    require(
+        "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in mesh
+        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in mesh
+        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in mesh,
+        "Mesh backend must receive only the provider and strict-SSH authorities required by verified VPC composition",
+    )
+    require(
+        "line3-mesh vpc-plan" in mesh
+        and "line3-mesh vpc-apply" in mesh
+        and "plan_authority.authority_digest" in mesh,
+        "Mesh provider mutations must reuse typed VPC-derived planning and exact PlanAuthority",
+    )
+    require(
+        "vultr-lifecycle lease-acquire" in mesh
+        and "vultr-lifecycle lease-release" in mesh
+        and "ACCESS_CLEANUP_ARMED=1" in mesh,
+        "Mesh VPC proof must use the typed transient SSH lease with armed cleanup",
+    )
+    require(
+        "acquire-access-plan" not in mesh and "release-access-plan" not in mesh,
+        "Mesh workflow must not own transient-access PlanAuthority plumbing",
+    )
+    require(
+        'tokens[0] != "/mesh"' in mesh
+        and 'tokens[1] not in {"plan", "apply"}' in mesh,
+        "Mesh backend must expose only the bounded CP3 plan/apply grammar",
+    )
+    require(
+        "line3-mesh vpc-runtime-" not in mesh
+        and "line3-mesh runtime-" not in mesh
+        and "line3-mesh cleanup-" not in mesh
+        and "MESH_NODE_TOKEN" not in mesh,
+        "CP3 Mesh backend must not expose runtime, token, or cleanup operations",
+    )
+    require(
+        "MESH_CIDR" not in mesh
+        and "PRIVATE_IPV4" not in mesh
+        and "PROVIDER_ID" not in mesh,
+        "Mesh workflow must not transport raw provider IDs, CIDR, or private-IP authority",
+    )
+    require(
+        '"${bin}" line3-mesh vpc-plan \\\n                "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"' in mesh,
+        "Mesh plan must derive effective route only through the typed VPC-composed command",
+    )
+    require(
+        mesh.count("line3-mesh vpc-apply") == 1,
+        "one Mesh workflow invocation must contain at most one provider apply call",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
