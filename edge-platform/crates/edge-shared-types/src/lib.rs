@@ -140,9 +140,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                 &vm.edge_orchestrator_sha256,
             )?;
             if !vm.runtime_input_sha256.is_empty() || !vm.runtime_source_revision.is_empty() {
-                return Err(
-                    "schema v3 must not contain VM runtime reuse identity".to_owned(),
-                );
+                return Err("schema v3 must not contain VM runtime reuse identity".to_owned());
             }
         }
         4 => {
@@ -154,10 +152,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                 "vm_runtime.edge_orchestrator_sha256",
                 &vm.edge_orchestrator_sha256,
             )?;
-            validate_sha256_bytes(
-                "vm_runtime.runtime_input_sha256",
-                &vm.runtime_input_sha256,
-            )?;
+            validate_sha256_bytes("vm_runtime.runtime_input_sha256", &vm.runtime_input_sha256)?;
             validate_lower_hex(
                 "vm_runtime.runtime_source_revision",
                 &vm.runtime_source_revision,
@@ -662,8 +657,18 @@ mod release_set_tests {
             .unwrap()
             .edge_orchestrator_sha256
             .clear();
-        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
-        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_input_sha256
+            .clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_source_revision
+            .clear();
         let bytes = encode_release_set(&release).unwrap();
         assert_eq!(decode_release_set(&bytes).unwrap(), release);
     }
@@ -691,8 +696,18 @@ mod release_set_tests {
             .unwrap()
             .edge_controller_sha256
             .clear();
-        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
-        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_input_sha256
+            .clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_source_revision
+            .clear();
         assert!(validate_release_set(&release).is_err());
     }
 
@@ -706,8 +721,18 @@ mod release_set_tests {
             .unwrap()
             .edge_orchestrator_sha256
             .clear();
-        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
-        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_input_sha256
+            .clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_source_revision
+            .clear();
         let bytes = encode_release_set(&release).unwrap();
         assert_eq!(decode_release_set(&bytes).unwrap(), release);
     }
@@ -723,8 +748,18 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v3_without_runtime_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 3;
-        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
-        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_input_sha256
+            .clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_source_revision
+            .clear();
         let bytes = encode_release_set(&release).unwrap();
         assert_eq!(decode_release_set(&bytes).unwrap(), release);
     }
@@ -739,10 +774,20 @@ mod release_set_tests {
     #[test]
     fn release_set_rejects_missing_v4_runtime_reuse_identity() {
         let mut release = valid_release();
-        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_input_sha256
+            .clear();
         assert!(validate_release_set(&release).is_err());
         let mut release = valid_release();
-        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_source_revision
+            .clear();
         assert!(validate_release_set(&release).is_err());
     }
 
@@ -750,8 +795,18 @@ mod release_set_tests {
     fn release_set_rejects_missing_v3_orchestrator_hash() {
         let mut release = valid_release();
         release.schema_version = 3;
-        release.vm_runtime.as_mut().unwrap().runtime_input_sha256.clear();
-        release.vm_runtime.as_mut().unwrap().runtime_source_revision.clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_input_sha256
+            .clear();
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .runtime_source_revision
+            .clear();
         release
             .vm_runtime
             .as_mut()
