@@ -1,5 +1,4 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -141,23 +140,23 @@ pub(crate) struct CleanupApplyArgs {
 }
 
 #[derive(Debug, Args, Clone)]
-pub(crate) struct DnsTargetArgs {
+pub(crate) struct DnsDerivedArgs {
     pub spec_path: PathBuf,
-    pub target_ipv4: Ipv4Addr,
+    pub application_spec_path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]
-pub(crate) struct DnsTargetAuthorizedArgs {
+pub(crate) struct DnsDerivedAuthorizedArgs {
     pub spec_path: PathBuf,
-    pub target_ipv4: Ipv4Addr,
+    pub application_spec_path: PathBuf,
     pub authorized_plan_sha256: String,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareDnsCommand {
     Inventory(SpecArgs),
-    Plan(DnsTargetArgs),
-    Apply(DnsTargetAuthorizedArgs),
+    Plan(DnsDerivedArgs),
+    Apply(DnsDerivedAuthorizedArgs),
     CleanupPlan(SpecArgs),
     CleanupApply(CleanupApplyArgs),
 }
@@ -169,12 +168,12 @@ impl CloudflareDnsCommand {
             Self::Plan(args) => vec![
                 "plan".to_owned(),
                 path(args.spec_path),
-                args.target_ipv4.to_string(),
+                path(args.application_spec_path),
             ],
             Self::Apply(args) => vec![
                 "apply".to_owned(),
                 path(args.spec_path),
-                args.target_ipv4.to_string(),
+                path(args.application_spec_path),
                 args.authorized_plan_sha256,
             ],
             Self::CleanupPlan(args) => vec!["cleanup-plan".to_owned(), path(args.spec_path)],
@@ -558,7 +557,7 @@ mod tests {
                 "cloudflare-dns",
                 "apply",
                 "infra/cloudflare/dns.json",
-                "203.0.113.10",
+                "infra/application/production.json",
                 &digest,
             ],
             vec![
