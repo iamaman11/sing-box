@@ -183,6 +183,12 @@ def main() -> None:
         "VPC guest mutation must use transient SSH access with armed cleanup",
     )
     require(
+        "EDGE_DOCKER_ENGINE_VERSION" in vpc
+        and "EDGE_CONTAINERD_VERSION" in vpc
+        and "EDGE_COMPOSE_VERSION" in vpc,
+        "VPC host-substrate verification must bind exact ReleaseSet substrate versions",
+    )
+    require(
         '"apply"' in dns
         and "cloudflare-dns plan" in dns
         and "cloudflare-dns apply" in dns
