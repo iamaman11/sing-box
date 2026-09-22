@@ -48,10 +48,8 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     let desired = load_desired(Path::new(&args[0]))?;
     let derived = derive_target_from_application(Path::new(&args[1])).await?;
     let mut provider = provider_from_env()?;
-    let (observed, plan) =
-        plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
-    let authorized =
-        authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan.clone())?;
+    let (observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
+    let authorized = authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan.clone())?;
     print_json(serde_json::json!({
         "derived_target": derived,
         "observation": observed,
@@ -148,8 +146,7 @@ async fn derive_target_from_application(
             application_spec_path.display()
         )
     })?;
-    let application =
-        DesiredApplicationState::parse_json(&raw).map_err(|err| err.to_string())?;
+    let application = DesiredApplicationState::parse_json(&raw).map_err(|err| err.to_string())?;
     let vultr_desired = load_vultr_desired_state(Path::new(&application.vultr_spec_path))?;
     if vultr_desired.environment != application.environment {
         return Err(format!(
