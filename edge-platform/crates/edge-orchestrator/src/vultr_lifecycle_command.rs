@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
@@ -660,6 +660,181 @@ async fn acquire_access_with_authority(
     }))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TcpReadinessPolicy {
+    max_attempts: usize,
+    max_elapsed: Duration,
+    connect_timeout: Duration,
+    backoff: Duration,
+}
+
+impl TcpReadinessPolicy {
+    const fn support_access() -> Self {
+        Self {
+            max_attempts: 90,
+            max_elapsed: Duration::from_secs(300),
+            connect_timeout: Duration::from_secs(3),
+            backoff: Duration::from_secs(2),
+        }
+    }
+
+    fn validate(self) -> Result<Self, String> {
+        if self.max_attempts == 0 {
+            return Err("TCP readiness max_attempts must be greater than zero".to_owned());
+        }
+        if self.max_elapsed.is_zero() {
+            return Err("TCP readiness max_elapsed must be greater than zero".to_owned());
+        }
+        if self.connect_timeout.is_zero() {
+            return Err("TCP readiness connect_timeout must be greater than zero".to_owned());
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum TcpReadinessState {
+    Ready,
+    Timeout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum TcpReadinessFailureClass {
+    ConnectTimeout,
+    ConnectionRefused,
+    Io,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct TcpReadinessObservation {
+    attempts: usize,
+    elapsed_ms: u64,
+    final_state: TcpReadinessState,
+    last_error_class: Option<TcpReadinessFailureClass>,
+}
+
+impl TcpReadinessObservation {
+    fn evidence(&self) -> String {
+        format!(
+            "attempts={}; elapsed_ms={}; final_state={:?}; last_error_class={:?}",
+            self.attempts, self.elapsed_ms, self.final_state, self.last_error_class
+        )
+    }
+}
+
+fn bounded_elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn classify_tcp_connect_error(error: &std::io::Error) -> TcpReadinessFailureClass {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionRefused => TcpReadinessFailureClass::ConnectionRefused,
+        std::io::ErrorKind::TimedOut => TcpReadinessFailureClass::ConnectTimeout,
+        _ => TcpReadinessFailureClass::Io,
+    }
+}
+
+async fn observe_tcp_readiness_with_probe<F, Fut>(
+    policy: TcpReadinessPolicy,
+    mut probe: F,
+) -> Result<TcpReadinessObservation, String>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: std::future::Future<Output = Result<(), TcpReadinessFailureClass>>,
+{
+    let policy = policy.validate()?;
+    let started = Instant::now();
+    let mut attempts = 0usize;
+    let mut last_error_class = None;
+
+    while attempts < policy.max_attempts && started.elapsed() < policy.max_elapsed {
+        let remaining = policy.max_elapsed.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+
+        attempts += 1;
+        let attempt_timeout = std::cmp::min(policy.connect_timeout, remaining);
+        match probe(attempt_timeout).await {
+            Ok(()) => {
+                return Ok(TcpReadinessObservation {
+                    attempts,
+                    elapsed_ms: bounded_elapsed_ms(started),
+                    final_state: TcpReadinessState::Ready,
+                    last_error_class,
+                });
+            }
+            Err(class) => last_error_class = Some(class),
+        }
+
+        if attempts >= policy.max_attempts || started.elapsed() >= policy.max_elapsed {
+            break;
+        }
+
+        let remaining = policy.max_elapsed.saturating_sub(started.elapsed());
+        let delay = std::cmp::min(policy.backoff, remaining);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    Ok(TcpReadinessObservation {
+        attempts,
+        elapsed_ms: bounded_elapsed_ms(started),
+        final_state: TcpReadinessState::Timeout,
+        last_error_class,
+    })
+}
+
+async fn observe_tcp_readiness(
+    target_ip: &str,
+    policy: TcpReadinessPolicy,
+) -> Result<TcpReadinessObservation, String> {
+    let target_ip = target_ip
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|err| format!("observed machine public IPv4 {target_ip:?} is invalid: {err}"))?;
+    let target = std::net::SocketAddr::from((target_ip, 22));
+
+    observe_tcp_readiness_with_probe(policy, |attempt_timeout| async move {
+        match tokio::time::timeout(attempt_timeout, tokio::net::TcpStream::connect(target)).await {
+            Ok(Ok(stream)) => {
+                drop(stream);
+                Ok(())
+            }
+            Ok(Err(error)) => Err(classify_tcp_connect_error(&error)),
+            Err(_) => Err(TcpReadinessFailureClass::ConnectTimeout),
+        }
+    })
+    .await
+}
+
+async fn wait_for_tcp_readiness(
+    target_ip: &str,
+    policy: TcpReadinessPolicy,
+) -> Result<TcpReadinessObservation, String> {
+    let observation = observe_tcp_readiness(target_ip, policy).await?;
+    if observation.final_state == TcpReadinessState::Ready {
+        Ok(observation)
+    } else {
+        Err(format!(
+            "support-access TCP readiness failed for {target_ip}:22: {}",
+            observation.evidence()
+        ))
+    }
+}
+
+fn strict_ssh_error_after_tcp_ready(
+    tcp_readiness: &TcpReadinessObservation,
+    ssh_error: String,
+) -> String {
+    format!(
+        "support-access TCP readiness passed ({}); {ssh_error}",
+        tcp_readiness.evidence()
+    )
+}
+
 async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
@@ -698,6 +873,8 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
     let canonical_public_key = read_canonical_ssh_public_key()?;
     verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
     let substrate = host_substrate_versions_from_env()?;
+    let tcp_readiness =
+        wait_for_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
     strict_ssh_accept(
         target_ip,
         &args[1],
@@ -707,7 +884,8 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
         15,
         Duration::from_secs(2),
     )
-    .await?;
+    .await
+    .map_err(|error| strict_ssh_error_after_tcp_ready(&tcp_readiness, error))?;
     lease.ready()?;
     let mutations_performed = access
         .get("mutations_performed")
@@ -720,6 +898,7 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
         "lease_phase": lease.phase(),
         "access": access,
         "provider_id": observed.provider_id,
+        "tcp_readiness": tcp_readiness,
         "mutations_performed": mutations_performed,
     }))
 }
@@ -2220,6 +2399,77 @@ mod tests {
             instance_action_disposition(InstanceAction::Reboot, &stopped),
             (PlanDisposition::Blocked, "BLOCKED")
         );
+    }
+
+    #[tokio::test]
+    async fn tcp_readiness_retries_probe_only_until_bounded_timeout() {
+        let policy = TcpReadinessPolicy {
+            max_attempts: 3,
+            max_elapsed: Duration::from_secs(1),
+            connect_timeout: Duration::from_millis(1),
+            backoff: Duration::ZERO,
+        };
+        let mut calls = 0usize;
+        let observation = observe_tcp_readiness_with_probe(policy, |_| {
+            calls += 1;
+            std::future::ready(Err(TcpReadinessFailureClass::ConnectionRefused))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(calls, 3);
+        assert_eq!(observation.attempts, 3);
+        assert_eq!(observation.final_state, TcpReadinessState::Timeout);
+        assert_eq!(
+            observation.last_error_class,
+            Some(TcpReadinessFailureClass::ConnectionRefused)
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_readiness_accepts_late_network_path_before_strict_ssh() {
+        let policy = TcpReadinessPolicy {
+            max_attempts: 4,
+            max_elapsed: Duration::from_secs(1),
+            connect_timeout: Duration::from_millis(1),
+            backoff: Duration::ZERO,
+        };
+        let mut calls = 0usize;
+        let observation = observe_tcp_readiness_with_probe(policy, |_| {
+            calls += 1;
+            std::future::ready(if calls < 3 {
+                Err(TcpReadinessFailureClass::ConnectTimeout)
+            } else {
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(calls, 3);
+        assert_eq!(observation.attempts, 3);
+        assert_eq!(observation.final_state, TcpReadinessState::Ready);
+        assert_eq!(
+            observation.last_error_class,
+            Some(TcpReadinessFailureClass::ConnectTimeout)
+        );
+    }
+
+    #[test]
+    fn strict_ssh_failure_after_tcp_ready_keeps_protocol_failure_distinct() {
+        let tcp = TcpReadinessObservation {
+            attempts: 7,
+            elapsed_ms: 1234,
+            final_state: TcpReadinessState::Ready,
+            last_error_class: Some(TcpReadinessFailureClass::ConnectTimeout),
+        };
+        let error =
+            strict_ssh_error_after_tcp_ready(&tcp, "HOST_TRUST: certificate mismatch".to_owned());
+
+        assert!(error.contains("TCP readiness passed"));
+        assert!(error.contains("final_state=Ready"));
+        assert!(error.contains("HOST_TRUST: certificate mismatch"));
+        assert!(!error.contains("TCP readiness failed"));
     }
 
     #[test]
