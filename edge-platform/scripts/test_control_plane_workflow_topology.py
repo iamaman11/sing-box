@@ -362,7 +362,8 @@ def main() -> None:
         "Mesh workflow must not transport raw provider IDs, CIDR, or private-IP authority",
     )
     require(
-        '"${bin}" line3-mesh vpc-plan \\\n                "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"' in mesh,
+        '"${bin}" line3-mesh vpc-plan' in mesh
+        and '"${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"' in mesh,
         "Mesh plan must derive effective route only through the typed VPC-composed command",
     )
     require(
