@@ -1,0 +1,205 @@
+name: Cloudflare DNS Lifecycle
+
+on:
+  workflow_call:
+    inputs:
+      command_body:
+        description: Authorized /dns command from the control-plane router
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.parse.outputs.operation }}
+      spec_path: ${{ steps.parse.outputs.spec_path }}
+      target_ipv4: ${{ steps.parse.outputs.target_ipv4 }}
+
+    steps:
+      - name: Parse and authorize typed request
+        id: parse
+        shell: bash
+        env:
+          COMMENT_BODY: ${{ inputs.command_body }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import ipaddress
+          import os
+          import re
+
+          spec_re = re.compile(r"^infra/cloudflare/[A-Za-z0-9._/-]+-dns\.json$")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+          operation = ""
+          spec_path = ""
+          target_ipv4 = ""
+
+          if (
+              len(tokens) == 3
+              and tokens[0] == "/dns"
+              and tokens[1] == "inventory"
+          ):
+              operation = "inventory"
+              spec_path = tokens[2]
+          elif (
+              len(tokens) == 4
+              and tokens[0] == "/dns"
+              and tokens[1] in {"plan", "apply"}
+          ):
+              operation = tokens[1]
+              spec_path = tokens[2]
+              target_ipv4 = tokens[3]
+          else:
+              fail("unsupported /dns command grammar")
+
+          if not spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
+              fail("invalid DNS spec path")
+
+          if target_ipv4:
+              try:
+                  address = ipaddress.ip_address(target_ipv4)
+              except ValueError as exc:
+                  fail(f"target must be an IPv4 address: {exc}")
+              if address.version != 4:
+                  fail("target must be IPv4")
+              target_ipv4 = str(address)
+          elif operation != "inventory":
+              fail("DNS plan/apply require target IPv4")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"operation={operation}\n")
+              handle.write(f"spec_path={spec_path}\n")
+              handle.write(f"target_ipv4={target_ipv4}\n")
+          PY
+
+  verify:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve_release.outputs.release_tag }}
+      release_set_sha256: ${{ steps.resolve_release.outputs.release_set_sha256 }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve and verify exact durable Edge Platform release
+        id: resolve_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+
+  execute:
+    needs: [authorize, verify]
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+      TARGET_IPV4: ${{ needs.authorize.outputs.target_ipv4 }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${RUNNER_TEMP}/edge-platform-release/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          controller="${RUNNER_TEMP}/edge-platform-release/edge-controller-linux-amd64"
+          test "$(sha256sum "${controller}" | awk '{print $1}')" = "${EDGE_CONTROLLER_SHA256}"
+          chmod 0755 "${controller}"
+          printf 'EDGE_DNS_CONTROLLER=%s\n' "${controller}" >> "${GITHUB_ENV}"
+
+      - name: Execute typed DNS lifecycle operation
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          bin="${EDGE_DNS_CONTROLLER}"
+          result="${RUNNER_TEMP}/dns-result.json"
+
+          plan_authority() {
+            jq -er '.plan_authority.authority_digest' "$1"
+          }
+
+          case "${REQUESTED_OPERATION}" in
+            inventory)
+              "${bin}" cloudflare-dns inventory "${SPEC_PATH}" | tee "${result}"
+              ;;
+            plan)
+              "${bin}" cloudflare-dns plan "${SPEC_PATH}" "${TARGET_IPV4}" | tee "${result}"
+              ;;
+            apply)
+              "${bin}" cloudflare-dns plan "${SPEC_PATH}" "${TARGET_IPV4}"                 > "${RUNNER_TEMP}/dns-plan.json"
+              authority="$(plan_authority "${RUNNER_TEMP}/dns-plan.json")"
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" cloudflare-dns apply "${SPEC_PATH}" "${TARGET_IPV4}" "${authority}"                 > "${RUNNER_TEMP}/dns-apply.json"
+              "${bin}" cloudflare-dns plan "${SPEC_PATH}" "${TARGET_IPV4}"                 > "${RUNNER_TEMP}/dns-after.json"
+              jq -e '.next_plan.action.kind == "NOOP"' "${RUNNER_TEMP}/dns-apply.json" >/dev/null
+              jq -e '.plan.action.kind == "NOOP" and .mutations_performed == 0'                 "${RUNNER_TEMP}/dns-after.json" >/dev/null
+              jq -s '{apply:.[0],reobservation:.[1]}'                 "${RUNNER_TEMP}/dns-apply.json" "${RUNNER_TEMP}/dns-after.json"                 | tee "${result}"
+              ;;
+            *)
+              echo "unreachable DNS operation" >&2
+              exit 1
+              ;;
+          esac

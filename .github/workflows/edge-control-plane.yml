@@ -38,6 +38,36 @@ jobs:
       command_body: ${{ github.event.comment.body }}
     secrets: inherit
 
+  vpc:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1 &&
+      startsWith(github.event.comment.body, '/vpc ')
+    uses: ./.github/workflows/vultr-vpc-lifecycle.yml
+    with:
+      command_body: ${{ github.event.comment.body }}
+    secrets: inherit
+
+  dns:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1 &&
+      startsWith(github.event.comment.body, '/dns ')
+    uses: ./.github/workflows/cloudflare-dns-lifecycle.yml
+    with:
+      command_body: ${{ github.event.comment.body }}
+    secrets: inherit
+
   zero-trust:
     if: >-
       github.event_name == 'issue_comment' &&
