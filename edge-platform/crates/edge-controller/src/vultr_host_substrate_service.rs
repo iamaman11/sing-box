@@ -73,6 +73,7 @@ pub async fn observe_host_substrate<P: OperationalProvider>(
         && !instance.main_ip.trim().is_empty();
 
     if !provider_ready {
+        let main_ip_present = !instance.main_ip.trim().is_empty();
         return Ok(HostSubstrateObservation {
             machine_id: machine.id.clone(),
             provider_id: provider_id.to_owned(),
@@ -84,7 +85,7 @@ pub async fn observe_host_substrate<P: OperationalProvider>(
                 instance.status,
                 instance.power_status,
                 instance.server_status,
-                !instance.main_ip.trim().is_empty()
+                main_ip_present
             ),
             user_data_scrubbed: None,
             host_certificate_serial: None,
@@ -301,7 +302,6 @@ pub async fn apply_host_substrate_once<P: OperationalProvider>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
 
     #[test]
