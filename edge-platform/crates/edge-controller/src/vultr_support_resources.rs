@@ -245,11 +245,13 @@ impl FirewallProfileSet {
         profile_names: &[String],
         controller_ipv4: Option<&str>,
     ) -> Result<(), String> {
-        const PLACEHOLDER: &str = "@controller-ipv4";
         let needs_controller_ip = profile_names.iter().any(|name| {
-            self.profiles
-                .get(name)
-                .is_some_and(|profile| profile.rules.iter().any(|rule| rule.subnet == PLACEHOLDER))
+            self.profiles.get(name).is_some_and(|profile| {
+                profile
+                    .rules
+                    .iter()
+                    .any(|rule| rule.subnet == CONTROLLER_IPV4_PLACEHOLDER)
+            })
         });
         if !needs_controller_ip {
             return Ok(());
@@ -268,7 +270,7 @@ impl FirewallProfileSet {
                 .get_mut(name)
                 .ok_or_else(|| format!("firewall profile {name} is not defined"))?;
             for rule in &mut profile.rules {
-                if rule.subnet == PLACEHOLDER {
+                if rule.subnet == CONTROLLER_IPV4_PLACEHOLDER {
                     if rule.ip_type != "v4" || rule.subnet_size != 32 {
                         return Err(format!(
                             "firewall profile {} uses {CONTROLLER_IPV4_PLACEHOLDER} but is not an exact IPv4 /32",
