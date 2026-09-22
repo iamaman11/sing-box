@@ -1,5 +1,16 @@
 # edge-platform Finalization Plan
 
+> **SUPERSEDED — historical planning record only.**
+>
+> This file is not an execution or ownership authority. The sole living execution
+> plan is GitHub Issue #26, and the canonical process-ownership model is
+> `edge-platform/ARCHITECTURE.md`. In particular, provider/VM lifecycle belongs
+> to the GitHub-only `edge-orchestrator`; installed Windows `edge-controller.exe`
+> owns local Windows runtime/config/selectors. Legacy statements below are
+> retained only as historical context and must not be used to reintroduce a
+> second production orchestration path.
+
+
 ## Objective
 
 Finish the Rust control plane so the normal operator workflow no longer depends
