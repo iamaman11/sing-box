@@ -1914,20 +1914,24 @@ mod tests {
             notes: String::new(),
         };
 
-        assert!(firewall_persistent_rules_match(
-            profile,
-            &[static_rule.clone(), dynamic(21, "203.0.113.25")]
-        )
-        .unwrap());
-        assert!(firewall_persistent_rules_match(
-            profile,
-            &[
-                static_rule.clone(),
-                dynamic(21, "203.0.113.25"),
-                dynamic(22, "198.51.100.44"),
-            ]
-        )
-        .unwrap());
+        assert!(
+            firewall_persistent_rules_match(
+                profile,
+                &[static_rule.clone(), dynamic(21, "203.0.113.25")]
+            )
+            .unwrap()
+        );
+        assert!(
+            firewall_persistent_rules_match(
+                profile,
+                &[
+                    static_rule.clone(),
+                    dynamic(21, "203.0.113.25"),
+                    dynamic(22, "198.51.100.44"),
+                ]
+            )
+            .unwrap()
+        );
         assert!(firewall_persistent_rules_match(profile, &[static_rule.clone()]).unwrap());
 
         let mut unexpected = static_rule;
