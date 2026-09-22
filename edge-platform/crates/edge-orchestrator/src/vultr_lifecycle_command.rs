@@ -876,12 +876,16 @@ async fn capture_support_access_provider_evidence(
         .iter()
         .find(|machine| machine.id == machine_id)
         .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
-    let profile_name = machine.provider.firewall_profile.as_deref().ok_or_else(|| {
-        format!(
-            "machine {} has no firewall_profile; timeout evidence requires support access",
-            machine.id
-        )
-    })?;
+    let profile_name = machine
+        .provider
+        .firewall_profile
+        .as_deref()
+        .ok_or_else(|| {
+            format!(
+                "machine {} has no firewall_profile; timeout evidence requires support access",
+                machine.id
+            )
+        })?;
 
     let (raw_profiles, _, _, controller_ipv4) = load_access_authority_profiles(desired)?;
     let raw_profile = raw_profiles.profile(profile_name)?;
@@ -922,8 +926,9 @@ fn support_access_timeout_error(
     provider_evidence: Result<SupportAccessProviderEvidence, String>,
 ) -> String {
     let evidence_json = match provider_evidence {
-        Ok(evidence) => serde_json::to_string(&evidence)
-            .unwrap_or_else(|err| format!(r#"{{"status":"SERIALIZATION_ERROR","detail":"{err}"}}"#)),
+        Ok(evidence) => serde_json::to_string(&evidence).unwrap_or_else(|err| {
+            format!(r#"{{"status":"SERIALIZATION_ERROR","detail":"{err}"}}"#)
+        }),
         Err(error) => serde_json::to_string(&serde_json::json!({
             "status": "OBSERVATION_ERROR",
             "detail": error,
