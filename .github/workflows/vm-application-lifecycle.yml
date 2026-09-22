@@ -569,124 +569,15 @@ jobs:
             "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" > "${verify_output}"
             jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
           }
-          cleanup_mesh_provider() {
-            local plan="${RUNNER_TEMP}/acceptance-emergency-mesh-plan.json"
-            local digest authority
-            for _ in 1 2 3 4; do
-              if ! "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" > "${plan}" 2>/dev/null; then
-                return 0
-              fi
-              digest="$(jq -r '.plan.destructive_digest // empty' "${plan}")"
-              if [[ -z "${digest}" ]]; then
-                return 0
-              fi
-              authority="$(plan_authority "${plan}" 2>/dev/null || true)"
-              if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ || ! "${authority}" =~ ^[0-9a-f]{64}$ ]]; then
-                return 0
-              fi
-              "${bin}" line3-mesh cleanup-apply "${mesh_base_spec}" "${digest}" "${authority}" \
-                >/dev/null 2>&1 || return 0
-            done
-          }
-
-          cleanup_dns_provider() {
-            local plan="${RUNNER_TEMP}/acceptance-emergency-dns-plan.json"
-            local digest authority
-            if "${bin}" cloudflare-dns cleanup-plan "${dns_spec}" > "${plan}" 2>/dev/null; then
-              digest="$(jq -r '.plan.destructive_digest // empty' "${plan}")"
-              authority="$(plan_authority "${plan}" 2>/dev/null || true)"
-              if [[ "${digest}" =~ ^[0-9a-f]{64}$ && "${authority}" =~ ^[0-9a-f]{64}$ ]]; then
-                "${bin}" cloudflare-dns cleanup-apply "${dns_spec}" "${digest}" "${authority}" \
-                  >/dev/null 2>&1 || true
-              fi
-            fi
-          }
-
-          cleanup_vpc_provider() {
-            local plan="${RUNNER_TEMP}/acceptance-emergency-vpc-plan.json"
-            local digest authority
-            for _ in 1 2 3 4; do
-              if ! "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" > "${plan}" 2>/dev/null; then
-                return 0
-              fi
-              digest="$(jq -r '.plan.destructive_digest // empty' "${plan}")"
-              if [[ -z "${digest}" ]]; then
-                return 0
-              fi
-              authority="$(plan_authority "${plan}" 2>/dev/null || true)"
-              if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ || ! "${authority}" =~ ^[0-9a-f]{64}$ ]]; then
-                return 0
-              fi
-              "${bin}" vultr-vpc cleanup-apply "${vpc_spec}" "${digest}" "${authority}" \
-                >/dev/null 2>&1 || return 0
-            done
-          }
-
-          ensure_vpc_clean_room() {
+          require_vpc_clean_room() {
             local plan="${RUNNER_TEMP}/acceptance-vpc-before.json"
-            local apply_result="${RUNNER_TEMP}/acceptance-vpc-preflight-cleanup.json"
-            local digest authority
-            local attempt
-
-            for attempt in 1 2 3 4; do
-              "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" > "${plan}"
-              digest="$(jq -r '.plan.destructive_digest // empty' "${plan}")"
-              if [[ -z "${digest}" ]]; then
-                jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-                  "${plan}" >/dev/null
-                return 0
-              fi
-
-              [[ "${digest}" =~ ^[0-9a-f]{64}$ ]]
-              authority="$(plan_authority "${plan}")"
-              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
-
-              "${bin}" vultr-vpc cleanup-apply "${vpc_spec}" "${digest}" "${authority}" \
-                > "${apply_result}"
-            done
-
             "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" > "${plan}"
             jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
               "${plan}" >/dev/null
           }
 
-          cleanup_acceptance() (
-            set +e
-            "${bin}" line3-mesh runtime-cleanup "${app_spec}" >/dev/null 2>&1 || true
-            cleanup_mesh_provider
-            cleanup_dns_provider
-            cleanup_vpc_provider
-            "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
-              > "${RUNNER_TEMP}/acceptance-emergency-release.json" 2>&1 || true
-
-            local destroy_json="${RUNNER_TEMP}/acceptance-emergency-destroy.json"
-            if "${bin}" vultr-lifecycle destroy-plan \
-                "${vultr_spec}" "${machine}" "${source_revision}" \
-                > "${destroy_json}" 2>/dev/null; then
-              local digest authority
-              digest="$(jq -r '.destroy_digest // empty' "${destroy_json}")"
-              authority="$(plan_authority "${destroy_json}" 2>/dev/null || true)"
-              if [[ "${digest}" =~ ^[0-9a-f]{64}$ && "${authority}" =~ ^[0-9a-f]{64}$ ]]; then
-                "${bin}" vultr-lifecycle destroy-apply \
-                  "${vultr_spec}" "${machine}" "${source_revision}" "${digest}" "${authority}" \
-                  >/dev/null 2>&1 || true
-              fi
-            fi
-            local support_plan="${RUNNER_TEMP}/acceptance-emergency-support-cleanup-plan.json"
-            if "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" > "${support_plan}" 2>/dev/null; then
-              local support_authority
-              support_authority="$(plan_authority "${support_plan}" 2>/dev/null || true)"
-              if [[ "${support_authority}" =~ ^[0-9a-f]{64}$ ]]; then
-                "${bin}" vultr-lifecycle cleanup "${vultr_spec}" "${support_authority}" >/dev/null 2>&1 || true
-              fi
-            fi
-            return 0
-          )
-
-          # Recover any exact acceptance-owned residue from a previous failed run.
-          # The cleanup itself is best-effort, but the following read-only assertions are strict.
-          cleanup_acceptance
-
+          # Fail closed on any acceptance-owned residue. Never auto-clean a failed run:
+          # preserving exact provider/guest state is required for diagnosis and checkpoint evidence.
           "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
             > "${RUNNER_TEMP}/acceptance-support-before.json"
           jq -e '.plan.action == "NOOP" and .plan.environment_in_use == false' \
@@ -709,9 +600,7 @@ jobs:
           jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
             "${RUNNER_TEMP}/acceptance-mesh-before.json" >/dev/null
 
-          ensure_vpc_clean_room
-
-          trap 'rc=$?; if [[ $rc -ne 0 ]]; then cleanup_acceptance; fi; exit $rc' EXIT
+          require_vpc_clean_room
 
           "${bin}" vultr-vpc plan "${vpc_spec}" \
             > "${RUNNER_TEMP}/acceptance-vpc-plan.json"
