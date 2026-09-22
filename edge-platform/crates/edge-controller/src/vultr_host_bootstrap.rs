@@ -1050,6 +1050,26 @@ fn resolve_host_certificate_rotation_outcome(
     }
 }
 
+fn parse_served_host_certificate_serial(stderr: &[u8]) -> Result<u64, String> {
+    let text = String::from_utf8_lossy(stderr);
+    for line in text.lines().map(str::trim) {
+        if !line.contains("Server host certificate:") {
+            continue;
+        }
+        let (_, suffix) = line
+            .split_once(", serial ")
+            .ok_or_else(|| "served host certificate evidence did not contain serial".to_owned())?;
+        let serial = suffix
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| "served host certificate serial was empty".to_owned())?;
+        return serial
+            .parse::<u64>()
+            .map_err(|err| format!("invalid served host certificate serial: {err}"));
+    }
+    Err("strict SSH evidence did not contain served host certificate metadata".to_owned())
+}
+
 pub(crate) fn read_host_certificate_serial(
     target_ip: &str,
     logical_hostname: &str,
@@ -1057,26 +1077,28 @@ pub(crate) fn read_host_certificate_serial(
     canonical_operator_public_key: &str,
 ) -> Result<u64, String> {
     let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let mut args = strict_ssh_args(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        &trust,
+        "true",
+    );
+    args.insert(0, "-v".to_owned());
     let result = (|| {
-        let output = run_capture(
-            "ssh",
-            &strict_ssh_args(
-                target_ip,
-                logical_hostname,
-                operator_private_key_path,
-                &trust,
-                "sudo ssh-keygen -L -f /etc/ssh/ssh_host_ed25519_key-cert.pub",
-            ),
-        )?;
-        let text = String::from_utf8(output)
-            .map_err(|_| "host certificate metadata was not UTF-8".to_owned())?;
-        text.lines()
-            .map(str::trim)
-            .find_map(|line| line.strip_prefix("Serial:"))
-            .map(str::trim)
-            .ok_or_else(|| "host certificate metadata did not contain Serial".to_owned())?
-            .parse::<u64>()
-            .map_err(|err| format!("invalid host certificate serial: {err}"))
+        let output = Command::new("ssh")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|err| format!("failed to start strict SSH certificate observation: {err}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "strict SSH certificate observation failed: {}",
+                bounded_ssh_evidence(&output.stderr)
+            ));
+        }
+        parse_served_host_certificate_serial(&output.stderr)
     })();
     let _ = fs::remove_file(&trust);
     result
@@ -1815,6 +1837,20 @@ mod tests {
             "@cert-authority edge-1 ssh-ed25519 AAAACanonical\n"
         );
     }
+    #[test]
+    fn served_host_certificate_serial_is_read_from_strict_handshake() {
+        let stderr = b"debug1: Server host certificate: ssh-ed25519-cert-v01@openssh.com SHA256:redacted, serial 2 ID \"edge-1-rotated\" CA ssh-ed25519 SHA256:redacted valid forever\n";
+        assert_eq!(parse_served_host_certificate_serial(stderr).unwrap(), 2);
+        assert!(parse_served_host_certificate_serial(
+            b"debug1: Server host key: ssh-ed25519 SHA256:redacted\n"
+        )
+        .is_err());
+        assert!(parse_served_host_certificate_serial(
+            b"debug1: Server host certificate: ssh-ed25519-cert-v01@openssh.com SHA256:redacted, serial nope ID \"bad\"\n"
+        )
+        .is_err());
+    }
+
     #[test]
     fn transport_stage_evidence_is_structured_and_bounded() {
         let stderr = b"debug1: Connection established.\ndebug1: Remote protocol version 2.0\ndebug1: SSH2_MSG_KEXINIT sent\ndebug1: Server host key: ssh-ed25519 SHA256:redacted\ndebug1: Authentications that can continue: publickey\n";
