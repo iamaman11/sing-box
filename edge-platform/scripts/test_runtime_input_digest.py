@@ -33,6 +33,16 @@ def materialize(root: Path) -> None:
         else:
             path.mkdir(parents=True, exist_ok=True)
             (path / "input.txt").write_text(f"{raw}\n", encoding="utf-8")
+    workflow = root / subject.RUNTIME_BUILD_CONTRACT_PATH
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text(
+        "control-plane-before\n"
+        + subject.RUNTIME_BUILD_CONTRACT_BEGIN
+        + "\ndocker build exact-runtime\n"
+        + subject.RUNTIME_BUILD_CONTRACT_END
+        + "\ncontrol-plane-after\n",
+        encoding="utf-8",
+    )
 
 
 def test_digest_scope() -> None:
@@ -46,6 +56,20 @@ def test_digest_scope() -> None:
         unrelated.write_text("control-plane docs only\n", encoding="utf-8")
         assert subject.compute_digest(root, inputs()) == original
 
+        workflow = root / subject.RUNTIME_BUILD_CONTRACT_PATH
+        workflow.write_text(
+            workflow.read_text(encoding="utf-8").replace("control-plane-before", "control-plane-changed"),
+            encoding="utf-8",
+        )
+        assert subject.compute_digest(root, inputs()) == original
+
+        workflow.write_text(
+            workflow.read_text(encoding="utf-8").replace("docker build exact-runtime", "docker build changed-runtime"),
+            encoding="utf-8",
+        )
+        assert subject.compute_digest(root, inputs()) != original
+
+        materialize(root)
         tracked = root / "edge-platform/crates/edge-agent/input.txt"
         tracked.write_text("runtime changed\n", encoding="utf-8")
         assert subject.compute_digest(root, inputs()) != original
