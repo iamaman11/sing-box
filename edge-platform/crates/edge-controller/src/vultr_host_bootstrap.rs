@@ -939,35 +939,6 @@ pub(crate) async fn observe_strict_ssh_acceptance(
     Ok(observation)
 }
 
-pub async fn strict_ssh_accept(
-    target_ip: &str,
-    logical_hostname: &str,
-    operator_private_key_path: &Path,
-    canonical_operator_public_key: &str,
-    substrate: &HostSubstrateVersions,
-    attempts: usize,
-    delay: Duration,
-) -> Result<(), String> {
-    let observed = observe_strict_ssh_acceptance(
-        target_ip,
-        logical_hostname,
-        operator_private_key_path,
-        canonical_operator_public_key,
-        substrate,
-        attempts,
-        delay,
-    )
-    .await?;
-    if observed.passed {
-        Ok(())
-    } else {
-        Err(format!(
-            "strict SSH acceptance failed for {logical_hostname} at {target_ip}: {}",
-            observed.evidence()
-        ))
-    }
-}
-
 pub fn ensure_host_certificate_rotated(
     target_ip: &str,
     logical_hostname: &str,
