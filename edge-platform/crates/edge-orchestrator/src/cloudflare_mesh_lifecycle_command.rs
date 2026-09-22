@@ -782,6 +782,26 @@ mod tests {
     }
 
     #[test]
+    fn changed_verified_vpc_cidr_changes_effective_mesh_route_without_source_edit() {
+        let first = compose_verified_vpc_route(
+            mesh_base(),
+            &vpc_desired(),
+            ready_report("10.0.4.0/24", "10.0.4.2"),
+        )
+        .unwrap();
+        let second = compose_verified_vpc_route(
+            mesh_base(),
+            &vpc_desired(),
+            ready_report("10.0.5.0/24", "10.0.5.2"),
+        )
+        .unwrap();
+
+        assert_eq!(first.routes[0].network, "10.0.4.0/24");
+        assert_eq!(second.routes[0].network, "10.0.5.0/24");
+        assert_ne!(first.routes, second.routes);
+    }
+
+    #[test]
     fn vpc_route_composition_rejects_git_routes_and_mismatched_authority() {
         let mut predeclared = mesh_base();
         predeclared.routes.push(MeshRouteSpec {
