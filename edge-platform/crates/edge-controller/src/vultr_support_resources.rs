@@ -591,7 +591,7 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
 
     for rule in observed {
         let spec = firewall_rule_spec(&rule)?;
-        if controller_access_projection_matches(unresolved_profile, &spec)? {
+        if controller_access_cleanup_projection_matches(unresolved_profile, &spec)? {
             delete_firewall_rule_and_observe(provider, &group.id, rule.id, policy).await?;
             removed_rule_ids.push(rule.id);
         }
@@ -607,7 +607,7 @@ pub async fn release_controller_ipv4_access<P: SupportResourceProvider>(
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .map(|spec| {
-            let matches = controller_access_projection_matches(unresolved_profile, &spec)?;
+            let matches = controller_access_cleanup_projection_matches(unresolved_profile, &spec)?;
             Ok((spec, matches))
         })
         .collect::<Result<Vec<_>, String>>()?
@@ -842,6 +842,28 @@ fn persistent_firewall_rules(profile: &FirewallProfile) -> BTreeSet<FirewallRule
 }
 
 pub(crate) fn controller_access_projection_matches(
+    profile: &FirewallProfile,
+    observed: &FirewallRuleSpec,
+) -> Result<bool, String> {
+    validate_controller_access_templates(profile)?;
+    if observed.ip_type != "v4"
+        || observed.subnet_size != 32
+        || observed.subnet.parse::<std::net::Ipv4Addr>().is_err()
+    {
+        return Ok(false);
+    }
+    Ok(profile.rules.iter().any(|template| {
+        template.subnet == CONTROLLER_IPV4_PLACEHOLDER
+            && template.ip_type == observed.ip_type
+            && template.protocol == observed.protocol
+            && template.subnet_size == observed.subnet_size
+            && template.port == observed.port
+            && template.source == observed.source
+            && template.notes == observed.notes
+    }))
+}
+
+pub(crate) fn controller_access_cleanup_projection_matches(
     profile: &FirewallProfile,
     observed: &FirewallRuleSpec,
 ) -> Result<bool, String> {
@@ -2049,9 +2071,13 @@ mod tests {
             subnet_size: 32,
             port: "22".to_owned(),
             source: String::new(),
-            notes: "runner note may drift".to_owned(),
+            notes: "ephemeral controller SSH".to_owned(),
         };
-        assert!(firewall_rules_match(profile, &[persistent.clone(), transient]).unwrap());
+        assert!(firewall_rules_match(profile, &[persistent.clone(), transient.clone()]).unwrap());
+
+        let mut note_drift = transient;
+        note_drift.notes = "unexpected SSH rule".to_owned();
+        assert!(!firewall_rules_match(profile, &[persistent.clone(), note_drift]).unwrap());
 
         let unrelated = VultrFirewallRule {
             id: 3,
