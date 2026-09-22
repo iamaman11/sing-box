@@ -709,6 +709,10 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
     )
     .await?;
     lease.ready()?;
+    let mutations_performed = access
+        .get("mutations_performed")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
 
     print_json_value(serde_json::json!({
         "status": "READY",
@@ -716,10 +720,7 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
         "lease_phase": lease.phase(),
         "access": access,
         "provider_id": observed.provider_id,
-        "mutations_performed": access
-            .get("mutations_performed")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0),
+        "mutations_performed": mutations_performed,
     }))
 }
 
