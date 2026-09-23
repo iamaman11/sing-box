@@ -61,8 +61,7 @@ fn collect_network_diagnostics(
     let default_route_present_observed = default_route_observation(&routes_probe, &routes);
     let default_route_present = default_route_present_observed.unwrap_or(false);
 
-    let mut rules_probe =
-        fixed_probe(namespace_pid, &["ip", "-j", "rule", "show"], 6, true);
+    let mut rules_probe = fixed_probe(namespace_pid, &["ip", "-j", "rule", "show"], 6, true);
     let rules = parse_rules(&mut rules_probe);
 
     let dns_probe = fixed_dns_probe(container_name);
@@ -123,12 +122,7 @@ fn fixed_dns_probe(container_name: Option<&str>) -> BoundedCommandProbe {
 
     let path_probe = bounded_command_probe(
         "docker",
-        &[
-            "inspect",
-            "--format",
-            "{{.ResolvConfPath}}",
-            container_name,
-        ],
+        &["inspect", "--format", "{{.ResolvConfPath}}", container_name],
         6,
         true,
     );
@@ -148,7 +142,13 @@ fn parse_container_pid(probe: &mut BoundedCommandProbe) -> Option<u32> {
     if probe.status != RuntimeProbeStatus::Ok {
         return None;
     }
-    match probe.stdout.trim().parse::<u32>().ok().filter(|pid| *pid > 0) {
+    match probe
+        .stdout
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 0)
+    {
         Some(pid) => Some(pid),
         None => {
             probe.status = RuntimeProbeStatus::ParseError;
