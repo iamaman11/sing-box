@@ -104,6 +104,8 @@ pub(crate) enum ApplicationLifecycleCommand {
     Apply(DesiredApplicationAuthorizedArgs),
     Verify(DesiredApplicationArgs),
     Upgrade(DesiredApplicationAuthorizedArgs),
+    RecoverPlan(SpecArgs),
+    RecoverApply(AuthorizedSpecArgs),
     RollbackPlan(SpecArgs),
     RollbackApply(CleanupApplyArgs),
 }
@@ -115,6 +117,12 @@ impl ApplicationLifecycleCommand {
             Self::Apply(args) => args.into_legacy("apply"),
             Self::Verify(args) => args.into_legacy("verify"),
             Self::Upgrade(args) => args.into_legacy("upgrade"),
+            Self::RecoverPlan(args) => vec!["recover-plan".to_owned(), path(args.spec_path)],
+            Self::RecoverApply(args) => vec![
+                "recover-apply".to_owned(),
+                path(args.spec_path),
+                args.authorized_plan_sha256,
+            ],
             Self::RollbackPlan(args) => vec!["rollback-plan".to_owned(), path(args.spec_path)],
             Self::RollbackApply(args) => destructive_apply("rollback-apply", args),
         }
@@ -546,6 +554,13 @@ mod tests {
                 "infra/application/production.json",
                 "artifact.json",
                 "edge-agent",
+                &digest,
+            ],
+            vec![
+                "edge-orchestrator",
+                "application-lifecycle",
+                "recover-apply",
+                "infra/application/production.json",
                 &digest,
             ],
             vec![

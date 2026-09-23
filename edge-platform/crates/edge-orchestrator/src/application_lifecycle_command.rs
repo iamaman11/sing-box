@@ -1,7 +1,8 @@
 use crate::application_lifecycle_service::{
     ApplicationAuthority, ApplicationObservationView, DesiredMutationMode,
-    authorize_application_plan, authorize_application_rollback, execute_desired, execute_rollback,
-    observe_application, prepare_application_bundle, rollback_plan_remote, verify_desired,
+    authorize_application_plan, authorize_application_recovery, authorize_application_rollback,
+    execute_desired, execute_recovery, execute_rollback, observe_application,
+    prepare_application_bundle, recovery_plan_remote, rollback_plan_remote, verify_desired,
     verify_exact_agent_artifact,
 };
 use crate::vultr_host_bootstrap::{strict_ssh_accept, verify_operator_key_matches};
@@ -30,6 +31,8 @@ pub(crate) async fn run(args: Vec<String>) -> Result<(), String> {
         "apply" => run_mutation(&args[1..], DesiredMutationMode::Apply).await,
         "verify" => run_verify(&args[1..]).await,
         "upgrade" => run_mutation(&args[1..], DesiredMutationMode::Upgrade).await,
+        "recover-plan" => run_recovery_plan(&args[1..]).await,
+        "recover-apply" => run_recovery_apply(&args[1..]).await,
         "rollback-plan" => run_rollback_plan(&args[1..]).await,
         "rollback-apply" => run_rollback_apply(&args[1..]).await,
         _ => Err(usage()),
@@ -142,6 +145,42 @@ async fn run_verify(args: &[String]) -> Result<(), String> {
     } else {
         Err("application verify did not observe exact healthy desired release".to_owned())
     }
+}
+
+async fn run_recovery_plan(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err(
+            "usage: edge-orchestrator application-lifecycle recover-plan <spec-path>".to_owned(),
+        );
+    }
+    let desired = load_application_desired(Path::new(&args[0]))?;
+    let authority = resolve_application_authority(&desired).await?;
+    let (observation, plan) = recovery_plan_remote(&authority, &desired).await?;
+    let authorized = authorize_application_recovery(&desired, &observation, plan.clone())?;
+    print_json(json!({
+        "recovery": plan,
+        "plan_authority": authorized.authority,
+        "plan_disposition": authorized.disposition,
+        "observation": observation,
+        "mutations_performed": 0
+    }))
+}
+
+async fn run_recovery_apply(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-orchestrator application-lifecycle recover-apply <spec-path> <authorized-plan-sha256>"
+                .to_owned(),
+        );
+    }
+    validate_digest(&args[1])?;
+    let desired = load_application_desired(Path::new(&args[0]))?;
+    let authority = resolve_application_authority(&desired).await?;
+    let report = execute_recovery(&authority, &desired, &args[1]).await?;
+    print_json(json!({
+        "status": "RECOVERED",
+        "report": report
+    }))
 }
 
 async fn run_rollback_plan(args: &[String]) -> Result<(), String> {
@@ -346,6 +385,8 @@ fn usage() -> String {
         "  edge-orchestrator application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
         "  edge-orchestrator application-lifecycle verify <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
         "  edge-orchestrator application-lifecycle upgrade <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
+        "  edge-orchestrator application-lifecycle recover-plan <spec-path>",
+        "  edge-orchestrator application-lifecycle recover-apply <spec-path> <authorized-plan-sha256>",
         "  edge-orchestrator application-lifecycle rollback-plan <spec-path>",
         "  edge-orchestrator application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>",
     ]
