@@ -133,6 +133,13 @@ def main() -> None:
         "Vultr backend must serialize its execute mutation job",
     )
     require(
+        'verb == "action-plan" and len(tokens) == 5' in vultr
+        and '"action-plan", "apply", "action"' in vultr
+        and 'action-plan)' in vultr
+        and 'run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"' in vultr,
+        "Vultr backend must expose the existing typed read-only instance action plan through the sole router",
+    )
+    require(
         zero_trust.count("group: vultr-control-plane-production") == 1,
         "Zero Trust backend must serialize its execute mutation job",
     )

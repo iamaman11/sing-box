@@ -59,6 +59,13 @@ jobs:
                   operation, spec_path = "plan", tokens[2]
                   if len(tokens) == 4:
                       machine_id = tokens[3]
+              elif verb == "action-plan" and len(tokens) == 5:
+                  operation, spec_path, machine_id, action = (
+                      "action-plan",
+                      tokens[2],
+                      tokens[3],
+                      tokens[4],
+                  )
               elif verb == "apply" and len(tokens) == 4:
                   operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
               elif verb in {"start", "halt", "reboot"} and len(tokens) == 4:
@@ -78,7 +85,7 @@ jobs:
               fail("comment is not an authorized /vultr command")
 
           if operation not in {
-              "doctor", "inventory", "plan", "apply", "action",
+              "doctor", "inventory", "plan", "action-plan", "apply", "action",
               "destroy-plan", "destroy-apply", "cleanup", "acceptance",
           }:
               fail("unsupported lifecycle operation")
@@ -89,10 +96,12 @@ jobs:
           if machine_id and not machine_re.fullmatch(machine_id):
               fail("invalid machine_id")
 
-          if operation in {"apply", "action", "destroy-plan", "destroy-apply"} and not machine_id:
+          if operation in {
+              "apply", "action-plan", "action", "destroy-plan", "destroy-apply"
+          } and not machine_id:
               fail("machine_id is required for targeted operation")
 
-          if operation == "action" and action not in {"start", "halt", "reboot"}:
+          if operation in {"action-plan", "action"} and action not in {"start", "halt", "reboot"}:
               fail("invalid instance action")
 
           if operation == "destroy-apply" and not digest_re.fullmatch(destroy_digest):
@@ -380,6 +389,9 @@ jobs:
               else
                 run_lifecycle plan "${spec}" | tee "${RUNNER_TEMP}/result.json"
               fi
+              ;;
+            action-plan)
+              run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"
               ;;
             apply)
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-authority-plan.json"
