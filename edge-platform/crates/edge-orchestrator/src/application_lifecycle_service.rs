@@ -1800,6 +1800,57 @@ mod tests {
         assert_eq!(bounded_detail("abc", 4), "abc");
     }
 
+    #[test]
+    fn mesh_runtime_summary_preserves_typed_failure_boundary() {
+        let ok_probe = edge_shared_types::RuntimeProbeEvidence {
+            status: RuntimeProbeStatus::Ok as i32,
+            exit_code: Some(0),
+            diagnostic_stdout: None,
+            diagnostic_stderr: None,
+        };
+        let mut diagnostics = edge_shared_types::MeshRuntimeDiagnostics::default();
+        diagnostics.warp_connection_state = Some("DISCONNECTED".to_owned());
+        diagnostics.tunnel_protocol = Some("MASQUE".to_owned());
+        diagnostics.warp_status_probe = Some(edge_shared_types::RuntimeProbeEvidence {
+            status: RuntimeProbeStatus::NonZero as i32,
+            exit_code: Some(1),
+            diagnostic_stdout: None,
+            diagnostic_stderr: None,
+        });
+        diagnostics.warp_settings_probe = Some(ok_probe.clone());
+        diagnostics.host = Some(edge_shared_types::HostRuntimeDiagnostics {
+            identity: Some(edge_shared_types::HostIdentityDiagnostics {
+                probe: Some(ok_probe.clone()),
+                ..Default::default()
+            }),
+            time: Some(edge_shared_types::HostTimeDiagnostics {
+                probe: Some(ok_probe.clone()),
+                ..Default::default()
+            }),
+            resources: Some(edge_shared_types::HostResourceDiagnostics {
+                probe: Some(ok_probe),
+                ..Default::default()
+            }),
+        });
+
+        let state = MeshRuntimeState {
+            runtime_ready: false,
+            diagnostics: Some(diagnostics),
+            last_failure_snapshot: Some(edge_shared_types::MeshRuntimeFailureSnapshot {
+                observed_unix_time_seconds: 123,
+                reasons: vec!["warp status unavailable".to_owned()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let summary = mesh_runtime_evidence_summary(&state);
+        assert!(summary.contains("warp_state=DISCONNECTED"));
+        assert!(summary.contains("warp_status=NON_ZERO"));
+        assert!(summary.contains("host_identity=OK"));
+        assert!(summary.contains("last_failure_at=123"));
+        assert!(summary.contains("warp status unavailable"));
+    }
+
     #[tokio::test]
     async fn uncertain_bundle_transport_is_mutated_once_and_never_replayed() {
         use std::sync::Arc;
