@@ -56,6 +56,8 @@ pub struct CloudflareDeviceProfile {
     pub match_expression: Option<String>,
     pub service_mode: Option<String>,
     pub tunnel_protocol: Option<String>,
+    pub auto_connect: Option<u64>,
+    pub switch_locked: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -107,6 +109,8 @@ pub struct CloudflareDeviceProfileWrite {
     pub match_expression: String,
     pub service_mode_v2: CloudflareServiceModeWrite,
     pub tunnel_protocol: String,
+    pub auto_connect: u64,
+    pub switch_locked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<CloudflareSplitTunnelWrite>>,
 }
@@ -959,6 +963,8 @@ fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, St
             .get("tunnel_protocol")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+        auto_connect: object.get("auto_connect").and_then(Value::as_u64),
+        switch_locked: object.get("switch_locked").and_then(Value::as_bool),
     })
 }
 
@@ -1461,6 +1467,8 @@ mod tests {
                 mode: "warp".to_owned(),
             },
             tunnel_protocol: "masque".to_owned(),
+            auto_connect: 1,
+            switch_locked: true,
             include: Some(vec![CloudflareSplitTunnelWrite {
                 address: Some("100.96.0.0/12".to_owned()),
                 host: None,
@@ -1475,6 +1483,8 @@ mod tests {
         );
         assert_eq!(value["service_mode_v2"]["mode"], "warp");
         assert_eq!(value["tunnel_protocol"], "masque");
+        assert_eq!(value["auto_connect"], 1);
+        assert_eq!(value["switch_locked"], true);
         assert_eq!(value["include"][0]["address"], "100.96.0.0/12");
         assert!(value.get("exclude").is_none());
     }
@@ -1519,7 +1529,9 @@ mod tests {
             "precedence": 100,
             "match": "identity.email == \"warp_connector@example.cloudflareaccess.com\"",
             "service_mode_v2": {"mode": "warp"},
-            "tunnel_protocol": "masque"
+            "tunnel_protocol": "masque",
+            "auto_connect": 1,
+            "switch_locked": true
         }))
         .unwrap();
 
@@ -1527,6 +1539,8 @@ mod tests {
         assert_eq!(profile.precedence, Some(100));
         assert_eq!(profile.service_mode.as_deref(), Some("warp"));
         assert_eq!(profile.tunnel_protocol.as_deref(), Some("masque"));
+        assert_eq!(profile.auto_connect, Some(1));
+        assert_eq!(profile.switch_locked, Some(true));
     }
 
     #[test]
