@@ -139,7 +139,12 @@ jobs:
           grep -Fq '"warp-egress:11080"' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'direct egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'WARP egress datapath probe failed' edge-platform/crates/edge-agent/src/main.rs
-          grep -Fq 'Mesh runtime warp-cli status is not Connected' edge-platform/crates/edge-agent/src/main.rs
+          if grep -Fq 'Mesh runtime warp-cli status is not Connected' edge-platform/crates/edge-agent/src/main.rs; then
+            echo "Mesh readiness must not present failed observation as explicit disconnection" >&2
+            exit 1
+          fi
+          grep -Fq 'Mesh runtime connection state unavailable' edge-platform/crates/edge-agent/src/main.rs
+          grep -Fq 'Mesh runtime WARP status probe failed:' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'Mesh runtime IPv4 forwarding is not enabled' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'Mesh runtime container is not attached to the expected mesh network' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'Mesh runtime tunnel protocol evidence:' edge-platform/crates/edge-agent/src/main.rs
