@@ -31,10 +31,10 @@ use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
-    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState, ReadBundleIdentityRequest,
-    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
-    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
-    VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
+    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
+    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
+    RuntimeProbeEvidence, RuntimeProbeStatus, VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -1345,8 +1345,10 @@ fn read_mesh_runtime_failure_snapshot(
             ));
         }
     };
-    let persisted: PersistedMeshRuntimeFailureSnapshot = serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse persisted Mesh readiness failure snapshot: {err}"))?;
+    let persisted: PersistedMeshRuntimeFailureSnapshot =
+        serde_json::from_str(&raw).map_err(|err| {
+            format!("failed to parse persisted Mesh readiness failure snapshot: {err}")
+        })?;
     Ok(Some(MeshRuntimeFailureSnapshot {
         observed_unix_time_seconds: persisted.observed_unix_time_seconds,
         reasons: persisted.reasons,
@@ -1516,8 +1518,7 @@ async fn inspect_mesh_runtime(
         warnings.push(mesh_tunnel_protocol_evidence_from_diagnostics(diagnostics));
     }
 
-    let mut last_failure_snapshot = read_mesh_runtime_failure_snapshot(stack_dir)
-        .unwrap_or(None);
+    let mut last_failure_snapshot = read_mesh_runtime_failure_snapshot(stack_dir).unwrap_or(None);
     if !runtime_ready && diagnostic_depth == MeshDiagnosticDepth::Deep {
         let snapshot = build_mesh_runtime_failure_snapshot(diagnostics.as_ref(), &warnings);
         if let Err(err) = persist_mesh_runtime_failure_snapshot(stack_dir, &snapshot) {
@@ -2685,10 +2686,12 @@ fn mesh_container_diagnostic_summary(evidence: &MeshContainerDiagnostics) -> Str
         evidence.present,
         evidence.running,
         exit_code,
-        evidence.restart_count
+        evidence
+            .restart_count
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".to_owned()),
-        evidence.oom_killed
+        evidence
+            .oom_killed
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".to_owned()),
         evidence.image.as_deref().unwrap_or("unknown"),
@@ -3335,14 +3338,20 @@ mod tests {
         ];
         let snapshot = build_mesh_runtime_failure_snapshot(Some(&diagnostics), &reasons);
         assert_eq!(snapshot.reasons[0], "[REDACTED_SENSITIVE_REASON]");
-        assert_eq!(snapshot.reasons[1].chars().count(), MAX_MESH_FAILURE_REASON_CHARS);
+        assert_eq!(
+            snapshot.reasons[1].chars().count(),
+            MAX_MESH_FAILURE_REASON_CHARS
+        );
         assert_eq!(snapshot.container_restart_count, Some(3));
         assert_eq!(snapshot.container_oom_killed, Some(true));
 
         persist_mesh_runtime_failure_snapshot(&stack, &snapshot).unwrap();
         let restored = read_mesh_runtime_failure_snapshot(&stack).unwrap().unwrap();
         assert_eq!(restored.reasons, snapshot.reasons);
-        assert_eq!(restored.warp_connection_state.as_deref(), Some("DISCONNECTED"));
+        assert_eq!(
+            restored.warp_connection_state.as_deref(),
+            Some("DISCONNECTED")
+        );
         assert_eq!(restored.container_exit_code, Some(137));
 
         fs::remove_dir_all(root).unwrap();
