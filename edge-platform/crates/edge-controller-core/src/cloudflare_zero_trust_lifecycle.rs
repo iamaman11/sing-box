@@ -28,6 +28,8 @@ pub struct MeshProfileDesired {
     pub precedence_start: u64,
     pub service_mode: String,
     pub tunnel_protocol: String,
+    pub auto_connect: u64,
+    pub switch_locked: bool,
     pub include_cidrs: Vec<String>,
 }
 
@@ -81,6 +83,8 @@ pub struct ObservedDeviceProfile {
     pub match_expression: Option<String>,
     pub service_mode: Option<String>,
     pub tunnel_protocol: Option<String>,
+    pub auto_connect: Option<u64>,
+    pub switch_locked: Option<bool>,
     #[serde(default)]
     pub includes: Vec<SplitTunnelEntry>,
     #[serde(default)]
@@ -253,6 +257,17 @@ impl DesiredZeroTrustState {
                 "Mesh and Android profiles must require warp + masque".to_owned(),
             ));
         }
+        if self.mesh_profile.auto_connect == 0 {
+            return Err(ZeroTrustLifecycleError::Validation(
+                "Mesh profile auto_connect must be greater than zero so the connector cannot remain disabled indefinitely"
+                    .to_owned(),
+            ));
+        }
+        if !self.mesh_profile.switch_locked {
+            return Err(ZeroTrustLifecycleError::Validation(
+                "Mesh profile switch_locked must be true for the always-on connector".to_owned(),
+            ));
+        }
 
         let mesh_includes = canonical_cidr_set(&self.mesh_profile.include_cidrs)?;
         let required_mesh = REQUIRED_MESH_CIDRS
@@ -386,6 +401,8 @@ pub fn plan_apply(
         || mesh_profile.service_mode.as_deref() != Some(desired.mesh_profile.service_mode.as_str())
         || mesh_profile.tunnel_protocol.as_deref()
             != Some(desired.mesh_profile.tunnel_protocol.as_str())
+        || mesh_profile.auto_connect != Some(desired.mesh_profile.auto_connect)
+        || mesh_profile.switch_locked != Some(desired.mesh_profile.switch_locked)
     {
         return Ok(ZeroTrustPlan {
             action: ZeroTrustAction::UpdateMeshProfile {
@@ -826,6 +843,8 @@ mod tests {
     "precedence_start":100,
     "service_mode":"warp",
     "tunnel_protocol":"masque",
+    "auto_connect":1,
+    "switch_locked":true,
     "include_cidrs":["100.64.0.0/12","100.96.0.0/12"]
   },
   "android_profile":{
@@ -862,6 +881,8 @@ mod tests {
             match_expression: Some(desired.mesh_profile.match_expression),
             service_mode: Some("warp".to_owned()),
             tunnel_protocol: Some("masque".to_owned()),
+            auto_connect: Some(desired.mesh_profile.auto_connect),
+            switch_locked: Some(desired.mesh_profile.switch_locked),
             includes: desired
                 .mesh_profile
                 .include_cidrs
@@ -885,6 +906,8 @@ mod tests {
             match_expression: None,
             service_mode: Some("warp".to_owned()),
             tunnel_protocol: Some("masque".to_owned()),
+            auto_connect: None,
+            switch_locked: None,
             includes: vec![],
             excludes: vec![SplitTunnelEntry {
                 address: Some("100.64.0.0/10".to_owned()),
@@ -916,6 +939,43 @@ mod tests {
             plan.action,
             ZeroTrustAction::CreateMeshProfile { precedence: 100 }
         ));
+    }
+
+    #[test]
+    fn mesh_profile_reconnect_policy_drift_plans_existing_update() {
+        let desired = desired();
+        let mut profile = mesh_profile();
+        profile.auto_connect = Some(0);
+        profile.switch_locked = Some(false);
+        let observed = ZeroTrustObservation {
+            device_settings_ready: true,
+            access_enrollment_ready: true,
+            connector_names: vec!["vultr".to_owned()],
+            mesh_profile_matches: vec![profile],
+            profile_precedences: vec![100],
+            android_profile: Some(android_profile()),
+            ..ZeroTrustObservation::default()
+        };
+
+        let plan = plan_apply(&desired, &observed, &authority()).unwrap();
+        assert!(matches!(
+            plan.action,
+            ZeroTrustAction::UpdateMeshProfile {
+                profile_id,
+                precedence: 100
+            } if profile_id == "profile-mesh"
+        ));
+    }
+
+    #[test]
+    fn mesh_profile_reconnect_policy_must_be_always_on() {
+        let mut desired = desired();
+        desired.mesh_profile.auto_connect = 0;
+        assert!(desired.validate().is_err());
+
+        let mut desired = desired();
+        desired.mesh_profile.switch_locked = false;
+        assert!(desired.validate().is_err());
     }
 
     #[test]
