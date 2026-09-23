@@ -92,6 +92,37 @@ pub struct ApplicationObservation {
     pub previous_release: Option<PublishedApplicationRelease>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplicationRecoveryObservation {
+    pub application: ApplicationObservation,
+    pub backup_agent_sha256: Option<String>,
+    pub backup_bundle_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApplicationRecoveryPlanClass {
+    Noop,
+    Recover,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApplicationRecoveryAction {
+    RestoreBundle,
+    RestoreAgent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationRecoveryPlan {
+    pub class: ApplicationRecoveryPlanClass,
+    pub machine_id: String,
+    pub target_release: PublishedApplicationRelease,
+    pub actions: Vec<ApplicationRecoveryAction>,
+    pub reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ApplicationPlanClass {
@@ -424,6 +455,99 @@ pub fn plan_application(
     })
 }
 
+pub fn plan_incomplete_upgrade_recovery(
+    desired: &DesiredApplicationState,
+    observation: &ApplicationRecoveryObservation,
+) -> Result<ApplicationRecoveryPlan, ApplicationSpecError> {
+    desired.validate()?;
+    let current = observation
+        .application
+        .current_release
+        .clone()
+        .ok_or_else(|| {
+            ApplicationSpecError::Validation(
+                "incomplete-upgrade recovery requires a published current release".to_owned(),
+            )
+        })?;
+    validate_release("current", &current)?;
+
+    let active_agent = observation.application.observed_agent_sha256.as_deref();
+    let active_bundle = observation.application.observed_bundle_digest.as_deref();
+    let agent_matches = active_agent == Some(current.agent_sha256.as_str());
+    let bundle_matches = active_bundle == Some(current.bundle_digest.as_str());
+
+    if agent_matches && bundle_matches {
+        return Ok(ApplicationRecoveryPlan {
+            class: ApplicationRecoveryPlanClass::Noop,
+            machine_id: desired.machine_id.clone(),
+            target_release: current,
+            actions: Vec::new(),
+            reasons: vec!["active application material already matches published current release"
+                .to_owned()],
+        });
+    }
+
+    let mut blocked_reasons = Vec::new();
+    if !agent_matches {
+        if active_agent.is_none() {
+            blocked_reasons.push(
+                "active edge-agent digest is unavailable; refusing incomplete-upgrade recovery"
+                    .to_owned(),
+            );
+        } else if observation.backup_agent_sha256.as_deref()
+            != Some(current.agent_sha256.as_str())
+        {
+            blocked_reasons.push(
+                "backup edge-agent digest does not match published current release".to_owned(),
+            );
+        }
+    }
+    if !bundle_matches {
+        if active_bundle.is_none() {
+            blocked_reasons.push(
+                "active application bundle digest is unavailable; refusing incomplete-upgrade recovery"
+                    .to_owned(),
+            );
+        } else if observation.backup_bundle_digest.as_deref()
+            != Some(current.bundle_digest.as_str())
+        {
+            blocked_reasons.push(
+                "backup application bundle digest does not match published current release"
+                    .to_owned(),
+            );
+        }
+    }
+
+    if !blocked_reasons.is_empty() {
+        return Ok(ApplicationRecoveryPlan {
+            class: ApplicationRecoveryPlanClass::Blocked,
+            machine_id: desired.machine_id.clone(),
+            target_release: current,
+            actions: Vec::new(),
+            reasons: blocked_reasons,
+        });
+    }
+
+    let mut actions = Vec::new();
+    if !bundle_matches {
+        actions.push(ApplicationRecoveryAction::RestoreBundle);
+    }
+    if !agent_matches {
+        actions.push(ApplicationRecoveryAction::RestoreAgent);
+    }
+
+    Ok(ApplicationRecoveryPlan {
+        class: ApplicationRecoveryPlanClass::Recover,
+        machine_id: desired.machine_id.clone(),
+        target_release: current,
+        actions,
+        reasons: vec![
+            "active material differs from published current release and exact matching backups are present"
+                .to_owned(),
+        ],
+    })
+}
+
 pub fn build_rollback_plan(
     desired: &DesiredApplicationState,
     observation: &ApplicationObservation,
@@ -741,6 +865,56 @@ mod tests {
         let plan =
             plan_application(&desired(), &artifact(), &"3".repeat(64), &observation).unwrap();
         assert_eq!(plan.class, ApplicationPlanClass::Blocked);
+    }
+
+    #[test]
+    fn incomplete_upgrade_recovery_requires_exact_published_current_backups() {
+        let current = release();
+        let observation = ApplicationRecoveryObservation {
+            application: ApplicationObservation {
+                observed_agent_sha256: Some("4".repeat(64)),
+                observed_bundle_digest: Some("5".repeat(64)),
+                runtime_ready: false,
+                current_release: Some(current.clone()),
+                previous_release: None,
+            },
+            backup_agent_sha256: Some(current.agent_sha256.clone()),
+            backup_bundle_digest: Some(current.bundle_digest.clone()),
+        };
+        let plan = plan_incomplete_upgrade_recovery(&desired(), &observation).unwrap();
+        assert_eq!(plan.class, ApplicationRecoveryPlanClass::Recover);
+        assert_eq!(
+            plan.actions,
+            vec![
+                ApplicationRecoveryAction::RestoreBundle,
+                ApplicationRecoveryAction::RestoreAgent,
+            ]
+        );
+
+        let mut blocked = observation.clone();
+        blocked.backup_agent_sha256 = Some("6".repeat(64));
+        let plan = plan_incomplete_upgrade_recovery(&desired(), &blocked).unwrap();
+        assert_eq!(plan.class, ApplicationRecoveryPlanClass::Blocked);
+        assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn incomplete_upgrade_recovery_is_noop_when_active_matches_published_current() {
+        let current = release();
+        let observation = ApplicationRecoveryObservation {
+            application: ApplicationObservation {
+                observed_agent_sha256: Some(current.agent_sha256.clone()),
+                observed_bundle_digest: Some(current.bundle_digest.clone()),
+                runtime_ready: false,
+                current_release: Some(current),
+                previous_release: None,
+            },
+            backup_agent_sha256: None,
+            backup_bundle_digest: None,
+        };
+        let plan = plan_incomplete_upgrade_recovery(&desired(), &observation).unwrap();
+        assert_eq!(plan.class, ApplicationRecoveryPlanClass::Noop);
+        assert!(plan.actions.is_empty());
     }
 
     #[test]
