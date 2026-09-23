@@ -150,7 +150,11 @@ pub(crate) fn classify_probe_failure(exit_code: Option<i32>, output: &str) -> Ru
 
 fn redacted_diagnostic_output(value: &str) -> Option<String> {
     let mut rendered = String::new();
-    for raw_line in value.lines().filter(|line| !line.trim().is_empty()).take(MAX_DIAGNOSTIC_LINES) {
+    for raw_line in value
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(MAX_DIAGNOSTIC_LINES)
+    {
         let line = redact_diagnostic_line(raw_line);
         if line.is_empty() {
             continue;
@@ -207,7 +211,10 @@ fn redact_diagnostic_line(value: &str) -> String {
         "api_key",
         "access_key",
     ];
-    if SENSITIVE_MARKERS.iter().any(|marker| lowered.contains(marker)) {
+    if SENSITIVE_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+    {
         return "[REDACTED_SENSITIVE_LINE]".to_owned();
     }
 
@@ -232,7 +239,10 @@ fn looks_secret_like(value: &str) -> bool {
         return false;
     }
 
-    let alpha = candidate.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+    let alpha = candidate
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
     let digits = candidate.chars().filter(|ch| ch.is_ascii_digit()).count();
     let alnum = alpha + digits;
     candidate.len() >= 40
