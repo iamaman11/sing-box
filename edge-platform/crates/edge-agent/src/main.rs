@@ -3022,7 +3022,13 @@ mod tests {
         );
         assert_eq!(
             mesh_warp_cli_probe_args("settings"),
-            ["exec", MESH_CONTAINER, "warp-cli", "--accept-tos", "settings"]
+            [
+                "exec",
+                MESH_CONTAINER,
+                "warp-cli",
+                "--accept-tos",
+                "settings",
+            ]
         );
     }
 
