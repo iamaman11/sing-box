@@ -372,6 +372,140 @@ fn runtime_probe_json(
     }
 }
 
+fn runtime_network_diagnostics_json(
+    diagnostics: Option<&edge_shared_types::RuntimeNetworkDiagnostics>,
+) -> serde_json::Value {
+    let Some(diagnostics) = diagnostics else {
+        return serde_json::Value::Null;
+    };
+    let dns = diagnostics.dns.as_ref().map(|dns| {
+        serde_json::json!({
+            "probe": runtime_probe_json(dns.probe.as_ref()),
+            "nameservers": dns.nameservers,
+            "search_domains": dns.search_domains,
+        })
+    });
+    serde_json::json!({
+        "interfaces_probe": runtime_probe_json(diagnostics.interfaces_probe.as_ref()),
+        "interfaces": diagnostics.interfaces.iter().map(|interface| {
+            serde_json::json!({
+                "name": interface.name,
+                "mtu": interface.mtu,
+                "up": interface.up,
+                "addresses": interface.addresses,
+            })
+        }).collect::<Vec<_>>(),
+        "routes_probe": runtime_probe_json(diagnostics.routes_probe.as_ref()),
+        "routes": diagnostics.routes.iter().map(|route| {
+            serde_json::json!({
+                "destination": route.destination,
+                "gateway": route.gateway,
+                "device": route.device,
+                "preferred_source": route.preferred_source,
+                "metric": route.metric,
+                "table": route.table,
+                "protocol": route.protocol,
+            })
+        }).collect::<Vec<_>>(),
+        "rules_probe": runtime_probe_json(diagnostics.rules_probe.as_ref()),
+        "rules": diagnostics.rules.iter().map(|rule| {
+            serde_json::json!({
+                "priority": rule.priority,
+                "source": rule.source,
+                "destination": rule.destination,
+                "table": rule.table,
+            })
+        }).collect::<Vec<_>>(),
+        "dns": dns,
+        "sockets_probe": runtime_probe_json(diagnostics.sockets_probe.as_ref()),
+        "sockets": diagnostics.sockets.iter().map(|socket| {
+            serde_json::json!({
+                "protocol": socket.protocol,
+                "local_address": socket.local_address,
+                "local_port": socket.local_port,
+                "remote_address": socket.remote_address,
+                "remote_port": socket.remote_port,
+                "state": socket.state,
+            })
+        }).collect::<Vec<_>>(),
+        "default_route_present": diagnostics.default_route_present,
+    })
+}
+
+fn runtime_network_summary_json(
+    diagnostics: Option<&edge_shared_types::RuntimeNetworkDiagnostics>,
+) -> serde_json::Value {
+    let Some(diagnostics) = diagnostics else {
+        return serde_json::Value::Null;
+    };
+    let interfaces = diagnostics
+        .interfaces
+        .iter()
+        .take(16)
+        .map(|interface| {
+            serde_json::json!({
+                "name": interface.name,
+                "mtu": interface.mtu,
+                "up": interface.up,
+                "addresses": interface.addresses,
+            })
+        })
+        .collect::<Vec<_>>();
+    let routes = diagnostics
+        .routes
+        .iter()
+        .filter(|route| {
+            route.destination == "default"
+                || route.destination.starts_with("10.")
+                || route.destination.starts_with("172.")
+                || route.destination.starts_with("192.168.")
+        })
+        .take(32)
+        .map(|route| {
+            serde_json::json!({
+                "destination": route.destination,
+                "gateway": route.gateway,
+                "device": route.device,
+                "preferred_source": route.preferred_source,
+                "metric": route.metric,
+                "table": route.table,
+                "protocol": route.protocol,
+            })
+        })
+        .collect::<Vec<_>>();
+    let remote_sockets = diagnostics
+        .sockets
+        .iter()
+        .filter(|socket| socket.remote_address.as_deref().is_some_and(|value| {
+            value != "0.0.0.0" && value != "::" && value != "*"
+        }))
+        .take(24)
+        .map(|socket| {
+            serde_json::json!({
+                "protocol": socket.protocol,
+                "remote_address": socket.remote_address,
+                "remote_port": socket.remote_port,
+                "state": socket.state,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "interfaces_probe": runtime_probe_json(diagnostics.interfaces_probe.as_ref()),
+        "routes_probe": runtime_probe_json(diagnostics.routes_probe.as_ref()),
+        "rules_probe": runtime_probe_json(diagnostics.rules_probe.as_ref()),
+        "sockets_probe": runtime_probe_json(diagnostics.sockets_probe.as_ref()),
+        "default_route_present": diagnostics.default_route_present,
+        "interfaces": interfaces,
+        "routes": routes,
+        "dns": diagnostics.dns.as_ref().map(|dns| serde_json::json!({
+            "probe": runtime_probe_json(dns.probe.as_ref()),
+            "nameservers": dns.nameservers,
+            "search_domains": dns.search_domains,
+        })),
+        "remote_sockets": remote_sockets,
+    })
+}
+
 fn mesh_runtime_diagnostics_json(
     diagnostics: Option<&edge_shared_types::MeshRuntimeDiagnostics>,
 ) -> serde_json::Value {
@@ -401,6 +535,12 @@ fn mesh_runtime_diagnostics_json(
         "net_admin_present": diagnostics.net_admin_present,
         "net_raw_present": diagnostics.net_raw_present,
         "container": container,
+        "host_network": runtime_network_diagnostics_json(diagnostics.host_network.as_ref()),
+        "container_network": runtime_network_diagnostics_json(diagnostics.container_network.as_ref()),
+        "route_events": diagnostics.route_events.iter().map(|event| serde_json::json!({
+            "changed_count": event.changed_count,
+            "window": event.window,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -430,6 +570,12 @@ fn mesh_runtime_diagnostic_summary(state: &edge_shared_types::MeshRuntimeState) 
         "net_admin_present": diagnostics.net_admin_present,
         "net_raw_present": diagnostics.net_raw_present,
         "recent_events": recent_events,
+        "host_network": runtime_network_summary_json(diagnostics.host_network.as_ref()),
+        "container_network": runtime_network_summary_json(diagnostics.container_network.as_ref()),
+        "route_events": diagnostics.route_events.iter().map(|event| serde_json::json!({
+            "changed_count": event.changed_count,
+            "window": event.window,
+        })).collect::<Vec<_>>(),
     })
     .to_string()
 }
