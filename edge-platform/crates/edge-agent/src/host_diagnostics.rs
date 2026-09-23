@@ -32,7 +32,9 @@ fn collect_identity() -> HostIdentityDiagnostics {
             Some((label, err)) => io_failure_evidence(label, err),
             None => ok_evidence(),
         }),
-        hostname: hostname.ok().and_then(|value| bounded_nonempty(&value, 128)),
+        hostname: hostname
+            .ok()
+            .and_then(|value| bounded_nonempty(&value, 128)),
         kernel_release: kernel.ok().and_then(|value| bounded_nonempty(&value, 128)),
         architecture: Some(std::env::consts::ARCH.to_owned()),
     }
@@ -44,10 +46,7 @@ fn collect_time() -> HostTimeDiagnostics {
         .ok()
         .map(|duration| duration.as_secs());
     let uptime_raw = fs::read_to_string("/proc/uptime");
-    let uptime_seconds = uptime_raw
-        .as_deref()
-        .ok()
-        .and_then(parse_uptime_seconds);
+    let uptime_seconds = uptime_raw.as_deref().ok().and_then(parse_uptime_seconds);
 
     let probe = match (&uptime_raw, unix_time_seconds, uptime_seconds) {
         (Err(err), _, _) => io_failure_evidence("uptime", err),
@@ -219,6 +218,9 @@ mod tests {
 
     #[test]
     fn diagnostic_detail_is_bounded() {
-        assert_eq!(bounded_detail(&"x".repeat(1024)).len(), MAX_DIAGNOSTIC_DETAIL);
+        assert_eq!(
+            bounded_detail(&"x".repeat(1024)).len(),
+            MAX_DIAGNOSTIC_DETAIL
+        );
     }
 }
