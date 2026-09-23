@@ -31,8 +31,8 @@ use edge_shared_types::{
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest,
     ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
-    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeStatus,
-    VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeStatus, VerifyRuntimeRequest,
+    canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
