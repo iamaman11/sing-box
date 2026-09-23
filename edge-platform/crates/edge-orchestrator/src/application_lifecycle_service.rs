@@ -1724,6 +1724,44 @@ mod tests {
         assert_eq!(mutation_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recovery_calls.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn recovery_authority_is_stale_when_backup_evidence_changes() {
+        let desired = test_desired("stack");
+        let current = PublishedApplicationRelease {
+            release_id: "published-current".to_owned(),
+            source_revision: "1".repeat(40),
+            agent_sha256: "2".repeat(64),
+            bundle_digest: "3".repeat(64),
+            bootstrap_mode: ApplicationBootstrapMode::Base,
+        };
+        let mut observation = ApplicationRecoveryObservation {
+            application: ApplicationObservation {
+                observed_agent_sha256: Some("4".repeat(64)),
+                observed_bundle_digest: Some("5".repeat(64)),
+                runtime_ready: false,
+                current_release: Some(current.clone()),
+                previous_release: None,
+            },
+            backup_agent_sha256: Some(current.agent_sha256.clone()),
+            backup_bundle_digest: Some(current.bundle_digest.clone()),
+        };
+
+        let plan = plan_incomplete_upgrade_recovery(&desired, &observation).unwrap();
+        assert_eq!(plan.class, ApplicationRecoveryPlanClass::Recover);
+        let authorized =
+            authorize_application_recovery(&desired, &observation, plan).unwrap();
+        let authorized_digest = authorized.authority.authority_digest.clone();
+
+        observation.backup_agent_sha256 = Some("6".repeat(64));
+        let changed_plan = plan_incomplete_upgrade_recovery(&desired, &observation).unwrap();
+        assert_eq!(changed_plan.class, ApplicationRecoveryPlanClass::Blocked);
+        let changed =
+            authorize_application_recovery(&desired, &observation, changed_plan).unwrap();
+
+        assert!(verify_exact_authority(&authorized_digest, &changed.authority).is_err());
+    }
+
     fn test_desired(bundle_root: &str) -> DesiredApplicationState {
         DesiredApplicationState {
             schema: 2,
