@@ -32,8 +32,7 @@ use edge_shared_types::{
     MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest,
     ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
     RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
-    VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -2081,10 +2080,7 @@ fn inspect_compose(
     })
 }
 
-async fn inspect_datapath_readiness(
-    state: &mut AgentState,
-    docker: &DockerObservation,
-) -> bool {
+async fn inspect_datapath_readiness(state: &mut AgentState, docker: &DockerObservation) -> bool {
     let direct_ready = probe_direct_egress(&state.running_containers);
     state.direct_egress_ready = Some(direct_ready);
     if !direct_ready {
