@@ -212,10 +212,50 @@ message MeshRuntimeConvergeRequest {
   string node_token = 1;
 }
 
+enum RuntimeProbeStatus {
+  RUNTIME_PROBE_STATUS_UNSPECIFIED = 0;
+  RUNTIME_PROBE_STATUS_OK = 1;
+  RUNTIME_PROBE_STATUS_TIMEOUT = 2;
+  RUNTIME_PROBE_STATUS_COMMAND_NOT_FOUND = 3;
+  RUNTIME_PROBE_STATUS_PERMISSION_DENIED = 4;
+  RUNTIME_PROBE_STATUS_UNSUPPORTED = 5;
+  RUNTIME_PROBE_STATUS_NON_ZERO = 6;
+  RUNTIME_PROBE_STATUS_EMPTY = 7;
+  RUNTIME_PROBE_STATUS_PARSE_ERROR = 8;
+  RUNTIME_PROBE_STATUS_OUTPUT_LIMIT = 9;
+}
+
+message RuntimeProbeEvidence {
+  RuntimeProbeStatus status = 1;
+  optional int32 exit_code = 2;
+}
+
+message MeshContainerDiagnostics {
+  bool present = 1;
+  bool running = 2;
+  optional int64 exit_code = 3;
+  bool runtime_error_present = 4;
+  repeated string recent_events = 5;
+}
+
+message MeshRuntimeDiagnostics {
+  RuntimeProbeEvidence warp_status_probe = 1;
+  optional string warp_connection_state = 2;
+  RuntimeProbeEvidence warp_settings_probe = 3;
+  optional string tunnel_protocol = 4;
+  RuntimeProbeEvidence tun_device_probe = 5;
+  optional bool tun_device_present = 6;
+  RuntimeProbeEvidence ipv4_forwarding_probe = 7;
+  optional bool ipv4_forwarding = 8;
+  bool mesh_network_attached = 9;
+  MeshContainerDiagnostics container = 10;
+}
+
 message MeshRuntimeState {
   bool token_store_present = 1;
   bool container_running = 2;
   bool exact_image_ready = 3;
   bool runtime_ready = 4;
   repeated string warnings = 5;
+  MeshRuntimeDiagnostics diagnostics = 6;
 }
