@@ -254,6 +254,7 @@ pub(crate) enum MeshCommand {
     VpcRuntimeApply(MeshVpcArgs),
     RuntimeVerify(MeshRuntimeArgs),
     VpcRuntimeVerify(MeshVpcArgs),
+    RuntimeObserve(RuntimeCleanupArgs),
     RuntimeCleanup(RuntimeCleanupArgs),
 }
 
@@ -285,6 +286,10 @@ impl MeshCommand {
                 path(args.application_spec_path),
             ],
             Self::VpcRuntimeVerify(args) => mesh_vpc("vpc-runtime-verify", args),
+            Self::RuntimeObserve(args) => vec![
+                "runtime-observe".to_owned(),
+                path(args.application_spec_path),
+            ],
             Self::RuntimeCleanup(args) => vec![
                 "runtime-cleanup".to_owned(),
                 path(args.application_spec_path),
@@ -610,6 +615,12 @@ mod tests {
                 "infra/cloudflare/mesh.json",
                 &digest,
                 &digest,
+            ],
+            vec![
+                "edge-orchestrator",
+                "line3-mesh",
+                "runtime-observe",
+                "infra/application/production.json",
             ],
             vec![
                 "edge-orchestrator",
