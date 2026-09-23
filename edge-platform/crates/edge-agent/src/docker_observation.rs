@@ -38,6 +38,11 @@ pub(crate) struct ContainerRuntimeEvidence {
     pub(crate) exit_code: Option<i64>,
     pub(crate) runtime_error: Option<String>,
     pub(crate) log_tail: Vec<String>,
+    pub(crate) name: String,
+    pub(crate) image: Option<String>,
+    pub(crate) restart_count: Option<u64>,
+    pub(crate) oom_killed: Option<bool>,
+    pub(crate) networks: Vec<String>,
 }
 
 impl ContainerRuntimeEvidence {
@@ -53,8 +58,20 @@ impl ContainerRuntimeEvidence {
             self.log_tail.join(" | ")
         };
         format!(
-            "present={} running={} exit_code={} runtime_error={} log_tail={}",
-            self.present, self.running, exit_code, runtime_error, logs
+            "present={} running={} exit_code={} restart_count={} oom_killed={} image={} networks={:?} runtime_error={} log_tail={}",
+            self.present,
+            self.running,
+            exit_code,
+            self.restart_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            self.oom_killed
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            self.image.as_deref().unwrap_or("unknown"),
+            self.networks,
+            runtime_error,
+            logs
         )
     }
 }
@@ -141,6 +158,11 @@ pub(crate) async fn observe_container_runtime(
                 exit_code: None,
                 runtime_error: None,
                 log_tail: Vec::new(),
+                name: container_name.to_owned(),
+                image: None,
+                restart_count: None,
+                oom_killed: None,
+                networks: Vec::new(),
             });
         }
         Err(err) => {
@@ -151,6 +173,22 @@ pub(crate) async fn observe_container_runtime(
     };
 
     let state = inspect.state.unwrap_or_default();
+    let image = inspect
+        .config
+        .and_then(|config| config.image)
+        .or(inspect.image);
+    let restart_count = inspect
+        .restart_count
+        .and_then(|value| u64::try_from(value).ok());
+    let oom_killed = state.oom_killed;
+    let mut networks = inspect
+        .network_settings
+        .and_then(|settings| settings.networks)
+        .map(|networks| networks.into_keys().collect::<Vec<_>>())
+        .unwrap_or_default();
+    networks.sort();
+    networks.dedup();
+
     let options = LogsOptionsBuilder::default()
         .stdout(true)
         .stderr(true)
@@ -174,6 +212,11 @@ pub(crate) async fn observe_container_runtime(
         exit_code: state.exit_code,
         runtime_error: state.error.filter(|value| !value.is_empty()),
         log_tail,
+        name: container_name.to_owned(),
+        image,
+        restart_count,
+        oom_killed,
+        networks,
     })
 }
 
