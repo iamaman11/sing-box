@@ -310,6 +310,9 @@ jobs:
           agent_docker = Path(
               "edge-platform/crates/edge-agent/src/docker_observation.rs"
           ).read_text()
+          application_core = Path(
+              "edge-platform/crates/edge-controller-core/src/application_lifecycle.rs"
+          ).read_text()
           application_service = Path(
               "edge-platform/crates/edge-orchestrator/src/application_lifecycle_service.rs"
           ).read_text()
@@ -358,6 +361,17 @@ jobs:
           assert ".destroy_digest // empty" in vultr_workflow
           assert "plan_authority" in vultr_workflow
           assert "plan_authority" in application_workflow
+          assert "recover-plan" in application_command
+          assert "recover-apply" in application_command
+          assert "recover-plan" in application_workflow
+          assert "recover-apply" in application_workflow
+          assert "ApplicationRecoveryPlanClass::Blocked" in application_core
+          assert "backup edge-agent digest does not match published current release" in application_core
+          assert "backup application bundle digest does not match published current release" in application_core
+          assert "restore_bundle_from_backup_once" in application_service
+          assert "restore_agent_from_backup_once" in application_service
+          assert "application_recovery" in application_service
+          assert "rpc Recover" not in agent_proto
           for process_root in [controller_main, orchestrator_main, console_main, agent_main]:
               assert "env::args()" not in process_root
               assert "_ARG_INDEX" not in process_root
