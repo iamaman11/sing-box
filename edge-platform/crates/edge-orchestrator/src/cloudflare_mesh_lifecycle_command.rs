@@ -476,9 +476,12 @@ fn runtime_network_summary_json(
     let remote_sockets = diagnostics
         .sockets
         .iter()
-        .filter(|socket| socket.remote_address.as_deref().is_some_and(|value| {
-            value != "0.0.0.0" && value != "::" && value != "*"
-        }))
+        .filter(|socket| {
+            socket
+                .remote_address
+                .as_deref()
+                .is_some_and(|value| value != "0.0.0.0" && value != "::" && value != "*")
+        })
         .take(24)
         .map(|socket| {
             serde_json::json!({
