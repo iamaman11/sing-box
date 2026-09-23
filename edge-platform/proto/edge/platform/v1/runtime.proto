@@ -335,6 +335,9 @@ message MeshRuntimeFailureSnapshot {
   optional int64 container_exit_code = 11;
   optional uint64 container_restart_count = 12;
   optional bool container_oom_killed = 13;
+  optional string container_image = 14;
+  repeated string container_networks = 15;
+  bool exact_image_ready = 16;
 }
 
 message RuntimeNetworkDiagnostics {
