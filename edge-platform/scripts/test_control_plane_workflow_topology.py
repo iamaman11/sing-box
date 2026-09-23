@@ -376,16 +376,16 @@ def main() -> None:
     )
     require(
         'tokens[0] != "/mesh"' in mesh
-        and 'tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify"}' in mesh,
+        and 'tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify", "runtime-cleanup"}' in mesh,
         "Mesh backend must expose only the bounded provider/runtime grammar",
     )
     require(
         "line3-mesh vpc-runtime-apply" in mesh
         and "line3-mesh vpc-runtime-verify" in mesh
-        and "line3-mesh runtime-" not in mesh
+        and mesh.count("line3-mesh runtime-cleanup") == 1
         and "line3-mesh cleanup-" not in mesh
         and "MESH_NODE_TOKEN" not in mesh,
-        "Mesh backend must expose only VPC-composed runtime operations without raw token or cleanup surfaces",
+        "Mesh backend must expose only VPC-composed runtime operations plus one typed runtime cleanup, without raw token or provider cleanup surfaces",
     )
     require(
         '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' in mesh,
@@ -410,6 +410,13 @@ def main() -> None:
         mesh.count("line3-mesh vpc-runtime-apply") == 1
         and mesh.count("line3-mesh vpc-runtime-verify") == 1,
         "one Mesh workflow invocation must contain at most one typed runtime converge and one typed runtime verify call",
+    )
+    require(
+        "mesh-runtime-cleanup-provider-before.json" in mesh
+        and "mesh-runtime-cleanup-provider-after.json" in mesh
+        and '.status == "ABSENT" and .runtime.token_store_present == false and .runtime.container_running == false and .runtime.runtime_ready == false' in mesh
+        and "provider_before:.[0],runtime:.[1],provider_after:.[2]" in mesh,
+        "Mesh runtime cleanup must prove provider NOOP before and after one typed cleanup and require exact runtime absence",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
