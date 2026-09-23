@@ -324,26 +324,19 @@ jobs:
             local spec="$1"
             local machine="$2"
             local prefix="$3"
-            local plan="${RUNNER_TEMP}/${prefix}-access-acquire-plan.json"
-            local authority
-            run_lifecycle acquire-access-plan "${spec}" "${machine}" > "${plan}"
-            authority="$(plan_authority "${plan}")"
-            [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
-            run_lifecycle acquire-access "${spec}" "${machine}" "${authority}" \
-              > "${RUNNER_TEMP}/${prefix}-access-acquire.json"
+            local result="${RUNNER_TEMP}/${prefix}-access-acquire.json"
+            run_lifecycle lease-acquire "${spec}" "${machine}" > "${result}"
+            jq -e '.status == "READY" and .lease_phase == "READY" and .tcp_readiness.final_state == "READY"' \
+              "${result}" >/dev/null
           }
 
           release_host_access() {
             local spec="$1"
             local machine="$2"
             local prefix="$3"
-            local plan="${RUNNER_TEMP}/${prefix}-access-release-plan.json"
-            local authority
-            run_lifecycle release-access-plan "${spec}" "${machine}" > "${plan}"
-            authority="$(plan_authority "${plan}")"
-            [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
-            run_lifecycle release-access "${spec}" "${machine}" "${authority}" \
-              > "${RUNNER_TEMP}/${prefix}-access-release.json"
+            local result="${RUNNER_TEMP}/${prefix}-access-release.json"
+            run_lifecycle lease-release "${spec}" "${machine}" > "${result}"
+            jq -e '.status == "RELEASED"' "${result}" >/dev/null
           }
 
           emit_result() {
@@ -445,7 +438,11 @@ jobs:
                 if [[ "${release_rc}" -ne 0 ]]; then
                   exit "${release_rc}"
                 fi
-                cat "${RUNNER_TEMP}/action-result.json" | tee "${RUNNER_TEMP}/result.json"
+                jq -s '.[0] + {support_access: {acquire: .[1], release: .[2]}}' \
+                  "${RUNNER_TEMP}/action-result.json" \
+                  "${RUNNER_TEMP}/action-reboot-access-acquire.json" \
+                  "${RUNNER_TEMP}/action-reboot-access-release.json" \
+                  | tee "${RUNNER_TEMP}/result.json"
               else
                 run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
               fi
