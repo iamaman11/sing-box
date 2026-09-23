@@ -16,8 +16,8 @@ use edge_controller_core::lifecycle::{
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
     ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile, Ipv4NetworkObservation,
-    MeshRuntimeConvergeRequest, MeshRuntimeState, RollbackBundleRequest, VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    MeshRuntimeConvergeRequest, MeshRuntimeState, RollbackBundleRequest, RuntimeProbeStatus,
+    VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
@@ -1329,10 +1329,26 @@ async fn bootstrap_once(
             if response.success {
                 Ok(())
             } else {
+                let mesh_evidence = if response
+                    .post_state
+                    .as_ref()
+                    .and_then(|state| state.mesh_runtime_ready)
+                    == Some(false)
+                {
+                    observe_mesh_runtime_remote_once(authority)
+                        .await
+                        .ok()
+                        .map(|state| mesh_runtime_evidence_summary(&state))
+                } else {
+                    None
+                };
                 Err(format!(
-                    "typed BootstrapRuntime failed with exit_code={} warnings={}",
+                    "typed BootstrapRuntime failed with exit_code={} warnings={}{}",
                     response.exit_code,
-                    response.warnings.join("; ")
+                    response.warnings.join("; "),
+                    mesh_evidence
+                        .map(|evidence| format!(" mesh_evidence={evidence}"))
+                        .unwrap_or_default()
                 ))
             }
         }
@@ -1383,6 +1399,17 @@ async fn verify_runtime_ready(
         .await
         .map_err(|err| format!("typed VerifyRuntime RPC failed: {err}"))?
         .into_inner();
+    if !response.ready && response.mesh_runtime_ready == Some(false) {
+        let mesh = observe_mesh_runtime_remote_once(authority).await.map_err(|err| {
+            format!(
+                "typed runtime readiness failed and deep Mesh evidence could not be collected: {err}"
+            )
+        })?;
+        return Err(format!(
+            "typed runtime readiness failed; mesh_evidence={}",
+            mesh_runtime_evidence_summary(&mesh)
+        ));
+    }
     Ok(response.ready)
 }
 
@@ -1503,6 +1530,85 @@ async fn observe_mesh_runtime_remote_once(
         .await
         .map_err(|err| format!("typed VerifyMeshRuntime RPC failed: {err}"))
         .map(|response| response.into_inner())
+}
+
+fn mesh_runtime_evidence_summary(state: &MeshRuntimeState) -> String {
+    let diagnostics = state.diagnostics.as_ref();
+    let container = diagnostics.and_then(|value| value.container.as_ref());
+    let host = diagnostics.and_then(|value| value.host.as_ref());
+    let last_failure = state.last_failure_snapshot.as_ref();
+
+    let current_status = |probe: Option<&edge_shared_types::RuntimeProbeEvidence>| {
+        probe
+            .map(|value| runtime_probe_status_label(value.status))
+            .unwrap_or("UNSPECIFIED")
+    };
+    let reasons = last_failure
+        .map(|snapshot| {
+            snapshot
+                .reasons
+                .iter()
+                .take(6)
+                .map(|value| bounded_detail(value, 160))
+                .collect::<Vec<_>>()
+                .join("|")
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "none".to_owned());
+
+    format!(
+        "runtime_ready={} warp_state={} tunnel_protocol={} warp_status={} warp_settings={} container_present={} container_running={} restart_count={} oom_killed={} host_identity={} host_time={} host_resources={} last_failure_at={} last_failure_reasons={}",
+        state.runtime_ready,
+        diagnostics
+            .and_then(|value| value.warp_connection_state.as_deref())
+            .unwrap_or("UNKNOWN"),
+        diagnostics
+            .and_then(|value| value.tunnel_protocol.as_deref())
+            .unwrap_or("UNKNOWN"),
+        current_status(diagnostics.and_then(|value| value.warp_status_probe.as_ref())),
+        current_status(diagnostics.and_then(|value| value.warp_settings_probe.as_ref())),
+        container.is_some_and(|value| value.present),
+        container.is_some_and(|value| value.running),
+        container
+            .and_then(|value| value.restart_count)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        container
+            .and_then(|value| value.oom_killed)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        current_status(
+            host.and_then(|value| value.identity.as_ref())
+                .and_then(|value| value.probe.as_ref())
+        ),
+        current_status(
+            host.and_then(|value| value.time.as_ref())
+                .and_then(|value| value.probe.as_ref())
+        ),
+        current_status(
+            host.and_then(|value| value.resources.as_ref())
+                .and_then(|value| value.probe.as_ref())
+        ),
+        last_failure
+            .map(|value| value.observed_unix_time_seconds.to_string())
+            .unwrap_or_else(|| "none".to_owned()),
+        reasons
+    )
+}
+
+fn runtime_probe_status_label(value: i32) -> &'static str {
+    match RuntimeProbeStatus::try_from(value).unwrap_or(RuntimeProbeStatus::Unspecified) {
+        RuntimeProbeStatus::Unspecified => "UNSPECIFIED",
+        RuntimeProbeStatus::Ok => "OK",
+        RuntimeProbeStatus::Timeout => "TIMEOUT",
+        RuntimeProbeStatus::CommandNotFound => "COMMAND_NOT_FOUND",
+        RuntimeProbeStatus::PermissionDenied => "PERMISSION_DENIED",
+        RuntimeProbeStatus::Unsupported => "UNSUPPORTED",
+        RuntimeProbeStatus::NonZero => "NON_ZERO",
+        RuntimeProbeStatus::Empty => "EMPTY",
+        RuntimeProbeStatus::ParseError => "PARSE_ERROR",
+        RuntimeProbeStatus::OutputLimit => "OUTPUT_LIMIT",
+    }
 }
 
 async fn connect_agent(
