@@ -48,15 +48,18 @@ fn collect_network_diagnostics(container_name: Option<&str>) -> RuntimeNetworkDi
     let routes = parse_routes(&mut routes_probe);
     let default_route_present = routes.iter().any(|route| route.destination == "default");
 
-    let mut rules_probe =
-        fixed_probe(container_name, &["ip", "-j", "rule", "show"], 6, true);
+    let mut rules_probe = fixed_probe(container_name, &["ip", "-j", "rule", "show"], 6, true);
     let rules = parse_rules(&mut rules_probe);
 
     let dns_probe = fixed_probe(container_name, &["cat", "/etc/resolv.conf"], 6, true);
     let dns = parse_dns(dns_probe);
 
-    let mut sockets_probe =
-        fixed_probe(container_name, &["ss", "-H", "-n", "-t", "-u", "-a"], 6, false);
+    let mut sockets_probe = fixed_probe(
+        container_name,
+        &["ss", "-H", "-n", "-t", "-u", "-a"],
+        6,
+        false,
+    );
     let sockets = parse_sockets(&mut sockets_probe);
 
     RuntimeNetworkDiagnostics {
@@ -87,12 +90,7 @@ fn fixed_probe(
             args.extend_from_slice(command);
             bounded_command_probe("docker", &args, timeout_seconds, require_output)
         }
-        None => bounded_command_probe(
-            command[0],
-            &command[1..],
-            timeout_seconds,
-            require_output,
-        ),
+        None => bounded_command_probe(command[0], &command[1..], timeout_seconds, require_output),
     }
 }
 
@@ -252,18 +250,12 @@ fn parse_rules(probe: &mut BoundedCommandProbe) -> Vec<RuntimeNetworkRule> {
         .take(MAX_RULES)
         .collect::<Vec<_>>();
     result.sort_by(|left, right| {
-        (
-            left.priority,
-            &left.source,
-            &left.destination,
-            &left.table,
-        )
-            .cmp(&(
-                right.priority,
-                &right.source,
-                &right.destination,
-                &right.table,
-            ))
+        (left.priority, &left.source, &left.destination, &left.table).cmp(&(
+            right.priority,
+            &right.source,
+            &right.destination,
+            &right.table,
+        ))
     });
     result
 }
@@ -392,10 +384,7 @@ fn split_endpoint(value: &str) -> (String, Option<u32>) {
     if let Some(stripped) = bounded.strip_prefix('[')
         && let Some((address, port)) = stripped.rsplit_once("]:")
     {
-        return (
-            address.to_owned(),
-            parse_port(port),
-        );
+        return (address.to_owned(), parse_port(port));
     }
     if let Some((address, port)) = bounded.rsplit_once(':')
         && !address.contains(':')
@@ -444,10 +433,7 @@ fn bounded_json_string(value: &Value, max_len: usize) -> Option<String> {
     }
 }
 
-fn bounded_optional_json_string(
-    value: Option<&Value>,
-    max_len: usize,
-) -> Option<String> {
+fn bounded_optional_json_string(value: Option<&Value>, max_len: usize) -> Option<String> {
     value.and_then(|value| bounded_json_string(value, max_len))
 }
 
@@ -497,7 +483,11 @@ mod tests {
         );
         let parsed_routes = parse_routes(&mut routes);
         assert_eq!(parsed_routes.len(), 2);
-        assert!(parsed_routes.iter().any(|route| route.destination == "default"));
+        assert!(
+            parsed_routes
+                .iter()
+                .any(|route| route.destination == "default")
+        );
         assert!(parsed_routes.iter().any(|route| {
             route.destination == "10.27.96.0/20"
                 && route.preferred_source.as_deref() == Some("10.27.96.3")
