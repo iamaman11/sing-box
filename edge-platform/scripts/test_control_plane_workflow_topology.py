@@ -224,8 +224,8 @@ def main() -> None:
         "VPC workflow must not own transient-access PlanAuthority plumbing",
     )
     require(
-        "vultr-lifecycle lease-acquire" in vultr
-        and "vultr-lifecycle lease-release" in vultr,
+        'run_lifecycle lease-acquire "${spec}" "${machine}"' in vultr
+        and 'run_lifecycle lease-release "${spec}" "${machine}"' in vultr,
         "Vultr workflow host operations must use the typed transient SSH lease",
     )
     require(
