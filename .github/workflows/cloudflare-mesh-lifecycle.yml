@@ -43,7 +43,7 @@ jobs:
           if (
               len(tokens) != 5
               or tokens[0] != "/mesh"
-              or tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify"}
+              or tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify", "runtime-cleanup"}
           ):
               fail("unsupported /mesh command grammar")
 
@@ -271,6 +271,18 @@ jobs:
               "${bin}" line3-mesh vpc-runtime-verify                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${runtime}"
               jq -e '.status == "PASS" and .runtime.token_store_present == true and .runtime.container_running == true and .runtime.exact_image_ready == true and .runtime.runtime_ready == true' "${runtime}" >/dev/null
               jq -s '{provider_plan:.[0],runtime:.[1]}' "${provider_plan}" "${runtime}" | tee "${result}"
+              ;;
+            runtime-cleanup)
+              provider_before="${RUNNER_TEMP}/mesh-runtime-cleanup-provider-before.json"
+              runtime="${RUNNER_TEMP}/mesh-runtime-cleanup.json"
+              provider_after="${RUNNER_TEMP}/mesh-runtime-cleanup-provider-after.json"
+              "${bin}" line3-mesh vpc-plan                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${provider_before}"
+              jq -e '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' "${provider_before}" >/dev/null
+              "${bin}" line3-mesh runtime-cleanup "${APPLICATION_SPEC_PATH}" > "${runtime}"
+              jq -e '.status == "ABSENT" and .runtime.token_store_present == false and .runtime.container_running == false and .runtime.runtime_ready == false' "${runtime}" >/dev/null
+              "${bin}" line3-mesh vpc-plan                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"                 > "${provider_after}"
+              jq -e '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' "${provider_after}" >/dev/null
+              jq -s '{provider_before:.[0],runtime:.[1],provider_after:.[2]}' "${provider_before}" "${runtime}" "${provider_after}" | tee "${result}"
               ;;
             *)
               echo "unreachable Mesh operation" >&2
