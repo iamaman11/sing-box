@@ -1226,7 +1226,10 @@ mod tests {
         assert_eq!(rendered["host"]["identity"]["hostname"], "acceptance-host");
         assert_eq!(rendered["host"]["time"]["uptime_seconds"], 12_345);
         assert_eq!(rendered["host"]["resources"]["logical_cpus"], 2);
-        assert_eq!(rendered["host"]["resources"]["memory_available_bytes"], 750_000);
+        assert_eq!(
+            rendered["host"]["resources"]["memory_available_bytes"],
+            750_000
+        );
 
         let failure = mesh_runtime_failure_snapshot_json(Some(&snapshot));
         assert_eq!(failure["warp_status"], "NON_ZERO");
