@@ -238,6 +238,63 @@ message MeshContainerDiagnostics {
   repeated string recent_events = 5;
 }
 
+message RuntimeNetworkInterface {
+  string name = 1;
+  optional uint32 mtu = 2;
+  bool up = 3;
+  repeated string addresses = 4;
+}
+
+message RuntimeNetworkRoute {
+  string destination = 1;
+  optional string gateway = 2;
+  optional string device = 3;
+  optional string preferred_source = 4;
+  optional uint32 metric = 5;
+  optional string table = 6;
+  optional string protocol = 7;
+}
+
+message RuntimeNetworkRule {
+  optional uint32 priority = 1;
+  optional string source = 2;
+  optional string destination = 3;
+  optional string table = 4;
+}
+
+message RuntimeDnsDiagnostics {
+  RuntimeProbeEvidence probe = 1;
+  repeated string nameservers = 2;
+  repeated string search_domains = 3;
+}
+
+message RuntimeSocketEndpoint {
+  string protocol = 1;
+  string local_address = 2;
+  optional uint32 local_port = 3;
+  optional string remote_address = 4;
+  optional uint32 remote_port = 5;
+  optional string state = 6;
+}
+
+message RuntimeRouteEvent {
+  uint32 changed_count = 1;
+  string window = 2;
+}
+
+message RuntimeNetworkDiagnostics {
+  RuntimeProbeEvidence interfaces_probe = 1;
+  repeated RuntimeNetworkInterface interfaces = 2;
+  RuntimeProbeEvidence routes_probe = 3;
+  repeated RuntimeNetworkRoute routes = 4;
+  RuntimeProbeEvidence rules_probe = 5;
+  repeated RuntimeNetworkRule rules = 6;
+  RuntimeDnsDiagnostics dns = 7;
+  RuntimeProbeEvidence sockets_probe = 8;
+  repeated RuntimeSocketEndpoint sockets = 9;
+  bool default_route_present = 10;
+}
+
 message MeshRuntimeDiagnostics {
   RuntimeProbeEvidence warp_status_probe = 1;
   optional string warp_connection_state = 2;
@@ -252,6 +309,9 @@ message MeshRuntimeDiagnostics {
   RuntimeProbeEvidence capability_probe = 11;
   optional bool net_admin_present = 12;
   optional bool net_raw_present = 13;
+  RuntimeNetworkDiagnostics host_network = 14;
+  RuntimeNetworkDiagnostics container_network = 15;
+  repeated RuntimeRouteEvent route_events = 16;
 }
 
 message MeshRuntimeState {
