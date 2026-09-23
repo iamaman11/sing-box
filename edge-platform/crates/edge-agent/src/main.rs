@@ -1,11 +1,17 @@
 mod cli;
 mod docker_observation;
 mod error;
+mod mesh_network_diagnostics;
 mod network_observation;
+mod runtime_probe;
 
 use crate::docker_observation::{
     ContainerRuntimeEvidence, DockerObservation, observe_container_runtime, observe_docker,
 };
+use crate::mesh_network_diagnostics::{
+    collect_container_network_diagnostics, collect_host_network_diagnostics, extract_route_events,
+};
+use crate::runtime_probe::{BoundedCommandProbe, bounded_command_probe};
 use clap::Parser;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -25,7 +31,7 @@ use edge_shared_types::{
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest,
     ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
-    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeStatus,
     VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
@@ -306,7 +312,9 @@ impl AgentService for AgentServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
-        Ok(Response::new(inspect_mesh_runtime(&self.stack_dir).await))
+        Ok(Response::new(
+            inspect_mesh_runtime(&self.stack_dir, MeshDiagnosticDepth::Deep).await,
+        ))
     }
 
     async fn cleanup_mesh_runtime(
@@ -1292,7 +1300,16 @@ fn run_mesh_compose(
     Ok(())
 }
 
-async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeshDiagnosticDepth {
+    Basic,
+    Deep,
+}
+
+async fn inspect_mesh_runtime(
+    stack_dir: &Path,
+    diagnostic_depth: MeshDiagnosticDepth,
+) -> MeshRuntimeState {
     let token_store_path = mesh_runtime_secret_path(stack_dir).ok();
     let token_store_present = token_store_path.as_ref().is_some_and(|path| path.is_file());
     let token_valid = read_mesh_node_token(stack_dir).is_ok();
@@ -1308,7 +1325,7 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
         .as_deref()
         .is_some_and(|expected| docker.container_exact_image_ready(MESH_CONTAINER, expected));
     let diagnostics = if container_running && exact_image_ready {
-        Some(collect_mesh_runtime_diagnostics(&docker).await)
+        Some(collect_mesh_runtime_diagnostics(&docker, diagnostic_depth).await)
     } else {
         None
     };
@@ -1386,15 +1403,15 @@ async fn converge_mesh_runtime(
         ],
     )?;
 
-    let mut last = inspect_mesh_runtime(stack_dir).await;
+    let mut last = inspect_mesh_runtime(stack_dir, MeshDiagnosticDepth::Basic).await;
     for _ in 0..45 {
         if last.runtime_ready {
             return Ok(last);
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
-        last = inspect_mesh_runtime(stack_dir).await;
+        last = inspect_mesh_runtime(stack_dir, MeshDiagnosticDepth::Basic).await;
     }
-    Ok(last)
+    Ok(inspect_mesh_runtime(stack_dir, MeshDiagnosticDepth::Deep).await)
 }
 
 async fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, String> {
@@ -1435,7 +1452,7 @@ async fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, Stri
             .map_err(|err| format!("failed to remove Mesh runtime state: {err}"))?;
     }
 
-    let state = inspect_mesh_runtime(stack_dir).await;
+    let state = inspect_mesh_runtime(stack_dir, MeshDiagnosticDepth::Basic).await;
     if state.token_store_present || state.container_running {
         return Err("Mesh runtime cleanup did not converge to absence".to_owned());
     }
@@ -2287,115 +2304,6 @@ fn mesh_tunnel_protocol_evidence() -> String {
     format!("Mesh runtime tunnel protocol evidence: {protocol}")
 }
 
-#[derive(Debug, Clone)]
-struct BoundedCommandProbe {
-    status: RuntimeProbeStatus,
-    exit_code: Option<i32>,
-    stdout: String,
-}
-
-impl BoundedCommandProbe {
-    fn evidence(&self) -> RuntimeProbeEvidence {
-        RuntimeProbeEvidence {
-            status: self.status as i32,
-            exit_code: self.exit_code,
-        }
-    }
-}
-
-fn bounded_command_probe(
-    program: &str,
-    args: &[&str],
-    timeout_seconds: u64,
-    require_output: bool,
-) -> BoundedCommandProbe {
-    let timeout = format!("{timeout_seconds}s");
-    let output = match Command::new("timeout")
-        .arg(timeout)
-        .arg(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-    {
-        Ok(output) => output,
-        Err(err) => {
-            return BoundedCommandProbe {
-                status: if err.kind() == std::io::ErrorKind::NotFound {
-                    RuntimeProbeStatus::CommandNotFound
-                } else {
-                    RuntimeProbeStatus::NonZero
-                },
-                exit_code: None,
-                stdout: String::new(),
-            };
-        }
-    };
-
-    let exit_code = output.status.code();
-    if output.stdout.len() > 16 * 1024 || output.stderr.len() > 16 * 1024 {
-        return BoundedCommandProbe {
-            status: RuntimeProbeStatus::OutputLimit,
-            exit_code,
-            stdout: String::new(),
-        };
-    }
-
-    let stdout = match String::from_utf8(output.stdout) {
-        Ok(stdout) => stdout,
-        Err(_) => {
-            return BoundedCommandProbe {
-                status: RuntimeProbeStatus::ParseError,
-                exit_code,
-                stdout: String::new(),
-            };
-        }
-    };
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if output.status.success() {
-        return BoundedCommandProbe {
-            status: if require_output && stdout.trim().is_empty() {
-                RuntimeProbeStatus::Empty
-            } else {
-                RuntimeProbeStatus::Ok
-            },
-            exit_code,
-            stdout,
-        };
-    }
-
-    BoundedCommandProbe {
-        status: classify_probe_failure(exit_code, &stderr),
-        exit_code,
-        stdout: String::new(),
-    }
-}
-
-fn classify_probe_failure(exit_code: Option<i32>, stderr: &str) -> RuntimeProbeStatus {
-    let lowered = stderr.to_ascii_lowercase();
-    if exit_code == Some(124) {
-        RuntimeProbeStatus::Timeout
-    } else if exit_code == Some(126) || lowered.contains("permission denied") {
-        RuntimeProbeStatus::PermissionDenied
-    } else if lowered.contains("unknown command")
-        || lowered.contains("unknown subcommand")
-        || lowered.contains("unsupported")
-        || lowered.contains("not supported")
-        || lowered.contains("unrecognized option")
-    {
-        RuntimeProbeStatus::Unsupported
-    } else if exit_code == Some(127)
-        || lowered.contains("executable file not found")
-        || lowered.contains("command not found")
-        || lowered.contains("no such file or directory")
-    {
-        RuntimeProbeStatus::CommandNotFound
-    } else {
-        RuntimeProbeStatus::NonZero
-    }
-}
-
 fn parse_warp_connection_state(probe: &BoundedCommandProbe) -> Option<String> {
     if probe.status != RuntimeProbeStatus::Ok {
         return None;
@@ -2440,7 +2348,10 @@ fn parse_binary_bool_probe(probe: &mut BoundedCommandProbe) -> Option<bool> {
     }
 }
 
-async fn collect_mesh_runtime_diagnostics(docker: &DockerObservation) -> MeshRuntimeDiagnostics {
+async fn collect_mesh_runtime_diagnostics(
+    docker: &DockerObservation,
+    diagnostic_depth: MeshDiagnosticDepth,
+) -> MeshRuntimeDiagnostics {
     let warp_status = bounded_command_probe(
         "docker",
         &["exec", MESH_CONTAINER, "warp-cli", "status"],
@@ -2506,16 +2417,26 @@ async fn collect_mesh_runtime_diagnostics(docker: &DockerObservation) -> MeshRun
         (None, None)
     };
 
-    let container = observe_container_runtime(MESH_CONTAINER)
-        .await
-        .ok()
-        .map(|evidence| MeshContainerDiagnostics {
-            present: evidence.present,
-            running: evidence.running,
-            exit_code: evidence.exit_code,
-            runtime_error_present: evidence.runtime_error.is_some(),
-            recent_events: evidence.log_tail,
-        });
+    let container_evidence = observe_container_runtime(MESH_CONTAINER).await.ok();
+    let route_events = container_evidence
+        .as_ref()
+        .map(|evidence| extract_route_events(&evidence.log_tail))
+        .unwrap_or_default();
+    let container = container_evidence.map(|evidence| MeshContainerDiagnostics {
+        present: evidence.present,
+        running: evidence.running,
+        exit_code: evidence.exit_code,
+        runtime_error_present: evidence.runtime_error.is_some(),
+        recent_events: evidence.log_tail,
+    });
+
+    let (host_network, container_network) = match diagnostic_depth {
+        MeshDiagnosticDepth::Basic => (None, None),
+        MeshDiagnosticDepth::Deep => (
+            Some(collect_host_network_diagnostics()),
+            Some(collect_container_network_diagnostics(MESH_CONTAINER)),
+        ),
+    };
 
     MeshRuntimeDiagnostics {
         warp_status_probe: Some(warp_status.evidence()),
@@ -2531,6 +2452,9 @@ async fn collect_mesh_runtime_diagnostics(docker: &DockerObservation) -> MeshRun
         capability_probe: Some(capability_probe.evidence()),
         net_admin_present,
         net_raw_present,
+        host_network,
+        container_network,
+        route_events,
     }
 }
 
@@ -3160,30 +3084,6 @@ mod tests {
                 mesh_network_attached: true,
             }
             .ready()
-        );
-    }
-
-    #[test]
-    fn typed_mesh_probe_classifies_failure_boundaries() {
-        assert_eq!(
-            classify_probe_failure(Some(124), ""),
-            RuntimeProbeStatus::Timeout
-        );
-        assert_eq!(
-            classify_probe_failure(Some(127), "executable file not found"),
-            RuntimeProbeStatus::CommandNotFound
-        );
-        assert_eq!(
-            classify_probe_failure(Some(1), "permission denied"),
-            RuntimeProbeStatus::PermissionDenied
-        );
-        assert_eq!(
-            classify_probe_failure(Some(2), "unknown subcommand settings"),
-            RuntimeProbeStatus::Unsupported
-        );
-        assert_eq!(
-            classify_probe_failure(Some(1), "connection failed"),
-            RuntimeProbeStatus::NonZero
         );
     }
 
