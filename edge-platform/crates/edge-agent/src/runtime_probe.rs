@@ -87,10 +87,7 @@ pub(crate) fn bounded_command_probe(
     }
 }
 
-pub(crate) fn classify_probe_failure(
-    exit_code: Option<i32>,
-    stderr: &str,
-) -> RuntimeProbeStatus {
+pub(crate) fn classify_probe_failure(exit_code: Option<i32>, stderr: &str) -> RuntimeProbeStatus {
     let lowered = stderr.to_ascii_lowercase();
     if exit_code == Some(124) {
         RuntimeProbeStatus::Timeout
