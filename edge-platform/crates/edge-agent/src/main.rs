@@ -23,9 +23,9 @@ use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
-    MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest, ReadBundleIdentityResponse,
-    ReadRenderedArtifactsRequest, RuntimeProbeEvidence, RuntimeProbeStatus,
-    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
+    MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest,
+    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
     VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
@@ -2495,13 +2495,16 @@ async fn collect_mesh_runtime_diagnostics(docker: &DockerObservation) -> MeshRun
         6,
         true,
     );
-    let (net_admin_present, net_raw_present) =
-        if capability_probe.status == RuntimeProbeStatus::Ok {
-            let upper = capability_probe.stdout.to_ascii_uppercase();
-            (Some(upper.contains("NET_ADMIN")), Some(upper.contains("NET_RAW")))
-        } else {
-            (None, None)
-        };
+    let (net_admin_present, net_raw_present) = if capability_probe.status == RuntimeProbeStatus::Ok
+    {
+        let upper = capability_probe.stdout.to_ascii_uppercase();
+        (
+            Some(upper.contains("NET_ADMIN")),
+            Some(upper.contains("NET_RAW")),
+        )
+    } else {
+        (None, None)
+    };
 
     let container = observe_container_runtime(MESH_CONTAINER)
         .await
@@ -2548,9 +2551,8 @@ fn append_mesh_runtime_diagnostic_warnings(
         warnings.push("Mesh runtime IPv4 forwarding is not enabled".to_owned());
     }
     if !diagnostics.mesh_network_attached {
-        warnings.push(
-            "Mesh runtime container is not attached to the expected mesh network".to_owned(),
-        );
+        warnings
+            .push("Mesh runtime container is not attached to the expected mesh network".to_owned());
     }
     if let Some(probe) = diagnostics.warp_status_probe.as_ref()
         && probe.status != RuntimeProbeStatus::Ok as i32
@@ -2585,9 +2587,7 @@ fn runtime_probe_status_label(value: i32) -> &'static str {
     }
 }
 
-fn mesh_tunnel_protocol_evidence_from_diagnostics(
-    diagnostics: &MeshRuntimeDiagnostics,
-) -> String {
+fn mesh_tunnel_protocol_evidence_from_diagnostics(diagnostics: &MeshRuntimeDiagnostics) -> String {
     match diagnostics.tunnel_protocol.as_deref() {
         Some(protocol) => format!("Mesh runtime tunnel protocol evidence: {protocol}"),
         None => format!(
