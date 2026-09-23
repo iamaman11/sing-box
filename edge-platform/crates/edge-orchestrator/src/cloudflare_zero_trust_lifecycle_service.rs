@@ -732,10 +732,8 @@ mod tests {
                     match_expression: Some(request.match_expression.clone()),
                     service_mode: Some(request.service_mode_v2.mode.clone()),
                     tunnel_protocol: Some(request.tunnel_protocol.clone()),
-
-                    auto_connect: None,
-
-                    switch_locked: None,
+                    auto_connect: Some(request.auto_connect),
+                    switch_locked: Some(request.switch_locked),
                 });
                 self.includes = request
                     .include
