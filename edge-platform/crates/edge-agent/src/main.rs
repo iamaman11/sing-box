@@ -1326,6 +1326,9 @@ struct PersistedMeshRuntimeFailureSnapshot {
     container_exit_code: Option<i64>,
     container_restart_count: Option<u64>,
     container_oom_killed: Option<bool>,
+    container_image: Option<String>,
+    container_networks: Vec<String>,
+    exact_image_ready: bool,
 }
 
 fn mesh_runtime_failure_snapshot_path(stack_dir: &Path) -> Result<PathBuf, String> {
@@ -1363,12 +1366,16 @@ fn read_mesh_runtime_failure_snapshot(
         container_exit_code: persisted.container_exit_code,
         container_restart_count: persisted.container_restart_count,
         container_oom_killed: persisted.container_oom_killed,
+        container_image: persisted.container_image,
+        container_networks: persisted.container_networks,
+        exact_image_ready: persisted.exact_image_ready,
     }))
 }
 
 fn build_mesh_runtime_failure_snapshot(
     diagnostics: Option<&MeshRuntimeDiagnostics>,
     warnings: &[String],
+    exact_image_ready: bool,
 ) -> MeshRuntimeFailureSnapshot {
     let container = diagnostics.and_then(|value| value.container.as_ref());
     MeshRuntimeFailureSnapshot {
@@ -1404,6 +1411,11 @@ fn build_mesh_runtime_failure_snapshot(
         container_exit_code: container.and_then(|value| value.exit_code),
         container_restart_count: container.and_then(|value| value.restart_count),
         container_oom_killed: container.and_then(|value| value.oom_killed),
+        container_image: container.and_then(|value| value.image.clone()),
+        container_networks: container
+            .map(|value| value.networks.clone())
+            .unwrap_or_default(),
+        exact_image_ready,
     }
 }
 
@@ -1426,6 +1438,9 @@ fn persist_mesh_runtime_failure_snapshot(
         container_exit_code: snapshot.container_exit_code,
         container_restart_count: snapshot.container_restart_count,
         container_oom_killed: snapshot.container_oom_killed,
+        container_image: snapshot.container_image.clone(),
+        container_networks: snapshot.container_networks.clone(),
+        exact_image_ready: snapshot.exact_image_ready,
     };
     let bytes = serde_json::to_vec_pretty(&persisted)
         .map_err(|err| format!("failed to encode Mesh readiness failure snapshot: {err}"))?;
@@ -1478,10 +1493,14 @@ async fn inspect_mesh_runtime(
     let exact_image_ready = expected_image
         .as_deref()
         .is_some_and(|expected| docker.container_exact_image_ready(MESH_CONTAINER, expected));
-    let diagnostics = if container_running && exact_image_ready {
-        Some(collect_mesh_runtime_diagnostics(&docker, diagnostic_depth).await)
-    } else {
-        None
+    let diagnostics = match diagnostic_depth {
+        MeshDiagnosticDepth::Basic if container_running && exact_image_ready => {
+            Some(collect_mesh_runtime_diagnostics(&docker, diagnostic_depth).await)
+        }
+        MeshDiagnosticDepth::Deep => {
+            Some(collect_mesh_runtime_diagnostics(&docker, diagnostic_depth).await)
+        }
+        MeshDiagnosticDepth::Basic => None,
     };
     let runtime_ready = token_valid
         && container_running
@@ -1520,7 +1539,8 @@ async fn inspect_mesh_runtime(
 
     let mut last_failure_snapshot = read_mesh_runtime_failure_snapshot(stack_dir).unwrap_or(None);
     if !runtime_ready && diagnostic_depth == MeshDiagnosticDepth::Deep {
-        let snapshot = build_mesh_runtime_failure_snapshot(diagnostics.as_ref(), &warnings);
+        let snapshot =
+            build_mesh_runtime_failure_snapshot(diagnostics.as_ref(), &warnings, exact_image_ready);
         if let Err(err) = persist_mesh_runtime_failure_snapshot(stack_dir, &snapshot) {
             warnings.push(format!(
                 "Mesh readiness failure snapshot persistence failed: {}",
@@ -3336,7 +3356,7 @@ mod tests {
             "Authorization: Bearer should-not-escape".to_owned(),
             "x".repeat(MAX_MESH_FAILURE_REASON_CHARS * 2),
         ];
-        let snapshot = build_mesh_runtime_failure_snapshot(Some(&diagnostics), &reasons);
+        let snapshot = build_mesh_runtime_failure_snapshot(Some(&diagnostics), &reasons, false);
         assert_eq!(snapshot.reasons[0], "[REDACTED_SENSITIVE_REASON]");
         assert_eq!(
             snapshot.reasons[1].chars().count(),
@@ -3344,6 +3364,12 @@ mod tests {
         );
         assert_eq!(snapshot.container_restart_count, Some(3));
         assert_eq!(snapshot.container_oom_killed, Some(true));
+        assert_eq!(
+            snapshot.container_image.as_deref(),
+            Some("docker.io/cloudflare/mesh@sha256:test")
+        );
+        assert_eq!(snapshot.container_networks, vec!["mesh_net"]);
+        assert!(!snapshot.exact_image_ready);
 
         persist_mesh_runtime_failure_snapshot(&stack, &snapshot).unwrap();
         let restored = read_mesh_runtime_failure_snapshot(&stack).unwrap().unwrap();
