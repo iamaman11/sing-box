@@ -430,7 +430,7 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     let datapaths_ready = if matches!(mode, AgentMode::Health) {
         true
     } else {
-        inspect_datapath_readiness(stack_dir, &mut state, &docker).await
+        inspect_datapath_readiness(&mut state, &docker).await
     };
 
     state.ready = state.compose_file_present
@@ -2082,7 +2082,6 @@ fn inspect_compose(
 }
 
 async fn inspect_datapath_readiness(
-    stack_dir: &Path,
     state: &mut AgentState,
     docker: &DockerObservation,
 ) -> bool {
@@ -2115,7 +2114,6 @@ async fn inspect_datapath_readiness(
     };
     state.mesh_runtime_ready = mesh_ready;
 
-    let _ = stack_dir;
     direct_ready && warp_ready && mesh_ready != Some(false)
 }
 
