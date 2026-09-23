@@ -337,6 +337,7 @@ fn print_mesh_runtime_result(
             "runtime_ready": state.runtime_ready,
             "warnings": state.warnings,
             "diagnostics": mesh_runtime_diagnostics_json(state.diagnostics.as_ref()),
+            "last_failure_snapshot": mesh_runtime_failure_snapshot_json(state.last_failure_snapshot.as_ref()),
         },
         "provider_observation": provider_observation,
     }))
@@ -511,6 +512,62 @@ fn runtime_network_summary_json(
     })
 }
 
+fn host_runtime_diagnostics_json(
+    diagnostics: Option<&edge_shared_types::HostRuntimeDiagnostics>,
+) -> serde_json::Value {
+    let Some(diagnostics) = diagnostics else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "identity": diagnostics.identity.as_ref().map(|identity| serde_json::json!({
+            "probe": runtime_probe_json(identity.probe.as_ref()),
+            "hostname": identity.hostname,
+            "kernel_release": identity.kernel_release,
+            "architecture": identity.architecture,
+        })),
+        "time": diagnostics.time.as_ref().map(|time| serde_json::json!({
+            "probe": runtime_probe_json(time.probe.as_ref()),
+            "unix_time_seconds": time.unix_time_seconds,
+            "uptime_seconds": time.uptime_seconds,
+        })),
+        "resources": diagnostics.resources.as_ref().map(|resources| serde_json::json!({
+            "probe": runtime_probe_json(resources.probe.as_ref()),
+            "logical_cpus": resources.logical_cpus,
+            "load_1": resources.load_1,
+            "load_5": resources.load_5,
+            "load_15": resources.load_15,
+            "memory_total_bytes": resources.memory_total_bytes,
+            "memory_available_bytes": resources.memory_available_bytes,
+        })),
+    })
+}
+
+fn mesh_runtime_failure_snapshot_json(
+    snapshot: Option<&edge_shared_types::MeshRuntimeFailureSnapshot>,
+) -> serde_json::Value {
+    let Some(snapshot) = snapshot else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "observed_unix_time_seconds": snapshot.observed_unix_time_seconds,
+        "reasons": snapshot.reasons,
+        "warp_connection_state": snapshot.warp_connection_state,
+        "tunnel_protocol": snapshot.tunnel_protocol,
+        "warp_status": runtime_probe_status_name(snapshot.warp_status),
+        "warp_settings": runtime_probe_status_name(snapshot.warp_settings),
+        "tun_device_status": runtime_probe_status_name(snapshot.tun_device_status),
+        "ipv4_forwarding_status": runtime_probe_status_name(snapshot.ipv4_forwarding_status),
+        "container_present": snapshot.container_present,
+        "container_running": snapshot.container_running,
+        "container_exit_code": snapshot.container_exit_code,
+        "container_restart_count": snapshot.container_restart_count,
+        "container_oom_killed": snapshot.container_oom_killed,
+        "container_image": snapshot.container_image,
+        "container_networks": snapshot.container_networks,
+        "exact_image_ready": snapshot.exact_image_ready,
+    })
+}
+
 fn mesh_runtime_diagnostics_json(
     diagnostics: Option<&edge_shared_types::MeshRuntimeDiagnostics>,
 ) -> serde_json::Value {
@@ -524,6 +581,11 @@ fn mesh_runtime_diagnostics_json(
             "exit_code": container.exit_code,
             "runtime_error_present": container.runtime_error_present,
             "recent_events": container.recent_events,
+            "name": container.name,
+            "image": container.image,
+            "restart_count": container.restart_count,
+            "oom_killed": container.oom_killed,
+            "networks": container.networks,
         })
     });
     serde_json::json!({
@@ -542,6 +604,7 @@ fn mesh_runtime_diagnostics_json(
         "container": container,
         "host_network": runtime_network_diagnostics_json(diagnostics.host_network.as_ref()),
         "container_network": runtime_network_diagnostics_json(diagnostics.container_network.as_ref()),
+        "host": host_runtime_diagnostics_json(diagnostics.host.as_ref()),
         "route_churn_aggregates": diagnostics.route_events.iter().map(|event| serde_json::json!({
             "changed_count": event.changed_count,
             "window": event.window,
@@ -576,6 +639,19 @@ fn mesh_runtime_diagnostic_summary(state: &edge_shared_types::MeshRuntimeState) 
         "net_admin_present": diagnostics.net_admin_present,
         "net_raw_present": diagnostics.net_raw_present,
         "recent_events": recent_events,
+        "container": diagnostics.container.as_ref().map(|container| serde_json::json!({
+            "present": container.present,
+            "running": container.running,
+            "exit_code": container.exit_code,
+            "runtime_error_present": container.runtime_error_present,
+            "name": container.name,
+            "image": container.image,
+            "restart_count": container.restart_count,
+            "oom_killed": container.oom_killed,
+            "networks": container.networks,
+        })),
+        "host": host_runtime_diagnostics_json(diagnostics.host.as_ref()),
+        "last_failure_snapshot": mesh_runtime_failure_snapshot_json(state.last_failure_snapshot.as_ref()),
         "host_network": runtime_network_summary_json(diagnostics.host_network.as_ref()),
         "container_network": runtime_network_summary_json(diagnostics.container_network.as_ref()),
         "route_churn_aggregates": diagnostics.route_events.iter().map(|event| serde_json::json!({
@@ -1078,6 +1154,94 @@ mod tests {
         let mut not_ready = ready_report("10.0.4.0/24", "10.0.4.2");
         not_ready.status = "NOT_READY";
         assert!(compose_verified_vpc_route(mesh_base(), &vpc_desired(), not_ready).is_err());
+    }
+
+    #[test]
+    fn mesh_runtime_renderer_preserves_extended_typed_diagnostics() {
+        let ok_probe = || edge_shared_types::RuntimeProbeEvidence {
+            status: 1,
+            ..Default::default()
+        };
+        let diagnostics = edge_shared_types::MeshRuntimeDiagnostics {
+            container: Some(edge_shared_types::MeshContainerDiagnostics {
+                present: true,
+                running: true,
+                exit_code: Some(0),
+                runtime_error_present: false,
+                recent_events: vec!["bounded-event".to_owned()],
+                name: "vultr-cloudflare-mesh".to_owned(),
+                image: Some("docker.io/cloudflare/mesh@sha256:abc".to_owned()),
+                restart_count: Some(3),
+                oom_killed: Some(false),
+                networks: vec!["mesh-net".to_owned()],
+            }),
+            host: Some(edge_shared_types::HostRuntimeDiagnostics {
+                identity: Some(edge_shared_types::HostIdentityDiagnostics {
+                    probe: Some(ok_probe()),
+                    hostname: Some("acceptance-host".to_owned()),
+                    kernel_release: Some("6.12.0".to_owned()),
+                    architecture: Some("x86_64".to_owned()),
+                }),
+                time: Some(edge_shared_types::HostTimeDiagnostics {
+                    probe: Some(ok_probe()),
+                    unix_time_seconds: Some(1_790_000_000),
+                    uptime_seconds: Some(12_345),
+                }),
+                resources: Some(edge_shared_types::HostResourceDiagnostics {
+                    probe: Some(ok_probe()),
+                    logical_cpus: Some(2),
+                    load_1: Some(0.1),
+                    load_5: Some(0.2),
+                    load_15: Some(0.3),
+                    memory_total_bytes: Some(1_000_000),
+                    memory_available_bytes: Some(750_000),
+                }),
+            }),
+            ..Default::default()
+        };
+        let snapshot = edge_shared_types::MeshRuntimeFailureSnapshot {
+            observed_unix_time_seconds: 1_790_000_001,
+            reasons: vec!["bounded failure reason".to_owned()],
+            warp_connection_state: Some("DISCONNECTED".to_owned()),
+            tunnel_protocol: Some("MASQUE".to_owned()),
+            warp_status: 6,
+            warp_settings: 1,
+            tun_device_status: 1,
+            ipv4_forwarding_status: 1,
+            container_present: true,
+            container_running: false,
+            container_exit_code: Some(1),
+            container_restart_count: Some(4),
+            container_oom_killed: Some(false),
+            container_image: Some("docker.io/cloudflare/mesh@sha256:abc".to_owned()),
+            container_networks: vec!["mesh-net".to_owned()],
+            exact_image_ready: true,
+        };
+
+        let rendered = mesh_runtime_diagnostics_json(Some(&diagnostics));
+        assert_eq!(rendered["container"]["name"], "vultr-cloudflare-mesh");
+        assert_eq!(rendered["container"]["restart_count"], 3);
+        assert_eq!(rendered["container"]["oom_killed"], false);
+        assert_eq!(rendered["container"]["networks"][0], "mesh-net");
+        assert_eq!(rendered["host"]["identity"]["hostname"], "acceptance-host");
+        assert_eq!(rendered["host"]["time"]["uptime_seconds"], 12_345);
+        assert_eq!(rendered["host"]["resources"]["logical_cpus"], 2);
+        assert_eq!(rendered["host"]["resources"]["memory_available_bytes"], 750_000);
+
+        let failure = mesh_runtime_failure_snapshot_json(Some(&snapshot));
+        assert_eq!(failure["warp_status"], "NON_ZERO");
+        assert_eq!(failure["container_restart_count"], 4);
+        assert_eq!(failure["container_networks"][0], "mesh-net");
+
+        let state = edge_shared_types::MeshRuntimeState {
+            diagnostics: Some(diagnostics),
+            last_failure_snapshot: Some(snapshot),
+            ..Default::default()
+        };
+        let summary = mesh_runtime_diagnostic_summary(&state);
+        assert!(summary.contains("\"host\""));
+        assert!(summary.contains("\"restart_count\":3"));
+        assert!(summary.contains("\"last_failure_snapshot\""));
     }
 
     #[test]
