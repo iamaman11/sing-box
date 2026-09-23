@@ -365,6 +365,10 @@ jobs:
           assert "recover-apply" in application_command
           assert "recover-plan" in application_workflow
           assert "recover-apply" in application_workflow
+          assert "recovery_authority_digest" in application_workflow
+          assert "recover-apply requires the exact recovery-plan authority digest" in application_workflow
+          assert "RECOVERY_AUTHORITY_DIGEST" in application_workflow
+          assert "application-recovery-authority-plan.json" not in application_workflow
           assert "ApplicationRecoveryPlanClass::Blocked" in application_core
           assert "backup edge-agent digest does not match published current release" in application_core
           assert "backup application bundle digest does not match published current release" in application_core
