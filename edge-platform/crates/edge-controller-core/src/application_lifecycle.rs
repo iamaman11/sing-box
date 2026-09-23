@@ -482,8 +482,9 @@ pub fn plan_incomplete_upgrade_recovery(
             machine_id: desired.machine_id.clone(),
             target_release: current,
             actions: Vec::new(),
-            reasons: vec!["active application material already matches published current release"
-                .to_owned()],
+            reasons: vec![
+                "active application material already matches published current release".to_owned(),
+            ],
         });
     }
 
@@ -494,8 +495,7 @@ pub fn plan_incomplete_upgrade_recovery(
                 "active edge-agent digest is unavailable; refusing incomplete-upgrade recovery"
                     .to_owned(),
             );
-        } else if observation.backup_agent_sha256.as_deref()
-            != Some(current.agent_sha256.as_str())
+        } else if observation.backup_agent_sha256.as_deref() != Some(current.agent_sha256.as_str())
         {
             blocked_reasons.push(
                 "backup edge-agent digest does not match published current release".to_owned(),
