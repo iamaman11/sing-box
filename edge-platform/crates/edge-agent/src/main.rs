@@ -22,9 +22,10 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
-    FilePresence, Ipv4NetworkObservation, MeshRuntimeConvergeRequest, MeshRuntimeState,
-    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
-    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
+    FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest,
+    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
     VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
@@ -1306,17 +1307,17 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     let exact_image_ready = expected_image
         .as_deref()
         .is_some_and(|expected| docker.container_exact_image_ready(MESH_CONTAINER, expected));
-    let datapath = if container_running && exact_image_ready {
-        Some(probe_mesh_runtime(&docker))
+    let diagnostics = if container_running && exact_image_ready {
+        Some(collect_mesh_runtime_diagnostics(&docker).await)
     } else {
         None
     };
     let runtime_ready = token_valid
         && container_running
         && exact_image_ready
-        && datapath
+        && diagnostics
             .as_ref()
-            .is_some_and(MeshRuntimeProbeEvidence::ready);
+            .is_some_and(mesh_runtime_diagnostics_ready);
 
     let mut warnings = Vec::new();
     if let Some(err) = docker_error {
@@ -1333,21 +1334,17 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
     if container_running && !exact_image_ready {
         warnings.push("Mesh runtime container does not use the exact accepted image".to_owned());
     }
-    if let Some(datapath) = datapath.as_ref()
-        && !datapath.ready()
+    if let Some(diagnostics) = diagnostics.as_ref()
+        && !mesh_runtime_diagnostics_ready(diagnostics)
     {
-        datapath.append_failure_warnings(&mut warnings);
-        match observe_container_runtime(MESH_CONTAINER).await {
-            Ok(evidence) => warnings.push(format!(
+        append_mesh_runtime_diagnostic_warnings(diagnostics, &mut warnings);
+        if let Some(container) = diagnostics.container.as_ref() {
+            warnings.push(format!(
                 "Mesh runtime container evidence: {}",
-                bounded_container_runtime_summary(&evidence)
-            )),
-            Err(err) => warnings.push(format!(
-                "Mesh runtime container evidence unavailable: {}",
-                err.chars().take(512).collect::<String>()
-            )),
+                mesh_container_diagnostic_summary(container)
+            ));
         }
-        warnings.push(mesh_tunnel_protocol_evidence());
+        warnings.push(mesh_tunnel_protocol_evidence_from_diagnostics(diagnostics));
     }
 
     MeshRuntimeState {
@@ -1356,6 +1353,7 @@ async fn inspect_mesh_runtime(stack_dir: &Path) -> MeshRuntimeState {
         exact_image_ready,
         runtime_ready,
         warnings,
+        diagnostics,
     }
 }
 
@@ -2289,6 +2287,337 @@ fn mesh_tunnel_protocol_evidence() -> String {
     format!("Mesh runtime tunnel protocol evidence: {protocol}")
 }
 
+#[derive(Debug, Clone)]
+struct BoundedCommandProbe {
+    status: RuntimeProbeStatus,
+    exit_code: Option<i32>,
+    stdout: String,
+}
+
+impl BoundedCommandProbe {
+    fn evidence(&self) -> RuntimeProbeEvidence {
+        RuntimeProbeEvidence {
+            status: self.status as i32,
+            exit_code: self.exit_code,
+        }
+    }
+}
+
+fn bounded_command_probe(
+    program: &str,
+    args: &[&str],
+    timeout_seconds: u64,
+    require_output: bool,
+) -> BoundedCommandProbe {
+    let timeout = format!("{timeout_seconds}s");
+    let output = match Command::new("timeout")
+        .arg(timeout)
+        .arg(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            return BoundedCommandProbe {
+                status: if err.kind() == std::io::ErrorKind::NotFound {
+                    RuntimeProbeStatus::CommandNotFound
+                } else {
+                    RuntimeProbeStatus::NonZero
+                },
+                exit_code: None,
+                stdout: String::new(),
+            };
+        }
+    };
+
+    let exit_code = output.status.code();
+    if output.stdout.len() > 16 * 1024 || output.stderr.len() > 16 * 1024 {
+        return BoundedCommandProbe {
+            status: RuntimeProbeStatus::OutputLimit,
+            exit_code,
+            stdout: String::new(),
+        };
+    }
+
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(stdout) => stdout,
+        Err(_) => {
+            return BoundedCommandProbe {
+                status: RuntimeProbeStatus::ParseError,
+                exit_code,
+                stdout: String::new(),
+            };
+        }
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if output.status.success() {
+        return BoundedCommandProbe {
+            status: if require_output && stdout.trim().is_empty() {
+                RuntimeProbeStatus::Empty
+            } else {
+                RuntimeProbeStatus::Ok
+            },
+            exit_code,
+            stdout,
+        };
+    }
+
+    BoundedCommandProbe {
+        status: classify_probe_failure(exit_code, &stderr),
+        exit_code,
+        stdout: String::new(),
+    }
+}
+
+fn classify_probe_failure(exit_code: Option<i32>, stderr: &str) -> RuntimeProbeStatus {
+    let lowered = stderr.to_ascii_lowercase();
+    if exit_code == Some(124) {
+        RuntimeProbeStatus::Timeout
+    } else if exit_code == Some(126) || lowered.contains("permission denied") {
+        RuntimeProbeStatus::PermissionDenied
+    } else if lowered.contains("unknown command")
+        || lowered.contains("unknown subcommand")
+        || lowered.contains("unsupported")
+        || lowered.contains("not supported")
+        || lowered.contains("unrecognized option")
+    {
+        RuntimeProbeStatus::Unsupported
+    } else if exit_code == Some(127)
+        || lowered.contains("executable file not found")
+        || lowered.contains("command not found")
+        || lowered.contains("no such file or directory")
+    {
+        RuntimeProbeStatus::CommandNotFound
+    } else {
+        RuntimeProbeStatus::NonZero
+    }
+}
+
+fn parse_warp_connection_state(probe: &BoundedCommandProbe) -> Option<String> {
+    if probe.status != RuntimeProbeStatus::Ok {
+        return None;
+    }
+    let lowered = probe.stdout.to_ascii_lowercase();
+    if lowered.contains("disconnected") {
+        Some("DISCONNECTED".to_owned())
+    } else if lowered.contains("connecting") {
+        Some("CONNECTING".to_owned())
+    } else if lowered.lines().any(|line| line.contains("connected")) {
+        Some("CONNECTED".to_owned())
+    } else {
+        Some("UNKNOWN".to_owned())
+    }
+}
+
+fn parse_tunnel_protocol(probe: &BoundedCommandProbe) -> Option<String> {
+    if probe.status != RuntimeProbeStatus::Ok {
+        return None;
+    }
+    let lowered = probe.stdout.to_ascii_lowercase();
+    if lowered.contains("masque") {
+        Some("MASQUE".to_owned())
+    } else if lowered.contains("wireguard") {
+        Some("WIREGUARD".to_owned())
+    } else {
+        Some("NOT_REPORTED".to_owned())
+    }
+}
+
+fn parse_binary_bool_probe(probe: &mut BoundedCommandProbe) -> Option<bool> {
+    if probe.status != RuntimeProbeStatus::Ok {
+        return None;
+    }
+    match probe.stdout.trim() {
+        "1" | "present" => Some(true),
+        "0" | "absent" => Some(false),
+        _ => {
+            probe.status = RuntimeProbeStatus::ParseError;
+            None
+        }
+    }
+}
+
+async fn collect_mesh_runtime_diagnostics(docker: &DockerObservation) -> MeshRuntimeDiagnostics {
+    let warp_status = bounded_command_probe(
+        "docker",
+        &["exec", MESH_CONTAINER, "warp-cli", "status"],
+        8,
+        true,
+    );
+    let warp_connection_state = parse_warp_connection_state(&warp_status);
+
+    let warp_settings = bounded_command_probe(
+        "docker",
+        &["exec", MESH_CONTAINER, "warp-cli", "settings"],
+        8,
+        true,
+    );
+    let tunnel_protocol = parse_tunnel_protocol(&warp_settings);
+
+    let mut tun_device = bounded_command_probe(
+        "docker",
+        &[
+            "exec",
+            MESH_CONTAINER,
+            "sh",
+            "-c",
+            "if [ -c /dev/net/tun ]; then printf present; else printf absent; fi",
+        ],
+        6,
+        true,
+    );
+    let tun_device_present = parse_binary_bool_probe(&mut tun_device);
+
+    let mut ipv4_forwarding = bounded_command_probe(
+        "docker",
+        &[
+            "exec",
+            MESH_CONTAINER,
+            "cat",
+            "/proc/sys/net/ipv4/ip_forward",
+        ],
+        6,
+        true,
+    );
+    let ipv4_forwarding_value = parse_binary_bool_probe(&mut ipv4_forwarding);
+
+    let capability_probe = bounded_command_probe(
+        "docker",
+        &[
+            "inspect",
+            "--format",
+            "{{json .HostConfig.CapAdd}}",
+            MESH_CONTAINER,
+        ],
+        6,
+        true,
+    );
+    let (net_admin_present, net_raw_present) = if capability_probe.status == RuntimeProbeStatus::Ok
+    {
+        let upper = capability_probe.stdout.to_ascii_uppercase();
+        (
+            Some(upper.contains("NET_ADMIN")),
+            Some(upper.contains("NET_RAW")),
+        )
+    } else {
+        (None, None)
+    };
+
+    let container = observe_container_runtime(MESH_CONTAINER)
+        .await
+        .ok()
+        .map(|evidence| MeshContainerDiagnostics {
+            present: evidence.present,
+            running: evidence.running,
+            exit_code: evidence.exit_code,
+            runtime_error_present: evidence.runtime_error.is_some(),
+            recent_events: evidence.log_tail,
+        });
+
+    MeshRuntimeDiagnostics {
+        warp_status_probe: Some(warp_status.evidence()),
+        warp_connection_state,
+        warp_settings_probe: Some(warp_settings.evidence()),
+        tunnel_protocol,
+        tun_device_probe: Some(tun_device.evidence()),
+        tun_device_present,
+        ipv4_forwarding_probe: Some(ipv4_forwarding.evidence()),
+        ipv4_forwarding: ipv4_forwarding_value,
+        mesh_network_attached: docker.container_on_mesh_network(MESH_CONTAINER),
+        container,
+        capability_probe: Some(capability_probe.evidence()),
+        net_admin_present,
+        net_raw_present,
+    }
+}
+
+fn mesh_runtime_diagnostics_ready(diagnostics: &MeshRuntimeDiagnostics) -> bool {
+    diagnostics.warp_connection_state.as_deref() == Some("CONNECTED")
+        && diagnostics.ipv4_forwarding == Some(true)
+        && diagnostics.mesh_network_attached
+}
+
+fn append_mesh_runtime_diagnostic_warnings(
+    diagnostics: &MeshRuntimeDiagnostics,
+    warnings: &mut Vec<String>,
+) {
+    if diagnostics.warp_connection_state.as_deref() != Some("CONNECTED") {
+        warnings.push("Mesh runtime warp-cli status is not Connected".to_owned());
+    }
+    if diagnostics.ipv4_forwarding != Some(true) {
+        warnings.push("Mesh runtime IPv4 forwarding is not enabled".to_owned());
+    }
+    if !diagnostics.mesh_network_attached {
+        warnings
+            .push("Mesh runtime container is not attached to the expected mesh network".to_owned());
+    }
+    if let Some(probe) = diagnostics.warp_status_probe.as_ref()
+        && probe.status != RuntimeProbeStatus::Ok as i32
+    {
+        warnings.push(format!(
+            "Mesh runtime warp status probe failed: {}",
+            runtime_probe_status_label(probe.status)
+        ));
+    }
+    if let Some(probe) = diagnostics.ipv4_forwarding_probe.as_ref()
+        && probe.status != RuntimeProbeStatus::Ok as i32
+    {
+        warnings.push(format!(
+            "Mesh runtime IPv4 forwarding probe failed: {}",
+            runtime_probe_status_label(probe.status)
+        ));
+    }
+}
+
+fn runtime_probe_status_label(value: i32) -> &'static str {
+    match RuntimeProbeStatus::try_from(value).unwrap_or(RuntimeProbeStatus::Unspecified) {
+        RuntimeProbeStatus::Unspecified => "UNSPECIFIED",
+        RuntimeProbeStatus::Ok => "OK",
+        RuntimeProbeStatus::Timeout => "TIMEOUT",
+        RuntimeProbeStatus::CommandNotFound => "COMMAND_NOT_FOUND",
+        RuntimeProbeStatus::PermissionDenied => "PERMISSION_DENIED",
+        RuntimeProbeStatus::Unsupported => "UNSUPPORTED",
+        RuntimeProbeStatus::NonZero => "NON_ZERO",
+        RuntimeProbeStatus::Empty => "EMPTY",
+        RuntimeProbeStatus::ParseError => "PARSE_ERROR",
+        RuntimeProbeStatus::OutputLimit => "OUTPUT_LIMIT",
+    }
+}
+
+fn mesh_tunnel_protocol_evidence_from_diagnostics(diagnostics: &MeshRuntimeDiagnostics) -> String {
+    match diagnostics.tunnel_protocol.as_deref() {
+        Some(protocol) => format!("Mesh runtime tunnel protocol evidence: {protocol}"),
+        None => format!(
+            "Mesh runtime tunnel protocol evidence unavailable: settings_probe={}",
+            diagnostics
+                .warp_settings_probe
+                .as_ref()
+                .map(|probe| runtime_probe_status_label(probe.status))
+                .unwrap_or("UNSPECIFIED")
+        ),
+    }
+}
+
+fn mesh_container_diagnostic_summary(evidence: &MeshContainerDiagnostics) -> String {
+    let exit_code = evidence
+        .exit_code
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let start = evidence.recent_events.len().saturating_sub(8);
+    let logs = if evidence.recent_events.is_empty() {
+        "none".to_owned()
+    } else {
+        evidence.recent_events[start..].join(" | ")
+    };
+    format!(
+        "present={} running={} exit_code={} runtime_error_present={} log_tail={}",
+        evidence.present, evidence.running, exit_code, evidence.runtime_error_present, logs
+    )
+}
+
 fn bounded_container_runtime_summary(evidence: &ContainerRuntimeEvidence) -> String {
     let exit_code = evidence
         .exit_code
@@ -2831,6 +3160,73 @@ mod tests {
                 mesh_network_attached: true,
             }
             .ready()
+        );
+    }
+
+    #[test]
+    fn typed_mesh_probe_classifies_failure_boundaries() {
+        assert_eq!(
+            classify_probe_failure(Some(124), ""),
+            RuntimeProbeStatus::Timeout
+        );
+        assert_eq!(
+            classify_probe_failure(Some(127), "executable file not found"),
+            RuntimeProbeStatus::CommandNotFound
+        );
+        assert_eq!(
+            classify_probe_failure(Some(1), "permission denied"),
+            RuntimeProbeStatus::PermissionDenied
+        );
+        assert_eq!(
+            classify_probe_failure(Some(2), "unknown subcommand settings"),
+            RuntimeProbeStatus::Unsupported
+        );
+        assert_eq!(
+            classify_probe_failure(Some(1), "connection failed"),
+            RuntimeProbeStatus::NonZero
+        );
+    }
+
+    #[test]
+    fn typed_mesh_probe_does_not_confuse_disconnected_with_connected() {
+        let disconnected = BoundedCommandProbe {
+            status: RuntimeProbeStatus::Ok,
+            exit_code: Some(0),
+            stdout: "Status update: Disconnected\n".to_owned(),
+        };
+        assert_eq!(
+            parse_warp_connection_state(&disconnected).as_deref(),
+            Some("DISCONNECTED")
+        );
+
+        let connected = BoundedCommandProbe {
+            status: RuntimeProbeStatus::Ok,
+            exit_code: Some(0),
+            stdout: "Status update: Connected\n".to_owned(),
+        };
+        assert_eq!(
+            parse_warp_connection_state(&connected).as_deref(),
+            Some("CONNECTED")
+        );
+    }
+
+    #[test]
+    fn typed_mesh_probe_normalizes_known_tunnel_protocols() {
+        let masque = BoundedCommandProbe {
+            status: RuntimeProbeStatus::Ok,
+            exit_code: Some(0),
+            stdout: "tunnel protocol: MASQUE\n".to_owned(),
+        };
+        assert_eq!(parse_tunnel_protocol(&masque).as_deref(), Some("MASQUE"));
+
+        let wireguard = BoundedCommandProbe {
+            status: RuntimeProbeStatus::Ok,
+            exit_code: Some(0),
+            stdout: "protocol = WireGuard\n".to_owned(),
+        };
+        assert_eq!(
+            parse_tunnel_protocol(&wireguard).as_deref(),
+            Some("WIREGUARD")
         );
     }
 
