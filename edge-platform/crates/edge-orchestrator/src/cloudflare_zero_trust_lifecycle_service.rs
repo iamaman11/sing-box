@@ -1023,7 +1023,10 @@ mod tests {
         let (observed, plan) = plan_zero_trust(&mut provider, &desired, &runtime)
             .await
             .unwrap();
-        assert!(matches!(plan.action, ZeroTrustAction::UpdateMeshProfile { .. }));
+        assert!(matches!(
+            plan.action,
+            ZeroTrustAction::UpdateMeshProfile { .. }
+        ));
         let authorized =
             authorize_zero_trust_apply(&desired, &runtime.authority, &observed, plan).unwrap();
 
