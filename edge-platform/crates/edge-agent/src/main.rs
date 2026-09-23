@@ -1,6 +1,7 @@
 mod cli;
 mod docker_observation;
 mod error;
+mod host_diagnostics;
 mod mesh_network_diagnostics;
 mod network_observation;
 mod runtime_probe;
@@ -8,6 +9,7 @@ mod runtime_probe;
 use crate::docker_observation::{
     ContainerRuntimeEvidence, DockerObservation, observe_container_runtime, observe_docker,
 };
+use crate::host_diagnostics::collect_host_runtime_diagnostics;
 use crate::mesh_network_diagnostics::{
     collect_container_network_diagnostics, collect_host_network_diagnostics, extract_route_events,
 };
@@ -20,7 +22,7 @@ use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
 use edge_secrets::ApplicationRuntimeSecrets;
@@ -29,10 +31,10 @@ use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
     BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
-    MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest,
-    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
-    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
-    VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
+    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
+    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
+    RuntimeProbeEvidence, RuntimeProbeStatus, VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -51,6 +53,9 @@ const RUNTIME_ENV_FILE: &str = ".env.runtime";
 const RUNTIME_SECRET_DIR: &str = "runtime-secrets";
 const RUNTIME_SECRET_FILE: &str = "application-runtime-v1.env";
 const MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env";
+const MESH_RUNTIME_FAILURE_FILE: &str = "last-readiness-failure-v1.json";
+const MAX_MESH_FAILURE_REASONS: usize = 12;
+const MAX_MESH_FAILURE_REASON_CHARS: usize = 512;
 const IMAGE_ENV_FILE: &str = ".images.env";
 const MESH_NODE_TOKEN_KEY: &str = "MESH_NODE_TOKEN";
 const EDGE_GATEWAY_IMAGE_KEY: &str = "EDGE_GATEWAY_IMAGE";
@@ -1306,6 +1311,170 @@ enum MeshDiagnosticDepth {
     Deep,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedMeshRuntimeFailureSnapshot {
+    observed_unix_time_seconds: u64,
+    reasons: Vec<String>,
+    warp_connection_state: Option<String>,
+    tunnel_protocol: Option<String>,
+    warp_status: i32,
+    warp_settings: i32,
+    tun_device_status: i32,
+    ipv4_forwarding_status: i32,
+    container_present: bool,
+    container_running: bool,
+    container_exit_code: Option<i64>,
+    container_restart_count: Option<u64>,
+    container_oom_killed: Option<bool>,
+    container_image: Option<String>,
+    container_networks: Vec<String>,
+    exact_image_ready: bool,
+}
+
+fn mesh_runtime_failure_snapshot_path(stack_dir: &Path) -> Result<PathBuf, String> {
+    Ok(mesh_runtime_state_dir(stack_dir)?.join(MESH_RUNTIME_FAILURE_FILE))
+}
+
+fn read_mesh_runtime_failure_snapshot(
+    stack_dir: &Path,
+) -> Result<Option<MeshRuntimeFailureSnapshot>, String> {
+    let path = mesh_runtime_failure_snapshot_path(stack_dir)?;
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(format!(
+                "failed to read persisted Mesh readiness failure snapshot: {err}"
+            ));
+        }
+    };
+    let persisted: PersistedMeshRuntimeFailureSnapshot =
+        serde_json::from_str(&raw).map_err(|err| {
+            format!("failed to parse persisted Mesh readiness failure snapshot: {err}")
+        })?;
+    Ok(Some(MeshRuntimeFailureSnapshot {
+        observed_unix_time_seconds: persisted.observed_unix_time_seconds,
+        reasons: persisted.reasons,
+        warp_connection_state: persisted.warp_connection_state,
+        tunnel_protocol: persisted.tunnel_protocol,
+        warp_status: persisted.warp_status,
+        warp_settings: persisted.warp_settings,
+        tun_device_status: persisted.tun_device_status,
+        ipv4_forwarding_status: persisted.ipv4_forwarding_status,
+        container_present: persisted.container_present,
+        container_running: persisted.container_running,
+        container_exit_code: persisted.container_exit_code,
+        container_restart_count: persisted.container_restart_count,
+        container_oom_killed: persisted.container_oom_killed,
+        container_image: persisted.container_image,
+        container_networks: persisted.container_networks,
+        exact_image_ready: persisted.exact_image_ready,
+    }))
+}
+
+fn build_mesh_runtime_failure_snapshot(
+    diagnostics: Option<&MeshRuntimeDiagnostics>,
+    warnings: &[String],
+    exact_image_ready: bool,
+) -> MeshRuntimeFailureSnapshot {
+    let container = diagnostics.and_then(|value| value.container.as_ref());
+    MeshRuntimeFailureSnapshot {
+        observed_unix_time_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0),
+        reasons: warnings
+            .iter()
+            .take(MAX_MESH_FAILURE_REASONS)
+            .map(|value| bounded_secret_safe_failure_reason(value))
+            .collect(),
+        warp_connection_state: diagnostics.and_then(|value| value.warp_connection_state.clone()),
+        tunnel_protocol: diagnostics.and_then(|value| value.tunnel_protocol.clone()),
+        warp_status: diagnostics
+            .and_then(|value| value.warp_status_probe.as_ref())
+            .map(|value| value.status)
+            .unwrap_or(RuntimeProbeStatus::Unspecified as i32),
+        warp_settings: diagnostics
+            .and_then(|value| value.warp_settings_probe.as_ref())
+            .map(|value| value.status)
+            .unwrap_or(RuntimeProbeStatus::Unspecified as i32),
+        tun_device_status: diagnostics
+            .and_then(|value| value.tun_device_probe.as_ref())
+            .map(|value| value.status)
+            .unwrap_or(RuntimeProbeStatus::Unspecified as i32),
+        ipv4_forwarding_status: diagnostics
+            .and_then(|value| value.ipv4_forwarding_probe.as_ref())
+            .map(|value| value.status)
+            .unwrap_or(RuntimeProbeStatus::Unspecified as i32),
+        container_present: container.is_some_and(|value| value.present),
+        container_running: container.is_some_and(|value| value.running),
+        container_exit_code: container.and_then(|value| value.exit_code),
+        container_restart_count: container.and_then(|value| value.restart_count),
+        container_oom_killed: container.and_then(|value| value.oom_killed),
+        container_image: container.and_then(|value| value.image.clone()),
+        container_networks: container
+            .map(|value| value.networks.clone())
+            .unwrap_or_default(),
+        exact_image_ready,
+    }
+}
+
+fn persist_mesh_runtime_failure_snapshot(
+    stack_dir: &Path,
+    snapshot: &MeshRuntimeFailureSnapshot,
+) -> Result<(), String> {
+    prepare_mesh_runtime_state(stack_dir)?;
+    let persisted = PersistedMeshRuntimeFailureSnapshot {
+        observed_unix_time_seconds: snapshot.observed_unix_time_seconds,
+        reasons: snapshot.reasons.clone(),
+        warp_connection_state: snapshot.warp_connection_state.clone(),
+        tunnel_protocol: snapshot.tunnel_protocol.clone(),
+        warp_status: snapshot.warp_status,
+        warp_settings: snapshot.warp_settings,
+        tun_device_status: snapshot.tun_device_status,
+        ipv4_forwarding_status: snapshot.ipv4_forwarding_status,
+        container_present: snapshot.container_present,
+        container_running: snapshot.container_running,
+        container_exit_code: snapshot.container_exit_code,
+        container_restart_count: snapshot.container_restart_count,
+        container_oom_killed: snapshot.container_oom_killed,
+        container_image: snapshot.container_image.clone(),
+        container_networks: snapshot.container_networks.clone(),
+        exact_image_ready: snapshot.exact_image_ready,
+    };
+    let bytes = serde_json::to_vec_pretty(&persisted)
+        .map_err(|err| format!("failed to encode Mesh readiness failure snapshot: {err}"))?;
+    let path = mesh_runtime_failure_snapshot_path(stack_dir)?;
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes)
+        .map_err(|err| format!("failed to write Mesh readiness failure snapshot: {err}"))?;
+    set_bundle_file_permissions(&temporary, false, true)?;
+    fs::rename(&temporary, &path)
+        .map_err(|err| format!("failed to publish Mesh readiness failure snapshot: {err}"))?;
+    Ok(())
+}
+
+fn bounded_secret_safe_failure_reason(value: &str) -> String {
+    let lowered = value.to_ascii_lowercase();
+    if [
+        "authorization",
+        "bearer ",
+        "password",
+        "private_key",
+        "private key",
+        "credential",
+        "mesh_node_token",
+        "token=",
+        "secret=",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
+    {
+        return "[REDACTED_SENSITIVE_REASON]".to_owned();
+    }
+    value.chars().take(MAX_MESH_FAILURE_REASON_CHARS).collect()
+}
+
 async fn inspect_mesh_runtime(
     stack_dir: &Path,
     diagnostic_depth: MeshDiagnosticDepth,
@@ -1324,10 +1493,14 @@ async fn inspect_mesh_runtime(
     let exact_image_ready = expected_image
         .as_deref()
         .is_some_and(|expected| docker.container_exact_image_ready(MESH_CONTAINER, expected));
-    let diagnostics = if container_running && exact_image_ready {
-        Some(collect_mesh_runtime_diagnostics(&docker, diagnostic_depth).await)
-    } else {
-        None
+    let diagnostics = match diagnostic_depth {
+        MeshDiagnosticDepth::Basic if container_running && exact_image_ready => {
+            Some(collect_mesh_runtime_diagnostics(&docker, diagnostic_depth).await)
+        }
+        MeshDiagnosticDepth::Deep => {
+            Some(collect_mesh_runtime_diagnostics(&docker, diagnostic_depth).await)
+        }
+        MeshDiagnosticDepth::Basic => None,
     };
     let runtime_ready = token_valid
         && container_running
@@ -1364,6 +1537,19 @@ async fn inspect_mesh_runtime(
         warnings.push(mesh_tunnel_protocol_evidence_from_diagnostics(diagnostics));
     }
 
+    let mut last_failure_snapshot = read_mesh_runtime_failure_snapshot(stack_dir).unwrap_or(None);
+    if !runtime_ready && diagnostic_depth == MeshDiagnosticDepth::Deep {
+        let snapshot =
+            build_mesh_runtime_failure_snapshot(diagnostics.as_ref(), &warnings, exact_image_ready);
+        if let Err(err) = persist_mesh_runtime_failure_snapshot(stack_dir, &snapshot) {
+            warnings.push(format!(
+                "Mesh readiness failure snapshot persistence failed: {}",
+                bounded_secret_safe_failure_reason(&err)
+            ));
+        }
+        last_failure_snapshot = Some(snapshot);
+    }
+
     MeshRuntimeState {
         token_store_present,
         container_running,
@@ -1371,6 +1557,7 @@ async fn inspect_mesh_runtime(
         runtime_ready,
         warnings,
         diagnostics,
+        last_failure_snapshot,
     }
 }
 
@@ -2369,13 +2556,19 @@ async fn collect_mesh_runtime_diagnostics(
         exit_code: evidence.exit_code,
         runtime_error_present: evidence.runtime_error.is_some(),
         recent_events: evidence.log_tail,
+        name: evidence.name,
+        image: evidence.image,
+        restart_count: evidence.restart_count,
+        oom_killed: evidence.oom_killed,
+        networks: evidence.networks,
     });
 
-    let (host_network, container_network) = match diagnostic_depth {
-        MeshDiagnosticDepth::Basic => (None, None),
+    let (host_network, container_network, host) = match diagnostic_depth {
+        MeshDiagnosticDepth::Basic => (None, None, None),
         MeshDiagnosticDepth::Deep => (
             Some(collect_host_network_diagnostics()),
             Some(collect_container_network_diagnostics(MESH_CONTAINER)),
+            Some(collect_host_runtime_diagnostics()),
         ),
     };
 
@@ -2396,6 +2589,7 @@ async fn collect_mesh_runtime_diagnostics(
         host_network,
         container_network,
         route_events,
+        host,
     }
 }
 
@@ -2507,8 +2701,23 @@ fn mesh_container_diagnostic_summary(evidence: &MeshContainerDiagnostics) -> Str
         evidence.recent_events[start..].join(" | ")
     };
     format!(
-        "present={} running={} exit_code={} runtime_error_present={} log_tail={}",
-        evidence.present, evidence.running, exit_code, evidence.runtime_error_present, logs
+        "name={} present={} running={} exit_code={} restart_count={} oom_killed={} image={} networks={:?} runtime_error_present={} log_tail={}",
+        evidence.name,
+        evidence.present,
+        evidence.running,
+        exit_code,
+        evidence
+            .restart_count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        evidence
+            .oom_killed
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        evidence.image.as_deref().unwrap_or("unknown"),
+        evidence.networks,
+        evidence.runtime_error_present,
+        logs
     )
 }
 
@@ -3116,6 +3325,65 @@ mod tests {
     }
 
     #[test]
+    fn mesh_failure_snapshot_is_bounded_secret_safe_and_persistent() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+
+        let mut diagnostics = MeshRuntimeDiagnostics::default();
+        diagnostics.warp_connection_state = Some("DISCONNECTED".to_owned());
+        diagnostics.tunnel_protocol = Some("MASQUE".to_owned());
+        diagnostics.warp_status_probe = Some(RuntimeProbeEvidence {
+            status: RuntimeProbeStatus::NonZero as i32,
+            exit_code: Some(1),
+            diagnostic_stdout: None,
+            diagnostic_stderr: None,
+        });
+        diagnostics.container = Some(MeshContainerDiagnostics {
+            present: true,
+            running: false,
+            exit_code: Some(137),
+            runtime_error_present: true,
+            recent_events: Vec::new(),
+            name: MESH_CONTAINER.to_owned(),
+            image: Some("docker.io/cloudflare/mesh@sha256:test".to_owned()),
+            restart_count: Some(3),
+            oom_killed: Some(true),
+            networks: vec!["mesh_net".to_owned()],
+        });
+
+        let reasons = vec![
+            "Authorization: Bearer should-not-escape".to_owned(),
+            "x".repeat(MAX_MESH_FAILURE_REASON_CHARS * 2),
+        ];
+        let snapshot = build_mesh_runtime_failure_snapshot(Some(&diagnostics), &reasons, false);
+        assert_eq!(snapshot.reasons[0], "[REDACTED_SENSITIVE_REASON]");
+        assert_eq!(
+            snapshot.reasons[1].chars().count(),
+            MAX_MESH_FAILURE_REASON_CHARS
+        );
+        assert_eq!(snapshot.container_restart_count, Some(3));
+        assert_eq!(snapshot.container_oom_killed, Some(true));
+        assert_eq!(
+            snapshot.container_image.as_deref(),
+            Some("docker.io/cloudflare/mesh@sha256:test")
+        );
+        assert_eq!(snapshot.container_networks, vec!["mesh_net"]);
+        assert!(!snapshot.exact_image_ready);
+
+        persist_mesh_runtime_failure_snapshot(&stack, &snapshot).unwrap();
+        let restored = read_mesh_runtime_failure_snapshot(&stack).unwrap().unwrap();
+        assert_eq!(restored.reasons, snapshot.reasons);
+        assert_eq!(
+            restored.warp_connection_state.as_deref(),
+            Some("DISCONNECTED")
+        );
+        assert_eq!(restored.container_exit_code, Some(137));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn certificate_readiness_requires_complete_valid_material() {
         let mut evidence = CertificateReadinessEvidence {
             cert_present: true,
@@ -3128,6 +3396,11 @@ mod tests {
                 exit_code: None,
                 runtime_error: None,
                 log_tail: Vec::new(),
+                name: LINE1_CONTAINER.to_owned(),
+                image: None,
+                restart_count: Some(0),
+                oom_killed: Some(false),
+                networks: Vec::new(),
             }),
             docker_observation_error: None,
         };
