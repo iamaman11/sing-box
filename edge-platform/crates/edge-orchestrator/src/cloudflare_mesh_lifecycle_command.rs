@@ -34,6 +34,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         "vpc-runtime-apply" => run_vpc_runtime_apply(&args[1..]).await,
         "runtime-verify" => run_runtime_verify(&args[1..]).await,
         "vpc-runtime-verify" => run_vpc_runtime_verify(&args[1..]).await,
+        "runtime-observe" => run_runtime_observe(&args[1..]).await,
         "runtime-cleanup" => run_runtime_cleanup(&args[1..]).await,
         _ => Err(usage()),
     }
@@ -287,6 +288,25 @@ async fn run_runtime_verify_with_desired(
         ));
     }
     print_mesh_runtime_result("PASS", &state, Some(provider_observation))
+}
+
+async fn run_runtime_observe(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err(
+            "usage: edge-orchestrator line3-mesh runtime-observe <application-spec-path>"
+                .to_owned(),
+        );
+    }
+    let authority = resolve_application_authority_from_spec(Path::new(&args[0])).await?;
+    let state = verify_mesh_runtime_remote(&authority).await?;
+    let status = if state.runtime_ready {
+        "READY"
+    } else if !state.token_store_present && !state.container_running {
+        "ABSENT"
+    } else {
+        "DEGRADED"
+    };
+    print_mesh_runtime_result(status, &state, None)
 }
 
 async fn run_runtime_cleanup(args: &[String]) -> Result<(), String> {
@@ -873,6 +893,7 @@ fn usage() -> String {
         "  edge-orchestrator line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
         "  edge-orchestrator line3-mesh runtime-verify <mesh-spec-path> <application-spec-path>",
         "  edge-orchestrator line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
+        "  edge-orchestrator line3-mesh runtime-observe <application-spec-path>",
         "  edge-orchestrator line3-mesh runtime-cleanup <application-spec-path>",
     ]
     .join("\n")
@@ -1262,6 +1283,7 @@ mod tests {
         assert!(text.contains("line3-mesh vpc-runtime-apply"));
         assert!(text.contains("line3-mesh runtime-verify"));
         assert!(text.contains("line3-mesh vpc-runtime-verify"));
+        assert!(text.contains("line3-mesh runtime-observe"));
         assert!(text.contains("line3-mesh runtime-cleanup"));
         assert!(!text.contains("node-id"));
         assert!(!text.contains("route-id"));
