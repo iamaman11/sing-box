@@ -4,9 +4,10 @@ use crate::vultr_host_bootstrap::{
 };
 use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationAction, ApplicationBootstrapMode, ApplicationObservation,
-    ApplicationPlan, ApplicationPlanClass, DesiredApplicationState, PublishedApplicationRelease,
-    RollbackPlan, authorize_rollback, build_rollback_plan, desired_bundle_id, desired_release,
-    plan_application,
+    ApplicationPlan, ApplicationPlanClass, ApplicationRecoveryAction, ApplicationRecoveryObservation,
+    ApplicationRecoveryPlan, ApplicationRecoveryPlanClass, DesiredApplicationState,
+    PublishedApplicationRelease, RollbackPlan, authorize_rollback, build_rollback_plan,
+    desired_bundle_id, desired_release, plan_application, plan_incomplete_upgrade_recovery,
 };
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
@@ -87,6 +88,13 @@ pub(crate) struct ApplicationExecutionReport {
     pub initial_plan: ApplicationPlan,
     pub final_plan: ApplicationPlan,
     pub final_observation: ApplicationObservationView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ApplicationRecoveryExecutionReport {
+    pub initial_plan: ApplicationRecoveryPlan,
+    pub final_plan: ApplicationRecoveryPlan,
+    pub final_observation: ApplicationRecoveryObservation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +326,22 @@ pub(crate) async fn observe_application(
     })
 }
 
+pub(crate) async fn observe_application_recovery(
+    authority: &ApplicationAuthority,
+    desired: &DesiredApplicationState,
+) -> Result<ApplicationRecoveryObservation, String> {
+    let application = observe_application(authority, desired).await?;
+    let backup_agent_sha256 = remote_file_sha(authority, REMOTE_PREVIOUS_AGENT)?;
+    let backup_bundle_digest =
+        read_remote_bundle_release(authority, REMOTE_PREVIOUS_STACK_RELEASE)?
+            .map(|value| value.bundle_digest);
+    Ok(ApplicationRecoveryObservation {
+        application,
+        backup_agent_sha256,
+        backup_bundle_digest,
+    })
+}
+
 pub(crate) async fn execute_desired(
     authority: &ApplicationAuthority,
     desired: &DesiredApplicationState,
@@ -451,6 +475,123 @@ pub(crate) fn authorize_application_plan(
         disposition,
     )
     .map_err(|err| err.to_string())
+}
+
+pub(crate) fn authorize_application_recovery(
+    desired: &DesiredApplicationState,
+    observation: &ApplicationRecoveryObservation,
+    plan: ApplicationRecoveryPlan,
+) -> Result<AuthorizedPlan<ApplicationRecoveryPlan>, String> {
+    let disposition = match plan.class {
+        ApplicationRecoveryPlanClass::Noop => PlanDisposition::Noop,
+        ApplicationRecoveryPlanClass::Recover => PlanDisposition::Mutate,
+        ApplicationRecoveryPlanClass::Blocked => PlanDisposition::Blocked,
+    };
+    authorize_plan(
+        "application_recovery",
+        desired,
+        observation,
+        plan,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub(crate) async fn recovery_plan_remote(
+    authority: &ApplicationAuthority,
+    desired: &DesiredApplicationState,
+) -> Result<(ApplicationRecoveryObservation, ApplicationRecoveryPlan), String> {
+    let observation = observe_application_recovery(authority, desired).await?;
+    let plan =
+        plan_incomplete_upgrade_recovery(desired, &observation).map_err(|err| err.to_string())?;
+    Ok((observation, plan))
+}
+
+pub(crate) async fn execute_recovery(
+    authority: &ApplicationAuthority,
+    desired: &DesiredApplicationState,
+    authorized_plan_digest: &str,
+) -> Result<ApplicationRecoveryExecutionReport, String> {
+    let observation = observe_application_recovery(authority, desired).await?;
+    let initial_plan =
+        plan_incomplete_upgrade_recovery(desired, &observation).map_err(|err| err.to_string())?;
+    let authorized =
+        authorize_application_recovery(desired, &observation, initial_plan.clone())?;
+    verify_exact_authority(authorized_plan_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
+
+    match initial_plan.class {
+        ApplicationRecoveryPlanClass::Blocked => {
+            return Err(format!(
+                "incomplete-upgrade recovery is blocked: {}",
+                initial_plan.reasons.join("; ")
+            ));
+        }
+        ApplicationRecoveryPlanClass::Noop => {
+            return Ok(ApplicationRecoveryExecutionReport {
+                final_plan: initial_plan.clone(),
+                initial_plan,
+                final_observation: observation,
+            });
+        }
+        ApplicationRecoveryPlanClass::Recover => {}
+    }
+
+    let target = initial_plan.target_release.clone();
+    let original_previous_release = observation.application.previous_release.clone();
+
+    if initial_plan
+        .actions
+        .contains(&ApplicationRecoveryAction::RestoreBundle)
+    {
+        let expected_active = observation
+            .application
+            .observed_bundle_digest
+            .as_deref()
+            .ok_or_else(|| "recovery plan lost exact active bundle digest".to_owned())?;
+        restore_bundle_from_backup_once(authority, expected_active, &target.bundle_digest).await?;
+    }
+
+    if initial_plan
+        .actions
+        .contains(&ApplicationRecoveryAction::RestoreAgent)
+    {
+        let expected_active = observation
+            .application
+            .observed_agent_sha256
+            .as_deref()
+            .ok_or_else(|| "recovery plan lost exact active edge-agent digest".to_owned())?;
+        restore_agent_from_backup_once(authority, expected_active, &target.agent_sha256)?;
+    }
+
+    let final_observation = observe_application_recovery(authority, desired).await?;
+    if final_observation.application.current_release.as_ref() != Some(&target)
+        || final_observation.application.previous_release != original_previous_release
+        || final_observation.application.observed_agent_sha256.as_deref()
+            != Some(target.agent_sha256.as_str())
+        || final_observation.application.observed_bundle_digest.as_deref()
+            != Some(target.bundle_digest.as_str())
+    {
+        return Err(
+            "incomplete-upgrade recovery did not converge exactly to published current release"
+                .to_owned(),
+        );
+    }
+
+    let final_plan = plan_incomplete_upgrade_recovery(desired, &final_observation)
+        .map_err(|err| err.to_string())?;
+    if final_plan.class != ApplicationRecoveryPlanClass::Noop {
+        return Err(
+            "incomplete-upgrade recovery completed but recovery plan did not converge to NOOP"
+                .to_owned(),
+        );
+    }
+
+    Ok(ApplicationRecoveryExecutionReport {
+        initial_plan,
+        final_plan,
+        final_observation,
+    })
 }
 
 pub(crate) fn authorize_application_rollback(
@@ -951,6 +1092,135 @@ async fn apply_bundle_once(
         },
     )
     .await
+}
+
+async fn restore_bundle_from_backup_once(
+    authority: &ApplicationAuthority,
+    expected_active_digest: &str,
+    target_backup_digest: &str,
+) -> Result<(), String> {
+    validate_lower_hex(
+        "expected active recovery bundle digest",
+        expected_active_digest,
+        64,
+    )?;
+    validate_lower_hex(
+        "target backup recovery bundle digest",
+        target_backup_digest,
+        64,
+    )?;
+    let active = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
+    if active.as_ref().map(|value| value.bundle_digest.as_str())
+        != Some(expected_active_digest)
+    {
+        return Err(
+            "active bundle digest changed since incomplete-upgrade recovery planning".to_owned(),
+        );
+    }
+    let backup = read_remote_bundle_release(authority, REMOTE_PREVIOUS_STACK_RELEASE)?;
+    if backup.as_ref().map(|value| value.bundle_digest.as_str())
+        != Some(target_backup_digest)
+    {
+        return Err(
+            "backup bundle digest changed since incomplete-upgrade recovery planning".to_owned(),
+        );
+    }
+
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    let expected_active = expected_active_digest.to_owned();
+    let expected_target = target_backup_digest.to_owned();
+    let recovery_target = expected_target.clone();
+    execute_bundle_mutation_once(
+        "RecoverPublishedBundle",
+        &expected_target,
+        || async {
+            client
+                .rollback_bundle(Request::new(RollbackBundleRequest {
+                    expected_current_bundle_digest: expected_active,
+                }))
+                .await
+                .map(|response| response.get_ref().active_bundle_digest.clone())
+                .map_err(|err| err.to_string())
+        },
+        |err| async move {
+            match wait_for_exact_bundle_digest_after_uncertain_mutation(
+                authority,
+                &recovery_target,
+            )
+            .await
+            {
+                Ok(resolution) => {
+                    record_bundle_mutation_resolved_by_observation(
+                        "RecoverPublishedBundle",
+                        &recovery_target,
+                        resolution,
+                    );
+                    Ok(())
+                }
+                Err(observation) => Err(format!(
+                    "RecoverPublishedBundle outcome is uncertain; RPC was not replayed: {err}; {observation}"
+                )),
+            }
+        },
+    )
+    .await
+}
+
+fn restore_agent_from_backup_once(
+    authority: &ApplicationAuthority,
+    expected_active_digest: &str,
+    target_backup_digest: &str,
+) -> Result<(), String> {
+    validate_lower_hex(
+        "expected active recovery edge-agent digest",
+        expected_active_digest,
+        64,
+    )?;
+    validate_lower_hex(
+        "target backup recovery edge-agent digest",
+        target_backup_digest,
+        64,
+    )?;
+    if remote_file_sha(authority, REMOTE_AGENT)?.as_deref() != Some(expected_active_digest) {
+        return Err(
+            "active edge-agent digest changed since incomplete-upgrade recovery planning".to_owned(),
+        );
+    }
+    if remote_file_sha(authority, REMOTE_PREVIOUS_AGENT)?.as_deref() != Some(target_backup_digest) {
+        return Err(
+            "backup edge-agent digest changed since incomplete-upgrade recovery planning".to_owned(),
+        );
+    }
+
+    let command = format!(
+        "set -eu; test \"$(sudo sha256sum {agent} | cut -d ' ' -f1)\" = '{expected_active}'; test \"$(sudo sha256sum {previous} | cut -d ' ' -f1)\" = '{expected_backup}'; sudo mv -f {agent} {agent}.recovery; if ! sudo mv -f {previous} {agent}; then sudo mv -f {agent}.recovery {agent}; exit 1; fi; sudo mv -f {agent}.recovery {previous}; sudo systemctl restart edge-agent.service; sudo systemctl is-active --quiet edge-agent.service",
+        agent = REMOTE_AGENT,
+        previous = REMOTE_PREVIOUS_AGENT,
+        expected_active = expected_active_digest,
+        expected_backup = target_backup_digest,
+    );
+    if let Err(err) = strict_ssh_run(
+        &authority.target_ip,
+        &authority.logical_hostname,
+        &authority.operator_private_key_path,
+        &authority.canonical_operator_public_key,
+        &command,
+    ) {
+        let observed = remote_file_sha(authority, REMOTE_AGENT)?;
+        if observed.as_deref() == Some(target_backup_digest) {
+            return Ok(());
+        }
+        return Err(format!(
+            "edge-agent incomplete-upgrade recovery outcome is uncertain; mutation was not replayed: {err}"
+        ));
+    }
+    if remote_file_sha(authority, REMOTE_AGENT)?.as_deref() != Some(target_backup_digest) {
+        return Err(
+            "edge-agent incomplete-upgrade recovery did not reach published current digest"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 async fn rollback_bundle_once(
