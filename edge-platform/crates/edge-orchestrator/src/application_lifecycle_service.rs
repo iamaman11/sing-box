@@ -4,10 +4,11 @@ use crate::vultr_host_bootstrap::{
 };
 use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationAction, ApplicationBootstrapMode, ApplicationObservation,
-    ApplicationPlan, ApplicationPlanClass, ApplicationRecoveryAction, ApplicationRecoveryObservation,
-    ApplicationRecoveryPlan, ApplicationRecoveryPlanClass, DesiredApplicationState,
-    PublishedApplicationRelease, RollbackPlan, authorize_rollback, build_rollback_plan,
-    desired_bundle_id, desired_release, plan_application, plan_incomplete_upgrade_recovery,
+    ApplicationPlan, ApplicationPlanClass, ApplicationRecoveryAction,
+    ApplicationRecoveryObservation, ApplicationRecoveryPlan, ApplicationRecoveryPlanClass,
+    DesiredApplicationState, PublishedApplicationRelease, RollbackPlan, authorize_rollback,
+    build_rollback_plan, desired_bundle_id, desired_release, plan_application,
+    plan_incomplete_upgrade_recovery,
 };
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
@@ -515,8 +516,7 @@ pub(crate) async fn execute_recovery(
     let observation = observe_application_recovery(authority, desired).await?;
     let initial_plan =
         plan_incomplete_upgrade_recovery(desired, &observation).map_err(|err| err.to_string())?;
-    let authorized =
-        authorize_application_recovery(desired, &observation, initial_plan.clone())?;
+    let authorized = authorize_application_recovery(desired, &observation, initial_plan.clone())?;
     verify_exact_authority(authorized_plan_digest, &authorized.authority)
         .map_err(|err| err.to_string())?;
 
@@ -567,9 +567,15 @@ pub(crate) async fn execute_recovery(
     let final_observation = observe_application_recovery(authority, desired).await?;
     if final_observation.application.current_release.as_ref() != Some(&target)
         || final_observation.application.previous_release != original_previous_release
-        || final_observation.application.observed_agent_sha256.as_deref()
+        || final_observation
+            .application
+            .observed_agent_sha256
+            .as_deref()
             != Some(target.agent_sha256.as_str())
-        || final_observation.application.observed_bundle_digest.as_deref()
+        || final_observation
+            .application
+            .observed_bundle_digest
+            .as_deref()
             != Some(target.bundle_digest.as_str())
     {
         return Err(
@@ -1110,17 +1116,13 @@ async fn restore_bundle_from_backup_once(
         64,
     )?;
     let active = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
-    if active.as_ref().map(|value| value.bundle_digest.as_str())
-        != Some(expected_active_digest)
-    {
+    if active.as_ref().map(|value| value.bundle_digest.as_str()) != Some(expected_active_digest) {
         return Err(
             "active bundle digest changed since incomplete-upgrade recovery planning".to_owned(),
         );
     }
     let backup = read_remote_bundle_release(authority, REMOTE_PREVIOUS_STACK_RELEASE)?;
-    if backup.as_ref().map(|value| value.bundle_digest.as_str())
-        != Some(target_backup_digest)
-    {
+    if backup.as_ref().map(|value| value.bundle_digest.as_str()) != Some(target_backup_digest) {
         return Err(
             "backup bundle digest changed since incomplete-upgrade recovery planning".to_owned(),
         );
@@ -1183,12 +1185,14 @@ fn restore_agent_from_backup_once(
     )?;
     if remote_file_sha(authority, REMOTE_AGENT)?.as_deref() != Some(expected_active_digest) {
         return Err(
-            "active edge-agent digest changed since incomplete-upgrade recovery planning".to_owned(),
+            "active edge-agent digest changed since incomplete-upgrade recovery planning"
+                .to_owned(),
         );
     }
     if remote_file_sha(authority, REMOTE_PREVIOUS_AGENT)?.as_deref() != Some(target_backup_digest) {
         return Err(
-            "backup edge-agent digest changed since incomplete-upgrade recovery planning".to_owned(),
+            "backup edge-agent digest changed since incomplete-upgrade recovery planning"
+                .to_owned(),
         );
     }
 
