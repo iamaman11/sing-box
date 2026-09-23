@@ -2293,24 +2293,20 @@ fn parse_binary_bool_probe(probe: &mut BoundedCommandProbe) -> Option<bool> {
     }
 }
 
+fn mesh_warp_cli_probe_args(command: &'static str) -> [&'static str; 5] {
+    ["exec", MESH_CONTAINER, "warp-cli", "--accept-tos", command]
+}
+
 async fn collect_mesh_runtime_diagnostics(
     docker: &DockerObservation,
     diagnostic_depth: MeshDiagnosticDepth,
 ) -> MeshRuntimeDiagnostics {
-    let warp_status = bounded_command_probe(
-        "docker",
-        &["exec", MESH_CONTAINER, "warp-cli", "status"],
-        8,
-        true,
-    );
+    let warp_status_args = mesh_warp_cli_probe_args("status");
+    let warp_status = bounded_command_probe("docker", &warp_status_args, 8, true);
     let warp_connection_state = parse_warp_connection_state(&warp_status);
 
-    let warp_settings = bounded_command_probe(
-        "docker",
-        &["exec", MESH_CONTAINER, "warp-cli", "settings"],
-        8,
-        true,
-    );
+    let warp_settings_args = mesh_warp_cli_probe_args("settings");
+    let warp_settings = bounded_command_probe("docker", &warp_settings_args, 8, true);
     let tunnel_protocol = parse_tunnel_protocol(&warp_settings);
 
     let mut tun_device = bounded_command_probe(
@@ -3016,6 +3012,18 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mesh_warp_cli_probes_accept_tos_non_interactively() {
+        assert_eq!(
+            mesh_warp_cli_probe_args("status"),
+            ["exec", MESH_CONTAINER, "warp-cli", "--accept-tos", "status"]
+        );
+        assert_eq!(
+            mesh_warp_cli_probe_args("settings"),
+            ["exec", MESH_CONTAINER, "warp-cli", "--accept-tos", "settings"]
+        );
     }
 
     #[test]
