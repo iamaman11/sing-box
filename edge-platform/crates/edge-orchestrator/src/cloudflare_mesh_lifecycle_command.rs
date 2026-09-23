@@ -430,7 +430,7 @@ fn runtime_network_diagnostics_json(
                 "state": socket.state,
             })
         }).collect::<Vec<_>>(),
-        "default_route_present": diagnostics.default_route_present,
+        "default_route_present": diagnostics.default_route_present_observed,
     })
 }
 
@@ -499,7 +499,7 @@ fn runtime_network_summary_json(
         "routes_probe": runtime_probe_json(diagnostics.routes_probe.as_ref()),
         "rules_probe": runtime_probe_json(diagnostics.rules_probe.as_ref()),
         "sockets_probe": runtime_probe_json(diagnostics.sockets_probe.as_ref()),
-        "default_route_present": diagnostics.default_route_present,
+        "default_route_present": diagnostics.default_route_present_observed,
         "interfaces": interfaces,
         "routes": routes,
         "dns": diagnostics.dns.as_ref().map(|dns| serde_json::json!({
