@@ -18,6 +18,7 @@ jobs:
       operation: ${{ steps.parse.outputs.operation }}
       spec_path: ${{ steps.parse.outputs.spec_path }}
       rollback_digest: ${{ steps.parse.outputs.rollback_digest }}
+      recovery_authority_digest: ${{ steps.parse.outputs.recovery_authority_digest }}
 
     steps:
       - name: Parse and authorize typed request
@@ -41,15 +42,24 @@ jobs:
           operation = ""
           spec_path = ""
           rollback_digest = ""
+          recovery_authority_digest = ""
 
           if tokens == ["/application", "acceptance"]:
               operation = "acceptance"
               spec_path = "infra/application/disposable-acceptance.json"
           elif len(tokens) == 3 and tokens[0] == "/application" and tokens[1] in {
-              "plan", "apply", "verify", "upgrade", "recover-plan", "recover-apply", "rollback-plan"
+              "plan", "apply", "verify", "upgrade", "recover-plan", "rollback-plan"
           }:
               operation = tokens[1]
               spec_path = tokens[2]
+          elif (
+              len(tokens) == 4
+              and tokens[0] == "/application"
+              and tokens[1] == "recover-apply"
+          ):
+              operation = "recover-apply"
+              spec_path = tokens[2]
+              recovery_authority_digest = tokens[3]
           elif (
               len(tokens) == 4
               and tokens[0] == "/application"
@@ -69,10 +79,17 @@ jobs:
           elif rollback_digest:
               fail("rollback digest is only valid for rollback-apply")
 
+          if operation == "recover-apply":
+              if not digest_re.fullmatch(recovery_authority_digest):
+                  fail("recover-apply requires the exact recovery-plan authority digest")
+          elif recovery_authority_digest:
+              fail("recovery authority digest is only valid for recover-apply")
+
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"operation={operation}\n")
               handle.write(f"spec_path={spec_path}\n")
               handle.write(f"rollback_digest={rollback_digest}\n")
+              handle.write(f"recovery_authority_digest={recovery_authority_digest}\n")
           PY
 
   verify:
@@ -129,6 +146,7 @@ jobs:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
       SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
       ROLLBACK_DIGEST: ${{ needs.authorize.outputs.rollback_digest }}
+      RECOVERY_AUTHORITY_DIGEST: ${{ needs.authorize.outputs.recovery_authority_digest }}
 
     steps:
       - name: Checkout exact canonical revision
@@ -295,12 +313,9 @@ jobs:
               "${bin}" application-lifecycle recover-plan "${SPEC_PATH}" | tee "${result}"
               ;;
             recover-apply)
-              recovery_plan="${RUNNER_TEMP}/application-recovery-authority-plan.json"
-              "${bin}" application-lifecycle recover-plan "${SPEC_PATH}" > "${recovery_plan}"
-              jq -e '.recovery.class == "RECOVER" and .plan_disposition == "MUTATE"'                 "${recovery_plan}" >/dev/null
-              authority_digest="$(jq -er '.plan_authority.authority_digest' "${recovery_plan}")"
-              [[ "${authority_digest}" =~ ^[0-9a-f]{64}$ ]]
-              "${bin}" application-lifecycle recover-apply                 "${SPEC_PATH}" "${authority_digest}" | tee "${result}"
+              [[ "${RECOVERY_AUTHORITY_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" application-lifecycle recover-apply \
+                "${SPEC_PATH}" "${RECOVERY_AUTHORITY_DIGEST}" | tee "${result}"
               ;;
             rollback-plan)
               "${bin}" application-lifecycle rollback-plan "${SPEC_PATH}" | tee "${result}"
