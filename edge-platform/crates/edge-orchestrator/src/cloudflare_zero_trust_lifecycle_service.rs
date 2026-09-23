@@ -526,6 +526,8 @@ fn mesh_profile_request(
             mode: desired.mesh_profile.service_mode.clone(),
         },
         tunnel_protocol: desired.mesh_profile.tunnel_protocol.clone(),
+        auto_connect: desired.mesh_profile.auto_connect,
+        switch_locked: desired.mesh_profile.switch_locked,
         include: include_on_create.then(|| {
             desired
                 .mesh_profile
@@ -583,6 +585,8 @@ fn observed_profile(
         match_expression: profile.match_expression,
         service_mode: profile.service_mode,
         tunnel_protocol: profile.tunnel_protocol,
+        auto_connect: profile.auto_connect,
+        switch_locked: profile.switch_locked,
         includes: core_entries(includes),
         excludes: core_entries(excludes),
     }
@@ -728,6 +732,8 @@ mod tests {
                     match_expression: Some(request.match_expression.clone()),
                     service_mode: Some(request.service_mode_v2.mode.clone()),
                     tunnel_protocol: Some(request.tunnel_protocol.clone()),
+                    auto_connect: Some(request.auto_connect),
+                    switch_locked: Some(request.switch_locked),
                 });
                 self.includes = request
                     .include
@@ -748,9 +754,23 @@ mod tests {
         }
         async fn update_profile(
             &mut self,
-            _profile_id: &str,
-            _request: &CloudflareDeviceProfileWrite,
+            profile_id: &str,
+            request: &CloudflareDeviceProfileWrite,
         ) -> Result<(), String> {
+            let profile = self
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == profile_id)
+                .ok_or_else(|| "fake Cloudflare profile not found".to_owned())?;
+            profile.name = request.name.clone();
+            profile.description = Some(request.description.clone());
+            profile.enabled = Some(request.enabled);
+            profile.precedence = Some(request.precedence);
+            profile.match_expression = Some(request.match_expression.clone());
+            profile.service_mode = Some(request.service_mode_v2.mode.clone());
+            profile.tunnel_protocol = Some(request.tunnel_protocol.clone());
+            profile.auto_connect = Some(request.auto_connect);
+            profile.switch_locked = Some(request.switch_locked);
             Ok(())
         }
         async fn set_includes(
@@ -817,6 +837,10 @@ mod tests {
                 match_expression: None,
                 service_mode: Some("warp".to_owned()),
                 tunnel_protocol: Some("masque".to_owned()),
+
+                auto_connect: None,
+
+                switch_locked: None,
             }],
             ..FakeProvider::default()
         };
@@ -866,6 +890,10 @@ mod tests {
                 match_expression: None,
                 service_mode: Some("warp".to_owned()),
                 tunnel_protocol: Some("masque".to_owned()),
+
+                auto_connect: None,
+
+                switch_locked: None,
             }],
             excludes: vec![
                 CloudflareSplitTunnelEntry {
@@ -927,6 +955,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mesh_profile_policy_update_converges_without_touching_android_profile() {
+        let desired = desired();
+        let runtime = runtime();
+        let mut mesh_profile = CloudflareDeviceProfile {
+            id: "mesh-profile".to_owned(),
+            name: desired.mesh_profile.name.clone(),
+            description: Some(desired.mesh_profile.description.clone()),
+            enabled: Some(true),
+            precedence: Some(100),
+            match_expression: Some(desired.mesh_profile.match_expression.clone()),
+            service_mode: Some(desired.mesh_profile.service_mode.clone()),
+            tunnel_protocol: Some(desired.mesh_profile.tunnel_protocol.clone()),
+            auto_connect: Some(0),
+            switch_locked: Some(false),
+        };
+        let android_profile = CloudflareDeviceProfile {
+            id: "android-profile".to_owned(),
+            name: "Android".to_owned(),
+            description: None,
+            enabled: Some(true),
+            precedence: Some(850),
+            match_expression: None,
+            service_mode: Some("warp".to_owned()),
+            tunnel_protocol: Some("masque".to_owned()),
+            auto_connect: None,
+            switch_locked: None,
+        };
+        let mut provider = FakeProvider {
+            connectors: vec![CloudflareMeshNode {
+                id: "node-vultr".to_owned(),
+                name: "vultr".to_owned(),
+                status: Some("healthy".to_owned()),
+            }],
+            profiles: vec![mesh_profile.clone(), android_profile.clone()],
+            includes: desired
+                .mesh_profile
+                .include_cidrs
+                .iter()
+                .map(|address| CloudflareSplitTunnelEntry {
+                    address: Some(address.clone()),
+                    host: None,
+                    description: Some(if address == "100.96.0.0/12" {
+                        "Cloudflare Mesh device IPs".to_owned()
+                    } else {
+                        "Cloudflare source IPs".to_owned()
+                    }),
+                })
+                .collect(),
+            excludes: vec![
+                CloudflareSplitTunnelEntry {
+                    address: Some("100.80.0.0/12".to_owned()),
+                    host: None,
+                    description: Some("Preserve non-Cloudflare CGNAT bypass".to_owned()),
+                },
+                CloudflareSplitTunnelEntry {
+                    address: Some("100.112.0.0/12".to_owned()),
+                    host: None,
+                    description: Some("Preserve non-Cloudflare CGNAT bypass".to_owned()),
+                },
+            ],
+            ..FakeProvider::default()
+        };
+
+        let (observed, plan) = plan_zero_trust(&mut provider, &desired, &runtime)
+            .await
+            .unwrap();
+        assert!(matches!(
+            plan.action,
+            ZeroTrustAction::UpdateMeshProfile { .. }
+        ));
+        let authorized =
+            authorize_zero_trust_apply(&desired, &runtime.authority, &observed, plan).unwrap();
+
+        let report = apply_zero_trust_once(
+            &mut provider,
+            &desired,
+            &runtime,
+            &authorized.authority.authority_digest,
+            ZeroTrustExecutionPolicy {
+                reobserve_attempts: 1,
+                reobserve_delay: Duration::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+
+        mesh_profile.auto_connect = Some(desired.mesh_profile.auto_connect);
+        mesh_profile.switch_locked = Some(desired.mesh_profile.switch_locked);
+        assert_eq!(provider.profiles[0], mesh_profile);
+        assert_eq!(provider.profiles[1], android_profile);
+        assert!(!matches!(
+            report.next_plan.action,
+            ZeroTrustAction::UpdateMeshProfile { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn uncertain_create_is_observed_without_replay() {
         let desired = desired();
         let runtime = runtime();
@@ -945,6 +1070,10 @@ mod tests {
                 match_expression: None,
                 service_mode: Some("warp".to_owned()),
                 tunnel_protocol: Some("masque".to_owned()),
+
+                auto_connect: None,
+
+                switch_locked: None,
             }],
             create_profile_error: Some("transport lost".to_owned()),
             commit_profile_on_error: true,
