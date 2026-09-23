@@ -1557,8 +1557,9 @@ fn mesh_runtime_evidence_summary(state: &MeshRuntimeState) -> String {
         .unwrap_or_else(|| "none".to_owned());
 
     format!(
-        "runtime_ready={} warp_state={} tunnel_protocol={} warp_status={} warp_settings={} container_present={} container_running={} restart_count={} oom_killed={} host_identity={} host_time={} host_resources={} last_failure_at={} last_failure_reasons={}",
+        "runtime_ready={} exact_image_ready={} warp_state={} tunnel_protocol={} warp_status={} warp_settings={} container_present={} container_running={} container_image={} container_networks={:?} restart_count={} oom_killed={} host_identity={} host_time={} host_resources={} last_failure_at={} last_failure_reasons={}",
         state.runtime_ready,
+        state.exact_image_ready,
         diagnostics
             .and_then(|value| value.warp_connection_state.as_deref())
             .unwrap_or("UNKNOWN"),
@@ -1569,6 +1570,12 @@ fn mesh_runtime_evidence_summary(state: &MeshRuntimeState) -> String {
         current_status(diagnostics.and_then(|value| value.warp_settings_probe.as_ref())),
         container.is_some_and(|value| value.present),
         container.is_some_and(|value| value.running),
+        container
+            .and_then(|value| value.image.as_deref())
+            .unwrap_or("unknown"),
+        container
+            .map(|value| value.networks.as_slice())
+            .unwrap_or(&[]),
         container
             .and_then(|value| value.restart_count)
             .map(|value| value.to_string())
@@ -1844,6 +1851,8 @@ mod tests {
             ..Default::default()
         };
         let summary = mesh_runtime_evidence_summary(&state);
+        assert!(summary.contains("runtime_ready=false"));
+        assert!(summary.contains("exact_image_ready=false"));
         assert!(summary.contains("warp_state=DISCONNECTED"));
         assert!(summary.contains("warp_status=NON_ZERO"));
         assert!(summary.contains("host_identity=OK"));
