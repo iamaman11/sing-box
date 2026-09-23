@@ -1,0 +1,22 @@
+{
+  "schema": 2,
+  "environment": "application-acceptance",
+  "vultr_spec_path": "infra/vultr/application-acceptance.json",
+  "machine_id": "application-acceptance-1",
+  "application_profile": "application-acceptance",
+  "bundle_root": "win/vultr-waw/stack",
+  "runtime_env_required": true,
+  "bootstrap_mode": "full",
+  "runtime_policy": {
+    "line1": {
+      "tunnel_domain": "stage2-acceptance.alegria.by",
+      "acme_email": "admin@alegria.by",
+      "reality_server_name": "www.microsoft.com",
+      "acme_provider": "https://acme-staging-v02.api.letsencrypt.org/directory"
+    },
+    "line2": {
+      "proxy_username": "acceptance-v2",
+      "proxy_cert_cn": "stage2-acceptance.alegria.by"
+    }
+  }
+}
