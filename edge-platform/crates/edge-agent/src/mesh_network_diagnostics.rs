@@ -58,7 +58,8 @@ fn collect_network_diagnostics(
         true,
     );
     let routes = parse_routes(&mut routes_probe);
-    let default_route_present = default_route_observation(&routes_probe, &routes);
+    let default_route_present_observed = default_route_observation(&routes_probe, &routes);
+    let default_route_present = default_route_present_observed.unwrap_or(false);
 
     let mut rules_probe =
         fixed_probe(namespace_pid, &["ip", "-j", "rule", "show"], 6, true);
@@ -86,6 +87,7 @@ fn collect_network_diagnostics(
         sockets_probe: Some(sockets_probe.evidence()),
         sockets,
         default_route_present,
+        default_route_present_observed,
     }
 }
 
@@ -170,7 +172,8 @@ fn unavailable_network_diagnostics(probe: &BoundedCommandProbe) -> RuntimeNetwor
         }),
         sockets_probe: Some(probe.evidence()),
         sockets: Vec::new(),
-        default_route_present: None,
+        default_route_present: false,
+        default_route_present_observed: None,
     }
 }
 
