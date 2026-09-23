@@ -969,13 +969,13 @@ mod tests {
 
     #[test]
     fn mesh_profile_reconnect_policy_must_be_always_on() {
-        let mut desired = desired();
-        desired.mesh_profile.auto_connect = 0;
-        assert!(desired.validate().is_err());
+        let mut auto_connect_invalid = desired();
+        auto_connect_invalid.mesh_profile.auto_connect = 0;
+        assert!(auto_connect_invalid.validate().is_err());
 
-        let mut desired = desired();
-        desired.mesh_profile.switch_locked = false;
-        assert!(desired.validate().is_err());
+        let mut switch_lock_invalid = desired();
+        switch_lock_invalid.mesh_profile.switch_locked = false;
+        assert!(switch_lock_invalid.validate().is_err());
     }
 
     #[test]
