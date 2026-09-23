@@ -239,6 +239,11 @@ message MeshContainerDiagnostics {
   optional int64 exit_code = 3;
   bool runtime_error_present = 4;
   repeated string recent_events = 5;
+  string name = 6;
+  optional string image = 7;
+  optional uint64 restart_count = 8;
+  optional bool oom_killed = 9;
+  repeated string networks = 10;
 }
 
 message RuntimeNetworkInterface {
@@ -287,6 +292,51 @@ message RuntimeRouteEvent {
   bool aggregate_counter_only = 3;
 }
 
+message HostIdentityDiagnostics {
+  RuntimeProbeEvidence probe = 1;
+  optional string hostname = 2;
+  optional string kernel_release = 3;
+  optional string architecture = 4;
+}
+
+message HostTimeDiagnostics {
+  RuntimeProbeEvidence probe = 1;
+  optional uint64 unix_time_seconds = 2;
+  optional uint64 uptime_seconds = 3;
+}
+
+message HostResourceDiagnostics {
+  RuntimeProbeEvidence probe = 1;
+  optional uint32 logical_cpus = 2;
+  optional double load_1 = 3;
+  optional double load_5 = 4;
+  optional double load_15 = 5;
+  optional uint64 memory_total_bytes = 6;
+  optional uint64 memory_available_bytes = 7;
+}
+
+message HostRuntimeDiagnostics {
+  HostIdentityDiagnostics identity = 1;
+  HostTimeDiagnostics time = 2;
+  HostResourceDiagnostics resources = 3;
+}
+
+message MeshRuntimeFailureSnapshot {
+  uint64 observed_unix_time_seconds = 1;
+  repeated string reasons = 2;
+  optional string warp_connection_state = 3;
+  optional string tunnel_protocol = 4;
+  RuntimeProbeStatus warp_status = 5;
+  RuntimeProbeStatus warp_settings = 6;
+  RuntimeProbeStatus tun_device_status = 7;
+  RuntimeProbeStatus ipv4_forwarding_status = 8;
+  bool container_present = 9;
+  bool container_running = 10;
+  optional int64 container_exit_code = 11;
+  optional uint64 container_restart_count = 12;
+  optional bool container_oom_killed = 13;
+}
+
 message RuntimeNetworkDiagnostics {
   RuntimeProbeEvidence interfaces_probe = 1;
   repeated RuntimeNetworkInterface interfaces = 2;
@@ -319,6 +369,7 @@ message MeshRuntimeDiagnostics {
   RuntimeNetworkDiagnostics host_network = 14;
   RuntimeNetworkDiagnostics container_network = 15;
   repeated RuntimeRouteEvent route_events = 16;
+  HostRuntimeDiagnostics host = 17;
 }
 
 message MeshRuntimeState {
@@ -328,4 +379,5 @@ message MeshRuntimeState {
   bool runtime_ready = 4;
   repeated string warnings = 5;
   MeshRuntimeDiagnostics diagnostics = 6;
+  MeshRuntimeFailureSnapshot last_failure_snapshot = 7;
 }
