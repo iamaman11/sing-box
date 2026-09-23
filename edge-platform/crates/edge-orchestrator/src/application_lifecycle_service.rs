@@ -1749,15 +1749,13 @@ mod tests {
 
         let plan = plan_incomplete_upgrade_recovery(&desired, &observation).unwrap();
         assert_eq!(plan.class, ApplicationRecoveryPlanClass::Recover);
-        let authorized =
-            authorize_application_recovery(&desired, &observation, plan).unwrap();
+        let authorized = authorize_application_recovery(&desired, &observation, plan).unwrap();
         let authorized_digest = authorized.authority.authority_digest.clone();
 
         observation.backup_agent_sha256 = Some("6".repeat(64));
         let changed_plan = plan_incomplete_upgrade_recovery(&desired, &observation).unwrap();
         assert_eq!(changed_plan.class, ApplicationRecoveryPlanClass::Blocked);
-        let changed =
-            authorize_application_recovery(&desired, &observation, changed_plan).unwrap();
+        let changed = authorize_application_recovery(&desired, &observation, changed_plan).unwrap();
 
         assert!(verify_exact_authority(&authorized_digest, &changed.authority).is_err());
     }
