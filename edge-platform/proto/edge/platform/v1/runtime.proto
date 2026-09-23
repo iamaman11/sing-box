@@ -297,7 +297,9 @@ message RuntimeNetworkDiagnostics {
   RuntimeDnsDiagnostics dns = 7;
   RuntimeProbeEvidence sockets_probe = 8;
   repeated RuntimeSocketEndpoint sockets = 9;
-  optional bool default_route_present = 10;
+  // Legacy compatibility field. Use default_route_present_observed for observation quality.
+  bool default_route_present = 10 [deprecated = true];
+  optional bool default_route_present_observed = 11;
 }
 
 message MeshRuntimeDiagnostics {
