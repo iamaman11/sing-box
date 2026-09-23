@@ -14,13 +14,22 @@ const MAX_SOCKETS: usize = 96;
 const MAX_ROUTE_EVENTS: usize = 16;
 
 pub(crate) fn collect_host_network_diagnostics() -> RuntimeNetworkDiagnostics {
-    collect_network_diagnostics(None)
+    collect_network_diagnostics(None, None)
 }
 
 pub(crate) fn collect_container_network_diagnostics(
     container_name: &str,
 ) -> RuntimeNetworkDiagnostics {
-    collect_network_diagnostics(Some(container_name))
+    let mut pid_probe = bounded_command_probe(
+        "docker",
+        &["inspect", "--format", "{{.State.Pid}}", container_name],
+        6,
+        true,
+    );
+    let Some(pid) = parse_container_pid(&mut pid_probe) else {
+        return unavailable_network_diagnostics(&pid_probe);
+    };
+    collect_network_diagnostics(Some(pid), Some(container_name))
 }
 
 pub(crate) fn extract_route_events(events: &[String]) -> Vec<RuntimeRouteEvent> {
@@ -34,28 +43,32 @@ pub(crate) fn extract_route_events(events: &[String]) -> Vec<RuntimeRouteEvent> 
     parsed
 }
 
-fn collect_network_diagnostics(container_name: Option<&str>) -> RuntimeNetworkDiagnostics {
+fn collect_network_diagnostics(
+    namespace_pid: Option<u32>,
+    container_name: Option<&str>,
+) -> RuntimeNetworkDiagnostics {
     let mut interfaces_probe =
-        fixed_probe(container_name, &["ip", "-j", "address", "show"], 6, true);
+        fixed_probe(namespace_pid, &["ip", "-j", "address", "show"], 6, true);
     let interfaces = parse_interfaces(&mut interfaces_probe);
 
     let mut routes_probe = fixed_probe(
-        container_name,
+        namespace_pid,
         &["ip", "-j", "route", "show", "table", "all"],
         6,
         true,
     );
     let routes = parse_routes(&mut routes_probe);
-    let default_route_present = routes.iter().any(|route| route.destination == "default");
+    let default_route_present = default_route_observation(&routes_probe, &routes);
 
-    let mut rules_probe = fixed_probe(container_name, &["ip", "-j", "rule", "show"], 6, true);
+    let mut rules_probe =
+        fixed_probe(namespace_pid, &["ip", "-j", "rule", "show"], 6, true);
     let rules = parse_rules(&mut rules_probe);
 
-    let dns_probe = fixed_probe(container_name, &["cat", "/etc/resolv.conf"], 6, true);
+    let dns_probe = fixed_dns_probe(container_name);
     let dns = parse_dns(dns_probe);
 
     let mut sockets_probe = fixed_probe(
-        container_name,
+        namespace_pid,
         &["ss", "-H", "-n", "-t", "-u", "-a"],
         6,
         false,
@@ -77,20 +90,98 @@ fn collect_network_diagnostics(container_name: Option<&str>) -> RuntimeNetworkDi
 }
 
 fn fixed_probe(
-    container_name: Option<&str>,
+    namespace_pid: Option<u32>,
     command: &[&str],
     timeout_seconds: u64,
     require_output: bool,
 ) -> BoundedCommandProbe {
-    match container_name {
-        Some(container) => {
-            let mut args = Vec::with_capacity(command.len() + 2);
-            args.push("exec");
-            args.push(container);
-            args.extend_from_slice(command);
-            bounded_command_probe("docker", &args, timeout_seconds, require_output)
+    let Some(pid) = namespace_pid else {
+        return bounded_command_probe(command[0], &command[1..], timeout_seconds, require_output);
+    };
+    let (program, args) = container_namespace_command(pid, command);
+    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    bounded_command_probe(&program, &arg_refs, timeout_seconds, require_output)
+}
+
+fn container_namespace_command(pid: u32, command: &[&str]) -> (String, Vec<String>) {
+    let mut args = vec![
+        "-t".to_owned(),
+        pid.to_string(),
+        "-n".to_owned(),
+        "--".to_owned(),
+    ];
+    args.extend(command.iter().map(|value| (*value).to_owned()));
+    ("nsenter".to_owned(), args)
+}
+
+fn fixed_dns_probe(container_name: Option<&str>) -> BoundedCommandProbe {
+    let Some(container_name) = container_name else {
+        return bounded_command_probe("cat", &["/etc/resolv.conf"], 6, true);
+    };
+
+    let path_probe = bounded_command_probe(
+        "docker",
+        &[
+            "inspect",
+            "--format",
+            "{{.ResolvConfPath}}",
+            container_name,
+        ],
+        6,
+        true,
+    );
+    if path_probe.status != RuntimeProbeStatus::Ok {
+        return path_probe;
+    }
+    let resolv_conf_path = path_probe.stdout.trim().to_owned();
+    if resolv_conf_path.is_empty() {
+        let mut empty = path_probe;
+        empty.status = RuntimeProbeStatus::Empty;
+        return empty;
+    }
+    bounded_command_probe("cat", &[resolv_conf_path.as_str()], 6, true)
+}
+
+fn parse_container_pid(probe: &mut BoundedCommandProbe) -> Option<u32> {
+    if probe.status != RuntimeProbeStatus::Ok {
+        return None;
+    }
+    match probe.stdout.trim().parse::<u32>().ok().filter(|pid| *pid > 0) {
+        Some(pid) => Some(pid),
+        None => {
+            probe.status = RuntimeProbeStatus::ParseError;
+            None
         }
-        None => bounded_command_probe(command[0], &command[1..], timeout_seconds, require_output),
+    }
+}
+
+fn unavailable_network_diagnostics(probe: &BoundedCommandProbe) -> RuntimeNetworkDiagnostics {
+    RuntimeNetworkDiagnostics {
+        interfaces_probe: Some(probe.evidence()),
+        interfaces: Vec::new(),
+        routes_probe: Some(probe.evidence()),
+        routes: Vec::new(),
+        rules_probe: Some(probe.evidence()),
+        rules: Vec::new(),
+        dns: Some(RuntimeDnsDiagnostics {
+            probe: Some(probe.evidence()),
+            nameservers: Vec::new(),
+            search_domains: Vec::new(),
+        }),
+        sockets_probe: Some(probe.evidence()),
+        sockets: Vec::new(),
+        default_route_present: None,
+    }
+}
+
+fn default_route_observation(
+    probe: &BoundedCommandProbe,
+    routes: &[RuntimeNetworkRoute],
+) -> Option<bool> {
+    if probe.status == RuntimeProbeStatus::Ok {
+        Some(routes.iter().any(|route| route.destination == "default"))
+    } else {
+        None
     }
 }
 
@@ -421,6 +512,7 @@ fn parse_route_event(line: &str) -> Option<RuntimeRouteEvent> {
     Some(RuntimeRouteEvent {
         changed_count,
         window,
+        aggregate_counter_only: true,
     })
 }
 
@@ -460,6 +552,7 @@ mod tests {
             status: RuntimeProbeStatus::Ok,
             exit_code: Some(0),
             stdout: stdout.to_owned(),
+            stderr: String::new(),
         }
     }
 
@@ -534,6 +627,32 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].changed_count, 5);
         assert_eq!(parsed[0].window, "last 30 seconds");
+        assert!(parsed[0].aggregate_counter_only);
+    }
+
+    #[test]
+    fn container_network_probe_uses_host_namespace_tools() {
+        let (program, args) =
+            container_namespace_command(4242, &["ip", "-j", "route", "show", "table", "all"]);
+        assert_eq!(program, "nsenter");
+        assert_eq!(
+            args,
+            vec![
+                "-t", "4242", "-n", "--", "ip", "-j", "route", "show", "table", "all"
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "docker" || arg == "exec"));
+    }
+
+    #[test]
+    fn failed_route_observation_keeps_default_route_unknown() {
+        let probe = BoundedCommandProbe {
+            status: RuntimeProbeStatus::CommandNotFound,
+            exit_code: Some(127),
+            stdout: String::new(),
+            stderr: "ip: command not found".to_owned(),
+        };
+        assert_eq!(default_route_observation(&probe, &[]), None);
     }
 
     #[test]
