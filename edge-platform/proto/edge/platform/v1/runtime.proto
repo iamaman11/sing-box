@@ -249,6 +249,9 @@ message MeshRuntimeDiagnostics {
   optional bool ipv4_forwarding = 8;
   bool mesh_network_attached = 9;
   MeshContainerDiagnostics container = 10;
+  RuntimeProbeEvidence capability_probe = 11;
+  optional bool net_admin_present = 12;
+  optional bool net_raw_present = 13;
 }
 
 message MeshRuntimeState {
