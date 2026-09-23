@@ -231,8 +231,9 @@ async fn run_runtime_apply_with_desired(
                 )
             });
         return Err(format!(
-            "Mesh runtime convergence completed without READY: {}; {}",
+            "Mesh runtime convergence completed without READY: {}; diagnostics={}; {}",
             state.warnings.join("; "),
+            mesh_runtime_diagnostic_summary(&state),
             provider_summary
         ));
     }
@@ -279,8 +280,9 @@ async fn run_runtime_verify_with_desired(
     let state = verify_mesh_runtime_remote(&authority).await?;
     if !state.runtime_ready {
         return Err(format!(
-            "Mesh runtime verify did not observe READY: {}; {}",
+            "Mesh runtime verify did not observe READY: {}; diagnostics={}; {}",
             state.warnings.join("; "),
+            mesh_runtime_diagnostic_summary(&state),
             mesh_observation_summary(&provider_observation)
         ));
     }
@@ -334,9 +336,102 @@ fn print_mesh_runtime_result(
             "exact_image_ready": state.exact_image_ready,
             "runtime_ready": state.runtime_ready,
             "warnings": state.warnings,
+            "diagnostics": mesh_runtime_diagnostics_json(state.diagnostics.as_ref()),
         },
         "provider_observation": provider_observation,
     }))
+}
+
+fn runtime_probe_status_name(value: i32) -> &'static str {
+    match value {
+        1 => "OK",
+        2 => "TIMEOUT",
+        3 => "COMMAND_NOT_FOUND",
+        4 => "PERMISSION_DENIED",
+        5 => "UNSUPPORTED",
+        6 => "NON_ZERO",
+        7 => "EMPTY",
+        8 => "PARSE_ERROR",
+        9 => "OUTPUT_LIMIT",
+        _ => "UNSPECIFIED",
+    }
+}
+
+fn runtime_probe_json(
+    probe: Option<&edge_shared_types::RuntimeProbeEvidence>,
+) -> serde_json::Value {
+    match probe {
+        Some(probe) => serde_json::json!({
+            "status": runtime_probe_status_name(probe.status),
+            "exit_code": probe.exit_code,
+        }),
+        None => serde_json::json!({
+            "status": "UNSPECIFIED",
+            "exit_code": null,
+        }),
+    }
+}
+
+fn mesh_runtime_diagnostics_json(
+    diagnostics: Option<&edge_shared_types::MeshRuntimeDiagnostics>,
+) -> serde_json::Value {
+    let Some(diagnostics) = diagnostics else {
+        return serde_json::Value::Null;
+    };
+    let container = diagnostics.container.as_ref().map(|container| {
+        serde_json::json!({
+            "present": container.present,
+            "running": container.running,
+            "exit_code": container.exit_code,
+            "runtime_error_present": container.runtime_error_present,
+            "recent_events": container.recent_events,
+        })
+    });
+    serde_json::json!({
+        "warp_status_probe": runtime_probe_json(diagnostics.warp_status_probe.as_ref()),
+        "warp_connection_state": diagnostics.warp_connection_state,
+        "warp_settings_probe": runtime_probe_json(diagnostics.warp_settings_probe.as_ref()),
+        "tunnel_protocol": diagnostics.tunnel_protocol,
+        "tun_device_probe": runtime_probe_json(diagnostics.tun_device_probe.as_ref()),
+        "tun_device_present": diagnostics.tun_device_present,
+        "ipv4_forwarding_probe": runtime_probe_json(diagnostics.ipv4_forwarding_probe.as_ref()),
+        "ipv4_forwarding": diagnostics.ipv4_forwarding,
+        "mesh_network_attached": diagnostics.mesh_network_attached,
+        "capability_probe": runtime_probe_json(diagnostics.capability_probe.as_ref()),
+        "net_admin_present": diagnostics.net_admin_present,
+        "net_raw_present": diagnostics.net_raw_present,
+        "container": container,
+    })
+}
+
+fn mesh_runtime_diagnostic_summary(state: &edge_shared_types::MeshRuntimeState) -> String {
+    let Some(diagnostics) = state.diagnostics.as_ref() else {
+        return "absent".to_owned();
+    };
+    let recent_events = diagnostics
+        .container
+        .as_ref()
+        .map(|container| {
+            let start = container.recent_events.len().saturating_sub(8);
+            container.recent_events[start..].to_vec()
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "warp_status_probe": runtime_probe_json(diagnostics.warp_status_probe.as_ref()),
+        "warp_connection_state": diagnostics.warp_connection_state,
+        "warp_settings_probe": runtime_probe_json(diagnostics.warp_settings_probe.as_ref()),
+        "tunnel_protocol": diagnostics.tunnel_protocol,
+        "tun_device_probe": runtime_probe_json(diagnostics.tun_device_probe.as_ref()),
+        "tun_device_present": diagnostics.tun_device_present,
+        "ipv4_forwarding_probe": runtime_probe_json(diagnostics.ipv4_forwarding_probe.as_ref()),
+        "ipv4_forwarding": diagnostics.ipv4_forwarding,
+        "mesh_network_attached": diagnostics.mesh_network_attached,
+        "capability_probe": runtime_probe_json(diagnostics.capability_probe.as_ref()),
+        "net_admin_present": diagnostics.net_admin_present,
+        "net_raw_present": diagnostics.net_raw_present,
+        "recent_events": recent_events,
+    })
+    .to_string()
 }
 
 fn load_desired(path: &Path) -> Result<DesiredMeshState, String> {
