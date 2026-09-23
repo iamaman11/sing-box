@@ -376,16 +376,17 @@ def main() -> None:
     )
     require(
         'tokens[0] != "/mesh"' in mesh
-        and 'tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify", "runtime-cleanup"}' in mesh,
+        and 'tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
         "Mesh backend must expose only the bounded provider/runtime grammar",
     )
     require(
         "line3-mesh vpc-runtime-apply" in mesh
         and "line3-mesh vpc-runtime-verify" in mesh
+        and mesh.count("line3-mesh runtime-observe") == 1
         and mesh.count("line3-mesh runtime-cleanup") == 1
         and "line3-mesh cleanup-" not in mesh
         and "MESH_NODE_TOKEN" not in mesh,
-        "Mesh backend must expose only VPC-composed runtime operations plus one typed runtime cleanup, without raw token or provider cleanup surfaces",
+        "Mesh backend must expose only VPC-composed runtime operations plus one read-only runtime observation and one typed runtime cleanup, without raw token or provider cleanup surfaces",
     )
     require(
         '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' in mesh,
@@ -410,6 +411,14 @@ def main() -> None:
         mesh.count("line3-mesh vpc-runtime-apply") == 1
         and mesh.count("line3-mesh vpc-runtime-verify") == 1,
         "one Mesh workflow invocation must contain at most one typed runtime converge and one typed runtime verify call",
+    )
+    require(
+        "mesh-runtime-observe-provider-plan.json" in mesh
+        and "mesh-runtime-observe.json" in mesh
+        and '(.status == "READY" and .runtime.runtime_ready == true)' in mesh
+        and '(.status == "ABSENT" and .runtime.runtime_ready == false and .runtime.token_store_present == false and .runtime.container_running == false)' in mesh
+        and '(.status == "DEGRADED" and .runtime.runtime_ready == false and (.runtime.token_store_present == true or .runtime.container_running == true))' in mesh,
+        "Mesh runtime observation must stay read-only, provider-NOOP-gated, and classify READY/ABSENT/DEGRADED deterministically",
     )
     require(
         "mesh-runtime-cleanup-provider-before.json" in mesh
