@@ -918,6 +918,41 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_upgrade_recovery_restores_only_divergent_components() {
+        let current = release();
+
+        let agent_only = ApplicationRecoveryObservation {
+            application: ApplicationObservation {
+                observed_agent_sha256: Some("4".repeat(64)),
+                observed_bundle_digest: Some(current.bundle_digest.clone()),
+                runtime_ready: false,
+                current_release: Some(current.clone()),
+                previous_release: None,
+            },
+            backup_agent_sha256: Some(current.agent_sha256.clone()),
+            backup_bundle_digest: None,
+        };
+        let plan = plan_incomplete_upgrade_recovery(&desired(), &agent_only).unwrap();
+        assert_eq!(plan.class, ApplicationRecoveryPlanClass::Recover);
+        assert_eq!(plan.actions, vec![ApplicationRecoveryAction::RestoreAgent]);
+
+        let bundle_only = ApplicationRecoveryObservation {
+            application: ApplicationObservation {
+                observed_agent_sha256: Some(current.agent_sha256.clone()),
+                observed_bundle_digest: Some("5".repeat(64)),
+                runtime_ready: false,
+                current_release: Some(current.clone()),
+                previous_release: None,
+            },
+            backup_agent_sha256: None,
+            backup_bundle_digest: Some(current.bundle_digest.clone()),
+        };
+        let plan = plan_incomplete_upgrade_recovery(&desired(), &bundle_only).unwrap();
+        assert_eq!(plan.class, ApplicationRecoveryPlanClass::Recover);
+        assert_eq!(plan.actions, vec![ApplicationRecoveryAction::RestoreBundle]);
+    }
+
+    #[test]
     fn rollback_digest_is_stale_safe() {
         let current = release();
         let previous = PublishedApplicationRelease {
