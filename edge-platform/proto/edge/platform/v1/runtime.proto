@@ -228,6 +228,9 @@ enum RuntimeProbeStatus {
 message RuntimeProbeEvidence {
   RuntimeProbeStatus status = 1;
   optional int32 exit_code = 2;
+  // Bounded and secret-redacted detail. Populated only for approved failed probes.
+  optional string diagnostic_stdout = 3;
+  optional string diagnostic_stderr = 4;
 }
 
 message MeshContainerDiagnostics {
@@ -280,6 +283,8 @@ message RuntimeSocketEndpoint {
 message RuntimeRouteEvent {
   uint32 changed_count = 1;
   string window = 2;
+  // True means this is only an aggregate counter, not event-level route evidence.
+  bool aggregate_counter_only = 3;
 }
 
 message RuntimeNetworkDiagnostics {
@@ -292,7 +297,9 @@ message RuntimeNetworkDiagnostics {
   RuntimeDnsDiagnostics dns = 7;
   RuntimeProbeEvidence sockets_probe = 8;
   repeated RuntimeSocketEndpoint sockets = 9;
-  bool default_route_present = 10;
+  // Legacy compatibility field. Use default_route_present_observed for observation quality.
+  bool default_route_present = 10 [deprecated = true];
+  optional bool default_route_present_observed = 11;
 }
 
 message MeshRuntimeDiagnostics {

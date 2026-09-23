@@ -364,6 +364,8 @@ fn runtime_probe_json(
         Some(probe) => serde_json::json!({
             "status": runtime_probe_status_name(probe.status),
             "exit_code": probe.exit_code,
+            "diagnostic_stdout": probe.diagnostic_stdout,
+            "diagnostic_stderr": probe.diagnostic_stderr,
         }),
         None => serde_json::json!({
             "status": "UNSPECIFIED",
@@ -428,7 +430,7 @@ fn runtime_network_diagnostics_json(
                 "state": socket.state,
             })
         }).collect::<Vec<_>>(),
-        "default_route_present": diagnostics.default_route_present,
+        "default_route_present": diagnostics.default_route_present_observed,
     })
 }
 
@@ -497,7 +499,7 @@ fn runtime_network_summary_json(
         "routes_probe": runtime_probe_json(diagnostics.routes_probe.as_ref()),
         "rules_probe": runtime_probe_json(diagnostics.rules_probe.as_ref()),
         "sockets_probe": runtime_probe_json(diagnostics.sockets_probe.as_ref()),
-        "default_route_present": diagnostics.default_route_present,
+        "default_route_present": diagnostics.default_route_present_observed,
         "interfaces": interfaces,
         "routes": routes,
         "dns": diagnostics.dns.as_ref().map(|dns| serde_json::json!({
@@ -540,9 +542,10 @@ fn mesh_runtime_diagnostics_json(
         "container": container,
         "host_network": runtime_network_diagnostics_json(diagnostics.host_network.as_ref()),
         "container_network": runtime_network_diagnostics_json(diagnostics.container_network.as_ref()),
-        "route_events": diagnostics.route_events.iter().map(|event| serde_json::json!({
+        "route_churn_aggregates": diagnostics.route_events.iter().map(|event| serde_json::json!({
             "changed_count": event.changed_count,
             "window": event.window,
+            "aggregate_counter_only": event.aggregate_counter_only,
         })).collect::<Vec<_>>(),
     })
 }
@@ -575,9 +578,10 @@ fn mesh_runtime_diagnostic_summary(state: &edge_shared_types::MeshRuntimeState) 
         "recent_events": recent_events,
         "host_network": runtime_network_summary_json(diagnostics.host_network.as_ref()),
         "container_network": runtime_network_summary_json(diagnostics.container_network.as_ref()),
-        "route_events": diagnostics.route_events.iter().map(|event| serde_json::json!({
+        "route_churn_aggregates": diagnostics.route_events.iter().map(|event| serde_json::json!({
             "changed_count": event.changed_count,
             "window": event.window,
+            "aggregate_counter_only": event.aggregate_counter_only,
         })).collect::<Vec<_>>(),
     })
     .to_string()

@@ -31,8 +31,8 @@ use edge_shared_types::{
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeState, ReadBundleIdentityRequest,
     ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
-    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeStatus, VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
+    VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -429,7 +429,7 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     let datapaths_ready = if matches!(mode, AgentMode::Health) {
         true
     } else {
-        inspect_datapath_readiness(&mut state, &docker)
+        inspect_datapath_readiness(&mut state, &docker).await
     };
 
     state.ready = state.compose_file_present
@@ -2080,7 +2080,7 @@ fn inspect_compose(
     })
 }
 
-fn inspect_datapath_readiness(state: &mut AgentState, docker: &DockerObservation) -> bool {
+async fn inspect_datapath_readiness(state: &mut AgentState, docker: &DockerObservation) -> bool {
     let direct_ready = probe_direct_egress(&state.running_containers);
     state.direct_egress_ready = Some(direct_ready);
     if !direct_ready {
@@ -2098,10 +2098,11 @@ fn inspect_datapath_readiness(state: &mut AgentState, docker: &DockerObservation
     }
 
     let mesh_ready = if docker.container_present(MESH_CONTAINER) {
-        let evidence = probe_mesh_runtime(docker);
-        let ready = evidence.ready();
+        let diagnostics =
+            collect_mesh_runtime_diagnostics(docker, MeshDiagnosticDepth::Basic).await;
+        let ready = mesh_runtime_diagnostics_ready(&diagnostics);
         if !ready {
-            evidence.append_failure_warnings(&mut state.degraded_reasons);
+            append_mesh_runtime_diagnostic_warnings(&diagnostics, &mut state.degraded_reasons);
         }
         Some(ready)
     } else {
@@ -2235,93 +2236,35 @@ fn probe_warp_egress(running_containers: &[String]) -> bool {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MeshRuntimeProbeEvidence {
-    warp_connected: bool,
-    ipv4_forwarding: bool,
-    mesh_network_attached: bool,
-}
-
-impl MeshRuntimeProbeEvidence {
-    fn ready(&self) -> bool {
-        self.warp_connected && self.ipv4_forwarding && self.mesh_network_attached
-    }
-
-    fn append_failure_warnings(&self, warnings: &mut Vec<String>) {
-        if !self.warp_connected {
-            warnings.push("Mesh runtime warp-cli status is not Connected".to_owned());
-        }
-        if !self.ipv4_forwarding {
-            warnings.push("Mesh runtime IPv4 forwarding is not enabled".to_owned());
-        }
-        if !self.mesh_network_attached {
-            warnings.push(
-                "Mesh runtime container is not attached to the expected mesh network".to_owned(),
-            );
-        }
-    }
-}
-
-fn probe_mesh_runtime(docker: &DockerObservation) -> MeshRuntimeProbeEvidence {
-    let warp_connected =
-        bounded_command_output("docker", &["exec", MESH_CONTAINER, "warp-cli", "status"], 8)
-            .is_some_and(|output| output.lines().any(|line| line.contains("Connected")));
-    let ipv4_forwarding = bounded_command_output(
-        "docker",
-        &[
-            "exec",
-            MESH_CONTAINER,
-            "cat",
-            "/proc/sys/net/ipv4/ip_forward",
-        ],
-        6,
-    )
-    .is_some_and(|output| output.trim() == "1");
-    let mesh_network_attached = docker.container_on_mesh_network(MESH_CONTAINER);
-
-    MeshRuntimeProbeEvidence {
-        warp_connected,
-        ipv4_forwarding,
-        mesh_network_attached,
-    }
-}
-
-fn mesh_tunnel_protocol_evidence() -> String {
-    let Some(output) = bounded_command_output(
-        "docker",
-        &["exec", MESH_CONTAINER, "warp-cli", "settings"],
-        8,
-    ) else {
-        return "Mesh runtime tunnel protocol evidence: unavailable".to_owned();
-    };
-    let protocol = output
-        .lines()
-        .find(|line| line.to_ascii_lowercase().contains("protocol"))
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| line.chars().take(160).collect::<String>())
-        .unwrap_or_else(|| "not-reported".to_owned());
-    format!("Mesh runtime tunnel protocol evidence: {protocol}")
-}
-
 fn parse_warp_connection_state(probe: &BoundedCommandProbe) -> Option<String> {
-    if probe.status != RuntimeProbeStatus::Ok {
+    if !matches!(
+        probe.status,
+        RuntimeProbeStatus::Ok | RuntimeProbeStatus::NonZero
+    ) {
         return None;
     }
     let lowered = probe.stdout.to_ascii_lowercase();
-    if lowered.contains("disconnected") {
+    if lowered
+        .lines()
+        .any(|line| line.contains("disconnected") || line.contains("not connected"))
+    {
         Some("DISCONNECTED".to_owned())
-    } else if lowered.contains("connecting") {
+    } else if lowered.lines().any(|line| line.contains("connecting")) {
         Some("CONNECTING".to_owned())
     } else if lowered.lines().any(|line| line.contains("connected")) {
         Some("CONNECTED".to_owned())
-    } else {
+    } else if probe.status == RuntimeProbeStatus::Ok {
         Some("UNKNOWN".to_owned())
+    } else {
+        None
     }
 }
 
 fn parse_tunnel_protocol(probe: &BoundedCommandProbe) -> Option<String> {
-    if probe.status != RuntimeProbeStatus::Ok {
+    if !matches!(
+        probe.status,
+        RuntimeProbeStatus::Ok | RuntimeProbeStatus::NonZero
+    ) {
         return None;
     }
     let lowered = probe.stdout.to_ascii_lowercase();
@@ -2329,8 +2272,10 @@ fn parse_tunnel_protocol(probe: &BoundedCommandProbe) -> Option<String> {
         Some("MASQUE".to_owned())
     } else if lowered.contains("wireguard") {
         Some("WIREGUARD".to_owned())
-    } else {
+    } else if probe.status == RuntimeProbeStatus::Ok {
         Some("NOT_REPORTED".to_owned())
+    } else {
+        None
     }
 }
 
@@ -2439,9 +2384,9 @@ async fn collect_mesh_runtime_diagnostics(
     };
 
     MeshRuntimeDiagnostics {
-        warp_status_probe: Some(warp_status.evidence()),
+        warp_status_probe: Some(warp_status.diagnostic_evidence()),
         warp_connection_state,
-        warp_settings_probe: Some(warp_settings.evidence()),
+        warp_settings_probe: Some(warp_settings.diagnostic_evidence()),
         tunnel_protocol,
         tun_device_probe: Some(tun_device.evidence()),
         tun_device_present,
@@ -2468,8 +2413,10 @@ fn append_mesh_runtime_diagnostic_warnings(
     diagnostics: &MeshRuntimeDiagnostics,
     warnings: &mut Vec<String>,
 ) {
-    if diagnostics.warp_connection_state.as_deref() != Some("CONNECTED") {
-        warnings.push("Mesh runtime warp-cli status is not Connected".to_owned());
+    match diagnostics.warp_connection_state.as_deref() {
+        Some("CONNECTED") => {}
+        Some(state) => warnings.push(format!("Mesh runtime connection state is {state}")),
+        None => warnings.push("Mesh runtime connection state unavailable".to_owned()),
     }
     if diagnostics.ipv4_forwarding != Some(true) {
         warnings.push("Mesh runtime IPv4 forwarding is not enabled".to_owned());
@@ -2482,8 +2429,16 @@ fn append_mesh_runtime_diagnostic_warnings(
         && probe.status != RuntimeProbeStatus::Ok as i32
     {
         warnings.push(format!(
-            "Mesh runtime warp status probe failed: {}",
-            runtime_probe_status_label(probe.status)
+            "Mesh runtime WARP status probe failed: {}",
+            runtime_probe_failure_summary(probe)
+        ));
+    }
+    if let Some(probe) = diagnostics.warp_settings_probe.as_ref()
+        && probe.status != RuntimeProbeStatus::Ok as i32
+    {
+        warnings.push(format!(
+            "Mesh runtime WARP settings probe failed: {}",
+            runtime_probe_failure_summary(probe)
         ));
     }
     if let Some(probe) = diagnostics.ipv4_forwarding_probe.as_ref()
@@ -2491,8 +2446,27 @@ fn append_mesh_runtime_diagnostic_warnings(
     {
         warnings.push(format!(
             "Mesh runtime IPv4 forwarding probe failed: {}",
-            runtime_probe_status_label(probe.status)
+            runtime_probe_failure_summary(probe)
         ));
+    }
+}
+
+fn runtime_probe_failure_summary(probe: &RuntimeProbeEvidence) -> String {
+    let mut details = Vec::new();
+    if let Some(exit_code) = probe.exit_code {
+        details.push(format!("exit_code={exit_code}"));
+    }
+    if let Some(stdout) = probe.diagnostic_stdout.as_deref() {
+        details.push(format!("stdout={stdout:?}"));
+    }
+    if let Some(stderr) = probe.diagnostic_stderr.as_deref() {
+        details.push(format!("stderr={stderr:?}"));
+    }
+    let status = runtime_probe_status_label(probe.status);
+    if details.is_empty() {
+        status.to_owned()
+    } else {
+        format!("{status} {}", details.join(" "))
     }
 }
 
@@ -3045,54 +3019,12 @@ mod tests {
     }
 
     #[test]
-    fn mesh_runtime_probe_evidence_reports_each_failed_predicate() {
-        let evidence = MeshRuntimeProbeEvidence {
-            warp_connected: false,
-            ipv4_forwarding: true,
-            mesh_network_attached: false,
-        };
-        assert!(!evidence.ready());
-
-        let mut warnings = Vec::new();
-        evidence.append_failure_warnings(&mut warnings);
-        assert_eq!(
-            warnings,
-            vec![
-                "Mesh runtime warp-cli status is not Connected",
-                "Mesh runtime container is not attached to the expected mesh network",
-            ]
-        );
-    }
-
-    #[test]
-    fn mesh_tunnel_protocol_evidence_output_is_bounded_to_protocol_line() {
-        let raw = "mode: warp\ntunnel protocol: MASQUE\nother: value\n";
-        let protocol = raw
-            .lines()
-            .find(|line| line.to_ascii_lowercase().contains("protocol"))
-            .map(str::trim)
-            .unwrap();
-        assert_eq!(protocol, "tunnel protocol: MASQUE");
-    }
-
-    #[test]
-    fn mesh_runtime_probe_evidence_requires_all_predicates() {
-        assert!(
-            MeshRuntimeProbeEvidence {
-                warp_connected: true,
-                ipv4_forwarding: true,
-                mesh_network_attached: true,
-            }
-            .ready()
-        );
-    }
-
-    #[test]
     fn typed_mesh_probe_does_not_confuse_disconnected_with_connected() {
         let disconnected = BoundedCommandProbe {
             status: RuntimeProbeStatus::Ok,
             exit_code: Some(0),
             stdout: "Status update: Disconnected\n".to_owned(),
+            stderr: String::new(),
         };
         assert_eq!(
             parse_warp_connection_state(&disconnected).as_deref(),
@@ -3103,6 +3035,43 @@ mod tests {
             status: RuntimeProbeStatus::Ok,
             exit_code: Some(0),
             stdout: "Status update: Connected\n".to_owned(),
+            stderr: String::new(),
+        };
+        assert_eq!(
+            parse_warp_connection_state(&connected).as_deref(),
+            Some("CONNECTED")
+        );
+    }
+
+    #[test]
+    fn failed_warp_observation_is_not_explicit_disconnection() {
+        let failed = BoundedCommandProbe {
+            status: RuntimeProbeStatus::NonZero,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: "daemon IPC unavailable".to_owned(),
+        };
+        assert_eq!(parse_warp_connection_state(&failed), None);
+
+        let explicit = BoundedCommandProbe {
+            status: RuntimeProbeStatus::NonZero,
+            exit_code: Some(1),
+            stdout: "Status update: Disconnected\n".to_owned(),
+            stderr: "non-zero CLI status".to_owned(),
+        };
+        assert_eq!(
+            parse_warp_connection_state(&explicit).as_deref(),
+            Some("DISCONNECTED")
+        );
+    }
+
+    #[test]
+    fn non_zero_warp_probe_can_preserve_explicit_connected_state() {
+        let connected = BoundedCommandProbe {
+            status: RuntimeProbeStatus::NonZero,
+            exit_code: Some(1),
+            stdout: "Status update: Connected\n".to_owned(),
+            stderr: "non-zero CLI status".to_owned(),
         };
         assert_eq!(
             parse_warp_connection_state(&connected).as_deref(),
@@ -3116,6 +3085,7 @@ mod tests {
             status: RuntimeProbeStatus::Ok,
             exit_code: Some(0),
             stdout: "tunnel protocol: MASQUE\n".to_owned(),
+            stderr: String::new(),
         };
         assert_eq!(parse_tunnel_protocol(&masque).as_deref(), Some("MASQUE"));
 
@@ -3123,6 +3093,7 @@ mod tests {
             status: RuntimeProbeStatus::Ok,
             exit_code: Some(0),
             stdout: "protocol = WireGuard\n".to_owned(),
+            stderr: String::new(),
         };
         assert_eq!(
             parse_tunnel_protocol(&wireguard).as_deref(),
