@@ -256,7 +256,7 @@ def main() -> None:
         "application workflow must use the typed transient SSH lease",
     )
     require(
-        "cleanup_acceptance_access()" in application
+        "release_acceptance_access()" in application
         and "trap finish_acceptance EXIT" in application
         and "ACCESS_CLEANUP_ARMED=1" in application
         and "ACCESS_CLEANUP_ARMED=0" in application
