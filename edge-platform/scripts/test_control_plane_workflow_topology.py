@@ -616,6 +616,15 @@ def main() -> None:
         "candidate CI must derive durable Windows identity and reuse only the exact accepted artifact",
     )
     require(
+        edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 3
+        and "id: finalize" in edge_platform_ci
+        and "artifact_sha256: ${{ steps.finalize.outputs.artifact_sha256 }}" in edge_platform_ci
+        and "controller_sha256: ${{ steps.finalize.outputs.controller_sha256 }}" in edge_platform_ci
+        and "console_sha256: ${{ steps.finalize.outputs.console_sha256 }}" in edge_platform_ci
+        and "sing_box_binary_sha256: ${{ steps.finalize.outputs.sing_box_binary_sha256 }}" in edge_platform_ci,
+        "Windows reuse must skip only download/toolchain/build work while exact artifact finalization remains authoritative",
+    )
+    require(
         "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\")" in windows_input
         and "_reachable_package_dirs(repo_root)" in windows_input
         and "WINDOWS_BUILD_CONTRACT_PATH" in windows_input
