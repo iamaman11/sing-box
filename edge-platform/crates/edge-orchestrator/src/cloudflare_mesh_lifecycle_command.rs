@@ -10,7 +10,7 @@ use crate::cloudflare_mesh_lifecycle_service::{
 };
 use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
 use edge_controller_core::cloudflare_mesh_lifecycle::{
-    DesiredMeshState, MeshObservation, MeshRouteSpec,
+    ApplyAction, CleanupAction, DesiredMeshState, MeshObservation, MeshRouteSpec,
 };
 use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::Ipv4NetworkObservation;
@@ -682,6 +682,148 @@ fn mesh_runtime_diagnostic_summary(state: &edge_shared_types::MeshRuntimeState) 
         })).collect::<Vec<_>>(),
     })
     .to_string()
+}
+
+
+pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env(&desired)?;
+    let (_observation, plan) = plan_mesh_cleanup(&mut provider, &desired).await?;
+    if !matches!(plan.action, CleanupAction::Noop) || plan.destructive_digest.is_some() {
+        return Err(format!(
+            "acceptance Mesh clean room is not empty: action={:?}",
+            plan.action
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_converge_provider(
+    mesh_base_spec_path: &Path,
+    vpc_spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let (desired, _guest_vpc) = load_desired_with_verified_vpc_route(
+        mesh_base_spec_path,
+        vpc_spec_path,
+        application_spec_path,
+    )
+    .await?;
+    let mut provider = provider_from_env(&desired)?;
+    for _ in 0..4 {
+        let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
+        if matches!(plan.action, ApplyAction::Noop) {
+            wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default())
+                .await?;
+            return Ok(());
+        }
+        let authorized = authorize_mesh_apply(&desired, &observed, plan)?;
+        apply_mesh_once(
+            &mut provider,
+            &desired,
+            &authorized.authority.authority_digest,
+            MeshExecutionPolicy::default(),
+        )
+        .await?;
+    }
+    Err("Mesh provider convergence exceeded bounded one-mutation steps".to_owned())
+}
+
+pub(crate) async fn acceptance_runtime_apply(
+    mesh_base_spec_path: &Path,
+    vpc_spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let (desired, _guest_vpc) = load_desired_with_verified_vpc_route(
+        mesh_base_spec_path,
+        vpc_spec_path,
+        application_spec_path,
+    )
+    .await?;
+    let mut provider = provider_from_env(&desired)?;
+    let node_token = exact_mesh_node_token(&mut provider, &desired).await?;
+    let authority = resolve_application_authority_from_spec(application_spec_path).await?;
+    let state = converge_mesh_runtime_remote(&authority, node_token).await?;
+    if !state.runtime_ready || !state.exact_image_ready {
+        return Err(format!(
+            "Mesh runtime convergence completed without READY: {}",
+            state.warnings.join("; ")
+        ));
+    }
+    wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    Ok(())
+}
+
+pub(crate) async fn acceptance_runtime_verify(
+    mesh_base_spec_path: &Path,
+    vpc_spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let (desired, _guest_vpc) = load_desired_with_verified_vpc_route(
+        mesh_base_spec_path,
+        vpc_spec_path,
+        application_spec_path,
+    )
+    .await?;
+    let mut provider = provider_from_env(&desired)?;
+    let provider_observation =
+        wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    let authority = resolve_application_authority_from_spec(application_spec_path).await?;
+    let state = verify_mesh_runtime_remote(&authority).await?;
+    if !state.runtime_ready || !state.exact_image_ready {
+        return Err(format!(
+            "Mesh runtime verification did not observe READY: {}",
+            state.warnings.join("; ")
+        ));
+    }
+    if provider_observation.nodes.len() != 1 {
+        return Err("Mesh provider verification did not observe exactly one node".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_runtime_cleanup(
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let authority = resolve_application_authority_from_spec(application_spec_path).await?;
+    let state = cleanup_mesh_runtime_remote(&authority).await?;
+    if state.runtime_ready || state.token_store_present || state.container_running {
+        return Err("Mesh runtime cleanup did not prove exact absence".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_cleanup_provider_to_absent(
+    spec_path: &Path,
+) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env(&desired)?;
+    for _ in 0..4 {
+        let (observed, plan) = plan_mesh_cleanup(&mut provider, &desired).await?;
+        if matches!(plan.action, CleanupAction::Noop) {
+            if plan.destructive_digest.is_some()
+                || !observed.nodes.is_empty()
+                || !observed.routes.is_empty()
+            {
+                return Err("Mesh NOOP cleanup plan contained provider residue".to_owned());
+            }
+            return Ok(());
+        }
+        let destructive_digest = plan
+            .destructive_digest
+            .clone()
+            .ok_or_else(|| "Mesh cleanup mutation is missing destructive digest".to_owned())?;
+        let authorized = authorize_mesh_cleanup(&desired, &observed, plan)?;
+        cleanup_mesh_once(
+            &mut provider,
+            &desired,
+            &destructive_digest,
+            &authorized.authority.authority_digest,
+            MeshExecutionPolicy::default(),
+        )
+        .await?;
+    }
+    Err("Mesh provider cleanup exceeded bounded one-mutation steps".to_owned())
 }
 
 fn load_desired(path: &Path) -> Result<DesiredMeshState, String> {
