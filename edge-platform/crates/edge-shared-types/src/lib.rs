@@ -20,7 +20,7 @@ pub use release::v1::{
 };
 
 pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
-pub const RELEASE_SET_SCHEMA_VERSION: u32 = 4;
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 5;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 
@@ -94,6 +94,20 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
             "windows_runtime.sing_box_sha256 must equal sing_box.windows_amd64_sha256".to_owned(),
         );
     }
+    if release.schema_version < 5 {
+        if !windows.input_sha256.is_empty() || !windows.source_revision.is_empty() {
+            return Err(
+                "ReleaseSet schemas before v5 must not contain Windows reuse identity".to_owned(),
+            );
+        }
+    } else {
+        validate_sha256_bytes("windows_runtime.input_sha256", &windows.input_sha256)?;
+        validate_lower_hex(
+            "windows_runtime.source_revision",
+            &windows.source_revision,
+            40,
+        )?;
+    }
 
     let vm = release
         .vm_runtime
@@ -143,7 +157,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                 return Err("schema v3 must not contain VM runtime reuse identity".to_owned());
             }
         }
-        4 => {
+        4 | 5 => {
             validate_sha256_bytes(
                 "vm_runtime.edge_controller_sha256",
                 &vm.edge_controller_sha256,
