@@ -171,12 +171,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
                 .to_owned(),
         );
     }
-    let value = apply_machine_value(
-        Path::new(&args[0]),
-        &args[1],
-        Some(args[2].as_str()),
-    )
-    .await?;
+    let value = apply_machine_value(Path::new(&args[0]), &args[1], Some(args[2].as_str())).await?;
     print_json_value(value)
 }
 
@@ -372,7 +367,10 @@ pub(crate) async fn acceptance_create_machine(
 ) -> Result<(), String> {
     let value = apply_machine_value(spec_path, machine_id, None).await?;
     if value.get("action").and_then(serde_json::Value::as_str) != Some("CREATED")
-        || value.get("provider_ready").and_then(serde_json::Value::as_bool) != Some(true)
+        || value
+            .get("provider_ready")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
         || value
             .get("host_substrate_required")
             .and_then(serde_json::Value::as_bool)
@@ -2172,7 +2170,6 @@ async fn run_cleanup(args: &[String]) -> Result<(), String> {
     }))
 }
 
-
 pub(crate) async fn acceptance_require_clean_room(
     spec_path: &Path,
     machine_id: &str,
@@ -2452,10 +2449,7 @@ pub(crate) async fn acceptance_verify_substrate(
     Ok(())
 }
 
-pub(crate) async fn acceptance_reboot(
-    spec_path: &Path,
-    machine_id: &str,
-) -> Result<(), String> {
+pub(crate) async fn acceptance_reboot(spec_path: &Path, machine_id: &str) -> Result<(), String> {
     let desired = load_desired_state(spec_path)?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
