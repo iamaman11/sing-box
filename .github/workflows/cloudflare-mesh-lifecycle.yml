@@ -95,8 +95,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           REVISION: ${{ github.sha }}
           REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
-          REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
-      MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
+          MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
           VPC_SPEC_PATH: ${{ needs.authorize.outputs.vpc_spec_path }}
           APPLICATION_SPEC_PATH: ${{ needs.authorize.outputs.application_spec_path }}
         run: |
@@ -138,6 +137,7 @@ jobs:
     permissions:
       contents: read
     env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
       MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
 
     steps:
