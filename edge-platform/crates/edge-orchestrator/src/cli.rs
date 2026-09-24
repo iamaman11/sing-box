@@ -25,6 +25,7 @@ pub(crate) enum Command {
         command: ApplicationLifecycleCommand,
     },
     ApplicationAcceptance(ApplicationAcceptanceArgs),
+    ApplicationCleanup(ApplicationCleanupArgs),
     CloudflareDns {
         #[command(subcommand)]
         command: CloudflareDnsCommand,
@@ -53,6 +54,7 @@ impl Command {
         match self {
             Self::ApplicationLifecycle { .. } => "application-lifecycle",
             Self::ApplicationAcceptance(_) => "application-acceptance",
+            Self::ApplicationCleanup(_) => "application-cleanup",
             Self::CloudflareDns { .. } => "cloudflare-dns",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Line3Mesh { .. } => "line3-mesh",
@@ -67,6 +69,14 @@ pub(crate) struct ApplicationAcceptanceArgs {
     pub spec_path: PathBuf,
     pub artifact_manifest_path: PathBuf,
     pub edge_agent_artifact_path: PathBuf,
+    pub dns_spec_path: PathBuf,
+    pub mesh_base_spec_path: PathBuf,
+    pub vpc_spec_path: PathBuf,
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct ApplicationCleanupArgs {
+    pub spec_path: PathBuf,
     pub dns_spec_path: PathBuf,
     pub mesh_base_spec_path: PathBuf,
     pub vpc_spec_path: PathBuf,
@@ -564,6 +574,14 @@ mod tests {
     fn parses_typed_orchestrator_commands() {
         let digest = "a".repeat(64);
         let cases = [
+            vec![
+                "edge-orchestrator",
+                "application-cleanup",
+                "infra/application/disposable-acceptance.json",
+                "infra/cloudflare/application-acceptance-dns.json",
+                "infra/cloudflare/application-acceptance-mesh.json",
+                "infra/vultr/application-acceptance-vpc.json",
+            ],
             vec![
                 "edge-orchestrator",
                 "application-lifecycle",
