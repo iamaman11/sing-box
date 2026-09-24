@@ -76,7 +76,6 @@ struct CleanupPaths<'a> {
     vpc_spec: &'a Path,
 }
 
-
 #[derive(Debug, Serialize)]
 struct AcceptanceCertificate<'a> {
     outcome: &'a str,
@@ -193,20 +192,19 @@ pub(crate) async fn run(
 
     match result {
         Ok(success) => {
-            if let Err(detail) =
-                cleanup_environment(
-                    CleanupPaths {
-                        application_spec: &args.spec_path,
-                        dns_spec: &args.dns_spec_path,
-                        mesh_spec: &args.mesh_base_spec_path,
-                        vpc_spec: &args.vpc_spec_path,
-                    },
-                    &vultr_spec,
-                    &machine_id,
-                    source_revision,
-                    &progress,
-                )
-                .await
+            if let Err(detail) = cleanup_environment(
+                CleanupPaths {
+                    application_spec: &args.spec_path,
+                    dns_spec: &args.dns_spec_path,
+                    mesh_spec: &args.mesh_base_spec_path,
+                    vpc_spec: &args.vpc_spec_path,
+                },
+                &vultr_spec,
+                &machine_id,
+                source_revision,
+                &progress,
+            )
+            .await
             {
                 let disposition = terminal_disposition(TerminalPath::SuccessCleanupFailed);
                 let certificate = AcceptanceCertificate {
@@ -272,20 +270,19 @@ pub(crate) async fn run(
             ))
         }
         Err(failure) => {
-            let cleanup =
-                cleanup_environment(
-                    CleanupPaths {
-                        application_spec: &args.spec_path,
-                        dns_spec: &args.dns_spec_path,
-                        mesh_spec: &args.mesh_base_spec_path,
-                        vpc_spec: &args.vpc_spec_path,
-                    },
-                    &vultr_spec,
-                    &machine_id,
-                    source_revision,
-                    &progress,
-                )
-                .await;
+            let cleanup = cleanup_environment(
+                CleanupPaths {
+                    application_spec: &args.spec_path,
+                    dns_spec: &args.dns_spec_path,
+                    mesh_spec: &args.mesh_base_spec_path,
+                    vpc_spec: &args.vpc_spec_path,
+                },
+                &vultr_spec,
+                &machine_id,
+                source_revision,
+                &progress,
+            )
+            .await;
             let (disposition, cleanup_detail) = match cleanup {
                 Ok(()) => (terminal_disposition(TerminalPath::FailureCleaned), None),
                 Err(detail) => (
@@ -346,15 +343,7 @@ pub(crate) async fn run_cleanup(
         mesh_runtime_possible: false,
     };
 
-    match cleanup_environment(
-        paths,
-        &vultr_spec,
-        &machine_id,
-        source_revision,
-        &progress,
-    )
-    .await
-    {
+    match cleanup_environment(paths, &vultr_spec, &machine_id, source_revision, &progress).await {
         Ok(()) => {
             let certificate = CleanupCertificate {
                 outcome: "PASS",
@@ -830,18 +819,24 @@ mod tests {
     #[test]
     fn cleanup_contract_attempts_independent_owners_before_final_zero_leak_decision() {
         let source = include_str!("application_acceptance_command.rs");
-        let runtime = source.find("mesh_runtime_cleanup(paths.application_spec)").unwrap();
+        let runtime = source
+            .find("mesh_runtime_cleanup(paths.application_spec)")
+            .unwrap();
         let provider = source
             .find("mesh_cleanup_provider_to_absent(paths.mesh_spec)")
             .unwrap();
-        let dns = source.find("dns_cleanup_to_absent(paths.dns_spec)").unwrap();
+        let dns = source
+            .find("dns_cleanup_to_absent(paths.dns_spec)")
+            .unwrap();
         let access = source
             .find("acceptance_lease_release(vultr_spec, machine_id)")
             .unwrap();
         let vm = source
             .find("acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)")
             .unwrap();
-        let vpc = source.find("vpc_cleanup_to_absent(paths.vpc_spec)").unwrap();
+        let vpc = source
+            .find("vpc_cleanup_to_absent(paths.vpc_spec)")
+            .unwrap();
         let final_zero_leak = source.find("\"final_zero_leak\"").unwrap();
 
         assert!(runtime < provider);
