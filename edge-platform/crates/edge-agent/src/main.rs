@@ -929,8 +929,7 @@ struct ApplicationBundleRelease {
 async fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
     match execute_typed_bootstrap(stack_dir, mode).await {
         Ok(()) => {
-            let (post_state, verified) =
-                wait_for_bootstrap_post_state(stack_dir, mode).await;
+            let (post_state, verified) = wait_for_bootstrap_post_state(stack_dir, mode).await;
             let success = verified.success;
             BootstrapRuntimeResponse {
                 success,
@@ -975,10 +974,7 @@ async fn wait_for_bootstrap_post_state(
     unreachable!("post-bootstrap re-observation loop always returns on its final attempt")
 }
 
-fn should_reobserve_bootstrap_post_state(
-    verified: &BootstrapVerification,
-    attempt: usize,
-) -> bool {
+fn should_reobserve_bootstrap_post_state(verified: &BootstrapVerification, attempt: usize) -> bool {
     !verified.success && attempt + 1 < POST_BOOTSTRAP_REOBSERVE_ATTEMPTS
 }
 
