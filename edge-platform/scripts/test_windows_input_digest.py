@@ -20,7 +20,7 @@ def materialize(root: Path) -> None:
     workflow.write_text(
         "before\n"
         + subject.WINDOWS_BUILD_CONTRACT_BEGIN
-        + "\ncargo build exact-windows\npackage exact-windows\n"
+        + "\ncompile exact-windows\npackage exact-windows\n"
         + subject.WINDOWS_BUILD_CONTRACT_END
         + "\nafter\n",
         encoding="utf-8",
@@ -93,7 +93,7 @@ def test_contract_and_dependency_change_identity() -> None:
         workflow.write_text(
             "before\n"
             + subject.WINDOWS_BUILD_CONTRACT_BEGIN
-            + "\ncargo build changed-windows\npackage exact-windows\n"
+            + "\ncompile changed-windows\npackage exact-windows\n"
             + subject.WINDOWS_BUILD_CONTRACT_END
             + "\nafter\n",
             encoding="utf-8",
