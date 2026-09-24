@@ -233,9 +233,11 @@ def main() -> None:
         and 'operation, spec_path, machine_id = "access-release", tokens[2], tokens[3]' in vultr
         and "access-release)" in vultr
         and 'release_host_access "${spec}" "${machine}" "explicit"' in vultr
+        and '.status == "RELEASED"' in vultr
         and '.access.next_plan.action == "NOOP"' in vultr
-        and '.access.verified_absent == true' in vultr,
-        "Vultr backend must expose only the existing typed idempotent access release for CP15",
+        and '(.access.next_plan.matching_rule_ids | length) == 0' in vultr
+        and '.access.verified_absent == true' not in vultr,
+        "Vultr backend must accept the typed lease-release NOOP absence proof without depending on an internal verified_absent field",
     )
     require(
         '"cleanup-plan"' in vultr
