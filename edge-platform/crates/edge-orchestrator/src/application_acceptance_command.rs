@@ -3,7 +3,7 @@ use crate::application_lifecycle_command::{
     load_application_desired,
 };
 use crate::application_lifecycle_service::DesiredMutationMode;
-use crate::cli::ApplicationAcceptanceArgs;
+use crate::cli::{ApplicationAcceptanceArgs, ApplicationCleanupArgs};
 use crate::cloudflare_dns_lifecycle_command::{
     acceptance_cleanup_to_absent as dns_cleanup_to_absent, acceptance_create as dns_create,
     acceptance_require_clean_room as dns_require_clean_room,
@@ -57,6 +57,25 @@ struct AcceptanceSuccess {
     bundle_v1: String,
     bundle_v2: String,
 }
+
+#[derive(Debug, Serialize)]
+struct CleanupCertificate<'a> {
+    outcome: &'a str,
+    source_revision: &'a str,
+    release_set_sha256: &'a str,
+    terminal_stage: &'a str,
+    failure: Option<&'a str>,
+    zero_leaked_resources: &'a str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CleanupPaths<'a> {
+    application_spec: &'a Path,
+    dns_spec: &'a Path,
+    mesh_spec: &'a Path,
+    vpc_spec: &'a Path,
+}
+
 
 #[derive(Debug, Serialize)]
 struct AcceptanceCertificate<'a> {
@@ -175,8 +194,19 @@ pub(crate) async fn run(
     match result {
         Ok(success) => {
             if let Err(detail) =
-                cleanup_environment(&args, &vultr_spec, &machine_id, source_revision, &progress)
-                    .await
+                cleanup_environment(
+                    CleanupPaths {
+                        application_spec: &args.spec_path,
+                        dns_spec: &args.dns_spec_path,
+                        mesh_spec: &args.mesh_base_spec_path,
+                        vpc_spec: &args.vpc_spec_path,
+                    },
+                    &vultr_spec,
+                    &machine_id,
+                    source_revision,
+                    &progress,
+                )
+                .await
             {
                 let disposition = terminal_disposition(TerminalPath::SuccessCleanupFailed);
                 let certificate = AcceptanceCertificate {
@@ -243,8 +273,19 @@ pub(crate) async fn run(
         }
         Err(failure) => {
             let cleanup =
-                cleanup_environment(&args, &vultr_spec, &machine_id, source_revision, &progress)
-                    .await;
+                cleanup_environment(
+                    CleanupPaths {
+                        application_spec: &args.spec_path,
+                        dns_spec: &args.dns_spec_path,
+                        mesh_spec: &args.mesh_base_spec_path,
+                        vpc_spec: &args.vpc_spec_path,
+                    },
+                    &vultr_spec,
+                    &machine_id,
+                    source_revision,
+                    &progress,
+                )
+                .await;
             let (disposition, cleanup_detail) = match cleanup {
                 Ok(()) => (terminal_disposition(TerminalPath::FailureCleaned), None),
                 Err(detail) => (
@@ -280,6 +321,68 @@ pub(crate) async fn run(
     }
 }
 
+pub(crate) async fn run_cleanup(
+    args: ApplicationCleanupArgs,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    let desired = load_application_desired(&args.spec_path)?;
+    validate_disposable_acceptance(&desired)?;
+
+    let vultr_spec = PathBuf::from(&desired.vultr_spec_path);
+    let machine_id = desired.machine_id.clone();
+    let source_revision = context.release().accepted_revision.as_str();
+    let release_set_sha256 = context.release().release_set_sha256.as_str();
+    let paths = CleanupPaths {
+        application_spec: &args.spec_path,
+        dns_spec: &args.dns_spec_path,
+        mesh_spec: &args.mesh_base_spec_path,
+        vpc_spec: &args.vpc_spec_path,
+    };
+    let progress = AcceptanceProgress {
+        mutation_started: true,
+        vm_possible: true,
+        // Recovery must not depend on guest SSH/runtime health. Exact VM destruction below
+        // guarantees guest runtime removal while provider owners clean their own state.
+        mesh_runtime_possible: false,
+    };
+
+    match cleanup_environment(
+        paths,
+        &vultr_spec,
+        &machine_id,
+        source_revision,
+        &progress,
+    )
+    .await
+    {
+        Ok(()) => {
+            let certificate = CleanupCertificate {
+                outcome: "PASS",
+                source_revision,
+                release_set_sha256,
+                terminal_stage: "complete",
+                failure: None,
+                zero_leaked_resources: "PASS",
+            };
+            print_cleanup_certificate(&certificate)
+        }
+        Err(detail) => {
+            let certificate = CleanupCertificate {
+                outcome: "DIAGNOSTIC_REQUIRED",
+                source_revision,
+                release_set_sha256,
+                terminal_stage: "cleanup",
+                failure: Some(&detail),
+                zero_leaked_resources: "UNPROVEN",
+            };
+            print_cleanup_certificate(&certificate)?;
+            Err(format!(
+                "application cleanup could not prove zero leak: {detail}"
+            ))
+        }
+    }
+}
+
 async fn run_lifecycle(
     args: &ApplicationAcceptanceArgs,
     desired: &DesiredApplicationState,
@@ -289,7 +392,16 @@ async fn run_lifecycle(
 ) -> Result<AcceptanceSuccess, AcceptanceFailure> {
     timed_stage(
         "clean_room",
-        require_clean_room(args, vultr_spec, machine_id),
+        require_clean_room(
+            CleanupPaths {
+                application_spec: &args.spec_path,
+                dns_spec: &args.dns_spec_path,
+                mesh_spec: &args.mesh_base_spec_path,
+                vpc_spec: &args.vpc_spec_path,
+            },
+            vultr_spec,
+            machine_id,
+        ),
     )
     .await
     .map_err(|detail| AcceptanceFailure {
@@ -506,7 +618,7 @@ async fn run_lifecycle(
 }
 
 async fn require_clean_room(
-    args: &ApplicationAcceptanceArgs,
+    paths: CleanupPaths<'_>,
     vultr_spec: &Path,
     machine_id: &str,
 ) -> Result<(), String> {
@@ -515,25 +627,23 @@ async fn require_clean_room(
         vultr_require_clean_room(vultr_spec, machine_id),
     )
     .await?;
-    timed_stage(
-        "clean_room.dns",
-        dns_require_clean_room(&args.dns_spec_path),
-    )
-    .await?;
-    timed_stage(
-        "clean_room.mesh",
-        mesh_require_clean_room(&args.mesh_base_spec_path),
-    )
-    .await?;
-    timed_stage(
-        "clean_room.vpc",
-        vpc_require_clean_room(&args.vpc_spec_path),
-    )
-    .await
+    timed_stage("clean_room.dns", dns_require_clean_room(paths.dns_spec)).await?;
+    timed_stage("clean_room.mesh", mesh_require_clean_room(paths.mesh_spec)).await?;
+    timed_stage("clean_room.vpc", vpc_require_clean_room(paths.vpc_spec)).await
+}
+
+fn record_cleanup_failure(
+    failures: &mut Vec<String>,
+    label: &'static str,
+    result: Result<(), String>,
+) {
+    if let Err(err) = result {
+        failures.push(format!("{label}: {err}"));
+    }
 }
 
 async fn cleanup_environment(
-    args: &ApplicationAcceptanceArgs,
+    paths: CleanupPaths<'_>,
     vultr_spec: &Path,
     machine_id: &str,
     source_revision: &str,
@@ -543,71 +653,72 @@ async fn cleanup_environment(
         return Ok(());
     }
 
-    let mut cleanup_failure = None;
-    if progress.mesh_runtime_possible
-        && let Err(err) = timed_stage(
+    let mut failures = Vec::new();
+
+    if progress.mesh_runtime_possible {
+        let result = timed_stage(
             "cleanup.mesh_runtime",
-            mesh_runtime_cleanup(&args.spec_path),
+            mesh_runtime_cleanup(paths.application_spec),
         )
-        .await
-    {
-        cleanup_failure = Some(format!("mesh_runtime_cleanup: {err}"));
-    }
-    if cleanup_failure.is_none()
-        && let Err(err) = timed_stage(
-            "cleanup.mesh_provider",
-            mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path),
-        )
-        .await
-    {
-        cleanup_failure = Some(format!("mesh_provider_cleanup: {err}"));
-    }
-    if cleanup_failure.is_none()
-        && let Err(err) =
-            timed_stage("cleanup.dns", dns_cleanup_to_absent(&args.dns_spec_path)).await
-    {
-        cleanup_failure = Some(format!("dns_cleanup: {err}"));
-    }
-    if cleanup_failure.is_none()
-        && let Err(err) =
-            timed_stage("cleanup.vpc", vpc_cleanup_to_absent(&args.vpc_spec_path)).await
-    {
-        cleanup_failure = Some(format!("vpc_cleanup: {err}"));
+        .await;
+        record_cleanup_failure(&mut failures, "mesh_runtime_cleanup", result);
     }
 
-    if progress.vm_possible
-        && let Err(err) = timed_stage(
+    let result = timed_stage(
+        "cleanup.mesh_provider",
+        mesh_cleanup_provider_to_absent(paths.mesh_spec),
+    )
+    .await;
+    record_cleanup_failure(&mut failures, "mesh_provider_cleanup", result);
+
+    let result = timed_stage("cleanup.dns", dns_cleanup_to_absent(paths.dns_spec)).await;
+    record_cleanup_failure(&mut failures, "dns_cleanup", result);
+
+    if progress.vm_possible {
+        let result = timed_stage(
             "cleanup.access",
             acceptance_lease_release(vultr_spec, machine_id),
         )
-        .await
-    {
-        let access_failure = format!("access_release: {err}");
-        cleanup_failure = Some(match cleanup_failure {
-            Some(previous) => format!("{previous}; {access_failure}"),
-            None => access_failure,
-        });
-    }
+        .await;
+        record_cleanup_failure(&mut failures, "access_release", result);
 
-    if let Some(failure) = cleanup_failure {
-        return Err(failure);
-    }
-
-    if progress.vm_possible {
-        timed_stage(
+        let result = timed_stage(
             "cleanup.vm_support",
             acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision),
         )
-        .await
-        .map_err(|err| format!("vm_support_cleanup: {err}"))?;
+        .await;
+        record_cleanup_failure(&mut failures, "vm_support_cleanup", result);
     }
 
-    timed_stage(
+    // VPC cleanup intentionally follows VM destruction. That removes the strongest
+    // attachment dependency while the VPC owner still fresh-observes/fresh-plans
+    // every destructive transition.
+    let result = timed_stage("cleanup.vpc", vpc_cleanup_to_absent(paths.vpc_spec)).await;
+    record_cleanup_failure(&mut failures, "vpc_cleanup", result);
+
+    let final_zero_leak = timed_stage(
         "final_zero_leak",
-        require_clean_room(args, vultr_spec, machine_id),
+        require_clean_room(paths, vultr_spec, machine_id),
     )
-    .await
-    .map_err(|err| format!("final_zero_leak: {err}"))
+    .await;
+
+    match final_zero_leak {
+        Ok(()) => {
+            if !failures.is_empty() {
+                tracing::warn!(
+                    component = "edge-orchestrator",
+                    recovered_failures = %failures.join("; "),
+                    event = "application.acceptance.cleanup.recovered",
+                    "intermediate cleanup failures were superseded by independent final zero-leak proof"
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            failures.push(format!("final_zero_leak: {err}"));
+            Err(failures.join("; "))
+        }
+    }
 }
 
 fn operational_failure(stage: &'static str, detail: impl Into<String>) -> AcceptanceFailure {
@@ -653,6 +764,13 @@ fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(
 fn print_certificate(certificate: &AcceptanceCertificate<'_>) -> Result<(), String> {
     let output = serde_json::to_string_pretty(certificate)
         .map_err(|err| format!("failed to serialize application acceptance certificate: {err}"))?;
+    println!("{output}");
+    Ok(())
+}
+
+fn print_cleanup_certificate(certificate: &CleanupCertificate<'_>) -> Result<(), String> {
+    let output = serde_json::to_string_pretty(certificate)
+        .map_err(|err| format!("failed to serialize application cleanup certificate: {err}"))?;
     println!("{output}");
     Ok(())
 }
@@ -710,29 +828,29 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_contract_keeps_access_release_outside_feature_success_path() {
+    fn cleanup_contract_attempts_independent_owners_before_final_zero_leak_decision() {
         let source = include_str!("application_acceptance_command.rs");
-        let runtime = source
-            .find("mesh_runtime_cleanup(&args.spec_path)")
-            .unwrap();
+        let runtime = source.find("mesh_runtime_cleanup(paths.application_spec)").unwrap();
         let provider = source
-            .find("mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path)")
+            .find("mesh_cleanup_provider_to_absent(paths.mesh_spec)")
             .unwrap();
-        let dns = source
-            .find("dns_cleanup_to_absent(&args.dns_spec_path)")
-            .unwrap();
-        let vpc = source
-            .find("vpc_cleanup_to_absent(&args.vpc_spec_path)")
-            .unwrap();
+        let dns = source.find("dns_cleanup_to_absent(paths.dns_spec)").unwrap();
         let access = source
             .find("acceptance_lease_release(vultr_spec, machine_id)")
             .unwrap();
-        let failure_return = source
-            .find("if let Some(failure) = cleanup_failure")
+        let vm = source
+            .find("acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)")
             .unwrap();
+        let vpc = source.find("vpc_cleanup_to_absent(paths.vpc_spec)").unwrap();
+        let final_zero_leak = source.find(""final_zero_leak"").unwrap();
 
-        assert!(runtime < provider && provider < dns && dns < vpc && vpc < access);
-        assert!(access < failure_return);
+        assert!(runtime < provider);
+        assert!(provider < dns);
+        assert!(dns < access);
+        assert!(access < vm);
+        assert!(vm < vpc);
+        assert!(vpc < final_zero_leak);
+        assert!(!source.contains("cleanup_failure.is_none()"));
     }
 
     #[test]
