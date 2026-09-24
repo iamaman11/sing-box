@@ -673,28 +673,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_is_available_only_for_exact_noop_provider_state() {
+    async fn token_requires_exact_topology_but_not_pre_runtime_health() {
+        let desired = desired(&[]);
         let mut provider = FakeProvider {
             nodes: vec![CloudflareMeshNode {
                 id: "node-1".to_owned(),
                 name: "singbox-line3-poc".to_owned(),
-                status: Some("healthy".to_owned()),
+                status: Some("inactive".to_owned()),
             }],
             ..FakeProvider::default()
         };
+
+        let (_observed, plan) = plan_mesh_apply(&mut provider, &desired).await.unwrap();
+        assert_eq!(plan.action, ApplyAction::Noop);
         assert_eq!(
-            exact_mesh_node_token(&mut provider, &desired(&[]))
+            exact_mesh_node_token(&mut provider, &desired)
                 .await
                 .unwrap(),
             "opaque-mesh-node-token"
         );
-
-        let mut missing = FakeProvider::default();
         assert!(
-            exact_mesh_node_token(&mut missing, &desired(&[]))
+            wait_mesh_provider_healthy(&mut provider, &desired, policy())
                 .await
                 .is_err()
         );
+
+        let mut missing = FakeProvider::default();
+        assert!(exact_mesh_node_token(&mut missing, &desired).await.is_err());
     }
 
     #[tokio::test]

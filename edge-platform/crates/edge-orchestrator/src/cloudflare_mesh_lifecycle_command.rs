@@ -712,8 +712,8 @@ pub(crate) async fn acceptance_converge_provider(
     for _ in 0..4 {
         let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
         if matches!(plan.action, ApplyAction::Noop) {
-            wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default())
-                .await?;
+            // Provider topology must exist before the guest connector can start. Health is
+            // intentionally checked only after acceptance_runtime_apply starts that runtime.
             return Ok(());
         }
         let authorized = authorize_mesh_apply(&desired, &observed, plan)?;
