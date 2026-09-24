@@ -687,7 +687,9 @@ mod tests {
         let (_observed, plan) = plan_mesh_apply(&mut provider, &desired).await.unwrap();
         assert_eq!(plan.action, ApplyAction::Noop);
         assert_eq!(
-            exact_mesh_node_token(&mut provider, &desired).await.unwrap(),
+            exact_mesh_node_token(&mut provider, &desired)
+                .await
+                .unwrap(),
             "opaque-mesh-node-token"
         );
         assert!(
