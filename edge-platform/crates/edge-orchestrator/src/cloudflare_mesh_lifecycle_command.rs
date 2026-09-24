@@ -159,6 +159,7 @@ async fn run_cleanup_plan(args: &[String]) -> Result<(), String> {
         "plan": plan,
         "plan_authority": authorized.authority,
         "plan_disposition": authorized.disposition,
+        "mutations_performed": 0,
     }))
 }
 
