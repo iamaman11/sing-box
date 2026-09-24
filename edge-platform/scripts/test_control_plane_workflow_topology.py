@@ -253,6 +253,18 @@ def main() -> None:
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
+    application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
+    require(
+        "  verify:\n    needs: authorize\n    if: needs.authorize.outputs.operation != 'acceptance'"
+        in application_before_acceptance
+        and "  acceptance:\n    needs: authorize" in application,
+        "acceptance must skip the separate verify job and resolve its ReleaseSet once in its own job",
+    )
+    require(
+        acceptance_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and "needs.verify.outputs.release_tag" not in acceptance_job,
+        "acceptance job must perform exactly one durable ReleaseSet resolution",
+    )
     require(
         acceptance_job.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance') == 1,
         "normal acceptance must invoke exactly one typed lifecycle coordinator",
