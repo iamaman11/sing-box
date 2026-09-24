@@ -1,4 +1,5 @@
 name: Edge Control Plane
+run-name: ${{ startsWith(github.event.comment.body, '/') && github.event.comment.body || 'Edge Control Plane — NO_COMMAND' }}
 
 on:
   issue_comment:

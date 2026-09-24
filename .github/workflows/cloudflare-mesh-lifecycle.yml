@@ -43,7 +43,7 @@ jobs:
           if (
               len(tokens) == 3
               and tokens[0] == "/mesh"
-              and tokens[1] == "provider-cleanup-plan"
+              and tokens[1] in {"provider-cleanup-plan", "provider-cleanup-verify"}
           ):
               operation = tokens[1]
               mesh_spec_path = tokens[2]
@@ -106,7 +106,7 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
           test -f "${MESH_SPEC_PATH}"
-          if [[ "${REQUESTED_OPERATION}" != "provider-cleanup-plan" ]]; then
+          if [[ "${REQUESTED_OPERATION}" != "provider-cleanup-plan" && "${REQUESTED_OPERATION}" != "provider-cleanup-verify" ]]; then
             test -f "${VPC_SPEC_PATH}"
             test -f "${APPLICATION_SPEC_PATH}"
           fi
@@ -125,7 +125,7 @@ jobs:
 
   provider_observe:
     needs: [authorize, verify]
-    if: needs.authorize.outputs.operation == 'provider-cleanup-plan'
+    if: needs.authorize.outputs.operation == 'provider-cleanup-plan' || needs.authorize.outputs.operation == 'provider-cleanup-verify'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -137,6 +137,7 @@ jobs:
     permissions:
       contents: read
     env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
       MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
 
     steps:
@@ -173,25 +174,46 @@ jobs:
           printf 'EDGE_MESH_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${RUNNER_TEMP}/edge-platform-release/resolved.env" >> "${GITHUB_ENV}"
 
-      - name: Observe Mesh provider zero-state
+      - name: Observe Mesh provider cleanup state
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          result="${RUNNER_TEMP}/mesh-provider-zero-plan.json"
+          result="${RUNNER_TEMP}/mesh-provider-cleanup-plan.json"
           "${EDGE_MESH_ORCHESTRATOR}" line3-mesh cleanup-plan "${MESH_SPEC_PATH}" | tee "${result}"
+
           jq -e '
-            .plan_disposition == "NOOP"
-            and .plan.action.kind == "NOOP"
-            and .plan.destructive_digest == null
-            and .mutations_performed == 0
+            .mutations_performed == 0
+            and (
+              (.plan_disposition == "NOOP"
+                and .plan.action.kind == "NOOP"
+                and .plan.destructive_digest == null)
+              or
+              (.plan_disposition == "MUTATE"
+                and (.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")
+                and (.plan.destructive_digest | type == "string")
+                and (.plan.destructive_digest | test("^[0-9a-f]{64}$")))
+            )
           ' "${result}" >/dev/null
 
+          if [[ "${REQUESTED_OPERATION}" == "provider-cleanup-verify" ]]; then
+            jq -e '
+              .plan_disposition == "NOOP"
+              and .plan.action.kind == "NOOP"
+              and .plan.destructive_digest == null
+            ' "${result}" >/dev/null
+          fi
+
           {
-            echo '### Cloudflare Mesh provider zero-state result'
+            echo '### Cloudflare Mesh provider cleanup observation'
             echo
-            echo 'Provider-only read-only observation. No SSH authority, controller egress, Vultr access lease, or provider mutation surface is used.'
+            if [[ "${REQUESTED_OPERATION}" == "provider-cleanup-verify" ]]; then
+              echo 'Read-only zero-state assertion: exact provider cleanup plan must be NOOP.'
+            else
+              echo 'Read-only plan: both a valid MUTATE cleanup plan and NOOP are successful observations.'
+            fi
+            echo 'No SSH authority, controller egress, Vultr access lease, or provider mutation surface is used.'
             echo
             echo '~~~json'
             cat "${result}"
@@ -200,7 +222,7 @@ jobs:
 
   execute:
     needs: [authorize, verify]
-    if: needs.authorize.outputs.operation != 'provider-cleanup-plan'
+    if: needs.authorize.outputs.operation != 'provider-cleanup-plan' && needs.authorize.outputs.operation != 'provider-cleanup-verify'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr

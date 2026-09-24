@@ -47,6 +47,9 @@ jobs:
           if tokens == ["/application", "acceptance"]:
               operation = "acceptance"
               spec_path = "infra/application/disposable-acceptance.json"
+          elif tokens == ["/application", "cleanup"]:
+              operation = "cleanup"
+              spec_path = "infra/application/disposable-acceptance.json"
           elif len(tokens) == 3 and tokens[0] == "/application" and tokens[1] in {
               "plan", "apply", "verify", "upgrade", "recover-plan", "rollback-plan"
           }:
@@ -94,7 +97,7 @@ jobs:
 
   verify:
     needs: authorize
-    if: needs.authorize.outputs.operation != 'acceptance'
+    if: needs.authorize.outputs.operation != 'acceptance' && needs.authorize.outputs.operation != 'cleanup'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -135,7 +138,7 @@ jobs:
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
-    if: needs.authorize.outputs.operation != 'acceptance'
+    if: needs.authorize.outputs.operation != 'acceptance' && needs.authorize.outputs.operation != 'cleanup'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -346,6 +349,108 @@ jobs:
             cat "${result}"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  cleanup:
+    needs: authorize
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    if: needs.authorize.outputs.operation == 'cleanup'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+      DNS_SPEC_PATH: infra/cloudflare/application-acceptance-dns.json
+      MESH_SPEC_PATH: infra/cloudflare/application-acceptance-mesh.json
+      VPC_SPEC_PATH: infra/vultr/application-acceptance-vpc.json
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${SPEC_PATH}"
+          test -f "${DNS_SPEC_PATH}"
+          test -f "${MESH_SPEC_PATH}"
+          test -f "${VPC_SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Validate disposable cleanup authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(jq -er '.environment' "${SPEC_PATH}")" = "application-acceptance"
+          test "$(jq -er '.machine_id' "${SPEC_PATH}")" = "application-acceptance-1"
+          test "$(jq -er '.record_name' "${DNS_SPEC_PATH}")" = "stage2-acceptance.alegria.by"
+          test "$(jq -er '.environment' "${VPC_SPEC_PATH}")" = "application-acceptance"
+          test "$(jq -er '.machine_id' "${VPC_SPEC_PATH}")" = "application-acceptance-1"
+          if grep -R --fixed-strings -n "miu.alegria.by" \
+              "${MESH_SPEC_PATH}" "${DNS_SPEC_PATH}" "${VPC_SPEC_PATH}" "${SPEC_PATH}"; then
+            echo "disposable cleanup must not reference permanent production DNS" >&2
+            exit 1
+          fi
+
+      - name: Run typed disposable cleanup coordinator
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/application-cleanup-result.json"
+          set +e
+          "${EDGE_APPLICATION_ORCHESTRATOR}" application-cleanup \
+            "${SPEC_PATH}" \
+            "${DNS_SPEC_PATH}" \
+            "${MESH_SPEC_PATH}" \
+            "${VPC_SPEC_PATH}" \
+            | tee "${result}"
+          operation_rc="${PIPESTATUS[0]}"
+          set -e
+
+          if [[ -s "${result}" ]]; then
+            {
+              echo '### Disposable application cleanup'
+              echo '~~~json'
+              cat "${result}"
+              echo '~~~'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          exit "${operation_rc}"
+
 
   acceptance:
     needs: authorize
