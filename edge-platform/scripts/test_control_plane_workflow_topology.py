@@ -127,8 +127,8 @@ def main() -> None:
         )
 
     require(
-        application.count("group: vultr-control-plane-production") == 2,
-        "application backend must serialize execute and acceptance mutation jobs",
+        application.count("group: vultr-control-plane-production") == 3,
+        "application backend must serialize execute, cleanup and acceptance mutation jobs",
     )
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
@@ -253,12 +253,14 @@ def main() -> None:
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
+    cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
     require(
-        "  verify:\n    needs: authorize\n    if: needs.authorize.outputs.operation != 'acceptance'"
+        "  verify:\n    needs: authorize\n    if: needs.authorize.outputs.operation != 'acceptance' && needs.authorize.outputs.operation != 'cleanup'"
         in application_before_acceptance
+        and "  cleanup:\n    needs: authorize" in application
         and "  acceptance:\n    needs: authorize" in application,
-        "acceptance must skip the separate verify job and resolve its ReleaseSet once in its own job",
+        "disposable cleanup and acceptance must skip the separate verify job and resolve their ReleaseSet in their own jobs",
     )
     require(
         acceptance_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
@@ -268,6 +270,18 @@ def main() -> None:
     require(
         acceptance_job.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance') == 1,
         "normal acceptance must invoke exactly one typed lifecycle coordinator",
+    )
+    require(
+        cleanup_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and "needs.verify.outputs.release_tag" not in cleanup_job
+        and cleanup_job.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-cleanup') == 1,
+        "disposable cleanup must resolve one exact ReleaseSet and invoke exactly one typed cleanup coordinator",
+    )
+    require(
+        "VULTR_SSH_PRIVATE_KEY" not in cleanup_job
+        and "EDGE_SSH_PRIVATE_KEY_PATH" not in cleanup_job
+        and "api.ipify.org" not in cleanup_job,
+        "disposable cleanup recovery must not depend on guest SSH authority or controller egress discovery",
     )
     for forbidden in [
         "vultr-lifecycle apply ",
@@ -396,9 +410,9 @@ def main() -> None:
     )
 
     require(
-        "require_clean_room(args, vultr_spec, machine_id)" in acceptance_coordinator
+        "CleanupPaths {" in acceptance_coordinator
         and "progress.mutation_started = true" in acceptance_coordinator
-        and acceptance_coordinator.index("require_clean_room(args, vultr_spec, machine_id)")
+        and acceptance_coordinator.index('"clean_room"')
         < acceptance_coordinator.index("progress.mutation_started = true"),
         "typed acceptance must prove full clean room before the first mutation",
     )
@@ -412,17 +426,23 @@ def main() -> None:
         "typed acceptance must retain exactly one explicit reboot for persistence verification",
     )
     cleanup_order = [
-        "mesh_runtime_cleanup(&args.spec_path)",
-        "mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path)",
-        "dns_cleanup_to_absent(&args.dns_spec_path)",
-        "vpc_cleanup_to_absent(&args.vpc_spec_path)",
+        "mesh_runtime_cleanup(paths.application_spec)",
+        "mesh_cleanup_provider_to_absent(paths.mesh_spec)",
+        "dns_cleanup_to_absent(paths.dns_spec)",
         "acceptance_lease_release(vultr_spec, machine_id)",
         "acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)",
+        "vpc_cleanup_to_absent(paths.vpc_spec)",
+        '"final_zero_leak"',
     ]
     cleanup_positions = [acceptance_coordinator.index(marker) for marker in cleanup_order]
     require(
         cleanup_positions == sorted(cleanup_positions),
-        "typed acceptance compensation order must be runtime -> Mesh -> DNS -> VPC -> access -> VM/support",
+        "typed acceptance cleanup must attempt runtime -> Mesh -> DNS -> access -> VM/support -> VPC -> final zero-leak",
+    )
+    require(
+        "cleanup_failure.is_none()" not in acceptance_coordinator
+        and "application.acceptance.cleanup.recovered" in acceptance_coordinator,
+        "one owner cleanup error must not globally short-circuit independent cleanup owners",
     )
     require(
         "context.release().accepted_revision.as_str()" in acceptance_coordinator
@@ -457,7 +477,7 @@ def main() -> None:
     )
     require(
         'tokens[0] == "/mesh"' in mesh
-        and 'tokens[1] == "provider-cleanup-plan"' in mesh
+        and 'tokens[1] in {"provider-cleanup-plan", "provider-cleanup-verify"}' in mesh
         and 'len(tokens) == 3' in mesh
         and 'tokens[1] in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
         "Mesh backend must expose only the bounded provider/runtime grammar plus one provider-only CP16 observation",
@@ -525,11 +545,11 @@ def main() -> None:
     provider_observe = mesh.split("  provider_observe:\n", 1)[1].split("\n  execute:", 1)[0]
     require(
         "line3-mesh cleanup-plan" in provider_observe
-        and '.plan_disposition == "NOOP"' in provider_observe
-        and '.plan.action.kind == "NOOP"' in provider_observe
-        and '.plan.destructive_digest == null' in provider_observe
-        and ".mutations_performed == 0" in provider_observe,
-        "CP16 Mesh provider observation must be read-only and require exact zero-state",
+        and ".mutations_performed == 0" in provider_observe
+        and '"provider-cleanup-verify"' in provider_observe
+        and '(.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' in provider_observe
+        and '.plan.action.kind == "NOOP"' in provider_observe,
+        "Mesh provider plan must be read-only for MUTATE/NOOP, while explicit verify requires exact zero-state",
     )
     require(
         "EDGE_RELEASE_CONTEXT_PATH" in provider_observe
