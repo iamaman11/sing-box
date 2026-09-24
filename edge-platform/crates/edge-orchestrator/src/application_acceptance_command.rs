@@ -32,7 +32,9 @@ use edge_controller_core::application_lifecycle::{
 };
 use edge_orchestrator::OrchestrationContext;
 use serde::Serialize;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Debug, Default)]
 struct AcceptanceProgress {
@@ -129,6 +131,30 @@ fn terminal_disposition(path: TerminalPath) -> TerminalDisposition {
             zero_leaked_resources: "UNPROVEN",
         },
     }
+}
+
+async fn timed_stage<T, F>(stage: &'static str, future: F) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    let started = Instant::now();
+    tracing::info!(
+        component = "edge-orchestrator",
+        stage,
+        event = "application.acceptance.stage.start",
+        "application acceptance stage started"
+    );
+    let result = future.await;
+    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    tracing::info!(
+        component = "edge-orchestrator",
+        stage,
+        outcome = if result.is_ok() { "PASS" } else { "FAIL" },
+        elapsed_ms,
+        event = "application.acceptance.stage.terminal",
+        "application acceptance stage completed"
+    );
+    result
 }
 
 pub(crate) async fn run(
@@ -261,96 +287,135 @@ async fn run_lifecycle(
     machine_id: &str,
     progress: &mut AcceptanceProgress,
 ) -> Result<AcceptanceSuccess, AcceptanceFailure> {
-    require_clean_room(args, vultr_spec, machine_id)
-        .await
-        .map_err(|detail| AcceptanceFailure {
-            stage: "clean_room",
-            detail,
-            cleanup_allowed: false,
-        })?;
+    timed_stage(
+        "clean_room",
+        require_clean_room(args, vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|detail| AcceptanceFailure {
+        stage: "clean_room",
+        detail,
+        cleanup_allowed: false,
+    })?;
 
     progress.mutation_started = true;
-    vpc_create(&args.vpc_spec_path)
+    timed_stage("vpc_create", vpc_create(&args.vpc_spec_path))
         .await
         .map_err(|detail| operational_failure("vpc_create", detail))?;
 
     progress.vm_possible = true;
-    acceptance_create_machine(vultr_spec, machine_id)
-        .await
-        .map_err(|detail| operational_failure("vm_create", detail))?;
+    timed_stage(
+        "vm_create",
+        acceptance_create_machine(vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|detail| operational_failure("vm_create", detail))?;
 
-    acceptance_lease_acquire(vultr_spec, machine_id)
-        .await
-        .map_err(|detail| operational_failure("access_acquire", detail))?;
+    timed_stage(
+        "access_acquire",
+        acceptance_lease_acquire(vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|detail| operational_failure("access_acquire", detail))?;
 
-    acceptance_converge_substrate(vultr_spec, machine_id)
-        .await
-        .map_err(|detail| operational_failure("substrate_converge", detail))?;
+    timed_stage(
+        "substrate_converge",
+        acceptance_converge_substrate(vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|detail| operational_failure("substrate_converge", detail))?;
 
-    vpc_attach_and_verify(&args.vpc_spec_path)
+    timed_stage("vpc_attach", vpc_attach_and_verify(&args.vpc_spec_path))
         .await
         .map_err(|detail| operational_failure("vpc_attach", detail))?;
-    acceptance_verify_substrate(vultr_spec, machine_id)
-        .await
-        .map_err(|detail| operational_failure("substrate_after_vpc", detail))?;
+    timed_stage(
+        "substrate_after_vpc",
+        acceptance_verify_substrate(vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|detail| operational_failure("substrate_after_vpc", detail))?;
 
-    dns_create(&args.dns_spec_path, &args.spec_path)
-        .await
-        .map_err(|detail| operational_failure("dns_create", detail))?;
+    timed_stage(
+        "dns_create",
+        dns_create(&args.dns_spec_path, &args.spec_path),
+    )
+    .await
+    .map_err(|detail| operational_failure("dns_create", detail))?;
 
-    let (release_v1, bundle_v1) = acceptance_apply_desired(
-        desired,
-        &args.artifact_manifest_path,
-        &args.edge_agent_artifact_path,
-        DesiredMutationMode::Apply,
-        ApplicationPlanClass::Apply,
+    let (release_v1, bundle_v1) = timed_stage(
+        "application_v1",
+        acceptance_apply_desired(
+            desired,
+            &args.artifact_manifest_path,
+            &args.edge_agent_artifact_path,
+            DesiredMutationMode::Apply,
+            ApplicationPlanClass::Apply,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("application_v1", detail))?;
 
-    mesh_converge_provider(
-        &args.mesh_base_spec_path,
-        &args.vpc_spec_path,
-        &args.spec_path,
+    timed_stage(
+        "mesh_provider",
+        mesh_converge_provider(
+            &args.mesh_base_spec_path,
+            &args.vpc_spec_path,
+            &args.spec_path,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("mesh_provider", detail))?;
 
     progress.mesh_runtime_possible = true;
-    mesh_runtime_apply(
-        &args.mesh_base_spec_path,
-        &args.vpc_spec_path,
-        &args.spec_path,
+    timed_stage(
+        "mesh_runtime",
+        mesh_runtime_apply(
+            &args.mesh_base_spec_path,
+            &args.vpc_spec_path,
+            &args.spec_path,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("mesh_runtime", detail))?;
-    mesh_runtime_verify(
-        &args.mesh_base_spec_path,
-        &args.vpc_spec_path,
-        &args.spec_path,
+    timed_stage(
+        "mesh_runtime_verify",
+        mesh_runtime_verify(
+            &args.mesh_base_spec_path,
+            &args.vpc_spec_path,
+            &args.spec_path,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("mesh_runtime_verify", detail))?;
 
-    acceptance_apply_desired(
-        desired,
-        &args.artifact_manifest_path,
-        &args.edge_agent_artifact_path,
-        DesiredMutationMode::Apply,
-        ApplicationPlanClass::Noop,
+    timed_stage(
+        "application_v1_noop",
+        acceptance_apply_desired(
+            desired,
+            &args.artifact_manifest_path,
+            &args.edge_agent_artifact_path,
+            DesiredMutationMode::Apply,
+            ApplicationPlanClass::Noop,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("application_v1_noop", detail))?;
-    acceptance_verify_desired(
-        desired,
-        &args.artifact_manifest_path,
-        &args.edge_agent_artifact_path,
+    timed_stage(
+        "application_v1_verify",
+        acceptance_verify_desired(
+            desired,
+            &args.artifact_manifest_path,
+            &args.edge_agent_artifact_path,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("application_v1_verify", detail))?;
-    dns_verify_noop(&args.dns_spec_path, &args.spec_path)
-        .await
-        .map_err(|detail| operational_failure("dns_noop", detail))?;
+    timed_stage(
+        "dns_noop",
+        dns_verify_noop(&args.dns_spec_path, &args.spec_path),
+    )
+    .await
+    .map_err(|detail| operational_failure("dns_noop", detail))?;
 
     let mut desired_v2 = desired.clone();
     let line2 = desired_v2.runtime_policy.line2.as_mut().ok_or_else(|| {
@@ -361,12 +426,15 @@ async fn run_lifecycle(
         .validate()
         .map_err(|err| operational_failure("application_v2_spec", err.to_string()))?;
 
-    let (release_v2, bundle_v2) = acceptance_apply_desired(
-        &desired_v2,
-        &args.artifact_manifest_path,
-        &args.edge_agent_artifact_path,
-        DesiredMutationMode::Upgrade,
-        ApplicationPlanClass::Upgrade,
+    let (release_v2, bundle_v2) = timed_stage(
+        "application_v2_upgrade",
+        acceptance_apply_desired(
+            &desired_v2,
+            &args.artifact_manifest_path,
+            &args.edge_agent_artifact_path,
+            DesiredMutationMode::Upgrade,
+            ApplicationPlanClass::Upgrade,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("application_v2_upgrade", detail))?;
@@ -377,40 +445,55 @@ async fn run_lifecycle(
         ));
     }
 
-    acceptance_rollback(
-        desired,
-        &release_v2,
-        &release_v1,
-        &args.artifact_manifest_path,
-        &args.edge_agent_artifact_path,
+    timed_stage(
+        "application_rollback",
+        acceptance_rollback(
+            desired,
+            &release_v2,
+            &release_v1,
+            &args.artifact_manifest_path,
+            &args.edge_agent_artifact_path,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("application_rollback", detail))?;
 
-    acceptance_reboot(vultr_spec, machine_id)
+    timed_stage("vm_reboot", acceptance_reboot(vultr_spec, machine_id))
         .await
         .map_err(|detail| operational_failure("vm_reboot", detail))?;
-    acceptance_verify_substrate(vultr_spec, machine_id)
-        .await
-        .map_err(|detail| operational_failure("substrate_after_reboot", detail))?;
-    acceptance_verify_desired(
-        desired,
-        &args.artifact_manifest_path,
-        &args.edge_agent_artifact_path,
+    timed_stage(
+        "substrate_after_reboot",
+        acceptance_verify_substrate(vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|detail| operational_failure("substrate_after_reboot", detail))?;
+    timed_stage(
+        "application_after_reboot",
+        acceptance_verify_desired(
+            desired,
+            &args.artifact_manifest_path,
+            &args.edge_agent_artifact_path,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("application_after_reboot", detail))?;
-    mesh_runtime_verify(
-        &args.mesh_base_spec_path,
-        &args.vpc_spec_path,
-        &args.spec_path,
+    timed_stage(
+        "mesh_after_reboot",
+        mesh_runtime_verify(
+            &args.mesh_base_spec_path,
+            &args.vpc_spec_path,
+            &args.spec_path,
+        ),
     )
     .await
     .map_err(|detail| operational_failure("mesh_after_reboot", detail))?;
-    dns_verify_noop(&args.dns_spec_path, &args.spec_path)
-        .await
-        .map_err(|detail| operational_failure("dns_after_reboot", detail))?;
-    vpc_verify(&args.vpc_spec_path)
+    timed_stage(
+        "dns_after_reboot",
+        dns_verify_noop(&args.dns_spec_path, &args.spec_path),
+    )
+    .await
+    .map_err(|detail| operational_failure("dns_after_reboot", detail))?;
+    timed_stage("vpc_after_reboot", vpc_verify(&args.vpc_spec_path))
         .await
         .map_err(|detail| operational_failure("vpc_after_reboot", detail))?;
 
@@ -427,10 +510,26 @@ async fn require_clean_room(
     vultr_spec: &Path,
     machine_id: &str,
 ) -> Result<(), String> {
-    vultr_require_clean_room(vultr_spec, machine_id).await?;
-    dns_require_clean_room(&args.dns_spec_path).await?;
-    mesh_require_clean_room(&args.mesh_base_spec_path).await?;
-    vpc_require_clean_room(&args.vpc_spec_path).await
+    timed_stage(
+        "clean_room.vultr",
+        vultr_require_clean_room(vultr_spec, machine_id),
+    )
+    .await?;
+    timed_stage(
+        "clean_room.dns",
+        dns_require_clean_room(&args.dns_spec_path),
+    )
+    .await?;
+    timed_stage(
+        "clean_room.mesh",
+        mesh_require_clean_room(&args.mesh_base_spec_path),
+    )
+    .await?;
+    timed_stage(
+        "clean_room.vpc",
+        vpc_require_clean_room(&args.vpc_spec_path),
+    )
+    .await
 }
 
 async fn cleanup_environment(
@@ -446,28 +545,42 @@ async fn cleanup_environment(
 
     let mut cleanup_failure = None;
     if progress.mesh_runtime_possible
-        && let Err(err) = mesh_runtime_cleanup(&args.spec_path).await
+        && let Err(err) = timed_stage(
+            "cleanup.mesh_runtime",
+            mesh_runtime_cleanup(&args.spec_path),
+        )
+        .await
     {
         cleanup_failure = Some(format!("mesh_runtime_cleanup: {err}"));
     }
     if cleanup_failure.is_none()
-        && let Err(err) = mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path).await
+        && let Err(err) = timed_stage(
+            "cleanup.mesh_provider",
+            mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path),
+        )
+        .await
     {
         cleanup_failure = Some(format!("mesh_provider_cleanup: {err}"));
     }
     if cleanup_failure.is_none()
-        && let Err(err) = dns_cleanup_to_absent(&args.dns_spec_path).await
+        && let Err(err) =
+            timed_stage("cleanup.dns", dns_cleanup_to_absent(&args.dns_spec_path)).await
     {
         cleanup_failure = Some(format!("dns_cleanup: {err}"));
     }
     if cleanup_failure.is_none()
-        && let Err(err) = vpc_cleanup_to_absent(&args.vpc_spec_path).await
+        && let Err(err) =
+            timed_stage("cleanup.vpc", vpc_cleanup_to_absent(&args.vpc_spec_path)).await
     {
         cleanup_failure = Some(format!("vpc_cleanup: {err}"));
     }
 
     if progress.vm_possible
-        && let Err(err) = acceptance_lease_release(vultr_spec, machine_id).await
+        && let Err(err) = timed_stage(
+            "cleanup.access",
+            acceptance_lease_release(vultr_spec, machine_id),
+        )
+        .await
     {
         let access_failure = format!("access_release: {err}");
         cleanup_failure = Some(match cleanup_failure {
@@ -481,14 +594,20 @@ async fn cleanup_environment(
     }
 
     if progress.vm_possible {
-        acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)
-            .await
-            .map_err(|err| format!("vm_support_cleanup: {err}"))?;
+        timed_stage(
+            "cleanup.vm_support",
+            acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision),
+        )
+        .await
+        .map_err(|err| format!("vm_support_cleanup: {err}"))?;
     }
 
-    require_clean_room(args, vultr_spec, machine_id)
-        .await
-        .map_err(|err| format!("final_zero_leak: {err}"))
+    timed_stage(
+        "final_zero_leak",
+        require_clean_room(args, vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|err| format!("final_zero_leak: {err}"))
 }
 
 fn operational_failure(stage: &'static str, detail: impl Into<String>) -> AcceptanceFailure {
