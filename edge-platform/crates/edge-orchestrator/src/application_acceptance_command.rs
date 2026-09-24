@@ -133,7 +133,6 @@ fn terminal_disposition(path: TerminalPath) -> TerminalDisposition {
     }
 }
 
-
 async fn timed_stage<T, F>(stage: &'static str, future: F) -> Result<T, String>
 where
     F: Future<Output = Result<T, String>>,
@@ -146,10 +145,7 @@ where
         "application acceptance stage started"
     );
     let result = future.await;
-    let elapsed_ms = started
-        .elapsed()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64;
+    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     tracing::info!(
         component = "edge-orchestrator",
         stage,
@@ -291,13 +287,16 @@ async fn run_lifecycle(
     machine_id: &str,
     progress: &mut AcceptanceProgress,
 ) -> Result<AcceptanceSuccess, AcceptanceFailure> {
-    timed_stage("clean_room", require_clean_room(args, vultr_spec, machine_id))
-        .await
-        .map_err(|detail| AcceptanceFailure {
-            stage: "clean_room",
-            detail,
-            cleanup_allowed: false,
-        })?;
+    timed_stage(
+        "clean_room",
+        require_clean_room(args, vultr_spec, machine_id),
+    )
+    .await
+    .map_err(|detail| AcceptanceFailure {
+        stage: "clean_room",
+        detail,
+        cleanup_allowed: false,
+    })?;
 
     progress.mutation_started = true;
     timed_stage("vpc_create", vpc_create(&args.vpc_spec_path))
@@ -564,20 +563,14 @@ async fn cleanup_environment(
         cleanup_failure = Some(format!("mesh_provider_cleanup: {err}"));
     }
     if cleanup_failure.is_none()
-        && let Err(err) = timed_stage(
-            "cleanup.dns",
-            dns_cleanup_to_absent(&args.dns_spec_path),
-        )
-        .await
+        && let Err(err) =
+            timed_stage("cleanup.dns", dns_cleanup_to_absent(&args.dns_spec_path)).await
     {
         cleanup_failure = Some(format!("dns_cleanup: {err}"));
     }
     if cleanup_failure.is_none()
-        && let Err(err) = timed_stage(
-            "cleanup.vpc",
-            vpc_cleanup_to_absent(&args.vpc_spec_path),
-        )
-        .await
+        && let Err(err) =
+            timed_stage("cleanup.vpc", vpc_cleanup_to_absent(&args.vpc_spec_path)).await
     {
         cleanup_failure = Some(format!("vpc_cleanup: {err}"));
     }
