@@ -66,6 +66,8 @@ const LINE1_CONTAINER: &str = "vultr-line1-gateway";
 const LINE2_CONTAINER: &str = "vultr-line2-proxy";
 const MESH_CONTAINER: &str = "vultr-cloudflare-mesh";
 const CLOUDFLARE_TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
+const POST_BOOTSTRAP_REOBSERVE_ATTEMPTS: usize = 45;
+const POST_BOOTSTRAP_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -925,24 +927,59 @@ struct ApplicationBundleRelease {
 }
 
 async fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
-    let operation = execute_typed_bootstrap(stack_dir, mode).await;
-    let post_state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
-    let verified = verify_bootstrap_post_state(stack_dir, mode, &post_state);
-    let success = operation.is_ok() && verified.success;
-    let mut warnings = verified.warnings;
-    if let Err(err) = operation {
-        warnings.insert(0, err);
+    match execute_typed_bootstrap(stack_dir, mode).await {
+        Ok(()) => {
+            let (post_state, verified) =
+                wait_for_bootstrap_post_state(stack_dir, mode).await;
+            let success = verified.success;
+            BootstrapRuntimeResponse {
+                success,
+                mode: mode as i32,
+                exit_code: if success { 0 } else { 1 },
+                stdout: String::new(),
+                stderr: String::new(),
+                post_state: Some(post_state),
+                warnings: verified.warnings,
+            }
+        }
+        Err(err) => {
+            let post_state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
+            let verified = verify_bootstrap_post_state(stack_dir, mode, &post_state);
+            let mut warnings = verified.warnings;
+            warnings.insert(0, err);
+            BootstrapRuntimeResponse {
+                success: false,
+                mode: mode as i32,
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: String::new(),
+                post_state: Some(post_state),
+                warnings,
+            }
+        }
     }
+}
 
-    BootstrapRuntimeResponse {
-        success,
-        mode: mode as i32,
-        exit_code: if success { 0 } else { 1 },
-        stdout: String::new(),
-        stderr: String::new(),
-        post_state: Some(post_state),
-        warnings,
+async fn wait_for_bootstrap_post_state(
+    stack_dir: &Path,
+    mode: BootstrapMode,
+) -> (AgentState, BootstrapVerification) {
+    for attempt in 0..POST_BOOTSTRAP_REOBSERVE_ATTEMPTS {
+        let post_state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
+        let verified = verify_bootstrap_post_state(stack_dir, mode, &post_state);
+        if !should_reobserve_bootstrap_post_state(&verified, attempt) {
+            return (post_state, verified);
+        }
+        tokio::time::sleep(POST_BOOTSTRAP_REOBSERVE_DELAY).await;
     }
+    unreachable!("post-bootstrap re-observation loop always returns on its final attempt")
+}
+
+fn should_reobserve_bootstrap_post_state(
+    verified: &BootstrapVerification,
+    attempt: usize,
+) -> bool {
+    !verified.success && attempt + 1 < POST_BOOTSTRAP_REOBSERVE_ATTEMPTS
 }
 
 async fn execute_typed_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> Result<(), String> {
@@ -4133,6 +4170,29 @@ mod tests {
             "ip=203.0.113.10\nwarp=on\nwarp=off\n",
             "on"
         ));
+    }
+
+    #[test]
+    fn post_bootstrap_reobservation_is_bounded_and_stops_when_ready() {
+        let not_ready = BootstrapVerification {
+            success: false,
+            warnings: vec!["consumer datapath not converged".to_owned()],
+        };
+        assert!(should_reobserve_bootstrap_post_state(&not_ready, 0));
+        assert!(should_reobserve_bootstrap_post_state(
+            &not_ready,
+            POST_BOOTSTRAP_REOBSERVE_ATTEMPTS - 2
+        ));
+        assert!(!should_reobserve_bootstrap_post_state(
+            &not_ready,
+            POST_BOOTSTRAP_REOBSERVE_ATTEMPTS - 1
+        ));
+
+        let ready = BootstrapVerification {
+            success: true,
+            warnings: Vec::new(),
+        };
+        assert!(!should_reobserve_bootstrap_post_state(&ready, 0));
     }
 
     #[test]
