@@ -11,6 +11,7 @@ DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
 MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
 EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
+ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 
 
 def require(condition: bool, message: str) -> None:
@@ -28,6 +29,7 @@ def main() -> None:
     mesh = MESH.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
+    acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -250,23 +252,41 @@ def main() -> None:
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
+    acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     require(
-        "vultr-lifecycle lease-acquire" in application
-        and "vultr-lifecycle lease-release" in application,
-        "application workflow must use the typed transient SSH lease",
+        acceptance_job.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance') == 1,
+        "normal acceptance must invoke exactly one typed lifecycle coordinator",
+    )
+    for forbidden in [
+        "vultr-lifecycle ",
+        "vultr-vpc ",
+        "cloudflare-dns ",
+        "line3-mesh ",
+        "application-lifecycle ",
+    ]:
+        require(
+            forbidden not in acceptance_job,
+            f"acceptance workflow must not orchestrate domain mutation directly: {forbidden}",
+        )
+    require(
+        'operation_rc="${PIPESTATUS[0]}"' in acceptance_job
+        and "application-acceptance-result.json" in acceptance_job,
+        "acceptance workflow must preserve coordinator exit status and terminal certificate",
     )
     require(
-        "release_acceptance_access()" in application
-        and "trap finish_acceptance EXIT" in application
-        and "ACCESS_CLEANUP_ARMED=1" in application
-        and "ACCESS_CLEANUP_ARMED=0" in application
-        and ".access.next_plan.action == \"NOOP\"" in application
-        and ".access.next_plan.matching_rule_ids | length" in application,
-        "aggregate acceptance must unconditionally release and verify transient support access",
+        "acceptance_lease_acquire" in acceptance_coordinator
+        and "acceptance_lease_release" in acceptance_coordinator
+        and "acceptance_destroy_and_cleanup" in acceptance_coordinator
+        and "FAIL_CLEANED" in acceptance_coordinator
+        and "DIAGNOSTIC_REQUIRED" in acceptance_coordinator
+        and 'zero_leaked_resources: "PASS"' in acceptance_coordinator,
+        "typed acceptance coordinator must own lease-finally, compensation and terminal zero-leak classification",
     )
     require(
-        "acquire-access-plan" not in application and "release-access-plan" not in application,
-        "application workflow must not own transient-access PlanAuthority plumbing",
+        "std::process::Command" not in acceptance_coordinator
+        and "Command::new" not in acceptance_coordinator
+        and "sh -c" not in acceptance_coordinator,
+        "typed acceptance coordinator must compose owners in-process, never via shell/process replay",
     )
     require(
         application.count('test "${EDGE_RELEASE_SCHEMA_VERSION}" = "4"') == 2
@@ -305,12 +325,12 @@ def main() -> None:
         "DNS composition must have bounded Vultr read authority for current VM observation",
     )
     require(
-        '"${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}"' in application
-        and '"${bin}" cloudflare-dns apply "${dns_spec}" "${app_spec}"' in application,
-        "application acceptance must not manually copy VM public IPv4 into DNS commands",
+        "dns_create(&args.dns_spec_path, &args.spec_path)" in acceptance_coordinator
+        and "dns_verify_noop(&args.dns_spec_path, &args.spec_path)" in acceptance_coordinator,
+        "typed acceptance must keep DNS target derivation inside the existing DNS owner",
     )
     require(
-        "vm_ip=" not in application,
+        "vm_ip=" not in application and "vm_ip" not in acceptance_coordinator,
         "application acceptance must not own derived VM public-IP plumbing",
     )
     require(
@@ -355,49 +375,39 @@ def main() -> None:
     )
 
     require(
-        "cleanup_acceptance" not in application
-        and "acceptance-emergency-" not in application
-        and "if [[ $rc -ne 0 ]]; then cleanup" not in application,
-        "acceptance failure must preserve provider/guest state for diagnosis, never auto-clean",
+        "require_clean_room(args, vultr_spec, machine_id)" in acceptance_coordinator
+        and "progress.mutation_started = true" in acceptance_coordinator
+        and acceptance_coordinator.index("require_clean_room(args, vultr_spec, machine_id)")
+        < acceptance_coordinator.index("progress.mutation_started = true"),
+        "typed acceptance must prove full clean room before the first mutation",
     )
     require(
-        "require_vpc_clean_room()" in application,
-        "acceptance must require a read-only VPC clean-room proof",
-    )
-    preflight_marker = "# Fail closed on any acceptance-owned feature residue."
-    support_marker = 'acceptance-support-before.json'
-    vm_marker = 'acceptance-plan-before.json'
-    require(preflight_marker in application, "acceptance must fail closed on residue")
-    preflight_pos = application.index(preflight_marker)
-    support_pos = application.index(support_marker, preflight_pos)
-    vm_pos = application.index(vm_marker, support_pos)
-    require(
-        preflight_pos < support_pos < vm_pos,
-        "strict read-only clean-room proof must precede fresh VM planning",
+        "vpc_attach_and_verify" in acceptance_coordinator
+        and "acceptance_verify_substrate" in acceptance_coordinator,
+        "typed acceptance must retain VPC guest-readiness and host-substrate verification",
     )
     require(
-        '.plan.action == "NOOP" and .plan.environment_in_use == false' in application,
-        "acceptance must prove support resources absent before fresh creation",
+        acceptance_coordinator.count("acceptance_reboot(vultr_spec, machine_id)") == 1,
+        "typed acceptance must retain exactly one explicit reboot for persistence verification",
     )
-
+    cleanup_order = [
+        "mesh_runtime_cleanup(&args.spec_path)",
+        "mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path)",
+        "dns_cleanup_to_absent(&args.dns_spec_path)",
+        "vpc_cleanup_to_absent(&args.vpc_spec_path)",
+        "acceptance_lease_release(vultr_spec, machine_id)",
+        "acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)",
+    ]
+    cleanup_positions = [acceptance_coordinator.index(marker) for marker in cleanup_order]
     require(
-        ".guest_transition.network_ready == true" in application,
-        "VPC attachment acceptance must require exact guest VPC network readiness",
+        cleanup_positions == sorted(cleanup_positions),
+        "typed acceptance compensation order must be runtime -> Mesh -> DNS -> VPC -> access -> VM/support",
     )
     require(
-        ".guest_transition.boot_id_changed == true" not in application,
-        "VPC attachment success must not depend on undocumented provider reboot behavior",
+        "context.release().accepted_revision.as_str()" in acceptance_coordinator
+        and "GITHUB_SHA" not in acceptance_coordinator,
+        "typed acceptance destroy authority must come from validated ReleaseSet accepted revision",
     )
-    require(
-        "acceptance-vpc-reboot" not in application,
-        "VPC attachment must not be followed by a second explicit reboot",
-    )
-    reboot_action = 'vultr-lifecycle action-plan "${vultr_spec}" "${machine}" reboot'
-    require(
-        application.count(reboot_action) == 1,
-        "application acceptance must retain exactly one explicit reboot for final persistence verification",
-    )
-
     require(
         "edge-platform/scripts/resolve_durable_release.sh" in mesh,
         "Mesh backend must consume the exact durable accepted ReleaseSet",
