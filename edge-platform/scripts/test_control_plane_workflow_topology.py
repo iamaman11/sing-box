@@ -256,6 +256,15 @@ def main() -> None:
         "application workflow must use the typed transient SSH lease",
     )
     require(
+        "cleanup_acceptance_access()" in application
+        and "trap finish_acceptance EXIT" in application
+        and "ACCESS_CLEANUP_ARMED=1" in application
+        and "ACCESS_CLEANUP_ARMED=0" in application
+        and ".access.next_plan.action == \"NOOP\"" in application
+        and ".access.next_plan.matching_rule_ids | length" in application,
+        "aggregate acceptance must unconditionally release and verify transient support access",
+    )
+    require(
         "acquire-access-plan" not in application and "release-access-plan" not in application,
         "application workflow must not own transient-access PlanAuthority plumbing",
     )
@@ -355,7 +364,7 @@ def main() -> None:
         "require_vpc_clean_room()" in application,
         "acceptance must require a read-only VPC clean-room proof",
     )
-    preflight_marker = "# Fail closed on any acceptance-owned residue."
+    preflight_marker = "# Fail closed on any acceptance-owned feature residue."
     support_marker = 'acceptance-support-before.json'
     vm_marker = 'acceptance-plan-before.json'
     require(preflight_marker in application, "acceptance must fail closed on residue")
