@@ -384,7 +384,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ACCEPTED_REVISION: ${{ github.sha }}
-          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
         run: |
           set -euo pipefail
@@ -397,7 +396,7 @@ jobs:
           dir="${RUNNER_TEMP}/edge-platform-release"
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
           test "${EDGE_RELEASE_SCHEMA_VERSION}" = "4"
           [[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
