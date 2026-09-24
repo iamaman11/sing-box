@@ -229,6 +229,22 @@ def main() -> None:
         "Vultr workflow host operations must use the typed transient SSH lease",
     )
     require(
+        'verb == "access-release" and len(tokens) == 4' in vultr
+        and 'operation, spec_path, machine_id = "access-release", tokens[2], tokens[3]' in vultr
+        and "access-release)" in vultr
+        and 'release_host_access "${spec}" "${machine}" "explicit"' in vultr
+        and '.access.next_plan.action == "NOOP"' in vultr
+        and '.access.verified_absent == true' in vultr,
+        "Vultr backend must expose only the existing typed idempotent access release for CP15",
+    )
+    require(
+        '"cleanup-plan"' in vultr
+        and "cleanup-plan)" in vultr
+        and 'run_lifecycle cleanup-plan "${spec}" | tee "${RUNNER_TEMP}/result.json"' in vultr
+        and '.plan.environment_in_use | type == "boolean"' in vultr,
+        "Vultr backend must expose the existing typed read-only support cleanup plan",
+    )
+    require(
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
