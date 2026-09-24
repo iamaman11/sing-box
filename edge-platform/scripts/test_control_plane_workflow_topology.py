@@ -152,8 +152,8 @@ def main() -> None:
         "DNS backend must serialize its execute mutation job",
     )
     require(
-        mesh.count("group: vultr-control-plane-production") == 1,
-        "Mesh backend must serialize its execute mutation job",
+        mesh.count("group: vultr-control-plane-production") == 2,
+        "Mesh backend must serialize both provider observation and execute jobs",
     )
     require(
         "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
