@@ -592,6 +592,12 @@ mod release_set_tests {
         }
     }
 
+    fn clear_windows_reuse_identity(release: &mut ReleaseSet) {
+        let windows = release.windows_runtime.as_mut().unwrap();
+        windows.input_sha256.clear();
+        windows.source_revision.clear();
+    }
+
     fn valid_release() -> ReleaseSet {
         ReleaseSet {
             schema_version: RELEASE_SET_SCHEMA_VERSION,
@@ -606,6 +612,8 @@ mod release_set_tests {
                 controller_sha256: digest(5),
                 console_sha256: digest(6),
                 sing_box_sha256: digest(2),
+                input_sha256: digest(14),
+                source_revision: "f".repeat(40),
             }),
             vm_runtime: Some(VmRuntime {
                 edge_agent_sha256: digest(7),
@@ -659,6 +667,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v1_without_controller_hash() {
         let mut release = valid_release();
         release.schema_version = 1;
+        clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
             .as_mut()
@@ -691,6 +700,7 @@ mod release_set_tests {
     fn release_set_rejects_v1_with_v2_controller_hash() {
         let mut release = valid_release();
         release.schema_version = 1;
+        clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }
 
@@ -698,6 +708,7 @@ mod release_set_tests {
     fn release_set_rejects_missing_v2_controller_hash() {
         let mut release = valid_release();
         release.schema_version = 2;
+        clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
             .as_mut()
@@ -729,6 +740,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v2_without_orchestrator_hash() {
         let mut release = valid_release();
         release.schema_version = 2;
+        clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
             .as_mut()
@@ -755,6 +767,7 @@ mod release_set_tests {
     fn release_set_rejects_v2_with_v3_orchestrator_hash() {
         let mut release = valid_release();
         release.schema_version = 2;
+        clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }
 
@@ -762,6 +775,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v3_without_runtime_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 3;
+        clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
             .as_mut()
@@ -782,12 +796,15 @@ mod release_set_tests {
     fn release_set_rejects_v3_with_v4_runtime_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 3;
+        clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }
 
     #[test]
     fn release_set_rejects_missing_v4_runtime_reuse_identity() {
         let mut release = valid_release();
+        release.schema_version = 4;
+        clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
             .as_mut()
@@ -796,6 +813,8 @@ mod release_set_tests {
             .clear();
         assert!(validate_release_set(&release).is_err());
         let mut release = valid_release();
+        release.schema_version = 4;
+        clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
             .as_mut()
@@ -806,9 +825,35 @@ mod release_set_tests {
     }
 
     #[test]
+    fn release_set_accepts_legacy_v4_without_windows_reuse_identity() {
+        let mut release = valid_release();
+        release.schema_version = 4;
+        clear_windows_reuse_identity(&mut release);
+        let bytes = encode_release_set(&release).unwrap();
+        assert_eq!(decode_release_set(&bytes).unwrap(), release);
+    }
+
+    #[test]
+    fn release_set_rejects_missing_v5_windows_reuse_identity() {
+        let mut release = valid_release();
+        release.windows_runtime.as_mut().unwrap().input_sha256.clear();
+        assert!(validate_release_set(&release).is_err());
+
+        let mut release = valid_release();
+        release
+            .windows_runtime
+            .as_mut()
+            .unwrap()
+            .source_revision
+            .clear();
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
     fn release_set_rejects_missing_v3_orchestrator_hash() {
         let mut release = valid_release();
         release.schema_version = 3;
+        clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
             .as_mut()
