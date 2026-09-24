@@ -41,24 +41,35 @@ jobs:
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
           if (
-              len(tokens) != 5
-              or tokens[0] != "/mesh"
-              or tokens[1] not in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}
+              len(tokens) == 3
+              and tokens[0] == "/mesh"
+              and tokens[1] == "provider-cleanup-plan"
           ):
+              operation = tokens[1]
+              mesh_spec_path = tokens[2]
+              vpc_spec_path = ""
+              application_spec_path = ""
+              if not mesh_re.fullmatch(mesh_spec_path) or ".." in mesh_spec_path or "//" in mesh_spec_path:
+                  fail("invalid Mesh spec path")
+          elif (
+              len(tokens) == 5
+              and tokens[0] == "/mesh"
+              and tokens[1] in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}
+          ):
+              operation = tokens[1]
+              mesh_spec_path = tokens[2]
+              vpc_spec_path = tokens[3]
+              application_spec_path = tokens[4]
+
+              for label, value, pattern in (
+                  ("Mesh", mesh_spec_path, mesh_re),
+                  ("VPC", vpc_spec_path, vpc_re),
+                  ("application", application_spec_path, application_re),
+              ):
+                  if not pattern.fullmatch(value) or ".." in value or "//" in value:
+                      fail(f"invalid {label} spec path")
+          else:
               fail("unsupported /mesh command grammar")
-
-          operation = tokens[1]
-          mesh_spec_path = tokens[2]
-          vpc_spec_path = tokens[3]
-          application_spec_path = tokens[4]
-
-          for label, value, pattern in (
-              ("Mesh", mesh_spec_path, mesh_re),
-              ("VPC", vpc_spec_path, vpc_re),
-              ("application", application_spec_path, application_re),
-          ):
-              if not pattern.fullmatch(value) or ".." in value or "//" in value:
-                  fail(f"invalid {label} spec path")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"operation={operation}\n")
@@ -83,6 +94,7 @@ jobs:
         env:
           REPOSITORY: ${{ github.repository }}
           REVISION: ${{ github.sha }}
+          REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
           MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
           VPC_SPEC_PATH: ${{ needs.authorize.outputs.vpc_spec_path }}
           APPLICATION_SPEC_PATH: ${{ needs.authorize.outputs.application_spec_path }}
@@ -94,8 +106,10 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
           test -f "${MESH_SPEC_PATH}"
-          test -f "${VPC_SPEC_PATH}"
-          test -f "${APPLICATION_SPEC_PATH}"
+          if [[ "${REQUESTED_OPERATION}" != "provider-cleanup-plan" ]]; then
+            test -f "${VPC_SPEC_PATH}"
+            test -f "${APPLICATION_SPEC_PATH}"
+          fi
 
       - name: Resolve and verify exact durable Edge Platform release
         id: resolve_release
@@ -109,8 +123,83 @@ jobs:
           set -euo pipefail
           bash edge-platform/scripts/resolve_durable_release.sh
 
+  provider_observe:
+    needs: [authorize, verify]
+    if: needs.authorize.outputs.operation == 'provider-cleanup-plan'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test -f "${MESH_SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${RUNNER_TEMP}/edge-platform-release/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          orchestrator="${RUNNER_TEMP}/edge-platform-release/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_MESH_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+
+      - name: Observe Mesh provider zero-state
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/mesh-provider-zero-plan.json"
+          "${EDGE_MESH_ORCHESTRATOR}" line3-mesh cleanup-plan "${MESH_SPEC_PATH}" | tee "${result}"
+          jq -e '
+            .plan_disposition == "NOOP"
+            and .plan.action.kind == "NOOP"
+            and .plan.destructive_digest == null
+            and .mutations_performed == 0
+          ' "${result}" >/dev/null
+
+          {
+            echo '### Cloudflare Mesh provider zero-state result'
+            echo
+            echo 'Provider-only read-only observation. No SSH authority, controller egress, Vultr access lease, or provider mutation surface is used.'
+            echo
+            echo '~~~json'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   execute:
     needs: [authorize, verify]
+    if: needs.authorize.outputs.operation != 'provider-cleanup-plan'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
