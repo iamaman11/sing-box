@@ -876,7 +876,76 @@ jobs:
           $packagePath = Join-Path $out "edge-platform-windows.zip"
 
           if ($env:REUSE_WINDOWS -eq "true") {
-            if (-not ($env:BASE_RELEASE_TAG -match '^edge-release-[0-9a-f]{64}
+            $tagDigest = $env:BASE_RELEASE_TAG.Replace("edge-release-", "")
+            if (-not $env:BASE_RELEASE_TAG.StartsWith("edge-release-") -or $tagDigest -notmatch '^[0-9a-f]{64}\z') {
+              throw "base durable release tag is invalid"
+            }
+            gh release download $env:BASE_RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern "edge-platform-windows.zip" --dir $out
+            if ($LASTEXITCODE -ne 0) { throw "failed to download exact accepted Windows artifact" }
+            $artifactSha = (Get-FileHash -Algorithm SHA256 $packagePath).Hash.ToLowerInvariant()
+            if ($artifactSha -ne $env:BASE_ARTIFACT_SHA256) {
+              throw "reused Windows artifact digest mismatch"
+            }
+            $unpacked = Join-Path $env:RUNNER_TEMP "edge-platform-windows-reused"
+            Expand-Archive -LiteralPath $packagePath -DestinationPath $unpacked -Force
+            Copy-Item (Join-Path $unpacked "bin\edge-controller.exe") (Join-Path $out "edge-controller.exe")
+            Copy-Item (Join-Path $unpacked "bin\edge-console.exe") (Join-Path $out "edge-console.exe")
+            Copy-Item (Join-Path $unpacked "bin\sing-box.exe") (Join-Path $out "sing-box.exe")
+          } else {
+            Copy-Item "edge-platform\target\release\edge-controller.exe" (Join-Path $out "edge-controller.exe")
+            Copy-Item "edge-platform\target\release\edge-console.exe" (Join-Path $out "edge-console.exe")
+            $resolvedSingBox = Get-ChildItem (Join-Path $env:RUNNER_TEMP "sing-box-windows") -Recurse -File -Filter sing-box.exe | Select-Object -First 1
+            if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
+            Copy-Item $resolvedSingBox.FullName (Join-Path $out "sing-box.exe")
+
+            $packageRoot = Join-Path $env:RUNNER_TEMP "edge-platform-windows-package"
+            $packageBin = Join-Path $packageRoot "bin"
+            New-Item -ItemType Directory -Force -Path $packageBin | Out-Null
+            Copy-Item (Join-Path $out "edge-controller.exe") (Join-Path $packageBin "edge-controller.exe")
+            Copy-Item (Join-Path $out "edge-console.exe") (Join-Path $packageBin "edge-console.exe")
+            Copy-Item (Join-Path $out "sing-box.exe") (Join-Path $packageBin "sing-box.exe")
+            Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $packagePath -CompressionLevel Optimal
+          }
+
+          $artifactSha = (Get-FileHash -Algorithm SHA256 $packagePath).Hash.ToLowerInvariant()
+          $controllerSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-controller.exe")).Hash.ToLowerInvariant()
+          $consoleSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-console.exe")).Hash.ToLowerInvariant()
+          $singBoxSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "sing-box.exe")).Hash.ToLowerInvariant()
+
+          if ($env:REUSE_WINDOWS -eq "true") {
+            if ($controllerSha -ne $env:BASE_CONTROLLER_SHA256) { throw "reused Windows controller digest mismatch" }
+            if ($consoleSha -ne $env:BASE_CONSOLE_SHA256) { throw "reused Windows console digest mismatch" }
+            if ($singBoxSha -ne $env:BASE_SING_BOX_SHA256) { throw "reused Windows sing-box digest mismatch" }
+          }
+
+          $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
+          $manifest = [ordered]@{
+            schema = 3
+            source_revision = $env:CANDIDATE_REVISION
+            source_tree = $sourceTree
+            windows_input_sha256 = $env:WINDOWS_INPUT_SHA256
+            windows_source_revision = $env:WINDOWS_SOURCE_REVISION
+            reused = ($env:REUSE_WINDOWS -eq "true")
+            sing_box_version = $env:SING_BOX_VERSION
+            sing_box_archive_sha256 = $env:SING_BOX_WINDOWS_SHA256
+            sing_box_binary_sha256 = $singBoxSha
+            artifact_sha256 = $artifactSha
+            controller_sha256 = $controllerSha
+            console_sha256 = $consoleSha
+          }
+          $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $out "manifest.json")
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "artifact_sha256=$artifactSha"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "controller_sha256=$controllerSha"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "console_sha256=$consoleSha"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sing_box_binary_sha256=$singBoxSha"
+
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "### Windows candidate"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "- reuse: $env:REUSE_WINDOWS"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "- input SHA-256: $env:WINDOWS_INPUT_SHA256"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "- artifact source revision: $env:WINDOWS_SOURCE_REVISION"
+      # WINDOWS_CANDIDATE_BUILD_CONTRACT_END
+
       - name: Store exact Windows candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
