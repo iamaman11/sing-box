@@ -842,7 +842,7 @@ mod tests {
             .find("acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)")
             .unwrap();
         let vpc = source.find("vpc_cleanup_to_absent(paths.vpc_spec)").unwrap();
-        let final_zero_leak = source.find(""final_zero_leak"").unwrap();
+        let final_zero_leak = source.find("\"final_zero_leak\"").unwrap();
 
         assert!(runtime < provider);
         assert!(provider < dns);
