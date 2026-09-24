@@ -127,7 +127,6 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
     }))
 }
 
-
 pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<(), String> {
     let desired = load_desired(spec_path)?;
     let mut provider = provider_from_env()?;
@@ -155,8 +154,7 @@ pub(crate) async fn acceptance_create(
             plan.action
         ));
     }
-    let authorized =
-        authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
+    let authorized = authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
     let report = apply_dns_once(
         &mut provider,
         &desired,
