@@ -684,7 +684,6 @@ fn mesh_runtime_diagnostic_summary(state: &edge_shared_types::MeshRuntimeState) 
     .to_string()
 }
 
-
 pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<(), String> {
     let desired = load_desired(spec_path)?;
     let mut provider = provider_from_env(&desired)?;
@@ -782,9 +781,7 @@ pub(crate) async fn acceptance_runtime_verify(
     Ok(())
 }
 
-pub(crate) async fn acceptance_runtime_cleanup(
-    application_spec_path: &Path,
-) -> Result<(), String> {
+pub(crate) async fn acceptance_runtime_cleanup(application_spec_path: &Path) -> Result<(), String> {
     let authority = resolve_application_authority_from_spec(application_spec_path).await?;
     let state = cleanup_mesh_runtime_remote(&authority).await?;
     if state.runtime_ready || state.token_store_present || state.container_running {
@@ -793,9 +790,7 @@ pub(crate) async fn acceptance_runtime_cleanup(
     Ok(())
 }
 
-pub(crate) async fn acceptance_cleanup_provider_to_absent(
-    spec_path: &Path,
-) -> Result<(), String> {
+pub(crate) async fn acceptance_cleanup_provider_to_absent(spec_path: &Path) -> Result<(), String> {
     let desired = load_desired(spec_path)?;
     let mut provider = provider_from_env(&desired)?;
     for _ in 0..4 {
