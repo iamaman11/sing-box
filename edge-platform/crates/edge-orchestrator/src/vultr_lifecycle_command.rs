@@ -171,12 +171,26 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
                 .to_owned(),
         );
     }
-    let desired = load_desired_state(Path::new(&args[0]))?;
+    let value = apply_machine_value(
+        Path::new(&args[0]),
+        &args[1],
+        Some(args[2].as_str()),
+    )
+    .await?;
+    print_json_value(value)
+}
+
+async fn apply_machine_value(
+    spec_path: &Path,
+    machine_id: &str,
+    expected_authority: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let desired = load_desired_state(spec_path)?;
     let machine = desired
         .machines
         .iter()
-        .find(|machine| machine.id == args[1])
-        .ok_or_else(|| format!("machine {} is not present in desired state", args[1]))?;
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
     let profiles = load_firewall_profiles(&desired)?;
     let substrate = host_substrate_versions_from_env()?;
     let policy = LifecycleExecutionPolicy::default();
@@ -191,7 +205,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     let initial = plan_desired_state_with_firewall_profiles(
         &mut lifecycle_provider,
         &desired,
-        Some(&args[1]),
+        Some(machine_id),
         &verified_firewalls,
     )
     .await?;
@@ -199,10 +213,14 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .plans
         .first()
         .cloned()
-        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
+        .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
     let initial_class = initial_plan.class;
     let authorized = authorize_vultr_machine(&desired, &initial.inventory, initial_plan)?;
-    verify_exact_authority(&args[2], &authorized.authority).map_err(|err| err.to_string())?;
+    let authority_digest = expected_authority
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| authorized.authority.authority_digest.clone());
+    verify_exact_authority(&authority_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
 
     if matches!(
         initial_class,
@@ -245,7 +263,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     let after_support = plan_desired_state_with_firewall_profiles(
         &mut lifecycle_provider,
         &desired,
-        Some(&args[1]),
+        Some(machine_id),
         &verified_firewalls,
     )
     .await?;
@@ -253,7 +271,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         .plans
         .first()
         .cloned()
-        .ok_or_else(|| format!("no lifecycle plan was produced for {}", args[1]))?;
+        .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
     let after_support_class = after_support_plan.class;
 
     if initial_class == PlanClass::UpdateInPlace && after_support_class != PlanClass::Noop {
@@ -270,7 +288,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
             &after_support.inventory,
             after_support_plan.clone(),
         )?;
-        verify_exact_authority(&args[2], &after_support_authorized.authority)
+        verify_exact_authority(&authority_digest, &after_support_authorized.authority)
             .map_err(|err| err.to_string())?;
     }
 
@@ -318,8 +336,8 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         apply_machine_with_firewall_profiles(
             &mut lifecycle_provider,
             &desired,
-            &args[1],
-            &args[2],
+            machine_id,
+            &authority_digest,
             &prerequisites,
             &policy,
             &verified_firewalls,
@@ -336,7 +354,7 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    print_json_value(serde_json::json!({
+    Ok(serde_json::json!({
         "action": report.action.as_str(),
         "machine_id": report.machine_id,
         "provider_id": report.provider_id,
@@ -346,6 +364,25 @@ async fn run_apply(args: &[String]) -> Result<(), String> {
         "host_substrate_required": true,
         "support_reconciled": support_reconciled,
     }))
+}
+
+pub(crate) async fn acceptance_create_machine(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let value = apply_machine_value(spec_path, machine_id, None).await?;
+    if value.get("action").and_then(serde_json::Value::as_str) != Some("CREATED")
+        || value.get("provider_ready").and_then(serde_json::Value::as_bool) != Some(true)
+        || value
+            .get("host_substrate_required")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return Err(format!(
+            "fresh acceptance VM create returned unexpected result: {value}"
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn exact_existing_machine_observation(
