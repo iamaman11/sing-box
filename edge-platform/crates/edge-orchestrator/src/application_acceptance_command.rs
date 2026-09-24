@@ -73,6 +73,64 @@ struct AcceptanceCertificate<'a> {
     bundle_v2: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalPath {
+    SuccessCleaned,
+    SuccessCleanupFailed,
+    CleanRoomRejected,
+    FailureCleaned,
+    FailureCleanupFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalDisposition {
+    outcome: &'static str,
+    clean_room_precondition: &'static str,
+    lifecycle: &'static str,
+    compensation: &'static str,
+    zero_leaked_resources: &'static str,
+}
+
+fn terminal_disposition(path: TerminalPath) -> TerminalDisposition {
+    match path {
+        TerminalPath::SuccessCleaned => TerminalDisposition {
+            outcome: "PASS",
+            clean_room_precondition: "PASS",
+            lifecycle: "PASS",
+            compensation: "NOT_REQUIRED",
+            zero_leaked_resources: "PASS",
+        },
+        TerminalPath::SuccessCleanupFailed => TerminalDisposition {
+            outcome: "DIAGNOSTIC_REQUIRED",
+            clean_room_precondition: "PASS",
+            lifecycle: "PASS",
+            compensation: "FAILED",
+            zero_leaked_resources: "UNPROVEN",
+        },
+        TerminalPath::CleanRoomRejected => TerminalDisposition {
+            outcome: "DIAGNOSTIC_REQUIRED",
+            clean_room_precondition: "FAIL",
+            lifecycle: "NOT_STARTED",
+            compensation: "NOT_ALLOWED",
+            zero_leaked_resources: "PRESERVED",
+        },
+        TerminalPath::FailureCleaned => TerminalDisposition {
+            outcome: "FAIL_CLEANED",
+            clean_room_precondition: "PASS",
+            lifecycle: "FAIL",
+            compensation: "PASS",
+            zero_leaked_resources: "PASS",
+        },
+        TerminalPath::FailureCleanupFailed => TerminalDisposition {
+            outcome: "DIAGNOSTIC_REQUIRED",
+            clean_room_precondition: "PASS",
+            lifecycle: "FAIL",
+            compensation: "FAILED",
+            zero_leaked_resources: "UNPROVEN",
+        },
+    }
+}
+
 pub(crate) async fn run(
     args: ApplicationAcceptanceArgs,
     context: &OrchestrationContext,
@@ -94,16 +152,17 @@ pub(crate) async fn run(
                 cleanup_environment(&args, &vultr_spec, &machine_id, source_revision, &progress)
                     .await
             {
+                let disposition = terminal_disposition(TerminalPath::SuccessCleanupFailed);
                 let certificate = AcceptanceCertificate {
-                    outcome: "DIAGNOSTIC_REQUIRED",
+                    outcome: disposition.outcome,
                     source_revision,
                     release_set_sha256,
                     terminal_stage: "cleanup",
                     failure: Some(&detail),
-                    clean_room_precondition: "PASS",
-                    lifecycle: "PASS",
-                    compensation: "FAILED",
-                    zero_leaked_resources: "UNPROVEN",
+                    clean_room_precondition: disposition.clean_room_precondition,
+                    lifecycle: disposition.lifecycle,
+                    compensation: disposition.compensation,
+                    zero_leaked_resources: disposition.zero_leaked_resources,
                     release_v1: Some(&success.release_v1),
                     release_v2: Some(&success.release_v2),
                     bundle_v1: Some(&success.bundle_v1),
@@ -115,16 +174,17 @@ pub(crate) async fn run(
                 ));
             }
 
+            let disposition = terminal_disposition(TerminalPath::SuccessCleaned);
             let certificate = AcceptanceCertificate {
-                outcome: "PASS",
+                outcome: disposition.outcome,
                 source_revision,
                 release_set_sha256,
                 terminal_stage: "complete",
                 failure: None,
-                clean_room_precondition: "PASS",
-                lifecycle: "PASS",
-                compensation: "NOT_REQUIRED",
-                zero_leaked_resources: "PASS",
+                clean_room_precondition: disposition.clean_room_precondition,
+                lifecycle: disposition.lifecycle,
+                compensation: disposition.compensation,
+                zero_leaked_resources: disposition.zero_leaked_resources,
                 release_v1: Some(&success.release_v1),
                 release_v2: Some(&success.release_v2),
                 bundle_v1: Some(&success.bundle_v1),
@@ -133,16 +193,17 @@ pub(crate) async fn run(
             print_certificate(&certificate)
         }
         Err(failure) if !failure.cleanup_allowed => {
+            let disposition = terminal_disposition(TerminalPath::CleanRoomRejected);
             let certificate = AcceptanceCertificate {
-                outcome: "DIAGNOSTIC_REQUIRED",
+                outcome: disposition.outcome,
                 source_revision,
                 release_set_sha256,
                 terminal_stage: failure.stage,
                 failure: Some(&failure.detail),
-                clean_room_precondition: "FAIL",
-                lifecycle: "NOT_STARTED",
-                compensation: "NOT_ALLOWED",
-                zero_leaked_resources: "PRESERVED",
+                clean_room_precondition: disposition.clean_room_precondition,
+                lifecycle: disposition.lifecycle,
+                compensation: disposition.compensation,
+                zero_leaked_resources: disposition.zero_leaked_resources,
                 release_v1: None,
                 release_v2: None,
                 bundle_v1: None,
@@ -158,24 +219,27 @@ pub(crate) async fn run(
             let cleanup =
                 cleanup_environment(&args, &vultr_spec, &machine_id, source_revision, &progress)
                     .await;
-            let (outcome, compensation, zero_leak, cleanup_detail) = match cleanup {
-                Ok(()) => ("FAIL_CLEANED", "PASS", "PASS", None),
-                Err(detail) => ("DIAGNOSTIC_REQUIRED", "FAILED", "UNPROVEN", Some(detail)),
+            let (disposition, cleanup_detail) = match cleanup {
+                Ok(()) => (terminal_disposition(TerminalPath::FailureCleaned), None),
+                Err(detail) => (
+                    terminal_disposition(TerminalPath::FailureCleanupFailed),
+                    Some(detail),
+                ),
             };
             let combined = cleanup_detail
                 .as_ref()
                 .map(|detail| format!("{}; cleanup={detail}", failure.detail))
                 .unwrap_or_else(|| failure.detail.clone());
             let certificate = AcceptanceCertificate {
-                outcome,
+                outcome: disposition.outcome,
                 source_revision,
                 release_set_sha256,
                 terminal_stage: failure.stage,
                 failure: Some(&combined),
-                clean_room_precondition: "PASS",
-                lifecycle: "FAIL",
-                compensation,
-                zero_leaked_resources: zero_leak,
+                clean_room_precondition: disposition.clean_room_precondition,
+                lifecycle: disposition.lifecycle,
+                compensation: disposition.compensation,
+                zero_leaked_resources: disposition.zero_leaked_resources,
                 release_v1: None,
                 release_v2: None,
                 bundle_v1: None,
@@ -557,5 +621,65 @@ mod tests {
         let failure = operational_failure("application_v2_upgrade", "typed failure");
         assert!(failure.cleanup_allowed);
         assert_eq!(failure.stage, "application_v2_upgrade");
+    }
+
+    #[test]
+    fn terminal_certificate_outcome_matrix_is_fail_closed() {
+        let cases = [
+            (
+                TerminalPath::SuccessCleaned,
+                TerminalDisposition {
+                    outcome: "PASS",
+                    clean_room_precondition: "PASS",
+                    lifecycle: "PASS",
+                    compensation: "NOT_REQUIRED",
+                    zero_leaked_resources: "PASS",
+                },
+            ),
+            (
+                TerminalPath::SuccessCleanupFailed,
+                TerminalDisposition {
+                    outcome: "DIAGNOSTIC_REQUIRED",
+                    clean_room_precondition: "PASS",
+                    lifecycle: "PASS",
+                    compensation: "FAILED",
+                    zero_leaked_resources: "UNPROVEN",
+                },
+            ),
+            (
+                TerminalPath::CleanRoomRejected,
+                TerminalDisposition {
+                    outcome: "DIAGNOSTIC_REQUIRED",
+                    clean_room_precondition: "FAIL",
+                    lifecycle: "NOT_STARTED",
+                    compensation: "NOT_ALLOWED",
+                    zero_leaked_resources: "PRESERVED",
+                },
+            ),
+            (
+                TerminalPath::FailureCleaned,
+                TerminalDisposition {
+                    outcome: "FAIL_CLEANED",
+                    clean_room_precondition: "PASS",
+                    lifecycle: "FAIL",
+                    compensation: "PASS",
+                    zero_leaked_resources: "PASS",
+                },
+            ),
+            (
+                TerminalPath::FailureCleanupFailed,
+                TerminalDisposition {
+                    outcome: "DIAGNOSTIC_REQUIRED",
+                    clean_room_precondition: "PASS",
+                    lifecycle: "FAIL",
+                    compensation: "FAILED",
+                    zero_leaked_resources: "UNPROVEN",
+                },
+            ),
+        ];
+
+        for (path, expected) in cases {
+            assert_eq!(terminal_disposition(path), expected);
+        }
     }
 }
