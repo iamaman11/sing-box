@@ -2481,8 +2481,23 @@ pub(crate) async fn acceptance_reboot(
         &operator_private_key_path,
         &canonical_public_key,
     )?;
-    verify_exact_authority(&authorized.authority.authority_digest, &authorized.authority)
+    let authority_digest = authorized.authority.authority_digest.clone();
+    let (fresh_authorized, fresh_operational) = build_instance_action_authority(
+        &desired,
+        machine_id,
+        InstanceAction::Reboot,
+        &mut lifecycle_provider,
+        &mut support_provider,
+        &mut operational_provider,
+    )
+    .await?;
+    verify_exact_authority(&authority_digest, &fresh_authorized.authority)
         .map_err(|err| err.to_string())?;
+    if fresh_authorized.disposition != PlanDisposition::Mutate
+        || fresh_operational.id != operational.id
+    {
+        return Err("acceptance reboot authority changed before mutation".to_owned());
+    }
     apply_instance_action(
         &mut operational_provider,
         &operational.id,
