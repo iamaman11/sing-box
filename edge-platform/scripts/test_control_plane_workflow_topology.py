@@ -258,7 +258,16 @@ def main() -> None:
         "normal acceptance must invoke exactly one typed lifecycle coordinator",
     )
     for forbidden in [
-        "vultr-lifecycle ",
+        "vultr-lifecycle apply ",
+        "vultr-lifecycle substrate-plan ",
+        "vultr-lifecycle substrate-apply ",
+        "vultr-lifecycle lease-acquire ",
+        "vultr-lifecycle action-plan ",
+        "vultr-lifecycle action ",
+        "vultr-lifecycle destroy-plan ",
+        "vultr-lifecycle destroy-apply ",
+        "vultr-lifecycle cleanup-plan ",
+        "vultr-lifecycle cleanup ",
         "vultr-vpc ",
         "cloudflare-dns ",
         "line3-mesh ",
