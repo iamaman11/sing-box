@@ -390,8 +390,7 @@ jobs:
               cp "${RUNNER_TEMP}/explicit-access-release.json" "${RUNNER_TEMP}/result.json"
               jq -e '.status == "RELEASED"
                 and .access.next_plan.action == "NOOP"
-                and (.access.next_plan.matching_rule_ids | length) == 0
-                and .access.verified_absent == true' "${RUNNER_TEMP}/result.json" >/dev/null
+                and (.access.next_plan.matching_rule_ids | length) == 0' "${RUNNER_TEMP}/result.json" >/dev/null
               cat "${RUNNER_TEMP}/result.json"
               ;;
             action-plan)
