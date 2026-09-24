@@ -2590,23 +2590,41 @@ pub(crate) async fn acceptance_destroy_and_cleanup(
         .iter()
         .find(|machine| machine.id == machine_id)
         .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
-    let plan =
-        destroy_plan(&desired, machine, &inventory, source_revision).map_err(|err| err.to_string())?;
-    let authorized =
-        authorize_vultr_destroy(&desired, machine_id, source_revision, &inventory, plan.clone())?;
-    let report = destroy_machine_with_firewall_profiles(
+    let lifecycle = plan_desired_state_with_firewall_profiles(
         &mut lifecycle_provider,
         &desired,
-        machine_id,
-        source_revision,
-        &plan.destroy_digest,
-        &authorized.authority.authority_digest,
-        &policy,
+        Some(machine_id),
         &verified_firewalls,
     )
     .await?;
-    if !report.absence_verified {
-        return Err("acceptance VM destroy did not prove exact provider absence".to_owned());
+    let machine_plan = lifecycle
+        .plans
+        .first()
+        .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
+    if machine_plan.class != PlanClass::Create {
+        let plan = destroy_plan(&desired, machine, &inventory, source_revision)
+            .map_err(|err| err.to_string())?;
+        let authorized = authorize_vultr_destroy(
+            &desired,
+            machine_id,
+            source_revision,
+            &inventory,
+            plan.clone(),
+        )?;
+        let report = destroy_machine_with_firewall_profiles(
+            &mut lifecycle_provider,
+            &desired,
+            machine_id,
+            source_revision,
+            &plan.destroy_digest,
+            &authorized.authority.authority_digest,
+            &policy,
+            &verified_firewalls,
+        )
+        .await?;
+        if !report.absence_verified {
+            return Err("acceptance VM destroy did not prove exact provider absence".to_owned());
+        }
     }
     acceptance_cleanup_support(&desired).await?;
     acceptance_require_clean_room(spec_path, machine_id).await
