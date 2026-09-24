@@ -561,7 +561,7 @@ jobs:
 
           ACCESS_CLEANUP_ARMED=0
 
-          cleanup_acceptance_access() {
+          release_acceptance_access() {
             if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
               return 0
             fi
@@ -577,7 +577,7 @@ jobs:
             local operation_rc=$?
             trap - EXIT
             set +e
-            cleanup_acceptance_access
+            release_acceptance_access
             local cleanup_rc=$?
             set -e
             if [[ "${cleanup_rc}" -ne 0 && "${operation_rc}" -eq 0 ]]; then
