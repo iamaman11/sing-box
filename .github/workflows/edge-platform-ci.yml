@@ -437,21 +437,27 @@ jobs:
           assert "strict_ssh_capture" not in mesh_command
 
           workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
+          acceptance_coordinator = Path(
+              "edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs"
+          ).read_text()
           assert "CLOUDFLARE_ACCOUNT_ID" not in workflow
-          assert "vultr-vpc attachment-apply" in workflow
-          assert "vultr-vpc verify" in workflow
-          assert "vultr-vpc cleanup-apply" in workflow
-          assert 'line3-mesh vpc-plan "${mesh_base_spec}" "${vpc_spec}" "${app_spec}"' in workflow
-          assert 'line3-mesh vpc-apply "${mesh_base_spec}" "${vpc_spec}" "${app_spec}"' in workflow
-          assert '.guest_vpc.status == "PASS"' in workflow
-          assert 'line3-mesh vpc-runtime-apply "${mesh_base_spec}" "${vpc_spec}" "${app_spec}"' in workflow
-          assert 'line3-mesh vpc-runtime-verify "${mesh_base_spec}" "${vpc_spec}" "${app_spec}"' in workflow
-          assert 'test -n "${VULTR_API_KEY}"' in workflow
-          assert 'test -n "${CLOUDFLARE_API_TOKEN}"' in workflow
+          assert workflow.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance') == 1
+          assert "acceptance_attach_and_verify as vpc_attach_and_verify" in acceptance_coordinator
+          assert "acceptance_cleanup_to_absent as vpc_cleanup_to_absent" in acceptance_coordinator
+          assert "acceptance_converge_provider as mesh_converge_provider" in acceptance_coordinator
+          assert "acceptance_runtime_apply as mesh_runtime_apply" in acceptance_coordinator
+          assert "acceptance_runtime_verify as mesh_runtime_verify" in acceptance_coordinator
+          assert "vpc_attach_and_verify(&args.vpc_spec_path)" in acceptance_coordinator
+          assert "mesh_converge_provider(" in acceptance_coordinator
+          assert "mesh_runtime_apply(" in acceptance_coordinator
+          assert "mesh_runtime_verify(" in acceptance_coordinator
+          assert 'VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}' in workflow
+          assert 'CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}' in workflow
           assert "jq --arg cidr" not in workflow
           assert "vpc_cidr=" not in workflow
           assert "mesh_spec=" not in workflow
           assert '.routes = [{"network": $cidr}]' not in workflow
+          assert "std::process::Command" not in acceptance_coordinator
 
           for acceptance_path in [
               "infra/application/disposable-acceptance.json",
