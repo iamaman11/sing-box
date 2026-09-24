@@ -95,46 +95,8 @@ jobs:
               handle.write(f"recovery_authority_digest={recovery_authority_digest}\n")
           PY
 
-  verify:
-    needs: authorize
-    if: needs.authorize.outputs.operation != 'acceptance' && needs.authorize.outputs.operation != 'cleanup'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    outputs:
-      release_tag: ${{ steps.resolve_release.outputs.release_tag }}
-      release_set_sha256: ${{ steps.resolve_release.outputs.release_set_sha256 }}
-    steps:
-      - name: Checkout exact canonical revision
-        shell: bash
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
-          SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "${REVISION}"
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${REVISION}"
-          test -f "${SPEC_PATH}"
-
-      - name: Resolve and verify exact durable Edge Platform release
-        id: resolve_release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.sha }}
-          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
-        run: |
-          set -euo pipefail
-          bash edge-platform/scripts/resolve_durable_release.sh
-
   execute:
-    needs: [authorize, verify]
+    needs: authorize
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false

@@ -126,6 +126,10 @@ def main() -> None:
             "group: vultr-control-plane-production" in backend,
             f"{name} mutation backend must retain shared production concurrency",
         )
+        require(
+            "\n  verify:\n" not in backend,
+            f"{name} backend must resolve its immutable ReleaseSet only in the actual command job",
+        )
 
     require(
         application.count("group: vultr-control-plane-production") == 3,
@@ -256,12 +260,17 @@ def main() -> None:
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
+    execute_job = application.split("\n  execute:\n", 1)[1].split("\n  cleanup:\n", 1)[0]
     require(
-        "  verify:\n    needs: authorize\n    if: needs.authorize.outputs.operation != 'acceptance' && needs.authorize.outputs.operation != 'cleanup'"
-        in application_before_acceptance
-        and "  cleanup:\n    needs: authorize" in application
-        and "  acceptance:\n    needs: authorize" in application,
-        "disposable cleanup and acceptance must skip the separate verify job and resolve their ReleaseSet in their own jobs",
+        "  cleanup:\n    needs: authorize" in application
+        and "  acceptance:\n    needs: authorize" in application
+        and "  execute:\n    needs: authorize" in application,
+        "application commands must dispatch directly from authorization to exactly one command job",
+    )
+    require(
+        execute_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and "needs.verify" not in execute_job,
+        "normal application execute must perform exactly one durable ReleaseSet resolution",
     )
     require(
         acceptance_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1

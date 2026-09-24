@@ -78,53 +78,8 @@ jobs:
               handle.write(f"application_spec_path={application_spec_path}\n")
           PY
 
-  verify:
-    needs: authorize
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    outputs:
-      release_tag: ${{ steps.resolve_release.outputs.release_tag }}
-      release_set_sha256: ${{ steps.resolve_release.outputs.release_set_sha256 }}
-
-    steps:
-      - name: Checkout exact canonical revision
-        shell: bash
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
-          REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
-          MESH_SPEC_PATH: ${{ needs.authorize.outputs.mesh_spec_path }}
-          VPC_SPEC_PATH: ${{ needs.authorize.outputs.vpc_spec_path }}
-          APPLICATION_SPEC_PATH: ${{ needs.authorize.outputs.application_spec_path }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "${REVISION}"
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${REVISION}"
-          test -f "${MESH_SPEC_PATH}"
-          if [[ "${REQUESTED_OPERATION}" != "provider-cleanup-plan" && "${REQUESTED_OPERATION}" != "provider-cleanup-verify" ]]; then
-            test -f "${VPC_SPEC_PATH}"
-            test -f "${APPLICATION_SPEC_PATH}"
-          fi
-
-      - name: Resolve and verify exact durable Edge Platform release
-        id: resolve_release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.sha }}
-          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
-        run: |
-          set -euo pipefail
-          bash edge-platform/scripts/resolve_durable_release.sh
-
   provider_observe:
-    needs: [authorize, verify]
+    needs: authorize
     if: needs.authorize.outputs.operation == 'provider-cleanup-plan' || needs.authorize.outputs.operation == 'provider-cleanup-verify'
     runs-on: ubuntu-24.04
     environment:
@@ -161,7 +116,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ACCEPTED_REVISION: ${{ github.sha }}
-          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
         run: |
           set -euo pipefail
@@ -221,7 +175,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   execute:
-    needs: [authorize, verify]
+    needs: authorize
     if: needs.authorize.outputs.operation != 'provider-cleanup-plan' && needs.authorize.outputs.operation != 'provider-cleanup-verify'
     runs-on: ubuntu-24.04
     environment:
@@ -262,7 +216,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ACCEPTED_REVISION: ${{ github.sha }}
-          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
         run: |
           set -euo pipefail
