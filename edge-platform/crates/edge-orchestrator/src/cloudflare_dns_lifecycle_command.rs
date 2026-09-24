@@ -6,7 +6,7 @@ use crate::vultr_lifecycle_command::{
     exact_existing_machine_observation, load_desired_state as load_vultr_desired_state,
 };
 use edge_controller_core::application_lifecycle::DesiredApplicationState;
-use edge_controller_core::cloudflare_dns_lifecycle::DesiredDnsState;
+use edge_controller_core::cloudflare_dns_lifecycle::{ApplyAction, CleanupAction, DesiredDnsState};
 use edge_controller_core::orchestration::{MachineObservation, derive_dns_target};
 use std::env;
 use std::fs;
@@ -125,6 +125,96 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
         "observation": report.observation,
         "next_plan": report.next_plan,
     }))
+}
+
+pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    let (_observation, plan) = plan_dns_cleanup(&mut provider, &desired).await?;
+    if !matches!(plan.action, CleanupAction::Noop) || plan.destructive_digest.is_some() {
+        return Err(format!(
+            "acceptance DNS clean room is not empty: action={:?}",
+            plan.action
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_create(
+    spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let derived = derive_target_from_application(application_spec_path).await?;
+    let mut provider = provider_from_env()?;
+    let (observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
+    if !matches!(plan.action, ApplyAction::Create { .. }) {
+        return Err(format!(
+            "fresh acceptance DNS must plan CREATE, got {:?}",
+            plan.action
+        ));
+    }
+    let authorized = authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
+    let report = apply_dns_once(
+        &mut provider,
+        &desired,
+        &derived.target_ipv4,
+        &authorized.authority.authority_digest,
+        DnsExecutionPolicy::default(),
+    )
+    .await?;
+    if !matches!(report.next_plan.action, ApplyAction::Noop) {
+        return Err("acceptance DNS create did not converge to NOOP".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_verify_noop(
+    spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let derived = derive_target_from_application(application_spec_path).await?;
+    let mut provider = provider_from_env()?;
+    let (_observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
+    if !matches!(plan.action, ApplyAction::Noop) {
+        return Err(format!(
+            "acceptance DNS expected NOOP, got {:?}",
+            plan.action
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_cleanup_to_absent(spec_path: &Path) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    let (observed, plan) = plan_dns_cleanup(&mut provider, &desired).await?;
+    if matches!(plan.action, CleanupAction::Noop) {
+        if plan.destructive_digest.is_some() {
+            return Err("DNS NOOP cleanup plan contained destructive digest".to_owned());
+        }
+        return Ok(());
+    }
+    let destructive_digest = plan
+        .destructive_digest
+        .clone()
+        .ok_or_else(|| "DNS cleanup mutation is missing destructive digest".to_owned())?;
+    let authorized = authorize_dns_cleanup(&desired, &observed, plan)?;
+    let report = cleanup_dns_once(
+        &mut provider,
+        &desired,
+        &destructive_digest,
+        &authorized.authority.authority_digest,
+        DnsExecutionPolicy::default(),
+    )
+    .await?;
+    if !matches!(report.next_plan.action, CleanupAction::Noop)
+        || report.next_plan.destructive_digest.is_some()
+    {
+        return Err("acceptance DNS cleanup did not converge to NOOP".to_owned());
+    }
+    Ok(())
 }
 
 fn load_desired(path: &Path) -> Result<DesiredDnsState, String> {

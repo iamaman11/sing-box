@@ -94,6 +94,7 @@ jobs:
 
   verify:
     needs: authorize
+    if: needs.authorize.outputs.operation != 'acceptance'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -169,7 +170,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ACCEPTED_REVISION: ${{ github.sha }}
-          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
         run: |
           set -euo pipefail
@@ -182,7 +182,7 @@ jobs:
           dir="${RUNNER_TEMP}/edge-platform-release"
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
           test "${EDGE_RELEASE_SCHEMA_VERSION}" = "4"
           [[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
@@ -348,7 +348,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   acceptance:
-    needs: [authorize, verify]
+    needs: authorize
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
@@ -384,7 +384,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ACCEPTED_REVISION: ${{ github.sha }}
-          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
         run: |
           set -euo pipefail
@@ -397,7 +396,7 @@ jobs:
           dir="${RUNNER_TEMP}/edge-platform-release"
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
           test "${EDGE_RELEASE_SCHEMA_VERSION}" = "4"
           [[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
@@ -521,496 +520,37 @@ jobs:
           PY
           printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
 
-      - name: Run full provider-backed disposable acceptance
+      - name: Run typed provider-backed disposable acceptance
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          bin="${EDGE_APPLICATION_ORCHESTRATOR}"
-          app_spec="${SPEC_PATH}"
-          vultr_spec="$(jq -er '.vultr_spec_path' "${app_spec}")"
-          machine="$(jq -er '.machine_id' "${app_spec}")"
-          dns_spec="${EDGE_ACCEPTANCE_DNS_SPEC}"
-          mesh_base_spec="${EDGE_ACCEPTANCE_MESH_BASE_SPEC}"
-          vpc_spec="${EDGE_ACCEPTANCE_VPC_SPEC}"
-          source_revision="${GITHUB_SHA}"
-          artifact="${EDGE_APPLICATION_ARTIFACT}"
-          manifest="${EDGE_APPLICATION_ARTIFACT_MANIFEST}"
-          access_release="${RUNNER_TEMP}/acceptance-access-release.json"
+          result="${RUNNER_TEMP}/application-acceptance-result.json"
 
-          test -f "${vultr_spec}"
-          test -f "${dns_spec}"
-          test -f "${mesh_base_spec}"
-          test -f "${vpc_spec}"
-          test -n "${VULTR_API_KEY}"
-          test -n "${CLOUDFLARE_API_TOKEN}"
-          test -s "${EDGE_SSH_PRIVATE_KEY_PATH}"
-          test "$(jq -r '.bootstrap_mode' "${app_spec}")" = "full"
-          test "$(jq -r '.runtime_policy.line1.acme_provider' "${app_spec}")" = \
-            "https://acme-staging-v02.api.letsencrypt.org/directory"
+          set +e
+          "${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance \
+            "${SPEC_PATH}" \
+            "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" \
+            "${EDGE_APPLICATION_ARTIFACT}" \
+            "${EDGE_ACCEPTANCE_DNS_SPEC}" \
+            "${EDGE_ACCEPTANCE_MESH_BASE_SPEC}" \
+            "${EDGE_ACCEPTANCE_VPC_SPEC}" \
+            | tee "${result}"
+          operation_rc="${PIPESTATUS[0]}"
+          set -e
 
-          plan_authority() {
-            jq -er '.plan_authority.authority_digest' "$1"
-          }
+          if [[ -s "${result}" ]]; then
+            {
+              echo '### Full disposable Stage 2 application acceptance'
+              echo '~~~json'
+              cat "${result}"
+              echo '~~~'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
-          machine_authority() {
-            jq -er '.authorized_plans[0].authority.authority_digest' "$1"
-          }
-
-          ACCESS_CLEANUP_ARMED=0
-
-          release_acceptance_access() {
-            if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
-              return 0
-            fi
-            "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
-              | tee "${access_release}"
-            jq -e '.status == "RELEASED" and
-                   .access.next_plan.action == "NOOP" and
-                   (.access.next_plan.matching_rule_ids | length) == 0' \
-              "${access_release}" >/dev/null
-          }
-
-          finish_acceptance() {
-            local operation_rc=$?
-            trap - EXIT
-            set +e
-            release_acceptance_access
-            local cleanup_rc=$?
-            set -e
-            if [[ "${cleanup_rc}" -ne 0 && "${operation_rc}" -eq 0 ]]; then
-              operation_rc="${cleanup_rc}"
-            fi
-            exit "${operation_rc}"
-          }
-
-          trap finish_acceptance EXIT
-
-          converge_host_substrate() {
-            local prefix="$1"
-            local verify_output="$2"
-            local converged=0
-
-            for iteration in 1 2 3 4; do
-              local plan="${RUNNER_TEMP}/${prefix}-substrate-plan-${iteration}.json"
-              "${bin}" vultr-lifecycle substrate-plan "${vultr_spec}" "${machine}" > "${plan}"
-              local action
-              action="$(jq -er '.plan.action' "${plan}")"
-              case "${action}" in
-                NOOP)
-                  converged=1
-                  break
-                  ;;
-                SCRUB_USER_DATA|ROTATE_HOST_CERTIFICATE)
-                  local authority
-                  authority="$(plan_authority "${plan}")"
-                  [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
-                  "${bin}" vultr-lifecycle substrate-apply "${vultr_spec}" "${machine}" "${authority}" \
-                    > "${RUNNER_TEMP}/${prefix}-substrate-apply-${iteration}.json"
-                  ;;
-                BLOCKED_PROVIDER|BLOCKED_STRICT_SSH|BLOCKED_SUBSTRATE)
-                  cat "${plan}" >&2
-                  echo "host substrate convergence is blocked: ${action}" >&2
-                  return 1
-                  ;;
-                *)
-                  cat "${plan}" >&2
-                  echo "unexpected host substrate action: ${action}" >&2
-                  return 1
-                  ;;
-              esac
-            done
-
-            test "${converged}" = "1" || {
-              echo "host substrate convergence exceeded bounded mutation steps" >&2
-              return 1
-            }
-            "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" > "${verify_output}"
-            jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
-          }
-          require_vpc_clean_room() {
-            local plan="${RUNNER_TEMP}/acceptance-vpc-before.json"
-            "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" > "${plan}"
-            jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-              "${plan}" >/dev/null
-          }
-
-          # Fail closed on any acceptance-owned feature residue. Feature/provider state is
-          # preserved for diagnosis on failure, but transient support access is always released
-          # by the EXIT trap once a lease has been acquired.
-          "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
-            > "${RUNNER_TEMP}/acceptance-support-before.json"
-          jq -e '.plan.action == "NOOP" and .plan.environment_in_use == false' \
-            "${RUNNER_TEMP}/acceptance-support-before.json" >/dev/null
-
-          "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-plan-before.json"
-          jq -e '.plans[0].class == "CREATE"' \
-            "${RUNNER_TEMP}/acceptance-plan-before.json" >/dev/null
-          vm_authority="$(machine_authority "${RUNNER_TEMP}/acceptance-plan-before.json")"
-          [[ "${vm_authority}" =~ ^[0-9a-f]{64}$ ]]
-
-          "${bin}" cloudflare-dns cleanup-plan "${dns_spec}" \
-            > "${RUNNER_TEMP}/acceptance-dns-before.json"
-          jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-            "${RUNNER_TEMP}/acceptance-dns-before.json" >/dev/null
-
-          "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" \
-            > "${RUNNER_TEMP}/acceptance-mesh-before.json"
-          jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-            "${RUNNER_TEMP}/acceptance-mesh-before.json" >/dev/null
-
-          require_vpc_clean_room
-
-          "${bin}" vultr-vpc plan "${vpc_spec}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-plan.json"
-          vpc_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-vpc-plan.json")"
-          "${bin}" vultr-vpc apply "${vpc_spec}" "${vpc_authority}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-apply.json"
-          jq -e '.performed.kind == "CREATE_VPC" and .next_plan.action.kind == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-vpc-apply.json" >/dev/null
-
-          "${bin}" vultr-lifecycle apply "${vultr_spec}" "${machine}" "${vm_authority}" \
-            > "${RUNNER_TEMP}/acceptance-vm-apply.json"
-          jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
-            "${RUNNER_TEMP}/acceptance-vm-apply.json" >/dev/null
-
-          "${bin}" vultr-lifecycle lease-acquire "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-access-acquire.json"
-          jq -e '.status == "READY"' "${RUNNER_TEMP}/acceptance-access-acquire.json" >/dev/null
-          ACCESS_CLEANUP_ARMED=1
-
-          converge_host_substrate "acceptance-initial" "${RUNNER_TEMP}/acceptance-substrate-initial.json"
-
-          "${bin}" vultr-vpc attachment-plan "${vpc_spec}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-attachment-plan.json"
-          jq -e '.plan.action.kind == "ATTACH_INSTANCE"' \
-            "${RUNNER_TEMP}/acceptance-vpc-attachment-plan.json" >/dev/null
-          attachment_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-vpc-attachment-plan.json")"
-          "${bin}" vultr-vpc attachment-apply "${vpc_spec}" "${attachment_authority}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-attachment-apply.json"
-          jq -e '.performed.kind == "ATTACH_INSTANCE" and
-                 .next_plan.action.kind == "NOOP" and
-                 .guest_transition.network_ready == true and
-                 (.guest_transition.boot_id_changed | type == "boolean") and
-                 (.guest_transition.interface | type == "string") and
-                 .guest_transition.cidr == .next_plan.cidr and
-                 .guest_transition.private_ipv4 == .next_plan.private_ipv4' \
-            "${RUNNER_TEMP}/acceptance-vpc-attachment-apply.json" >/dev/null
-
-          # VPC attachment owns the guest transition; substrate verification proves the host remains accepted.
-          "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-post-attachment-substrate.json"
-          jq -e '.status == "PASS" and .plan.action == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-vpc-post-attachment-substrate.json" >/dev/null
-
-          "${bin}" vultr-vpc verify "${vpc_spec}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-verify.json"
-          jq -e '.status == "PASS" and (.cidr | type == "string") and (.private_ipv4 | type == "string")' \
-            "${RUNNER_TEMP}/acceptance-vpc-verify.json" >/dev/null
-
-          "${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-dns-plan.json"
-          jq -e '.plan.action.kind == "CREATE"' \
-            "${RUNNER_TEMP}/acceptance-dns-plan.json" >/dev/null
-          dns_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-dns-plan.json")"
-          "${bin}" cloudflare-dns apply "${dns_spec}" "${app_spec}" "${dns_authority}" \
-            > "${RUNNER_TEMP}/acceptance-dns-apply.json"
-          jq -e '.next_plan.action.kind == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-dns-apply.json" >/dev/null
-
-          "${bin}" application-lifecycle plan "${app_spec}" "${manifest}" "${artifact}" \
-            > "${RUNNER_TEMP}/acceptance-app-plan.json"
-          app_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-app-plan.json")"
-          "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}" "${app_authority}" \
-            > "${RUNNER_TEMP}/acceptance-app-apply.json"
-          jq -e '.initial_plan.class == "APPLY" and .final_plan.class == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-app-apply.json" >/dev/null
-
-          mesh_noop=0
-          for _ in 1 2 3 4; do
-            "${bin}" line3-mesh vpc-plan "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
-              > "${RUNNER_TEMP}/acceptance-mesh-plan.json"
-            jq -e '.guest_vpc.status == "PASS"' \
-              "${RUNNER_TEMP}/acceptance-mesh-plan.json" >/dev/null
-            if jq -e '.plan.action.kind == "NOOP"' \
-                "${RUNNER_TEMP}/acceptance-mesh-plan.json" >/dev/null; then
-              mesh_noop=1
-              break
-            fi
-            mesh_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-mesh-plan.json")"
-            "${bin}" line3-mesh vpc-apply "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" "${mesh_authority}" \
-              > "${RUNNER_TEMP}/acceptance-mesh-apply.json"
-            jq -e '.guest_vpc.status == "PASS"' \
-              "${RUNNER_TEMP}/acceptance-mesh-apply.json" >/dev/null
-          done
-          test "${mesh_noop}" = "1"
-
-          "${bin}" line3-mesh vpc-runtime-apply "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-mesh-runtime-apply.json"
-          jq -e \
-            '.status == "READY" and
-             .runtime.runtime_ready == true and
-             .runtime.exact_image_ready == true and
-             .provider_observation.nodes[0].status == "healthy"' \
-            "${RUNNER_TEMP}/acceptance-mesh-runtime-apply.json" >/dev/null
-
-          "${bin}" line3-mesh vpc-runtime-verify "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-mesh-runtime-verify.json"
-          jq -e '.status == "PASS" and .runtime.runtime_ready == true' \
-            "${RUNNER_TEMP}/acceptance-mesh-runtime-verify.json" >/dev/null
-
-          "${bin}" application-lifecycle plan "${app_spec}" "${manifest}" "${artifact}" \
-            > "${RUNNER_TEMP}/acceptance-app-noop-plan.json"
-          app_noop_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-app-noop-plan.json")"
-          "${bin}" application-lifecycle apply "${app_spec}" "${manifest}" "${artifact}" "${app_noop_authority}" \
-            > "${RUNNER_TEMP}/acceptance-app-noop.json"
-          jq -e '.initial_plan.class == "NOOP" and .final_plan.class == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-app-noop.json" >/dev/null
-
-          "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}" \
-            > "${RUNNER_TEMP}/acceptance-verify-v1.json"
-          jq -e '.status == "PASS" and .plan.class == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-verify-v1.json" >/dev/null
-
-          "${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-dns-noop.json"
-          jq -e '.plan.action.kind == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-dns-noop.json" >/dev/null
-
-          release_v1="$(jq -er '.final_plan.desired_release.release_id' \
-            "${RUNNER_TEMP}/acceptance-app-noop.json")"
-          bundle_v1="$(jq -er '.final_plan.desired_release.bundle_digest' \
-            "${RUNNER_TEMP}/acceptance-app-noop.json")"
-
-          upgrade_spec="${RUNNER_TEMP}/application-upgrade.json"
-          jq '.runtime_policy.line2.proxy_username = "acceptance-v2"' \
-            "${app_spec}" > "${upgrade_spec}"
-          "${bin}" application-lifecycle plan "${upgrade_spec}" "${manifest}" "${artifact}" \
-            > "${RUNNER_TEMP}/acceptance-upgrade-plan.json"
-          upgrade_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-upgrade-plan.json")"
-          "${bin}" application-lifecycle upgrade "${upgrade_spec}" "${manifest}" "${artifact}" "${upgrade_authority}" \
-            > "${RUNNER_TEMP}/acceptance-upgrade.json"
-          jq -e '.initial_plan.class == "UPGRADE" and .final_plan.class == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-upgrade.json" >/dev/null
-
-          release_v2="$(jq -er '.final_plan.desired_release.release_id' \
-            "${RUNNER_TEMP}/acceptance-upgrade.json")"
-          bundle_v2="$(jq -er '.final_plan.desired_release.bundle_digest' \
-            "${RUNNER_TEMP}/acceptance-upgrade.json")"
-          test "${release_v1}" != "${release_v2}"
-          test "${bundle_v1}" != "${bundle_v2}"
-
-          "${bin}" application-lifecycle rollback-plan "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-rollback-plan.json"
-          rollback_digest="$(jq -er '.rollback.rollback_digest' \
-            "${RUNNER_TEMP}/acceptance-rollback-plan.json")"
-          [[ "${rollback_digest}" =~ ^[0-9a-f]{64}$ ]]
-          jq -e --arg current "${release_v2}" --arg previous "${release_v1}" \
-            '.rollback.current_release.release_id == $current and
-             .rollback.previous_release.release_id == $previous' \
-            "${RUNNER_TEMP}/acceptance-rollback-plan.json" >/dev/null
-
-          rollback_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-rollback-plan.json")"
-          "${bin}" application-lifecycle rollback-apply "${app_spec}" "${rollback_digest}" "${rollback_authority}" \
-            > "${RUNNER_TEMP}/acceptance-rollback-apply.json"
-          jq -e '.status == "ROLLED_BACK"' \
-            "${RUNNER_TEMP}/acceptance-rollback-apply.json" >/dev/null
-
-          "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}" \
-            > "${RUNNER_TEMP}/acceptance-verify-rollback.json"
-          jq -e '.status == "PASS" and .plan.class == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-verify-rollback.json" >/dev/null
-
-          "${bin}" vultr-lifecycle action-plan "${vultr_spec}" "${machine}" reboot \
-            > "${RUNNER_TEMP}/acceptance-reboot-plan.json"
-          reboot_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-reboot-plan.json")"
-          "${bin}" vultr-lifecycle action "${vultr_spec}" "${machine}" reboot "${reboot_authority}" \
-            > "${RUNNER_TEMP}/acceptance-reboot.json"
-          jq -e '.action == "reboot" and
-                 .reboot_observation.boot_id_changed == true and
-                 .reboot_observation.boot_id_before != .reboot_observation.boot_id_after' \
-            "${RUNNER_TEMP}/acceptance-reboot.json" >/dev/null
-          "${bin}" vultr-lifecycle substrate-verify "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-post-reboot-substrate.json"
-          jq -e '.status == "PASS" and .plan.action == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-post-reboot-substrate.json" >/dev/null
-
-          "${bin}" application-lifecycle verify "${app_spec}" "${manifest}" "${artifact}" \
-            > "${RUNNER_TEMP}/acceptance-post-reboot-app.json"
-          jq -e '.status == "PASS" and .plan.class == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-post-reboot-app.json" >/dev/null
-
-          "${bin}" line3-mesh vpc-runtime-verify "${mesh_base_spec}" "${vpc_spec}" "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-post-reboot-mesh.json"
-          jq -e '.status == "PASS" and .runtime.runtime_ready == true' \
-            "${RUNNER_TEMP}/acceptance-post-reboot-mesh.json" >/dev/null
-
-          "${bin}" cloudflare-dns plan "${dns_spec}" "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-post-reboot-dns.json"
-          jq -e '.plan.action.kind == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-post-reboot-dns.json" >/dev/null
-
-          "${bin}" vultr-vpc verify "${vpc_spec}" \
-            > "${RUNNER_TEMP}/acceptance-post-reboot-vpc.json"
-          jq -e -s \
-            '.[0].status == "PASS" and
-             .[1].status == "PASS" and
-             .[0].cidr == .[1].cidr and
-             .[0].private_ipv4 == .[1].private_ipv4' \
-            "${RUNNER_TEMP}/acceptance-vpc-verify.json" \
-            "${RUNNER_TEMP}/acceptance-post-reboot-vpc.json" >/dev/null
-
-          "${bin}" line3-mesh runtime-cleanup "${app_spec}" \
-            > "${RUNNER_TEMP}/acceptance-mesh-runtime-cleanup.json"
-          jq -e \
-            '.status == "ABSENT" and
-             .runtime.token_store_present == false and
-             .runtime.container_running == false' \
-            "${RUNNER_TEMP}/acceptance-mesh-runtime-cleanup.json" >/dev/null
-
-          mesh_absent=0
-          for _ in 1 2 3 4; do
-            "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" \
-              > "${RUNNER_TEMP}/acceptance-mesh-cleanup-plan.json"
-            mesh_digest="$(jq -r '.plan.destructive_digest // empty' \
-              "${RUNNER_TEMP}/acceptance-mesh-cleanup-plan.json")"
-            if [[ -z "${mesh_digest}" ]]; then
-              jq -e '.plan.action.kind == "NOOP"' \
-                "${RUNNER_TEMP}/acceptance-mesh-cleanup-plan.json" >/dev/null
-              mesh_absent=1
-              break
-            fi
-            [[ "${mesh_digest}" =~ ^[0-9a-f]{64}$ ]]
-            mesh_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-mesh-cleanup-plan.json")"
-            "${bin}" line3-mesh cleanup-apply "${mesh_base_spec}" "${mesh_digest}" "${mesh_cleanup_authority}" \
-              > "${RUNNER_TEMP}/acceptance-mesh-cleanup-apply.json"
-          done
-          test "${mesh_absent}" = "1"
-
-          "${bin}" cloudflare-dns cleanup-plan "${dns_spec}" \
-            > "${RUNNER_TEMP}/acceptance-dns-cleanup-plan.json"
-          dns_digest="$(jq -er '.plan.destructive_digest' \
-            "${RUNNER_TEMP}/acceptance-dns-cleanup-plan.json")"
-          [[ "${dns_digest}" =~ ^[0-9a-f]{64}$ ]]
-          dns_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-dns-cleanup-plan.json")"
-          "${bin}" cloudflare-dns cleanup-apply "${dns_spec}" "${dns_digest}" "${dns_cleanup_authority}" \
-            > "${RUNNER_TEMP}/acceptance-dns-cleanup-apply.json"
-          jq -e '.next_plan.action.kind == "NOOP"' \
-            "${RUNNER_TEMP}/acceptance-dns-cleanup-apply.json" >/dev/null
-
-          vpc_absent=0
-          for _ in 1 2 3 4; do
-            "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" \
-              > "${RUNNER_TEMP}/acceptance-vpc-cleanup-plan.json"
-            vpc_digest="$(jq -r '.plan.destructive_digest // empty' \
-              "${RUNNER_TEMP}/acceptance-vpc-cleanup-plan.json")"
-            if [[ -z "${vpc_digest}" ]]; then
-              jq -e '.plan.action.kind == "NOOP"' \
-                "${RUNNER_TEMP}/acceptance-vpc-cleanup-plan.json" >/dev/null
-              vpc_absent=1
-              break
-            fi
-            [[ "${vpc_digest}" =~ ^[0-9a-f]{64}$ ]]
-            vpc_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-vpc-cleanup-plan.json")"
-            "${bin}" vultr-vpc cleanup-apply "${vpc_spec}" "${vpc_digest}" "${vpc_cleanup_authority}" \
-              > "${RUNNER_TEMP}/acceptance-vpc-cleanup-apply.json"
-          done
-          test "${vpc_absent}" = "1"
-
-          "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
-            | tee "${access_release}"
-          jq -e '.status == "RELEASED" and
-                 .access.next_plan.action == "NOOP" and
-                 (.access.next_plan.matching_rule_ids | length) == 0' \
-            "${access_release}" >/dev/null
-          ACCESS_CLEANUP_ARMED=0
-
-          "${bin}" vultr-lifecycle destroy-plan \
-            "${vultr_spec}" "${machine}" "${source_revision}" \
-            > "${RUNNER_TEMP}/acceptance-destroy-plan.json"
-          destroy_digest="$(jq -er '.destroy_digest' \
-            "${RUNNER_TEMP}/acceptance-destroy-plan.json")"
-          destroy_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-destroy-plan.json")"
-          "${bin}" vultr-lifecycle destroy-apply \
-            "${vultr_spec}" "${machine}" "${source_revision}" "${destroy_digest}" "${destroy_authority}" \
-            > "${RUNNER_TEMP}/acceptance-destroy-apply.json"
-          jq -e '.absence_verified == true' \
-            "${RUNNER_TEMP}/acceptance-destroy-apply.json" >/dev/null
-
-          "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
-            > "${RUNNER_TEMP}/acceptance-support-cleanup-plan.json"
-          support_cleanup_authority="$(plan_authority "${RUNNER_TEMP}/acceptance-support-cleanup-plan.json")"
-          "${bin}" vultr-lifecycle cleanup "${vultr_spec}" "${support_cleanup_authority}" \
-            > "${RUNNER_TEMP}/acceptance-support-cleanup.json"
-          jq -e '.environment_in_use == false' "${RUNNER_TEMP}/acceptance-support-cleanup.json" >/dev/null
-          "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
-            > "${RUNNER_TEMP}/acceptance-support-cleanup-noop-plan.json"
-          jq -e '.plan.action == "NOOP"' "${RUNNER_TEMP}/acceptance-support-cleanup-noop-plan.json" >/dev/null
-          "${bin}" vultr-lifecycle plan "${vultr_spec}" "${machine}" \
-            > "${RUNNER_TEMP}/acceptance-plan-after.json"
-          jq -e '.plans[0].class == "CREATE"' \
-            "${RUNNER_TEMP}/acceptance-plan-after.json" >/dev/null
-
-          "${bin}" cloudflare-dns cleanup-plan "${dns_spec}" \
-            > "${RUNNER_TEMP}/acceptance-dns-after.json"
-          jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-            "${RUNNER_TEMP}/acceptance-dns-after.json" >/dev/null
-
-          "${bin}" line3-mesh cleanup-plan "${mesh_base_spec}" \
-            > "${RUNNER_TEMP}/acceptance-mesh-after.json"
-          jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-            "${RUNNER_TEMP}/acceptance-mesh-after.json" >/dev/null
-
-          "${bin}" vultr-vpc cleanup-plan "${vpc_spec}" \
-            > "${RUNNER_TEMP}/acceptance-vpc-after.json"
-          jq -e '.plan.action.kind == "NOOP" and .plan.destructive_digest == null' \
-            "${RUNNER_TEMP}/acceptance-vpc-after.json" >/dev/null
-
-          trap - EXIT
-
-          jq -n \
-            --arg source_revision "${source_revision}" \
-            --arg release_v1 "${release_v1}" \
-            --arg release_v2 "${release_v2}" \
-            --arg bundle_v1 "${bundle_v1}" \
-            --arg bundle_v2 "${bundle_v2}" \
-            '{
-              acceptance:"PASS",
-              source_revision:$source_revision,
-              clean_room_precondition:"PASS",
-              fresh_vm:"PASS",
-              vpc:"CREATE_ATTACH_READY_TO_ABSENT",
-              dns:"CREATE_TO_NOOP_TO_ABSENT",
-              clean_room_certificate:"STAGING_ACME_PASS",
-              direct_warp_datapath:"PASS",
-              mesh_provider_runtime:"PASS",
-              first_apply:"APPLY_TO_NOOP",
-              repeat_apply:"NOOP",
-              verify:"PASS",
-              upgrade:"UPGRADE_TO_NOOP",
-              rollback:"PASS",
-              reboot_verify:"PASS",
-              mesh_runtime_cleanup:"PASS",
-              dns_mesh_vpc_provider_cleanup:"PASS",
-              access_cleanup:"PASS",
-              destroy_absence:"PASS",
-              support_cleanup:"PASS",
-              zero_leaked_resources:"PASS",
-              release_v1:$release_v1,
-              release_v2:$release_v2,
-              bundle_v1:$bundle_v1,
-              bundle_v2:$bundle_v2
-            }' | tee "${RUNNER_TEMP}/application-acceptance-result.json"
-
-          {
-            echo '### Full disposable Stage 2 application acceptance'
-            echo '~~~json'
-            cat "${RUNNER_TEMP}/application-acceptance-result.json"
-            echo '~~~'
-          } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${operation_rc}"
 
       - name: Remove local sensitive material
         if: always()

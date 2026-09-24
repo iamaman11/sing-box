@@ -24,6 +24,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ApplicationLifecycleCommand,
     },
+    ApplicationAcceptance(ApplicationAcceptanceArgs),
     CloudflareDns {
         #[command(subcommand)]
         command: CloudflareDnsCommand,
@@ -51,6 +52,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::ApplicationLifecycle { .. } => "application-lifecycle",
+            Self::ApplicationAcceptance(_) => "application-acceptance",
             Self::CloudflareDns { .. } => "cloudflare-dns",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Line3Mesh { .. } => "line3-mesh",
@@ -58,6 +60,16 @@ impl Command {
             Self::VultrVpc { .. } => "vultr-vpc",
         }
     }
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct ApplicationAcceptanceArgs {
+    pub spec_path: PathBuf,
+    pub artifact_manifest_path: PathBuf,
+    pub edge_agent_artifact_path: PathBuf,
+    pub dns_spec_path: PathBuf,
+    pub mesh_base_spec_path: PathBuf,
+    pub vpc_spec_path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]
