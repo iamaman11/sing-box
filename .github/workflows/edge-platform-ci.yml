@@ -53,6 +53,10 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_runtime_input_digest.py
 
+      - name: Test Windows candidate input identity
+        shell: bash
+        run: python3 edge-platform/scripts/test_windows_input_digest.py
+
       - name: Validate durable release publisher
         shell: bash
         run: |
@@ -540,6 +544,14 @@ jobs:
       containerd_version: ${{ steps.resolve.outputs.containerd_version }}
       compose_version: ${{ steps.resolve.outputs.compose_version }}
       runtime_input_sha256: ${{ steps.resolve.outputs.runtime_input_sha256 }}
+      windows_input_sha256: ${{ steps.resolve.outputs.windows_input_sha256 }}
+      windows_reuse: ${{ steps.resolve.outputs.windows_reuse }}
+      windows_source_revision: ${{ steps.resolve.outputs.windows_source_revision }}
+      base_release_tag: ${{ steps.resolve.outputs.base_release_tag }}
+      base_windows_artifact_sha256: ${{ steps.resolve.outputs.base_windows_artifact_sha256 }}
+      base_windows_controller_sha256: ${{ steps.resolve.outputs.base_windows_controller_sha256 }}
+      base_windows_console_sha256: ${{ steps.resolve.outputs.base_windows_console_sha256 }}
+      base_windows_sing_box_sha256: ${{ steps.resolve.outputs.base_windows_sing_box_sha256 }}
     steps:
       - name: Checkout exact revision
         shell: bash
@@ -559,6 +571,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           work="${RUNNER_TEMP}/release-dependencies"
@@ -643,6 +658,45 @@ jobs:
             --repo-root . --inputs-json "${runtime_inputs}")"
           [[ "${runtime_input_sha}" =~ ^[0-9a-f]{64}$ ]]
 
+          windows_inputs="${work}/windows-inputs.json"
+          jq -n \
+            --arg rust_toolchain "1.95.0" \
+            --arg windows_runner "windows-2025" \
+            --arg sing_box_version "${sing_version}" \
+            --arg sing_box_windows_sha256 "${sing_windows_sha}" \
+            '{
+              rust_toolchain:$rust_toolchain,
+              windows_runner:$windows_runner,
+              sing_box_version:$sing_box_version,
+              sing_box_windows_sha256:$sing_box_windows_sha256
+            }' > "${windows_inputs}"
+          windows_input_sha="$(python3 edge-platform/scripts/windows_input_digest.py compute \
+            --repo-root . --inputs-json "${windows_inputs}")"
+          [[ "${windows_input_sha}" =~ ^[0-9a-f]{64}$ ]]
+
+          base_dir="${RUNNER_TEMP}/base-edge-platform-release"
+          ACCEPTED_REVISION="${BASE_REVISION}" OUTPUT_DIR="${base_dir}" \
+            bash edge-platform/scripts/resolve_durable_release.sh
+          source "${base_dir}/resolved.env"
+
+          windows_decision="$(python3 edge-platform/scripts/windows_input_digest.py decide \
+            --candidate-digest "${windows_input_sha}" \
+            --base-schema "${EDGE_RELEASE_SCHEMA_VERSION}" \
+            --base-digest "${EDGE_WINDOWS_INPUT_SHA256}" \
+            --base-source-revision "${EDGE_WINDOWS_SOURCE_REVISION}" \
+            --base-artifact-sha256 "${EDGE_WINDOWS_ARTIFACT_SHA256}" \
+            --base-controller-sha256 "${EDGE_WINDOWS_CONTROLLER_SHA256}" \
+            --base-console-sha256 "${EDGE_WINDOWS_CONSOLE_SHA256}" \
+            --base-sing-box-sha256 "${EDGE_WINDOWS_SING_BOX_SHA256}")"
+          test "${windows_decision}" = "REUSE" || test "${windows_decision}" = "BUILD"
+
+          windows_reuse=false
+          windows_source_revision="${CANDIDATE_REVISION}"
+          if [[ "${windows_decision}" = "REUSE" ]]; then
+            windows_reuse=true
+            windows_source_revision="${EDGE_WINDOWS_SOURCE_REVISION}"
+          fi
+
           {
             printf 'sing_box_version=%s\n' "${sing_version}"
             printf 'sing_box_windows_url=%s\n' "${sing_windows_url}"
@@ -659,6 +713,14 @@ jobs:
             printf 'containerd_version=%s\n' "${containerd_version}"
             printf 'compose_version=%s\n' "${compose_version}"
             printf 'runtime_input_sha256=%s\n' "${runtime_input_sha}"
+            printf 'windows_input_sha256=%s\n' "${windows_input_sha}"
+            printf 'windows_reuse=%s\n' "${windows_reuse}"
+            printf 'windows_source_revision=%s\n' "${windows_source_revision}"
+            printf 'base_release_tag=%s\n' "${EDGE_RELEASE_TAG}"
+            printf 'base_windows_artifact_sha256=%s\n' "${EDGE_WINDOWS_ARTIFACT_SHA256}"
+            printf 'base_windows_controller_sha256=%s\n' "${EDGE_WINDOWS_CONTROLLER_SHA256}"
+            printf 'base_windows_console_sha256=%s\n' "${EDGE_WINDOWS_CONSOLE_SHA256}"
+            printf 'base_windows_sing_box_sha256=%s\n' "${EDGE_WINDOWS_SING_BOX_SHA256}"
           } >> "${GITHUB_OUTPUT}"
 
           {
@@ -675,6 +737,9 @@ jobs:
             echo "- containerd package: \`${containerd_version}\`"
             echo "- Compose package: \`${compose_version}\`"
             echo "- VM runtime input SHA-256: \`${runtime_input_sha}\`"
+            echo "- Windows candidate input SHA-256: \`${windows_input_sha}\`"
+            echo "- Windows candidate decision: \`${windows_decision}\`"
+            echo "- Windows artifact source revision: \`${windows_source_revision}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   windows:
@@ -686,10 +751,10 @@ jobs:
     permissions:
       contents: read
     outputs:
-      artifact_sha256: ${{ steps.package.outputs.artifact_sha256 }}
-      controller_sha256: ${{ steps.package.outputs.controller_sha256 }}
-      console_sha256: ${{ steps.package.outputs.console_sha256 }}
-      sing_box_binary_sha256: ${{ steps.package.outputs.sing_box_binary_sha256 }}
+      artifact_sha256: ${{ steps.finalize.outputs.artifact_sha256 }}
+      controller_sha256: ${{ steps.finalize.outputs.controller_sha256 }}
+      console_sha256: ${{ steps.finalize.outputs.console_sha256 }}
+      sing_box_binary_sha256: ${{ steps.finalize.outputs.sing_box_binary_sha256 }}
     steps:
       - name: Checkout exact revision
         shell: pwsh
@@ -705,6 +770,7 @@ jobs:
           if ((git rev-parse HEAD).Trim() -ne $env:REVISION) { throw "exact revision checkout failed" }
 
       - name: Verify exact upstream Windows sing-box candidate
+        if: needs.dependencies.outputs.windows_reuse != 'true'
         shell: pwsh
         env:
           SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
@@ -739,6 +805,7 @@ jobs:
           }
 
       - name: Install pinned Rust toolchain
+        if: needs.dependencies.outputs.windows_reuse != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -777,17 +844,28 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
 
+      # WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN
       - name: Build exact Windows control binaries
+        if: needs.dependencies.outputs.windows_reuse != 'true'
         working-directory: edge-platform
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           cargo build --locked --release -p edge-controller --bin edge-controller -p edge-console --bin edge-console
 
-      - name: Package exact Windows candidate
-        id: package
+      - name: Build or reuse exact Windows candidate
+        id: finalize
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_WINDOWS: ${{ needs.dependencies.outputs.windows_reuse }}
+          BASE_RELEASE_TAG: ${{ needs.dependencies.outputs.base_release_tag }}
+          BASE_ARTIFACT_SHA256: ${{ needs.dependencies.outputs.base_windows_artifact_sha256 }}
+          BASE_CONTROLLER_SHA256: ${{ needs.dependencies.outputs.base_windows_controller_sha256 }}
+          BASE_CONSOLE_SHA256: ${{ needs.dependencies.outputs.base_windows_console_sha256 }}
+          BASE_SING_BOX_SHA256: ${{ needs.dependencies.outputs.base_windows_sing_box_sha256 }}
+          WINDOWS_INPUT_SHA256: ${{ needs.dependencies.outputs.windows_input_sha256 }}
+          WINDOWS_SOURCE_REVISION: ${{ needs.dependencies.outputs.windows_source_revision }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
           SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
           SING_BOX_WINDOWS_SHA256: ${{ needs.dependencies.outputs.sing_box_windows_sha256 }}
@@ -795,30 +873,55 @@ jobs:
           $ErrorActionPreference = "Stop"
           $out = Join-Path $env:RUNNER_TEMP "edge-platform-windows"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item "edge-platform\target\release\edge-controller.exe" (Join-Path $out "edge-controller.exe")
-          Copy-Item "edge-platform\target\release\edge-console.exe" (Join-Path $out "edge-console.exe")
-          $resolvedSingBox = Get-ChildItem (Join-Path $env:RUNNER_TEMP "sing-box-windows") -Recurse -File -Filter sing-box.exe | Select-Object -First 1
-          if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
-          Copy-Item $resolvedSingBox.FullName (Join-Path $out "sing-box.exe")
-
-          $packageRoot = Join-Path $env:RUNNER_TEMP "edge-platform-windows-package"
-          $packageBin = Join-Path $packageRoot "bin"
-          New-Item -ItemType Directory -Force -Path $packageBin | Out-Null
-          Copy-Item (Join-Path $out "edge-controller.exe") (Join-Path $packageBin "edge-controller.exe")
-          Copy-Item (Join-Path $out "edge-console.exe") (Join-Path $packageBin "edge-console.exe")
-          Copy-Item (Join-Path $out "sing-box.exe") (Join-Path $packageBin "sing-box.exe")
           $packagePath = Join-Path $out "edge-platform-windows.zip"
-          Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $packagePath -CompressionLevel Optimal
+
+          if ($env:REUSE_WINDOWS -eq "true") {
+            $tagDigest = $env:BASE_RELEASE_TAG.Replace("edge-release-", "")
+            if (-not $env:BASE_RELEASE_TAG.StartsWith("edge-release-") -or $tagDigest -notmatch '^[0-9a-f]{64}\z') {
+              throw "base durable release tag is invalid"
+            }
+            gh release download $env:BASE_RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern "edge-platform-windows.zip" --dir $out
+            if ($LASTEXITCODE -ne 0) { throw "failed to download exact accepted Windows artifact" }
+            $artifactSha = (Get-FileHash -Algorithm SHA256 $packagePath).Hash.ToLowerInvariant()
+            if ($artifactSha -ne $env:BASE_ARTIFACT_SHA256) { throw "reused Windows artifact digest mismatch" }
+            $unpacked = Join-Path $env:RUNNER_TEMP "edge-platform-windows-reused"
+            Expand-Archive -LiteralPath $packagePath -DestinationPath $unpacked -Force
+            Copy-Item (Join-Path $unpacked "bin\edge-controller.exe") (Join-Path $out "edge-controller.exe")
+            Copy-Item (Join-Path $unpacked "bin\edge-console.exe") (Join-Path $out "edge-console.exe")
+            Copy-Item (Join-Path $unpacked "bin\sing-box.exe") (Join-Path $out "sing-box.exe")
+          } else {
+            Copy-Item "edge-platform\target\release\edge-controller.exe" (Join-Path $out "edge-controller.exe")
+            Copy-Item "edge-platform\target\release\edge-console.exe" (Join-Path $out "edge-console.exe")
+            $resolvedSingBox = Get-ChildItem (Join-Path $env:RUNNER_TEMP "sing-box-windows") -Recurse -File -Filter sing-box.exe | Select-Object -First 1
+            if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
+            Copy-Item $resolvedSingBox.FullName (Join-Path $out "sing-box.exe")
+            $packageRoot = Join-Path $env:RUNNER_TEMP "edge-platform-windows-package"
+            $packageBin = Join-Path $packageRoot "bin"
+            New-Item -ItemType Directory -Force -Path $packageBin | Out-Null
+            Copy-Item (Join-Path $out "edge-controller.exe") (Join-Path $packageBin "edge-controller.exe")
+            Copy-Item (Join-Path $out "edge-console.exe") (Join-Path $packageBin "edge-console.exe")
+            Copy-Item (Join-Path $out "sing-box.exe") (Join-Path $packageBin "sing-box.exe")
+            Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $packagePath -CompressionLevel Optimal
+          }
 
           $artifactSha = (Get-FileHash -Algorithm SHA256 $packagePath).Hash.ToLowerInvariant()
           $controllerSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-controller.exe")).Hash.ToLowerInvariant()
           $consoleSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-console.exe")).Hash.ToLowerInvariant()
           $singBoxSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "sing-box.exe")).Hash.ToLowerInvariant()
+          if ($env:REUSE_WINDOWS -eq "true") {
+            if ($controllerSha -ne $env:BASE_CONTROLLER_SHA256) { throw "reused Windows controller digest mismatch" }
+            if ($consoleSha -ne $env:BASE_CONSOLE_SHA256) { throw "reused Windows console digest mismatch" }
+            if ($singBoxSha -ne $env:BASE_SING_BOX_SHA256) { throw "reused Windows sing-box digest mismatch" }
+          }
+
           $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
           $manifest = [ordered]@{
-            schema = 2
+            schema = 3
             source_revision = $env:CANDIDATE_REVISION
             source_tree = $sourceTree
+            windows_input_sha256 = $env:WINDOWS_INPUT_SHA256
+            windows_source_revision = $env:WINDOWS_SOURCE_REVISION
+            reused = ($env:REUSE_WINDOWS -eq "true")
             sing_box_version = $env:SING_BOX_VERSION
             sing_box_archive_sha256 = $env:SING_BOX_WINDOWS_SHA256
             sing_box_binary_sha256 = $singBoxSha
@@ -831,6 +934,7 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "controller_sha256=$controllerSha"
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "console_sha256=$consoleSha"
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sing_box_binary_sha256=$singBoxSha"
+      # WINDOWS_CANDIDATE_BUILD_CONTRACT_END
 
       - name: Store exact Windows candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1237,6 +1341,8 @@ jobs:
           WINDOWS_CONTROLLER_SHA256: ${{ needs.windows.outputs.controller_sha256 }}
           WINDOWS_CONSOLE_SHA256: ${{ needs.windows.outputs.console_sha256 }}
           WINDOWS_SING_BOX_SHA256: ${{ needs.windows.outputs.sing_box_binary_sha256 }}
+          WINDOWS_INPUT_SHA256: ${{ needs.dependencies.outputs.windows_input_sha256 }}
+          WINDOWS_SOURCE_REVISION: ${{ needs.dependencies.outputs.windows_source_revision }}
           LINUX_SING_BOX_SHA256: ${{ needs.linux_candidate.outputs.sing_box_binary_sha256 }}
           EDGE_AGENT_SHA256: ${{ needs.linux_candidate.outputs.edge_agent_sha256 }}
           EDGE_CONTROLLER_SHA256: ${{ needs.linux_candidate.outputs.edge_controller_sha256 }}
@@ -1281,6 +1387,8 @@ jobs:
             --windows-artifact-sha256 "${WINDOWS_ARTIFACT_SHA256}" \
             --windows-controller-sha256 "${WINDOWS_CONTROLLER_SHA256}" \
             --windows-console-sha256 "${WINDOWS_CONSOLE_SHA256}" \
+            --windows-input-sha256 "${WINDOWS_INPUT_SHA256}" \
+            --windows-source-revision "${WINDOWS_SOURCE_REVISION}" \
             --edge-agent-sha256 "${EDGE_AGENT_SHA256}" \
             --edge-controller-sha256 "${EDGE_CONTROLLER_SHA256}" \
             --edge-orchestrator-sha256 "${EDGE_ORCHESTRATOR_SHA256}" \
@@ -1322,7 +1430,7 @@ jobs:
             --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${vm_verify_output}"
           test "$(sed -n 's/^release_set_sha256=//p' <<<"${vm_verify_output}")" = "${release_set_sha}"
-          test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "4"
+          test "$(sed -n 's/^schema_version=//p' <<<"${vm_verify_output}")" = "5"
           test "$(sed -n 's/^source_revision=//p' <<<"${vm_verify_output}")" = "${CANDIDATE_REVISION}"
           test "$(sed -n 's/^edge_agent_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_AGENT_SHA256}"
           test "$(sed -n 's/^edge_controller_sha256=//p' <<<"${vm_verify_output}")" = "${EDGE_CONTROLLER_SHA256}"

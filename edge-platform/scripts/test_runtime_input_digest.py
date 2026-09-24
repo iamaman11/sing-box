@@ -93,6 +93,7 @@ def test_reuse_is_fail_closed() -> None:
     warp = "ghcr.io/iamaman11/vultr-warp-egress@sha256:" + "e" * 64
 
     assert subject.decide_reuse(digest, "4", digest, source, agent, gateway, warp)
+    assert subject.decide_reuse(digest, "5", digest, source, agent, gateway, warp)
     assert not subject.decide_reuse(digest, "3", digest, source, agent, gateway, warp)
     assert not subject.decide_reuse(digest, "4", "f" * 64, source, agent, gateway, warp)
     assert not subject.decide_reuse(digest, "4", "", source, agent, gateway, warp)

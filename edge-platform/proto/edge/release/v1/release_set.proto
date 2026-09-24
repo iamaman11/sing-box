@@ -26,6 +26,12 @@ message WindowsRuntime {
   bytes controller_sha256 = 2;
   bytes console_sha256 = 3;
   bytes sing_box_sha256 = 4;
+  // Versioned digest of the complete source/build/dependency inputs that can
+  // change the reusable Windows candidate. Present from ReleaseSet v5.
+  bytes input_sha256 = 5;
+  // Source revision that originally produced the exact reusable Windows
+  // artifact. Stable across later control-plane-only releases that reuse it.
+  string source_revision = 6;
 }
 
 message VmRuntime {
