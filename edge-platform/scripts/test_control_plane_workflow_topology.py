@@ -492,7 +492,8 @@ def main() -> None:
         "CP16 Mesh provider observation must be read-only and require exact zero-state",
     )
     require(
-        "VULTR_API_KEY" not in provider_observe
+        "EDGE_RELEASE_CONTEXT_PATH" in provider_observe
+        and "VULTR_API_KEY" not in provider_observe
         and "VULTR_SSH_PRIVATE_KEY" not in provider_observe
         and "EDGE_SSH_PRIVATE_KEY_PATH" not in provider_observe
         and "vultr-lifecycle lease-acquire" not in provider_observe
