@@ -319,7 +319,6 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
     print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
 }
 
-
 pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<(), String> {
     let desired = load_desired(spec_path)?;
     let mut provider = provider_from_env()?;
