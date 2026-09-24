@@ -416,7 +416,8 @@ jobs:
           test "$(jq -er '.record_name' "${DNS_SPEC_PATH}")" = "stage2-acceptance.alegria.by"
           test "$(jq -er '.environment' "${VPC_SPEC_PATH}")" = "application-acceptance"
           test "$(jq -er '.machine_id' "${VPC_SPEC_PATH}")" = "application-acceptance-1"
-          if grep -R --fixed-strings -n "miu.alegria.by"               "${MESH_SPEC_PATH}" "${DNS_SPEC_PATH}" "${VPC_SPEC_PATH}" "${SPEC_PATH}"; then
+          if grep -R --fixed-strings -n "miu.alegria.by" \
+              "${MESH_SPEC_PATH}" "${DNS_SPEC_PATH}" "${VPC_SPEC_PATH}" "${SPEC_PATH}"; then
             echo "disposable cleanup must not reference permanent production DNS" >&2
             exit 1
           fi
@@ -430,7 +431,12 @@ jobs:
           set -euo pipefail
           result="${RUNNER_TEMP}/application-cleanup-result.json"
           set +e
-          "${EDGE_APPLICATION_ORCHESTRATOR}" application-cleanup             "${SPEC_PATH}"             "${DNS_SPEC_PATH}"             "${MESH_SPEC_PATH}"             "${VPC_SPEC_PATH}"             | tee "${result}"
+          "${EDGE_APPLICATION_ORCHESTRATOR}" application-cleanup \
+            "${SPEC_PATH}" \
+            "${DNS_SPEC_PATH}" \
+            "${MESH_SPEC_PATH}" \
+            "${VPC_SPEC_PATH}" \
+            | tee "${result}"
           operation_rc="${PIPESTATUS[0]}"
           set -e
 
