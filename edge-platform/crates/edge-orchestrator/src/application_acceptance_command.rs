@@ -380,25 +380,43 @@ async fn cleanup_environment(
         return Ok(());
     }
 
-    if progress.mesh_runtime_possible {
-        mesh_runtime_cleanup(&args.spec_path)
-            .await
-            .map_err(|err| format!("mesh_runtime_cleanup: {err}"))?;
+    let mut cleanup_failure = None;
+    if progress.mesh_runtime_possible
+        && let Err(err) = mesh_runtime_cleanup(&args.spec_path).await
+    {
+        cleanup_failure = Some(format!("mesh_runtime_cleanup: {err}"));
     }
-    mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path)
-        .await
-        .map_err(|err| format!("mesh_provider_cleanup: {err}"))?;
-    dns_cleanup_to_absent(&args.dns_spec_path)
-        .await
-        .map_err(|err| format!("dns_cleanup: {err}"))?;
-    vpc_cleanup_to_absent(&args.vpc_spec_path)
-        .await
-        .map_err(|err| format!("vpc_cleanup: {err}"))?;
+    if cleanup_failure.is_none()
+        && let Err(err) = mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path).await
+    {
+        cleanup_failure = Some(format!("mesh_provider_cleanup: {err}"));
+    }
+    if cleanup_failure.is_none()
+        && let Err(err) = dns_cleanup_to_absent(&args.dns_spec_path).await
+    {
+        cleanup_failure = Some(format!("dns_cleanup: {err}"));
+    }
+    if cleanup_failure.is_none()
+        && let Err(err) = vpc_cleanup_to_absent(&args.vpc_spec_path).await
+    {
+        cleanup_failure = Some(format!("vpc_cleanup: {err}"));
+    }
+
+    if progress.vm_possible
+        && let Err(err) = acceptance_lease_release(vultr_spec, machine_id).await
+    {
+        let access_failure = format!("access_release: {err}");
+        cleanup_failure = Some(match cleanup_failure {
+            Some(previous) => format!("{previous}; {access_failure}"),
+            None => access_failure,
+        });
+    }
+
+    if let Some(failure) = cleanup_failure {
+        return Err(failure);
+    }
 
     if progress.vm_possible {
-        acceptance_lease_release(vultr_spec, machine_id)
-            .await
-            .map_err(|err| format!("access_release: {err}"))?;
         acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)
             .await
             .map_err(|err| format!("vm_support_cleanup: {err}"))?;
@@ -506,6 +524,24 @@ mod tests {
             cleanup_allowed: false,
         };
         assert!(!failure.cleanup_allowed);
+    }
+
+    #[test]
+    fn cleanup_contract_keeps_access_release_outside_feature_success_path() {
+        let source = include_str!("application_acceptance_command.rs");
+        let runtime = source.find("mesh_runtime_cleanup(&args.spec_path)").unwrap();
+        let provider = source
+            .find("mesh_cleanup_provider_to_absent(&args.mesh_base_spec_path)")
+            .unwrap();
+        let dns = source.find("dns_cleanup_to_absent(&args.dns_spec_path)").unwrap();
+        let vpc = source.find("vpc_cleanup_to_absent(&args.vpc_spec_path)").unwrap();
+        let access = source
+            .find("acceptance_lease_release(vultr_spec, machine_id)")
+            .unwrap();
+        let failure_return = source.find("if let Some(failure) = cleanup_failure").unwrap();
+
+        assert!(runtime < provider && provider < dns && dns < vpc && vpc < access);
+        assert!(access < failure_return);
     }
 
     #[test]
