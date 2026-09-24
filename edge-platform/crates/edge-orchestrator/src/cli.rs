@@ -62,7 +62,6 @@ impl Command {
     }
 }
 
-
 #[derive(Debug, Args, Clone)]
 pub(crate) struct ApplicationAcceptanceArgs {
     pub spec_path: PathBuf,
