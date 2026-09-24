@@ -838,6 +838,7 @@ mod tests {
             .find("vpc_cleanup_to_absent(paths.vpc_spec)")
             .unwrap();
         let final_zero_leak = source.find("\"final_zero_leak\"").unwrap();
+        let implementation = source.split("\n#[cfg(test)]").next().unwrap();
 
         assert!(runtime < provider);
         assert!(provider < dns);
@@ -845,7 +846,7 @@ mod tests {
         assert!(access < vm);
         assert!(vm < vpc);
         assert!(vpc < final_zero_leak);
-        assert!(!source.contains("cleanup_failure.is_none()"));
+        assert!(!implementation.contains("cleanup_failure.is_none()"));
     }
 
     #[test]
