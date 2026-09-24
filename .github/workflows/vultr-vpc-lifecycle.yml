@@ -43,7 +43,8 @@ jobs:
           vultr_spec_path = ""
 
           if len(tokens) == 3 and tokens[0] == "/vpc" and tokens[1] in {
-              "inventory", "plan", "apply", "attachment-plan", "verify"
+              "inventory", "plan", "apply", "attachment-plan", "verify",
+              "cleanup-plan", "cleanup-apply"
           }:
               operation = tokens[1]
               spec_path = tokens[2]
@@ -257,6 +258,32 @@ jobs:
               authority="$(plan_authority "${RUNNER_TEMP}/vpc-plan.json")"
               [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
               "${bin}" vultr-vpc apply "${SPEC_PATH}" "${authority}" | tee "${result}"
+              ;;
+            cleanup-plan)
+              "${bin}" vultr-vpc cleanup-plan "${SPEC_PATH}" | tee "${result}"
+              jq -e '
+                (.plan_disposition == "MUTATE"
+                  and (.plan.action.kind == "DETACH_INSTANCE" or .plan.action.kind == "DELETE_VPC")
+                  and (.plan.destructive_digest | type == "string")
+                  and (.plan.destructive_digest | test("^[0-9a-f]{64}$")))
+                or
+                (.plan_disposition == "NOOP"
+                  and .plan.action.kind == "NOOP"
+                  and .plan.destructive_digest == null)
+              ' "${result}" >/dev/null
+              ;;
+            cleanup-apply)
+              plan="${RUNNER_TEMP}/vpc-cleanup-plan.json"
+              apply="${RUNNER_TEMP}/vpc-cleanup-apply.json"
+              "${bin}" vultr-vpc cleanup-plan "${SPEC_PATH}" > "${plan}"
+              jq -e '.plan_disposition == "MUTATE" and (.plan.action.kind == "DETACH_INSTANCE" or .plan.action.kind == "DELETE_VPC")' "${plan}" >/dev/null
+              destructive_digest="$(jq -er '.plan.destructive_digest' "${plan}")"
+              authority="$(plan_authority "${plan}")"
+              [[ "${destructive_digest}" =~ ^[0-9a-f]{64}$ ]]
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" vultr-vpc cleanup-apply "${SPEC_PATH}" "${destructive_digest}" "${authority}" > "${apply}"
+              jq -s -e '.[1].performed.kind == .[0].plan.action.kind' "${plan}" "${apply}" >/dev/null
+              jq -s '{plan:.[0],apply:.[1]}' "${plan}" "${apply}" | tee "${result}"
               ;;
             attachment-plan)
               "${bin}" vultr-vpc attachment-plan "${SPEC_PATH}" | tee "${result}"
