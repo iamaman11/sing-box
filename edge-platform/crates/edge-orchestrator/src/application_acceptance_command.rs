@@ -86,25 +86,13 @@ pub(crate) async fn run(
     let release_set_sha256 = context.release().release_set_sha256.as_str();
     let mut progress = AcceptanceProgress::default();
 
-    let result = run_lifecycle(
-        &args,
-        &desired,
-        &vultr_spec,
-        &machine_id,
-        &mut progress,
-    )
-    .await;
+    let result = run_lifecycle(&args, &desired, &vultr_spec, &machine_id, &mut progress).await;
 
     match result {
         Ok(success) => {
-            if let Err(detail) = cleanup_environment(
-                &args,
-                &vultr_spec,
-                &machine_id,
-                source_revision,
-                &progress,
-            )
-            .await
+            if let Err(detail) =
+                cleanup_environment(&args, &vultr_spec, &machine_id, source_revision, &progress)
+                    .await
             {
                 let certificate = AcceptanceCertificate {
                     outcome: "DIAGNOSTIC_REQUIRED",
@@ -167,22 +155,12 @@ pub(crate) async fn run(
             ))
         }
         Err(failure) => {
-            let cleanup = cleanup_environment(
-                &args,
-                &vultr_spec,
-                &machine_id,
-                source_revision,
-                &progress,
-            )
-            .await;
+            let cleanup =
+                cleanup_environment(&args, &vultr_spec, &machine_id, source_revision, &progress)
+                    .await;
             let (outcome, compensation, zero_leak, cleanup_detail) = match cleanup {
                 Ok(()) => ("FAIL_CLEANED", "PASS", "PASS", None),
-                Err(detail) => (
-                    "DIAGNOSTIC_REQUIRED",
-                    "FAILED",
-                    "UNPROVEN",
-                    Some(detail),
-                ),
+                Err(detail) => ("DIAGNOSTIC_REQUIRED", "FAILED", "UNPROVEN", Some(detail)),
             };
             let combined = cleanup_detail
                 .as_ref()
@@ -311,11 +289,9 @@ async fn run_lifecycle(
         .map_err(|detail| operational_failure("dns_noop", detail))?;
 
     let mut desired_v2 = desired.clone();
-    let line2 = desired_v2
-        .runtime_policy
-        .line2
-        .as_mut()
-        .ok_or_else(|| operational_failure("application_v2_spec", "line2 runtime policy is absent"))?;
+    let line2 = desired_v2.runtime_policy.line2.as_mut().ok_or_else(|| {
+        operational_failure("application_v2_spec", "line2 runtime policy is absent")
+    })?;
     line2.proxy_username = "acceptance-v2".to_owned();
     desired_v2
         .validate()
@@ -500,8 +476,8 @@ mod tests {
                 line1: Some(Line1RuntimePolicy {
                     tunnel_domain: "stage2-acceptance.alegria.by".to_owned(),
                     acme_email: "admin@alegria.by".to_owned(),
-                    acme_provider:
-                        "https://acme-staging-v02.api.letsencrypt.org/directory".to_owned(),
+                    acme_provider: "https://acme-staging-v02.api.letsencrypt.org/directory"
+                        .to_owned(),
                     reality_server_name: "www.microsoft.com".to_owned(),
                 }),
                 line2: Some(Line2RuntimePolicy {
