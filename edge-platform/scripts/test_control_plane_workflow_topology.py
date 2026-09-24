@@ -287,8 +287,31 @@ def main() -> None:
         "application acceptance must not own derived VM public-IP plumbing",
     )
     require(
-        "cleanup-apply" not in vpc and "cleanup-apply" not in dns,
-        "staged Checkpoint 1 backends must not expose destructive cleanup",
+        "cloudflare-dns cleanup-plan" in dns
+        and dns.count("cloudflare-dns cleanup-apply") == 1
+        and 'tokens[1] in {"inventory", "cleanup-plan", "cleanup-apply"}' in dns
+        and '.plan.action.kind == "DELETE"' in dns
+        and 'destructive_digest="$(jq -er' in dns
+        and 'authority="$(plan_authority' in dns
+        and '.[1].performed.kind == .[0].plan.action.kind' in dns,
+        "DNS backend must expose only typed exact-authority cleanup with one delete per invocation",
+    )
+    require(
+        "vultr-vpc cleanup-plan" in vpc
+        and vpc.count("vultr-vpc cleanup-apply") == 1
+        and '"cleanup-plan", "cleanup-apply"' in vpc
+        and '(.plan.action.kind == "DETACH_INSTANCE" or .plan.action.kind == "DELETE_VPC")' in vpc
+        and 'destructive_digest="$(jq -er' in vpc
+        and 'authority="$(plan_authority' in vpc
+        and '.[1].performed.kind == .[0].plan.action.kind' in vpc,
+        "VPC backend must expose one-at-a-time typed cleanup with fresh destructive digest and PlanAuthority",
+    )
+    require(
+        "RECORD_ID" not in dns
+        and "ZONE_ID" not in dns
+        and "VPC_ID" not in vpc
+        and "INSTANCE_ID" not in vpc,
+        "cleanup workflows must not accept raw provider identifiers as command authority",
     )
 
     acquire_pos = vpc.index("vpc-access-acquire.json")
