@@ -232,6 +232,112 @@ fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, P
     ))
 }
 
+
+pub(crate) async fn acceptance_apply_desired(
+    desired: &DesiredApplicationState,
+    manifest_path: &Path,
+    artifact_path: &Path,
+    mode: DesiredMutationMode,
+    expected_initial_class: ApplicationPlanClass,
+) -> Result<(String, String), String> {
+    let artifact = load_artifact_manifest(manifest_path)?;
+    verify_exact_agent_artifact(&artifact, artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
+    let authority = resolve_application_authority(desired).await?;
+    let observation = observe_application(&authority, desired).await?;
+    let plan = plan_application(
+        desired,
+        &artifact,
+        &prepared.release.bundle_digest,
+        &observation,
+    )
+    .map_err(|err| err.to_string())?;
+    if plan.class != expected_initial_class {
+        return Err(format!(
+            "acceptance application expected initial {:?}, got {:?}: {}",
+            expected_initial_class,
+            plan.class,
+            plan.reasons.join("; ")
+        ));
+    }
+    let authorized = authorize_application_plan(
+        desired,
+        &artifact,
+        &prepared.release.bundle_digest,
+        &observation,
+        plan,
+    )?;
+    let report = execute_desired(
+        &authority,
+        desired,
+        &artifact,
+        artifact_path,
+        &prepared,
+        &authorized.authority.authority_digest,
+        mode,
+    )
+    .await?;
+    if report.final_plan.class != ApplicationPlanClass::Noop {
+        return Err(format!(
+            "acceptance application mutation did not converge to NOOP: {:?}: {}",
+            report.final_plan.class,
+            report.final_plan.reasons.join("; ")
+        ));
+    }
+    Ok((
+        report.final_plan.desired_release.release_id,
+        report.final_plan.desired_release.bundle_digest,
+    ))
+}
+
+pub(crate) async fn acceptance_verify_desired(
+    desired: &DesiredApplicationState,
+    manifest_path: &Path,
+    artifact_path: &Path,
+) -> Result<(), String> {
+    let artifact = load_artifact_manifest(manifest_path)?;
+    verify_exact_agent_artifact(&artifact, artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
+    let authority = resolve_application_authority(desired).await?;
+    let (plan, _observation) = verify_desired(&authority, desired, &artifact, &prepared).await?;
+    if plan.class != ApplicationPlanClass::Noop {
+        return Err(format!(
+            "acceptance application verify expected NOOP, got {:?}: {}",
+            plan.class,
+            plan.reasons.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_rollback(
+    desired: &DesiredApplicationState,
+    expected_current_release: &str,
+    expected_previous_release: &str,
+    manifest_path: &Path,
+    artifact_path: &Path,
+) -> Result<(), String> {
+    let authority = resolve_application_authority(desired).await?;
+    let (observation, rollback) = rollback_plan_remote(&authority, desired).await?;
+    if rollback.current_release.release_id != expected_current_release
+        || rollback.previous_release.release_id != expected_previous_release
+    {
+        return Err(format!(
+            "acceptance rollback authority mismatch: current={} previous={}",
+            rollback.current_release.release_id, rollback.previous_release.release_id
+        ));
+    }
+    let authorized = authorize_application_rollback(desired, &observation, rollback.clone())?;
+    execute_rollback(
+        &authority,
+        desired,
+        &rollback.rollback_digest,
+        &authorized.authority.authority_digest,
+    )
+    .await?;
+    acceptance_verify_desired(desired, manifest_path, artifact_path).await
+}
+
 pub(crate) async fn resolve_application_authority_from_spec(
     path: &Path,
 ) -> Result<ApplicationAuthority, String> {
