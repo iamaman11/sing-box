@@ -171,6 +171,7 @@ jobs:
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
           chmod 0755 "${orchestrator}"
           printf 'EDGE_MESH_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${RUNNER_TEMP}/edge-platform-release/resolved.env" >> "${GITHUB_ENV}"
 
       - name: Observe Mesh provider zero-state
         shell: bash
