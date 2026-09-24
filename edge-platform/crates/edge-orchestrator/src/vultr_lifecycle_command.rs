@@ -2172,6 +2172,446 @@ async fn run_cleanup(args: &[String]) -> Result<(), String> {
     }))
 }
 
+
+pub(crate) async fn acceptance_require_clean_room(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let desired = load_desired_state(spec_path)?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let support = build_support_cleanup_authority(
+        &desired,
+        &mut lifecycle_provider,
+        &mut support_provider,
+        &canonical_public_key,
+    )
+    .await?;
+    let environment_in_use = support
+        .authorized
+        .plan
+        .get("environment_in_use")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let firewall_count = support
+        .authorized
+        .plan
+        .get("firewall_group_ids")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(usize::MAX);
+    let ssh_key_absent = support
+        .authorized
+        .plan
+        .get("ssh_key_id")
+        .is_some_and(serde_json::Value::is_null);
+    if support.authorized.disposition != PlanDisposition::Noop
+        || environment_in_use
+        || firewall_count != 0
+        || !ssh_key_absent
+    {
+        return Err("acceptance Vultr support clean room is not empty".to_owned());
+    }
+
+    let profiles = load_firewall_profiles(&desired)?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        Some(machine_id),
+        &verified_firewalls,
+    )
+    .await?;
+    if !report.orphaned_managed_provider_ids.is_empty() {
+        return Err(format!(
+            "acceptance Vultr clean room has orphaned managed provider resources: {:?}",
+            report.orphaned_managed_provider_ids
+        ));
+    }
+    let plan = report
+        .plans
+        .first()
+        .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
+    if plan.class != PlanClass::Create {
+        return Err(format!(
+            "fresh acceptance VM must plan CREATE, got {:?}: {}",
+            plan.class,
+            plan.reasons.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_lease_acquire(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let desired = load_desired_state(spec_path)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let planned = build_access_authority(
+        &desired,
+        machine_id,
+        AccessAuthorityMode::Acquire,
+        &mut lifecycle_provider,
+        &mut support_provider,
+    )
+    .await?;
+    if planned.disposition == PlanDisposition::Blocked {
+        return Err(format!(
+            "acceptance lease-acquire is blocked for machine {machine_id}"
+        ));
+    }
+    let access =
+        acquire_access_with_authority(&desired, machine_id, &planned.authority.authority_digest)
+            .await?;
+
+    let observed = exact_existing_machine_observation(&desired, machine_id).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| format!("exact machine {machine_id} has no observed public IPv4"))?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let substrate = host_substrate_versions_from_env()?;
+    let tcp_readiness =
+        observe_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
+    if tcp_readiness.final_state == TcpReadinessState::Timeout {
+        let provider_evidence = capture_support_access_provider_evidence(
+            &desired,
+            machine_id,
+            &mut lifecycle_provider,
+            &mut support_provider,
+        )
+        .await;
+        return Err(support_access_timeout_error(
+            target_ip,
+            &tcp_readiness,
+            provider_evidence,
+        ));
+    }
+    strict_ssh_accept(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &substrate,
+        15,
+        Duration::from_secs(2),
+    )
+    .await
+    .map_err(|error| strict_ssh_error_after_tcp_ready(&tcp_readiness, error))?;
+
+    if access
+        .get("next_plan")
+        .and_then(|plan| plan.get("action"))
+        .and_then(serde_json::Value::as_str)
+        != Some("NOOP")
+    {
+        return Err("acceptance lease-acquire did not converge to NOOP".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_lease_release(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let desired = load_desired_state(spec_path)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let planned = build_access_authority(
+        &desired,
+        machine_id,
+        AccessAuthorityMode::Release,
+        &mut lifecycle_provider,
+        &mut support_provider,
+    )
+    .await?;
+    if planned.disposition == PlanDisposition::Blocked {
+        return Err(format!(
+            "acceptance lease-release is blocked for machine {machine_id}"
+        ));
+    }
+    let access =
+        release_access_with_authority(&desired, machine_id, &planned.authority.authority_digest)
+            .await?;
+    let verified_absent = access
+        .get("verified_absent")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            access
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|action| action == "NOOP")
+        });
+    let no_matching_rules = access
+        .get("next_plan")
+        .and_then(|plan| plan.get("matching_rule_ids"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty);
+    if !verified_absent || !no_matching_rules {
+        return Err("acceptance lease-release did not prove transient SSH absence".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_converge_substrate(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let desired = load_desired_state(spec_path)?;
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
+    let provider_id = exact_existing_machine_provider_id(&desired, machine_id).await?;
+    let substrate = host_substrate_versions_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let mut provider = operational_provider_from_env()?;
+
+    for _ in 0..4 {
+        let (_observation, authorized) = build_host_substrate_authority(
+            &mut provider,
+            &desired,
+            machine,
+            &provider_id,
+            &operator_private_key_path,
+            &canonical_public_key,
+            &substrate,
+            HostSubstrateExecutionPolicy::default(),
+        )
+        .await?;
+        match authorized.plan.action {
+            HostSubstrateAction::Noop => return Ok(()),
+            HostSubstrateAction::ScrubUserData | HostSubstrateAction::RotateHostCertificate => {
+                apply_host_substrate_once(
+                    &mut provider,
+                    &desired,
+                    machine,
+                    &provider_id,
+                    &authorized.authority.authority_digest,
+                    &operator_private_key_path,
+                    &canonical_public_key,
+                    &substrate,
+                    HostSubstrateExecutionPolicy::default(),
+                )
+                .await?;
+            }
+            action => {
+                return Err(format!(
+                    "acceptance host substrate convergence is blocked: {action:?}: {}",
+                    authorized.plan.reasons.join("; ")
+                ));
+            }
+        }
+    }
+    Err("host substrate convergence exceeded bounded mutation steps".to_owned())
+}
+
+pub(crate) async fn acceptance_verify_substrate(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let desired = load_desired_state(spec_path)?;
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
+    let provider_id = exact_existing_machine_provider_id(&desired, machine_id).await?;
+    let substrate = host_substrate_versions_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let mut provider = operational_provider_from_env()?;
+    let (_observation, authorized) = build_host_substrate_authority(
+        &mut provider,
+        &desired,
+        machine,
+        &provider_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &substrate,
+        HostSubstrateExecutionPolicy::default(),
+    )
+    .await?;
+    if authorized.plan.action != HostSubstrateAction::Noop {
+        return Err(format!(
+            "acceptance host substrate verify expected NOOP, got {:?}: {}",
+            authorized.plan.action,
+            authorized.plan.reasons.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_reboot(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let desired = load_desired_state(spec_path)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let mut operational_provider = operational_provider_from_env()?;
+    let (authorized, operational) = build_instance_action_authority(
+        &desired,
+        machine_id,
+        InstanceAction::Reboot,
+        &mut lifecycle_provider,
+        &mut support_provider,
+        &mut operational_provider,
+    )
+    .await?;
+    if authorized.disposition != PlanDisposition::Mutate {
+        return Err("fresh acceptance reboot was not authorized as one mutation".to_owned());
+    }
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let boot_id_before = observe_guest_boot_id(
+        &operational.main_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+    )?;
+    verify_exact_authority(&authorized.authority.authority_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
+    apply_instance_action(
+        &mut operational_provider,
+        &operational.id,
+        InstanceAction::Reboot,
+        60,
+        Duration::from_secs(2),
+    )
+    .await?;
+    let boot_id_after = wait_for_guest_boot_id_change(
+        &operational.main_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &boot_id_before,
+        60,
+        Duration::from_secs(2),
+    )
+    .await?;
+    if boot_id_before == boot_id_after {
+        return Err("acceptance reboot did not change guest boot identity".to_owned());
+    }
+    Ok(())
+}
+
+async fn acceptance_cleanup_support(desired: &DesiredState) -> Result<(), String> {
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let policy = LifecycleExecutionPolicy::default();
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let context = build_support_cleanup_authority(
+        desired,
+        &mut lifecycle_provider,
+        &mut support_provider,
+        &canonical_public_key,
+    )
+    .await?;
+    if context.authorized.disposition == PlanDisposition::Blocked {
+        return Err("acceptance support cleanup is blocked by exact plan".to_owned());
+    }
+    if context.authorized.disposition == PlanDisposition::Mutate {
+        cleanup_environment_support_resources(
+            &mut support_provider,
+            desired,
+            &context.remaining_instances,
+            &canonical_public_key,
+            &policy,
+        )
+        .await?;
+    }
+    let next = build_support_cleanup_authority(
+        desired,
+        &mut lifecycle_provider,
+        &mut support_provider,
+        &canonical_public_key,
+    )
+    .await?;
+    let environment_in_use = next
+        .authorized
+        .plan
+        .get("environment_in_use")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let firewall_count = next
+        .authorized
+        .plan
+        .get("firewall_group_ids")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(usize::MAX);
+    let ssh_key_absent = next
+        .authorized
+        .plan
+        .get("ssh_key_id")
+        .is_some_and(serde_json::Value::is_null);
+    if next.authorized.disposition != PlanDisposition::Noop
+        || environment_in_use
+        || firewall_count != 0
+        || !ssh_key_absent
+    {
+        return Err("acceptance support cleanup did not converge to exact absence".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_destroy_and_cleanup(
+    spec_path: &Path,
+    machine_id: &str,
+    source_revision: &str,
+) -> Result<(), String> {
+    let desired = load_desired_state(spec_path)?;
+    let profiles = load_firewall_profiles(&desired)?;
+    let policy = LifecycleExecutionPolicy::default();
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let verified_firewalls =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let inventory = inventory_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        &verified_firewalls,
+    )
+    .await?;
+    let machine = desired
+        .machines
+        .iter()
+        .find(|machine| machine.id == machine_id)
+        .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
+    let plan =
+        destroy_plan(&desired, machine, &inventory, source_revision).map_err(|err| err.to_string())?;
+    let authorized =
+        authorize_vultr_destroy(&desired, machine_id, source_revision, &inventory, plan.clone())?;
+    let report = destroy_machine_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        machine_id,
+        source_revision,
+        &plan.destroy_digest,
+        &authorized.authority.authority_digest,
+        &policy,
+        &verified_firewalls,
+    )
+    .await?;
+    if !report.absence_verified {
+        return Err("acceptance VM destroy did not prove exact provider absence".to_owned());
+    }
+    acceptance_cleanup_support(&desired).await?;
+    acceptance_require_clean_room(spec_path, machine_id).await
+}
+
 pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read lifecycle spec {}: {err}", path.display()))?;
