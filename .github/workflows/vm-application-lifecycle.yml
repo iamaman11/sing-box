@@ -559,6 +559,35 @@ jobs:
             jq -er '.authorized_plans[0].authority.authority_digest' "$1"
           }
 
+          ACCESS_CLEANUP_ARMED=0
+
+          release_acceptance_access() {
+            if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
+              return 0
+            fi
+            "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
+              | tee "${access_release}"
+            jq -e '.status == "RELEASED" and
+                   .access.next_plan.action == "NOOP" and
+                   (.access.next_plan.matching_rule_ids | length) == 0' \
+              "${access_release}" >/dev/null
+          }
+
+          finish_acceptance() {
+            local operation_rc=$?
+            trap - EXIT
+            set +e
+            release_acceptance_access
+            local cleanup_rc=$?
+            set -e
+            if [[ "${cleanup_rc}" -ne 0 && "${operation_rc}" -eq 0 ]]; then
+              operation_rc="${cleanup_rc}"
+            fi
+            exit "${operation_rc}"
+          }
+
+          trap finish_acceptance EXIT
+
           converge_host_substrate() {
             local prefix="$1"
             local verify_output="$2"
@@ -608,8 +637,9 @@ jobs:
               "${plan}" >/dev/null
           }
 
-          # Fail closed on any acceptance-owned residue. Never auto-clean a failed run:
-          # preserving exact provider/guest state is required for diagnosis and checkpoint evidence.
+          # Fail closed on any acceptance-owned feature residue. Feature/provider state is
+          # preserved for diagnosis on failure, but transient support access is always released
+          # by the EXIT trap once a lease has been acquired.
           "${bin}" vultr-lifecycle cleanup-plan "${vultr_spec}" \
             > "${RUNNER_TEMP}/acceptance-support-before.json"
           jq -e '.plan.action == "NOOP" and .plan.environment_in_use == false' \
@@ -650,6 +680,7 @@ jobs:
           "${bin}" vultr-lifecycle lease-acquire "${vultr_spec}" "${machine}" \
             > "${RUNNER_TEMP}/acceptance-access-acquire.json"
           jq -e '.status == "READY"' "${RUNNER_TEMP}/acceptance-access-acquire.json" >/dev/null
+          ACCESS_CLEANUP_ARMED=1
 
           converge_host_substrate "acceptance-initial" "${RUNNER_TEMP}/acceptance-substrate-initial.json"
 
@@ -891,7 +922,11 @@ jobs:
 
           "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
             | tee "${access_release}"
-          jq -e '.status == "RELEASED"' "${access_release}" >/dev/null
+          jq -e '.status == "RELEASED" and
+                 .access.next_plan.action == "NOOP" and
+                 (.access.next_plan.matching_rule_ids | length) == 0' \
+            "${access_release}" >/dev/null
+          ACCESS_CLEANUP_ARMED=0
 
           "${bin}" vultr-lifecycle destroy-plan \
             "${vultr_spec}" "${machine}" "${source_revision}" \
