@@ -53,12 +53,14 @@ jobs:
               machine_id = "lifecycle-acceptance-1"
           elif len(tokens) >= 3 and tokens[0] == "/vultr":
               verb = tokens[1]
-              if verb in {"doctor", "inventory", "cleanup"} and len(tokens) == 3:
+              if verb in {"doctor", "inventory", "cleanup-plan", "cleanup"} and len(tokens) == 3:
                   operation, spec_path = verb, tokens[2]
               elif verb == "plan" and len(tokens) in {3, 4}:
                   operation, spec_path = "plan", tokens[2]
                   if len(tokens) == 4:
                       machine_id = tokens[3]
+              elif verb == "access-release" and len(tokens) == 4:
+                  operation, spec_path, machine_id = "access-release", tokens[2], tokens[3]
               elif verb == "action-plan" and len(tokens) == 5:
                   operation, spec_path, machine_id, action = (
                       "action-plan",
@@ -85,8 +87,8 @@ jobs:
               fail("comment is not an authorized /vultr command")
 
           if operation not in {
-              "doctor", "inventory", "plan", "action-plan", "apply", "action",
-              "destroy-plan", "destroy-apply", "cleanup", "acceptance",
+              "doctor", "inventory", "plan", "access-release", "action-plan", "apply", "action",
+              "destroy-plan", "destroy-apply", "cleanup-plan", "cleanup", "acceptance",
           }:
               fail("unsupported lifecycle operation")
 
@@ -97,7 +99,7 @@ jobs:
               fail("invalid machine_id")
 
           if operation in {
-              "apply", "action-plan", "action", "destroy-plan", "destroy-apply"
+              "apply", "access-release", "action-plan", "action", "destroy-plan", "destroy-apply"
           } and not machine_id:
               fail("machine_id is required for targeted operation")
 
@@ -383,6 +385,15 @@ jobs:
                 run_lifecycle plan "${spec}" | tee "${RUNNER_TEMP}/result.json"
               fi
               ;;
+            access-release)
+              release_host_access "${spec}" "${machine}" "explicit"
+              cp "${RUNNER_TEMP}/explicit-access-release.json" "${RUNNER_TEMP}/result.json"
+              jq -e '.status == "RELEASED"
+                and .access.next_plan.action == "NOOP"
+                and (.access.next_plan.matching_rule_ids | length) == 0
+                and .access.verified_absent == true' "${RUNNER_TEMP}/result.json" >/dev/null
+              cat "${RUNNER_TEMP}/result.json"
+              ;;
             action-plan)
               run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"
               ;;
@@ -462,6 +473,12 @@ jobs:
               jq -s '.[0] + {support_cleanup: .[1]}' \
                 "${RUNNER_TEMP}/destroy-result.json" "${RUNNER_TEMP}/destroy-support-result.json" \
                 | tee "${RUNNER_TEMP}/result.json"
+              ;;
+            cleanup-plan)
+              run_lifecycle cleanup-plan "${spec}" | tee "${RUNNER_TEMP}/result.json"
+              jq -e '.plan.action | type == "string"' "${RUNNER_TEMP}/result.json" >/dev/null
+              jq -e '.plan.environment_in_use | type == "boolean"' "${RUNNER_TEMP}/result.json" >/dev/null
+              jq -e '.plan_authority.authority_digest | test("^[0-9a-f]{64}$")' "${RUNNER_TEMP}/result.json" >/dev/null
               ;;
             cleanup)
               run_lifecycle cleanup-plan "${spec}" > "${RUNNER_TEMP}/cleanup-authority-plan.json"
