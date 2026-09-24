@@ -101,6 +101,9 @@ async fn run(
         Command::ApplicationAcceptance(args) => {
             application_acceptance_command::run(args, release_context).await
         }
+        Command::ApplicationCleanup(args) => {
+            application_acceptance_command::run_cleanup(args, release_context).await
+        }
         Command::ApplicationLifecycle { command } => {
             application_lifecycle_command::run(command.into_legacy_args()).await
         }
