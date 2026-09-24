@@ -30,6 +30,7 @@ def main() -> None:
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
+    acceptance_impl = acceptance_coordinator.split("\n#[cfg(test)]", 1)[0]
 
     listeners = sorted(
         path.name
@@ -440,8 +441,8 @@ def main() -> None:
         "typed acceptance cleanup must attempt runtime -> Mesh -> DNS -> access -> VM/support -> VPC -> final zero-leak",
     )
     require(
-        "cleanup_failure.is_none()" not in acceptance_coordinator
-        and "application.acceptance.cleanup.recovered" in acceptance_coordinator,
+        "cleanup_failure.is_none()" not in acceptance_impl
+        and "application.acceptance.cleanup.recovered" in acceptance_impl,
         "one owner cleanup error must not globally short-circuit independent cleanup owners",
     )
     require(
