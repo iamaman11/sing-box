@@ -376,17 +376,18 @@ def main() -> None:
     )
     require(
         'tokens[0] != "/mesh"' in mesh
-        and 'tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
+        and 'tokens[1] not in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
         "Mesh backend must expose only the bounded provider/runtime grammar",
     )
     require(
         "line3-mesh vpc-runtime-apply" in mesh
         and "line3-mesh vpc-runtime-verify" in mesh
-        and mesh.count("line3-mesh runtime-observe") == 1
+        and mesh.count("line3-mesh runtime-observe") == 3
         and mesh.count("line3-mesh runtime-cleanup") == 1
-        and "line3-mesh cleanup-" not in mesh
+        and mesh.count("line3-mesh cleanup-plan") == 2
+        and mesh.count("line3-mesh cleanup-apply") == 1
         and "MESH_NODE_TOKEN" not in mesh,
-        "Mesh backend must expose only VPC-composed runtime operations plus one read-only runtime observation and one typed runtime cleanup, without raw token or provider cleanup surfaces",
+        "Mesh backend must expose bounded runtime operations plus one-at-a-time typed provider cleanup without raw token authority",
     )
     require(
         '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' in mesh,
@@ -426,6 +427,16 @@ def main() -> None:
         and '.status == "ABSENT" and .runtime.token_store_present == false and .runtime.container_running == false and .runtime.runtime_ready == false' in mesh
         and "provider_before:.[0],runtime:.[1],provider_after:.[2]" in mesh,
         "Mesh runtime cleanup must prove provider NOOP before and after one typed cleanup and require exact runtime absence",
+    )
+    require(
+        "mesh-provider-cleanup-runtime.json" in mesh
+        and "mesh-provider-cleanup-plan.json" in mesh
+        and "mesh-provider-cleanup-apply.json" in mesh
+        and 'destructive_digest="$(jq -er' in mesh
+        and 'authority="$(plan_authority' in mesh
+        and '(.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' in mesh
+        and '.[1].performed.kind == .[0].plan.action.kind' in mesh,
+        "Mesh provider cleanup must require runtime ABSENT, fresh destructive digest + PlanAuthority, and exactly one matching delete per invocation",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
