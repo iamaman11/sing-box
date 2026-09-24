@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+mod application_acceptance_command;
 mod application_lifecycle_command;
 mod application_lifecycle_service;
 mod cli;
@@ -65,7 +66,7 @@ async fn main() -> ExitCode {
         "command started"
     );
 
-    match run(parsed).await {
+    match run(parsed, &release_context).await {
         Ok(()) => {
             tracing::info!(
                 component = "edge-orchestrator",
@@ -90,10 +91,16 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(parsed: cli::Cli) -> Result<(), String> {
+async fn run(
+    parsed: cli::Cli,
+    release_context: &edge_orchestrator::OrchestrationContext,
+) -> Result<(), String> {
     use cli::Command;
 
     match parsed.command {
+        Command::ApplicationAcceptance(args) => {
+            application_acceptance_command::run(args, release_context).await
+        }
         Command::ApplicationLifecycle { command } => {
             application_lifecycle_command::run(command.into_legacy_args()).await
         }
