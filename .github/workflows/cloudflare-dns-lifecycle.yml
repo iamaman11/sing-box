@@ -45,9 +45,9 @@ jobs:
           if (
               len(tokens) == 3
               and tokens[0] == "/dns"
-              and tokens[1] == "inventory"
+              and tokens[1] in {"inventory", "cleanup-plan", "cleanup-apply"}
           ):
-              operation = "inventory"
+              operation = tokens[1]
               spec_path = tokens[2]
           elif (
               len(tokens) == 4
@@ -70,7 +70,7 @@ jobs:
                   or "//" in application_spec_path
               ):
                   fail("invalid application spec path")
-          elif operation != "inventory":
+          elif operation in {"plan", "apply"}:
               fail("DNS plan/apply require application spec path")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
@@ -202,6 +202,35 @@ jobs:
               jq -e '.next_plan.action.kind == "NOOP"' "${RUNNER_TEMP}/dns-apply.json" >/dev/null
               jq -e '.plan.action.kind == "NOOP" and .mutations_performed == 0'                 "${RUNNER_TEMP}/dns-after.json" >/dev/null
               jq -s '{apply:.[0],reobservation:.[1]}'                 "${RUNNER_TEMP}/dns-apply.json" "${RUNNER_TEMP}/dns-after.json"                 | tee "${result}"
+              ;;
+            cleanup-plan)
+              "${bin}" cloudflare-dns cleanup-plan "${SPEC_PATH}" | tee "${result}"
+              jq -e '
+                (.plan_disposition == "MUTATE"
+                  and .plan.action.kind == "DELETE"
+                  and (.plan.destructive_digest | type == "string")
+                  and (.plan.destructive_digest | test("^[0-9a-f]{64}$")))
+                or
+                (.plan_disposition == "NOOP"
+                  and .plan.action.kind == "NOOP"
+                  and .plan.destructive_digest == null)
+              ' "${result}" >/dev/null
+              ;;
+            cleanup-apply)
+              plan="${RUNNER_TEMP}/dns-cleanup-plan.json"
+              apply="${RUNNER_TEMP}/dns-cleanup-apply.json"
+              after="${RUNNER_TEMP}/dns-cleanup-after.json"
+              "${bin}" cloudflare-dns cleanup-plan "${SPEC_PATH}" > "${plan}"
+              jq -e '.plan_disposition == "MUTATE" and .plan.action.kind == "DELETE"' "${plan}" >/dev/null
+              destructive_digest="$(jq -er '.plan.destructive_digest' "${plan}")"
+              authority="$(plan_authority "${plan}")"
+              [[ "${destructive_digest}" =~ ^[0-9a-f]{64}$ ]]
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" cloudflare-dns cleanup-apply "${SPEC_PATH}" "${destructive_digest}" "${authority}" > "${apply}"
+              jq -s -e '.[1].performed.kind == .[0].plan.action.kind' "${plan}" "${apply}" >/dev/null
+              "${bin}" cloudflare-dns cleanup-plan "${SPEC_PATH}" > "${after}"
+              jq -e '.plan_disposition == "NOOP" and .plan.action.kind == "NOOP" and .plan.destructive_digest == null and .mutations_performed == 0' "${after}" >/dev/null
+              jq -s '{plan:.[0],apply:.[1],reobservation:.[2]}' "${plan}" "${apply}" "${after}" | tee "${result}"
               ;;
             *)
               echo "unreachable DNS operation" >&2
