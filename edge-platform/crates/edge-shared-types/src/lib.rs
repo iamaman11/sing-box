@@ -836,7 +836,12 @@ mod release_set_tests {
     #[test]
     fn release_set_rejects_missing_v5_windows_reuse_identity() {
         let mut release = valid_release();
-        release.windows_runtime.as_mut().unwrap().input_sha256.clear();
+        release
+            .windows_runtime
+            .as_mut()
+            .unwrap()
+            .input_sha256
+            .clear();
         assert!(validate_release_set(&release).is_err());
 
         let mut release = valid_release();
