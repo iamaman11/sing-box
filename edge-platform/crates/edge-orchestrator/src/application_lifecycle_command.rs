@@ -239,14 +239,14 @@ pub(crate) async fn resolve_application_authority_from_spec(
     resolve_application_authority(&desired).await
 }
 
-fn load_application_desired(path: &Path) -> Result<DesiredApplicationState, String> {
+pub(crate) fn load_application_desired(path: &Path) -> Result<DesiredApplicationState, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read application spec {}: {err}", path.display()))?;
     DesiredApplicationState::parse_json(&raw)
         .map_err(|err| format!("failed to parse application spec {}: {err}", path.display()))
 }
 
-fn load_artifact_manifest(path: &Path) -> Result<AgentArtifactManifest, String> {
+pub(crate) fn load_artifact_manifest(path: &Path) -> Result<AgentArtifactManifest, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read artifact manifest {}: {err}", path.display()))?;
     AgentArtifactManifest::parse_json(&raw).map_err(|err| {
@@ -257,7 +257,7 @@ fn load_artifact_manifest(path: &Path) -> Result<AgentArtifactManifest, String> 
     })
 }
 
-async fn resolve_application_authority(
+pub(crate) async fn resolve_application_authority(
     desired: &DesiredApplicationState,
 ) -> Result<ApplicationAuthority, String> {
     let vultr_desired = load_desired_state(Path::new(&desired.vultr_spec_path))?;
