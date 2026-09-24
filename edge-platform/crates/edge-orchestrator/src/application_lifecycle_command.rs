@@ -232,7 +232,6 @@ fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, P
     ))
 }
 
-
 pub(crate) async fn acceptance_apply_desired(
     desired: &DesiredApplicationState,
     manifest_path: &Path,
