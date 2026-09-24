@@ -8,7 +8,9 @@ use crate::vultr_vpc_lifecycle_service::{
     authorize_vpc_apply, authorize_vpc_attachment, authorize_vpc_cleanup, cleanup_vpc_once,
     observe_vpc, plan_vpc, plan_vpc_attachment, plan_vpc_cleanup, verify_vpc_ready,
 };
-use edge_controller_core::vultr_vpc_lifecycle::{AttachmentAction, DesiredVpcState};
+use edge_controller_core::vultr_vpc_lifecycle::{
+    AttachmentAction, CleanupAction, DesiredVpcState, VpcApplyAction,
+};
 use std::env;
 use std::fs;
 use std::net::Ipv4Addr;
@@ -315,6 +317,143 @@ async fn run_cleanup_apply(args: &[String]) -> Result<(), String> {
     )
     .await?;
     print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
+}
+
+
+pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    let (_observation, attachments, plan) = plan_vpc_cleanup(&mut provider, &desired).await?;
+    if !attachments.attachments.is_empty()
+        || !matches!(plan.action, CleanupAction::Noop)
+        || plan.destructive_digest.is_some()
+    {
+        return Err(format!(
+            "acceptance VPC clean room is not empty: action={:?} attachments={}",
+            plan.action,
+            attachments.attachments.len()
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_create(spec_path: &Path) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    let (observation, plan) = plan_vpc(&mut provider, &desired).await?;
+    if !matches!(plan.action, VpcApplyAction::CreateVpc) {
+        return Err(format!(
+            "fresh acceptance VPC must plan CREATE_VPC, got {:?}",
+            plan.action
+        ));
+    }
+    let authorized = authorize_vpc_apply(&desired, &observation, plan)?;
+    let report = apply_vpc_once(
+        &mut provider,
+        &desired,
+        &authorized.authority.authority_digest,
+        VpcExecutionPolicy::default(),
+    )
+    .await?;
+    if !matches!(report.performed, VpcApplyAction::CreateVpc)
+        || !matches!(report.next_plan.action, VpcApplyAction::Noop)
+    {
+        return Err("acceptance VPC create did not converge to NOOP".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn acceptance_attach_and_verify(
+    spec_path: &Path,
+) -> Result<crate::vultr_vpc_lifecycle_service::VpcReadyReport, String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    let (target_before, observation, attachments, plan_before) =
+        plan_vpc_attachment(&mut provider, &desired).await?;
+    if !matches!(plan_before.action, AttachmentAction::AttachInstance { .. }) {
+        return Err(format!(
+            "fresh acceptance VPC attachment must plan ATTACH_INSTANCE, got {:?}",
+            plan_before.action
+        ));
+    }
+    let authorized = authorize_vpc_attachment(
+        &desired,
+        &target_before,
+        &observation,
+        &attachments,
+        plan_before,
+    )?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+    let boot_id_before = observe_guest_boot_id(
+        &target_before.main_ip,
+        &desired.machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+    )?;
+    let report = apply_vpc_attachment_once(
+        &mut provider,
+        &desired,
+        &authorized.authority.authority_digest,
+        VpcExecutionPolicy::default(),
+    )
+    .await?;
+    if !matches!(report.performed, AttachmentAction::AttachInstance { .. }) {
+        return Err("acceptance VPC attachment authority changed before mutation".to_owned());
+    }
+    let private_ipv4 = report.next_plan.private_ipv4.as_deref().ok_or_else(|| {
+        "Vultr VPC attachment converged to NOOP without provider private IPv4".to_owned()
+    })?;
+    wait_for_guest_vpc_ready(
+        &report.target.main_ip,
+        &desired.machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &boot_id_before,
+        &report.next_plan.cidr,
+        private_ipv4,
+        60,
+        Duration::from_secs(2),
+    )
+    .await?;
+    verify_vpc_ready(&mut provider, &desired).await
+}
+
+pub(crate) async fn acceptance_verify(
+    spec_path: &Path,
+) -> Result<crate::vultr_vpc_lifecycle_service::VpcReadyReport, String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    verify_vpc_ready(&mut provider, &desired).await
+}
+
+pub(crate) async fn acceptance_cleanup_to_absent(spec_path: &Path) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    for _ in 0..4 {
+        let (observation, attachments, plan) = plan_vpc_cleanup(&mut provider, &desired).await?;
+        if matches!(plan.action, CleanupAction::Noop) {
+            if plan.destructive_digest.is_some() || !attachments.attachments.is_empty() {
+                return Err("VPC NOOP cleanup plan contained destructive residue".to_owned());
+            }
+            return Ok(());
+        }
+        let destructive_digest = plan
+            .destructive_digest
+            .clone()
+            .ok_or_else(|| "VPC cleanup mutation is missing destructive digest".to_owned())?;
+        let authorized = authorize_vpc_cleanup(&desired, &observation, &attachments, plan)?;
+        cleanup_vpc_once(
+            &mut provider,
+            &desired,
+            &destructive_digest,
+            &authorized.authority.authority_digest,
+            VpcExecutionPolicy::default(),
+        )
+        .await?;
+    }
+    Err("VPC cleanup exceeded bounded one-mutation steps".to_owned())
 }
 
 fn one_spec_arg(args: &[String], command: &str) -> Result<DesiredVpcState, String> {
