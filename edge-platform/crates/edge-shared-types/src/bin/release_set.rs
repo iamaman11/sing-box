@@ -20,6 +20,8 @@ const CREATE_FLAGS: &[&str] = &[
     "windows-artifact-sha256",
     "windows-controller-sha256",
     "windows-console-sha256",
+    "windows-input-sha256",
+    "windows-source-revision",
     "edge-agent-sha256",
     "edge-controller-sha256",
     "edge-orchestrator-sha256",
@@ -153,6 +155,11 @@ fn create_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
                 flag(flags, "windows-console-sha256")?,
             )?,
             sing_box_sha256: windows_sing_box,
+            input_sha256: digest_from_hex(
+                "windows-input-sha256",
+                flag(flags, "windows-input-sha256")?,
+            )?,
+            source_revision: flag(flags, "windows-source-revision")?.to_owned(),
         }),
         vm_runtime: Some(VmRuntime {
             edge_agent_sha256: digest_from_hex(
@@ -377,6 +384,33 @@ fn print_vm_evidence(release: &ReleaseSet, digest: &str) -> Result<(), String> {
     println!("release_set_sha256={digest}");
     println!("schema_version={}", release.schema_version);
     println!("source_revision={}", release.source_revision);
+    let windows = release
+        .windows_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set windows_runtime is required".to_owned())?;
+    println!(
+        "windows_artifact_sha256={}",
+        digest_to_hex(&windows.artifact_sha256)
+    );
+    println!(
+        "windows_controller_sha256={}",
+        digest_to_hex(&windows.controller_sha256)
+    );
+    println!(
+        "windows_console_sha256={}",
+        digest_to_hex(&windows.console_sha256)
+    );
+    println!(
+        "windows_sing_box_sha256={}",
+        digest_to_hex(&windows.sing_box_sha256)
+    );
+    if release.schema_version >= 5 {
+        println!(
+            "windows_input_sha256={}",
+            digest_to_hex(&windows.input_sha256)
+        );
+        println!("windows_source_revision={}", windows.source_revision);
+    }
     println!("edge_agent_sha256={}", digest_to_hex(&vm.edge_agent_sha256));
     if release.schema_version >= 2 {
         println!(
