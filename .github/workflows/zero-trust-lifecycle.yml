@@ -46,46 +46,8 @@ jobs:
               handle.write(f"operation={tokens[1]}\n")
           PY
 
-  verify:
-    needs: authorize
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    outputs:
-      release_tag: ${{ steps.resolve_release.outputs.release_tag }}
-      release_set_sha256: ${{ steps.resolve_release.outputs.release_set_sha256 }}
-
-    steps:
-      - name: Checkout exact canonical revision
-        shell: bash
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "${REVISION}"
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${REVISION}"
-          test -f infra/cloudflare/zero-trust-guardrails.json
-          test -f infra/cloudflare/zero-trust-lifecycle.json
-
-      - name: Resolve and verify exact durable Edge Platform release
-        id: resolve_release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.sha }}
-          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
-        run: |
-          set -euo pipefail
-          bash edge-platform/scripts/resolve_durable_release.sh
-
   execute:
-    needs: [authorize, verify]
+    needs: authorize
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
@@ -123,7 +85,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ACCEPTED_REVISION: ${{ github.sha }}
-          EXPECTED_RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
         run: |
           set -euo pipefail
@@ -136,7 +97,7 @@ jobs:
           dir="${RUNNER_TEMP}/edge-platform-release"
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "${EDGE_RELEASE_TAG}" = "${{ needs.verify.outputs.release_tag }}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
           orchestrator="${dir}/edge-orchestrator-linux-amd64"
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
           chmod 0755 "${orchestrator}"
