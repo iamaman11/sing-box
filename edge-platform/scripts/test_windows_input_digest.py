@@ -34,7 +34,7 @@ def materialize(root: Path) -> None:
     (platform / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     (platform / "Cargo.lock").write_text("lock-v1\n", encoding="utf-8")
     proto = platform / "proto"
-    proto.mkdir()
+    proto.mkdir(exist_ok=True)
     (proto / "contract.proto").write_text("syntax = \"proto3\";\n", encoding="utf-8")
 
     crates = platform / "crates"
@@ -42,7 +42,7 @@ def materialize(root: Path) -> None:
     console = crates / "edge-console"
     shared = crates / "edge-shared-types"
     for path in (controller, console, shared):
-        (path / "src").mkdir(parents=True)
+        (path / "src").mkdir(parents=True, exist_ok=True)
 
     (controller / "Cargo.toml").write_text(
         '[package]\nname="edge-controller"\nversion="0.1.0"\n'
