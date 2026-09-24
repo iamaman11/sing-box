@@ -838,13 +838,20 @@ fn bounded_detail(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
-fn application_agent_forensic_summary(authority: &ApplicationAuthority) -> String {
-    let command = format!(
-        "marker_digest() {{ path=\"$1\"; if sudo test -f \"$path\"; then sudo jq -r '.bundle_digest // \"invalid\"' \"$path\" 2>/dev/null || printf invalid; else printf absent; fi; }}; active=$(marker_digest '{active}'); staging=$(marker_digest '{staging}'); previous=$(marker_digest '{previous}'); unit_active=$(systemctl is-active edge-agent.service 2>/dev/null || true); unit_sub=$(systemctl show edge-agent.service -p SubState --value 2>/dev/null || true); unit_result=$(systemctl show edge-agent.service -p Result --value 2>/dev/null || true); unit_restarts=$(systemctl show edge-agent.service -p NRestarts --value 2>/dev/null || true); unit_status=$(systemctl show edge-agent.service -p ExecMainStatus --value 2>/dev/null || true); listener=$(ss -ltnH 'sport = :50061' 2>/dev/null | wc -l | tr -d ' ' || true); boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true); printf 'active=%s staging=%s previous=%s unit_active=%s unit_sub=%s unit_result=%s unit_restarts=%s unit_status=%s listener=%s boot_id=%s' \"$active\" \"$staging\" \"$previous\" \"$unit_active\" \"$unit_sub\" \"$unit_result\" \"$unit_restarts\" \"$unit_status\" \"$listener\" \"$boot_id\"",
+fn application_agent_forensic_command() -> String {
+    format!(
+        "marker_digest() {{ path=\"$1\"; if sudo test -f \"$path\"; then sudo jq -r '.bundle_digest // \"invalid\"' \"$path\" 2>/dev/null || printf invalid; else printf absent; fi; }}; active=$(marker_digest '{active}'); staging=$(marker_digest '{staging}'); previous=$(marker_digest '{previous}'); agent='{agent}'; if sudo test -f \"$agent\"; then agent_present=yes; agent_sha256=$(sudo sha256sum \"$agent\" 2>/dev/null | cut -d ' ' -f1 || printf unreadable); agent_mode=$(sudo stat -c '%a' \"$agent\" 2>/dev/null || printf unreadable); agent_uid=$(sudo stat -c '%u' \"$agent\" 2>/dev/null || printf unreadable); agent_gid=$(sudo stat -c '%g' \"$agent\" 2>/dev/null || printf unreadable); agent_size=$(sudo stat -c '%s' \"$agent\" 2>/dev/null || printf unreadable); agent_elf_magic=$(sudo od -An -tx1 -N4 \"$agent\" 2>/dev/null | tr -d ' \\n' || printf unreadable); agent_elf_machine=$(sudo dd if=\"$agent\" bs=1 skip=18 count=2 status=none 2>/dev/null | od -An -tu2 | tr -d ' ' || printf unreadable); else agent_present=no; agent_sha256=absent; agent_mode=absent; agent_uid=absent; agent_gid=absent; agent_size=absent; agent_elf_magic=absent; agent_elf_machine=absent; fi; if sudo test -x \"$agent\"; then agent_executable=yes; else agent_executable=no; fi; host_arch=$(uname -m 2>/dev/null || printf unknown); if command -v findmnt >/dev/null 2>&1 && findmnt -no OPTIONS -T \"$agent\" 2>/dev/null | tr ',' '\\n' | grep -qx noexec; then agent_mount_noexec=yes; else agent_mount_noexec=no; fi; unit_load=$(systemctl show edge-agent.service -p LoadState --value 2>/dev/null || true); unit_fragment=$(systemctl show edge-agent.service -p FragmentPath --value 2>/dev/null || true); unit_exec=$(systemctl show edge-agent.service -p ExecStart --value 2>/dev/null || true); if printf '%s' \"$unit_exec\" | grep -Fq '{agent} serve'; then unit_exec_expected=yes; else unit_exec_expected=no; fi; unit_workdir=$(systemctl show edge-agent.service -p WorkingDirectory --value 2>/dev/null || true); if test \"$unit_workdir\" = '{root}'; then unit_workdir_expected=yes; else unit_workdir_expected=no; fi; if sudo test -f '{dropin}'; then dropin_present=yes; dropin_sha256=$(sudo sha256sum '{dropin}' 2>/dev/null | cut -d ' ' -f1 || printf unreadable); else dropin_present=no; dropin_sha256=absent; fi; unit_active=$(systemctl is-active edge-agent.service 2>/dev/null || true); unit_sub=$(systemctl show edge-agent.service -p SubState --value 2>/dev/null || true); unit_result=$(systemctl show edge-agent.service -p Result --value 2>/dev/null || true); unit_restarts=$(systemctl show edge-agent.service -p NRestarts --value 2>/dev/null || true); unit_main_code=$(systemctl show edge-agent.service -p ExecMainCode --value 2>/dev/null || true); unit_status=$(systemctl show edge-agent.service -p ExecMainStatus --value 2>/dev/null || true); journal=$(sudo journalctl -u edge-agent.service -n 40 --no-pager -o cat 2>/dev/null || true); journal_class=OTHER; if printf '%s' \"$journal\" | grep -qi 'No such file or directory'; then journal_class=ENOENT; elif printf '%s' \"$journal\" | grep -qi 'Permission denied'; then journal_class=EACCES; elif printf '%s' \"$journal\" | grep -qi 'Exec format error'; then journal_class=ENOEXEC; fi; if printf '%s' \"$journal\" | grep -qi 'Failed at step EXEC'; then journal_exec_failure=yes; else journal_exec_failure=no; fi; unset journal; listener=$(ss -ltnH 'sport = :50061' 2>/dev/null | wc -l | tr -d ' ' || true); boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true); printf 'active=%s staging=%s previous=%s agent_present=%s agent_executable=%s agent_sha256=%s agent_mode=%s agent_uid=%s agent_gid=%s agent_size=%s agent_elf_magic=%s agent_elf_machine=%s host_arch=%s agent_mount_noexec=%s unit_load=%s unit_fragment=%s unit_exec_expected=%s unit_workdir_expected=%s dropin_present=%s dropin_sha256=%s unit_active=%s unit_sub=%s unit_result=%s unit_restarts=%s unit_main_code=%s unit_status=%s journal_exec_failure=%s journal_class=%s listener=%s boot_id=%s' \"$active\" \"$staging\" \"$previous\" \"$agent_present\" \"$agent_executable\" \"$agent_sha256\" \"$agent_mode\" \"$agent_uid\" \"$agent_gid\" \"$agent_size\" \"$agent_elf_magic\" \"$agent_elf_machine\" \"$host_arch\" \"$agent_mount_noexec\" \"$unit_load\" \"$unit_fragment\" \"$unit_exec_expected\" \"$unit_workdir_expected\" \"$dropin_present\" \"$dropin_sha256\" \"$unit_active\" \"$unit_sub\" \"$unit_result\" \"$unit_restarts\" \"$unit_main_code\" \"$unit_status\" \"$journal_exec_failure\" \"$journal_class\" \"$listener\" \"$boot_id\"",
         active = REMOTE_STACK_RELEASE,
         staging = REMOTE_STAGING_STACK_RELEASE,
         previous = REMOTE_PREVIOUS_STACK_RELEASE,
-    );
+        agent = REMOTE_AGENT,
+        root = REMOTE_ROOT,
+        dropin = AGENT_DROPIN_PATH,
+    )
+}
+
+fn application_agent_forensic_summary(authority: &ApplicationAuthority) -> String {
+    let command = application_agent_forensic_command();
     match strict_ssh_capture(
         &authority.target_ip,
         &authority.logical_hostname,
@@ -852,7 +859,7 @@ fn application_agent_forensic_summary(authority: &ApplicationAuthority) -> Strin
         &authority.canonical_operator_public_key,
         &command,
     ) {
-        Ok(value) => bounded_detail(&value, 1200),
+        Ok(value) => bounded_detail(&value, 2400),
         Err(err) => format!("forensic_unavailable={}", bounded_detail(&err, 512)),
     }
 }
@@ -1799,6 +1806,36 @@ mod tests {
             None,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
+    }
+
+    #[test]
+    fn agent_forensic_command_classifies_exec_state_without_raw_journal_output() {
+        let command = application_agent_forensic_command();
+        for field in [
+            "agent_present=%s",
+            "agent_executable=%s",
+            "agent_sha256=%s",
+            "agent_mode=%s",
+            "agent_uid=%s",
+            "agent_gid=%s",
+            "agent_elf_magic=%s",
+            "agent_elf_machine=%s",
+            "host_arch=%s",
+            "agent_mount_noexec=%s",
+            "unit_fragment=%s",
+            "unit_exec_expected=%s",
+            "unit_workdir_expected=%s",
+            "dropin_present=%s",
+            "unit_main_code=%s",
+            "unit_status=%s",
+            "journal_exec_failure=%s",
+            "journal_class=%s",
+        ] {
+            assert!(command.contains(field), "missing forensic field {field}");
+        }
+        assert!(command.contains("journalctl -u edge-agent.service -n 40"));
+        assert!(command.contains("unset journal"));
+        assert!(!command.contains("journal=%s"));
     }
 
     #[test]
