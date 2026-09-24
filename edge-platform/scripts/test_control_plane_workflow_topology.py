@@ -416,16 +416,18 @@ def main() -> None:
         "Mesh workflow must not own transient-access PlanAuthority plumbing",
     )
     require(
-        'tokens[0] != "/mesh"' in mesh
-        and 'tokens[1] not in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
-        "Mesh backend must expose only the bounded provider/runtime grammar",
+        'tokens[0] == "/mesh"' in mesh
+        and 'tokens[1] == "provider-cleanup-plan"' in mesh
+        and 'len(tokens) == 3' in mesh
+        and 'tokens[1] in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
+        "Mesh backend must expose only the bounded provider/runtime grammar plus one provider-only CP16 observation",
     )
     require(
         "line3-mesh vpc-runtime-apply" in mesh
         and "line3-mesh vpc-runtime-verify" in mesh
         and mesh.count("line3-mesh runtime-observe") == 3
         and mesh.count("line3-mesh runtime-cleanup") == 1
-        and mesh.count("line3-mesh cleanup-plan") == 2
+        and mesh.count("line3-mesh cleanup-plan") == 3
         and mesh.count("line3-mesh cleanup-apply") == 1
         and "MESH_NODE_TOKEN" not in mesh,
         "Mesh backend must expose bounded runtime operations plus one-at-a-time typed provider cleanup without raw token authority",
@@ -478,6 +480,26 @@ def main() -> None:
         and '(.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' in mesh
         and '.[1].performed.kind == .[0].plan.action.kind' in mesh,
         "Mesh provider cleanup must require runtime ABSENT, fresh destructive digest + PlanAuthority, and exactly one matching delete per invocation",
+    )
+
+    provider_observe = mesh.split("  provider_observe:\n", 1)[1].split("\n  execute:", 1)[0]
+    require(
+        "line3-mesh cleanup-plan" in provider_observe
+        and '.plan_disposition == "NOOP"' in provider_observe
+        and '.plan.action.kind == "NOOP"' in provider_observe
+        and '.plan.destructive_digest == null' in provider_observe
+        and ".mutations_performed == 0" in provider_observe,
+        "CP16 Mesh provider observation must be read-only and require exact zero-state",
+    )
+    require(
+        "VULTR_API_KEY" not in provider_observe
+        and "VULTR_SSH_PRIVATE_KEY" not in provider_observe
+        and "EDGE_SSH_PRIVATE_KEY_PATH" not in provider_observe
+        and "vultr-lifecycle lease-acquire" not in provider_observe
+        and "vultr-lifecycle lease-release" not in provider_observe
+        and "api.ipify.org" not in provider_observe
+        and "cleanup-apply" not in provider_observe,
+        "CP16 Mesh provider observation must not materialize SSH/Vultr authority, discover egress, acquire access, or expose mutation",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
