@@ -11,6 +11,7 @@ DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
 MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
 EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
+WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 
 
@@ -29,6 +30,7 @@ def main() -> None:
     mesh = MESH.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
+    windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     acceptance_impl = acceptance_coordinator.split("\n#[cfg(test)]", 1)[0]
 
@@ -598,8 +600,27 @@ def main() -> None:
         '"edge-platform/crates/edge-agent"' in runtime_input
         and '"win/vultr-waw/stack/edge-gateway"' in runtime_input
         and '"win/vultr-waw/stack/warp-egress"' in runtime_input
-        and "base_schema != \"4\"" in runtime_input,
-        "runtime identity must cover runtime sources and fail closed for legacy ReleaseSets",
+        and 'base_schema not in {"4", "5"}' in runtime_input,
+        "runtime identity must cover runtime sources and fail closed for pre-v4 ReleaseSets",
+    )
+    require(
+        "windows_input_sha256" in edge_platform_ci
+        and "windows_input_digest.py compute" in edge_platform_ci
+        and "windows_input_digest.py decide" in edge_platform_ci
+        and "WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN" in edge_platform_ci
+        and "WINDOWS_CANDIDATE_BUILD_CONTRACT_END" in edge_platform_ci
+        and "needs.dependencies.outputs.windows_reuse != 'true'" in edge_platform_ci
+        and "gh release download $env:BASE_RELEASE_TAG" in edge_platform_ci
+        and "--windows-input-sha256" in edge_platform_ci
+        and "--windows-source-revision" in edge_platform_ci,
+        "candidate CI must derive durable Windows identity and reuse only the exact accepted artifact",
+    )
+    require(
+        "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\")" in windows_input
+        and "_reachable_package_dirs(repo_root)" in windows_input
+        and "WINDOWS_BUILD_CONTRACT_PATH" in windows_input
+        and 'base_schema != "5"' in windows_input,
+        "Windows identity must cover transitive local dependencies, marked build contract and fail closed before ReleaseSet v5",
     )
 
     require(
