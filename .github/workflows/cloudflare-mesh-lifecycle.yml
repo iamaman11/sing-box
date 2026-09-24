@@ -43,7 +43,7 @@ jobs:
           if (
               len(tokens) != 5
               or tokens[0] != "/mesh"
-              or tokens[1] not in {"plan", "apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}
+              or tokens[1] not in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}
           ):
               fail("unsupported /mesh command grammar")
 
@@ -253,6 +253,40 @@ jobs:
               [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
               "${bin}" line3-mesh vpc-apply                 "${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}" "${authority}"                 > "${apply}"
               jq -s '{plan:.[0],apply:.[1]}' "${plan}" "${apply}" | tee "${result}"
+              ;;
+            cleanup-plan)
+              runtime="${RUNNER_TEMP}/mesh-provider-cleanup-runtime.json"
+              plan="${RUNNER_TEMP}/mesh-provider-cleanup-plan.json"
+              "${bin}" line3-mesh runtime-observe "${APPLICATION_SPEC_PATH}" > "${runtime}"
+              jq -e '.status == "ABSENT" and .runtime.token_store_present == false and .runtime.container_running == false and .runtime.runtime_ready == false' "${runtime}" >/dev/null
+              "${bin}" line3-mesh cleanup-plan "${MESH_SPEC_PATH}" > "${plan}"
+              jq -e '
+                (.plan_disposition == "MUTATE"
+                  and (.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")
+                  and (.plan.destructive_digest | type == "string")
+                  and (.plan.destructive_digest | test("^[0-9a-f]{64}$")))
+                or
+                (.plan_disposition == "NOOP"
+                  and .plan.action.kind == "NOOP"
+                  and .plan.destructive_digest == null)
+              ' "${plan}" >/dev/null
+              jq -s '{runtime:.[0],plan:.[1]}' "${runtime}" "${plan}" | tee "${result}"
+              ;;
+            cleanup-apply)
+              runtime="${RUNNER_TEMP}/mesh-provider-cleanup-runtime.json"
+              plan="${RUNNER_TEMP}/mesh-provider-cleanup-plan.json"
+              apply="${RUNNER_TEMP}/mesh-provider-cleanup-apply.json"
+              "${bin}" line3-mesh runtime-observe "${APPLICATION_SPEC_PATH}" > "${runtime}"
+              jq -e '.status == "ABSENT" and .runtime.token_store_present == false and .runtime.container_running == false and .runtime.runtime_ready == false' "${runtime}" >/dev/null
+              "${bin}" line3-mesh cleanup-plan "${MESH_SPEC_PATH}" > "${plan}"
+              jq -e '.plan_disposition == "MUTATE" and (.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' "${plan}" >/dev/null
+              destructive_digest="$(jq -er '.plan.destructive_digest' "${plan}")"
+              authority="$(plan_authority "${plan}")"
+              [[ "${destructive_digest}" =~ ^[0-9a-f]{64}$ ]]
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" line3-mesh cleanup-apply "${MESH_SPEC_PATH}" "${destructive_digest}" "${authority}" > "${apply}"
+              jq -s -e '.[1].performed.kind == .[0].plan.action.kind' "${plan}" "${apply}" >/dev/null
+              jq -s '{runtime:.[0],plan:.[1],apply:.[2]}' "${runtime}" "${plan}" "${apply}" | tee "${result}"
               ;;
             runtime-apply)
               provider_plan="${RUNNER_TEMP}/mesh-runtime-provider-plan.json"
