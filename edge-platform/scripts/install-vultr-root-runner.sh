@@ -65,7 +65,7 @@ run_logged() {
 }
 
 trap cleanup_diagnostic_log EXIT
-trap 'rc=$?; if [[ "${diagnostic_emitted}" != "1" ]]; then printf "root runner bootstrap failed: stage=%s exit=%s\\n" "${stage}" "${rc}" >&2; fi' ERR
+trap 'rc=$?; if [[ "${diagnostic_emitted}" != "1" ]]; then printf "root runner bootstrap failed: stage=%s exit=%s\n" "${stage}" "${rc}" >&2; fi' ERR
 
 if ! id "${RUNNER_USER}" >/dev/null 2>&1; then
   useradd --create-home --home-dir "${RUNNER_HOME}" --shell /bin/bash "${RUNNER_USER}"
