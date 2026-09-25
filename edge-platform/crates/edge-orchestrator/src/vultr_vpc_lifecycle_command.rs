@@ -391,7 +391,9 @@ pub(crate) async fn production_converge(
             )
             .await?;
             if !matches!(report.performed, AttachmentAction::AttachInstance { .. }) {
-                return Err("production VPC attachment authority changed before mutation".to_owned());
+                return Err(
+                    "production VPC attachment authority changed before mutation".to_owned(),
+                );
             }
             let private_ipv4 = report.next_plan.private_ipv4.as_deref().ok_or_else(|| {
                 "production VPC attachment reached NOOP without provider private IPv4".to_owned()
