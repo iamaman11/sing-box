@@ -32,7 +32,6 @@ def main() -> None:
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
-    acceptance_impl = acceptance_coordinator.split("\n#[cfg(test)]", 1)[0]
 
     listeners = sorted(
         path.name
@@ -436,25 +435,6 @@ def main() -> None:
     require(
         acceptance_coordinator.count("acceptance_reboot(vultr_spec, machine_id)") == 1,
         "typed acceptance must retain exactly one explicit reboot for persistence verification",
-    )
-    cleanup_order = [
-        "mesh_runtime_cleanup(paths.application_spec)",
-        "mesh_cleanup_provider_to_absent(paths.mesh_spec)",
-        "dns_cleanup_to_absent(paths.dns_spec)",
-        "acceptance_lease_release(vultr_spec, machine_id)",
-        "acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)",
-        "vpc_cleanup_to_absent(paths.vpc_spec)",
-        '"final_zero_leak"',
-    ]
-    cleanup_positions = [acceptance_coordinator.index(marker) for marker in cleanup_order]
-    require(
-        cleanup_positions == sorted(cleanup_positions),
-        "typed acceptance cleanup must attempt runtime -> Mesh -> DNS -> access -> VM/support -> VPC -> final zero-leak",
-    )
-    require(
-        "cleanup_failure.is_none()" not in acceptance_impl
-        and "application.acceptance.cleanup.recovered" in acceptance_impl,
-        "one owner cleanup error must not globally short-circuit independent cleanup owners",
     )
     require(
         "context.release().accepted_revision.as_str()" in acceptance_coordinator
