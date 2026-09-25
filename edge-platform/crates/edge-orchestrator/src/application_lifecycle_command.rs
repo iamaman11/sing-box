@@ -322,6 +322,46 @@ pub(crate) async fn production_converge_desired(
     ))
 }
 
+pub(crate) async fn production_verify_desired(
+    context: &OrchestrationContext,
+    desired: &DesiredApplicationState,
+    artifact_path: &Path,
+) -> Result<(), String> {
+    let bundle_root = Path::new(".").join(&desired.bundle_root);
+    context.materialize_application_image_environment(&bundle_root, artifact_path)?;
+    let artifact = context.expected_application_artifact()?;
+    verify_release_bound_application_inputs(context, desired, &artifact, artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
+    let authority = resolve_application_authority(desired).await?;
+    let (plan, _observation) = verify_desired(&authority, desired, &artifact, &prepared).await?;
+    if plan.class != ApplicationPlanClass::Noop {
+        return Err(format!(
+            "production application verify expected NOOP, got {:?}: {}",
+            plan.class,
+            plan.reasons.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn production_rollback_desired(
+    desired: &DesiredApplicationState,
+) -> Result<(String, String), String> {
+    let authority = resolve_application_authority(desired).await?;
+    let (observation, rollback) = rollback_plan_remote(&authority, desired).await?;
+    let current_release = rollback.current_release.release_id.clone();
+    let previous_release = rollback.previous_release.release_id.clone();
+    let authorized = authorize_application_rollback(desired, &observation, rollback.clone())?;
+    execute_rollback(
+        &authority,
+        desired,
+        &rollback.rollback_digest,
+        &authorized.authority.authority_digest,
+    )
+    .await?;
+    Ok((current_release, previous_release))
+}
+
 pub(crate) async fn acceptance_apply_desired(
     context: &OrchestrationContext,
     desired: &DesiredApplicationState,
