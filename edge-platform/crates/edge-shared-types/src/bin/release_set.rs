@@ -13,32 +13,6 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const CREATE_FLAGS: &[&str] = &[
-    "output",
-    "sha256-output",
-    "source-revision",
-    "sing-box-version",
-    "windows-sing-box-sha256",
-    "linux-sing-box-sha256",
-    "windows-artifact-sha256",
-    "windows-controller-sha256",
-    "windows-console-sha256",
-    "windows-input-sha256",
-    "windows-source-revision",
-    "edge-agent-sha256",
-    "edge-controller-sha256",
-    "edge-orchestrator-sha256",
-    "runtime-input-sha256",
-    "runtime-source-revision",
-    "sing-box-image",
-    "warp-egress-image",
-    "docker-engine-version",
-    "containerd-version",
-    "compose-version",
-    "warp-version",
-    "mesh-image",
-];
-
 const VERIFY_FLAGS: &[&str] = &[
     "input",
     "sha256-file",
@@ -61,7 +35,7 @@ const VERIFY_VM_FLAGS: &[&str] = &[
     "edge-controller",
 ];
 
-const CREATE_FROM_MANIFESTS_FLAGS: &[&str] = &[
+const CREATE_FLAGS: &[&str] = &[
     "output",
     "sha256-output",
     "source-revision",
@@ -108,8 +82,7 @@ fn run() -> Result<(), String> {
     let flags = parse_flags(args.collect())?;
 
     match command.as_str() {
-        "create" => create_release_set(&flags),
-        "create-from-build-manifests" => create_release_set_from_build_manifests(&flags),
+        "create" => create_release_set_from_build_manifests(&flags),
         "verify" => verify_release_set(&flags),
         "verify-candidate" => verify_candidate_release_set(&flags),
         "verify-vm" => verify_vm_release_set(&flags),
@@ -118,7 +91,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: edge-release-set create|create-from-build-manifests|verify|verify-candidate|verify-vm --flag value ..."
+    "usage: edge-release-set create|verify|verify-candidate|verify-vm --flag value ..."
         .to_owned()
 }
 
@@ -163,114 +136,10 @@ fn flag<'a>(flags: &'a BTreeMap<String, String>, name: &str) -> Result<&'a str, 
         .ok_or_else(|| format!("missing required --{name}"))
 }
 
-fn create_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
-    require_allowed(flags, CREATE_FLAGS)?;
-
-    let windows_sing_box = digest_from_hex(
-        "windows-sing-box-sha256",
-        flag(flags, "windows-sing-box-sha256")?,
-    )?;
-    let release = ReleaseSet {
-        schema_version: RELEASE_SET_SCHEMA_VERSION,
-        source_revision: flag(flags, "source-revision")?.to_owned(),
-        sing_box: Some(SingBoxRelease {
-            version: flag(flags, "sing-box-version")?.to_owned(),
-            windows_amd64_sha256: windows_sing_box.clone(),
-            linux_amd64_sha256: digest_from_hex(
-                "linux-sing-box-sha256",
-                flag(flags, "linux-sing-box-sha256")?,
-            )?,
-        }),
-        windows_runtime: Some(WindowsRuntime {
-            artifact_sha256: digest_from_hex(
-                "windows-artifact-sha256",
-                flag(flags, "windows-artifact-sha256")?,
-            )?,
-            controller_sha256: digest_from_hex(
-                "windows-controller-sha256",
-                flag(flags, "windows-controller-sha256")?,
-            )?,
-            console_sha256: digest_from_hex(
-                "windows-console-sha256",
-                flag(flags, "windows-console-sha256")?,
-            )?,
-            sing_box_sha256: windows_sing_box,
-            input_sha256: digest_from_hex(
-                "windows-input-sha256",
-                flag(flags, "windows-input-sha256")?,
-            )?,
-            source_revision: flag(flags, "windows-source-revision")?.to_owned(),
-        }),
-        vm_runtime: Some(VmRuntime {
-            edge_agent_sha256: digest_from_hex(
-                "edge-agent-sha256",
-                flag(flags, "edge-agent-sha256")?,
-            )?,
-            edge_controller_sha256: digest_from_hex(
-                "edge-controller-sha256",
-                flag(flags, "edge-controller-sha256")?,
-            )?,
-            edge_orchestrator_sha256: digest_from_hex(
-                "edge-orchestrator-sha256",
-                flag(flags, "edge-orchestrator-sha256")?,
-            )?,
-            runtime_input_sha256: digest_from_hex(
-                "runtime-input-sha256",
-                flag(flags, "runtime-input-sha256")?,
-            )?,
-            runtime_source_revision: flag(flags, "runtime-source-revision")?.to_owned(),
-            sing_box_image: Some(parse_image_ref(
-                "sing-box-image",
-                flag(flags, "sing-box-image")?,
-            )?),
-            warp_egress_image: Some(parse_image_ref(
-                "warp-egress-image",
-                flag(flags, "warp-egress-image")?,
-            )?),
-            docker_engine_version: flag(flags, "docker-engine-version")?.to_owned(),
-            containerd_version: flag(flags, "containerd-version")?.to_owned(),
-            compose_version: flag(flags, "compose-version")?.to_owned(),
-        }),
-        cloudflare: Some(CloudflareRuntime {
-            warp_version: flag(flags, "warp-version")?.to_owned(),
-            mesh_image: Some(parse_image_ref("mesh-image", flag(flags, "mesh-image")?)?),
-        }),
-        schemas: Some(SchemaVersions {
-            config_schema: CONFIG_SCHEMA_VERSION,
-            db_schema: DB_SCHEMA_VERSION,
-        }),
-    };
-
-    let bytes = encode_release_set(&release)?;
-    let digest = release_set_sha256(&bytes)?;
-    let output = PathBuf::from(flag(flags, "output")?);
-    let sha256_output = PathBuf::from(flag(flags, "sha256-output")?);
-    let file_name = output
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "release-set output must have a UTF-8 filename".to_owned())?;
-
-    fs::write(&output, &bytes)
-        .map_err(|error| format!("failed to write {}: {error}", output.display()))?;
-    fs::write(
-        &sha256_output,
-        format!("{digest}  {file_name}\n").as_bytes(),
-    )
-    .map_err(|error| {
-        format!(
-            "failed to write release-set SHA-256 file {}: {error}",
-            sha256_output.display()
-        )
-    })?;
-
-    println!("release_set_sha256={digest}");
-    Ok(())
-}
-
 fn create_release_set_from_build_manifests(
     flags: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    require_allowed(flags, CREATE_FROM_MANIFESTS_FLAGS)?;
+    require_allowed(flags, CREATE_FLAGS)?;
     let (windows, linux) = load_build_manifests(flags)?;
     validate_build_manifest_pair(
         &windows,
