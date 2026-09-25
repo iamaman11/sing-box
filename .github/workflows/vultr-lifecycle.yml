@@ -70,6 +70,8 @@ jobs:
                   )
               elif verb == "apply" and len(tokens) == 4:
                   operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
+              elif verb == "runner-bootstrap" and len(tokens) == 4:
+                  operation, spec_path, machine_id = "runner-bootstrap", tokens[2], tokens[3]
               elif verb in {"start", "halt", "reboot"} and len(tokens) == 4:
                   operation, action, spec_path, machine_id = "action", verb, tokens[2], tokens[3]
               elif verb == "destroy-plan" and len(tokens) == 4:
@@ -87,8 +89,9 @@ jobs:
               fail("comment is not an authorized /vultr command")
 
           if operation not in {
-              "doctor", "inventory", "plan", "access-release", "action-plan", "apply", "action",
-              "destroy-plan", "destroy-apply", "cleanup-plan", "cleanup", "acceptance",
+              "doctor", "inventory", "plan", "access-release", "action-plan", "apply",
+              "runner-bootstrap", "action", "destroy-plan", "destroy-apply",
+              "cleanup-plan", "cleanup", "acceptance",
           }:
               fail("unsupported lifecycle operation")
 
@@ -99,7 +102,8 @@ jobs:
               fail("invalid machine_id")
 
           if operation in {
-              "apply", "access-release", "action-plan", "action", "destroy-plan", "destroy-apply"
+              "apply", "runner-bootstrap", "access-release", "action-plan", "action",
+              "destroy-plan", "destroy-apply"
           } and not machine_id:
               fail("machine_id is required for targeted operation")
 
@@ -220,6 +224,30 @@ jobs:
           print(value)
           PY
           printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
+
+      - name: Mint short-lived runner registration token
+        if: env.REQUESTED_OPERATION == 'runner-bootstrap'
+        shell: bash
+        env:
+          GITHUB_RUNNER_ADMIN_TOKEN: ${{ secrets.GITHUB_RUNNER_ADMIN_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test -n "${GITHUB_RUNNER_ADMIN_TOKEN:-}" || {
+            echo "GITHUB_RUNNER_ADMIN_TOKEN secret is required for runner-bootstrap" >&2
+            exit 1
+          }
+          response="$(curl --fail --silent --show-error --location \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GITHUB_RUNNER_ADMIN_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/${REPOSITORY}/actions/runners/registration-token")"
+          token="$(jq -er '.token' <<<"${response}")"
+          expires_at="$(jq -er '.expires_at' <<<"${response}")"
+          echo "::add-mask::${token}"
+          printf 'EDGE_RUNNER_REGISTRATION_TOKEN=%s\n' "${token}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RUNNER_REGISTRATION_EXPIRES_AT=%s\n' "${expires_at}" >> "${GITHUB_ENV}"
 
       - name: Execute typed lifecycle operation
         shell: bash
@@ -358,6 +386,21 @@ jobs:
                 and .access.next_plan.action == "NOOP"
                 and (.access.next_plan.matching_rule_ids | length) == 0' "${RUNNER_TEMP}/result.json" >/dev/null
               cat "${RUNNER_TEMP}/result.json"
+              ;;
+            runner-bootstrap)
+              acquire_host_access "${spec}" "${machine}" "runner-bootstrap"
+              trap 'release_host_access "${spec}" "${machine}" "runner-bootstrap-emergency" >/dev/null 2>&1 || true' EXIT
+              run_lifecycle runner-bootstrap "${spec}" "${machine}"                 "edge-platform/scripts/install-vultr-root-runner.sh"                 | tee "${RUNNER_TEMP}/result.json"
+              jq -e '
+                .status == "PASS"
+                and .machine_id == env.MACHINE_ID
+                and .runner_user == "github-runner"
+                and .root_authority == true
+                and .listener == "PASS"
+                and .registration_token_persisted == false
+              ' "${RUNNER_TEMP}/result.json" >/dev/null
+              release_host_access "${spec}" "${machine}" "runner-bootstrap"
+              trap - EXIT
               ;;
             action-plan)
               run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"
@@ -572,6 +615,40 @@ jobs:
           esac
 
           emit_result "${RUNNER_TEMP}/result.json"
+
+      - name: Verify self-hosted runner online
+        if: env.REQUESTED_OPERATION == 'runner-bootstrap'
+        shell: bash
+        env:
+          GITHUB_RUNNER_ADMIN_TOKEN: ${{ secrets.GITHUB_RUNNER_ADMIN_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          expected_name="sing-box-${MACHINE_ID}"
+          for attempt in {1..20}; do
+            response="$(curl --fail --silent --show-error --location \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GITHUB_RUNNER_ADMIN_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/${REPOSITORY}/actions/runners?per_page=100")"
+            if jq -e --arg name "${expected_name}" --arg machine "${MACHINE_ID}" '
+              .runners[]
+              | select(.name == $name and .status == "online")
+              | [.labels[].name] as $labels
+              | ($labels | index("self-hosted")) != null
+                and ($labels | index("Linux")) != null
+                and ($labels | index("X64")) != null
+                and ($labels | index("vultr-root")) != null
+                and ($labels | index("test-vm")) != null
+                and ($labels | index($machine)) != null
+            ' <<<"${response}" >/dev/null; then
+              echo "self-hosted root runner is online: ${expected_name}"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "self-hosted root runner did not become online: ${expected_name}" >&2
+          exit 1
 
       - name: Remove SSH authority material
         if: always()

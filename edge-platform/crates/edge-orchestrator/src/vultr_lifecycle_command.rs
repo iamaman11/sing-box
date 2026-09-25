@@ -2,8 +2,8 @@ use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, prepare_strict_bootstrap,
     prove_restricted_control_negative_capabilities, start_strict_agent_tunnel, strict_scp_upload,
-    strict_ssh_accept, strict_ssh_capture, strict_ssh_run, verify_operator_key_matches,
-    wait_provider_ready,
+    strict_ssh_accept, strict_ssh_capture, strict_ssh_run, strict_ssh_run_stdin,
+    verify_operator_key_matches, wait_provider_ready,
 };
 use crate::vultr_host_substrate_service::{
     HostSubstrateExecutionPolicy, apply_host_substrate_once, build_host_substrate_authority,
@@ -57,6 +57,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-apply" => run_substrate_apply(&args[1..]).await,
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
+        "runner-bootstrap" => run_runner_bootstrap(&args[1..]).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
         "lease-acquire" => run_lease_acquire(&args[1..]).await,
@@ -731,6 +732,115 @@ async fn run_transport_proof(
         "exclusive_transport_key_capability_proven": false,
         "note": "T0a proves the edge-control account path only; privileged bootstrap deletion and no-/32 proof belong to T0b",
     }))
+}
+
+async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
+    if args.len() != 3 {
+        return Err(
+            "usage: edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path>"
+                .to_owned(),
+        );
+    }
+
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let machine_id = &args[1];
+    if !desired
+        .machines
+        .iter()
+        .any(|machine| machine.id == *machine_id)
+    {
+        return Err(format!(
+            "machine {machine_id} is not present in desired state"
+        ));
+    }
+    let installer_path = Path::new(&args[2]);
+    if !installer_path.is_file() {
+        return Err(format!(
+            "root runner installer was not found: {}",
+            installer_path.display()
+        ));
+    }
+
+    let registration_token = env::var("EDGE_RUNNER_REGISTRATION_TOKEN")
+        .map_err(|_| "EDGE_RUNNER_REGISTRATION_TOKEN is required".to_owned())?;
+    validate_runner_registration_token(&registration_token)?;
+
+    let observed = exact_existing_machine_observation(&desired, machine_id).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| format!("exact machine {machine_id} has no observed public IPv4"))?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+
+    const REMOTE_INSTALLER: &str = "/tmp/singbox-root-runner-bootstrap";
+    strict_scp_upload(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        installer_path,
+        REMOTE_INSTALLER,
+    )?;
+
+    let remote_command = format!(
+        "sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?; rm -f {REMOTE_INSTALLER}; exit $rc"
+    );
+    let token_stdin = format!("{registration_token}\n");
+    strict_ssh_run_stdin(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &remote_command,
+        token_stdin.as_bytes(),
+    )?;
+
+    let root_uid = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "sudo -u github-runner sudo -n id -u",
+    )?;
+    if root_uid != "0" {
+        return Err(format!(
+            "self-hosted runner root authority verification failed: expected uid 0, got {root_uid}"
+        ));
+    }
+    let listener = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "pgrep -u github-runner -f Runner.Listener >/dev/null && echo PASS",
+    )?;
+    if listener != "PASS" {
+        return Err("self-hosted runner listener is not active".to_owned());
+    }
+
+    print_json_value(serde_json::json!({
+        "status": "PASS",
+        "machine_id": machine_id,
+        "runner_name": format!("sing-box-{machine_id}"),
+        "runner_user": "github-runner",
+        "root_authority": true,
+        "listener": "PASS",
+        "registration_token_persisted": false,
+    }))
+}
+
+fn validate_runner_registration_token(value: &str) -> Result<(), String> {
+    if value.len() < 16
+        || value.len() > 512
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err("runner registration token is malformed".to_owned());
+    }
+    Ok(())
 }
 
 async fn run_acquire_access_plan(args: &[String]) -> Result<(), String> {
@@ -3009,6 +3119,7 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>",
+        "  edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle lease-acquire <spec-path> <machine-id>",
@@ -3337,11 +3448,20 @@ mod tests {
     }
 
     #[test]
+    fn runner_registration_token_validation_is_secret_safe_and_bounded() {
+        assert!(validate_runner_registration_token("A".repeat(32).as_str()).is_ok());
+        assert!(validate_runner_registration_token("short").is_err());
+        assert!(validate_runner_registration_token("token with space").is_err());
+        assert!(validate_runner_registration_token(&"x".repeat(513)).is_err());
+    }
+
+    #[test]
     fn usage_is_closed_grammar() {
         let text = usage();
         assert!(text.contains("vultr-lifecycle plan"));
         assert!(text.contains("vultr-lifecycle destroy-apply"));
         assert!(text.contains("vultr-lifecycle transport-proof"));
+        assert!(text.contains("vultr-lifecycle runner-bootstrap"));
         assert!(text.contains("vultr-lifecycle acquire-access"));
         assert!(text.contains("vultr-lifecycle release-access"));
         assert!(!text.contains("exec"));
