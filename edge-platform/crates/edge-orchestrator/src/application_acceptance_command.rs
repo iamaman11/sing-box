@@ -44,6 +44,15 @@ struct AcceptanceProgress {
 }
 
 #[derive(Debug)]
+struct CleanRoomProof;
+
+impl AcceptanceProgress {
+    fn begin_lifecycle_mutation(&mut self, _proof: CleanRoomProof) {
+        self.mutation_started = true;
+    }
+}
+
+#[derive(Debug)]
 struct AcceptanceFailure {
     stage: &'static str,
     detail: String,
@@ -420,7 +429,7 @@ async fn run_lifecycle(
     machine_id: &str,
     progress: &mut AcceptanceProgress,
 ) -> Result<AcceptanceSuccess, AcceptanceFailure> {
-    timed_stage(
+    let clean_room_proof = timed_stage(
         "clean_room",
         require_clean_room(
             CleanupPaths {
@@ -440,7 +449,7 @@ async fn run_lifecycle(
         cleanup_allowed: false,
     })?;
 
-    progress.mutation_started = true;
+    progress.begin_lifecycle_mutation(clean_room_proof);
     timed_stage("vpc_create", vpc_create(&args.vpc_spec_path))
         .await
         .map_err(|detail| operational_failure("vpc_create", detail))?;
@@ -651,7 +660,7 @@ async fn require_clean_room(
     paths: CleanupPaths<'_>,
     vultr_spec: &Path,
     machine_id: &str,
-) -> Result<(), String> {
+) -> Result<CleanRoomProof, String> {
     timed_stage(
         "clean_room.vultr",
         vultr_require_clean_room(vultr_spec, machine_id),
@@ -659,7 +668,8 @@ async fn require_clean_room(
     .await?;
     timed_stage("clean_room.dns", dns_require_clean_room(paths.dns_spec)).await?;
     timed_stage("clean_room.mesh", mesh_require_clean_room(paths.mesh_spec)).await?;
-    timed_stage("clean_room.vpc", vpc_require_clean_room(paths.vpc_spec)).await
+    timed_stage("clean_room.vpc", vpc_require_clean_room(paths.vpc_spec)).await?;
+    Ok(CleanRoomProof)
 }
 
 fn record_cleanup_failure(
@@ -740,7 +750,7 @@ async fn cleanup_environment(
                 .await;
 
                 return match final_zero_leak {
-                    Ok(()) => {
+                    Ok(_) => {
                         if !failures.is_empty() {
                             tracing::warn!(
                                 component = "edge-orchestrator",
@@ -867,6 +877,15 @@ mod tests {
             cleanup_allowed: false,
         };
         assert!(!failure.cleanup_allowed);
+    }
+
+    #[test]
+    fn clean_room_proof_is_required_to_begin_lifecycle_mutation() {
+        let mut progress = AcceptanceProgress::default();
+        assert!(!progress.mutation_started);
+
+        progress.begin_lifecycle_mutation(CleanRoomProof);
+        assert!(progress.mutation_started);
     }
 
     #[test]
