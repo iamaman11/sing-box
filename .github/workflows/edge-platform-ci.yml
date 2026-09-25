@@ -729,11 +729,6 @@ jobs:
     timeout-minutes: 35
     permissions:
       contents: read
-    outputs:
-      artifact_sha256: ${{ steps.finalize.outputs.artifact_sha256 }}
-      controller_sha256: ${{ steps.finalize.outputs.controller_sha256 }}
-      console_sha256: ${{ steps.finalize.outputs.console_sha256 }}
-      sing_box_binary_sha256: ${{ steps.finalize.outputs.sing_box_binary_sha256 }}
     steps:
       - name: Checkout exact revision
         shell: pwsh
@@ -843,6 +838,7 @@ jobs:
           BASE_CONTROLLER_SHA256: ${{ needs.dependencies.outputs.base_windows_controller_sha256 }}
           BASE_CONSOLE_SHA256: ${{ needs.dependencies.outputs.base_windows_console_sha256 }}
           BASE_SING_BOX_SHA256: ${{ needs.dependencies.outputs.base_windows_sing_box_sha256 }}
+          RELEASE_INPUT_SHA256: ${{ needs.dependencies.outputs.release_input_sha256 }}
           WINDOWS_INPUT_SHA256: ${{ needs.dependencies.outputs.windows_input_sha256 }}
           WINDOWS_SOURCE_REVISION: ${{ needs.dependencies.outputs.windows_source_revision }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
@@ -895,9 +891,10 @@ jobs:
 
           $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
           $manifest = [ordered]@{
-            schema = 3
-            source_revision = $env:CANDIDATE_REVISION
+            schema_version = 1
+            candidate_source_revision = $env:CANDIDATE_REVISION
             source_tree = $sourceTree
+            release_input_sha256 = $env:RELEASE_INPUT_SHA256
             windows_input_sha256 = $env:WINDOWS_INPUT_SHA256
             windows_source_revision = $env:WINDOWS_SOURCE_REVISION
             reused = ($env:REUSE_WINDOWS -eq "true")
@@ -908,11 +905,7 @@ jobs:
             controller_sha256 = $controllerSha
             console_sha256 = $consoleSha
           }
-          $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $out "manifest.json")
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "artifact_sha256=$artifactSha"
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "controller_sha256=$controllerSha"
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "console_sha256=$consoleSha"
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sing_box_binary_sha256=$singBoxSha"
+          $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $out "windows-build-manifest.json")
       # WINDOWS_CANDIDATE_BUILD_CONTRACT_END
 
       - name: Store exact Windows candidate
@@ -937,16 +930,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      gateway_ref: ${{ steps.images.outputs.gateway_ref }}
-      warp_ref: ${{ steps.images.outputs.warp_ref }}
-      sing_box_binary_sha256: ${{ steps.images.outputs.sing_box_binary_sha256 }}
-      edge_agent_sha256: ${{ steps.package.outputs.edge_agent_sha256 }}
-      edge_controller_sha256: ${{ steps.package.outputs.edge_controller_sha256 }}
-      edge_orchestrator_sha256: ${{ steps.package.outputs.edge_orchestrator_sha256 }}
-      runtime_input_sha256: ${{ steps.package.outputs.runtime_input_sha256 }}
-      runtime_source_revision: ${{ steps.package.outputs.runtime_source_revision }}
-      runtime_reused: ${{ steps.package.outputs.runtime_reused }}
     steps:
       - name: Checkout exact candidate revision
         shell: bash
@@ -1172,10 +1155,10 @@ jobs:
           printf 'sing_box_binary_sha256=%s\n' "${sing_box_binary_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Package exact Linux candidate
-        id: package
         shell: bash
         env:
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          RELEASE_INPUT_SHA256: ${{ needs.dependencies.outputs.release_input_sha256 }}
           RUNTIME_REUSE: ${{ steps.runtime_reuse.outputs.reuse }}
           REUSED_AGENT_PATH: ${{ steps.runtime_reuse.outputs.base_agent_path }}
           RUNTIME_SOURCE_REVISION: ${{ steps.runtime_reuse.outputs.runtime_source_revision }}
@@ -1219,8 +1202,9 @@ jobs:
           [[ "${EDGE_WARP_EGRESS_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
 
           jq -n \
-            --arg source_revision "${CANDIDATE_REVISION}" \
+            --arg candidate_source_revision "${CANDIDATE_REVISION}" \
             --arg source_tree "${source_tree}" \
+            --arg release_input_sha256 "${RELEASE_INPUT_SHA256}" \
             --arg runtime_source_revision "${RUNTIME_SOURCE_REVISION}" \
             --arg runtime_input_sha256 "${RUNTIME_INPUT_SHA256}" \
             --argjson runtime_reused "${RUNTIME_REUSE}" \
@@ -1230,46 +1214,41 @@ jobs:
             --arg edge_gateway_image "${EDGE_GATEWAY_IMAGE}" \
             --arg edge_warp_egress_image "${EDGE_WARP_EGRESS_IMAGE}" \
             --arg sing_box_version "${SING_BOX_VERSION}" \
-            --arg sing_box_linux_sha256 "${SING_BOX_LINUX_SHA256}" \
+            --arg sing_box_archive_sha256 "${SING_BOX_LINUX_SHA256}" \
             --arg sing_box_binary_sha256 "${sing_box_binary_sha}" \
             --arg docker_engine_version "${DOCKER_ENGINE_VERSION}" \
             --arg containerd_version "${CONTAINERD_VERSION}" \
             --arg compose_version "${COMPOSE_VERSION}" \
             --arg warp_version "${WARP_VERSION}" \
-            --arg warp_sha256 "${WARP_SHA256}" \
+            --arg warp_archive_sha256 "${WARP_SHA256}" \
             --arg debian_base_image "${DEBIAN_BASE_IMAGE}" \
             --arg ubuntu_base_image "${UBUNTU_BASE_IMAGE}" \
             --arg mesh_image "${MESH_IMAGE}" \
             '{
-              schema:4,
-              source_revision:$source_revision,
+              schema_version:1,
+              candidate_source_revision:$candidate_source_revision,
+              source_tree:$source_tree,
+              release_input_sha256:$release_input_sha256,
               runtime_source_revision:$runtime_source_revision,
               runtime_input_sha256:$runtime_input_sha256,
               runtime_reused:$runtime_reused,
-              source_tree:$source_tree,
               controller_sha256:$controller_sha256,
               orchestrator_sha256:$orchestrator_sha256,
               agent_sha256:$agent_sha256,
               edge_gateway_image:$edge_gateway_image,
               edge_warp_egress_image:$edge_warp_egress_image,
               sing_box_version:$sing_box_version,
-              sing_box_linux_sha256:$sing_box_linux_sha256,
+              sing_box_archive_sha256:$sing_box_archive_sha256,
               sing_box_binary_sha256:$sing_box_binary_sha256,
               docker_engine_version:$docker_engine_version,
               containerd_version:$containerd_version,
               compose_version:$compose_version,
               warp_version:$warp_version,
-              warp_sha256:$warp_sha256,
+              warp_archive_sha256:$warp_archive_sha256,
               debian_base_image:$debian_base_image,
               ubuntu_base_image:$ubuntu_base_image,
               mesh_image:$mesh_image
-            }' > "${out}/manifest.json"
-          printf 'edge_agent_sha256=%s\n' "${agent_sha}" >> "${GITHUB_OUTPUT}"
-          printf 'edge_controller_sha256=%s\n' "${controller_sha}" >> "${GITHUB_OUTPUT}"
-          printf 'edge_orchestrator_sha256=%s\n' "${orchestrator_sha}" >> "${GITHUB_OUTPUT}"
-          printf 'runtime_input_sha256=%s\n' "${RUNTIME_INPUT_SHA256}" >> "${GITHUB_OUTPUT}"
-          printf 'runtime_source_revision=%s\n' "${RUNTIME_SOURCE_REVISION}" >> "${GITHUB_OUTPUT}"
-          printf 'runtime_reused=%s\n' "${RUNTIME_REUSE}" >> "${GITHUB_OUTPUT}"
+            }' > "${out}/linux-build-manifest.json"
 
       - name: Store exact Linux candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
