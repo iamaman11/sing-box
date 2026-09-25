@@ -417,11 +417,11 @@ mod tests {
         let expected_release_input = "3".repeat(64);
         let expected_tree = "2".repeat(40);
 
-        let mut windows = windows();
-        windows.candidate_source_revision = "6".repeat(40);
+        let mut windows_revision_drift = windows();
+        windows_revision_drift.candidate_source_revision = "6".repeat(40);
         assert!(
             validate_build_manifest_pair(
-                &windows,
+                &windows_revision_drift,
                 &linux(),
                 &expected_candidate,
                 &expected_release_input,
@@ -430,12 +430,12 @@ mod tests {
             .is_err()
         );
 
-        let mut linux = linux();
-        linux.release_input_sha256 = "7".repeat(64);
+        let mut linux_release_input_drift = linux();
+        linux_release_input_drift.release_input_sha256 = "7".repeat(64);
         assert!(
             validate_build_manifest_pair(
                 &windows(),
-                &linux,
+                &linux_release_input_drift,
                 &expected_candidate,
                 &expected_release_input,
                 Some(&expected_tree),
@@ -443,12 +443,12 @@ mod tests {
             .is_err()
         );
 
-        let mut linux = linux();
-        linux.source_tree = "8".repeat(40);
+        let mut linux_tree_drift = linux();
+        linux_tree_drift.source_tree = "8".repeat(40);
         assert!(
             validate_build_manifest_pair(
                 &windows(),
-                &linux,
+                &linux_tree_drift,
                 &expected_candidate,
                 &expected_release_input,
                 Some(&expected_tree),
@@ -456,12 +456,12 @@ mod tests {
             .is_err()
         );
 
-        let mut linux = linux();
-        linux.sing_box_version = "1.14.3".to_owned();
+        let mut linux_version_drift = linux();
+        linux_version_drift.sing_box_version = "1.14.3".to_owned();
         assert!(
             validate_build_manifest_pair(
                 &windows(),
-                &linux,
+                &linux_version_drift,
                 &expected_candidate,
                 &expected_release_input,
                 Some(&expected_tree),
@@ -472,12 +472,14 @@ mod tests {
 
     #[test]
     fn mutable_or_wrong_repository_images_fail_closed() {
-        let mut linux = linux();
-        linux.edge_gateway_image = "ghcr.io/iamaman11/vultr-edge-gateway:latest".to_owned();
-        assert!(linux.validate().is_err());
+        let mut mutable_gateway = linux();
+        mutable_gateway.edge_gateway_image =
+            "ghcr.io/iamaman11/vultr-edge-gateway:latest".to_owned();
+        assert!(mutable_gateway.validate().is_err());
 
-        let mut linux = linux();
-        linux.mesh_image = format!("docker.io/example/mesh@sha256:{}", "5".repeat(64));
-        assert!(linux.validate().is_err());
+        let mut wrong_mesh_repository = linux();
+        wrong_mesh_repository.mesh_image =
+            format!("docker.io/example/mesh@sha256:{}", "5".repeat(64));
+        assert!(wrong_mesh_repository.validate().is_err());
     }
 }
