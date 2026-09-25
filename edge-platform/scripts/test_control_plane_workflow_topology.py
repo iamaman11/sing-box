@@ -619,6 +619,21 @@ def main() -> None:
         "typed release ownership must not regress to redundant GitHub outputs or shell-owned manifest validation",
     )
     require(
+        edge_platform_ci.count(
+            "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+        )
+        == 3
+        and edge_platform_ci.count("continue-on-error: true") == 3
+        and "Restore disposable Cargo source cache" in edge_platform_ci
+        and "Restore disposable Cargo Windows cache" in edge_platform_ci
+        and "Restore disposable Cargo Linux cache" in edge_platform_ci
+        and "cargo-source-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-" in edge_platform_ci
+        and "cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-" in edge_platform_ci
+        and "cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-" in edge_platform_ci
+        and "cache-hit" not in edge_platform_ci,
+        "Cargo caches must remain pinned, job-scoped disposable acceleration without semantic ownership",
+    )
+    require(
         "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\")" in windows_input
         and "_reachable_package_dirs(repo_root)" in windows_input
         and "WINDOWS_BUILD_CONTRACT_PATH" in windows_input
