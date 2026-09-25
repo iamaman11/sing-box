@@ -1,0 +1,86 @@
+name: Vultr Root Ops
+
+on:
+  workflow_call:
+    inputs:
+      command_body:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    outputs:
+      machine_id: ${{ steps.parse.outputs.machine_id }}
+      command_b64: ${{ steps.parse.outputs.command_b64 }}
+    steps:
+      - name: Parse bounded root command
+        id: parse
+        shell: bash
+        env:
+          COMMAND_BODY: ${{ inputs.command_body }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import os
+          import re
+
+          body = os.environ["COMMAND_BODY"].strip()
+          parts = body.split()
+          if len(parts) != 3 or parts[0] != "/root":
+              raise SystemExit("usage: /root <machine-id> <base64-command>")
+          machine_id, command_b64 = parts[1], parts[2]
+          if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", machine_id):
+              raise SystemExit("invalid machine id")
+          if not re.fullmatch(r"[A-Za-z0-9_-]{1,12000}={0,2}", command_b64):
+              raise SystemExit("invalid base64 command")
+          padded = command_b64 + "=" * ((4 - len(command_b64) % 4) % 4)
+          try:
+              command = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+          except Exception as exc:
+              raise SystemExit(f"invalid base64 command: {exc}")
+          if not command.strip() or len(command.encode("utf-8")) > 8192 or "\x00" in command:
+              raise SystemExit("root command is empty, oversized, or contains NUL")
+          output = os.environ["GITHUB_OUTPUT"]
+          with open(output, "a", encoding="utf-8") as handle:
+              handle.write(f"machine_id={machine_id}\n")
+              handle.write(f"command_b64={command_b64}\n")
+          PY
+
+  root:
+    needs: authorize
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - vultr-root
+      - test-vm
+      - ${{ needs.authorize.outputs.machine_id }}
+    timeout-minutes: 30
+    concurrency:
+      group: vultr-root-${{ needs.authorize.outputs.machine_id }}
+      cancel-in-progress: false
+    steps:
+      - name: Execute root command
+        shell: bash
+        env:
+          ROOT_COMMAND_B64: ${{ needs.authorize.outputs.command_b64 }}
+        run: |
+          set -euo pipefail
+          command_file="$(mktemp)"
+          trap 'rm -f "${command_file}"' EXIT
+          python3 - "${ROOT_COMMAND_B64}" "${command_file}" <<'PY'
+          import base64
+          import pathlib
+          import sys
+
+          encoded = sys.argv[1]
+          padded = encoded + "=" * ((4 - len(encoded) % 4) % 4)
+          command = base64.urlsafe_b64decode(padded.encode("ascii"))
+          pathlib.Path(sys.argv[2]).write_bytes(command)
+          PY
+          chmod 0600 "${command_file}"
+          sudo -n bash "${command_file}"
