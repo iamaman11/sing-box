@@ -398,6 +398,13 @@ pub(crate) struct VultrTransportProofArgs {
     pub agent_artifact_path: PathBuf,
 }
 
+#[derive(Debug, Args, Clone)]
+pub(crate) struct VultrRunnerBootstrapArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub installer_path: PathBuf,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum VultrLifecycleCommand {
     Doctor(SpecArgs),
@@ -408,6 +415,7 @@ pub(crate) enum VultrLifecycleCommand {
     SubstrateApply(VultrAuthorizedMachineArgs),
     SubstrateVerify(VultrMachineArgs),
     TransportProof(VultrTransportProofArgs),
+    RunnerBootstrap(VultrRunnerBootstrapArgs),
     AcquireAccessPlan(VultrMachineArgs),
     AcquireAccess(VultrAuthorizedMachineArgs),
     LeaseAcquire(VultrMachineArgs),
@@ -453,6 +461,12 @@ impl VultrLifecycleCommand {
                 path(args.spec_path),
                 args.machine_id,
                 path(args.agent_artifact_path),
+            ],
+            Self::RunnerBootstrap(args) => vec![
+                "runner-bootstrap".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                path(args.installer_path),
             ],
             Self::AcquireAccessPlan(args) => machine("acquire-access-plan", args),
             Self::AcquireAccess(args) => vec![
@@ -683,6 +697,14 @@ mod tests {
                 "infra/vultr/production.json",
                 "primary",
                 "/tmp/edge-agent-linux-amd64",
+            ],
+            vec![
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "runner-bootstrap",
+                "infra/vultr/root-runner-dev.json",
+                "root-runner-dev-1",
+                "edge-platform/scripts/install-vultr-root-runner.sh",
             ],
             vec![
                 "edge-orchestrator",
