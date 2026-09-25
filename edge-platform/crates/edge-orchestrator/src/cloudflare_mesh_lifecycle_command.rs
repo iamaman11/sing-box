@@ -9,6 +9,9 @@ use crate::cloudflare_mesh_lifecycle_service::{
     plan_mesh_apply, plan_mesh_cleanup, wait_mesh_provider_healthy,
 };
 use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+};
 use edge_controller_core::cloudflare_mesh_lifecycle::{
     ApplyAction, CleanupAction, DesiredMeshState, MeshObservation, MeshRouteSpec,
 };
@@ -822,6 +825,12 @@ pub(crate) async fn acceptance_cleanup_provider_to_absent(spec_path: &Path) -> R
 }
 
 fn load_desired(path: &Path) -> Result<DesiredMeshState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.mesh)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path).map_err(|err| {
         format!(
             "failed to read Cloudflare Mesh spec {}: {err}",
@@ -832,6 +841,12 @@ fn load_desired(path: &Path) -> Result<DesiredMeshState, String> {
 }
 
 fn load_vpc_desired(path: &Path) -> Result<DesiredVpcState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.vpc)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read Vultr VPC spec {}: {err}", path.display()))?;
     DesiredVpcState::parse_json(&raw).map_err(|err| err.to_string())
