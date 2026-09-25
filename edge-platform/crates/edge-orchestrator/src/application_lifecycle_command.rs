@@ -251,6 +251,77 @@ fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, P
     ))
 }
 
+pub(crate) async fn production_converge_desired(
+    context: &OrchestrationContext,
+    desired: &DesiredApplicationState,
+    artifact_path: &Path,
+) -> Result<(String, String), String> {
+    let bundle_root = Path::new(".").join(&desired.bundle_root);
+    context.materialize_application_image_environment(&bundle_root, artifact_path)?;
+    let artifact = context.expected_application_artifact()?;
+    verify_release_bound_application_inputs(context, desired, &artifact, artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
+    let authority = resolve_application_authority(desired).await?;
+    let observation = observe_application(&authority, desired).await?;
+    let plan = plan_application(
+        desired,
+        &artifact,
+        &prepared.release.bundle_digest,
+        &observation,
+    )
+    .map_err(|err| err.to_string())?;
+
+    match plan.class {
+        ApplicationPlanClass::Noop => {
+            return Ok((
+                plan.desired_release.release_id,
+                plan.desired_release.bundle_digest,
+            ));
+        }
+        ApplicationPlanClass::Blocked => {
+            return Err(format!(
+                "production application convergence is blocked: {}",
+                plan.reasons.join("; ")
+            ));
+        }
+        ApplicationPlanClass::Apply | ApplicationPlanClass::Upgrade => {}
+    }
+
+    let mode = match plan.class {
+        ApplicationPlanClass::Apply => DesiredMutationMode::Apply,
+        ApplicationPlanClass::Upgrade => DesiredMutationMode::Upgrade,
+        ApplicationPlanClass::Noop | ApplicationPlanClass::Blocked => unreachable!(),
+    };
+    let authorized = authorize_application_plan(
+        desired,
+        &artifact,
+        &prepared.release.bundle_digest,
+        &observation,
+        plan,
+    )?;
+    let report = execute_desired(
+        &authority,
+        desired,
+        &artifact,
+        artifact_path,
+        &prepared,
+        &authorized.authority.authority_digest,
+        mode,
+    )
+    .await?;
+    if report.final_plan.class != ApplicationPlanClass::Noop {
+        return Err(format!(
+            "production application convergence did not reach NOOP: {:?}: {}",
+            report.final_plan.class,
+            report.final_plan.reasons.join("; ")
+        ));
+    }
+    Ok((
+        report.final_plan.desired_release.release_id,
+        report.final_plan.desired_release.bundle_digest,
+    ))
+}
+
 pub(crate) async fn acceptance_apply_desired(
     context: &OrchestrationContext,
     desired: &DesiredApplicationState,
