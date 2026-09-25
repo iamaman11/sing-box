@@ -4271,6 +4271,7 @@ mod tests {
             direct_egress_ready: Some(true),
             warp_egress_ready: Some(true),
             mesh_runtime_ready: None,
+            containers: Vec::new(),
         };
 
         let root = unique_test_dir();
@@ -4308,6 +4309,7 @@ mod tests {
             direct_egress_ready: Some(true),
             warp_egress_ready: Some(true),
             mesh_runtime_ready: None,
+            containers: Vec::new(),
         };
 
         let root = unique_test_dir();
