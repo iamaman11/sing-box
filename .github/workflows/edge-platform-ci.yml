@@ -506,6 +506,18 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Restore disposable Cargo source cache
+        continue-on-error: true
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            edge-platform/target
+          key: cargo-source-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}
+          restore-keys: |
+            cargo-source-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
+
       - name: Check formatting
         working-directory: edge-platform
         shell: bash
@@ -787,6 +799,18 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Restore disposable Cargo Windows cache
+        continue-on-error: true
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            edge-platform/target
+          key: cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}
+          restore-keys: |
+            cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
+
       - name: Build typed release manifest writer
         working-directory: edge-platform
         shell: pwsh
@@ -957,6 +981,18 @@ jobs:
           rustup default 1.95.0
           rustc --version
           cargo --version
+
+      - name: Restore disposable Cargo Linux cache
+        continue-on-error: true
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            edge-platform/target
+          key: cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}
+          restore-keys: |
+            cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
 
       - name: Build exact reusable Linux binaries
         working-directory: edge-platform
