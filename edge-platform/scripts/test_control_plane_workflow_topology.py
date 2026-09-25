@@ -5,6 +5,7 @@ WORKFLOWS = Path(".github/workflows")
 ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
+ROOT_OPS = WORKFLOWS / "vultr-root-ops.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
@@ -24,6 +25,7 @@ def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
+    root_ops = ROOT_OPS.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
@@ -45,12 +47,14 @@ def main() -> None:
 
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
+    require("workflow_call:" in root_ops, "Vultr root ops must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
+    require("issue_comment:" not in root_ops, "Vultr root ops must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
@@ -63,6 +67,11 @@ def main() -> None:
     require(
         "uses: ./.github/workflows/vultr-lifecycle.yml" in router,
         "router must call the Vultr backend",
+    )
+    require(
+        "uses: ./.github/workflows/vultr-root-ops.yml" in router
+        and "startsWith(github.event.comment.body, '/root ')" in router,
+        "router must expose root ops only through the sole owner-gated Issue #1 listener",
     )
     require(
         "uses: ./.github/workflows/zero-trust-lifecycle.yml" in router,
@@ -140,6 +149,31 @@ def main() -> None:
         vultr.count("group: vultr-control-plane-production") == 1,
         "Vultr backend must serialize its execute mutation job",
     )
+    require(
+        "runs-on:" in root_ops
+        and "- self-hosted" in root_ops
+        and "- vultr-root" in root_ops
+        and "- test-vm" in root_ops
+        and '${{ needs.authorize.outputs.machine_id }}' in root_ops,
+        "root ops must target only the machine-labelled self-hosted Vultr root runner",
+    )
+    require(
+        "permissions: {}" in root_ops
+        and 'sudo -n bash "${command_file}"' in root_ops
+        and "base64.urlsafe_b64decode" in root_ops,
+        "root ops must carry no GitHub token permission and execute only the explicitly owner-routed command as root",
+    )
+    require(
+        'verb == "runner-bootstrap" and len(tokens) == 4' in vultr
+        and '"runner-bootstrap"' in vultr
+        and "GITHUB_RUNNER_ADMIN_TOKEN" in vultr
+        and "/actions/runners/registration-token" in vultr
+        and 'run_lifecycle runner-bootstrap "${spec}" "${machine}"' in vultr
+        and "install-vultr-root-runner.sh" in vultr,
+        "Vultr lifecycle must bootstrap the repository root runner through the typed host owner using a short-lived registration token",
+    )
+
+
     require(
         'verb == "action-plan" and len(tokens) == 5' in vultr
         and '"action-plan", "apply", "action"' in vultr
