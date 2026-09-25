@@ -81,7 +81,12 @@ Boundary rules:
 - production desired state is specifically
   `infra/production/production.textproto` backed by a
   `ProductionDesiredState` protobuf schema. Do not create
-  `infra/production/production.json`.
+  `infra/production/production.json`;
+- the production textproto is compiled with the repository-pinned vendored
+  `protoc` into canonical protobuf bytes as part of `edge-shared-types`;
+  runtime code consumes those protobuf bytes and the Rust semantic owner rather
+  than carrying a second textproto/JSON parser or a path graph of production
+  sub-specs.
 
 CI enforces the tracked-file boundary in
 `edge-platform/scripts/test_json_contract_policy.py`. The only permanently

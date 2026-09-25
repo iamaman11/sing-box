@@ -201,11 +201,13 @@ impl DesiredApplicationState {
         validate_identifier("application_profile", &self.application_profile)?;
         validate_repo_path("vultr_spec_path", &self.vultr_spec_path)?;
         validate_repo_path("bundle_root", &self.bundle_root)?;
-        if !self.vultr_spec_path.starts_with("infra/vultr/")
-            || !self.vultr_spec_path.ends_with(".json")
-        {
+        let legacy_vultr_json = self.vultr_spec_path.starts_with("infra/vultr/")
+            && self.vultr_spec_path.ends_with(".json");
+        let production_textproto = self.vultr_spec_path == "infra/production/production.textproto";
+        if !legacy_vultr_json && !production_textproto {
             return Err(ApplicationSpecError::Validation(
-                "vultr_spec_path must be an infra/vultr/*.json path".to_owned(),
+                "vultr_spec_path must be legacy infra/vultr/*.json or the canonical infra/production/production.textproto authority"
+                    .to_owned(),
             ));
         }
         if !self.runtime_env_required {

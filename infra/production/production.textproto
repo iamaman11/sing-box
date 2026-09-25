@@ -1,0 +1,141 @@
+schema_version: 1
+environment: "production"
+machine_id: "production-1"
+public_hostname: "miu.alegria.by"
+
+machine {
+  role: "edge"
+  region: "waw"
+  plan: "vc2-1c-1gb"
+  os_id: 2625
+  enable_ipv6: false
+  bootstrap_profile: "singbox-host-v2"
+  application_profiles: "production"
+  tags: "production"
+  tags: "primary"
+  tags: "public-egress"
+}
+
+vpc {
+  region: "waw"
+}
+
+application {
+  application_profile: "production"
+  bundle_root: "win/vultr-waw/stack"
+  runtime_env_required: true
+  bootstrap_mode: PRODUCTION_BOOTSTRAP_MODE_FULL
+
+  line1 {
+    tunnel_domain: "miu.alegria.by"
+    acme_email: "admin@alegria.by"
+    acme_provider: "letsencrypt"
+    reality_server_name: "www.microsoft.com"
+  }
+
+  line2 {
+    proxy_username: "production"
+    proxy_cert_cn: "miu.alegria.by"
+  }
+}
+
+dns {
+  zone_name: "alegria.by"
+  record_name: "miu.alegria.by"
+}
+
+mesh {
+  account_id: "4426df1449e417511bc7697d60b7f62f"
+  node_name: "singbox-line3-production"
+}
+
+firewall {
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "80"
+    purpose: "production ACME HTTP-01"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "443"
+    purpose: "Line 1 VLESS Reality direct"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_UDP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "8443"
+    purpose: "Line 1 Hysteria2 direct"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "5443"
+    purpose: "Line 1 VLESS Reality WARP"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_UDP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "9444"
+    purpose: "Line 1 Hysteria2 WARP"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "3128"
+    purpose: "Line 2 authenticated HTTP proxy"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "1080"
+    purpose: "Line 2 authenticated SOCKS proxy"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "9443"
+    purpose: "Line 2 authenticated HTTPS proxy"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "4128"
+    purpose: "Line 2 authenticated direct HTTP proxy"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "4080"
+    purpose: "Line 2 authenticated direct SOCKS proxy"
+  }
+  rules {
+    ip_family: PRODUCTION_IP_FAMILY_V4
+    protocol: PRODUCTION_TRANSPORT_PROTOCOL_TCP
+    subnet: "0.0.0.0"
+    prefix_length: 0
+    port: "4443"
+    purpose: "Line 2 authenticated direct HTTPS proxy"
+  }
+}

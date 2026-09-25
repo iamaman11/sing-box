@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+// Human-authored production desired state is stored as protobuf text format in
+// infra/production/production.textproto. The canonical machine representation
+// is the protobuf encoding of this message.
+message ProductionDesiredState {
+  uint32 schema_version = 1;
+  string environment = 2;
+  string machine_id = 3;
+  string public_hostname = 4;
+  ProductionMachine machine = 5;
+  ProductionVpc vpc = 6;
+  ProductionApplication application = 7;
+  ProductionDns dns = 8;
+  ProductionMesh mesh = 9;
+  ProductionFirewallPolicy firewall = 10;
+}
+
+message ProductionMachine {
+  string role = 1;
+  string region = 2;
+  string plan = 3;
+  oneof image {
+    uint32 os_id = 4;
+    string snapshot_id = 5;
+  }
+  bool enable_ipv6 = 6;
+  string bootstrap_profile = 7;
+  repeated string application_profiles = 8;
+  repeated string tags = 9;
+}
+
+message ProductionVpc {
+  string region = 1;
+}
+
+message ProductionApplication {
+  string application_profile = 1;
+  string bundle_root = 2;
+  bool runtime_env_required = 3;
+  ProductionBootstrapMode bootstrap_mode = 4;
+  ProductionLine1Policy line1 = 5;
+  ProductionLine2Policy line2 = 6;
+}
+
+enum ProductionBootstrapMode {
+  PRODUCTION_BOOTSTRAP_MODE_UNSPECIFIED = 0;
+  PRODUCTION_BOOTSTRAP_MODE_BASE = 1;
+  PRODUCTION_BOOTSTRAP_MODE_TUNNEL = 2;
+  PRODUCTION_BOOTSTRAP_MODE_FULL = 3;
+}
+
+message ProductionLine1Policy {
+  string tunnel_domain = 1;
+  string acme_email = 2;
+  string acme_provider = 3;
+  string reality_server_name = 4;
+}
+
+message ProductionLine2Policy {
+  string proxy_username = 1;
+  string proxy_cert_cn = 2;
+}
+
+message ProductionDns {
+  string zone_name = 1;
+  string record_name = 2;
+}
+
+message ProductionMesh {
+  string account_id = 1;
+  string node_name = 2;
+  repeated string routes = 3;
+}
+
+message ProductionFirewallPolicy {
+  repeated ProductionFirewallRule rules = 1;
+}
+
+message ProductionFirewallRule {
+  ProductionIpFamily ip_family = 1;
+  ProductionTransportProtocol protocol = 2;
+  string subnet = 3;
+  uint32 prefix_length = 4;
+  string port = 5;
+  string purpose = 6;
+}
+
+enum ProductionIpFamily {
+  PRODUCTION_IP_FAMILY_UNSPECIFIED = 0;
+  PRODUCTION_IP_FAMILY_V4 = 1;
+  PRODUCTION_IP_FAMILY_V6 = 2;
+}
+
+enum ProductionTransportProtocol {
+  PRODUCTION_TRANSPORT_PROTOCOL_UNSPECIFIED = 0;
+  PRODUCTION_TRANSPORT_PROTOCOL_TCP = 1;
+  PRODUCTION_TRANSPORT_PROTOCOL_UDP = 2;
+}
