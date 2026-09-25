@@ -779,7 +779,6 @@ jobs:
           }
 
       - name: Install pinned Rust toolchain
-        if: needs.dependencies.outputs.windows_reuse != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -787,6 +786,13 @@ jobs:
           rustup default 1.95.0
           rustc --version
           cargo --version
+
+      - name: Build typed release manifest writer
+        working-directory: edge-platform
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build --locked --release -p edge-shared-types --bin edge-release-set
 
       - name: Validate Windows operational scripts
         shell: pwsh
@@ -891,22 +897,22 @@ jobs:
 
           # WINDOWS_CANDIDATE_BUILD_CONTRACT_END
           $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
-          $manifest = [ordered]@{
-            schema_version = 1
-            candidate_source_revision = $env:CANDIDATE_REVISION
-            source_tree = $sourceTree
-            release_input_sha256 = $env:RELEASE_INPUT_SHA256
-            windows_input_sha256 = $env:WINDOWS_INPUT_SHA256
-            windows_source_revision = $env:WINDOWS_SOURCE_REVISION
-            reused = ($env:REUSE_WINDOWS -eq "true")
-            sing_box_version = $env:SING_BOX_VERSION
-            sing_box_archive_sha256 = $env:SING_BOX_WINDOWS_SHA256
-            sing_box_binary_sha256 = $singBoxSha
-            artifact_sha256 = $artifactSha
-            controller_sha256 = $controllerSha
-            console_sha256 = $consoleSha
-          }
-          $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $out "windows-build-manifest.json")
+          $manifestTool = "edge-platform\target\release\edge-release-set.exe"
+          & $manifestTool write-windows-manifest `
+            --output (Join-Path $out "windows-build-manifest.pb") `
+            --candidate-source-revision $env:CANDIDATE_REVISION `
+            --source-tree $sourceTree `
+            --release-input-sha256 $env:RELEASE_INPUT_SHA256 `
+            --windows-input-sha256 $env:WINDOWS_INPUT_SHA256 `
+            --windows-source-revision $env:WINDOWS_SOURCE_REVISION `
+            --reused $env:REUSE_WINDOWS `
+            --sing-box-version $env:SING_BOX_VERSION `
+            --sing-box-archive-sha256 $env:SING_BOX_WINDOWS_SHA256 `
+            --sing-box-binary-sha256 $singBoxSha `
+            --artifact-sha256 $artifactSha `
+            --controller-sha256 $controllerSha `
+            --console-sha256 $consoleSha
+          if ($LASTEXITCODE -ne 0) { throw "failed to write typed Windows build manifest" }
       - name: Store exact Windows candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -1200,54 +1206,30 @@ jobs:
           [[ "${EDGE_GATEWAY_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
           [[ "${EDGE_WARP_EGRESS_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
 
-          jq -n \
-            --arg candidate_source_revision "${CANDIDATE_REVISION}" \
-            --arg source_tree "${source_tree}" \
-            --arg release_input_sha256 "${RELEASE_INPUT_SHA256}" \
-            --arg runtime_source_revision "${RUNTIME_SOURCE_REVISION}" \
-            --arg runtime_input_sha256 "${RUNTIME_INPUT_SHA256}" \
-            --argjson runtime_reused "${RUNTIME_REUSE}" \
-            --arg controller_sha256 "${controller_sha}" \
-            --arg orchestrator_sha256 "${orchestrator_sha}" \
-            --arg agent_sha256 "${agent_sha}" \
-            --arg edge_gateway_image "${EDGE_GATEWAY_IMAGE}" \
-            --arg edge_warp_egress_image "${EDGE_WARP_EGRESS_IMAGE}" \
-            --arg sing_box_version "${SING_BOX_VERSION}" \
-            --arg sing_box_archive_sha256 "${SING_BOX_LINUX_SHA256}" \
-            --arg sing_box_binary_sha256 "${sing_box_binary_sha}" \
-            --arg docker_engine_version "${DOCKER_ENGINE_VERSION}" \
-            --arg containerd_version "${CONTAINERD_VERSION}" \
-            --arg compose_version "${COMPOSE_VERSION}" \
-            --arg warp_version "${WARP_VERSION}" \
-            --arg warp_archive_sha256 "${WARP_SHA256}" \
-            --arg debian_base_image "${DEBIAN_BASE_IMAGE}" \
-            --arg ubuntu_base_image "${UBUNTU_BASE_IMAGE}" \
-            --arg mesh_image "${MESH_IMAGE}" \
-            '{
-              schema_version:1,
-              candidate_source_revision:$candidate_source_revision,
-              source_tree:$source_tree,
-              release_input_sha256:$release_input_sha256,
-              runtime_source_revision:$runtime_source_revision,
-              runtime_input_sha256:$runtime_input_sha256,
-              runtime_reused:$runtime_reused,
-              controller_sha256:$controller_sha256,
-              orchestrator_sha256:$orchestrator_sha256,
-              agent_sha256:$agent_sha256,
-              edge_gateway_image:$edge_gateway_image,
-              edge_warp_egress_image:$edge_warp_egress_image,
-              sing_box_version:$sing_box_version,
-              sing_box_archive_sha256:$sing_box_archive_sha256,
-              sing_box_binary_sha256:$sing_box_binary_sha256,
-              docker_engine_version:$docker_engine_version,
-              containerd_version:$containerd_version,
-              compose_version:$compose_version,
-              warp_version:$warp_version,
-              warp_archive_sha256:$warp_archive_sha256,
-              debian_base_image:$debian_base_image,
-              ubuntu_base_image:$ubuntu_base_image,
-              mesh_image:$mesh_image
-            }' > "${out}/linux-build-manifest.json"
+          edge-platform/target/release/edge-release-set write-linux-manifest \
+            --output "${out}/linux-build-manifest.pb" \
+            --candidate-source-revision "${CANDIDATE_REVISION}" \
+            --source-tree "${source_tree}" \
+            --release-input-sha256 "${RELEASE_INPUT_SHA256}" \
+            --runtime-input-sha256 "${RUNTIME_INPUT_SHA256}" \
+            --runtime-source-revision "${RUNTIME_SOURCE_REVISION}" \
+            --runtime-reused "${RUNTIME_REUSE}" \
+            --controller-sha256 "${controller_sha}" \
+            --orchestrator-sha256 "${orchestrator_sha}" \
+            --agent-sha256 "${agent_sha}" \
+            --edge-gateway-image "${EDGE_GATEWAY_IMAGE}" \
+            --edge-warp-egress-image "${EDGE_WARP_EGRESS_IMAGE}" \
+            --sing-box-version "${SING_BOX_VERSION}" \
+            --sing-box-archive-sha256 "${SING_BOX_LINUX_SHA256}" \
+            --sing-box-binary-sha256 "${sing_box_binary_sha}" \
+            --docker-engine-version "${DOCKER_ENGINE_VERSION}" \
+            --containerd-version "${CONTAINERD_VERSION}" \
+            --compose-version "${COMPOSE_VERSION}" \
+            --warp-version "${WARP_VERSION}" \
+            --warp-archive-sha256 "${WARP_SHA256}" \
+            --debian-base-image "${DEBIAN_BASE_IMAGE}" \
+            --ubuntu-base-image "${UBUNTU_BASE_IMAGE}" \
+            --mesh-image "${MESH_IMAGE}"
 
       - name: Store exact Linux candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1301,8 +1283,8 @@ jobs:
           unpacked="${RUNNER_TEMP}/candidate/windows-package"
           authority="${RUNNER_TEMP}/candidate/release-set"
           tool="${linux}/edge-release-set"
-          windows_manifest="${windows}/windows-build-manifest.json"
-          linux_manifest="${linux}/linux-build-manifest.json"
+          windows_manifest="${windows}/windows-build-manifest.pb"
+          linux_manifest="${linux}/linux-build-manifest.pb"
           install -d "${unpacked}" "${authority}"
           chmod 0755 "${tool}"
           unzip -q "${windows}/edge-platform-windows.zip" -d "${unpacked}"
@@ -1505,8 +1487,8 @@ jobs:
             --sha256-file "${authority}/release-set.pb.sha256" \
             --source-revision "${CANDIDATE_REVISION}" \
             --source-tree "${CANDIDATE_TREE}" \
-            --windows-manifest "${windows}/windows-build-manifest.json" \
-            --linux-manifest "${linux}/linux-build-manifest.json" \
+            --windows-manifest "${windows}/windows-build-manifest.pb" \
+            --linux-manifest "${linux}/linux-build-manifest.pb" \
             --windows-artifact "${windows}/edge-platform-windows.zip" \
             --windows-controller "${unpacked}/bin/edge-controller.exe" \
             --windows-console "${unpacked}/bin/edge-console.exe" \

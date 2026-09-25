@@ -1,7 +1,10 @@
 #[path = "release_set/build_manifest.rs"]
 mod build_manifest;
 
-use build_manifest::{LinuxBuildManifest, WindowsBuildManifest, validate_build_manifest_pair};
+use build_manifest::{
+    BUILD_MANIFEST_SCHEMA_VERSION, LinuxBuildManifest, WindowsBuildManifest,
+    validate_build_manifest_pair,
+};
 use edge_shared_types::{
     CONFIG_SCHEMA_VERSION, CloudflareRuntime, DB_SCHEMA_VERSION, OciImage,
     RELEASE_SET_SCHEMA_VERSION, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
@@ -70,6 +73,48 @@ const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
     "edge-orchestrator",
 ];
 
+const WRITE_WINDOWS_MANIFEST_FLAGS: &[&str] = &[
+    "output",
+    "candidate-source-revision",
+    "source-tree",
+    "release-input-sha256",
+    "windows-input-sha256",
+    "windows-source-revision",
+    "reused",
+    "sing-box-version",
+    "sing-box-archive-sha256",
+    "sing-box-binary-sha256",
+    "artifact-sha256",
+    "controller-sha256",
+    "console-sha256",
+];
+
+const WRITE_LINUX_MANIFEST_FLAGS: &[&str] = &[
+    "output",
+    "candidate-source-revision",
+    "source-tree",
+    "release-input-sha256",
+    "runtime-input-sha256",
+    "runtime-source-revision",
+    "runtime-reused",
+    "controller-sha256",
+    "orchestrator-sha256",
+    "agent-sha256",
+    "edge-gateway-image",
+    "edge-warp-egress-image",
+    "sing-box-version",
+    "sing-box-archive-sha256",
+    "sing-box-binary-sha256",
+    "docker-engine-version",
+    "containerd-version",
+    "compose-version",
+    "warp-version",
+    "warp-archive-sha256",
+    "debian-base-image",
+    "ubuntu-base-image",
+    "mesh-image",
+];
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -84,6 +129,8 @@ fn run() -> Result<(), String> {
 
     match command.as_str() {
         "create" => create_release_set_from_build_manifests(&flags),
+        "write-windows-manifest" => write_windows_build_manifest(&flags),
+        "write-linux-manifest" => write_linux_build_manifest(&flags),
         "verify" => verify_release_set(&flags),
         "verify-candidate" => verify_candidate_release_set(&flags),
         "verify-vm" => verify_vm_release_set(&flags),
@@ -92,7 +139,8 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: edge-release-set create|verify|verify-candidate|verify-vm --flag value ...".to_owned()
+    "usage: edge-release-set create|write-windows-manifest|write-linux-manifest|verify|verify-candidate|verify-vm --flag value ..."
+        .to_owned()
 }
 
 fn parse_flags(args: Vec<String>) -> Result<BTreeMap<String, String>, String> {
@@ -134,6 +182,77 @@ fn flag<'a>(flags: &'a BTreeMap<String, String>, name: &str) -> Result<&'a str, 
         .get(name)
         .map(String::as_str)
         .ok_or_else(|| format!("missing required --{name}"))
+}
+
+fn flag_bool(flags: &BTreeMap<String, String>, name: &str) -> Result<bool, String> {
+    match flag(flags, name)? {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(format!("--{name} must be true or false, got {value}")),
+    }
+}
+
+fn write_windows_build_manifest(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, WRITE_WINDOWS_MANIFEST_FLAGS)?;
+    let manifest = WindowsBuildManifest {
+        schema_version: BUILD_MANIFEST_SCHEMA_VERSION,
+        candidate_source_revision: flag(flags, "candidate-source-revision")?.to_owned(),
+        source_tree: flag(flags, "source-tree")?.to_owned(),
+        release_input_sha256: flag(flags, "release-input-sha256")?.to_owned(),
+        windows_input_sha256: flag(flags, "windows-input-sha256")?.to_owned(),
+        windows_source_revision: flag(flags, "windows-source-revision")?.to_owned(),
+        reused: flag_bool(flags, "reused")?,
+        sing_box_version: flag(flags, "sing-box-version")?.to_owned(),
+        sing_box_archive_sha256: flag(flags, "sing-box-archive-sha256")?.to_owned(),
+        sing_box_binary_sha256: flag(flags, "sing-box-binary-sha256")?.to_owned(),
+        artifact_sha256: flag(flags, "artifact-sha256")?.to_owned(),
+        controller_sha256: flag(flags, "controller-sha256")?.to_owned(),
+        console_sha256: flag(flags, "console-sha256")?.to_owned(),
+    };
+    write_build_manifest(
+        "WindowsBuildManifest",
+        Path::new(flag(flags, "output")?),
+        &manifest.encode_canonical()?,
+    )
+}
+
+fn write_linux_build_manifest(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, WRITE_LINUX_MANIFEST_FLAGS)?;
+    let manifest = LinuxBuildManifest {
+        schema_version: BUILD_MANIFEST_SCHEMA_VERSION,
+        candidate_source_revision: flag(flags, "candidate-source-revision")?.to_owned(),
+        source_tree: flag(flags, "source-tree")?.to_owned(),
+        release_input_sha256: flag(flags, "release-input-sha256")?.to_owned(),
+        runtime_input_sha256: flag(flags, "runtime-input-sha256")?.to_owned(),
+        runtime_source_revision: flag(flags, "runtime-source-revision")?.to_owned(),
+        runtime_reused: flag_bool(flags, "runtime-reused")?,
+        controller_sha256: flag(flags, "controller-sha256")?.to_owned(),
+        orchestrator_sha256: flag(flags, "orchestrator-sha256")?.to_owned(),
+        agent_sha256: flag(flags, "agent-sha256")?.to_owned(),
+        edge_gateway_image: flag(flags, "edge-gateway-image")?.to_owned(),
+        edge_warp_egress_image: flag(flags, "edge-warp-egress-image")?.to_owned(),
+        sing_box_version: flag(flags, "sing-box-version")?.to_owned(),
+        sing_box_archive_sha256: flag(flags, "sing-box-archive-sha256")?.to_owned(),
+        sing_box_binary_sha256: flag(flags, "sing-box-binary-sha256")?.to_owned(),
+        docker_engine_version: flag(flags, "docker-engine-version")?.to_owned(),
+        containerd_version: flag(flags, "containerd-version")?.to_owned(),
+        compose_version: flag(flags, "compose-version")?.to_owned(),
+        warp_version: flag(flags, "warp-version")?.to_owned(),
+        warp_archive_sha256: flag(flags, "warp-archive-sha256")?.to_owned(),
+        debian_base_image: flag(flags, "debian-base-image")?.to_owned(),
+        ubuntu_base_image: flag(flags, "ubuntu-base-image")?.to_owned(),
+        mesh_image: flag(flags, "mesh-image")?.to_owned(),
+    };
+    write_build_manifest(
+        "LinuxBuildManifest",
+        Path::new(flag(flags, "output")?),
+        &manifest.encode_canonical()?,
+    )
+}
+
+fn write_build_manifest(label: &str, output: &Path, bytes: &[u8]) -> Result<(), String> {
+    fs::write(output, bytes)
+        .map_err(|error| format!("failed to write {label} {}: {error}", output.display()))
 }
 
 fn create_release_set_from_build_manifests(flags: &BTreeMap<String, String>) -> Result<(), String> {
@@ -196,21 +315,21 @@ fn load_build_manifests(
 ) -> Result<(WindowsBuildManifest, LinuxBuildManifest), String> {
     let windows_path = Path::new(flag(flags, "windows-manifest")?);
     let linux_path = Path::new(flag(flags, "linux-manifest")?);
-    let windows_raw = fs::read_to_string(windows_path).map_err(|error| {
+    let windows_bytes = fs::read(windows_path).map_err(|error| {
         format!(
             "failed to read Windows build manifest {}: {error}",
             windows_path.display()
         )
     })?;
-    let linux_raw = fs::read_to_string(linux_path).map_err(|error| {
+    let linux_bytes = fs::read(linux_path).map_err(|error| {
         format!(
             "failed to read Linux build manifest {}: {error}",
             linux_path.display()
         )
     })?;
     Ok((
-        WindowsBuildManifest::parse_json(&windows_raw)?,
-        LinuxBuildManifest::parse_json(&linux_raw)?,
+        WindowsBuildManifest::decode_canonical(&windows_bytes)?,
+        LinuxBuildManifest::decode_canonical(&linux_bytes)?,
     ))
 }
 

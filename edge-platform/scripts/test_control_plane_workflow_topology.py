@@ -591,9 +591,12 @@ def main() -> None:
         "candidate CI must derive durable Windows identity and reuse only the exact accepted artifact",
     )
     require(
-        edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 3
-        and "windows-build-manifest.json" in edge_platform_ci
-        and "linux-build-manifest.json" in edge_platform_ci
+        edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 2
+        and "write-windows-manifest" in edge_platform_ci
+        and "write-linux-manifest" in edge_platform_ci
+        and "windows-build-manifest.pb" in edge_platform_ci
+        and "linux-build-manifest.pb" in edge_platform_ci
+        and "ConvertTo-Json" not in edge_platform_ci
         and "--windows-manifest" in edge_platform_ci
         and "--linux-manifest" in edge_platform_ci
         and edge_platform_ci.count("verify-candidate") == 2,

@@ -464,8 +464,6 @@ dependencies = [
  "prost-types",
  "protoc-bin-vendored",
  "ring",
- "serde",
- "serde_json",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

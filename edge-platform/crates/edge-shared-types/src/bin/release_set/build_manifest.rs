@@ -1,58 +1,103 @@
-use serde::{Deserialize, Serialize};
+use prost::Message;
 
 pub const BUILD_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Message)]
 pub struct WindowsBuildManifest {
+    #[prost(uint32, tag = "1")]
     pub schema_version: u32,
+    #[prost(string, tag = "2")]
     pub candidate_source_revision: String,
+    #[prost(string, tag = "3")]
     pub source_tree: String,
+    #[prost(string, tag = "4")]
     pub release_input_sha256: String,
+    #[prost(string, tag = "5")]
     pub windows_input_sha256: String,
+    #[prost(string, tag = "6")]
     pub windows_source_revision: String,
+    #[prost(bool, tag = "7")]
     pub reused: bool,
+    #[prost(string, tag = "8")]
     pub sing_box_version: String,
+    #[prost(string, tag = "9")]
     pub sing_box_archive_sha256: String,
+    #[prost(string, tag = "10")]
     pub sing_box_binary_sha256: String,
+    #[prost(string, tag = "11")]
     pub artifact_sha256: String,
+    #[prost(string, tag = "12")]
     pub controller_sha256: String,
+    #[prost(string, tag = "13")]
     pub console_sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, PartialEq, Message)]
 pub struct LinuxBuildManifest {
+    #[prost(uint32, tag = "1")]
     pub schema_version: u32,
+    #[prost(string, tag = "2")]
     pub candidate_source_revision: String,
+    #[prost(string, tag = "3")]
     pub source_tree: String,
+    #[prost(string, tag = "4")]
     pub release_input_sha256: String,
+    #[prost(string, tag = "5")]
     pub runtime_input_sha256: String,
+    #[prost(string, tag = "6")]
     pub runtime_source_revision: String,
+    #[prost(bool, tag = "7")]
     pub runtime_reused: bool,
+    #[prost(string, tag = "8")]
     pub controller_sha256: String,
+    #[prost(string, tag = "9")]
     pub orchestrator_sha256: String,
+    #[prost(string, tag = "10")]
     pub agent_sha256: String,
+    #[prost(string, tag = "11")]
     pub edge_gateway_image: String,
+    #[prost(string, tag = "12")]
     pub edge_warp_egress_image: String,
+    #[prost(string, tag = "13")]
     pub sing_box_version: String,
+    #[prost(string, tag = "14")]
     pub sing_box_archive_sha256: String,
+    #[prost(string, tag = "15")]
     pub sing_box_binary_sha256: String,
+    #[prost(string, tag = "16")]
     pub docker_engine_version: String,
+    #[prost(string, tag = "17")]
     pub containerd_version: String,
+    #[prost(string, tag = "18")]
     pub compose_version: String,
+    #[prost(string, tag = "19")]
     pub warp_version: String,
+    #[prost(string, tag = "20")]
     pub warp_archive_sha256: String,
+    #[prost(string, tag = "21")]
     pub debian_base_image: String,
+    #[prost(string, tag = "22")]
     pub ubuntu_base_image: String,
+    #[prost(string, tag = "23")]
     pub mesh_image: String,
 }
 
 impl WindowsBuildManifest {
-    pub fn parse_json(raw: &str) -> Result<Self, String> {
-        let value: Self = serde_json::from_str(raw)
-            .map_err(|err| format!("invalid WindowsBuildManifest JSON: {err}"))?;
+    pub fn encode_canonical(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
+        Ok(self.encode_to_vec())
+    }
+
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, String> {
+        let value = Self::decode(bytes)
+            .map_err(|err| format!("invalid WindowsBuildManifest protobuf: {err}"))?;
         value.validate()?;
+        if value.encode_to_vec() != bytes {
+            return Err(
+                "WindowsBuildManifest bytes are not canonical protobuf encoding; refusing unknown or ambiguous fields"
+                    .to_owned(),
+            );
+        }
         Ok(value)
     }
 
@@ -115,10 +160,21 @@ impl WindowsBuildManifest {
 }
 
 impl LinuxBuildManifest {
-    pub fn parse_json(raw: &str) -> Result<Self, String> {
-        let value: Self = serde_json::from_str(raw)
-            .map_err(|err| format!("invalid LinuxBuildManifest JSON: {err}"))?;
+    pub fn encode_canonical(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
+        Ok(self.encode_to_vec())
+    }
+
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, String> {
+        let value = Self::decode(bytes)
+            .map_err(|err| format!("invalid LinuxBuildManifest protobuf: {err}"))?;
         value.validate()?;
+        if value.encode_to_vec() != bytes {
+            return Err(
+                "LinuxBuildManifest bytes are not canonical protobuf encoding; refusing unknown or ambiguous fields"
+                    .to_owned(),
+            );
+        }
         Ok(value)
     }
 
@@ -390,14 +446,31 @@ mod tests {
     }
 
     #[test]
-    fn unknown_schema_and_unknown_fields_fail_closed() {
-        let mut value = serde_json::to_value(windows()).unwrap();
-        value["schema_version"] = serde_json::json!(2);
-        assert!(WindowsBuildManifest::parse_json(&value.to_string()).is_err());
+    fn protobuf_round_trip_is_canonical() {
+        let windows_bytes = windows().encode_canonical().unwrap();
+        assert_eq!(
+            WindowsBuildManifest::decode_canonical(&windows_bytes).unwrap(),
+            windows()
+        );
 
-        let mut value = serde_json::to_value(linux()).unwrap();
-        value["extra"] = serde_json::json!("not allowed");
-        assert!(LinuxBuildManifest::parse_json(&value.to_string()).is_err());
+        let linux_bytes = linux().encode_canonical().unwrap();
+        assert_eq!(
+            LinuxBuildManifest::decode_canonical(&linux_bytes).unwrap(),
+            linux()
+        );
+    }
+
+    #[test]
+    fn unknown_schema_and_unknown_fields_fail_closed() {
+        let mut unknown_schema = windows();
+        unknown_schema.schema_version = 2;
+        assert!(
+            WindowsBuildManifest::decode_canonical(&unknown_schema.encode_to_vec()).is_err()
+        );
+
+        let mut unknown_field = linux().encode_to_vec();
+        unknown_field.extend_from_slice(&[0x98, 0x06, 0x01]);
+        assert!(LinuxBuildManifest::decode_canonical(&unknown_field).is_err());
     }
 
     #[test]
