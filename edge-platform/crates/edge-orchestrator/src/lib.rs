@@ -287,6 +287,19 @@ fn required<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<&'a s
         .ok_or_else(|| format!("release context is missing {key}"))
 }
 
+fn validate_lower_hex(label: &str, value: &str, expected_len: usize) -> Result<(), String> {
+    if value.len() != expected_len
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "{label} must be exactly {expected_len} lowercase hexadecimal characters"
+        ));
+    }
+    Ok(())
+}
+
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file =
         File::open(path).map_err(|err| format!("failed to open {}: {err}", path.display()))?;
