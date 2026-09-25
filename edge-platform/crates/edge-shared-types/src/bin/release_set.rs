@@ -1,6 +1,7 @@
-use edge_shared_types::build_manifest::{
-    LinuxBuildManifest, WindowsBuildManifest, validate_build_manifest_pair,
-};
+#[path = "release_set/build_manifest.rs"]
+mod build_manifest;
+
+use build_manifest::{LinuxBuildManifest, WindowsBuildManifest, validate_build_manifest_pair};
 use edge_shared_types::{
     CONFIG_SCHEMA_VERSION, CloudflareRuntime, DB_SCHEMA_VERSION, OciImage,
     RELEASE_SET_SCHEMA_VERSION, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
