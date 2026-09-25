@@ -48,7 +48,10 @@ Windows control release set:
 
 - `edge-controller.exe`;
 - `edge-console.exe`;
-- manifest bound to the exact accepted `main` SHA and SHA-256 of both files.
+- `edge-diagnostic.exe`;
+- `sing-box.exe`;
+- `edge-release-set.exe`;
+- canonical `release-set.pb` with exact SHA-256 identities.
 
 Production deployment never runs `cargo build` or `docker build` on the VM.
 Windows operation does not require a local Rust build.
@@ -58,34 +61,41 @@ Windows operation does not require a local Rust build.
 Prerequisites:
 
 - GitHub CLI `gh` installed and authenticated;
-- this repository available locally so the installer script can be invoked.
+- this repository available locally so the installer script can be invoked;
+- an exact accepted durable ReleaseSet SHA-256.
 
-Run:
+Example:
 
 ```powershell
-& "C:\Users\Bose\temp\sing-box\edge-platform\scripts\install-windows-release.ps1"
+& "C:\Users\Bose\temp\sing-box\edge-platform\scripts\install-windows-release.ps1" `
+  -ReleaseSetSha256 "<accepted-release-set-sha256>"
 ```
 
 The installer:
 
-1. resolves the canonical remote `main` SHA;
-2. selects the first successful `Edge Platform CI` run for that exact SHA;
-3. downloads `edge-platform-windows-<SHA>`;
-4. verifies manifest schema, exact revision and both SHA-256 digests;
-5. stores the immutable release under:
-   `%LOCALAPPDATA%\edge-platform\releases\<SHA>`;
-6. currently updates the legacy local activation pointer
-   `%LOCALAPPDATA%\edge-platform\current.json`;
-7. installs the stable console path:
-   `%LOCALAPPDATA%\edge-platform\bin\edge-console.exe`.
+1. addresses one immutable durable GitHub Release:
+   `edge-release-<ReleaseSetSha256>`;
+2. downloads `release-set.pb`, its SHA-256 sidecar, and the exact Windows
+   package;
+3. verifies the ReleaseSet digest and every Windows binary identity through
+   `edge-release-set.exe verify-windows`;
+4. stores the immutable release under
+   `%LOCALAPPDATA%\edge-platform\releases\<ReleaseSetSha256>`;
+5. writes canonical protobuf activation state to
+   `%LOCALAPPDATA%\edge-platform\current.pb`;
+6. moves the previous activation pointer to `previous.pb` for LKG rollback;
+7. installs only stable bootstrap entrypoints in
+   `%LOCALAPPDATA%\edge-platform\bin`.
 
-`current.json` is frozen first-party JSON migration debt, not an approved
-pattern for new state. Slice 2 must move the Windows activation/LKG state to the
-protobuf-owned release state while preserving atomic activation and digest
-verification. Until that migration lands, the controller is executed from the
-versioned release path recorded in the legacy pointer. `ensure-edge-controller.ps1`
-verifies its SHA-256 before starting it. If port 50051 is occupied by an
-unmanaged process, it fails closed instead of terminating that process.
+`ensure-edge-controller.ps1` resolves the controller only from `current.pb`
+through the independent `edge-diagnostic.exe doctor` verification path. It
+refuses a controller path outside the immutable release root. There is no
+`current.json`, build-manifest, workflow-run, or mutable-latest authority in
+the accepted Windows activation path.
+
+Rollback swaps the verified `current.pb` / `previous.pb` activation state
+through the installer `-Rollback` path and re-runs independent exact-file
+diagnostics.
 
 ## Normal Windows entrypoint
 
