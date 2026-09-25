@@ -15,8 +15,7 @@ use std::error::Error;
 use std::fmt;
 
 pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 1;
-pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str =
-    "infra/production/production.textproto";
+pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str = "infra/production/production.textproto";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionFirewallRule {
@@ -498,8 +497,7 @@ mod tests {
             .line1
             .as_mut()
             .unwrap()
-            .acme_provider =
-            "https://acme-staging-v02.api.letsencrypt.org/directory".to_owned();
+            .acme_provider = "https://acme-staging-v02.api.letsencrypt.org/directory".to_owned();
         assert!(
             ProductionComposition::from_proto(&desired)
                 .unwrap_err()
