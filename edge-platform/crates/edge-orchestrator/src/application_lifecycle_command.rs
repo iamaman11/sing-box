@@ -25,10 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub(crate) async fn run(
-    args: Vec<String>,
-    context: &OrchestrationContext,
-) -> Result<(), String> {
+pub(crate) async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<(), String> {
     context.application_release_authority()?;
     let operation = args.first().map(String::as_str).ok_or_else(usage)?;
     match operation {
