@@ -30,8 +30,8 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, Empty, FileCategory,
-    FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    BundleFile, ContainerRuntimeObservation, Empty, FileCategory, FilePresence,
+    Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
     ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
@@ -411,12 +411,7 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     }
 
     if docker.reachable {
-        collect_exact_container_evidence(
-            stack_dir,
-            &compose.expected_containers,
-            &mut state,
-        )
-        .await;
+        collect_exact_container_evidence(stack_dir, &compose.expected_containers, &mut state).await;
     }
 
     let expected_tcp = compose.expected_tcp_ports;
@@ -484,9 +479,9 @@ async fn collect_exact_container_evidence(
     let images = match read_exact_image_environment(stack_dir) {
         Ok(images) => images,
         Err(err) => {
-            state
-                .degraded_reasons
-                .push(format!("exact ReleaseSet image authority is unavailable: {err}"));
+            state.degraded_reasons.push(format!(
+                "exact ReleaseSet image authority is unavailable: {err}"
+            ));
             return;
         }
     };
@@ -566,7 +561,9 @@ async fn collect_exact_container_evidence(
             }
         }
     }
-    state.containers.sort_by(|left, right| left.name.cmp(&right.name));
+    state
+        .containers
+        .sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 fn apply_bundle(
