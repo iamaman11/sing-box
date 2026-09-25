@@ -91,8 +91,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: edge-release-set create|verify|verify-candidate|verify-vm --flag value ..."
-        .to_owned()
+    "usage: edge-release-set create|verify|verify-candidate|verify-vm --flag value ...".to_owned()
 }
 
 fn parse_flags(args: Vec<String>) -> Result<BTreeMap<String, String>, String> {
@@ -136,9 +135,7 @@ fn flag<'a>(flags: &'a BTreeMap<String, String>, name: &str) -> Result<&'a str, 
         .ok_or_else(|| format!("missing required --{name}"))
 }
 
-fn create_release_set_from_build_manifests(
-    flags: &BTreeMap<String, String>,
-) -> Result<(), String> {
+fn create_release_set_from_build_manifests(flags: &BTreeMap<String, String>) -> Result<(), String> {
     require_allowed(flags, CREATE_FLAGS)?;
     let (windows, linux) = load_build_manifests(flags)?;
     validate_build_manifest_pair(
@@ -150,11 +147,8 @@ fn create_release_set_from_build_manifests(
     )?;
     verify_build_manifest_artifacts(flags, &windows, &linux)?;
 
-    let release = release_set_from_build_manifests(
-        flag(flags, "source-revision")?,
-        &windows,
-        &linux,
-    )?;
+    let release =
+        release_set_from_build_manifests(flag(flags, "source-revision")?, &windows, &linux)?;
     let digest = write_release_set_files(
         &release,
         Path::new(flag(flags, "output")?),
@@ -371,11 +365,7 @@ fn write_release_set_files(
 
     fs::write(output, &bytes)
         .map_err(|error| format!("failed to write {}: {error}", output.display()))?;
-    fs::write(
-        sha256_output,
-        format!("{digest}  {file_name}\n").as_bytes(),
-    )
-    .map_err(|error| {
+    fs::write(sha256_output, format!("{digest}  {file_name}\n").as_bytes()).map_err(|error| {
         format!(
             "failed to write release-set SHA-256 file {}: {error}",
             sha256_output.display()
