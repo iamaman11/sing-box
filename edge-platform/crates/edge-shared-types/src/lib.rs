@@ -251,9 +251,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
     Ok(())
 }
 
-pub fn encode_windows_activation_state(
-    state: &WindowsActivationState,
-) -> Result<Vec<u8>, String> {
+pub fn encode_windows_activation_state(state: &WindowsActivationState) -> Result<Vec<u8>, String> {
     validate_windows_activation_state(state)?;
     Ok(state.encode_to_vec())
 }
@@ -263,9 +261,7 @@ pub fn decode_windows_activation_state(bytes: &[u8]) -> Result<WindowsActivation
         .map_err(|err| format!("Windows activation protobuf decode failed: {err}"))?;
     validate_windows_activation_state(&state)?;
     if state.encode_to_vec() != bytes {
-        return Err(
-            "Windows activation state is not canonical protobuf encoding".to_owned(),
-        );
+        return Err("Windows activation state is not canonical protobuf encoding".to_owned());
     }
     Ok(state)
 }
@@ -277,8 +273,16 @@ pub fn validate_windows_activation_state(state: &WindowsActivationState) -> Resu
             state.schema_version
         ));
     }
-    validate_lower_hex("WindowsActivationState.release_set_sha256", &state.release_set_sha256, 64)?;
-    validate_lower_hex("WindowsActivationState.source_revision", &state.source_revision, 40)?;
+    validate_lower_hex(
+        "WindowsActivationState.release_set_sha256",
+        &state.release_set_sha256,
+        64,
+    )?;
+    validate_lower_hex(
+        "WindowsActivationState.source_revision",
+        &state.source_revision,
+        40,
+    )?;
     for (label, value) in [
         ("release_dir", state.release_dir.as_str()),
         ("controller_path", state.controller_path.as_str()),
