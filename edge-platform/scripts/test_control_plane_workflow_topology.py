@@ -335,15 +335,8 @@ def main() -> None:
         "typed acceptance coordinator must compose owners in-process, never via shell/process replay",
     )
     require(
-        application.count('test "${EDGE_RELEASE_SCHEMA_VERSION}" = "5"') == 2
-        and application.count('[[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]') == 2
-        and application.count('[[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]') == 2,
-        "application lifecycle must require exact ReleaseSet v5 runtime identity in both materialization paths",
-    )
-    require(
-        application.count('--arg source_revision "${EDGE_RUNTIME_SOURCE_REVISION}"') == 2
-        and '--arg source_revision "${GITHUB_SHA}"' not in application,
-        "application release provenance must come from VM runtime authority, not control-plane main SHA",
+        application.count('"${orchestrator}" application-lifecycle materialize') == 2,
+        "both application materialization paths must delegate exact release inputs to the typed Rust owner",
     )
     require(
         "EDGE_DOCKER_ENGINE_VERSION" in vpc
