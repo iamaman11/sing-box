@@ -403,7 +403,7 @@ EDGE_SOURCE_TREE={}\n\
 EDGE_RELEASE_ID=1\n\
 EDGE_RELEASE_TAG=edge-release-{release_set_sha}\n\
 EDGE_RELEASE_SET_SHA256={release_set_sha}\n\
-EDGE_RELEASE_SCHEMA_VERSION=5\n\
+EDGE_RELEASE_SCHEMA_VERSION=6\n\
 EDGE_RUNTIME_SOURCE_REVISION={}\n\
 EDGE_RUNTIME_INPUT_SHA256={}\n\
 EDGE_CONTROLLER_SHA256={}\n\
@@ -515,28 +515,28 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
         };
 
         let path = root.join("resolved.env");
-        fs::write(&path, render("4", &"5".repeat(40), &"6".repeat(64))).unwrap();
+        fs::write(&path, render("5", &"5".repeat(40), &"6".repeat(64))).unwrap();
         assert!(
             OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
                 .unwrap_err()
                 .contains("requires ReleaseSet schema")
         );
 
-        fs::write(&path, render("5", "not-a-revision", &"6".repeat(64))).unwrap();
+        fs::write(&path, render("6", "not-a-revision", &"6".repeat(64))).unwrap();
         assert!(
             OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
                 .unwrap_err()
                 .contains("EDGE_RUNTIME_SOURCE_REVISION")
         );
 
-        fs::write(&path, render("5", &"5".repeat(40), "not-a-digest")).unwrap();
+        fs::write(&path, render("6", &"5".repeat(40), "not-a-digest")).unwrap();
         assert!(
             OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
                 .unwrap_err()
                 .contains("EDGE_RUNTIME_INPUT_SHA256")
         );
 
-        let missing_runtime_input = render("5", &"5".repeat(40), &"6".repeat(64))
+        let missing_runtime_input = render("6", &"5".repeat(40), &"6".repeat(64))
             .lines()
             .filter(|line| !line.starts_with("EDGE_RUNTIME_INPUT_SHA256="))
             .collect::<Vec<_>>()
