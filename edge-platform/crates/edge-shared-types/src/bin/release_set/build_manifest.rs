@@ -402,6 +402,7 @@ mod tests {
             artifact_sha256: "8".repeat(64),
             controller_sha256: "9".repeat(64),
             console_sha256: "a".repeat(64),
+            diagnostic_sha256: "b".repeat(64),
         }
     }
 
