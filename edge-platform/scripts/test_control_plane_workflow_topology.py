@@ -293,8 +293,11 @@ def main() -> None:
         "root runner bootstrap failed: stage=%s exit=%s" in root_runner_installer
         and "tail -c 4096" in root_runner_installer
         and "[REDACTED]" in root_runner_installer
+        and "run_logged install-runner-dependencies ./bin/installdependencies.sh" in root_runner_installer
+        and root_runner_installer.index("run_logged install-runner-dependencies ./bin/installdependencies.sh")
+        < root_runner_installer.index("run_logged configure-runner")
         and "run_logged configure-runner" in root_runner_installer,
-        "root-runner bootstrap must emit bounded secret-safe stage diagnostics",
+        "root-runner bootstrap must install pinned archive runtime dependencies before configuration and emit bounded secret-safe diagnostics",
     )
     require(
         'verb == "access-release" and len(tokens) == 4' in vultr

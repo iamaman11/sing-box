@@ -95,6 +95,9 @@ fi
 
 cd "${RUNNER_DIR}"
 
+test -x ./bin/installdependencies.sh
+run_logged install-runner-dependencies ./bin/installdependencies.sh
+
 if [[ ! -f .runner ]]; then
   run_logged configure-runner sudo -u "${RUNNER_USER}" ./config.sh \
     --unattended \
