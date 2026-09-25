@@ -322,6 +322,8 @@ fn verify_candidate_release_set(flags: &BTreeMap<String, String>) -> Result<(), 
 
     println!("release_input_sha256={release_input_sha256}");
     println!("source_tree={}", windows.source_tree);
+    println!("windows_reused={}", windows.reused);
+    println!("runtime_reused={}", linux.runtime_reused);
     print_vm_evidence(&release, &digest)
 }
 
