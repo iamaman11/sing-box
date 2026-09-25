@@ -339,6 +339,81 @@ pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<()
     Ok(())
 }
 
+pub(crate) async fn production_converge(
+    spec_path: &Path,
+) -> Result<crate::vultr_vpc_lifecycle_service::VpcReadyReport, String> {
+    let desired = load_desired(spec_path)?;
+    let mut provider = provider_from_env()?;
+    let (observation, plan) = plan_vpc(&mut provider, &desired).await?;
+    match plan.action {
+        VpcApplyAction::Noop => {}
+        VpcApplyAction::CreateVpc => {
+            let authorized = authorize_vpc_apply(&desired, &observation, plan)?;
+            let report = apply_vpc_once(
+                &mut provider,
+                &desired,
+                &authorized.authority.authority_digest,
+                VpcExecutionPolicy::default(),
+            )
+            .await?;
+            if !matches!(report.next_plan.action, VpcApplyAction::Noop) {
+                return Err("production VPC create did not converge to NOOP".to_owned());
+            }
+        }
+    }
+
+    let (target_before, observation, attachments, attachment_plan) =
+        plan_vpc_attachment(&mut provider, &desired).await?;
+    match attachment_plan.action {
+        AttachmentAction::Noop => {}
+        AttachmentAction::AttachInstance { .. } => {
+            let authorized = authorize_vpc_attachment(
+                &desired,
+                &target_before,
+                &observation,
+                &attachments,
+                attachment_plan,
+            )?;
+            let canonical_public_key = read_canonical_ssh_public_key()?;
+            let operator_private_key_path = operator_private_key_path_from_env()?;
+            verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+            let boot_id_before = observe_guest_boot_id(
+                &target_before.main_ip,
+                &desired.machine_id,
+                &operator_private_key_path,
+                &canonical_public_key,
+            )?;
+            let report = apply_vpc_attachment_once(
+                &mut provider,
+                &desired,
+                &authorized.authority.authority_digest,
+                VpcExecutionPolicy::default(),
+            )
+            .await?;
+            if !matches!(report.performed, AttachmentAction::AttachInstance { .. }) {
+                return Err("production VPC attachment authority changed before mutation".to_owned());
+            }
+            let private_ipv4 = report.next_plan.private_ipv4.as_deref().ok_or_else(|| {
+                "production VPC attachment reached NOOP without provider private IPv4".to_owned()
+            })?;
+            wait_for_guest_vpc_ready(
+                &report.target.main_ip,
+                &desired.machine_id,
+                &operator_private_key_path,
+                &canonical_public_key,
+                &boot_id_before,
+                &report.next_plan.cidr,
+                private_ipv4,
+                60,
+                Duration::from_secs(2),
+            )
+            .await?;
+        }
+    }
+
+    verify_vpc_ready(&mut provider, &desired).await
+}
+
 pub(crate) async fn acceptance_create(spec_path: &Path) -> Result<(), String> {
     let desired = load_desired(spec_path)?;
     let mut provider = provider_from_env()?;
