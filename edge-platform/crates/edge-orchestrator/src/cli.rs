@@ -391,6 +391,13 @@ pub(crate) struct VultrDestroyApplyArgs {
     pub authorized_plan_sha256: String,
 }
 
+#[derive(Debug, Args, Clone)]
+pub(crate) struct VultrTransportProofArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub agent_artifact_path: PathBuf,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum VultrLifecycleCommand {
     Doctor(SpecArgs),
@@ -400,6 +407,7 @@ pub(crate) enum VultrLifecycleCommand {
     SubstratePlan(VultrMachineArgs),
     SubstrateApply(VultrAuthorizedMachineArgs),
     SubstrateVerify(VultrMachineArgs),
+    TransportProof(VultrTransportProofArgs),
     AcquireAccessPlan(VultrMachineArgs),
     AcquireAccess(VultrAuthorizedMachineArgs),
     LeaseAcquire(VultrMachineArgs),
@@ -440,6 +448,12 @@ impl VultrLifecycleCommand {
                 args.authorized_plan_sha256,
             ],
             Self::SubstrateVerify(args) => machine("substrate-verify", args),
+            Self::TransportProof(args) => vec![
+                "transport-proof".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                path(args.agent_artifact_path),
+            ],
             Self::AcquireAccessPlan(args) => machine("acquire-access-plan", args),
             Self::AcquireAccess(args) => vec![
                 "acquire-access".to_owned(),
@@ -661,6 +675,14 @@ mod tests {
                 "infra/vultr/production.json",
                 "primary",
                 &digest,
+            ],
+            vec![
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "transport-proof",
+                "infra/vultr/production.json",
+                "primary",
+                "/tmp/edge-agent-linux-amd64",
             ],
             vec![
                 "edge-orchestrator",
