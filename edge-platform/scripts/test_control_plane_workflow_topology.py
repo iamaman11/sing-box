@@ -278,9 +278,10 @@ def main() -> None:
     )
     require(
         "release_transient_access_exact" in vultr_lifecycle_command
+        and vultr_lifecycle_command.count("acquire_transient_access_ready_exact") >= 3
         and "transient support access compensated" in vultr_lifecycle_command
         and "transient support access compensation failed" in vultr_lifecycle_command,
-        "typed support-access acquire must compensate the transient lease before returning failure",
+        "all typed support-access lease acquisition paths must share compensated readiness semantics",
     )
     require(
         'if [[ "${INSTANCE_ACTION}" == "reboot" ]]' not in vultr
