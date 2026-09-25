@@ -1308,7 +1308,7 @@ jobs:
           chmod 0755 "${tool}"
           unzip -q "${windows}/edge-platform-windows.zip" -d "${unpacked}"
 
-          create_output="$("${tool}" create-from-build-manifests \
+          create_output="$("${tool}" create \
             --output "${authority}/release-set.pb" \
             --sha256-output "${authority}/release-set.pb.sha256" \
             --source-revision "${CANDIDATE_REVISION}" \
