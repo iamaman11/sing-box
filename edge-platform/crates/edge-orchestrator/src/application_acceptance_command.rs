@@ -239,8 +239,15 @@ pub(crate) async fn run(
     let mut progress = AcceptanceProgress::default();
 
     context.application_release_authority()?;
-    let result =
-        run_lifecycle(context, &args, &desired, &vultr_spec, &machine_id, &mut progress).await;
+    let result = run_lifecycle(
+        context,
+        &args,
+        &desired,
+        &vultr_spec,
+        &machine_id,
+        &mut progress,
+    )
+    .await;
 
     match result {
         Ok(success) => {
