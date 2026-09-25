@@ -25,17 +25,17 @@ fn run() -> Result<(), String> {
         return Err(usage());
     }
 
-    let bytes = std::fs::read(&state_path)
-        .map_err(|err| format!("failed to read activation state {}: {err}", state_path.display()))?;
+    let bytes = std::fs::read(&state_path).map_err(|err| {
+        format!(
+            "failed to read activation state {}: {err}",
+            state_path.display()
+        )
+    })?;
     let state = decode_windows_activation_state(&bytes)?;
     verify_state_files(&state)?;
 
     let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing(),
-    );
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let controller_running = system.processes().values().any(|process| {
         process
             .name()
