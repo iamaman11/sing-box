@@ -10,7 +10,7 @@ WINDOWS_INPUT_SCHEMA = 1
 WINDOWS_BUILD_CONTRACT_PATH = ".github/workflows/edge-platform-ci.yml"
 WINDOWS_BUILD_CONTRACT_BEGIN = "# WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN"
 WINDOWS_BUILD_CONTRACT_END = "# WINDOWS_CANDIDATE_BUILD_CONTRACT_END"
-ROOT_PACKAGES = ("edge-controller", "edge-console")
+ROOT_PACKAGES = ("edge-controller", "edge-console", "edge-diagnostic")
 REQUIRED_INPUT_KEYS = {
     "rust_toolchain",
     "windows_runner",
@@ -186,10 +186,11 @@ def decide_reuse(
     base_controller_sha256: str,
     base_console_sha256: str,
     base_sing_box_sha256: str,
+    base_diagnostic_sha256: str,
 ) -> bool:
     if not LOWER_HEX_64.fullmatch(candidate_digest):
         raise ValueError("candidate Windows input digest must be a lowercase SHA-256")
-    if base_schema != "5":
+    if base_schema != "6":
         return False
     return (
         LOWER_HEX_64.fullmatch(base_digest) is not None
@@ -199,6 +200,7 @@ def decide_reuse(
         and LOWER_HEX_64.fullmatch(base_controller_sha256) is not None
         and LOWER_HEX_64.fullmatch(base_console_sha256) is not None
         and LOWER_HEX_64.fullmatch(base_sing_box_sha256) is not None
+        and LOWER_HEX_64.fullmatch(base_diagnostic_sha256) is not None
     )
 
 
@@ -219,6 +221,7 @@ def main() -> None:
     decide.add_argument("--base-controller-sha256", default="")
     decide.add_argument("--base-console-sha256", default="")
     decide.add_argument("--base-sing-box-sha256", default="")
+    decide.add_argument("--base-diagnostic-sha256", default="")
 
     args = parser.parse_args()
     if args.command == "compute":
@@ -237,6 +240,7 @@ def main() -> None:
             args.base_controller_sha256,
             args.base_console_sha256,
             args.base_sing_box_sha256,
+            args.base_diagnostic_sha256,
         )
         else "BUILD"
     )
