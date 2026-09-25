@@ -82,7 +82,10 @@ impl WindowsBuildManifest {
                 "non-reused Windows build must use the candidate source revision".to_owned(),
             );
         }
-        validate_stable_semver("WindowsBuildManifest.sing_box_version", &self.sing_box_version)?;
+        validate_stable_semver(
+            "WindowsBuildManifest.sing_box_version",
+            &self.sing_box_version,
+        )?;
         for (label, value) in [
             (
                 "WindowsBuildManifest.sing_box_archive_sha256",
@@ -173,7 +176,10 @@ impl LinuxBuildManifest {
         ] {
             validate_sha256(label, value)?;
         }
-        validate_stable_semver("LinuxBuildManifest.sing_box_version", &self.sing_box_version)?;
+        validate_stable_semver(
+            "LinuxBuildManifest.sing_box_version",
+            &self.sing_box_version,
+        )?;
         validate_version_token(
             "LinuxBuildManifest.docker_engine_version",
             &self.docker_engine_version,
@@ -182,10 +188,7 @@ impl LinuxBuildManifest {
             "LinuxBuildManifest.containerd_version",
             &self.containerd_version,
         )?;
-        validate_version_token(
-            "LinuxBuildManifest.compose_version",
-            &self.compose_version,
-        )?;
+        validate_version_token("LinuxBuildManifest.compose_version", &self.compose_version)?;
         validate_version_token("LinuxBuildManifest.warp_version", &self.warp_version)?;
         validate_exact_image(
             "LinuxBuildManifest.edge_gateway_image",
@@ -225,8 +228,15 @@ pub fn validate_build_manifest_pair(
 ) -> Result<(), String> {
     windows.validate()?;
     linux.validate()?;
-    validate_lower_hex("expected candidate revision", expected_candidate_revision, 40)?;
-    validate_sha256("expected release input SHA-256", expected_release_input_sha256)?;
+    validate_lower_hex(
+        "expected candidate revision",
+        expected_candidate_revision,
+        40,
+    )?;
+    validate_sha256(
+        "expected release input SHA-256",
+        expected_release_input_sha256,
+    )?;
 
     if windows.candidate_source_revision != expected_candidate_revision
         || linux.candidate_source_revision != expected_candidate_revision
@@ -361,18 +371,9 @@ mod tests {
             compose_version: "5.5.1-1~debian.13~trixie".to_owned(),
             warp_version: "2026.7.1377.0".to_owned(),
             warp_archive_sha256: "1".repeat(64),
-            debian_base_image: format!(
-                "docker.io/library/debian@sha256:{}",
-                "3".repeat(64)
-            ),
-            ubuntu_base_image: format!(
-                "docker.io/library/ubuntu@sha256:{}",
-                "4".repeat(64)
-            ),
-            mesh_image: format!(
-                "docker.io/cloudflare/mesh@sha256:{}",
-                "5".repeat(64)
-            ),
+            debian_base_image: format!("docker.io/library/debian@sha256:{}", "3".repeat(64)),
+            ubuntu_base_image: format!("docker.io/library/ubuntu@sha256:{}", "4".repeat(64)),
+            mesh_image: format!("docker.io/cloudflare/mesh@sha256:{}", "5".repeat(64)),
         }
     }
 
