@@ -1266,6 +1266,30 @@ pub(crate) fn strict_ssh_run(
     result
 }
 
+pub(crate) fn strict_ssh_run_stdin(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+    remote_command: &str,
+    stdin: &[u8],
+) -> Result<(), String> {
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let result = run_checked(
+        "ssh",
+        &strict_ssh_args(
+            target_ip,
+            logical_hostname,
+            operator_private_key_path,
+            &trust,
+            remote_command,
+        ),
+        Some(stdin),
+    );
+    let _ = fs::remove_file(&trust);
+    result
+}
+
 pub(crate) fn strict_ssh_capture(
     target_ip: &str,
     logical_hostname: &str,
