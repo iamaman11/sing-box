@@ -238,7 +238,9 @@ pub(crate) async fn run(
     let release_set_sha256 = context.release().release_set_sha256.as_str();
     let mut progress = AcceptanceProgress::default();
 
-    let result = run_lifecycle(&args, &desired, &vultr_spec, &machine_id, &mut progress).await;
+    context.application_release_authority()?;
+    let result =
+        run_lifecycle(context, &args, &desired, &vultr_spec, &machine_id, &mut progress).await;
 
     match result {
         Ok(success) => {
@@ -423,6 +425,7 @@ pub(crate) async fn run_cleanup(
 }
 
 async fn run_lifecycle(
+    context: &OrchestrationContext,
     args: &ApplicationAcceptanceArgs,
     desired: &DesiredApplicationState,
     vultr_spec: &Path,
@@ -496,6 +499,7 @@ async fn run_lifecycle(
     let (release_v1, bundle_v1) = timed_stage(
         "application_v1",
         acceptance_apply_desired(
+            context,
             desired,
             &args.artifact_manifest_path,
             &args.edge_agent_artifact_path,
@@ -542,6 +546,7 @@ async fn run_lifecycle(
     timed_stage(
         "application_v1_noop",
         acceptance_apply_desired(
+            context,
             desired,
             &args.artifact_manifest_path,
             &args.edge_agent_artifact_path,
@@ -554,6 +559,7 @@ async fn run_lifecycle(
     timed_stage(
         "application_v1_verify",
         acceptance_verify_desired(
+            context,
             desired,
             &args.artifact_manifest_path,
             &args.edge_agent_artifact_path,
@@ -580,6 +586,7 @@ async fn run_lifecycle(
     let (release_v2, bundle_v2) = timed_stage(
         "application_v2_upgrade",
         acceptance_apply_desired(
+            context,
             &desired_v2,
             &args.artifact_manifest_path,
             &args.edge_agent_artifact_path,
@@ -599,6 +606,7 @@ async fn run_lifecycle(
     timed_stage(
         "application_rollback",
         acceptance_rollback(
+            context,
             desired,
             &release_v2,
             &release_v1,
@@ -621,6 +629,7 @@ async fn run_lifecycle(
     timed_stage(
         "application_after_reboot",
         acceptance_verify_desired(
+            context,
             desired,
             &args.artifact_manifest_path,
             &args.edge_agent_artifact_path,
