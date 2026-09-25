@@ -33,10 +33,7 @@ fn main() {
     for proto in &protos {
         println!("cargo:rerun-if-changed={}", proto.display());
     }
-    println!(
-        "cargo:rerun-if-changed={}",
-        production_textproto.display()
-    );
+    println!("cargo:rerun-if-changed={}", production_textproto.display());
 
     unsafe {
         std::env::set_var("PROTOC", &protoc);
