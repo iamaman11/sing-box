@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "sing_box": {
+    "version": "1.14.2",
+    "windows": {
+      "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-windows-amd64.zip",
+      "sha256": "c2d8bfff918755808781dfdeeb8581b6c91eb3a243d9a7b55483cfc0c0684d32"
+    },
+    "linux": {
+      "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-linux-amd64-glibc.tar.gz",
+      "sha256": "5c7bc18461827b28d0e5ee7e89d33b276d3ff7c818531104c8e8d26d85b0656e"
+    }
+  },
+  "cloudflare_warp": {
+    "version": "2026.7.1377.0",
+    "url": "https://pkg.cloudflareclient.com/pool/noble/main/c/cloudflare-warp/cloudflare-warp_2026.7.1377.0_amd64.deb",
+    "sha256": "a73429701c47ee9dc3c8307a0ead67054530787239bd71a12e7f93acdbe96f65"
+  },
+  "docker": {
+    "engine_version": "5:29.8.1-1~debian.13~trixie",
+    "containerd_version": "2.3.5-1~debian.13~trixie",
+    "compose_version": "5.5.1-1~debian.13~trixie"
+  },
+  "oci": {
+    "debian_base_image": "docker.io/library/debian@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251",
+    "ubuntu_base_image": "docker.io/library/ubuntu@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+    "mesh_image": "docker.io/cloudflare/mesh@sha256:18fad6d500e8ca48b7e4d5ae1905d65e8a50c1f5f5e21eba020d54d5cbf82571"
+  }
+}

@@ -2,221 +2,244 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
-import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
-STABLE_SEMVER = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+LOCK_SCHEMA_VERSION = 1
+SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 NUMERIC_VERSION = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*)){2,5}$")
 DEBIAN_VERSION = re.compile(r"^[0-9A-Za-z.+:~_-]+$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
+TOP_LEVEL_KEYS = {"schema_version", "sing_box", "cloudflare_warp", "docker", "oci"}
+SING_BOX_KEYS = {"version", "windows", "linux"}
+ASSET_KEYS = {"url", "sha256"}
+WARP_KEYS = {"version", "url", "sha256"}
+DOCKER_KEYS = {"engine_version", "containerd_version", "compose_version"}
+OCI_KEYS = {"debian_base_image", "ubuntu_base_image", "mesh_image"}
 
-def _stable_semver(tag: str) -> tuple[int, int, int] | None:
-    match = STABLE_SEMVER.fullmatch(tag)
-    if not match:
-        return None
-    return tuple(int(part) for part in match.groups())
+
+def _object(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    return value
 
 
-def _numeric_version(value: str) -> tuple[int, ...] | None:
+def _exact_keys(value: dict[str, Any], expected: set[str], name: str) -> None:
+    actual = set(value)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ValueError(f"{name} keys mismatch: missing={missing} extra={extra}")
+
+
+def _string(value: Any, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or "\n" in value
+        or "\r" in value
+    ):
+        raise ValueError(f"{name} must be a non-empty canonical string")
+    return value
+
+
+def _sha256(value: Any, name: str) -> str:
+    value = _string(value, name)
+    if not SHA256.fullmatch(value):
+        raise ValueError(f"{name} must be a lowercase SHA-256")
+    return value
+
+
+def _sing_box_version(value: Any) -> str:
+    value = _string(value, "sing_box.version")
+    if not SEMVER.fullmatch(value):
+        raise ValueError("sing_box.version must be normalized x.y.z")
+    return value
+
+
+def _numeric_version(value: Any, name: str) -> str:
+    value = _string(value, name)
     if not NUMERIC_VERSION.fullmatch(value):
-        return None
-    return tuple(int(part) for part in value.split("."))
+        raise ValueError(f"{name} must be a normalized numeric dotted version")
+    return value
 
 
-def _asset(release: dict[str, Any], expected_name: str, version: str) -> dict[str, str]:
-    matches = [asset for asset in release.get("assets", []) if asset.get("name") == expected_name]
-    if len(matches) != 1:
-        raise ValueError(f"expected exactly one release asset named {expected_name}")
-    asset = matches[0]
-    digest = str(asset.get("digest") or "")
-    if not digest.startswith("sha256:") or not SHA256.fullmatch(digest.removeprefix("sha256:")):
-        raise ValueError(f"{expected_name} is missing an exact GitHub SHA-256 digest")
-    expected_prefix = f"https://github.com/SagerNet/sing-box/releases/download/v{version}/"
-    url = str(asset.get("browser_download_url") or "")
-    if url != expected_prefix + expected_name:
-        raise ValueError(f"{expected_name} has unexpected download URL")
-    return {
-        "name": expected_name,
-        "url": url,
-        "sha256": digest.removeprefix("sha256:"),
-    }
+def _debian_version(value: Any, name: str) -> str:
+    value = _string(value, name)
+    if not DEBIAN_VERSION.fullmatch(value):
+        raise ValueError(f"{name} contains an invalid Debian version token")
+    if "~debian.13~trixie" not in value:
+        raise ValueError(f"{name} is incompatible with the canonical Debian 13/trixie host")
+    return value
 
 
-def resolve_sing_box(releases: list[dict[str, Any]]) -> dict[str, Any]:
-    candidates: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
-    for release in releases:
-        if release.get("draft") or release.get("prerelease"):
-            continue
-        tag = str(release.get("tag_name") or "")
-        version_tuple = _stable_semver(tag)
-        if version_tuple is not None:
-            candidates.append((version_tuple, release))
-    if not candidates:
-        raise ValueError("no stable sing-box x.y.z release found")
-
-    version_tuple, release = max(candidates, key=lambda item: item[0])
-    version = ".".join(str(part) for part in version_tuple)
-    if release.get("tag_name") != f"v{version}":
-        raise ValueError("resolved sing-box tag is not normalized")
-
-    return {
-        "version": version,
-        "tag": f"v{version}",
-        "windows": _asset(
-            release,
-            f"sing-box-{version}-windows-amd64.zip",
-            version,
-        ),
-        "linux": _asset(
-            release,
-            f"sing-box-{version}-linux-amd64-glibc.tar.gz",
-            version,
-        ),
-    }
-
-
-def _parse_debian_packages(raw: str) -> list[dict[str, str]]:
-    packages: list[dict[str, str]] = []
-    for stanza in re.split(r"\n\s*\n", raw.strip()):
-        fields: dict[str, str] = {}
-        current: str | None = None
-        for line in stanza.splitlines():
-            if line.startswith((" ", "\t")) and current is not None:
-                fields[current] += "\n" + line.strip()
-                continue
-            key, sep, value = line.partition(":")
-            if not sep:
-                raise ValueError(f"invalid Debian Packages line: {line!r}")
-            current = key
-            fields[key] = value.strip()
-        if fields:
-            packages.append(fields)
-    return packages
-
-
-def resolve_warp_packages(raw: str) -> dict[str, str]:
-    candidates: list[tuple[tuple[int, ...], dict[str, str]]] = []
-    for package in _parse_debian_packages(raw):
-        if package.get("Package") != "cloudflare-warp" or package.get("Architecture") != "amd64":
-            continue
-        version = package.get("Version", "")
-        parsed = _numeric_version(version)
-        if parsed is not None:
-            candidates.append((parsed, package))
-    if not candidates:
-        raise ValueError("no stable numeric amd64 cloudflare-warp package found")
-
-    _, package = max(candidates, key=lambda item: item[0])
-    version = package["Version"]
-    sha256 = package.get("SHA256", "")
-    if not SHA256.fullmatch(sha256):
-        raise ValueError("cloudflare-warp package SHA256 is missing or invalid")
-
-    filename = package.get("Filename", "")
-    path = PurePosixPath(filename)
-    if not filename.startswith("pool/") or path.is_absolute() or ".." in path.parts:
-        raise ValueError("cloudflare-warp package filename is not a safe repository-relative path")
-
-    return {
-        "version": version,
-        "filename": filename,
-        "url": f"https://pkg.cloudflareclient.com/{filename}",
-        "sha256": sha256,
-    }
-
-
-def _debian_version_gt(left: str, right: str) -> bool:
-    result = subprocess.run(
-        ["dpkg", "--compare-versions", left, "gt", right],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
+def _sing_box_asset(value: Any, platform: str, version: str) -> dict[str, str]:
+    item = _object(value, f"sing_box.{platform}")
+    _exact_keys(item, ASSET_KEYS, f"sing_box.{platform}")
+    suffix = (
+        f"sing-box-{version}-windows-amd64.zip"
+        if platform == "windows"
+        else f"sing-box-{version}-linux-amd64-glibc.tar.gz"
     )
-    if result.returncode not in (0, 1):
+    expected_url = f"https://github.com/SagerNet/sing-box/releases/download/v{version}/{suffix}"
+    url = _string(item["url"], f"sing_box.{platform}.url")
+    if url != expected_url:
         raise ValueError(
-            f"dpkg rejected Debian version comparison {left!r} > {right!r}: "
-            f"{result.stderr.strip()}"
+            f"sing_box.{platform}.url must identify the exact pinned v{version} asset"
         )
-    return result.returncode == 0
-
-
-def _docker_package(raw_packages: list[dict[str, str]], name: str) -> dict[str, str]:
-    candidates: list[dict[str, str]] = []
-    for package in raw_packages:
-        if package.get("Package") != name or package.get("Architecture") != "amd64":
-            continue
-        version = package.get("Version", "")
-        sha256 = package.get("SHA256", "")
-        filename = package.get("Filename", "")
-        path = PurePosixPath(filename)
-        if not DEBIAN_VERSION.fullmatch(version):
-            raise ValueError(f"{name} has invalid Debian version token {version!r}")
-        if not SHA256.fullmatch(sha256):
-            raise ValueError(f"{name} package SHA256 is missing or invalid")
-        if not filename.startswith("dists/") and not filename.startswith("pool/"):
-            raise ValueError(f"{name} package filename is outside the Docker repository")
-        if path.is_absolute() or ".." in path.parts:
-            raise ValueError(f"{name} package filename is not repository-relative")
-        candidates.append(
-            {
-                "version": version,
-                "filename": filename,
-                "url": f"https://download.docker.com/linux/debian/{filename}",
-                "sha256": sha256,
-            }
-        )
-    if not candidates:
-        raise ValueError(f"no amd64 {name} package found")
-
-    latest = candidates[0]
-    for candidate in candidates[1:]:
-        if _debian_version_gt(candidate["version"], latest["version"]):
-            latest = candidate
-
-    same_version = [item for item in candidates if item["version"] == latest["version"]]
-    if len(same_version) != 1:
-        raise ValueError(f"expected exactly one {name} package at version {latest['version']}")
-    return latest
-
-
-def resolve_docker_packages(raw: str) -> dict[str, dict[str, str]]:
-    packages = _parse_debian_packages(raw)
     return {
-        "docker_engine": _docker_package(packages, "docker-ce"),
-        "containerd": _docker_package(packages, "containerd.io"),
-        "compose": _docker_package(packages, "docker-compose-plugin"),
+        "url": url,
+        "sha256": _sha256(item["sha256"], f"sing_box.{platform}.sha256"),
     }
+
+
+def _warp(value: Any) -> dict[str, str]:
+    item = _object(value, "cloudflare_warp")
+    _exact_keys(item, WARP_KEYS, "cloudflare_warp")
+    version = _numeric_version(item["version"], "cloudflare_warp.version")
+    url = _string(item["url"], "cloudflare_warp.url")
+    parsed = urlparse(url)
+    expected_name = f"cloudflare-warp_{version}_amd64.deb"
+    path = PurePosixPath(parsed.path)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "pkg.cloudflareclient.com"
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith("/pool/")
+        or path.name != expected_name
+        or ".." in path.parts
+    ):
+        raise ValueError(
+            "cloudflare_warp.url must identify the exact pinned amd64 package under pkg.cloudflareclient.com/pool"
+        )
+    return {
+        "version": version,
+        "url": url,
+        "sha256": _sha256(item["sha256"], "cloudflare_warp.sha256"),
+    }
+
+
+def _docker(value: Any) -> dict[str, str]:
+    item = _object(value, "docker")
+    _exact_keys(item, DOCKER_KEYS, "docker")
+    return {
+        "engine_version": _debian_version(item["engine_version"], "docker.engine_version"),
+        "containerd_version": _debian_version(
+            item["containerd_version"], "docker.containerd_version"
+        ),
+        "compose_version": _debian_version(item["compose_version"], "docker.compose_version"),
+    }
+
+
+def _oci_ref(value: Any, name: str, repository: str) -> str:
+    value = _string(value, name)
+    prefix = f"{repository}@sha256:"
+    if not value.startswith(prefix):
+        raise ValueError(f"{name} must use exact immutable {repository}@sha256 identity")
+    digest = value.removeprefix(prefix)
+    if not SHA256.fullmatch(digest):
+        raise ValueError(f"{name} must contain a lowercase OCI SHA-256 digest")
+    return value
+
+
+def _oci(value: Any) -> dict[str, str]:
+    item = _object(value, "oci")
+    _exact_keys(item, OCI_KEYS, "oci")
+    return {
+        "debian_base_image": _oci_ref(
+            item["debian_base_image"],
+            "oci.debian_base_image",
+            "docker.io/library/debian",
+        ),
+        "ubuntu_base_image": _oci_ref(
+            item["ubuntu_base_image"],
+            "oci.ubuntu_base_image",
+            "docker.io/library/ubuntu",
+        ),
+        "mesh_image": _oci_ref(
+            item["mesh_image"],
+            "oci.mesh_image",
+            "docker.io/cloudflare/mesh",
+        ),
+    }
+
+
+def normalize_release_inputs(value: Any) -> dict[str, str | int]:
+    root = _object(value, "release input lock")
+    _exact_keys(root, TOP_LEVEL_KEYS, "release input lock")
+    schema_version = root["schema_version"]
+    if type(schema_version) is not int or schema_version != LOCK_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported release input lock schema: {schema_version!r}"
+        )
+
+    sing_box = _object(root["sing_box"], "sing_box")
+    _exact_keys(sing_box, SING_BOX_KEYS, "sing_box")
+    version = _sing_box_version(sing_box["version"])
+    windows = _sing_box_asset(sing_box["windows"], "windows", version)
+    linux = _sing_box_asset(sing_box["linux"], "linux", version)
+    warp = _warp(root["cloudflare_warp"])
+    docker = _docker(root["docker"])
+    oci = _oci(root["oci"])
+
+    selected: dict[str, str | int] = {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "sing_box_version": version,
+        "sing_box_windows_url": windows["url"],
+        "sing_box_windows_sha256": windows["sha256"],
+        "sing_box_linux_url": linux["url"],
+        "sing_box_linux_sha256": linux["sha256"],
+        "warp_version": warp["version"],
+        "warp_url": warp["url"],
+        "warp_sha256": warp["sha256"],
+        "docker_engine_version": docker["engine_version"],
+        "containerd_version": docker["containerd_version"],
+        "compose_version": docker["compose_version"],
+        "debian_base_image": oci["debian_base_image"],
+        "ubuntu_base_image": oci["ubuntu_base_image"],
+        "mesh_image": oci["mesh_image"],
+    }
+    authority_payload = json.dumps(
+        selected, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    selected["authority_sha256"] = hashlib.sha256(
+        b"sing-box-release-inputs-v1\0" + authority_payload
+    ).hexdigest()
+    return selected
+
+
+def load_release_inputs(path: Path) -> dict[str, str | int]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise ValueError(f"release input lock is missing: {path}") from error
+    except OSError as error:
+        raise ValueError(f"cannot read release input lock {path}: {error}") from error
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"release input lock is malformed JSON: {error}") from error
+    return normalize_release_inputs(value)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    sing_box = subparsers.add_parser("sing-box")
-    sing_box.add_argument("releases_json", type=Path)
-
-    warp = subparsers.add_parser("warp")
-    warp.add_argument("packages_file", type=Path)
-
-    docker = subparsers.add_parser("docker")
-    docker.add_argument("packages_file", type=Path)
-
+    lock = subparsers.add_parser("lock")
+    lock.add_argument("lock_file", type=Path)
     args = parser.parse_args()
-    if args.command == "sing-box":
-        releases = json.loads(args.releases_json.read_text(encoding="utf-8"))
-        if not isinstance(releases, list):
-            raise SystemExit("sing-box releases input must be a JSON array")
-        result = resolve_sing_box(releases)
-    elif args.command == "warp":
-        result = resolve_warp_packages(args.packages_file.read_text(encoding="utf-8"))
-    else:
-        result = resolve_docker_packages(args.packages_file.read_text(encoding="utf-8"))
 
+    try:
+        result = load_release_inputs(args.lock_file)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 
 

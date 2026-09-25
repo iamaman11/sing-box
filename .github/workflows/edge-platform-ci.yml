@@ -45,7 +45,7 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
 
-      - name: Test exact dependency resolver
+      - name: Test deterministic release input lock
         shell: bash
         run: python3 edge-platform/scripts/test_resolve_release_dependencies.py
 
@@ -543,6 +543,7 @@ jobs:
       docker_engine_version: ${{ steps.resolve.outputs.docker_engine_version }}
       containerd_version: ${{ steps.resolve.outputs.containerd_version }}
       compose_version: ${{ steps.resolve.outputs.compose_version }}
+      release_input_sha256: ${{ steps.resolve.outputs.release_input_sha256 }}
       runtime_input_sha256: ${{ steps.resolve.outputs.runtime_input_sha256 }}
       windows_input_sha256: ${{ steps.resolve.outputs.windows_input_sha256 }}
       windows_reuse: ${{ steps.resolve.outputs.windows_reuse }}
@@ -566,7 +567,7 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
 
-      - name: Resolve exact upstream dependencies
+      - name: Resolve locked upstream dependencies
         id: resolve
         shell: bash
         env:
@@ -579,50 +580,30 @@ jobs:
           work="${RUNNER_TEMP}/release-dependencies"
           mkdir -p "${work}"
 
-          gh api "repos/SagerNet/sing-box/releases/latest" > "${work}/sing-box-latest.json"
-          jq -c '[.]' "${work}/sing-box-latest.json" > "${work}/sing-box-releases.json"
-          curl --fail --silent --show-error --location \
-            https://pkg.cloudflareclient.com/dists/noble/main/binary-amd64/Packages \
-            -o "${work}/warp-Packages"
-
           # Current canonical disposable host input uses Vultr OS 2625 (Debian 13/trixie).
-          # Fail closed if that source-controlled host input changes before this resolver is updated.
+          # Keep the existing compatibility guard while release input selection moves to Git.
           test "$(jq -er '.machines | length' infra/vultr/disposable-acceptance.json)" -eq 1
           test "$(jq -er '.machines[0].provider.os_id' infra/vultr/disposable-acceptance.json)" = "2625"
-          curl --fail --silent --show-error --location \
-            https://download.docker.com/linux/debian/dists/trixie/stable/binary-amd64/Packages \
-            -o "${work}/docker-Packages"
 
-          sing_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py sing-box "${work}/sing-box-releases.json")"
-          warp_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py warp "${work}/warp-Packages")"
-          docker_json="$(python3 edge-platform/scripts/resolve_release_dependencies.py docker "${work}/docker-Packages")"
+          release_inputs="$(python3 edge-platform/scripts/resolve_release_dependencies.py lock \
+            infra/release/release-inputs.lock.json)"
+          release_input_sha="$(jq -er '.authority_sha256' <<<"${release_inputs}")"
+          [[ "${release_input_sha}" =~ ^[0-9a-f]{64}$ ]]
 
-          sing_version="$(jq -er '.version' <<<"${sing_json}")"
-          sing_windows_url="$(jq -er '.windows.url' <<<"${sing_json}")"
-          sing_windows_sha="$(jq -er '.windows.sha256' <<<"${sing_json}")"
-          sing_linux_url="$(jq -er '.linux.url' <<<"${sing_json}")"
-          sing_linux_sha="$(jq -er '.linux.sha256' <<<"${sing_json}")"
-          warp_version="$(jq -er '.version' <<<"${warp_json}")"
-          warp_url="$(jq -er '.url' <<<"${warp_json}")"
-          warp_sha="$(jq -er '.sha256' <<<"${warp_json}")"
-          docker_engine_version="$(jq -er '.docker_engine.version' <<<"${docker_json}")"
-          containerd_version="$(jq -er '.containerd.version' <<<"${docker_json}")"
-          compose_version="$(jq -er '.compose.version' <<<"${docker_json}")"
-
-          resolve_digest() {
-            docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' | jq -er '.'
-          }
-
-          debian_digest="$(resolve_digest docker.io/library/debian:bookworm-slim)"
-          ubuntu_digest="$(resolve_digest docker.io/library/ubuntu:24.04)"
-          mesh_digest="$(resolve_digest docker.io/cloudflare/mesh:latest)"
-          [[ "${debian_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "${ubuntu_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "${mesh_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
-
-          debian_ref="docker.io/library/debian@${debian_digest}"
-          ubuntu_ref="docker.io/library/ubuntu@${ubuntu_digest}"
-          mesh_ref="docker.io/cloudflare/mesh@${mesh_digest}"
+          sing_version="$(jq -er '.sing_box_version' <<<"${release_inputs}")"
+          sing_windows_url="$(jq -er '.sing_box_windows_url' <<<"${release_inputs}")"
+          sing_windows_sha="$(jq -er '.sing_box_windows_sha256' <<<"${release_inputs}")"
+          sing_linux_url="$(jq -er '.sing_box_linux_url' <<<"${release_inputs}")"
+          sing_linux_sha="$(jq -er '.sing_box_linux_sha256' <<<"${release_inputs}")"
+          warp_version="$(jq -er '.warp_version' <<<"${release_inputs}")"
+          warp_url="$(jq -er '.warp_url' <<<"${release_inputs}")"
+          warp_sha="$(jq -er '.warp_sha256' <<<"${release_inputs}")"
+          docker_engine_version="$(jq -er '.docker_engine_version' <<<"${release_inputs}")"
+          containerd_version="$(jq -er '.containerd_version' <<<"${release_inputs}")"
+          compose_version="$(jq -er '.compose_version' <<<"${release_inputs}")"
+          debian_ref="$(jq -er '.debian_base_image' <<<"${release_inputs}")"
+          ubuntu_ref="$(jq -er '.ubuntu_base_image' <<<"${release_inputs}")"
+          mesh_ref="$(jq -er '.mesh_image' <<<"${release_inputs}")"
 
           runtime_inputs="${work}/vm-runtime-inputs.json"
           jq -n \
@@ -712,6 +693,7 @@ jobs:
             printf 'docker_engine_version=%s\n' "${docker_engine_version}"
             printf 'containerd_version=%s\n' "${containerd_version}"
             printf 'compose_version=%s\n' "${compose_version}"
+            printf 'release_input_sha256=%s\n' "${release_input_sha}"
             printf 'runtime_input_sha256=%s\n' "${runtime_input_sha}"
             printf 'windows_input_sha256=%s\n' "${windows_input_sha}"
             printf 'windows_reuse=%s\n' "${windows_reuse}"
@@ -724,8 +706,9 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
           {
-            echo '### Exact dependency candidate'
+            echo '### Locked release inputs'
             echo
+            echo "- authority SHA-256: \`${release_input_sha}\`"
             echo "- sing-box: \`${sing_version}\`"
             echo "- sing-box Windows SHA-256: \`${sing_windows_sha}\`"
             echo "- sing-box Linux SHA-256: \`${sing_linux_sha}\`"
