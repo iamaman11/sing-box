@@ -155,8 +155,8 @@ def main() -> None:
         )
 
     require(
-        application.count("group: vultr-control-plane-production") == 3,
-        "application backend must serialize execute, cleanup and acceptance mutation jobs",
+        application.count("group: vultr-control-plane-production") == 4,
+        "application backend must serialize execute, production, cleanup and acceptance mutation jobs",
     )
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
