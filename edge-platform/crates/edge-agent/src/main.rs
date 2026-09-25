@@ -28,9 +28,9 @@ use edge_observability::init as init_observability;
 use edge_secrets::ApplicationRuntimeSecrets;
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
-    AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
-    BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, ContainerRuntimeObservation,
-    Empty, FileCategory,
+    AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
+    ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
+    BundleFile, ContainerRuntimeObservation, Empty, FileCategory,
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
@@ -46,7 +46,7 @@ use tonic::{Request, Response, Status};
 
 const DEFAULT_AGENT_ADDR: &str = "127.0.0.1:50061";
 const DEFAULT_STACK_DIR: &str = "/opt/vultr-edge-stack/stack";
-const APPLICATION_RELEASE_MARKER: &str = ".application-release.json";
+const APPLICATION_RELEASE_MARKER: &str = ".application-release.pb";
 const PREVIOUS_STACK_DIR: &str = "stack.previous";
 const STAGING_STACK_DIR: &str = "stack.next";
 const ROLLBACK_STACK_DIR: &str = "stack.rollback";
@@ -706,7 +706,7 @@ fn apply_digest_bound_bundle(
     materialize_vm_owned_runtime_environment(&staging)?;
 
     let release = ApplicationBundleRelease {
-        schema: 1,
+        schema_version: 1,
         bundle_id,
         bundle_digest: expected_digest,
     };
@@ -840,20 +840,33 @@ fn previous_stack_dir(stack_dir: &Path) -> PathBuf {
 }
 
 fn read_application_release(stack_dir: &Path) -> Option<ApplicationBundleRelease> {
-    let raw = fs::read_to_string(stack_dir.join(APPLICATION_RELEASE_MARKER)).ok()?;
-    let release: ApplicationBundleRelease = serde_json::from_str(&raw).ok()?;
-    (release.schema == 1 && validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_ok())
-        .then_some(release)
+    let bytes = fs::read(stack_dir.join(APPLICATION_RELEASE_MARKER)).ok()?;
+    let release = ApplicationBundleRelease::decode(bytes.as_slice()).ok()?;
+    if release.encode_to_vec() != bytes
+        || release.schema_version != 1
+        || release.bundle_id.trim().is_empty()
+        || validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_err()
+    {
+        return None;
+    }
+    Some(release)
 }
 
 fn write_application_release(
     stack_dir: &Path,
     release: &ApplicationBundleRelease,
 ) -> Result<(), String> {
-    let raw = serde_json::to_vec(release)
-        .map_err(|err| format!("failed to encode application release marker: {err}"))?;
-    fs::write(stack_dir.join(APPLICATION_RELEASE_MARKER), raw)
-        .map_err(|err| format!("failed to write application release marker: {err}"))
+    if release.schema_version != 1
+        || release.bundle_id.trim().is_empty()
+        || validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_err()
+    {
+        return Err("application release marker is invalid".to_owned());
+    }
+    fs::write(
+        stack_dir.join(APPLICATION_RELEASE_MARKER),
+        release.encode_to_vec(),
+    )
+    .map_err(|err| format!("failed to write application release marker: {err}"))
 }
 
 fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), String> {
@@ -1027,13 +1040,7 @@ fn validate_lower_hex(label: &str, value: &str, expected_len: usize) -> Result<(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApplicationBundleRelease {
-    schema: u32,
-    bundle_id: String,
-    bundle_digest: String,
-}
+type ApplicationBundleRelease = ApplicationBundleReleaseState;
 
 async fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
     match execute_typed_bootstrap(stack_dir, mode).await {
