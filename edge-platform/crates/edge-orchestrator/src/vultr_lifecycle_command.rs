@@ -744,8 +744,14 @@ async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
 
     let desired = load_desired_state(Path::new(&args[0]))?;
     let machine_id = &args[1];
-    if !desired.machines.iter().any(|machine| machine.id == *machine_id) {
-        return Err(format!("machine {machine_id} is not present in desired state"));
+    if !desired
+        .machines
+        .iter()
+        .any(|machine| machine.id == *machine_id)
+    {
+        return Err(format!(
+            "machine {machine_id} is not present in desired state"
+        ));
     }
     let installer_path = Path::new(&args[2]);
     if !installer_path.is_file() {
@@ -828,7 +834,9 @@ async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
 fn validate_runner_registration_token(value: &str) -> Result<(), String> {
     if value.len() < 16
         || value.len() > 512
-        || value.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
     {
         return Err("runner registration token is malformed".to_owned());
     }
