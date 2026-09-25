@@ -296,8 +296,13 @@ def main() -> None:
         and "run_logged install-runner-dependencies ./bin/installdependencies.sh" in root_runner_installer
         and root_runner_installer.index("run_logged install-runner-dependencies ./bin/installdependencies.sh")
         < root_runner_installer.index("run_logged configure-runner")
-        and "run_logged configure-runner" in root_runner_installer,
-        "root-runner bootstrap must install pinned archive runtime dependencies before configuration and emit bounded secret-safe diagnostics",
+        and "run_logged configure-runner" in root_runner_installer
+        and "pgrep -u" not in root_runner_installer
+        and "Verify self-hosted runner online" in vultr
+        and '.status == "online"' in vultr
+        and 'index("vultr-root")' in vultr
+        and 'index($machine)' in vultr,
+        "root-runner bootstrap must install pinned dependencies, avoid process-name readiness races, and defer online identity to the GitHub runner API",
     )
     require(
         'verb == "access-release" and len(tokens) == 4' in vultr
