@@ -117,7 +117,7 @@ async fn run(
             cloudflare_mesh_lifecycle_command::run(command.into_legacy_args()).await
         }
         Command::VultrLifecycle { command } => {
-            vultr_lifecycle_command::run(command.into_legacy_args()).await
+            vultr_lifecycle_command::run(command.into_legacy_args(), release_context).await
         }
         Command::VultrVpc { command } => {
             vultr_vpc_lifecycle_command::run(command.into_legacy_args()).await
