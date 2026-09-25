@@ -674,11 +674,31 @@ fn verify_windows_release_set(flags: &BTreeMap<String, String>) -> Result<(), St
         .as_ref()
         .ok_or_else(|| "release-set windows_runtime is required".to_owned())?;
     for (label, flag_name, expected) in [
-        ("Windows artifact", "windows-artifact", windows.artifact_sha256.as_slice()),
-        ("Windows controller", "windows-controller", windows.controller_sha256.as_slice()),
-        ("Windows console", "windows-console", windows.console_sha256.as_slice()),
-        ("Windows diagnostic", "windows-diagnostic", windows.diagnostic_sha256.as_slice()),
-        ("Windows sing-box", "windows-sing-box", windows.sing_box_sha256.as_slice()),
+        (
+            "Windows artifact",
+            "windows-artifact",
+            windows.artifact_sha256.as_slice(),
+        ),
+        (
+            "Windows controller",
+            "windows-controller",
+            windows.controller_sha256.as_slice(),
+        ),
+        (
+            "Windows console",
+            "windows-console",
+            windows.console_sha256.as_slice(),
+        ),
+        (
+            "Windows diagnostic",
+            "windows-diagnostic",
+            windows.diagnostic_sha256.as_slice(),
+        ),
+        (
+            "Windows sing-box",
+            "windows-sing-box",
+            windows.sing_box_sha256.as_slice(),
+        ),
     ] {
         verify_file_digest(label, Path::new(flag(flags, flag_name)?), expected)?;
     }
@@ -718,9 +738,17 @@ fn write_windows_activation_state(flags: &BTreeMap<String, String>) -> Result<()
     let console = PathBuf::from(flag(flags, "console")?);
     let diagnostic = PathBuf::from(flag(flags, "diagnostic")?);
     let sing_box = PathBuf::from(flag(flags, "sing-box")?);
-    verify_file_digest("Windows controller", &controller, &windows.controller_sha256)?;
+    verify_file_digest(
+        "Windows controller",
+        &controller,
+        &windows.controller_sha256,
+    )?;
     verify_file_digest("Windows console", &console, &windows.console_sha256)?;
-    verify_file_digest("Windows diagnostic", &diagnostic, &windows.diagnostic_sha256)?;
+    verify_file_digest(
+        "Windows diagnostic",
+        &diagnostic,
+        &windows.diagnostic_sha256,
+    )?;
     verify_file_digest("Windows sing-box", &sing_box, &windows.sing_box_sha256)?;
 
     let state = WindowsActivationState {
