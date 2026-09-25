@@ -8,6 +8,9 @@ use crate::vultr_vpc_lifecycle_service::{
     authorize_vpc_apply, authorize_vpc_attachment, authorize_vpc_cleanup, cleanup_vpc_once,
     observe_vpc, plan_vpc, plan_vpc_attachment, plan_vpc_cleanup, verify_vpc_ready,
 };
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+};
 use edge_controller_core::vultr_vpc_lifecycle::{
     AttachmentAction, CleanupAction, DesiredVpcState, VpcApplyAction,
 };
@@ -465,6 +468,12 @@ fn one_spec_arg(args: &[String], command: &str) -> Result<DesiredVpcState, Strin
 }
 
 fn load_desired(path: &Path) -> Result<DesiredVpcState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.vpc)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path).map_err(|err| {
         format!(
             "failed to read Vultr VPC desired state {}: {err}",
