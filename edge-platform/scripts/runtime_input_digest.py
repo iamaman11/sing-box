@@ -38,6 +38,10 @@ TRACKED_PATHS = (
     "win/vultr-waw/stack/warp-egress",
 )
 
+EXCLUDED_TRACKED_PREFIXES = (
+    "edge-platform/crates/edge-shared-types/src/bin/",
+)
+
 LOWER_HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 LOWER_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 GATEWAY_REF = re.compile(r"^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$")
@@ -68,6 +72,9 @@ def _tracked_files(repo_root: Path) -> list[Path]:
                     f"runtime input symlink is forbidden: {child.relative_to(repo_root).as_posix()}"
                 )
             if child.is_file():
+                relative = child.relative_to(repo_root).as_posix()
+                if any(relative.startswith(prefix) for prefix in EXCLUDED_TRACKED_PREFIXES):
+                    continue
                 files.add(child)
     return sorted(files, key=lambda path: path.relative_to(repo_root).as_posix())
 
