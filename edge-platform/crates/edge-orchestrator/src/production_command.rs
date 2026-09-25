@@ -10,11 +10,9 @@ use crate::cloudflare_mesh_lifecycle_command::{
     acceptance_runtime_verify as mesh_runtime_verify,
 };
 use crate::vultr_lifecycle_command::{
-    acceptance_converge_substrate as substrate_converge,
-    acceptance_lease_acquire as lease_acquire,
-    acceptance_lease_release as lease_release,
-    acceptance_verify_substrate as substrate_verify, exact_existing_machine_observation,
-    production_converge_machine,
+    acceptance_converge_substrate as substrate_converge, acceptance_lease_acquire as lease_acquire,
+    acceptance_lease_release as lease_release, acceptance_verify_substrate as substrate_verify,
+    exact_existing_machine_observation, production_converge_machine,
 };
 use crate::vultr_vpc_lifecycle_command::{
     acceptance_verify as vpc_verify, production_converge as vpc_converge,
@@ -24,7 +22,7 @@ use edge_controller_core::production::{
 };
 use edge_orchestrator::OrchestrationContext;
 use edge_shared_types::canonical_production_desired_state;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(crate) fn validate(release_context: &OrchestrationContext) -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
@@ -194,9 +192,4 @@ fn print_identity(
     println!("warp_egress_image={}", release.warp_egress_image);
     println!("mesh_image={}", release.mesh_image);
     println!("immutable_oci_release_identity=true");
-}
-
-#[allow(dead_code)]
-fn _path_owned(path: &Path) -> PathBuf {
-    path.to_path_buf()
 }
