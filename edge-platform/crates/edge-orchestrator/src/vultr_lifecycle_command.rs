@@ -373,6 +373,28 @@ async fn apply_machine_value(
     }))
 }
 
+pub(crate) async fn production_converge_machine(
+    spec_path: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
+    let value = apply_machine_value(spec_path, machine_id, None).await?;
+    let action = value
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "production machine convergence returned no typed action".to_owned())?;
+    if !matches!(action, "CREATED" | "NOOP")
+        || value
+            .get("provider_ready")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+    {
+        return Err(format!(
+            "production machine convergence returned unexpected result: {value}"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn acceptance_create_machine(
     spec_path: &Path,
     machine_id: &str,
