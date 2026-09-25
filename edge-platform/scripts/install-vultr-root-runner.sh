@@ -57,10 +57,11 @@ run_logged() {
   if "$@" > "${diagnostic_log}" 2>&1; then
     : > "${diagnostic_log}"
     return 0
+  else
+    local rc=$?
+    emit_diagnostic_failure "${rc}"
+    return "${rc}"
   fi
-  local rc=$?
-  emit_diagnostic_failure "${rc}"
-  return "${rc}"
 }
 
 trap cleanup_diagnostic_log EXIT
