@@ -6,14 +6,11 @@ use edge_shared_types::canonical_production_desired_state;
 
 pub(crate) fn run(release_context: &OrchestrationContext) -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
-    let composition =
-        ProductionComposition::from_proto(&desired).map_err(|err| err.to_string())?;
+    let composition = ProductionComposition::from_proto(&desired).map_err(|err| err.to_string())?;
     let release = release_context.release();
 
     println!("status=PASS");
-    println!(
-        "production_authority={CANONICAL_PRODUCTION_AUTHORITY_PATH}"
-    );
+    println!("production_authority={CANONICAL_PRODUCTION_AUTHORITY_PATH}");
     println!("schema_version={}", desired.schema_version);
     println!("environment={}", composition.environment);
     println!("machine_id={}", composition.machine_id);
