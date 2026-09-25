@@ -39,6 +39,7 @@ use edge_shared_types::{
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -54,7 +55,7 @@ const RUNTIME_ENV_FILE: &str = ".env.runtime";
 const RUNTIME_SECRET_DIR: &str = "runtime-secrets";
 const RUNTIME_SECRET_FILE: &str = "application-runtime-v1.env";
 const MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env";
-const MESH_RUNTIME_FAILURE_FILE: &str = "last-readiness-failure-v1.json";
+const MESH_RUNTIME_FAILURE_FILE: &str = "last-readiness-failure-v1.pb";
 const MAX_MESH_FAILURE_REASONS: usize = 12;
 const MAX_MESH_FAILURE_REASON_CHARS: usize = 512;
 const IMAGE_ENV_FILE: &str = ".images.env";
@@ -1452,26 +1453,6 @@ enum MeshDiagnosticDepth {
     Deep,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedMeshRuntimeFailureSnapshot {
-    observed_unix_time_seconds: u64,
-    reasons: Vec<String>,
-    warp_connection_state: Option<String>,
-    tunnel_protocol: Option<String>,
-    warp_status: i32,
-    warp_settings: i32,
-    tun_device_status: i32,
-    ipv4_forwarding_status: i32,
-    container_present: bool,
-    container_running: bool,
-    container_exit_code: Option<i64>,
-    container_restart_count: Option<u64>,
-    container_oom_killed: Option<bool>,
-    container_image: Option<String>,
-    container_networks: Vec<String>,
-    exact_image_ready: bool,
-}
-
 fn mesh_runtime_failure_snapshot_path(stack_dir: &Path) -> Result<PathBuf, String> {
     Ok(mesh_runtime_state_dir(stack_dir)?.join(MESH_RUNTIME_FAILURE_FILE))
 }
@@ -1480,8 +1461,8 @@ fn read_mesh_runtime_failure_snapshot(
     stack_dir: &Path,
 ) -> Result<Option<MeshRuntimeFailureSnapshot>, String> {
     let path = mesh_runtime_failure_snapshot_path(stack_dir)?;
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             return Err(format!(
@@ -1489,28 +1470,14 @@ fn read_mesh_runtime_failure_snapshot(
             ));
         }
     };
-    let persisted: PersistedMeshRuntimeFailureSnapshot =
-        serde_json::from_str(&raw).map_err(|err| {
-            format!("failed to parse persisted Mesh readiness failure snapshot: {err}")
-        })?;
-    Ok(Some(MeshRuntimeFailureSnapshot {
-        observed_unix_time_seconds: persisted.observed_unix_time_seconds,
-        reasons: persisted.reasons,
-        warp_connection_state: persisted.warp_connection_state,
-        tunnel_protocol: persisted.tunnel_protocol,
-        warp_status: persisted.warp_status,
-        warp_settings: persisted.warp_settings,
-        tun_device_status: persisted.tun_device_status,
-        ipv4_forwarding_status: persisted.ipv4_forwarding_status,
-        container_present: persisted.container_present,
-        container_running: persisted.container_running,
-        container_exit_code: persisted.container_exit_code,
-        container_restart_count: persisted.container_restart_count,
-        container_oom_killed: persisted.container_oom_killed,
-        container_image: persisted.container_image,
-        container_networks: persisted.container_networks,
-        exact_image_ready: persisted.exact_image_ready,
-    }))
+    let snapshot = MeshRuntimeFailureSnapshot::decode(bytes.as_slice())
+        .map_err(|err| format!("failed to decode Mesh readiness failure protobuf: {err}"))?;
+    if snapshot.encode_to_vec() != bytes {
+        return Err(
+            "persisted Mesh readiness failure snapshot is not canonical protobuf".to_owned(),
+        );
+    }
+    Ok(Some(snapshot))
 }
 
 fn build_mesh_runtime_failure_snapshot(
@@ -1565,26 +1532,7 @@ fn persist_mesh_runtime_failure_snapshot(
     snapshot: &MeshRuntimeFailureSnapshot,
 ) -> Result<(), String> {
     prepare_mesh_runtime_state(stack_dir)?;
-    let persisted = PersistedMeshRuntimeFailureSnapshot {
-        observed_unix_time_seconds: snapshot.observed_unix_time_seconds,
-        reasons: snapshot.reasons.clone(),
-        warp_connection_state: snapshot.warp_connection_state.clone(),
-        tunnel_protocol: snapshot.tunnel_protocol.clone(),
-        warp_status: snapshot.warp_status,
-        warp_settings: snapshot.warp_settings,
-        tun_device_status: snapshot.tun_device_status,
-        ipv4_forwarding_status: snapshot.ipv4_forwarding_status,
-        container_present: snapshot.container_present,
-        container_running: snapshot.container_running,
-        container_exit_code: snapshot.container_exit_code,
-        container_restart_count: snapshot.container_restart_count,
-        container_oom_killed: snapshot.container_oom_killed,
-        container_image: snapshot.container_image.clone(),
-        container_networks: snapshot.container_networks.clone(),
-        exact_image_ready: snapshot.exact_image_ready,
-    };
-    let bytes = serde_json::to_vec_pretty(&persisted)
-        .map_err(|err| format!("failed to encode Mesh readiness failure snapshot: {err}"))?;
+    let bytes = snapshot.encode_to_vec();
     let path = mesh_runtime_failure_snapshot_path(stack_dir)?;
     let temporary = path.with_extension("tmp");
     fs::write(&temporary, bytes)
