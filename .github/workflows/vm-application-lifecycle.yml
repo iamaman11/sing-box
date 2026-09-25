@@ -146,37 +146,17 @@ jobs:
           set -euo pipefail
           dir="${RUNNER_TEMP}/edge-platform-release"
           source "${dir}/resolved.env"
-          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
-          test "${EDGE_RELEASE_SCHEMA_VERSION}" = "5"
-          [[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           orchestrator="${dir}/edge-orchestrator-linux-amd64"
           agent="${dir}/edge-agent-linux-amd64"
-          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
-          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
-          gateway_image="${EDGE_GATEWAY_IMAGE}"
-          warp_image="${EDGE_WARP_EGRESS_IMAGE}"
-          mesh_image="${EDGE_MESH_IMAGE}"
-          [[ "${gateway_image}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
-          [[ "${warp_image}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
-          [[ "${mesh_image}" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
-          bundle_root="$(jq -er '.bundle_root' "${SPEC_PATH}")"
-          test -d "${bundle_root}"
-          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\nCLOUDFLARE_MESH_IMAGE=%s\n' \
-            "${gateway_image}" "${warp_image}" "${mesh_image}" > "${bundle_root}/.images.env"
-          chmod 0644 "${bundle_root}/.images.env"
+          agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           chmod 0755 "${orchestrator}" "${agent}"
+          export EDGE_RELEASE_CONTEXT_PATH="${dir}/resolved.env"
+          "${orchestrator}" application-lifecycle materialize \
+            "${SPEC_PATH}" "${agent_manifest}" "${agent}"
+          chmod 0600 "${agent_manifest}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
-          agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
-          jq -n \
-            --arg source_revision "${EDGE_RUNTIME_SOURCE_REVISION}" \
-            --arg sha256 "${EDGE_AGENT_SHA256}" \
-            '{schema:1,source_revision:$source_revision,sha256:$sha256}' \
-            > "${agent_manifest}"
-          chmod 600 "${agent_manifest}"
           printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
@@ -462,37 +442,17 @@ jobs:
           set -euo pipefail
           dir="${RUNNER_TEMP}/edge-platform-release"
           source "${dir}/resolved.env"
-          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
-          test "${EDGE_RELEASE_SCHEMA_VERSION}" = "5"
-          [[ "${EDGE_RUNTIME_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EDGE_RUNTIME_INPUT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           orchestrator="${dir}/edge-orchestrator-linux-amd64"
           agent="${dir}/edge-agent-linux-amd64"
-          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
-          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
-          gateway_image="${EDGE_GATEWAY_IMAGE}"
-          warp_image="${EDGE_WARP_EGRESS_IMAGE}"
-          mesh_image="${EDGE_MESH_IMAGE}"
-          [[ "${gateway_image}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
-          [[ "${warp_image}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
-          [[ "${mesh_image}" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
-          bundle_root="$(jq -er '.bundle_root' "${SPEC_PATH}")"
-          test -d "${bundle_root}"
-          printf 'EDGE_GATEWAY_IMAGE=%s\nEDGE_WARP_EGRESS_IMAGE=%s\nCLOUDFLARE_MESH_IMAGE=%s\n' \
-            "${gateway_image}" "${warp_image}" "${mesh_image}" > "${bundle_root}/.images.env"
-          chmod 0644 "${bundle_root}/.images.env"
+          agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
           chmod 0755 "${orchestrator}" "${agent}"
+          export EDGE_RELEASE_CONTEXT_PATH="${dir}/resolved.env"
+          "${orchestrator}" application-lifecycle materialize \
+            "${SPEC_PATH}" "${agent_manifest}" "${agent}"
+          chmod 0600 "${agent_manifest}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
-          agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
-          jq -n \
-            --arg source_revision "${EDGE_RUNTIME_SOURCE_REVISION}" \
-            --arg sha256 "${EDGE_AGENT_SHA256}" \
-            '{schema:1,source_revision:$source_revision,sha256:$sha256}' \
-            > "${agent_manifest}"
-          chmod 600 "${agent_manifest}"
           printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
           printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
