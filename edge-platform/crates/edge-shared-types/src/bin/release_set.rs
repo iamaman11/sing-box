@@ -1,3 +1,6 @@
+use edge_shared_types::build_manifest::{
+    LinuxBuildManifest, WindowsBuildManifest, validate_build_manifest_pair,
+};
 use edge_shared_types::{
     CONFIG_SCHEMA_VERSION, CloudflareRuntime, DB_SCHEMA_VERSION, OciImage,
     RELEASE_SET_SCHEMA_VERSION, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
@@ -58,6 +61,40 @@ const VERIFY_VM_FLAGS: &[&str] = &[
     "edge-controller",
 ];
 
+const CREATE_FROM_MANIFESTS_FLAGS: &[&str] = &[
+    "output",
+    "sha256-output",
+    "source-revision",
+    "release-input-sha256",
+    "windows-manifest",
+    "linux-manifest",
+    "windows-artifact",
+    "windows-controller",
+    "windows-console",
+    "windows-sing-box",
+    "linux-sing-box",
+    "edge-agent",
+    "edge-controller",
+    "edge-orchestrator",
+];
+
+const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
+    "input",
+    "sha256-file",
+    "source-revision",
+    "source-tree",
+    "windows-manifest",
+    "linux-manifest",
+    "windows-artifact",
+    "windows-controller",
+    "windows-console",
+    "windows-sing-box",
+    "linux-sing-box",
+    "edge-agent",
+    "edge-controller",
+    "edge-orchestrator",
+];
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -72,14 +109,17 @@ fn run() -> Result<(), String> {
 
     match command.as_str() {
         "create" => create_release_set(&flags),
+        "create-from-build-manifests" => create_release_set_from_build_manifests(&flags),
         "verify" => verify_release_set(&flags),
+        "verify-candidate" => verify_candidate_release_set(&flags),
         "verify-vm" => verify_vm_release_set(&flags),
         _ => Err(usage()),
     }
 }
 
 fn usage() -> String {
-    "usage: edge-release-set create|verify|verify-vm --flag value ...".to_owned()
+    "usage: edge-release-set create|create-from-build-manifests|verify|verify-candidate|verify-vm --flag value ..."
+        .to_owned()
 }
 
 fn parse_flags(args: Vec<String>) -> Result<BTreeMap<String, String>, String> {
@@ -225,6 +265,252 @@ fn create_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
 
     println!("release_set_sha256={digest}");
     Ok(())
+}
+
+fn create_release_set_from_build_manifests(
+    flags: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    require_allowed(flags, CREATE_FROM_MANIFESTS_FLAGS)?;
+    let (windows, linux) = load_build_manifests(flags)?;
+    validate_build_manifest_pair(
+        &windows,
+        &linux,
+        flag(flags, "source-revision")?,
+        flag(flags, "release-input-sha256")?,
+        None,
+    )?;
+    verify_build_manifest_artifacts(flags, &windows, &linux)?;
+
+    let release = release_set_from_build_manifests(
+        flag(flags, "source-revision")?,
+        &windows,
+        &linux,
+    )?;
+    let digest = write_release_set_files(
+        &release,
+        Path::new(flag(flags, "output")?),
+        Path::new(flag(flags, "sha256-output")?),
+    )?;
+    println!("release_set_sha256={digest}");
+    println!("release_input_sha256={}", windows.release_input_sha256);
+    println!("source_tree={}", windows.source_tree);
+    Ok(())
+}
+
+fn verify_candidate_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, VERIFY_CANDIDATE_FLAGS)?;
+    let (release, digest) = load_verified_release_set(flags)?;
+    let (windows, linux) = load_build_manifests(flags)?;
+    let release_input_sha256 = windows.release_input_sha256.clone();
+    validate_build_manifest_pair(
+        &windows,
+        &linux,
+        flag(flags, "source-revision")?,
+        &release_input_sha256,
+        Some(flag(flags, "source-tree")?),
+    )?;
+    verify_build_manifest_artifacts(flags, &windows, &linux)?;
+
+    let expected =
+        release_set_from_build_manifests(flag(flags, "source-revision")?, &windows, &linux)?;
+    if release != expected {
+        return Err(
+            "release-set contents do not exactly match the typed platform build manifests"
+                .to_owned(),
+        );
+    }
+
+    println!("release_input_sha256={release_input_sha256}");
+    println!("source_tree={}", windows.source_tree);
+    print_vm_evidence(&release, &digest)
+}
+
+fn load_build_manifests(
+    flags: &BTreeMap<String, String>,
+) -> Result<(WindowsBuildManifest, LinuxBuildManifest), String> {
+    let windows_path = Path::new(flag(flags, "windows-manifest")?);
+    let linux_path = Path::new(flag(flags, "linux-manifest")?);
+    let windows_raw = fs::read_to_string(windows_path).map_err(|error| {
+        format!(
+            "failed to read Windows build manifest {}: {error}",
+            windows_path.display()
+        )
+    })?;
+    let linux_raw = fs::read_to_string(linux_path).map_err(|error| {
+        format!(
+            "failed to read Linux build manifest {}: {error}",
+            linux_path.display()
+        )
+    })?;
+    Ok((
+        WindowsBuildManifest::parse_json(&windows_raw)?,
+        LinuxBuildManifest::parse_json(&linux_raw)?,
+    ))
+}
+
+fn verify_build_manifest_artifacts(
+    flags: &BTreeMap<String, String>,
+    windows: &WindowsBuildManifest,
+    linux: &LinuxBuildManifest,
+) -> Result<(), String> {
+    for (label, flag_name, expected) in [
+        (
+            "Windows artifact",
+            "windows-artifact",
+            windows.artifact_sha256.as_str(),
+        ),
+        (
+            "Windows controller",
+            "windows-controller",
+            windows.controller_sha256.as_str(),
+        ),
+        (
+            "Windows console",
+            "windows-console",
+            windows.console_sha256.as_str(),
+        ),
+        (
+            "Windows sing-box",
+            "windows-sing-box",
+            windows.sing_box_binary_sha256.as_str(),
+        ),
+        (
+            "Linux sing-box",
+            "linux-sing-box",
+            linux.sing_box_binary_sha256.as_str(),
+        ),
+        ("edge-agent", "edge-agent", linux.agent_sha256.as_str()),
+        (
+            "edge-controller",
+            "edge-controller",
+            linux.controller_sha256.as_str(),
+        ),
+        (
+            "edge-orchestrator",
+            "edge-orchestrator",
+            linux.orchestrator_sha256.as_str(),
+        ),
+    ] {
+        verify_file_digest(
+            label,
+            Path::new(flag(flags, flag_name)?),
+            &digest_from_hex(label, expected)?,
+        )?;
+    }
+    Ok(())
+}
+
+fn release_set_from_build_manifests(
+    source_revision: &str,
+    windows: &WindowsBuildManifest,
+    linux: &LinuxBuildManifest,
+) -> Result<ReleaseSet, String> {
+    Ok(ReleaseSet {
+        schema_version: RELEASE_SET_SCHEMA_VERSION,
+        source_revision: source_revision.to_owned(),
+        sing_box: Some(SingBoxRelease {
+            version: windows.sing_box_version.clone(),
+            windows_amd64_sha256: digest_from_hex(
+                "WindowsBuildManifest.sing_box_binary_sha256",
+                &windows.sing_box_binary_sha256,
+            )?,
+            linux_amd64_sha256: digest_from_hex(
+                "LinuxBuildManifest.sing_box_binary_sha256",
+                &linux.sing_box_binary_sha256,
+            )?,
+        }),
+        windows_runtime: Some(WindowsRuntime {
+            artifact_sha256: digest_from_hex(
+                "WindowsBuildManifest.artifact_sha256",
+                &windows.artifact_sha256,
+            )?,
+            controller_sha256: digest_from_hex(
+                "WindowsBuildManifest.controller_sha256",
+                &windows.controller_sha256,
+            )?,
+            console_sha256: digest_from_hex(
+                "WindowsBuildManifest.console_sha256",
+                &windows.console_sha256,
+            )?,
+            sing_box_sha256: digest_from_hex(
+                "WindowsBuildManifest.sing_box_binary_sha256",
+                &windows.sing_box_binary_sha256,
+            )?,
+            input_sha256: digest_from_hex(
+                "WindowsBuildManifest.windows_input_sha256",
+                &windows.windows_input_sha256,
+            )?,
+            source_revision: windows.windows_source_revision.clone(),
+        }),
+        vm_runtime: Some(VmRuntime {
+            edge_agent_sha256: digest_from_hex(
+                "LinuxBuildManifest.agent_sha256",
+                &linux.agent_sha256,
+            )?,
+            edge_controller_sha256: digest_from_hex(
+                "LinuxBuildManifest.controller_sha256",
+                &linux.controller_sha256,
+            )?,
+            edge_orchestrator_sha256: digest_from_hex(
+                "LinuxBuildManifest.orchestrator_sha256",
+                &linux.orchestrator_sha256,
+            )?,
+            runtime_input_sha256: digest_from_hex(
+                "LinuxBuildManifest.runtime_input_sha256",
+                &linux.runtime_input_sha256,
+            )?,
+            runtime_source_revision: linux.runtime_source_revision.clone(),
+            sing_box_image: Some(parse_image_ref(
+                "LinuxBuildManifest.edge_gateway_image",
+                &linux.edge_gateway_image,
+            )?),
+            warp_egress_image: Some(parse_image_ref(
+                "LinuxBuildManifest.edge_warp_egress_image",
+                &linux.edge_warp_egress_image,
+            )?),
+            docker_engine_version: linux.docker_engine_version.clone(),
+            containerd_version: linux.containerd_version.clone(),
+            compose_version: linux.compose_version.clone(),
+        }),
+        cloudflare: Some(CloudflareRuntime {
+            warp_version: linux.warp_version.clone(),
+            mesh_image: Some(parse_image_ref(
+                "LinuxBuildManifest.mesh_image",
+                &linux.mesh_image,
+            )?),
+        }),
+        schemas: Some(SchemaVersions {
+            config_schema: CONFIG_SCHEMA_VERSION,
+            db_schema: DB_SCHEMA_VERSION,
+        }),
+    })
+}
+
+fn write_release_set_files(
+    release: &ReleaseSet,
+    output: &Path,
+    sha256_output: &Path,
+) -> Result<String, String> {
+    let bytes = encode_release_set(release)?;
+    let digest = release_set_sha256(&bytes)?;
+    let file_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "release-set output must have a UTF-8 filename".to_owned())?;
+
+    fs::write(output, &bytes)
+        .map_err(|error| format!("failed to write {}: {error}", output.display()))?;
+    fs::write(
+        sha256_output,
+        format!("{digest}  {file_name}\n").as_bytes(),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to write release-set SHA-256 file {}: {error}",
+            sha256_output.display()
+        )
+    })?;
+    Ok(digest)
 }
 
 fn load_verified_release_set(
