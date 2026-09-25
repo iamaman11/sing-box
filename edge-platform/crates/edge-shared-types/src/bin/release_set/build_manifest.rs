@@ -464,9 +464,7 @@ mod tests {
     fn unknown_schema_and_unknown_fields_fail_closed() {
         let mut unknown_schema = windows();
         unknown_schema.schema_version = 2;
-        assert!(
-            WindowsBuildManifest::decode_canonical(&unknown_schema.encode_to_vec()).is_err()
-        );
+        assert!(WindowsBuildManifest::decode_canonical(&unknown_schema.encode_to_vec()).is_err());
 
         let mut unknown_field = linux().encode_to_vec();
         unknown_field.extend_from_slice(&[0x98, 0x06, 0x01]);
