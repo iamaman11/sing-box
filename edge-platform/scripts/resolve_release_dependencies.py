@@ -174,9 +174,10 @@ def _oci(value: Any) -> dict[str, str]:
 def normalize_release_inputs(value: Any) -> dict[str, str | int]:
     root = _object(value, "release input lock")
     _exact_keys(root, TOP_LEVEL_KEYS, "release input lock")
-    if root["schema_version"] != LOCK_SCHEMA_VERSION:
+    schema_version = root["schema_version"]
+    if type(schema_version) is not int or schema_version != LOCK_SCHEMA_VERSION:
         raise ValueError(
-            f"unsupported release input lock schema: {root['schema_version']!r}"
+            f"unsupported release input lock schema: {schema_version!r}"
         )
 
     sing_box = _object(root["sing_box"], "sing_box")
