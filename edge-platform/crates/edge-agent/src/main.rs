@@ -1746,27 +1746,23 @@ async fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, Stri
     let before = observe_docker()
         .await
         .map_err(|err| format!("Mesh runtime cleanup requires observable Docker state: {err}"))?;
-    let mutation = if before.container_present(MESH_CONTAINER) {
-        Some(
-            Command::new("docker")
-                .args(["rm", "-f", MESH_CONTAINER])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(|err| format!("fixed Mesh container removal could not start: {err}"))?,
-        )
-    } else {
-        None
-    };
+    if before.container_present(MESH_CONTAINER) {
+        let images = read_exact_image_environment(stack_dir)?;
+        run_compose(
+            stack_dir,
+            &images,
+            &["--profile", "mesh", "rm", "-f", "-s", "cloudflare-mesh"],
+        )?;
+    }
 
     let after = observe_docker()
         .await
         .map_err(|err| format!("Mesh runtime cleanup re-observation failed: {err}"))?;
     if after.container_present(MESH_CONTAINER) {
-        return Err(format!(
-            "Mesh runtime container remains present after one bounded removal attempt; exit_code={}",
-            mutation.and_then(|status| status.code()).unwrap_or(-1)
-        ));
+        return Err(
+            "Mesh runtime container remains present after one bounded Compose removal attempt"
+                .to_owned(),
+        );
     }
 
     let token_path = mesh_runtime_secret_path(stack_dir)?;
