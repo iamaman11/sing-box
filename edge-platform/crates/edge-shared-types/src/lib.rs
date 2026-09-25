@@ -688,6 +688,7 @@ mod release_set_tests {
         let windows = release.windows_runtime.as_mut().unwrap();
         windows.input_sha256.clear();
         windows.source_revision.clear();
+        windows.diagnostic_sha256.clear();
     }
 
     fn valid_release() -> ReleaseSet {
@@ -706,6 +707,7 @@ mod release_set_tests {
                 sing_box_sha256: digest(2),
                 input_sha256: digest(14),
                 source_revision: "f".repeat(40),
+                diagnostic_sha256: digest(15),
             }),
             vm_runtime: Some(VmRuntime {
                 edge_agent_sha256: digest(7),
@@ -926,8 +928,29 @@ mod release_set_tests {
     }
 
     #[test]
+    fn release_set_accepts_legacy_v5_without_windows_diagnostic_identity() {
+        let mut release = valid_release();
+        release.schema_version = 5;
+        release
+            .windows_runtime
+            .as_mut()
+            .unwrap()
+            .diagnostic_sha256
+            .clear();
+        let bytes = encode_release_set(&release).unwrap();
+        assert_eq!(decode_release_set(&bytes).unwrap(), release);
+    }
+
+    #[test]
     fn release_set_rejects_missing_v5_windows_reuse_identity() {
         let mut release = valid_release();
+        release.schema_version = 5;
+        release
+            .windows_runtime
+            .as_mut()
+            .unwrap()
+            .diagnostic_sha256
+            .clear();
         release
             .windows_runtime
             .as_mut()
@@ -937,11 +960,30 @@ mod release_set_tests {
         assert!(validate_release_set(&release).is_err());
 
         let mut release = valid_release();
+        release.schema_version = 5;
+        release
+            .windows_runtime
+            .as_mut()
+            .unwrap()
+            .diagnostic_sha256
+            .clear();
         release
             .windows_runtime
             .as_mut()
             .unwrap()
             .source_revision
+            .clear();
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_missing_v6_windows_diagnostic_identity() {
+        let mut release = valid_release();
+        release
+            .windows_runtime
+            .as_mut()
+            .unwrap()
+            .diagnostic_sha256
             .clear();
         assert!(validate_release_set(&release).is_err());
     }
