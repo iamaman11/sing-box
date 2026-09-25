@@ -9,11 +9,11 @@ use crate::cloudflare_mesh_lifecycle_service::{
     plan_mesh_apply, plan_mesh_cleanup, wait_mesh_provider_healthy,
 };
 use crate::vultr_vpc_lifecycle_service::{VpcReadyReport, VultrVpcApiProvider, verify_vpc_ready};
-use edge_controller_core::production::{
-    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
-};
 use edge_controller_core::cloudflare_mesh_lifecycle::{
     ApplyAction, CleanupAction, DesiredMeshState, MeshObservation, MeshRouteSpec,
+};
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
 };
 use edge_controller_core::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::Ipv4NetworkObservation;
