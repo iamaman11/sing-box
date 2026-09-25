@@ -1413,7 +1413,7 @@ fn restricted_control_sshd_config() -> &'static str {
     PermitTTY no\n\
     PermitTunnel no\n\
     PermitUserRC no\n\
-    ForceCommand /usr/bin/false\n\
+    MaxSessions 0\n\
 Match all\n"
 }
 
@@ -1834,7 +1834,8 @@ mod tests {
         assert!(rendered.contains("PermitTTY no"));
         assert!(rendered.contains("PermitTunnel no"));
         assert!(rendered.contains("PermitUserRC no"));
-        assert!(rendered.contains("ForceCommand /usr/bin/false"));
+        assert!(rendered.contains("MaxSessions 0"));
+        assert!(!rendered.contains("ForceCommand"));
         assert!(rendered.contains("Match all"));
         assert!(rendered.contains("hostname: edge-1"));
         assert!(!rendered.contains("StrictHostKeyChecking=accept-new"));
