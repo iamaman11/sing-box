@@ -24,6 +24,26 @@ pub const RELEASE_SET_SCHEMA_VERSION: u32 = 5;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 
+pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
+
+pub fn decode_production_desired_state(bytes: &[u8]) -> Result<ProductionDesiredState, String> {
+    let desired = ProductionDesiredState::decode(bytes)
+        .map_err(|err| format!("production desired-state protobuf decode failed: {err}"))?;
+    let canonical = desired.encode_to_vec();
+    if canonical != bytes {
+        return Err(
+            "production desired-state bytes are not canonical protobuf encoding; refusing ambiguous authority"
+                .to_owned(),
+        );
+    }
+    Ok(desired)
+}
+
+pub fn canonical_production_desired_state() -> Result<ProductionDesiredState, String> {
+    decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
+}
+
 pub fn timestamp_from_unix_seconds(seconds: i64) -> prost_types::Timestamp {
     prost_types::Timestamp { seconds, nanos: 0 }
 }
@@ -926,6 +946,19 @@ mod release_set_tests {
 mod tests {
     use super::*;
     use prost::Message;
+
+    #[test]
+    fn canonical_production_desired_state_is_protobuf_and_canonical() {
+        let desired = canonical_production_desired_state().unwrap();
+        assert_eq!(desired.schema_version, 1);
+        assert_eq!(desired.environment, "production");
+        assert_eq!(desired.machine_id, "production-1");
+        assert_eq!(desired.public_hostname, "miu.alegria.by");
+        assert_eq!(
+            desired.encode_to_vec(),
+            CANONICAL_PRODUCTION_DESIRED_STATE_BYTES
+        );
+    }
 
     #[test]
     fn encodes_agent_state_with_prost() {
