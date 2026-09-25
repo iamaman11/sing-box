@@ -181,10 +181,7 @@ impl OrchestrationContext {
         ))
     }
 
-    pub fn validate_application_image_environment(
-        &self,
-        bundle_root: &Path,
-    ) -> Result<(), String> {
+    pub fn validate_application_image_environment(&self, bundle_root: &Path) -> Result<(), String> {
         let path = bundle_root.join(".images.env");
         let actual = std::fs::read_to_string(&path).map_err(|err| {
             format!(
@@ -562,16 +559,17 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
             .materialize_application_inputs(&bundle, &manifest_path, &artifact)
             .unwrap();
 
-        let manifest = AgentArtifactManifest::parse_json(
-            &fs::read_to_string(&manifest_path).unwrap(),
-        )
-        .unwrap();
+        let manifest =
+            AgentArtifactManifest::parse_json(&fs::read_to_string(&manifest_path).unwrap())
+                .unwrap();
         assert_eq!(manifest.source_revision, "5".repeat(40));
         assert_eq!(manifest.sha256, actual_agent_sha);
         context
             .validate_application_artifact(&manifest, &artifact)
             .unwrap();
-        context.validate_application_image_environment(&bundle).unwrap();
+        context
+            .validate_application_image_environment(&bundle)
+            .unwrap();
 
         fs::write(
             bundle.join(".images.env"),
@@ -581,11 +579,19 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
                 .replace("gateway@sha256:", "gateway:latest#"),
         )
         .unwrap();
-        assert!(context.validate_application_image_environment(&bundle).is_err());
+        assert!(
+            context
+                .validate_application_image_environment(&bundle)
+                .is_err()
+        );
 
         let mut stale = manifest;
         stale.source_revision = "7".repeat(40);
-        assert!(context.validate_application_artifact(&stale, &artifact).is_err());
+        assert!(
+            context
+                .validate_application_artifact(&stale, &artifact)
+                .is_err()
+        );
 
         assert_ne!(agent_sha, context.release.agent_sha256);
         fs::remove_dir_all(root).unwrap();
