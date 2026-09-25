@@ -7,6 +7,7 @@ members = [
     "crates/edge-console",
     "crates/edge-controller",
     "crates/edge-controller-core",
+    "crates/edge-diagnostic",
     "crates/edge-local-runtime",
     "crates/edge-observability",
     "crates/edge-orchestrator",
