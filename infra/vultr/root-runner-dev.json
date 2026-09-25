@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "environment": "root-runner-dev",
+  "machines": [
+    {
+      "id": "root-runner-dev-1",
+      "role": "root-runner-dev",
+      "provider": {
+        "region": "waw",
+        "plan": "vc2-1c-1gb",
+        "os_id": 2625,
+        "enable_ipv6": false,
+        "firewall_profile": "acceptance-ssh"
+      },
+      "bootstrap_profile": "singbox-host-v2",
+      "application_profiles": [],
+      "tags": [
+        "root-runner-dev"
+      ]
+    }
+  ]
+}
