@@ -711,11 +711,13 @@ def main() -> None:
         "Cargo caches must remain pinned, job-scoped disposable acceleration without semantic ownership",
     )
     require(
-        "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\")" in windows_input
+        "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\", \"edge-diagnostic\")"
+        in windows_input
         and "_reachable_package_dirs(repo_root)" in windows_input
         and "WINDOWS_BUILD_CONTRACT_PATH" in windows_input
-        and 'base_schema != "5"' in windows_input,
-        "Windows identity must cover transitive local dependencies, marked build contract and fail closed before ReleaseSet v5",
+        and 'base_schema != "6"' in windows_input
+        and "base_diagnostic_sha256" in windows_input,
+        "Windows identity must cover controller/console/diagnostic transitive local dependencies, marked build contract and fail closed before ReleaseSet v6",
     )
 
     require(
