@@ -1203,9 +1203,6 @@ jobs:
           test "${sing_box_binary_sha}" = "${SING_BOX_BINARY_SHA256}"
           source_tree="$(git rev-parse 'HEAD^{tree}')"
 
-          [[ "${EDGE_GATEWAY_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-edge-gateway@sha256:[0-9a-f]{64}$ ]]
-          [[ "${EDGE_WARP_EGRESS_IMAGE}" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
-
           edge-platform/target/release/edge-release-set write-linux-manifest \
             --output "${out}/linux-build-manifest.pb" \
             --candidate-source-revision "${CANDIDATE_REVISION}" \
@@ -1250,8 +1247,6 @@ jobs:
       contents: read
       actions: read
       packages: read
-    outputs:
-      release_set_sha256: ${{ steps.authority.outputs.release_set_sha256 }}
     steps:
       - name: Download exact platform candidates
         shell: bash
@@ -1270,7 +1265,6 @@ jobs:
             -D "${RUNNER_TEMP}/candidate/linux"
 
       - name: Create and verify canonical ReleaseSet
-        id: authority
         shell: bash
         env:
           GHCR_TOKEN: ${{ github.token }}
@@ -1308,11 +1302,6 @@ jobs:
 
           release_set_sha="$(sed -n 's/^release_set_sha256=//p' <<<"${create_output}")"
           source_tree="$(sed -n 's/^source_tree=//p' <<<"${create_output}")"
-          test "$(grep -c . <<<"${release_set_sha}")" -eq 1
-          test "$(grep -c . <<<"${source_tree}")" -eq 1
-          [[ "${release_set_sha}" =~ ^[0-9a-f]{64}$ ]]
-          [[ "${source_tree}" =~ ^[0-9a-f]{40}$ ]]
-
           verify_output="$("${tool}" verify-candidate \
             --input "${authority}/release-set.pb" \
             --sha256-file "${authority}/release-set.pb.sha256" \
@@ -1329,10 +1318,6 @@ jobs:
             --edge-controller "${linux}/edge-controller" \
             --edge-orchestrator "${linux}/edge-orchestrator")"
           printf '%s\n' "${verify_output}"
-          test "$(sed -n 's/^release_set_sha256=//p' <<<"${verify_output}")" = "${release_set_sha}"
-          test "$(sed -n 's/^release_input_sha256=//p' <<<"${verify_output}")" = "${RELEASE_INPUT_SHA256}"
-          test "$(sed -n 's/^source_revision=//p' <<<"${verify_output}")" = "${CANDIDATE_REVISION}"
-
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"
           warp_ref="$(sed -n 's/^warp_egress_image=//p' <<<"${verify_output}")"
           mesh_ref="$(sed -n 's/^mesh_image=//p' <<<"${verify_output}")"
@@ -1341,8 +1326,6 @@ jobs:
           docker buildx imagetools inspect "${warp_ref}" >/dev/null
           docker logout ghcr.io >/dev/null
           docker buildx imagetools inspect "${mesh_ref}" >/dev/null
-
-          printf 'release_set_sha256=%s\n' "${release_set_sha}" >> "${GITHUB_OUTPUT}"
 
           {
             echo '### Canonical ReleaseSet candidate'
@@ -1380,7 +1363,6 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows.result }}
           LINUX_RESULT: ${{ needs.linux_candidate.result }}
           RELEASE_AUTHORITY_RESULT: ${{ needs.release_authority.result }}
-          RELEASE_SET_SHA256: ${{ needs.release_authority.outputs.release_set_sha256 }}
         run: |
           set -euo pipefail
           test "${SOURCE_RESULT}" = "success"
@@ -1388,9 +1370,7 @@ jobs:
           test "${WINDOWS_RESULT}" = "success"
           test "${LINUX_RESULT}" = "success"
           test "${RELEASE_AUTHORITY_RESULT}" = "success"
-          [[ "${RELEASE_SET_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           echo "candidate_revision=${CANDIDATE_REVISION}"
-          echo "release_set_sha256=${RELEASE_SET_SHA256}"
           echo "All candidate build and verification jobs passed."
 
   promote:

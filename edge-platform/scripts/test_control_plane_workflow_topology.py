@@ -612,6 +612,13 @@ def main() -> None:
         "ReleaseSet assembly must consume typed build manifests instead of scattered build hash outputs",
     )
     require(
+        "steps.authority.outputs.release_set_sha256" not in edge_platform_ci
+        and "needs.release_authority.outputs.release_set_sha256" not in edge_platform_ci
+        and '[[ "${EDGE_GATEWAY_IMAGE}" =~' not in edge_platform_ci
+        and '[[ "${EDGE_WARP_EGRESS_IMAGE}" =~' not in edge_platform_ci,
+        "typed release ownership must not regress to redundant GitHub outputs or shell-owned manifest validation",
+    )
+    require(
         "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\")" in windows_input
         and "_reachable_package_dirs(repo_root)" in windows_input
         and "WINDOWS_BUILD_CONTRACT_PATH" in windows_input
