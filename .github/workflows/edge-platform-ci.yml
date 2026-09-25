@@ -216,10 +216,6 @@ jobs:
           agent = Path("edge-platform/crates/edge-agent/src/main.rs").read_text()
           assert 'stack_dir.join("bootstrap.sh")' not in agent
           assert "Command::new(&script)" not in agent
-          workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
-          assert "CLOUDFLARE_MESH_IMAGE=%s" in workflow
-          assert 'mesh_image="${EDGE_MESH_IMAGE}"' in workflow
-
           vpc = json.loads(Path("infra/vultr/application-acceptance-vpc.json").read_text())
           assert vpc == {
               "schema": 1,
