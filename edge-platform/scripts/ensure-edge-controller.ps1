@@ -20,24 +20,41 @@ function Resolve-ControllerExe {
         return (Resolve-Path -LiteralPath $ExplicitPath).Path
     }
 
-    $currentPath = Join-Path $env:LOCALAPPDATA "edge-platform\current.json"
+    $installRoot = Join-Path $env:LOCALAPPDATA "edge-platform"
+    $currentPath = Join-Path $installRoot "current.pb"
+    $diagnosticPath = Join-Path $installRoot "bin\edge-diagnostic.exe"
     if (-not (Test-Path -LiteralPath $currentPath)) {
         throw "Accepted Windows control release is not installed. Run edge-platform\scripts\install-windows-release.ps1."
     }
-
-    $current = Get-Content -Raw $currentPath | ConvertFrom-Json
-    if ($current.schema -ne 1 -or [string]$current.source_revision -notmatch '^[0-9a-f]{40}$') {
-        throw "Installed Windows control pointer has invalid schema"
+    if (-not (Test-Path -LiteralPath $diagnosticPath)) {
+        throw "Accepted Windows diagnostic bootstrap is missing: $diagnosticPath"
     }
 
-    $path = [string]$current.controller_path
-    $expectedSha = ([string]$current.controller_sha256).ToLowerInvariant()
-    if (-not (Test-Path -LiteralPath $path)) { throw "Installed controller binary not found: $path" }
-    if ($expectedSha -notmatch '^[0-9a-f]{64}$') { throw "Installed controller digest is invalid" }
+    $diagnosticOutput = @(& $diagnosticPath doctor $currentPath)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Accepted Windows activation state failed independent diagnostic verification"
+    }
+    $values = @{}
+    foreach ($line in $diagnosticOutput) {
+        $parts = ([string]$line).Split("=", 2)
+        if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+    }
+    if ($values["status"] -ne "PASS" -or $values["exact_release_files"] -ne "PASS") {
+        throw "Accepted Windows activation state did not prove exact release files"
+    }
 
-    $actualSha = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
-    if ($actualSha -ne $expectedSha) { throw "Installed controller binary failed SHA-256 verification" }
-    return (Resolve-Path -LiteralPath $path).Path
+    $path = [string]$values["controller_path"]
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) {
+        throw "Accepted Windows activation state has no usable controller path"
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $path).Path
+    $releaseRoot = [IO.Path]::GetFullPath((Join-Path $installRoot "releases") + [IO.Path]::DirectorySeparatorChar)
+    $resolvedFull = [IO.Path]::GetFullPath($resolved)
+    if (-not $resolvedFull.StartsWith($releaseRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Accepted controller path is outside the immutable Windows release root"
+    }
+    return $resolved
 }
 
 function Get-ExistingController {
