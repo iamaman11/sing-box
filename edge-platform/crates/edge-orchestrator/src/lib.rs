@@ -199,10 +199,9 @@ impl OrchestrationContext {
         Ok(())
     }
 
-    pub fn materialize_application_inputs(
+    pub fn materialize_application_image_environment(
         &self,
         bundle_root: &Path,
-        artifact_manifest_path: &Path,
         artifact_path: &Path,
     ) -> Result<(), String> {
         if !bundle_root.is_dir() {
@@ -211,13 +210,21 @@ impl OrchestrationContext {
                 bundle_root.display()
             ));
         }
-
         let manifest = self.expected_application_artifact()?;
         self.validate_application_artifact(&manifest, artifact_path)?;
-
         let image_environment = self.expected_application_image_environment()?;
         std::fs::write(bundle_root.join(".images.env"), image_environment)
-            .map_err(|err| format!("failed to materialize exact application images: {err}"))?;
+            .map_err(|err| format!("failed to materialize exact application images: {err}"))
+    }
+
+    pub fn materialize_application_inputs(
+        &self,
+        bundle_root: &Path,
+        artifact_manifest_path: &Path,
+        artifact_path: &Path,
+    ) -> Result<(), String> {
+        self.materialize_application_image_environment(bundle_root, artifact_path)?;
+        let manifest = self.expected_application_artifact()?;
         let manifest_json = serde_json::to_vec_pretty(&manifest)
             .map_err(|err| format!("failed to serialize application artifact authority: {err}"))?;
         std::fs::write(artifact_manifest_path, manifest_json).map_err(|err| {
