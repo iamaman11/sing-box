@@ -16,6 +16,9 @@ use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationPlanClass, DesiredApplicationState, plan_application,
 };
 use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+};
 use edge_controller_core::vultr_lifecycle::PlanClass;
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::get_instance_typed;
@@ -248,6 +251,117 @@ fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, P
     ))
 }
 
+pub(crate) async fn production_converge_desired(
+    context: &OrchestrationContext,
+    desired: &DesiredApplicationState,
+    artifact_path: &Path,
+) -> Result<(String, String), String> {
+    let bundle_root = Path::new(".").join(&desired.bundle_root);
+    context.materialize_application_image_environment(&bundle_root, artifact_path)?;
+    let artifact = context.expected_application_artifact()?;
+    verify_release_bound_application_inputs(context, desired, &artifact, artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
+    let authority = resolve_application_authority(desired).await?;
+    let observation = observe_application(&authority, desired).await?;
+    let plan = plan_application(
+        desired,
+        &artifact,
+        &prepared.release.bundle_digest,
+        &observation,
+    )
+    .map_err(|err| err.to_string())?;
+
+    match plan.class {
+        ApplicationPlanClass::Noop => {
+            return Ok((
+                plan.desired_release.release_id,
+                plan.desired_release.bundle_digest,
+            ));
+        }
+        ApplicationPlanClass::Blocked => {
+            return Err(format!(
+                "production application convergence is blocked: {}",
+                plan.reasons.join("; ")
+            ));
+        }
+        ApplicationPlanClass::Apply | ApplicationPlanClass::Upgrade => {}
+    }
+
+    let mode = match plan.class {
+        ApplicationPlanClass::Apply => DesiredMutationMode::Apply,
+        ApplicationPlanClass::Upgrade => DesiredMutationMode::Upgrade,
+        ApplicationPlanClass::Noop | ApplicationPlanClass::Blocked => unreachable!(),
+    };
+    let authorized = authorize_application_plan(
+        desired,
+        &artifact,
+        &prepared.release.bundle_digest,
+        &observation,
+        plan,
+    )?;
+    let report = execute_desired(
+        &authority,
+        desired,
+        &artifact,
+        artifact_path,
+        &prepared,
+        &authorized.authority.authority_digest,
+        mode,
+    )
+    .await?;
+    if report.final_plan.class != ApplicationPlanClass::Noop {
+        return Err(format!(
+            "production application convergence did not reach NOOP: {:?}: {}",
+            report.final_plan.class,
+            report.final_plan.reasons.join("; ")
+        ));
+    }
+    Ok((
+        report.final_plan.desired_release.release_id,
+        report.final_plan.desired_release.bundle_digest,
+    ))
+}
+
+pub(crate) async fn production_verify_desired(
+    context: &OrchestrationContext,
+    desired: &DesiredApplicationState,
+    artifact_path: &Path,
+) -> Result<(), String> {
+    let bundle_root = Path::new(".").join(&desired.bundle_root);
+    context.materialize_application_image_environment(&bundle_root, artifact_path)?;
+    let artifact = context.expected_application_artifact()?;
+    verify_release_bound_application_inputs(context, desired, &artifact, artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
+    let authority = resolve_application_authority(desired).await?;
+    let (plan, _observation) = verify_desired(&authority, desired, &artifact, &prepared).await?;
+    if plan.class != ApplicationPlanClass::Noop {
+        return Err(format!(
+            "production application verify expected NOOP, got {:?}: {}",
+            plan.class,
+            plan.reasons.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn production_rollback_desired(
+    desired: &DesiredApplicationState,
+) -> Result<(String, String), String> {
+    let authority = resolve_application_authority(desired).await?;
+    let (observation, rollback) = rollback_plan_remote(&authority, desired).await?;
+    let current_release = rollback.current_release.release_id.clone();
+    let previous_release = rollback.previous_release.release_id.clone();
+    let authorized = authorize_application_rollback(desired, &observation, rollback.clone())?;
+    execute_rollback(
+        &authority,
+        desired,
+        &rollback.rollback_digest,
+        &authorized.authority.authority_digest,
+    )
+    .await?;
+    Ok((current_release, previous_release))
+}
+
 pub(crate) async fn acceptance_apply_desired(
     context: &OrchestrationContext,
     desired: &DesiredApplicationState,
@@ -376,6 +490,12 @@ pub(crate) async fn resolve_application_authority_from_spec(
 }
 
 pub(crate) fn load_application_desired(path: &Path) -> Result<DesiredApplicationState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.application)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read application spec {}: {err}", path.display()))?;
     DesiredApplicationState::parse_json(&raw)

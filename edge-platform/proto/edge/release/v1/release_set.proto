@@ -32,6 +32,24 @@ message WindowsRuntime {
   // Source revision that originally produced the exact reusable Windows
   // artifact. Stable across later control-plane-only releases that reuse it.
   string source_revision = 6;
+  // Read-only diagnostic binary bound to the same exact Windows release.
+  // Present from ReleaseSet v6.
+  bytes diagnostic_sha256 = 7;
+}
+
+message WindowsActivationState {
+  uint32 schema_version = 1;
+  string release_set_sha256 = 2;
+  string source_revision = 3;
+  string release_dir = 4;
+  string controller_path = 5;
+  string console_path = 6;
+  string sing_box_path = 7;
+  string diagnostic_path = 8;
+  bytes controller_sha256 = 9;
+  bytes console_sha256 = 10;
+  bytes sing_box_sha256 = 11;
+  bytes diagnostic_sha256 = 12;
 }
 
 message VmRuntime {

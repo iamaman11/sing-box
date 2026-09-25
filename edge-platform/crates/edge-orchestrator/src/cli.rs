@@ -161,6 +161,14 @@ impl ApplicationLifecycleCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ProductionCommand {
     Validate,
+    Converge(ProductionRuntimeArgs),
+    Verify(ProductionRuntimeArgs),
+    Rollback,
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct ProductionRuntimeArgs {
+    pub edge_agent_artifact_path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]

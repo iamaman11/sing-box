@@ -8,7 +8,8 @@ use build_manifest::{
 use edge_shared_types::{
     CONFIG_SCHEMA_VERSION, CloudflareRuntime, DB_SCHEMA_VERSION, OciImage,
     RELEASE_SET_SCHEMA_VERSION, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
-    WindowsRuntime, decode_release_set, encode_release_set, release_set_sha256,
+    WindowsActivationState, WindowsRuntime, decode_release_set, encode_release_set,
+    encode_windows_activation_state, release_set_sha256,
 };
 use ring::digest::{Context, SHA256};
 use std::collections::BTreeMap;
@@ -24,6 +25,7 @@ const VERIFY_FLAGS: &[&str] = &[
     "windows-artifact",
     "windows-controller",
     "windows-console",
+    "windows-diagnostic",
     "windows-sing-box",
     "linux-sing-box",
     "edge-agent",
@@ -39,6 +41,27 @@ const VERIFY_VM_FLAGS: &[&str] = &[
     "edge-controller",
 ];
 
+const VERIFY_WINDOWS_FLAGS: &[&str] = &[
+    "input",
+    "sha256-file",
+    "windows-artifact",
+    "windows-controller",
+    "windows-console",
+    "windows-diagnostic",
+    "windows-sing-box",
+];
+
+const WRITE_WINDOWS_ACTIVATION_FLAGS: &[&str] = &[
+    "input",
+    "sha256-file",
+    "release-dir",
+    "controller",
+    "console",
+    "diagnostic",
+    "sing-box",
+    "output",
+];
+
 const CREATE_FLAGS: &[&str] = &[
     "output",
     "sha256-output",
@@ -49,6 +72,7 @@ const CREATE_FLAGS: &[&str] = &[
     "windows-artifact",
     "windows-controller",
     "windows-console",
+    "windows-diagnostic",
     "windows-sing-box",
     "linux-sing-box",
     "edge-agent",
@@ -66,6 +90,7 @@ const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
     "windows-artifact",
     "windows-controller",
     "windows-console",
+    "windows-diagnostic",
     "windows-sing-box",
     "linux-sing-box",
     "edge-agent",
@@ -87,6 +112,7 @@ const WRITE_WINDOWS_MANIFEST_FLAGS: &[&str] = &[
     "artifact-sha256",
     "controller-sha256",
     "console-sha256",
+    "diagnostic-sha256",
 ];
 
 const WRITE_LINUX_MANIFEST_FLAGS: &[&str] = &[
@@ -134,12 +160,14 @@ fn run() -> Result<(), String> {
         "verify" => verify_release_set(&flags),
         "verify-candidate" => verify_candidate_release_set(&flags),
         "verify-vm" => verify_vm_release_set(&flags),
+        "verify-windows" => verify_windows_release_set(&flags),
+        "write-windows-activation" => write_windows_activation_state(&flags),
         _ => Err(usage()),
     }
 }
 
 fn usage() -> String {
-    "usage: edge-release-set create|write-windows-manifest|write-linux-manifest|verify|verify-candidate|verify-vm --flag value ..."
+    "usage: edge-release-set create|write-windows-manifest|write-linux-manifest|verify|verify-candidate|verify-vm|verify-windows|write-windows-activation --flag value ..."
         .to_owned()
 }
 
@@ -208,6 +236,7 @@ fn write_windows_build_manifest(flags: &BTreeMap<String, String>) -> Result<(), 
         artifact_sha256: flag(flags, "artifact-sha256")?.to_owned(),
         controller_sha256: flag(flags, "controller-sha256")?.to_owned(),
         console_sha256: flag(flags, "console-sha256")?.to_owned(),
+        diagnostic_sha256: flag(flags, "diagnostic-sha256")?.to_owned(),
     };
     write_build_manifest(
         "WindowsBuildManifest",
@@ -355,6 +384,11 @@ fn verify_build_manifest_artifacts(
             windows.console_sha256.as_str(),
         ),
         (
+            "Windows diagnostic",
+            "windows-diagnostic",
+            windows.diagnostic_sha256.as_str(),
+        ),
+        (
             "Windows sing-box",
             "windows-sing-box",
             windows.sing_box_binary_sha256.as_str(),
@@ -426,6 +460,10 @@ fn release_set_from_build_manifests(
                 &windows.windows_input_sha256,
             )?,
             source_revision: windows.windows_source_revision.clone(),
+            diagnostic_sha256: digest_from_hex(
+                "WindowsBuildManifest.diagnostic_sha256",
+                &windows.diagnostic_sha256,
+            )?,
         }),
         vm_runtime: Some(VmRuntime {
             edge_agent_sha256: digest_from_hex(
@@ -492,6 +530,32 @@ fn write_release_set_files(
         )
     })?;
     Ok(digest)
+}
+
+fn load_verified_release_set_without_revision(
+    flags: &BTreeMap<String, String>,
+) -> Result<(ReleaseSet, String), String> {
+    let input = PathBuf::from(flag(flags, "input")?);
+    let sha256_file = PathBuf::from(flag(flags, "sha256-file")?);
+    let bytes =
+        fs::read(&input).map_err(|error| format!("failed to read {}: {error}", input.display()))?;
+    let release = decode_release_set(&bytes)?;
+    let digest = release_set_sha256(&bytes)?;
+    let file_name = input
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "release-set input must have a UTF-8 filename".to_owned())?;
+    let expected_sha_file = format!("{digest}  {file_name}\n");
+    let actual_sha_file = fs::read_to_string(&sha256_file).map_err(|error| {
+        format!(
+            "failed to read release-set SHA-256 file {}: {error}",
+            sha256_file.display()
+        )
+    })?;
+    if actual_sha_file != expected_sha_file {
+        return Err("release-set SHA-256 sidecar does not match exact protobuf bytes".to_owned());
+    }
+    Ok((release, digest))
 }
 
 fn load_verified_release_set(
@@ -562,6 +626,11 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
         &windows.console_sha256,
     )?;
     verify_file_digest(
+        "Windows diagnostic",
+        Path::new(flag(flags, "windows-diagnostic")?),
+        &windows.diagnostic_sha256,
+    )?;
+    verify_file_digest(
         "Windows sing-box",
         Path::new(flag(flags, "windows-sing-box")?),
         &windows.sing_box_sha256,
@@ -592,6 +661,117 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
     }
 
     print_vm_evidence(&release, &digest)
+}
+
+fn verify_windows_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, VERIFY_WINDOWS_FLAGS)?;
+    let (release, digest) = load_verified_release_set_without_revision(flags)?;
+    if release.schema_version < 6 {
+        return Err("verify-windows requires ReleaseSet schema_version >= 6".to_owned());
+    }
+    let windows = release
+        .windows_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set windows_runtime is required".to_owned())?;
+    for (label, flag_name, expected) in [
+        (
+            "Windows artifact",
+            "windows-artifact",
+            windows.artifact_sha256.as_slice(),
+        ),
+        (
+            "Windows controller",
+            "windows-controller",
+            windows.controller_sha256.as_slice(),
+        ),
+        (
+            "Windows console",
+            "windows-console",
+            windows.console_sha256.as_slice(),
+        ),
+        (
+            "Windows diagnostic",
+            "windows-diagnostic",
+            windows.diagnostic_sha256.as_slice(),
+        ),
+        (
+            "Windows sing-box",
+            "windows-sing-box",
+            windows.sing_box_sha256.as_slice(),
+        ),
+    ] {
+        verify_file_digest(label, Path::new(flag(flags, flag_name)?), expected)?;
+    }
+    println!("release_set_sha256={digest}");
+    println!("source_revision={}", release.source_revision);
+    println!(
+        "windows_controller_sha256={}",
+        digest_to_hex(&windows.controller_sha256)
+    );
+    println!(
+        "windows_console_sha256={}",
+        digest_to_hex(&windows.console_sha256)
+    );
+    println!(
+        "windows_diagnostic_sha256={}",
+        digest_to_hex(&windows.diagnostic_sha256)
+    );
+    println!(
+        "windows_sing_box_sha256={}",
+        digest_to_hex(&windows.sing_box_sha256)
+    );
+    Ok(())
+}
+
+fn write_windows_activation_state(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, WRITE_WINDOWS_ACTIVATION_FLAGS)?;
+    let (release, digest) = load_verified_release_set_without_revision(flags)?;
+    if release.schema_version < 6 {
+        return Err("Windows activation requires ReleaseSet schema_version >= 6".to_owned());
+    }
+    let windows = release
+        .windows_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set windows_runtime is required".to_owned())?;
+
+    let controller = PathBuf::from(flag(flags, "controller")?);
+    let console = PathBuf::from(flag(flags, "console")?);
+    let diagnostic = PathBuf::from(flag(flags, "diagnostic")?);
+    let sing_box = PathBuf::from(flag(flags, "sing-box")?);
+    verify_file_digest(
+        "Windows controller",
+        &controller,
+        &windows.controller_sha256,
+    )?;
+    verify_file_digest("Windows console", &console, &windows.console_sha256)?;
+    verify_file_digest(
+        "Windows diagnostic",
+        &diagnostic,
+        &windows.diagnostic_sha256,
+    )?;
+    verify_file_digest("Windows sing-box", &sing_box, &windows.sing_box_sha256)?;
+
+    let state = WindowsActivationState {
+        schema_version: 1,
+        release_set_sha256: digest,
+        source_revision: release.source_revision,
+        release_dir: flag(flags, "release-dir")?.to_owned(),
+        controller_path: controller.to_string_lossy().into_owned(),
+        console_path: console.to_string_lossy().into_owned(),
+        sing_box_path: sing_box.to_string_lossy().into_owned(),
+        diagnostic_path: diagnostic.to_string_lossy().into_owned(),
+        controller_sha256: windows.controller_sha256.clone(),
+        console_sha256: windows.console_sha256.clone(),
+        sing_box_sha256: windows.sing_box_sha256.clone(),
+        diagnostic_sha256: windows.diagnostic_sha256.clone(),
+    };
+    let bytes = encode_windows_activation_state(&state)?;
+    fs::write(Path::new(flag(flags, "output")?), bytes)
+        .map_err(|err| format!("failed to write Windows activation state: {err}"))?;
+    println!("release_set_sha256={}", state.release_set_sha256);
+    println!("release_dir={}", state.release_dir);
+    println!("diagnostic_path={}", state.diagnostic_path);
+    Ok(())
 }
 
 fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
@@ -667,6 +847,12 @@ fn print_vm_evidence(release: &ReleaseSet, digest: &str) -> Result<(), String> {
         "windows_console_sha256={}",
         digest_to_hex(&windows.console_sha256)
     );
+    if release.schema_version >= 6 {
+        println!(
+            "windows_diagnostic_sha256={}",
+            digest_to_hex(&windows.diagnostic_sha256)
+        );
+    }
     println!(
         "windows_sing_box_sha256={}",
         digest_to_hex(&windows.sing_box_sha256)

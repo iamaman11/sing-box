@@ -28,9 +28,10 @@ use edge_observability::init as init_observability;
 use edge_secrets::ApplicationRuntimeSecrets;
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
-    AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
-    BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
-    FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
+    ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
+    BundleFile, ContainerRuntimeObservation, Empty, FileCategory, FilePresence,
+    Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
     ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
@@ -38,13 +39,14 @@ use edge_shared_types::{
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 const DEFAULT_AGENT_ADDR: &str = "127.0.0.1:50061";
 const DEFAULT_STACK_DIR: &str = "/opt/vultr-edge-stack/stack";
-const APPLICATION_RELEASE_MARKER: &str = ".application-release.json";
+const APPLICATION_RELEASE_MARKER: &str = ".application-release.pb";
 const PREVIOUS_STACK_DIR: &str = "stack.previous";
 const STAGING_STACK_DIR: &str = "stack.next";
 const ROLLBACK_STACK_DIR: &str = "stack.rollback";
@@ -53,7 +55,7 @@ const RUNTIME_ENV_FILE: &str = ".env.runtime";
 const RUNTIME_SECRET_DIR: &str = "runtime-secrets";
 const RUNTIME_SECRET_FILE: &str = "application-runtime-v1.env";
 const MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env";
-const MESH_RUNTIME_FAILURE_FILE: &str = "last-readiness-failure-v1.json";
+const MESH_RUNTIME_FAILURE_FILE: &str = "last-readiness-failure-v1.pb";
 const MAX_MESH_FAILURE_REASONS: usize = 12;
 const MAX_MESH_FAILURE_REASON_CHARS: usize = 512;
 const IMAGE_ENV_FILE: &str = ".images.env";
@@ -361,6 +363,7 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         direct_egress_ready: None,
         warp_egress_ready: None,
         mesh_runtime_ready: None,
+        containers: Vec::new(),
     };
 
     inspect_bundle_artifacts(stack_dir, &mut state);
@@ -407,6 +410,10 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         ));
     }
 
+    if docker.reachable {
+        collect_exact_container_evidence(stack_dir, &compose.expected_containers, &mut state).await;
+    }
+
     let expected_tcp = compose.expected_tcp_ports;
     let expected_udp = compose.expected_udp_ports;
     let missing_tcp = expected_tcp
@@ -446,6 +453,10 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
             .any(|reason| reason.contains("bundle artifact"))
         && state.docker_reachable
         && state.missing_containers.is_empty()
+        && state
+            .containers
+            .iter()
+            .all(|container| container.exact_image_ready)
         && missing_tcp.is_empty()
         && missing_udp.is_empty()
         && datapaths_ready;
@@ -458,6 +469,101 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     }
 
     state
+}
+
+async fn collect_exact_container_evidence(
+    stack_dir: &Path,
+    expected_containers: &[String],
+    state: &mut AgentState,
+) {
+    let images = match read_exact_image_environment(stack_dir) {
+        Ok(images) => images,
+        Err(err) => {
+            state.degraded_reasons.push(format!(
+                "exact ReleaseSet image authority is unavailable: {err}"
+            ));
+            return;
+        }
+    };
+
+    for name in expected_containers {
+        let expected_image = match name.as_str() {
+            WARP_CONTAINER => images.get(EDGE_WARP_EGRESS_IMAGE_KEY).cloned(),
+            LINE1_CONTAINER | LINE2_CONTAINER => images.get(EDGE_GATEWAY_IMAGE_KEY).cloned(),
+            MESH_CONTAINER => images.get(EDGE_MESH_IMAGE_KEY).cloned(),
+            _ => None,
+        };
+        let Some(expected_image) = expected_image else {
+            state.degraded_reasons.push(format!(
+                "no exact ReleaseSet image mapping exists for expected container {name}"
+            ));
+            continue;
+        };
+
+        match observe_container_runtime(name).await {
+            Ok(evidence) => {
+                let health_ready = !matches!(
+                    evidence.health.as_deref(),
+                    Some("UNHEALTHY") | Some("STARTING")
+                );
+                let exact_image_ready = evidence.present
+                    && evidence.running
+                    && evidence.image.as_deref() == Some(expected_image.as_str())
+                    && evidence.oom_killed != Some(true)
+                    && health_ready;
+
+                if !exact_image_ready {
+                    state.degraded_reasons.push(format!(
+                        "container {name} does not match exact accepted runtime: {}",
+                        evidence.summary()
+                    ));
+                }
+
+                state.containers.push(ContainerRuntimeObservation {
+                    name: evidence.name,
+                    present: evidence.present,
+                    running: evidence.running,
+                    expected_image: Some(expected_image),
+                    observed_image: evidence.image,
+                    exact_image_ready,
+                    health: evidence.health,
+                    exit_code: evidence.exit_code,
+                    restart_count: evidence.restart_count,
+                    oom_killed: evidence.oom_killed,
+                    networks: evidence.networks,
+                    published_ports: evidence.published_ports,
+                    mounts: evidence.mounts,
+                    runtime_error_present: evidence.runtime_error.is_some(),
+                    recent_events: evidence.log_tail,
+                });
+            }
+            Err(err) => {
+                state.degraded_reasons.push(format!(
+                    "typed Docker inspection failed for expected container {name}: {err}"
+                ));
+                state.containers.push(ContainerRuntimeObservation {
+                    name: name.clone(),
+                    present: false,
+                    running: false,
+                    expected_image: Some(expected_image),
+                    observed_image: None,
+                    exact_image_ready: false,
+                    health: None,
+                    exit_code: None,
+                    restart_count: None,
+                    oom_killed: None,
+                    networks: Vec::new(),
+                    published_ports: Vec::new(),
+                    mounts: Vec::new(),
+                    runtime_error_present: true,
+                    recent_events: Vec::new(),
+                });
+            }
+        }
+    }
+    state
+        .containers
+        .sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 fn apply_bundle(
@@ -597,7 +703,7 @@ fn apply_digest_bound_bundle(
     materialize_vm_owned_runtime_environment(&staging)?;
 
     let release = ApplicationBundleRelease {
-        schema: 1,
+        schema_version: 1,
         bundle_id,
         bundle_digest: expected_digest,
     };
@@ -731,20 +837,33 @@ fn previous_stack_dir(stack_dir: &Path) -> PathBuf {
 }
 
 fn read_application_release(stack_dir: &Path) -> Option<ApplicationBundleRelease> {
-    let raw = fs::read_to_string(stack_dir.join(APPLICATION_RELEASE_MARKER)).ok()?;
-    let release: ApplicationBundleRelease = serde_json::from_str(&raw).ok()?;
-    (release.schema == 1 && validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_ok())
-        .then_some(release)
+    let bytes = fs::read(stack_dir.join(APPLICATION_RELEASE_MARKER)).ok()?;
+    let release = ApplicationBundleRelease::decode(bytes.as_slice()).ok()?;
+    if release.encode_to_vec() != bytes
+        || release.schema_version != 1
+        || release.bundle_id.trim().is_empty()
+        || validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_err()
+    {
+        return None;
+    }
+    Some(release)
 }
 
 fn write_application_release(
     stack_dir: &Path,
     release: &ApplicationBundleRelease,
 ) -> Result<(), String> {
-    let raw = serde_json::to_vec(release)
-        .map_err(|err| format!("failed to encode application release marker: {err}"))?;
-    fs::write(stack_dir.join(APPLICATION_RELEASE_MARKER), raw)
-        .map_err(|err| format!("failed to write application release marker: {err}"))
+    if release.schema_version != 1
+        || release.bundle_id.trim().is_empty()
+        || validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_err()
+    {
+        return Err("application release marker is invalid".to_owned());
+    }
+    fs::write(
+        stack_dir.join(APPLICATION_RELEASE_MARKER),
+        release.encode_to_vec(),
+    )
+    .map_err(|err| format!("failed to write application release marker: {err}"))
 }
 
 fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), String> {
@@ -918,13 +1037,7 @@ fn validate_lower_hex(label: &str, value: &str, expected_len: usize) -> Result<(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApplicationBundleRelease {
-    schema: u32,
-    bundle_id: String,
-    bundle_digest: String,
-}
+type ApplicationBundleRelease = ApplicationBundleReleaseState;
 
 async fn run_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> BootstrapRuntimeResponse {
     match execute_typed_bootstrap(stack_dir, mode).await {
@@ -1344,26 +1457,6 @@ enum MeshDiagnosticDepth {
     Deep,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedMeshRuntimeFailureSnapshot {
-    observed_unix_time_seconds: u64,
-    reasons: Vec<String>,
-    warp_connection_state: Option<String>,
-    tunnel_protocol: Option<String>,
-    warp_status: i32,
-    warp_settings: i32,
-    tun_device_status: i32,
-    ipv4_forwarding_status: i32,
-    container_present: bool,
-    container_running: bool,
-    container_exit_code: Option<i64>,
-    container_restart_count: Option<u64>,
-    container_oom_killed: Option<bool>,
-    container_image: Option<String>,
-    container_networks: Vec<String>,
-    exact_image_ready: bool,
-}
-
 fn mesh_runtime_failure_snapshot_path(stack_dir: &Path) -> Result<PathBuf, String> {
     Ok(mesh_runtime_state_dir(stack_dir)?.join(MESH_RUNTIME_FAILURE_FILE))
 }
@@ -1372,8 +1465,8 @@ fn read_mesh_runtime_failure_snapshot(
     stack_dir: &Path,
 ) -> Result<Option<MeshRuntimeFailureSnapshot>, String> {
     let path = mesh_runtime_failure_snapshot_path(stack_dir)?;
-    let raw = match fs::read_to_string(&path) {
-        Ok(raw) => raw,
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             return Err(format!(
@@ -1381,28 +1474,14 @@ fn read_mesh_runtime_failure_snapshot(
             ));
         }
     };
-    let persisted: PersistedMeshRuntimeFailureSnapshot =
-        serde_json::from_str(&raw).map_err(|err| {
-            format!("failed to parse persisted Mesh readiness failure snapshot: {err}")
-        })?;
-    Ok(Some(MeshRuntimeFailureSnapshot {
-        observed_unix_time_seconds: persisted.observed_unix_time_seconds,
-        reasons: persisted.reasons,
-        warp_connection_state: persisted.warp_connection_state,
-        tunnel_protocol: persisted.tunnel_protocol,
-        warp_status: persisted.warp_status,
-        warp_settings: persisted.warp_settings,
-        tun_device_status: persisted.tun_device_status,
-        ipv4_forwarding_status: persisted.ipv4_forwarding_status,
-        container_present: persisted.container_present,
-        container_running: persisted.container_running,
-        container_exit_code: persisted.container_exit_code,
-        container_restart_count: persisted.container_restart_count,
-        container_oom_killed: persisted.container_oom_killed,
-        container_image: persisted.container_image,
-        container_networks: persisted.container_networks,
-        exact_image_ready: persisted.exact_image_ready,
-    }))
+    let snapshot = MeshRuntimeFailureSnapshot::decode(bytes.as_slice())
+        .map_err(|err| format!("failed to decode Mesh readiness failure protobuf: {err}"))?;
+    if snapshot.encode_to_vec() != bytes {
+        return Err(
+            "persisted Mesh readiness failure snapshot is not canonical protobuf".to_owned(),
+        );
+    }
+    Ok(Some(snapshot))
 }
 
 fn build_mesh_runtime_failure_snapshot(
@@ -1457,26 +1536,7 @@ fn persist_mesh_runtime_failure_snapshot(
     snapshot: &MeshRuntimeFailureSnapshot,
 ) -> Result<(), String> {
     prepare_mesh_runtime_state(stack_dir)?;
-    let persisted = PersistedMeshRuntimeFailureSnapshot {
-        observed_unix_time_seconds: snapshot.observed_unix_time_seconds,
-        reasons: snapshot.reasons.clone(),
-        warp_connection_state: snapshot.warp_connection_state.clone(),
-        tunnel_protocol: snapshot.tunnel_protocol.clone(),
-        warp_status: snapshot.warp_status,
-        warp_settings: snapshot.warp_settings,
-        tun_device_status: snapshot.tun_device_status,
-        ipv4_forwarding_status: snapshot.ipv4_forwarding_status,
-        container_present: snapshot.container_present,
-        container_running: snapshot.container_running,
-        container_exit_code: snapshot.container_exit_code,
-        container_restart_count: snapshot.container_restart_count,
-        container_oom_killed: snapshot.container_oom_killed,
-        container_image: snapshot.container_image.clone(),
-        container_networks: snapshot.container_networks.clone(),
-        exact_image_ready: snapshot.exact_image_ready,
-    };
-    let bytes = serde_json::to_vec_pretty(&persisted)
-        .map_err(|err| format!("failed to encode Mesh readiness failure snapshot: {err}"))?;
+    let bytes = snapshot.encode_to_vec();
     let path = mesh_runtime_failure_snapshot_path(stack_dir)?;
     let temporary = path.with_extension("tmp");
     fs::write(&temporary, bytes)
@@ -1638,27 +1698,23 @@ async fn cleanup_mesh_runtime(stack_dir: &Path) -> Result<MeshRuntimeState, Stri
     let before = observe_docker()
         .await
         .map_err(|err| format!("Mesh runtime cleanup requires observable Docker state: {err}"))?;
-    let mutation = if before.container_present(MESH_CONTAINER) {
-        Some(
-            Command::new("docker")
-                .args(["rm", "-f", MESH_CONTAINER])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(|err| format!("fixed Mesh container removal could not start: {err}"))?,
-        )
-    } else {
-        None
-    };
+    if before.container_present(MESH_CONTAINER) {
+        let images = read_exact_image_environment(stack_dir)?;
+        run_compose(
+            stack_dir,
+            &images,
+            &["--profile", "mesh", "rm", "-f", "-s", "cloudflare-mesh"],
+        )?;
+    }
 
     let after = observe_docker()
         .await
         .map_err(|err| format!("Mesh runtime cleanup re-observation failed: {err}"))?;
     if after.container_present(MESH_CONTAINER) {
-        return Err(format!(
-            "Mesh runtime container remains present after one bounded removal attempt; exit_code={}",
-            mutation.and_then(|status| status.code()).unwrap_or(-1)
-        ));
+        return Err(
+            "Mesh runtime container remains present after one bounded Compose removal attempt"
+                .to_owned(),
+        );
     }
 
     let token_path = mesh_runtime_secret_path(stack_dir)?;
@@ -3433,7 +3489,10 @@ mod tests {
                 image: None,
                 restart_count: Some(0),
                 oom_killed: Some(false),
+                health: Some("HEALTHY".to_owned()),
                 networks: Vec::new(),
+                published_ports: Vec::new(),
+                mounts: Vec::new(),
             }),
             docker_observation_error: None,
         };
@@ -4212,6 +4271,7 @@ mod tests {
             direct_egress_ready: Some(true),
             warp_egress_ready: Some(true),
             mesh_runtime_ready: None,
+            containers: Vec::new(),
         };
 
         let root = unique_test_dir();
@@ -4249,6 +4309,7 @@ mod tests {
             direct_egress_ready: Some(true),
             warp_egress_ready: Some(true),
             mesh_runtime_ready: None,
+            containers: Vec::new(),
         };
 
         let root = unique_test_dir();

@@ -13,6 +13,7 @@ edge-provider-cloudflare = { path = "../edge-provider-cloudflare" }
 edge-provider-vultr = { path = "../edge-provider-vultr" }
 edge-shared-types = { path = "../edge-shared-types" }
 ring = "0.17.14"
+prost = "0.14.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "net"] }

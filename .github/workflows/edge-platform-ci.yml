@@ -565,6 +565,7 @@ jobs:
       base_windows_controller_sha256: ${{ steps.resolve.outputs.base_windows_controller_sha256 }}
       base_windows_console_sha256: ${{ steps.resolve.outputs.base_windows_console_sha256 }}
       base_windows_sing_box_sha256: ${{ steps.resolve.outputs.base_windows_sing_box_sha256 }}
+      base_windows_diagnostic_sha256: ${{ steps.resolve.outputs.base_windows_diagnostic_sha256 }}
     steps:
       - name: Checkout exact revision
         shell: bash
@@ -680,7 +681,8 @@ jobs:
             --base-artifact-sha256 "${EDGE_WINDOWS_ARTIFACT_SHA256}" \
             --base-controller-sha256 "${EDGE_WINDOWS_CONTROLLER_SHA256}" \
             --base-console-sha256 "${EDGE_WINDOWS_CONSOLE_SHA256}" \
-            --base-sing-box-sha256 "${EDGE_WINDOWS_SING_BOX_SHA256}")"
+            --base-sing-box-sha256 "${EDGE_WINDOWS_SING_BOX_SHA256}" \
+            --base-diagnostic-sha256 "${EDGE_WINDOWS_DIAGNOSTIC_SHA256:-}")"
           test "${windows_decision}" = "REUSE" || test "${windows_decision}" = "BUILD"
 
           windows_reuse=false
@@ -715,6 +717,7 @@ jobs:
             printf 'base_windows_controller_sha256=%s\n' "${EDGE_WINDOWS_CONTROLLER_SHA256}"
             printf 'base_windows_console_sha256=%s\n' "${EDGE_WINDOWS_CONSOLE_SHA256}"
             printf 'base_windows_sing_box_sha256=%s\n' "${EDGE_WINDOWS_SING_BOX_SHA256}"
+            printf 'base_windows_diagnostic_sha256=%s\n' "${EDGE_WINDOWS_DIAGNOSTIC_SHA256:-}"
           } >> "${GITHUB_OUTPUT}"
 
           {
@@ -859,7 +862,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          cargo build --locked --release -p edge-controller --bin edge-controller -p edge-console --bin edge-console
+          cargo build --locked --release -p edge-controller --bin edge-controller -p edge-console --bin edge-console -p edge-diagnostic --bin edge-diagnostic
 
       - name: Build or reuse exact Windows candidate
         id: finalize
@@ -872,6 +875,7 @@ jobs:
           BASE_CONTROLLER_SHA256: ${{ needs.dependencies.outputs.base_windows_controller_sha256 }}
           BASE_CONSOLE_SHA256: ${{ needs.dependencies.outputs.base_windows_console_sha256 }}
           BASE_SING_BOX_SHA256: ${{ needs.dependencies.outputs.base_windows_sing_box_sha256 }}
+          BASE_DIAGNOSTIC_SHA256: ${{ needs.dependencies.outputs.base_windows_diagnostic_sha256 }}
           RELEASE_INPUT_SHA256: ${{ needs.dependencies.outputs.release_input_sha256 }}
           WINDOWS_INPUT_SHA256: ${{ needs.dependencies.outputs.windows_input_sha256 }}
           WINDOWS_SOURCE_REVISION: ${{ needs.dependencies.outputs.windows_source_revision }}
@@ -898,9 +902,11 @@ jobs:
             Copy-Item (Join-Path $unpacked "bin\edge-controller.exe") (Join-Path $out "edge-controller.exe")
             Copy-Item (Join-Path $unpacked "bin\edge-console.exe") (Join-Path $out "edge-console.exe")
             Copy-Item (Join-Path $unpacked "bin\sing-box.exe") (Join-Path $out "sing-box.exe")
+            Copy-Item (Join-Path $unpacked "bin\edge-diagnostic.exe") (Join-Path $out "edge-diagnostic.exe")
           } else {
             Copy-Item "edge-platform\target\release\edge-controller.exe" (Join-Path $out "edge-controller.exe")
             Copy-Item "edge-platform\target\release\edge-console.exe" (Join-Path $out "edge-console.exe")
+            Copy-Item "edge-platform\target\release\edge-diagnostic.exe" (Join-Path $out "edge-diagnostic.exe")
             $resolvedSingBox = Get-ChildItem (Join-Path $env:RUNNER_TEMP "sing-box-windows") -Recurse -File -Filter sing-box.exe | Select-Object -First 1
             if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
             Copy-Item $resolvedSingBox.FullName (Join-Path $out "sing-box.exe")
@@ -909,6 +915,8 @@ jobs:
             New-Item -ItemType Directory -Force -Path $packageBin | Out-Null
             Copy-Item (Join-Path $out "edge-controller.exe") (Join-Path $packageBin "edge-controller.exe")
             Copy-Item (Join-Path $out "edge-console.exe") (Join-Path $packageBin "edge-console.exe")
+            Copy-Item (Join-Path $out "edge-diagnostic.exe") (Join-Path $packageBin "edge-diagnostic.exe")
+            Copy-Item "edge-platform\target\release\edge-release-set.exe" (Join-Path $packageBin "edge-release-set.exe")
             Copy-Item (Join-Path $out "sing-box.exe") (Join-Path $packageBin "sing-box.exe")
             Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $packagePath -CompressionLevel Optimal
           }
@@ -916,10 +924,12 @@ jobs:
           $artifactSha = (Get-FileHash -Algorithm SHA256 $packagePath).Hash.ToLowerInvariant()
           $controllerSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-controller.exe")).Hash.ToLowerInvariant()
           $consoleSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-console.exe")).Hash.ToLowerInvariant()
+          $diagnosticSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "edge-diagnostic.exe")).Hash.ToLowerInvariant()
           $singBoxSha = (Get-FileHash -Algorithm SHA256 (Join-Path $out "sing-box.exe")).Hash.ToLowerInvariant()
           if ($env:REUSE_WINDOWS -eq "true") {
             if ($controllerSha -ne $env:BASE_CONTROLLER_SHA256) { throw "reused Windows controller digest mismatch" }
             if ($consoleSha -ne $env:BASE_CONSOLE_SHA256) { throw "reused Windows console digest mismatch" }
+            if ($diagnosticSha -ne $env:BASE_DIAGNOSTIC_SHA256) { throw "reused Windows diagnostic digest mismatch" }
             if ($singBoxSha -ne $env:BASE_SING_BOX_SHA256) { throw "reused Windows sing-box digest mismatch" }
           }
 
@@ -939,7 +949,8 @@ jobs:
             --sing-box-binary-sha256 $singBoxSha `
             --artifact-sha256 $artifactSha `
             --controller-sha256 $controllerSha `
-            --console-sha256 $consoleSha
+            --console-sha256 $consoleSha `
+            --diagnostic-sha256 $diagnosticSha
           if ($LASTEXITCODE -ne 0) { throw "failed to write typed Windows build manifest" }
       - name: Store exact Windows candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1333,6 +1344,7 @@ jobs:
             --windows-artifact "${windows}/edge-platform-windows.zip" \
             --windows-controller "${unpacked}/bin/edge-controller.exe" \
             --windows-console "${unpacked}/bin/edge-console.exe" \
+            --windows-diagnostic "${unpacked}/bin/edge-diagnostic.exe" \
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
@@ -1352,6 +1364,7 @@ jobs:
             --windows-artifact "${windows}/edge-platform-windows.zip" \
             --windows-controller "${unpacked}/bin/edge-controller.exe" \
             --windows-console "${unpacked}/bin/edge-console.exe" \
+            --windows-diagnostic "${unpacked}/bin/edge-diagnostic.exe" \
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
@@ -1512,6 +1525,7 @@ jobs:
             --windows-artifact "${windows}/edge-platform-windows.zip" \
             --windows-controller "${unpacked}/bin/edge-controller.exe" \
             --windows-console "${unpacked}/bin/edge-console.exe" \
+            --windows-diagnostic "${unpacked}/bin/edge-diagnostic.exe" \
             --windows-sing-box "${unpacked}/bin/sing-box.exe" \
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \

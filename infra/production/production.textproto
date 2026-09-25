@@ -49,6 +49,10 @@ mesh {
   node_name: "singbox-line3-production"
 }
 
+support_access {
+  controller_ipv4_ssh: true
+}
+
 firewall {
   rules {
     ip_family: PRODUCTION_IP_FAMILY_V4

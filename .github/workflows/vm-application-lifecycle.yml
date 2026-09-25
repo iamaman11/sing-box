@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      command_family: ${{ steps.parse.outputs.command_family }}
       operation: ${{ steps.parse.outputs.operation }}
       spec_path: ${{ steps.parse.outputs.spec_path }}
       rollback_digest: ${{ steps.parse.outputs.rollback_digest }}
@@ -39,20 +40,36 @@ jobs:
               raise SystemExit(message)
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
+          command_family = ""
           operation = ""
           spec_path = ""
           rollback_digest = ""
           recovery_authority_digest = ""
 
-          if tokens == ["/application", "acceptance"]:
+          if tokens == ["/production", "converge"]:
+              command_family = "production"
+              operation = "converge"
+              spec_path = "infra/production/production.textproto"
+          elif tokens == ["/production", "verify"]:
+              command_family = "production"
+              operation = "verify"
+              spec_path = "infra/production/production.textproto"
+          elif tokens == ["/production", "rollback"]:
+              command_family = "production"
+              operation = "rollback"
+              spec_path = "infra/production/production.textproto"
+          elif tokens == ["/application", "acceptance"]:
+              command_family = "application"
               operation = "acceptance"
               spec_path = "infra/application/disposable-acceptance.json"
           elif tokens == ["/application", "cleanup"]:
+              command_family = "application"
               operation = "cleanup"
               spec_path = "infra/application/disposable-acceptance.json"
           elif len(tokens) == 3 and tokens[0] == "/application" and tokens[1] in {
               "plan", "apply", "verify", "upgrade", "recover-plan", "rollback-plan"
           }:
+              command_family = "application"
               operation = tokens[1]
               spec_path = tokens[2]
           elif (
@@ -60,6 +77,7 @@ jobs:
               and tokens[0] == "/application"
               and tokens[1] == "recover-apply"
           ):
+              command_family = "application"
               operation = "recover-apply"
               spec_path = tokens[2]
               recovery_authority_digest = tokens[3]
@@ -68,14 +86,18 @@ jobs:
               and tokens[0] == "/application"
               and tokens[1] == "rollback-apply"
           ):
+              command_family = "application"
               operation = "rollback-apply"
               spec_path = tokens[2]
               rollback_digest = tokens[3]
           else:
-              fail("unsupported /application command grammar")
+              fail("unsupported application/production command grammar")
 
-          if not spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
-              fail("invalid application spec path")
+          if command_family == "application":
+              if not spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
+                  fail("invalid application spec path")
+          elif spec_path != "infra/production/production.textproto":
+              fail("production commands must use the canonical production textproto")
           if operation == "rollback-apply":
               if not digest_re.fullmatch(rollback_digest):
                   fail("rollback-apply requires a lowercase 64-character digest")
@@ -89,6 +111,7 @@ jobs:
               fail("recovery authority digest is only valid for recover-apply")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"command_family={command_family}\n")
               handle.write(f"operation={operation}\n")
               handle.write(f"spec_path={spec_path}\n")
               handle.write(f"rollback_digest={rollback_digest}\n")
@@ -100,7 +123,10 @@ jobs:
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
-    if: needs.authorize.outputs.operation != 'acceptance' && needs.authorize.outputs.operation != 'cleanup'
+    if: >-
+      needs.authorize.outputs.command_family == 'application' &&
+      needs.authorize.outputs.operation != 'acceptance' &&
+      needs.authorize.outputs.operation != 'cleanup'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -292,12 +318,139 @@ jobs:
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+  production:
+    needs: authorize
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    if: needs.authorize.outputs.command_family == 'production'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test "${SPEC_PATH}" = "infra/production/production.textproto"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          agent="${dir}/edge-agent-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${orchestrator}" "${agent}"
+          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+          printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
+          printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Materialize strict SSH authority
+        shell: bash
+        env:
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
+          test -s "${key_path}"
+          chmod 600 "${key_path}"
+          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
+
+      - name: Discover controller egress IPv4
+        shell: bash
+        run: |
+          set -euo pipefail
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          python3 - "${ip}" <<'PY'
+          import ipaddress
+          import sys
+          value = ipaddress.ip_address(sys.argv[1].strip())
+          if value.version != 4 or not value.is_global:
+              raise SystemExit("controller egress is not a global IPv4 address")
+          print(value)
+          PY
+          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
+
+      - name: Execute typed production operation
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          bin="${EDGE_APPLICATION_ORCHESTRATOR}"
+          result="${RUNNER_TEMP}/production-result.txt"
+          case "${REQUESTED_OPERATION}" in
+            converge|verify)
+              "${bin}" production "${REQUESTED_OPERATION}" "${EDGE_APPLICATION_ARTIFACT}" | tee "${result}"
+              ;;
+            rollback)
+              "${bin}" production rollback | tee "${result}"
+              ;;
+            *)
+              echo "unsupported authorized production operation" >&2
+              exit 1
+              ;;
+          esac
+          grep -qx 'status=PASS' "${result}"
+          {
+            echo '### Production convergence result'
+            echo
+            echo 'One canonical production.textproto and one exact durable ReleaseSet were used.'
+            echo 'No provider IDs, IPs, CIDRs or secondary spec paths are command inputs.'
+            echo
+            echo '~~~text'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove local sensitive material
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-${RUNNER_TEMP}/singbox-vultr-ops}"
+
   cleanup:
     needs: authorize
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
-    if: needs.authorize.outputs.operation == 'cleanup'
+    if: needs.authorize.outputs.command_family == 'application' && needs.authorize.outputs.operation == 'cleanup'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -399,7 +552,7 @@ jobs:
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
-    if: needs.authorize.outputs.operation == 'acceptance'
+    if: needs.authorize.outputs.command_family == 'application' && needs.authorize.outputs.operation == 'acceptance'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr

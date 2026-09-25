@@ -42,7 +42,10 @@ pub(crate) struct ContainerRuntimeEvidence {
     pub(crate) image: Option<String>,
     pub(crate) restart_count: Option<u64>,
     pub(crate) oom_killed: Option<bool>,
+    pub(crate) health: Option<String>,
     pub(crate) networks: Vec<String>,
+    pub(crate) published_ports: Vec<String>,
+    pub(crate) mounts: Vec<String>,
 }
 
 impl ContainerRuntimeEvidence {
@@ -58,7 +61,7 @@ impl ContainerRuntimeEvidence {
             self.log_tail.join(" | ")
         };
         format!(
-            "present={} running={} exit_code={} restart_count={} oom_killed={} image={} networks={:?} runtime_error={} log_tail={}",
+            "present={} running={} exit_code={} restart_count={} oom_killed={} health={} image={} networks={:?} ports={:?} mounts={:?} runtime_error={} log_tail={}",
             self.present,
             self.running,
             exit_code,
@@ -68,8 +71,11 @@ impl ContainerRuntimeEvidence {
             self.oom_killed
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".to_owned()),
+            self.health.as_deref().unwrap_or("unknown"),
             self.image.as_deref().unwrap_or("unknown"),
             self.networks,
+            self.published_ports,
+            self.mounts,
             runtime_error,
             logs
         )
@@ -162,7 +168,10 @@ pub(crate) async fn observe_container_runtime(
                 image: None,
                 restart_count: None,
                 oom_killed: None,
+                health: None,
                 networks: Vec::new(),
+                published_ports: Vec::new(),
+                mounts: Vec::new(),
             });
         }
         Err(err) => {
@@ -181,13 +190,55 @@ pub(crate) async fn observe_container_runtime(
         .restart_count
         .and_then(|value| u64::try_from(value).ok());
     let oom_killed = state.oom_killed;
-    let mut networks = inspect
-        .network_settings
-        .and_then(|settings| settings.networks)
-        .map(|networks| networks.into_keys().collect::<Vec<_>>())
-        .unwrap_or_default();
+    let health = state
+        .health
+        .as_ref()
+        .and_then(|health| health.status.as_ref())
+        .map(|status| format!("{status:?}"));
+
+    let network_settings = inspect.network_settings.unwrap_or_default();
+    let mut networks = network_settings
+        .networks
+        .unwrap_or_default()
+        .into_keys()
+        .collect::<Vec<_>>();
     networks.sort();
     networks.dedup();
+
+    let mut published_ports = network_settings
+        .ports
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|(container_port, bindings)| {
+            bindings
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |binding| match binding.host_port {
+                    Some(host_port) => format!("{container_port}->{host_port}"),
+                    None => container_port.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    published_ports.sort();
+    published_ports.dedup();
+
+    let mut mounts = inspect
+        .mounts
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mount| {
+            let kind = mount
+                .typ
+                .as_ref()
+                .map(|kind| format!("{kind:?}"))
+                .unwrap_or_else(|| "UNKNOWN".to_owned());
+            let destination = mount.destination.unwrap_or_else(|| "<unknown>".to_owned());
+            let rw = mount.rw.unwrap_or(false);
+            format!("{kind}:{destination}:rw={rw}")
+        })
+        .collect::<Vec<_>>();
+    mounts.sort();
+    mounts.dedup();
 
     let options = LogsOptionsBuilder::default()
         .stdout(true)
@@ -216,7 +267,10 @@ pub(crate) async fn observe_container_runtime(
         image,
         restart_count,
         oom_killed,
+        health,
         networks,
+        published_ports,
+        mounts,
     })
 }
 

@@ -8,6 +8,9 @@ use crate::vultr_lifecycle_command::{
 use edge_controller_core::application_lifecycle::DesiredApplicationState;
 use edge_controller_core::cloudflare_dns_lifecycle::{ApplyAction, CleanupAction, DesiredDnsState};
 use edge_controller_core::orchestration::{MachineObservation, derive_dns_target};
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -140,6 +143,32 @@ pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<()
     Ok(())
 }
 
+pub(crate) async fn production_converge(
+    spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let derived = derive_target_from_application(application_spec_path).await?;
+    let mut provider = provider_from_env()?;
+    let (observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
+    if matches!(plan.action, ApplyAction::Noop) {
+        return Ok(());
+    }
+    let authorized = authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
+    let report = apply_dns_once(
+        &mut provider,
+        &desired,
+        &derived.target_ipv4,
+        &authorized.authority.authority_digest,
+        DnsExecutionPolicy::default(),
+    )
+    .await?;
+    if !matches!(report.next_plan.action, ApplyAction::Noop) {
+        return Err("production DNS convergence did not reach NOOP".to_owned());
+    }
+    Ok(())
+}
+
 pub(crate) async fn acceptance_create(
     spec_path: &Path,
     application_spec_path: &Path,
@@ -218,6 +247,12 @@ pub(crate) async fn acceptance_cleanup_to_absent(spec_path: &Path) -> Result<(),
 }
 
 fn load_desired(path: &Path) -> Result<DesiredDnsState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.dns)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path).map_err(|err| {
         format!(
             "failed to read Cloudflare DNS spec {}: {err}",
@@ -230,13 +265,8 @@ fn load_desired(path: &Path) -> Result<DesiredDnsState, String> {
 async fn derive_target_from_application(
     application_spec_path: &Path,
 ) -> Result<edge_controller_core::orchestration::DerivedDnsTarget, String> {
-    let raw = fs::read_to_string(application_spec_path).map_err(|err| {
-        format!(
-            "failed to read application spec {} for DNS derivation: {err}",
-            application_spec_path.display()
-        )
-    })?;
-    let application = DesiredApplicationState::parse_json(&raw).map_err(|err| err.to_string())?;
+    let application =
+        crate::application_lifecycle_command::load_application_desired(application_spec_path)?;
     let vultr_desired = load_vultr_desired_state(Path::new(&application.vultr_spec_path))?;
     if vultr_desired.environment != application.environment {
         return Err(format!(

@@ -207,6 +207,31 @@ impl SupportResourceProvider for VultrSupportApiProvider {
 }
 
 impl FirewallProfileSet {
+    pub fn single(mut profile: FirewallProfile) -> Result<Self, String> {
+        if profile.name.is_empty()
+            || !profile
+                .name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        {
+            return Err("firewall profile name must be a canonical identifier".to_owned());
+        }
+        let mut unique = BTreeSet::new();
+        for rule in &profile.rules {
+            validate_rule(rule)?;
+            if !unique.insert(rule.clone()) {
+                return Err(format!(
+                    "firewall profile {} contains a duplicate rule",
+                    profile.name
+                ));
+            }
+        }
+        profile.rules.sort();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(profile.name.clone(), profile);
+        Ok(Self { profiles })
+    }
+
     pub fn parse_json(raw: &str) -> Result<Self, String> {
         let value: Value = serde_json::from_str(raw)
             .map_err(|err| format!("invalid firewall profiles JSON: {err}"))?;

@@ -8,7 +8,7 @@ use crate::vultr_lifecycle::{DesiredState as DesiredMachineState, MachineSpec, P
 use crate::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::{
     ProductionBootstrapMode, ProductionDesiredState, ProductionIpFamily,
-    ProductionTransportProtocol, production_machine,
+    ProductionTransportProtocol, canonical_production_desired_state, production_machine,
 };
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -35,6 +35,7 @@ pub struct ProductionComposition {
     pub dns: DesiredDnsState,
     pub mesh: DesiredMeshState,
     pub firewall_rules: Vec<ProductionFirewallRule>,
+    pub support_controller_ssh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,12 @@ impl fmt::Display for ProductionSpecError {
 impl Error for ProductionSpecError {}
 
 impl ProductionComposition {
+    pub fn canonical() -> Result<Self, ProductionSpecError> {
+        let desired = canonical_production_desired_state()
+            .map_err(|err| ProductionSpecError::Validation(err.to_string()))?;
+        Self::from_proto(&desired)
+    }
+
     pub fn from_proto(root: &ProductionDesiredState) -> Result<Self, ProductionSpecError> {
         validate_root_identity(root)?;
 
@@ -84,6 +91,15 @@ impl ProductionComposition {
             .firewall
             .as_ref()
             .ok_or_else(|| validation("firewall is required"))?;
+        let support_access = root
+            .support_access
+            .as_ref()
+            .ok_or_else(|| validation("support_access is required"))?;
+        if !support_access.controller_ipv4_ssh {
+            return Err(validation(
+                "production support_access must authorize the bounded controller IPv4 SSH lease",
+            ));
+        }
 
         let (os_id, snapshot_id) = match machine.image.as_ref() {
             Some(production_machine::Image::OsId(value)) if *value > 0 => (Some(*value), None),
@@ -209,6 +225,7 @@ impl ProductionComposition {
             dns,
             mesh,
             firewall_rules,
+            support_controller_ssh: support_access.controller_ipv4_ssh,
         };
         composition.validate_cross_domain()?;
         Ok(composition)

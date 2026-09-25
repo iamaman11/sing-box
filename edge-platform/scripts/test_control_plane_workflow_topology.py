@@ -13,6 +13,8 @@ MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
 EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
+WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
+PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 ROOT_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-root-runner.sh")
@@ -35,6 +37,8 @@ def main() -> None:
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
+    windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
+    production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     root_runner_installer = ROOT_RUNNER_INSTALLER.read_text(encoding="utf-8")
@@ -67,6 +71,11 @@ def main() -> None:
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
         "router must call the application backend",
+    )
+    require(
+        "startsWith(github.event.comment.body, '/production ')" in router
+        and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 2,
+        "router must expose production only through the existing owner-gated application lifecycle backend",
     )
     require(
         "uses: ./.github/workflows/vultr-lifecycle.yml" in router,
@@ -146,8 +155,8 @@ def main() -> None:
         )
 
     require(
-        application.count("group: vultr-control-plane-production") == 3,
-        "application backend must serialize execute, cleanup and acceptance mutation jobs",
+        application.count("group: vultr-control-plane-production") == 4,
+        "application backend must serialize execute, production, cleanup and acceptance mutation jobs",
     )
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
@@ -326,10 +335,55 @@ def main() -> None:
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
+    production_job = application.split("\n  production:\n", 1)[1].split("\n  cleanup:\n", 1)[0]
+    require(
+        'tokens == ["/production", "converge"]' in application
+        and 'tokens == ["/production", "verify"]' in application
+        and 'tokens == ["/production", "rollback"]' in application
+        and 'spec_path = "infra/production/production.textproto"' in application,
+        "production command grammar must be fixed to converge/verify/rollback and the sole canonical textproto",
+    )
+    require(
+        "needs.authorize.outputs.command_family == 'production'" in production_job
+        and production_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and '"${bin}" production "${REQUESTED_OPERATION}" "${EDGE_APPLICATION_ARTIFACT}"' in production_job
+        and '"${bin}" production rollback' in production_job,
+        "production backend must resolve one exact durable ReleaseSet and invoke only the typed production coordinator",
+    )
+    require(
+        "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_job
+        and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_job
+        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in production_job,
+        "production backend must receive only the bounded provider and strict-SSH authorities required by the typed coordinator",
+    )
+    for forbidden in [
+        "INSTANCE_ID",
+        "VPC_ID",
+        "PROVIDER_ID",
+        "TARGET_IPV4",
+        "MESH_CIDR",
+        "current.json",
+        "manifest.json",
+    ]:
+        require(
+            forbidden not in production_job,
+            f"production workflow must not transport raw provider/runtime authority: {forbidden}",
+        )
+    require(
+        "std::process::Command" not in production_command
+        and "Command::new" not in production_command
+        and "sh -c" not in production_command
+        and "production_converge_machine" in production_command
+        and "production_converge_desired" in production_command
+        and "production_verify_desired" in production_command
+        and "production_rollback_desired" in production_command,
+        "typed production coordinator must compose existing owners in-process without shell replay",
+    )
+
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
-    execute_job = application.split("\n  execute:\n", 1)[1].split("\n  cleanup:\n", 1)[0]
+    execute_job = application.split("\n  execute:\n", 1)[1].split("\n  production:\n", 1)[0]
     require(
         "  cleanup:\n    needs: authorize" in application
         and "  acceptance:\n    needs: authorize" in application
@@ -649,6 +703,25 @@ def main() -> None:
         "runtime identity must cover runtime sources and fail closed for pre-v4 ReleaseSets",
     )
     require(
+        "edge-release-$ReleaseSetSha256" in windows_installer
+        and '$downloadArgs = @("release", "download", $tag' in windows_installer
+        and "release-set.pb" in windows_installer
+        and "current.pb" in windows_installer
+        and "previous.pb" in windows_installer
+        and "edge-diagnostic.exe" in windows_installer
+        and "verify-windows" in windows_installer
+        and "write-windows-activation" in windows_installer,
+        "Windows activation must be bound to the exact durable ReleaseSet and protobuf current/LKG state",
+    )
+    require(
+        "current.json" not in windows_installer
+        and "manifest.json" not in windows_installer
+        and "gh run download" not in windows_installer
+        and "workflow run" not in windows_installer,
+        "Windows activation must never regress to JSON state or workflow-run artifact authority",
+    )
+
+    require(
         "windows_input_sha256" in edge_platform_ci
         and "windows_input_digest.py compute" in edge_platform_ci
         and "windows_input_digest.py decide" in edge_platform_ci
@@ -711,11 +784,13 @@ def main() -> None:
         "Cargo caches must remain pinned, job-scoped disposable acceleration without semantic ownership",
     )
     require(
-        "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\")" in windows_input
+        "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\", \"edge-diagnostic\")"
+        in windows_input
         and "_reachable_package_dirs(repo_root)" in windows_input
         and "WINDOWS_BUILD_CONTRACT_PATH" in windows_input
-        and 'base_schema != "5"' in windows_input,
-        "Windows identity must cover transitive local dependencies, marked build contract and fail closed before ReleaseSet v5",
+        and 'base_schema != "6"' in windows_input
+        and "base_diagnostic_sha256" in windows_input,
+        "Windows identity must cover controller/console/diagnostic transitive local dependencies, marked build contract and fail closed before ReleaseSet v6",
     )
 
     require(

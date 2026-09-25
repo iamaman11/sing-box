@@ -314,6 +314,7 @@ dependencies = [
  "edge-shared-types",
  "edge-trust",
  "futures-util",
+ "prost",
  "rtnetlink",
  "serde",
  "serde_json",
@@ -408,12 +409,23 @@ dependencies = [
  "edge-provider-cloudflare",
  "edge-provider-vultr",
  "edge-shared-types",
+ "prost",
  "ring",
  "serde",
  "serde_json",
  "tokio",
  "tonic",
  "tracing",
+]
+
+[[package]]
+name = "edge-diagnostic"
+version = "0.1.0"
+dependencies = [
+ "edge-shared-types",
+ "prost",
+ "ring",
+ "sysinfo",
 ]
 
 [[package]]
