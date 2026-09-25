@@ -1389,7 +1389,9 @@ pub(crate) fn start_strict_agent_tunnel(
     ))
 }
 
-fn restricted_control_authorized_key(canonical_operator_public_key: &str) -> Result<String, String> {
+fn restricted_control_authorized_key(
+    canonical_operator_public_key: &str,
+) -> Result<String, String> {
     let material = public_key_material(canonical_operator_public_key)?;
     Ok(format!(
         "restrict,port-forwarding,permitopen=\"{EDGE_AGENT_LOOPBACK}\" {material}"
@@ -1840,10 +1842,8 @@ mod tests {
 
     #[test]
     fn restricted_control_key_and_tunnel_are_agent_only() {
-        let key = restricted_control_authorized_key(
-            "ssh-ed25519 AAAACanonical ignored-comment",
-        )
-        .unwrap();
+        let key =
+            restricted_control_authorized_key("ssh-ed25519 AAAACanonical ignored-comment").unwrap();
         assert_eq!(
             key,
             "restrict,port-forwarding,permitopen=\"127.0.0.1:50061\" ssh-ed25519 AAAACanonical"
@@ -1858,12 +1858,14 @@ mod tests {
             43123,
         );
         assert!(args.iter().any(|value| value == "-N"));
-        assert!(args
-            .iter()
-            .any(|value| value == "127.0.0.1:43123:127.0.0.1:50061"));
-        assert!(args
-            .iter()
-            .any(|value| value == "edge-control@203.0.113.10"));
+        assert!(
+            args.iter()
+                .any(|value| value == "127.0.0.1:43123:127.0.0.1:50061")
+        );
+        assert!(
+            args.iter()
+                .any(|value| value == "edge-control@203.0.113.10")
+        );
         assert!(!args.iter().any(|value| value == "singbox-ops@203.0.113.10"));
         assert!(!args.iter().any(|value| value == "accept-new"));
     }
