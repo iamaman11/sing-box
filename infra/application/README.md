@@ -101,14 +101,18 @@ and one previous `edge-agent` artifact as recovery material. This is runtime rec
 a second desired-state database.
 
 No canonical production JSON will be introduced. Slice 2 production desired
-state is human-authored protobuf text format at
-`infra/production/production.textproto`, validated against the
-`ProductionDesiredState` protobuf schema and canonicalized to protobuf bytes
-for machine use. Exact OCI identities remain ReleaseSet authority rather than
+state is one human-authored protobuf text-format composition at
+`infra/production/production.textproto`, validated against
+`ProductionDesiredState` and compiled to canonical protobuf bytes for machine
+use. Machine, VPC, application, DNS, Mesh and public firewall policy are fields
+of that single production composition rather than a graph of production
+sub-spec paths. Exact OCI identities remain ReleaseSet authority rather than
 being duplicated in desired state.
 
-Existing disposable JSON specs may be migrated to the same protobuf owner when
-their path is touched; they must not expand into new JSON contract families.
+The Rust production semantic owner converts the protobuf composition directly
+into the existing machine/VPC/application/DNS/Mesh domain types, so production
+does not need intermediate JSON files. Existing disposable JSON specs remain
+frozen migration debt and may be migrated when their legacy path is touched.
 
 ## Disposable acceptance
 
