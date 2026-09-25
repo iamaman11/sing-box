@@ -16,11 +16,11 @@ pub use edge::platform::v1::*;
 use prost::Message;
 pub use release::v1::{
     CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
-    WindowsRuntime,
+    WindowsActivationState, WindowsRuntime,
 };
 
 pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
-pub const RELEASE_SET_SCHEMA_VERSION: u32 = 5;
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 6;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 
@@ -128,6 +128,19 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
             40,
         )?;
     }
+    if release.schema_version < 6 {
+        if !windows.diagnostic_sha256.is_empty() {
+            return Err(
+                "ReleaseSet schemas before v6 must not contain Windows diagnostic identity"
+                    .to_owned(),
+            );
+        }
+    } else {
+        validate_sha256_bytes(
+            "windows_runtime.diagnostic_sha256",
+            &windows.diagnostic_sha256,
+        )?;
+    }
 
     let vm = release
         .vm_runtime
@@ -177,7 +190,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                 return Err("schema v3 must not contain VM runtime reuse identity".to_owned());
             }
         }
-        4 | 5 => {
+        4 | 5 | 6 => {
             validate_sha256_bytes(
                 "vm_runtime.edge_controller_sha256",
                 &vm.edge_controller_sha256,
@@ -236,6 +249,60 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn encode_windows_activation_state(
+    state: &WindowsActivationState,
+) -> Result<Vec<u8>, String> {
+    validate_windows_activation_state(state)?;
+    Ok(state.encode_to_vec())
+}
+
+pub fn decode_windows_activation_state(bytes: &[u8]) -> Result<WindowsActivationState, String> {
+    let state = WindowsActivationState::decode(bytes)
+        .map_err(|err| format!("Windows activation protobuf decode failed: {err}"))?;
+    validate_windows_activation_state(&state)?;
+    if state.encode_to_vec() != bytes {
+        return Err(
+            "Windows activation state is not canonical protobuf encoding".to_owned(),
+        );
+    }
+    Ok(state)
+}
+
+pub fn validate_windows_activation_state(state: &WindowsActivationState) -> Result<(), String> {
+    if state.schema_version != 1 {
+        return Err(format!(
+            "unsupported Windows activation schema_version {}",
+            state.schema_version
+        ));
+    }
+    validate_lower_hex("WindowsActivationState.release_set_sha256", &state.release_set_sha256, 64)?;
+    validate_lower_hex("WindowsActivationState.source_revision", &state.source_revision, 40)?;
+    for (label, value) in [
+        ("release_dir", state.release_dir.as_str()),
+        ("controller_path", state.controller_path.as_str()),
+        ("console_path", state.console_path.as_str()),
+        ("sing_box_path", state.sing_box_path.as_str()),
+        ("diagnostic_path", state.diagnostic_path.as_str()),
+    ] {
+        if value.is_empty() || value.len() > 1024 || value.contains('\0') {
+            return Err(format!("WindowsActivationState.{label} is invalid"));
+        }
+    }
+    for (label, value) in [
+        ("controller_sha256", state.controller_sha256.as_slice()),
+        ("console_sha256", state.console_sha256.as_slice()),
+        ("sing_box_sha256", state.sing_box_sha256.as_slice()),
+        ("diagnostic_sha256", state.diagnostic_sha256.as_slice()),
+    ] {
+        validate_sha256_bytes(&format!("WindowsActivationState.{label}"), value)?;
+    }
+    Ok(())
+}
+
+pub fn digest_to_lower_hex(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn validate_sha256_bytes(label: &str, value: &[u8]) -> Result<(), String> {
@@ -353,6 +420,7 @@ impl AgentState {
             direct_egress_ready: None,
             warp_egress_ready: None,
             mesh_runtime_ready: None,
+            containers: Vec::new(),
         }
     }
 
