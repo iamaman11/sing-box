@@ -1,8 +1,9 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
-    apply_instance_action, prepare_strict_bootstrap, prove_restricted_control_negative_capabilities,
-    start_strict_agent_tunnel, strict_scp_upload, strict_ssh_accept, strict_ssh_capture,
-    strict_ssh_run, verify_operator_key_matches, wait_provider_ready,
+    apply_instance_action, prepare_strict_bootstrap,
+    prove_restricted_control_negative_capabilities, start_strict_agent_tunnel, strict_scp_upload,
+    strict_ssh_accept, strict_ssh_capture, strict_ssh_run, verify_operator_key_matches,
+    wait_provider_ready,
 };
 use crate::vultr_host_substrate_service::{
     HostSubstrateExecutionPolicy, apply_host_substrate_once, build_host_substrate_authority,
@@ -682,9 +683,7 @@ async fn run_transport_proof(
     let network = client
         .observe_ipv4_network(Request::new(Empty {}))
         .await
-        .map_err(|err| {
-            format!("T0 ObserveIpv4Network through restricted transport failed: {err}")
-        })?
+        .map_err(|err| format!("T0 ObserveIpv4Network through restricted transport failed: {err}"))?
         .into_inner();
     if network.links.is_empty() || network.addresses.is_empty() {
         return Err(
