@@ -16,6 +16,13 @@ message ProductionDesiredState {
   ProductionDns dns = 8;
   ProductionMesh mesh = 9;
   ProductionFirewallPolicy firewall = 10;
+  ProductionSupportAccess support_access = 11;
+}
+
+message ProductionSupportAccess {
+  // Authorizes only a transient controller-observed IPv4 /32 SSH lease.
+  // It is not part of the persistent public firewall surface.
+  bool controller_ipv4_ssh = 1;
 }
 
 message ProductionMachine {
