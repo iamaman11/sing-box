@@ -15,7 +15,8 @@ use crate::vultr_lifecycle_service::{
     inventory_desired_state_with_firewall_profiles, plan_desired_state_with_firewall_profiles,
 };
 use crate::vultr_support_resources::{
-    FirewallProfileSet, ResolvedFirewallProfile, SupportResourceProvider, VultrSupportApiProvider,
+    FirewallProfile, FirewallProfileSet, FirewallRuleSpec, ResolvedFirewallProfile,
+    SupportResourceProvider, VultrSupportApiProvider,
     cleanup_environment_support_resources, controller_access_cleanup_projection_matches,
     controller_ipv4_access_specs, ensure_firewall_profile, ensure_persistent_firewall_profile,
     firewall_group_description, firewall_rule_spec, observe_verified_firewall_bindings,
@@ -27,6 +28,9 @@ use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
 use edge_controller_core::orchestration::SupportAccessLeaseState;
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+};
 use edge_controller_core::vultr_lifecycle::{
     DesiredState, MANAGED_BY_IDENTITY, MachineSpec, ObservedMachine, PlanClass,
     decode_provider_tags, destroy_plan,
@@ -2897,6 +2901,12 @@ pub(crate) async fn acceptance_destroy_and_cleanup(
 }
 
 pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.machines)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read lifecycle spec {}: {err}", path.display()))?;
     DesiredState::parse_json(&raw)
@@ -2930,6 +2940,35 @@ fn load_firewall_profiles_raw(
     {
         return Ok(None);
     }
+
+    if desired.environment == "production" {
+        let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+        if desired != &production.machines {
+            return Err(
+                "production Vultr desired state does not match canonical ProductionDesiredState"
+                    .to_owned(),
+            );
+        }
+        let rules = production
+            .firewall_rules
+            .into_iter()
+            .map(|rule| FirewallRuleSpec {
+                ip_type: "v4".to_owned(),
+                protocol: rule.protocol.to_owned(),
+                subnet: "0.0.0.0".to_owned(),
+                subnet_size: 0,
+                port: rule.port.to_string(),
+                source: String::new(),
+                notes: rule.purpose,
+            })
+            .collect();
+        return FirewallProfileSet::single(FirewallProfile {
+            name: "production".to_owned(),
+            rules,
+        })
+        .map(Some);
+    }
+
     let path = Path::new(FIREWALL_PROFILES_PATH);
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
