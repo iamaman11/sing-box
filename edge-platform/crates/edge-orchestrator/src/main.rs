@@ -105,7 +105,7 @@ async fn run(
             application_acceptance_command::run_cleanup(args, release_context).await
         }
         Command::ApplicationLifecycle { command } => {
-            application_lifecycle_command::run(command.into_legacy_args()).await
+            application_lifecycle_command::run(command.into_legacy_args(), release_context).await
         }
         Command::CloudflareDns { command } => {
             cloudflare_dns_lifecycle_command::run(command.into_legacy_args()).await
