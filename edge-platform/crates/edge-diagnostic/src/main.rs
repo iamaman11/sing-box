@@ -47,6 +47,10 @@ fn run() -> Result<(), String> {
     println!("release_set_sha256={}", state.release_set_sha256);
     println!("source_revision={}", state.source_revision);
     println!("release_dir={}", state.release_dir);
+    println!("controller_path={}", state.controller_path);
+    println!("console_path={}", state.console_path);
+    println!("sing_box_path={}", state.sing_box_path);
+    println!("diagnostic_path={}", state.diagnostic_path);
     println!("controller_running={controller_running}");
     println!("controller_required_for_diagnostics=false");
     println!("exact_release_files=PASS");
