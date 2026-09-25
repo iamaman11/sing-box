@@ -444,7 +444,7 @@ fn render_strict_cloud_init(
     let mut rendered = base_cloud_init.replacen("#cloud-config\n", &header, 1);
 
     let files = format!(
-        "write_files:\n{}{}{}{}",
+        "write_files:\n{}{}{}{}{}",
         cloud_init_file("/etc/ssh/ssh_host_ed25519_key", "0600", host_private_key),
         cloud_init_file("/etc/ssh/ssh_host_ed25519_key.pub", "0644", host_public_key),
         cloud_init_file(
