@@ -1535,11 +1535,8 @@ pub(crate) fn prove_restricted_control_negative_capabilities(
     let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
     let result = (|| {
         let target = format!("{CONTROL_TRANSPORT_USER}@{target_ip}");
-        let base = restricted_control_base_args(
-            logical_hostname,
-            operator_private_key_path,
-            &trust,
-        );
+        let base =
+            restricted_control_base_args(logical_hostname, operator_private_key_path, &trust);
 
         let mut shell_args = base.clone();
         shell_args.extend(["-T".to_owned(), target.clone()]);
@@ -1562,12 +1559,7 @@ pub(crate) fn prove_restricted_control_negative_capabilities(
             "127.0.0.1:45991:127.0.0.1:50061".to_owned(),
             target.clone(),
         ]);
-        run_expected_restricted_failure(
-            "ssh",
-            &remote_forward_args,
-            None,
-            "remote-forward",
-        )?;
+        run_expected_restricted_failure("ssh", &remote_forward_args, None, "remote-forward")?;
 
         let source = unique_temp_file("edge-control-scp-negative");
         fs::write(&source, b"restricted transport negative proof\n")
@@ -1586,12 +1578,7 @@ pub(crate) fn prove_restricted_control_negative_capabilities(
 
         let mut sftp_args = base;
         sftp_args.extend(["-b".to_owned(), "-".to_owned(), target]);
-        run_expected_restricted_failure(
-            "sftp",
-            &sftp_args,
-            Some(b"pwd\nquit\n"),
-            "sftp",
-        )?;
+        run_expected_restricted_failure("sftp", &sftp_args, Some(b"pwd\nquit\n"), "sftp")?;
 
         Ok(RestrictedControlNegativeProof {
             shell_rejected: true,
@@ -2032,7 +2019,10 @@ mod tests {
             Path::new("/tmp/known-hosts"),
         );
         assert!(base.iter().any(|value| value == "BatchMode=yes"));
-        assert!(base.iter().any(|value| value == "StrictHostKeyChecking=yes"));
+        assert!(
+            base.iter()
+                .any(|value| value == "StrictHostKeyChecking=yes")
+        );
         assert!(base.iter().any(|value| value == "HostKeyAlias=edge-1"));
         assert!(!base.iter().any(|value| value.contains("singbox-ops")));
     }
