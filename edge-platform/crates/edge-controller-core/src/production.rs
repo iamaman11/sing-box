@@ -8,7 +8,7 @@ use crate::vultr_lifecycle::{DesiredState as DesiredMachineState, MachineSpec, P
 use crate::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::{
     ProductionBootstrapMode, ProductionDesiredState, ProductionIpFamily,
-    ProductionTransportProtocol, production_machine,
+    ProductionTransportProtocol, canonical_production_desired_state, production_machine,
 };
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -57,6 +57,12 @@ impl fmt::Display for ProductionSpecError {
 impl Error for ProductionSpecError {}
 
 impl ProductionComposition {
+    pub fn canonical() -> Result<Self, ProductionSpecError> {
+        let desired = canonical_production_desired_state()
+            .map_err(|err| ProductionSpecError::Validation(err.to_string()))?;
+        Self::from_proto(&desired)
+    }
+
     pub fn from_proto(root: &ProductionDesiredState) -> Result<Self, ProductionSpecError> {
         validate_root_identity(root)?;
 
