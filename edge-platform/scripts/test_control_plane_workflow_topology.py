@@ -704,7 +704,7 @@ def main() -> None:
     )
     require(
         "edge-release-$ReleaseSetSha256" in windows_installer
-        and "release download" in windows_installer
+        and '$downloadArgs = @("release", "download", $tag' in windows_installer
         and "release-set.pb" in windows_installer
         and "current.pb" in windows_installer
         and "previous.pb" in windows_installer
