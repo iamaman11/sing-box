@@ -1895,7 +1895,7 @@ mod tests {
     #[test]
     fn exact_bundle_digest_observation_matches_only_exact_digest() {
         let observed = BundleReleaseView {
-            schema: 1,
+            schema_version: 1,
             bundle_id: "bundle-a".to_owned(),
             bundle_digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_owned(),
