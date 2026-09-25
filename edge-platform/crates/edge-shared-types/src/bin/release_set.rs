@@ -24,6 +24,7 @@ const VERIFY_FLAGS: &[&str] = &[
     "windows-artifact",
     "windows-controller",
     "windows-console",
+    "windows-diagnostic",
     "windows-sing-box",
     "linux-sing-box",
     "edge-agent",
@@ -49,6 +50,7 @@ const CREATE_FLAGS: &[&str] = &[
     "windows-artifact",
     "windows-controller",
     "windows-console",
+    "windows-diagnostic",
     "windows-sing-box",
     "linux-sing-box",
     "edge-agent",
@@ -66,6 +68,7 @@ const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
     "windows-artifact",
     "windows-controller",
     "windows-console",
+    "windows-diagnostic",
     "windows-sing-box",
     "linux-sing-box",
     "edge-agent",
@@ -87,6 +90,7 @@ const WRITE_WINDOWS_MANIFEST_FLAGS: &[&str] = &[
     "artifact-sha256",
     "controller-sha256",
     "console-sha256",
+    "diagnostic-sha256",
 ];
 
 const WRITE_LINUX_MANIFEST_FLAGS: &[&str] = &[
@@ -208,6 +212,7 @@ fn write_windows_build_manifest(flags: &BTreeMap<String, String>) -> Result<(), 
         artifact_sha256: flag(flags, "artifact-sha256")?.to_owned(),
         controller_sha256: flag(flags, "controller-sha256")?.to_owned(),
         console_sha256: flag(flags, "console-sha256")?.to_owned(),
+        diagnostic_sha256: flag(flags, "diagnostic-sha256")?.to_owned(),
     };
     write_build_manifest(
         "WindowsBuildManifest",
@@ -355,6 +360,11 @@ fn verify_build_manifest_artifacts(
             windows.console_sha256.as_str(),
         ),
         (
+            "Windows diagnostic",
+            "windows-diagnostic",
+            windows.diagnostic_sha256.as_str(),
+        ),
+        (
             "Windows sing-box",
             "windows-sing-box",
             windows.sing_box_binary_sha256.as_str(),
@@ -426,6 +436,10 @@ fn release_set_from_build_manifests(
                 &windows.windows_input_sha256,
             )?,
             source_revision: windows.windows_source_revision.clone(),
+            diagnostic_sha256: digest_from_hex(
+                "WindowsBuildManifest.diagnostic_sha256",
+                &windows.diagnostic_sha256,
+            )?,
         }),
         vm_runtime: Some(VmRuntime {
             edge_agent_sha256: digest_from_hex(
@@ -562,6 +576,11 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
         &windows.console_sha256,
     )?;
     verify_file_digest(
+        "Windows diagnostic",
+        Path::new(flag(flags, "windows-diagnostic")?),
+        &windows.diagnostic_sha256,
+    )?;
+    verify_file_digest(
         "Windows sing-box",
         Path::new(flag(flags, "windows-sing-box")?),
         &windows.sing_box_sha256,
@@ -667,6 +686,12 @@ fn print_vm_evidence(release: &ReleaseSet, digest: &str) -> Result<(), String> {
         "windows_console_sha256={}",
         digest_to_hex(&windows.console_sha256)
     );
+    if release.schema_version >= 6 {
+        println!(
+            "windows_diagnostic_sha256={}",
+            digest_to_hex(&windows.diagnostic_sha256)
+        );
+    }
     println!(
         "windows_sing_box_sha256={}",
         digest_to_hex(&windows.sing_box_sha256)
