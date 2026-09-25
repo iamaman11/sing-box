@@ -166,7 +166,7 @@ def main() -> None:
     require(
         'verb == "runner-bootstrap" and len(tokens) == 4' in vultr
         and '"runner-bootstrap"' in vultr
-        and "GITHUB_RUNNER_ADMIN_TOKEN" in vultr
+        and "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN" in vultr
         and "/actions/runners/registration-token" in vultr
         and 'run_lifecycle runner-bootstrap "${spec}" "${machine}"' in vultr
         and "install-vultr-root-runner.sh" in vultr,
