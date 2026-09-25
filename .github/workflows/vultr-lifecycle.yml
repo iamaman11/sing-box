@@ -182,9 +182,12 @@ jobs:
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
           orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          agent="${dir}/edge-agent-linux-amd64"
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
           chmod 0755 "${orchestrator}"
           printf 'EDGE_LIFECYCLE_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_LIFECYCLE_AGENT=%s\n' "${agent}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
           printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
           printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
@@ -462,6 +465,25 @@ jobs:
               acquire_host_access "${spec}" "${machine}" "acceptance"
               converge_host_substrate "${spec}" "${machine}" "acceptance-first" "${RUNNER_TEMP}/substrate-first-verify.json"
 
+              run_lifecycle transport-proof "${spec}" "${machine}" "${EDGE_LIFECYCLE_AGENT}" \
+                > "${RUNNER_TEMP}/restricted-transport-t0a.json"
+              jq -e '
+                .status == "PASS"
+                and .transport_user == "edge-control"
+                and .transport_target == "127.0.0.1:50061"
+                and .agent.get_version == "PASS"
+                and .agent.get_health == "PASS"
+                and .agent.observe_ipv4_network == "PASS"
+                and .negative_capabilities.shell_rejected == true
+                and .negative_capabilities.exec_rejected == true
+                and .negative_capabilities.scp_rejected == true
+                and .negative_capabilities.sftp_rejected == true
+                and .negative_capabilities.pty_rejected == true
+                and .negative_capabilities.remote_forward_rejected == true
+                and .legacy_bootstrap_used == true
+                and .exclusive_transport_key_capability_proven == false
+              ' "${RUNNER_TEMP}/restricted-transport-t0a.json" >/dev/null
+
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-plan.json"
               noop_authority="$(machine_authority "${RUNNER_TEMP}/apply-noop-plan.json")"
               run_lifecycle apply "${spec}" "${machine}" "${noop_authority}" > "${RUNNER_TEMP}/apply-noop.json"
@@ -538,6 +560,7 @@ jobs:
                   first_apply: $first_action,
                   repeat_apply: "NOOP",
                   strict_ssh: "PASS",
+                  restricted_transport_t0a: "PASS",
                   user_data_scrub: "PASS",
                   halt_start_reboot: "PASS",
                   stale_destroy_digest_refusal: "PASS",
