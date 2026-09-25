@@ -1,7 +1,8 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
-    apply_instance_action, prepare_strict_bootstrap, strict_ssh_accept, strict_ssh_capture,
-    verify_operator_key_matches, wait_provider_ready,
+    apply_instance_action, prepare_strict_bootstrap, prove_restricted_control_negative_capabilities,
+    start_strict_agent_tunnel, strict_scp_upload, strict_ssh_accept, strict_ssh_capture,
+    strict_ssh_run, verify_operator_key_matches, wait_provider_ready,
 };
 use crate::vultr_host_substrate_service::{
     HostSubstrateExecutionPolicy, apply_host_substrate_once, build_host_substrate_authority,
@@ -29,18 +30,22 @@ use edge_controller_core::vultr_lifecycle::{
     DesiredState, MANAGED_BY_IDENTITY, MachineSpec, ObservedMachine, PlanClass,
     decode_provider_tags, destroy_plan,
 };
+use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::{VultrFirewallRule, VultrInstance};
+use edge_shared_types::Empty;
+use edge_shared_types::agent_service_client::AgentServiceClient;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tonic::Request;
 
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
 const FIREWALL_PROFILES_PATH: &str = "infra/vultr/firewall-profiles.json";
 
-pub async fn run(args: Vec<String>) -> Result<(), String> {
+pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<(), String> {
     let command = args.first().map(String::as_str).ok_or_else(usage)?;
     match command {
         "doctor" => run_doctor(&args[1..]).await,
@@ -50,6 +55,7 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         "substrate-plan" => run_substrate_plan(&args[1..]).await,
         "substrate-apply" => run_substrate_apply(&args[1..]).await,
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
+        "transport-proof" => run_transport_proof(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
         "lease-acquire" => run_lease_acquire(&args[1..]).await,
@@ -569,6 +575,162 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
         "observation": observation,
         "plan": authorized.plan,
         "plan_authority": authorized.authority,
+    }))
+}
+
+async fn run_transport_proof(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 3 {
+        return Err(
+            "usage: edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>"
+                .to_owned(),
+        );
+    }
+
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let machine_id = &args[1];
+    let artifact_path = Path::new(&args[2]);
+    let expected_artifact = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_artifact, artifact_path)?;
+
+    let observed = exact_existing_machine_observation(&desired, machine_id).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| format!("exact machine {machine_id} has no observed public IPv4"))?;
+    let operator_private_key_path = operator_private_key_path_from_env()?;
+    let canonical_public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+
+    const REMOTE_T0_AGENT: &str = "/tmp/singbox-edge-agent-t0";
+    const INSTALLED_AGENT: &str = "/opt/vultr-edge-stack/bin/edge-agent";
+    strict_scp_upload(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        artifact_path,
+        REMOTE_T0_AGENT,
+    )?;
+    strict_ssh_run(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &format!(
+            "sudo install -m 0755 {REMOTE_T0_AGENT} {INSTALLED_AGENT} && rm -f {REMOTE_T0_AGENT} && sudo systemctl restart edge-agent.service && sudo systemctl is-active --quiet edge-agent.service"
+        ),
+    )?;
+    let remote_sha = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &format!("sha256sum {INSTALLED_AGENT} | cut -d' ' -f1"),
+    )?;
+    if remote_sha != expected_artifact.sha256 {
+        return Err(format!(
+            "T0 installed edge-agent digest mismatch: expected {}, got {remote_sha}",
+            expected_artifact.sha256
+        ));
+    }
+
+    let (local_port, tunnel) = start_strict_agent_tunnel(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+    )?;
+    let endpoint = format!("http://127.0.0.1:{local_port}");
+    let mut last_error = None;
+    let mut client = None;
+    for _ in 0..20 {
+        match AgentServiceClient::connect(endpoint.clone()).await {
+            Ok(value) => {
+                client = Some(value);
+                break;
+            }
+            Err(err) => last_error = Some(err.to_string()),
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let mut client = client.ok_or_else(|| {
+        format!(
+            "T0 restricted edge-agent tunnel did not become reachable: {}",
+            last_error.unwrap_or_else(|| "no connection attempt completed".to_owned())
+        )
+    })?;
+
+    let version = client
+        .get_version(Request::new(Empty {}))
+        .await
+        .map_err(|err| format!("T0 GetVersion through restricted transport failed: {err}"))?
+        .into_inner();
+    if version.name != "edge-agent" {
+        return Err(format!(
+            "T0 restricted transport reached unexpected agent name {}",
+            version.name
+        ));
+    }
+    let health = client
+        .get_health(Request::new(Empty {}))
+        .await
+        .map_err(|err| format!("T0 GetHealth through restricted transport failed: {err}"))?
+        .into_inner();
+    let network = client
+        .observe_ipv4_network(Request::new(Empty {}))
+        .await
+        .map_err(|err| {
+            format!("T0 ObserveIpv4Network through restricted transport failed: {err}")
+        })?
+        .into_inner();
+    if network.links.is_empty() || network.addresses.is_empty() {
+        return Err(
+            "T0 restricted transport returned empty typed IPv4 link/address observation".to_owned(),
+        );
+    }
+
+    let negative = prove_restricted_control_negative_capabilities(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+    )?;
+
+    drop(client);
+    drop(tunnel);
+
+    print_json_value(serde_json::json!({
+        "status": "PASS",
+        "machine_id": machine_id,
+        "transport_user": "edge-control",
+        "transport_target": "127.0.0.1:50061",
+        "agent": {
+            "name": version.name,
+            "version": version.version,
+            "sha256": remote_sha,
+            "get_version": "PASS",
+            "get_health": "PASS",
+            "health_value": health.healthy,
+            "readiness_value": health.ready,
+            "observe_ipv4_network": "PASS",
+            "link_count": network.links.len(),
+            "address_count": network.addresses.len(),
+            "route_count": network.routes.len(),
+        },
+        "negative_capabilities": {
+            "shell_rejected": negative.shell_rejected,
+            "exec_rejected": negative.exec_rejected,
+            "scp_rejected": negative.scp_rejected,
+            "sftp_rejected": negative.sftp_rejected,
+            "pty_rejected": negative.pty_rejected,
+            "remote_forward_rejected": negative.remote_forward_rejected,
+        },
+        "legacy_bootstrap_used": true,
+        "exclusive_transport_key_capability_proven": false,
+        "note": "T0a proves the edge-control account path only; privileged bootstrap deletion and no-/32 proof belong to T0b",
     }))
 }
 
