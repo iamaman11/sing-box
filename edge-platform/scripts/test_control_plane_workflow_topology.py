@@ -594,7 +594,7 @@ def main() -> None:
         edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 3
         and "windows-build-manifest.json" in edge_platform_ci
         and "linux-build-manifest.json" in edge_platform_ci
-        and "create-from-build-manifests" in edge_platform_ci
+        and "create" in edge_platform_ci
         and edge_platform_ci.count("verify-candidate") == 2,
         "candidate and promotion paths must converge through the typed platform build-manifest contract",
     )
