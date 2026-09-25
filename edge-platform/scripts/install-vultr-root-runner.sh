@@ -121,7 +121,6 @@ stage="verify-runner-state"
 test -f .runner
 test -f .credentials
 test "$(sudo -u "${RUNNER_USER}" sudo -n id -u)" = "0"
-pgrep -u "${RUNNER_USER}" -f 'Runner.Listener' >/dev/null
 
 echo "runner_name=${runner_name}"
 echo "runner_user=${RUNNER_USER}"
