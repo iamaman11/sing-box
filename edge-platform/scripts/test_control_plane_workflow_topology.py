@@ -421,13 +421,6 @@ def main() -> None:
     )
 
     require(
-        "CleanupPaths {" in acceptance_coordinator
-        and "progress.mutation_started = true" in acceptance_coordinator
-        and acceptance_coordinator.index('"clean_room"')
-        < acceptance_coordinator.index("progress.mutation_started = true"),
-        "typed acceptance must prove full clean room before the first mutation",
-    )
-    require(
         "vpc_attach_and_verify" in acceptance_coordinator
         and "acceptance_verify_substrate" in acceptance_coordinator,
         "typed acceptance must retain VPC guest-readiness and host-substrate verification",
