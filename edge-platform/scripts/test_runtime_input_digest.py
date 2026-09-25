@@ -56,6 +56,11 @@ def test_digest_scope() -> None:
         unrelated.write_text("control-plane docs only\n", encoding="utf-8")
         assert subject.compute_digest(root, inputs()) == original
 
+        release_tool = root / "edge-platform/crates/edge-shared-types/src/bin/release_set.rs"
+        release_tool.parent.mkdir(parents=True, exist_ok=True)
+        release_tool.write_text("fn main() { println!(\"release-only\"); }\n", encoding="utf-8")
+        assert subject.compute_digest(root, inputs()) == original
+
         workflow = root / subject.RUNTIME_BUILD_CONTRACT_PATH
         workflow.write_text(
             workflow.read_text(encoding="utf-8").replace("control-plane-before", "control-plane-changed"),
