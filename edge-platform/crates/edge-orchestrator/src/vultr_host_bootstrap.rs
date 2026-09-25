@@ -11,6 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 pub const DEFAULT_OPS_USER: &str = "singbox-ops";
+pub const CONTROL_TRANSPORT_USER: &str = "edge-control";
+const EDGE_AGENT_LOOPBACK: &str = "127.0.0.1:50061";
 pub const SCRUBBED_USER_DATA: &str =
     "#cloud-config\n# sing-box bootstrap material scrubbed after strict SSH acceptance\n";
 
@@ -434,9 +436,10 @@ fn render_strict_cloud_init(
     if canonical_key.contains('\n') || canonical_key.contains('\r') {
         return Err("canonical SSH public key must be a single line".to_owned());
     }
+    let control_key = restricted_control_authorized_key(canonical_key)?;
 
     let header = format!(
-        "#cloud-config\nhostname: {logical_hostname}\nmanage_etc_hosts: true\nusers:\n  - name: {DEFAULT_OPS_USER}\n    groups: [sudo]\n    sudo: [\"ALL=(ALL) NOPASSWD:ALL\"]\n    shell: /bin/bash\n    lock_passwd: true\n    ssh_authorized_keys:\n      - {canonical_key}\nssh_pwauth: false\ndisable_root: true\nssh_deletekeys: false\nssh_genkeytypes: []\n"
+        "#cloud-config\nhostname: {logical_hostname}\nmanage_etc_hosts: true\nusers:\n  - name: {DEFAULT_OPS_USER}\n    groups: [sudo]\n    sudo: [\"ALL=(ALL) NOPASSWD:ALL\"]\n    shell: /bin/bash\n    lock_passwd: true\n    ssh_authorized_keys:\n      - {canonical_key}\n  - name: {CONTROL_TRANSPORT_USER}\n    shell: /usr/sbin/nologin\n    lock_passwd: true\n    ssh_authorized_keys:\n      - '{control_key}'\nssh_pwauth: false\ndisable_root: true\nssh_deletekeys: false\nssh_genkeytypes: []\n"
     );
     let mut rendered = base_cloud_init.replacen("#cloud-config\n", &header, 1);
 
@@ -453,6 +456,11 @@ fn render_strict_cloud_init(
             "/etc/ssh/sshd_config.d/99-singbox-host-cert.conf",
             "0644",
             "HostKey /etc/ssh/ssh_host_ed25519_key\nHostCertificate /etc/ssh/ssh_host_ed25519_key-cert.pub\nPasswordAuthentication no\nPermitRootLogin no\n"
+        ),
+        cloud_init_file(
+            "/etc/ssh/sshd_config.d/99-z-singbox-control.conf",
+            "0644",
+            restricted_control_sshd_config()
         )
     );
     rendered = rendered.replacen(write_anchor, &files, 1);
@@ -1333,27 +1341,15 @@ pub(crate) fn start_strict_agent_tunnel(
     drop(listener);
 
     let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let tunnel_args = restricted_agent_tunnel_args(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        &trust,
+        local_port,
+    );
     let mut child = Command::new("ssh")
-        .args([
-            "-i",
-            &operator_private_key_path.display().to_string(),
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            &format!("UserKnownHostsFile={}", trust.display()),
-            "-o",
-            &format!("HostKeyAlias={logical_hostname}"),
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-N",
-            "-L",
-            &format!("127.0.0.1:{local_port}:127.0.0.1:50061"),
-            &format!("{DEFAULT_OPS_USER}@{target_ip}"),
-        ])
+        .args(&tunnel_args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -1391,6 +1387,65 @@ pub(crate) fn start_strict_agent_tunnel(
     Err(format!(
         "timed out waiting for strict edge-agent SSH tunnel on 127.0.0.1:{local_port}"
     ))
+}
+
+fn restricted_control_authorized_key(canonical_operator_public_key: &str) -> Result<String, String> {
+    let material = public_key_material(canonical_operator_public_key)?;
+    Ok(format!(
+        "restrict,port-forwarding,permitopen=\"{EDGE_AGENT_LOOPBACK}\" {material}"
+    ))
+}
+
+fn restricted_control_sshd_config() -> &'static str {
+    "Match User edge-control\n\
+    AuthenticationMethods publickey\n\
+    PubkeyAuthentication yes\n\
+    PasswordAuthentication no\n\
+    KbdInteractiveAuthentication no\n\
+    AllowTcpForwarding local\n\
+    AllowStreamLocalForwarding no\n\
+    PermitOpen 127.0.0.1:50061\n\
+    PermitListen none\n\
+    AllowAgentForwarding no\n\
+    X11Forwarding no\n\
+    PermitTTY no\n\
+    PermitTunnel no\n\
+    PermitUserRC no\n\
+    ForceCommand /usr/bin/false\n\
+Match all\n"
+}
+
+fn restricted_agent_tunnel_args(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    known_hosts_path: &Path,
+    local_port: u16,
+) -> Vec<String> {
+    vec![
+        "-i".to_owned(),
+        operator_private_key_path.display().to_string(),
+        "-o".to_owned(),
+        "IdentitiesOnly=yes".to_owned(),
+        "-o".to_owned(),
+        "BatchMode=yes".to_owned(),
+        "-o".to_owned(),
+        "ConnectTimeout=5".to_owned(),
+        "-o".to_owned(),
+        "ConnectionAttempts=1".to_owned(),
+        "-o".to_owned(),
+        "StrictHostKeyChecking=yes".to_owned(),
+        "-o".to_owned(),
+        format!("UserKnownHostsFile={}", known_hosts_path.display()),
+        "-o".to_owned(),
+        format!("HostKeyAlias={logical_hostname}"),
+        "-o".to_owned(),
+        "ExitOnForwardFailure=yes".to_owned(),
+        "-N".to_owned(),
+        "-L".to_owned(),
+        format!("127.0.0.1:{local_port}:{EDGE_AGENT_LOOPBACK}"),
+        format!("{CONTROL_TRANSPORT_USER}@{target_ip}"),
+    ]
 }
 
 fn strict_ssh_args(
@@ -1761,8 +1816,56 @@ mod tests {
         assert!(!rendered.contains("@@DOCKER_ENGINE_VERSION@@"));
         assert!(rendered.contains("PermitRootLogin no"));
         assert!(rendered.contains("name: singbox-ops"));
+        assert!(rendered.contains("name: edge-control"));
+        assert!(rendered.contains("shell: /usr/sbin/nologin"));
+        assert!(rendered.contains(
+            "restrict,port-forwarding,permitopen=\"127.0.0.1:50061\" ssh-ed25519 AAAACanonical"
+        ));
+        assert!(rendered.contains("Match User edge-control"));
+        assert!(rendered.contains("AuthenticationMethods publickey"));
+        assert!(rendered.contains("AllowTcpForwarding local"));
+        assert!(rendered.contains("AllowStreamLocalForwarding no"));
+        assert!(rendered.contains("PermitOpen 127.0.0.1:50061"));
+        assert!(rendered.contains("PermitListen none"));
+        assert!(rendered.contains("AllowAgentForwarding no"));
+        assert!(rendered.contains("X11Forwarding no"));
+        assert!(rendered.contains("PermitTTY no"));
+        assert!(rendered.contains("PermitTunnel no"));
+        assert!(rendered.contains("PermitUserRC no"));
+        assert!(rendered.contains("ForceCommand /usr/bin/false"));
+        assert!(rendered.contains("Match all"));
         assert!(rendered.contains("hostname: edge-1"));
         assert!(!rendered.contains("StrictHostKeyChecking=accept-new"));
+    }
+
+    #[test]
+    fn restricted_control_key_and_tunnel_are_agent_only() {
+        let key = restricted_control_authorized_key(
+            "ssh-ed25519 AAAACanonical ignored-comment",
+        )
+        .unwrap();
+        assert_eq!(
+            key,
+            "restrict,port-forwarding,permitopen=\"127.0.0.1:50061\" ssh-ed25519 AAAACanonical"
+        );
+        assert!(!key.contains("ignored-comment"));
+
+        let args = restricted_agent_tunnel_args(
+            "203.0.113.10",
+            "edge-1",
+            Path::new("/tmp/operator-key"),
+            Path::new("/tmp/known-hosts"),
+            43123,
+        );
+        assert!(args.iter().any(|value| value == "-N"));
+        assert!(args
+            .iter()
+            .any(|value| value == "127.0.0.1:43123:127.0.0.1:50061"));
+        assert!(args
+            .iter()
+            .any(|value| value == "edge-control@203.0.113.10"));
+        assert!(!args.iter().any(|value| value == "singbox-ops@203.0.113.10"));
+        assert!(!args.iter().any(|value| value == "accept-new"));
     }
 
     #[test]
