@@ -619,6 +619,15 @@ def main() -> None:
         "typed release ownership must not regress to redundant GitHub outputs or shell-owned manifest validation",
     )
     require(
+        "Publish accepted Windows artifact without rebuild" in edge_platform_ci
+        and "name: edge-platform-windows-${{ steps.locate.outputs.accepted_revision }}" in edge_platform_ci
+        and "Publish accepted Linux artifact without rebuild" not in edge_platform_ci
+        and "name: edge-platform-release-${{ steps.locate.outputs.accepted_revision }}" not in edge_platform_ci
+        and "Publish accepted ReleaseSet without rebuild" not in edge_platform_ci
+        and "name: edge-platform-release-set-${{ steps.locate.outputs.accepted_revision }}" not in edge_platform_ci,
+        "promotion must retain the Windows artifact consumed by the installer without re-uploading redundant Linux or ReleaseSet Actions artifacts",
+    )
+    require(
         edge_platform_ci.count(
             "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
         )
