@@ -11,6 +11,7 @@ mod cloudflare_mesh_lifecycle_service;
 mod cloudflare_zero_trust_doctor;
 mod cloudflare_zero_trust_lifecycle_command;
 mod cloudflare_zero_trust_lifecycle_service;
+mod production_command;
 mod vultr_host_bootstrap;
 mod vultr_host_substrate_service;
 mod vultr_lifecycle_adapter;
@@ -116,6 +117,9 @@ async fn run(
         Command::Line3Mesh { command } => {
             cloudflare_mesh_lifecycle_command::run(command.into_legacy_args()).await
         }
+        Command::Production { command } => match command {
+            cli::ProductionCommand::Validate => production_command::run(release_context),
+        },
         Command::VultrLifecycle { command } => {
             vultr_lifecycle_command::run(command.into_legacy_args(), release_context).await
         }
