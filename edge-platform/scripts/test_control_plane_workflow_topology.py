@@ -14,6 +14,8 @@ EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
+VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
+ROOT_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-root-runner.sh")
 
 
 def require(condition: bool, message: str) -> None:
@@ -34,6 +36,8 @@ def main() -> None:
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
+    vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
+    root_runner_installer = ROOT_RUNNER_INSTALLER.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -271,6 +275,26 @@ def main() -> None:
         'run_lifecycle lease-acquire "${spec}" "${machine}"' in vultr
         and 'run_lifecycle lease-release "${spec}" "${machine}"' in vultr,
         "Vultr workflow host operations must use the typed transient SSH lease",
+    )
+    require(
+        "release_transient_access_exact" in vultr_lifecycle_command
+        and vultr_lifecycle_command.count("acquire_transient_access_ready_exact") >= 3
+        and "transient support access compensated" in vultr_lifecycle_command
+        and "transient support access compensation failed" in vultr_lifecycle_command,
+        "all typed support-access lease acquisition paths must share compensated readiness semantics",
+    )
+    require(
+        'if [[ "${INSTANCE_ACTION}" == "reboot" ]]' not in vultr
+        and '"action-reboot"' not in vultr
+        and 'run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" | tee "${RUNNER_TEMP}/result.json"' in vultr,
+        "provider instance actions, including recovery reboot, must not depend on guest SSH",
+    )
+    require(
+        "root runner bootstrap failed: stage=%s exit=%s" in root_runner_installer
+        and "tail -c 4096" in root_runner_installer
+        and "[REDACTED]" in root_runner_installer
+        and "run_logged configure-runner" in root_runner_installer,
+        "root-runner bootstrap must emit bounded secret-safe stage diagnostics",
     )
     require(
         'verb == "access-release" and len(tokens) == 4' in vultr

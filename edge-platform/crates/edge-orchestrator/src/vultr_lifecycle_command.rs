@@ -1257,6 +1257,129 @@ fn strict_ssh_error_after_tcp_ready(
     )
 }
 
+async fn release_transient_access_exact(
+    desired: &DesiredState,
+    machine_id: &str,
+) -> Result<serde_json::Value, String> {
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let planned = build_access_authority(
+        desired,
+        machine_id,
+        AccessAuthorityMode::Release,
+        &mut lifecycle_provider,
+        &mut support_provider,
+    )
+    .await?;
+    if planned.disposition == PlanDisposition::Blocked {
+        return Err(format!(
+            "lease-release is blocked for machine {machine_id} by exact plan"
+        ));
+    }
+    let authority_digest = planned.authority.authority_digest.clone();
+    let access = release_access_with_authority(desired, machine_id, &authority_digest).await?;
+    let verified_absent = access
+        .get("verified_absent")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            access
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|action| action == "NOOP")
+        });
+    if !verified_absent {
+        return Err("lease-release did not prove transient SSH access absent".to_owned());
+    }
+    Ok(access)
+}
+
+async fn acquire_transient_access_ready_exact(
+    desired: &DesiredState,
+    machine_id: &str,
+) -> Result<
+    (
+        SupportAccessLeaseState,
+        serde_json::Value,
+        ObservedMachine,
+        TcpReadinessObservation,
+    ),
+    String,
+> {
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let planned = build_access_authority(
+        desired,
+        machine_id,
+        AccessAuthorityMode::Acquire,
+        &mut lifecycle_provider,
+        &mut support_provider,
+    )
+    .await?;
+    if planned.disposition == PlanDisposition::Blocked {
+        return Err(format!(
+            "lease-acquire is blocked for machine {machine_id} by exact plan"
+        ));
+    }
+    let authority_digest = planned.authority.authority_digest.clone();
+
+    let attempt = async {
+        let access = acquire_access_with_authority(desired, machine_id, &authority_digest).await?;
+        let mut lease = SupportAccessLeaseState::default();
+        lease.acquired()?;
+        let observed = exact_existing_machine_observation(desired, machine_id).await?;
+        let target_ip = observed
+            .main_ip
+            .clone()
+            .ok_or_else(|| format!("exact machine {machine_id} has no observed public IPv4"))?;
+        let operator_private_key_path = operator_private_key_path_from_env()?;
+        let canonical_public_key = read_canonical_ssh_public_key()?;
+        verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
+        let substrate = host_substrate_versions_from_env()?;
+        let tcp_readiness =
+            observe_tcp_readiness(&target_ip, TcpReadinessPolicy::support_access()).await?;
+        if tcp_readiness.final_state == TcpReadinessState::Timeout {
+            let provider_evidence = capture_support_access_provider_evidence(
+                desired,
+                machine_id,
+                &mut lifecycle_provider,
+                &mut support_provider,
+            )
+            .await;
+            return Err(support_access_timeout_error(
+                &target_ip,
+                &tcp_readiness,
+                provider_evidence,
+            ));
+        }
+        strict_ssh_accept(
+            &target_ip,
+            machine_id,
+            &operator_private_key_path,
+            &canonical_public_key,
+            &substrate,
+            15,
+            Duration::from_secs(2),
+        )
+        .await
+        .map_err(|error| strict_ssh_error_after_tcp_ready(&tcp_readiness, error))?;
+        lease.ready()?;
+        Ok::<_, String>((lease, access, observed, tcp_readiness))
+    }
+    .await;
+
+    match attempt {
+        Ok(result) => Ok(result),
+        Err(primary_error) => match release_transient_access_exact(desired, machine_id).await {
+            Ok(_) => Err(format!(
+                "{primary_error}; transient support access compensated"
+            )),
+            Err(compensation_error) => Err(format!(
+                "{primary_error}; transient support access compensation failed: {compensation_error}"
+            )),
+        },
+    }
+}
+
 async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
     if args.len() != 2 {
         return Err(
@@ -1265,64 +1388,9 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
-    let mut lifecycle_provider = lifecycle_provider_from_env()?;
-    let mut support_provider = support_provider_from_env()?;
-    let planned = build_access_authority(
-        &desired,
-        &args[1],
-        AccessAuthorityMode::Acquire,
-        &mut lifecycle_provider,
-        &mut support_provider,
-    )
-    .await?;
-    if planned.disposition == PlanDisposition::Blocked {
-        return Err(format!(
-            "lease-acquire is blocked for machine {} by exact plan",
-            args[1]
-        ));
-    }
-    let authority_digest = planned.authority.authority_digest.clone();
-    let access = acquire_access_with_authority(&desired, &args[1], &authority_digest).await?;
+    let (lease, access, observed, tcp_readiness) =
+        acquire_transient_access_ready_exact(&desired, &args[1]).await?;
 
-    let mut lease = SupportAccessLeaseState::default();
-    lease.acquired()?;
-    let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
-    let target_ip = observed
-        .main_ip
-        .as_deref()
-        .ok_or_else(|| format!("exact machine {} has no observed public IPv4", args[1]))?;
-    let operator_private_key_path = operator_private_key_path_from_env()?;
-    let canonical_public_key = read_canonical_ssh_public_key()?;
-    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
-    let substrate = host_substrate_versions_from_env()?;
-    let tcp_readiness =
-        observe_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
-    if tcp_readiness.final_state == TcpReadinessState::Timeout {
-        let provider_evidence = capture_support_access_provider_evidence(
-            &desired,
-            &args[1],
-            &mut lifecycle_provider,
-            &mut support_provider,
-        )
-        .await;
-        return Err(support_access_timeout_error(
-            target_ip,
-            &tcp_readiness,
-            provider_evidence,
-        ));
-    }
-    strict_ssh_accept(
-        target_ip,
-        &args[1],
-        &operator_private_key_path,
-        &canonical_public_key,
-        &substrate,
-        15,
-        Duration::from_secs(2),
-    )
-    .await
-    .map_err(|error| strict_ssh_error_after_tcp_ready(&tcp_readiness, error))?;
-    lease.ready()?;
     let mutations_performed = access
         .get("mutations_performed")
         .and_then(serde_json::Value::as_u64)
@@ -1704,36 +1772,7 @@ async fn run_lease_release(args: &[String]) -> Result<(), String> {
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
-    let mut lifecycle_provider = lifecycle_provider_from_env()?;
-    let mut support_provider = support_provider_from_env()?;
-    let planned = build_access_authority(
-        &desired,
-        &args[1],
-        AccessAuthorityMode::Release,
-        &mut lifecycle_provider,
-        &mut support_provider,
-    )
-    .await?;
-    if planned.disposition == PlanDisposition::Blocked {
-        return Err(format!(
-            "lease-release is blocked for machine {} by exact plan",
-            args[1]
-        ));
-    }
-    let authority_digest = planned.authority.authority_digest.clone();
-    let access = release_access_with_authority(&desired, &args[1], &authority_digest).await?;
-    let verified_absent = access
-        .get("verified_absent")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or_else(|| {
-            access
-                .get("action")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|action| action == "NOOP")
-        });
-    if !verified_absent {
-        return Err("lease-release did not prove transient SSH access absent".to_owned());
-    }
+    let access = release_transient_access_exact(&desired, &args[1]).await?;
     print_json_value(serde_json::json!({
         "status": "RELEASED",
         "machine_id": args[1],
@@ -2517,61 +2556,8 @@ pub(crate) async fn acceptance_lease_acquire(
     machine_id: &str,
 ) -> Result<(), String> {
     let desired = load_desired_state(spec_path)?;
-    let mut lifecycle_provider = lifecycle_provider_from_env()?;
-    let mut support_provider = support_provider_from_env()?;
-    let planned = build_access_authority(
-        &desired,
-        machine_id,
-        AccessAuthorityMode::Acquire,
-        &mut lifecycle_provider,
-        &mut support_provider,
-    )
-    .await?;
-    if planned.disposition == PlanDisposition::Blocked {
-        return Err(format!(
-            "acceptance lease-acquire is blocked for machine {machine_id}"
-        ));
-    }
-    let access =
-        acquire_access_with_authority(&desired, machine_id, &planned.authority.authority_digest)
-            .await?;
-
-    let observed = exact_existing_machine_observation(&desired, machine_id).await?;
-    let target_ip = observed
-        .main_ip
-        .as_deref()
-        .ok_or_else(|| format!("exact machine {machine_id} has no observed public IPv4"))?;
-    let operator_private_key_path = operator_private_key_path_from_env()?;
-    let canonical_public_key = read_canonical_ssh_public_key()?;
-    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
-    let substrate = host_substrate_versions_from_env()?;
-    let tcp_readiness =
-        observe_tcp_readiness(target_ip, TcpReadinessPolicy::support_access()).await?;
-    if tcp_readiness.final_state == TcpReadinessState::Timeout {
-        let provider_evidence = capture_support_access_provider_evidence(
-            &desired,
-            machine_id,
-            &mut lifecycle_provider,
-            &mut support_provider,
-        )
-        .await;
-        return Err(support_access_timeout_error(
-            target_ip,
-            &tcp_readiness,
-            provider_evidence,
-        ));
-    }
-    strict_ssh_accept(
-        target_ip,
-        machine_id,
-        &operator_private_key_path,
-        &canonical_public_key,
-        &substrate,
-        15,
-        Duration::from_secs(2),
-    )
-    .await
-    .map_err(|error| strict_ssh_error_after_tcp_ready(&tcp_readiness, error))?;
+    let (_lease, access, _observed, _tcp_readiness) =
+        acquire_transient_access_ready_exact(&desired, machine_id).await?;
 
     if access
         .get("next_plan")

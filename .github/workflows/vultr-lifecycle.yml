@@ -438,33 +438,7 @@ jobs:
             action)
               run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" > "${RUNNER_TEMP}/action-authority-plan.json"
               authority="$(plan_authority "${RUNNER_TEMP}/action-authority-plan.json")"
-              if [[ "${INSTANCE_ACTION}" == "reboot" ]]; then
-                acquire_host_access "${spec}" "${machine}" "action-reboot"
-                action_rc=0
-                set +e
-                run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" \
-                  > "${RUNNER_TEMP}/action-result.json"
-                action_rc=$?
-                set -e
-                release_rc=0
-                set +e
-                release_host_access "${spec}" "${machine}" "action-reboot"
-                release_rc=$?
-                set -e
-                if [[ "${action_rc}" -ne 0 ]]; then
-                  exit "${action_rc}"
-                fi
-                if [[ "${release_rc}" -ne 0 ]]; then
-                  exit "${release_rc}"
-                fi
-                jq -s '.[0] + {support_access: {acquire: .[1], release: .[2]}}' \
-                  "${RUNNER_TEMP}/action-result.json" \
-                  "${RUNNER_TEMP}/action-reboot-access-acquire.json" \
-                  "${RUNNER_TEMP}/action-reboot-access-release.json" \
-                  | tee "${RUNNER_TEMP}/result.json"
-              else
-                run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
-              fi
+              run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" | tee "${RUNNER_TEMP}/result.json"
               ;;
             destroy-plan)
               run_lifecycle destroy-plan "${spec}" "${machine}" "${source_revision}" | tee "${RUNNER_TEMP}/result.json"
