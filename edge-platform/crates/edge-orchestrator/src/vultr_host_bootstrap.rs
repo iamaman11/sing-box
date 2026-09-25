@@ -7,7 +7,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 pub const DEFAULT_OPS_USER: &str = "singbox-ops";
@@ -18,6 +18,16 @@ pub const SCRUBBED_USER_DATA: &str =
 
 pub struct StrictBootstrapBundle {
     pub cloud_init: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RestrictedControlNegativeProof {
+    pub shell_rejected: bool,
+    pub exec_rejected: bool,
+    pub scp_rejected: bool,
+    pub sftp_rejected: bool,
+    pub pty_rejected: bool,
+    pub remote_forward_rejected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1417,12 +1427,10 @@ fn restricted_control_sshd_config() -> &'static str {
 Match all\n"
 }
 
-fn restricted_agent_tunnel_args(
-    target_ip: &str,
+fn restricted_control_base_args(
     logical_hostname: &str,
     operator_private_key_path: &Path,
     known_hosts_path: &Path,
-    local_port: u16,
 ) -> Vec<String> {
     vec![
         "-i".to_owned(),
@@ -1441,13 +1449,161 @@ fn restricted_agent_tunnel_args(
         format!("UserKnownHostsFile={}", known_hosts_path.display()),
         "-o".to_owned(),
         format!("HostKeyAlias={logical_hostname}"),
+    ]
+}
+
+fn restricted_agent_tunnel_args(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    known_hosts_path: &Path,
+    local_port: u16,
+) -> Vec<String> {
+    let mut args = restricted_control_base_args(
+        logical_hostname,
+        operator_private_key_path,
+        known_hosts_path,
+    );
+    args.extend([
         "-o".to_owned(),
         "ExitOnForwardFailure=yes".to_owned(),
         "-N".to_owned(),
         "-L".to_owned(),
         format!("127.0.0.1:{local_port}:{EDGE_AGENT_LOOPBACK}"),
         format!("{CONTROL_TRANSPORT_USER}@{target_ip}"),
-    ]
+    ]);
+    args
+}
+
+fn run_expected_restricted_failure(
+    program: &str,
+    args: &[String],
+    stdin: Option<&[u8]>,
+    label: &str,
+) -> Result<(), String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("failed to start restricted {label} probe: {err}"))?;
+    if let Some(input) = stdin
+        && let Some(mut handle) = child.stdin.take()
+    {
+        handle
+            .write_all(input)
+            .map_err(|err| format!("failed to write restricted {label} probe input: {err}"))?;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to inspect restricted {label} probe: {err}"))?
+        {
+            if status.success() {
+                return Err(format!(
+                    "restricted edge-control {label} capability unexpectedly succeeded"
+                ));
+            }
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "restricted edge-control {label} probe remained active; capability was not proven rejected"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+pub(crate) fn prove_restricted_control_negative_capabilities(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+) -> Result<RestrictedControlNegativeProof, String> {
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let result = (|| {
+        let target = format!("{CONTROL_TRANSPORT_USER}@{target_ip}");
+        let base = restricted_control_base_args(
+            logical_hostname,
+            operator_private_key_path,
+            &trust,
+        );
+
+        let mut shell_args = base.clone();
+        shell_args.extend(["-T".to_owned(), target.clone()]);
+        run_expected_restricted_failure("ssh", &shell_args, None, "shell")?;
+
+        let mut exec_args = base.clone();
+        exec_args.extend([target.clone(), "true".to_owned()]);
+        run_expected_restricted_failure("ssh", &exec_args, None, "exec")?;
+
+        let mut pty_args = base.clone();
+        pty_args.extend(["-tt".to_owned(), target.clone(), "true".to_owned()]);
+        run_expected_restricted_failure("ssh", &pty_args, None, "pty")?;
+
+        let mut remote_forward_args = base.clone();
+        remote_forward_args.extend([
+            "-o".to_owned(),
+            "ExitOnForwardFailure=yes".to_owned(),
+            "-N".to_owned(),
+            "-R".to_owned(),
+            "127.0.0.1:45991:127.0.0.1:50061".to_owned(),
+            target.clone(),
+        ]);
+        run_expected_restricted_failure(
+            "ssh",
+            &remote_forward_args,
+            None,
+            "remote-forward",
+        )?;
+
+        let source = unique_temp_file("edge-control-scp-negative");
+        fs::write(&source, b"restricted transport negative proof\n")
+            .map_err(|err| format!("failed to write restricted SCP probe source: {err}"))?;
+        let scp_result = (|| {
+            let mut scp_args = base.clone();
+            scp_args.extend([
+                "-O".to_owned(),
+                source.display().to_string(),
+                format!("{target}:/tmp/edge-control-forbidden"),
+            ]);
+            run_expected_restricted_failure("scp", &scp_args, None, "scp")
+        })();
+        let _ = fs::remove_file(&source);
+        scp_result?;
+
+        let mut sftp_args = base;
+        sftp_args.extend(["-b".to_owned(), "-".to_owned(), target]);
+        run_expected_restricted_failure(
+            "sftp",
+            &sftp_args,
+            Some(b"pwd\nquit\n"),
+            "sftp",
+        )?;
+
+        Ok(RestrictedControlNegativeProof {
+            shell_rejected: true,
+            exec_rejected: true,
+            scp_rejected: true,
+            sftp_rejected: true,
+            pty_rejected: true,
+            remote_forward_rejected: true,
+        })
+    })();
+    let _ = fs::remove_file(&trust);
+    result
 }
 
 fn strict_ssh_args(
@@ -1869,6 +2025,16 @@ mod tests {
         );
         assert!(!args.iter().any(|value| value == "singbox-ops@203.0.113.10"));
         assert!(!args.iter().any(|value| value == "accept-new"));
+
+        let base = restricted_control_base_args(
+            "edge-1",
+            Path::new("/tmp/operator-key"),
+            Path::new("/tmp/known-hosts"),
+        );
+        assert!(base.iter().any(|value| value == "BatchMode=yes"));
+        assert!(base.iter().any(|value| value == "StrictHostKeyChecking=yes"));
+        assert!(base.iter().any(|value| value == "HostKeyAlias=edge-1"));
+        assert!(!base.iter().any(|value| value.contains("singbox-ops")));
     }
 
     #[test]
