@@ -120,22 +120,12 @@ async fn run(
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Converge(args) => {
-                production_command::converge(
-                    release_context,
-                    &args.edge_agent_artifact_path,
-                )
-                .await
+                production_command::converge(release_context, &args.edge_agent_artifact_path).await
             }
             cli::ProductionCommand::Verify(args) => {
-                production_command::verify(
-                    release_context,
-                    &args.edge_agent_artifact_path,
-                )
-                .await
+                production_command::verify(release_context, &args.edge_agent_artifact_path).await
             }
-            cli::ProductionCommand::Rollback => {
-                production_command::rollback(release_context).await
-            }
+            cli::ProductionCommand::Rollback => production_command::rollback(release_context).await,
         },
         Command::VultrLifecycle { command } => {
             vultr_lifecycle_command::run(command.into_legacy_args(), release_context).await
