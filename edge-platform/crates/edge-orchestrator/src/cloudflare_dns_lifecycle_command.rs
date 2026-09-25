@@ -6,6 +6,9 @@ use crate::vultr_lifecycle_command::{
     exact_existing_machine_observation, load_desired_state as load_vultr_desired_state,
 };
 use edge_controller_core::application_lifecycle::DesiredApplicationState;
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+};
 use edge_controller_core::cloudflare_dns_lifecycle::{ApplyAction, CleanupAction, DesiredDnsState};
 use edge_controller_core::orchestration::{MachineObservation, derive_dns_target};
 use std::env;
@@ -218,6 +221,12 @@ pub(crate) async fn acceptance_cleanup_to_absent(spec_path: &Path) -> Result<(),
 }
 
 fn load_desired(path: &Path) -> Result<DesiredDnsState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.dns)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path).map_err(|err| {
         format!(
             "failed to read Cloudflare DNS spec {}: {err}",
@@ -230,13 +239,8 @@ fn load_desired(path: &Path) -> Result<DesiredDnsState, String> {
 async fn derive_target_from_application(
     application_spec_path: &Path,
 ) -> Result<edge_controller_core::orchestration::DerivedDnsTarget, String> {
-    let raw = fs::read_to_string(application_spec_path).map_err(|err| {
-        format!(
-            "failed to read application spec {} for DNS derivation: {err}",
-            application_spec_path.display()
-        )
-    })?;
-    let application = DesiredApplicationState::parse_json(&raw).map_err(|err| err.to_string())?;
+    let application =
+        crate::application_lifecycle_command::load_application_desired(application_spec_path)?;
     let vultr_desired = load_vultr_desired_state(Path::new(&application.vultr_spec_path))?;
     if vultr_desired.environment != application.environment {
         return Err(format!(
