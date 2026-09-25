@@ -143,6 +143,32 @@ pub(crate) async fn acceptance_require_clean_room(spec_path: &Path) -> Result<()
     Ok(())
 }
 
+pub(crate) async fn production_converge(
+    spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<(), String> {
+    let desired = load_desired(spec_path)?;
+    let derived = derive_target_from_application(application_spec_path).await?;
+    let mut provider = provider_from_env()?;
+    let (observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
+    if matches!(plan.action, ApplyAction::Noop) {
+        return Ok(());
+    }
+    let authorized = authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
+    let report = apply_dns_once(
+        &mut provider,
+        &desired,
+        &derived.target_ipv4,
+        &authorized.authority.authority_digest,
+        DnsExecutionPolicy::default(),
+    )
+    .await?;
+    if !matches!(report.next_plan.action, ApplyAction::Noop) {
+        return Err("production DNS convergence did not reach NOOP".to_owned());
+    }
+    Ok(())
+}
+
 pub(crate) async fn acceptance_create(
     spec_path: &Path,
     application_spec_path: &Path,
