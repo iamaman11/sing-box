@@ -39,6 +39,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: MeshCommand,
     },
+    Production {
+        #[command(subcommand)]
+        command: ProductionCommand,
+    },
     VultrLifecycle {
         #[command(subcommand)]
         command: VultrLifecycleCommand,
@@ -58,6 +62,7 @@ impl Command {
             Self::CloudflareDns { .. } => "cloudflare-dns",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Line3Mesh { .. } => "line3-mesh",
+            Self::Production { .. } => "production",
             Self::VultrLifecycle { .. } => "vultr-lifecycle",
             Self::VultrVpc { .. } => "vultr-vpc",
         }
@@ -151,6 +156,11 @@ impl ApplicationLifecycleCommand {
             Self::RollbackApply(args) => destructive_apply("rollback-apply", args),
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProductionCommand {
+    Validate,
 }
 
 #[derive(Debug, Args, Clone)]
