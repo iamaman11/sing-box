@@ -44,7 +44,6 @@ const VERIFY_VM_FLAGS: &[&str] = &[
 const VERIFY_WINDOWS_FLAGS: &[&str] = &[
     "input",
     "sha256-file",
-    "source-revision",
     "windows-artifact",
     "windows-controller",
     "windows-console",
@@ -55,7 +54,6 @@ const VERIFY_WINDOWS_FLAGS: &[&str] = &[
 const WRITE_WINDOWS_ACTIVATION_FLAGS: &[&str] = &[
     "input",
     "sha256-file",
-    "source-revision",
     "release-dir",
     "controller",
     "console",
@@ -534,6 +532,32 @@ fn write_release_set_files(
     Ok(digest)
 }
 
+fn load_verified_release_set_without_revision(
+    flags: &BTreeMap<String, String>,
+) -> Result<(ReleaseSet, String), String> {
+    let input = PathBuf::from(flag(flags, "input")?);
+    let sha256_file = PathBuf::from(flag(flags, "sha256-file")?);
+    let bytes =
+        fs::read(&input).map_err(|error| format!("failed to read {}: {error}", input.display()))?;
+    let release = decode_release_set(&bytes)?;
+    let digest = release_set_sha256(&bytes)?;
+    let file_name = input
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "release-set input must have a UTF-8 filename".to_owned())?;
+    let expected_sha_file = format!("{digest}  {file_name}\n");
+    let actual_sha_file = fs::read_to_string(&sha256_file).map_err(|error| {
+        format!(
+            "failed to read release-set SHA-256 file {}: {error}",
+            sha256_file.display()
+        )
+    })?;
+    if actual_sha_file != expected_sha_file {
+        return Err("release-set SHA-256 sidecar does not match exact protobuf bytes".to_owned());
+    }
+    Ok((release, digest))
+}
+
 fn load_verified_release_set(
     flags: &BTreeMap<String, String>,
 ) -> Result<(ReleaseSet, String), String> {
@@ -641,7 +665,7 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
 
 fn verify_windows_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
     require_allowed(flags, VERIFY_WINDOWS_FLAGS)?;
-    let (release, digest) = load_verified_release_set(flags)?;
+    let (release, digest) = load_verified_release_set_without_revision(flags)?;
     if release.schema_version < 6 {
         return Err("verify-windows requires ReleaseSet schema_version >= 6".to_owned());
     }
@@ -681,7 +705,7 @@ fn verify_windows_release_set(flags: &BTreeMap<String, String>) -> Result<(), St
 
 fn write_windows_activation_state(flags: &BTreeMap<String, String>) -> Result<(), String> {
     require_allowed(flags, WRITE_WINDOWS_ACTIVATION_FLAGS)?;
-    let (release, digest) = load_verified_release_set(flags)?;
+    let (release, digest) = load_verified_release_set_without_revision(flags)?;
     if release.schema_version < 6 {
         return Err("Windows activation requires ReleaseSet schema_version >= 6".to_owned());
     }
