@@ -30,6 +30,8 @@ pub struct WindowsBuildManifest {
     pub controller_sha256: String,
     #[prost(string, tag = "13")]
     pub console_sha256: String,
+    #[prost(string, tag = "14")]
+    pub diagnostic_sha256: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -151,6 +153,10 @@ impl WindowsBuildManifest {
             (
                 "WindowsBuildManifest.console_sha256",
                 self.console_sha256.as_str(),
+            ),
+            (
+                "WindowsBuildManifest.diagnostic_sha256",
+                self.diagnostic_sha256.as_str(),
             ),
         ] {
             validate_sha256(label, value)?;
