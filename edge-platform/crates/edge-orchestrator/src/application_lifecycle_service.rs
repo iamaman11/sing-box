@@ -15,10 +15,12 @@ use edge_controller_core::lifecycle::{
 };
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
-    ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest, BundleFile, Ipv4NetworkObservation,
-    MeshRuntimeConvergeRequest, MeshRuntimeState, RollbackBundleRequest, RuntimeProbeStatus,
-    VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    ApplicationBundleReleaseState, ApplicationControlStateRecord, ApplyBundleRequest,
+    BootstrapMode, BootstrapRuntimeRequest, BundleFile, Ipv4NetworkObservation,
+    MeshRuntimeConvergeRequest, MeshRuntimeState, PublishedApplicationReleaseState,
+    RollbackBundleRequest, RuntimeProbeStatus, VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
+use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,13 +34,13 @@ use tonic::transport::Channel;
 const REMOTE_ROOT: &str = "/opt/vultr-edge-stack";
 const REMOTE_AGENT: &str = "/opt/vultr-edge-stack/bin/edge-agent";
 const REMOTE_PREVIOUS_AGENT: &str = "/opt/vultr-edge-stack/bin/edge-agent.previous";
-const REMOTE_STACK_RELEASE: &str = "/opt/vultr-edge-stack/stack/.application-release.json";
+const REMOTE_STACK_RELEASE: &str = "/opt/vultr-edge-stack/stack/.application-release.pb";
 const REMOTE_PREVIOUS_STACK_RELEASE: &str =
-    "/opt/vultr-edge-stack/stack.previous/.application-release.json";
+    "/opt/vultr-edge-stack/stack.previous/.application-release.pb";
 const REMOTE_STAGING_STACK_RELEASE: &str =
-    "/opt/vultr-edge-stack/stack.next/.application-release.json";
-const REMOTE_CONTROL_RELEASE: &str = "/opt/vultr-edge-stack/application-release.json";
-const REMOTE_CONTROL_RELEASE_STAGING: &str = "/tmp/singbox-application-release.json.tmp";
+    "/opt/vultr-edge-stack/stack.next/.application-release.pb";
+const REMOTE_CONTROL_RELEASE: &str = "/opt/vultr-edge-stack/application-release.pb";
+const REMOTE_CONTROL_RELEASE_STAGING: &str = "/tmp/singbox-application-release.pb.tmp";
 const AGENT_DROPIN_PATH: &str =
     "/etc/systemd/system/edge-agent.service.d/90-application-control.conf";
 const AGENT_DROPIN_CONTENT: &str =
@@ -107,13 +109,7 @@ struct ApplicationControlState {
     previous: Option<PublishedApplicationRelease>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BundleReleaseView {
-    schema: u32,
-    bundle_id: String,
-    bundle_digest: String,
-}
+type BundleReleaseView = ApplicationBundleReleaseState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DesiredMutationMode {
@@ -798,26 +794,62 @@ fn remote_file_sha(
     Ok(Some(value))
 }
 
-fn read_remote_bundle_release(
+fn decode_hex_bytes(value: &str, label: &str) -> Result<Vec<u8>, String> {
+    let compact = value
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect::<String>();
+    if compact.is_empty() {
+        return Ok(Vec::new());
+    }
+    if compact.len() % 2 != 0 || !compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("{label} returned invalid hex bytes"));
+    }
+    compact
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair)
+                .map_err(|_| format!("{label} returned invalid UTF-8 hex"))?;
+            u8::from_str_radix(text, 16)
+                .map_err(|_| format!("{label} returned invalid hex byte"))
+        })
+        .collect()
+}
+
+fn read_remote_protobuf_bytes(
     authority: &ApplicationAuthority,
     remote_path: &str,
-) -> Result<Option<BundleReleaseView>, String> {
-    let raw = strict_ssh_capture(
+) -> Result<Option<Vec<u8>>, String> {
+    let hex = strict_ssh_capture(
         &authority.target_ip,
         &authority.logical_hostname,
         &authority.operator_private_key_path,
         &authority.canonical_operator_public_key,
-        &format!("sudo cat {remote_path} 2>/dev/null || true"),
+        &format!(
+            "if sudo test -f {remote_path}; then sudo od -An -v -tx1 {remote_path} | tr -d ' \\n'; fi"
+        ),
     )?;
-    if raw.is_empty() {
+    let bytes = decode_hex_bytes(&hex, remote_path)?;
+    Ok((!bytes.is_empty()).then_some(bytes))
+}
+
+fn read_remote_bundle_release(
+    authority: &ApplicationAuthority,
+    remote_path: &str,
+) -> Result<Option<BundleReleaseView>, String> {
+    let Some(bytes) = read_remote_protobuf_bytes(authority, remote_path)? else {
         return Ok(None);
+    };
+    let value = BundleReleaseView::decode(bytes.as_slice())
+        .map_err(|err| format!("remote bundle release marker protobuf is invalid: {err}"))?;
+    if value.encode_to_vec() != bytes {
+        return Err("remote bundle release marker is not canonical protobuf".to_owned());
     }
-    let value: BundleReleaseView = serde_json::from_str(&raw)
-        .map_err(|err| format!("remote bundle release marker is invalid JSON: {err}"))?;
-    if value.schema != 1 {
+    if value.schema_version != 1 {
         return Err(format!(
             "unsupported remote bundle release marker schema {}",
-            value.schema
+            value.schema_version
         ));
     }
     validate_lower_hex("remote bundle digest", &value.bundle_digest, 64)?;
@@ -910,25 +942,21 @@ async fn wait_for_exact_bundle_digest_after_uncertain_mutation(
 fn read_control_state(
     authority: &ApplicationAuthority,
 ) -> Result<Option<ApplicationControlState>, String> {
-    let raw = strict_ssh_capture(
-        &authority.target_ip,
-        &authority.logical_hostname,
-        &authority.operator_private_key_path,
-        &authority.canonical_operator_public_key,
-        &format!("sudo cat {REMOTE_CONTROL_RELEASE} 2>/dev/null || true"),
-    )?;
-    if raw.is_empty() {
+    let Some(bytes) = read_remote_protobuf_bytes(authority, REMOTE_CONTROL_RELEASE)? else {
         return Ok(None);
+    };
+    let record = ApplicationControlStateRecord::decode(bytes.as_slice())
+        .map_err(|err| format!("application release control protobuf is invalid: {err}"))?;
+    if record.encode_to_vec() != bytes {
+        return Err("application release control state is not canonical protobuf".to_owned());
     }
-    let state: ApplicationControlState = serde_json::from_str(&raw)
-        .map_err(|err| format!("application release control marker is invalid JSON: {err}"))?;
-    if state.schema != 1 {
+    if record.schema_version != 1 {
         return Err(format!(
             "unsupported application release control schema {}",
-            state.schema
+            record.schema_version
         ));
     }
-    Ok(Some(state))
+    application_control_from_proto(record).map(Some)
 }
 
 fn install_exact_agent(
@@ -1673,9 +1701,8 @@ fn publish_control_state_once(
     state: &ApplicationControlState,
 ) -> Result<(), String> {
     let local = unique_temp_file("singbox-application-release");
-    let raw = serde_json::to_vec(state)
-        .map_err(|err| format!("failed to serialize application release control state: {err}"))?;
-    fs::write(&local, raw)
+    let record = application_control_to_proto(state)?;
+    fs::write(&local, record.encode_to_vec())
         .map_err(|err| format!("failed to write temporary release control state: {err}"))?;
 
     let upload = strict_scp_upload(
@@ -1740,6 +1767,75 @@ fn verify_previous_release_material(
         );
     }
     Ok(())
+}
+
+fn published_release_to_proto(
+    release: &PublishedApplicationRelease,
+) -> PublishedApplicationReleaseState {
+    PublishedApplicationReleaseState {
+        release_id: release.release_id.clone(),
+        source_revision: release.source_revision.clone(),
+        agent_sha256: release.agent_sha256.clone(),
+        bundle_digest: release.bundle_digest.clone(),
+        bootstrap_mode: proto_bootstrap_mode(release.bootstrap_mode) as i32,
+    }
+}
+
+fn published_release_from_proto(
+    release: PublishedApplicationReleaseState,
+) -> Result<PublishedApplicationRelease, String> {
+    validate_lower_hex("published release source_revision", &release.source_revision, 40)?;
+    validate_lower_hex("published release agent_sha256", &release.agent_sha256, 64)?;
+    validate_lower_hex("published release bundle_digest", &release.bundle_digest, 64)?;
+    if release.release_id.trim().is_empty() {
+        return Err("published release id must be non-empty".to_owned());
+    }
+    let mode = BootstrapMode::try_from(release.bootstrap_mode)
+        .map_err(|_| "published release bootstrap mode is unknown".to_owned())?;
+    let bootstrap_mode = match mode {
+        BootstrapMode::BootstrapBase => ApplicationBootstrapMode::Base,
+        BootstrapMode::BootstrapTunnel => ApplicationBootstrapMode::Tunnel,
+        BootstrapMode::BootstrapFull => ApplicationBootstrapMode::Full,
+        BootstrapMode::Unspecified => {
+            return Err("published release bootstrap mode is required".to_owned());
+        }
+    };
+    Ok(PublishedApplicationRelease {
+        release_id: release.release_id,
+        source_revision: release.source_revision,
+        agent_sha256: release.agent_sha256,
+        bundle_digest: release.bundle_digest,
+        bootstrap_mode,
+    })
+}
+
+fn application_control_to_proto(
+    state: &ApplicationControlState,
+) -> Result<ApplicationControlStateRecord, String> {
+    if state.schema != 1 {
+        return Err(format!(
+            "unsupported application release control schema {}",
+            state.schema
+        ));
+    }
+    Ok(ApplicationControlStateRecord {
+        schema_version: state.schema,
+        current: Some(published_release_to_proto(&state.current)),
+        previous: state.previous.as_ref().map(published_release_to_proto),
+    })
+}
+
+fn application_control_from_proto(
+    record: ApplicationControlStateRecord,
+) -> Result<ApplicationControlState, String> {
+    let current = record
+        .current
+        .ok_or_else(|| "application release control state is missing current release".to_owned())?;
+    Ok(ApplicationControlState {
+        schema: record.schema_version,
+        current: published_release_from_proto(current)?,
+        previous: record.previous.map(published_release_from_proto).transpose()?,
+    })
 }
 
 fn proto_bootstrap_mode(mode: ApplicationBootstrapMode) -> BootstrapMode {
