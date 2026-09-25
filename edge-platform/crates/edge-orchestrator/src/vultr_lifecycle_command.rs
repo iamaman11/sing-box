@@ -2971,7 +2971,7 @@ fn load_firewall_profiles_raw(
                     .to_owned(),
             );
         }
-        let rules = production
+        let mut rules = production
             .firewall_rules
             .into_iter()
             .map(|rule| FirewallRuleSpec {
@@ -2983,7 +2983,18 @@ fn load_firewall_profiles_raw(
                 source: String::new(),
                 notes: rule.purpose,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if production.support_controller_ssh {
+            rules.push(FirewallRuleSpec {
+                ip_type: "v4".to_owned(),
+                protocol: "tcp".to_owned(),
+                subnet: "@controller-ipv4".to_owned(),
+                subnet_size: 32,
+                port: "22".to_owned(),
+                source: String::new(),
+                notes: "transient production controller SSH lease".to_owned(),
+            });
+        }
         return FirewallProfileSet::single(FirewallProfile {
             name: "production".to_owned(),
             rules,
