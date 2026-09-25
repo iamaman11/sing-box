@@ -76,6 +76,47 @@ struct CleanupPaths<'a> {
     vpc_spec: &'a Path,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupStep {
+    MeshRuntime,
+    MeshProvider,
+    Dns,
+    Access,
+    VmSupport,
+    Vpc,
+    FinalZeroLeak,
+}
+
+fn cleanup_plan(progress: &AcceptanceProgress) -> Result<Vec<CleanupStep>, String> {
+    if !progress.mutation_started {
+        if progress.vm_possible || progress.mesh_runtime_possible {
+            return Err(
+                "invalid acceptance cleanup progress: resources cannot be possible before mutation starts"
+                    .to_owned(),
+            );
+        }
+        return Ok(Vec::new());
+    }
+
+    if progress.mesh_runtime_possible && !progress.vm_possible {
+        return Err(
+            "invalid acceptance cleanup progress: Mesh runtime cannot exist without a possible VM"
+                .to_owned(),
+        );
+    }
+
+    let mut steps = Vec::with_capacity(7);
+    if progress.mesh_runtime_possible {
+        steps.push(CleanupStep::MeshRuntime);
+    }
+    steps.extend([CleanupStep::MeshProvider, CleanupStep::Dns]);
+    if progress.vm_possible {
+        steps.extend([CleanupStep::Access, CleanupStep::VmSupport]);
+    }
+    steps.extend([CleanupStep::Vpc, CleanupStep::FinalZeroLeak]);
+    Ok(steps)
+}
+
 #[derive(Debug, Serialize)]
 struct AcceptanceCertificate<'a> {
     outcome: &'a str,
@@ -638,76 +679,88 @@ async fn cleanup_environment(
     source_revision: &str,
     progress: &AcceptanceProgress,
 ) -> Result<(), String> {
-    if !progress.mutation_started {
+    let plan = cleanup_plan(progress)?;
+    if plan.is_empty() {
         return Ok(());
     }
 
     let mut failures = Vec::new();
 
-    if progress.mesh_runtime_possible {
-        let result = timed_stage(
-            "cleanup.mesh_runtime",
-            mesh_runtime_cleanup(paths.application_spec),
-        )
-        .await;
-        record_cleanup_failure(&mut failures, "mesh_runtime_cleanup", result);
-    }
-
-    let result = timed_stage(
-        "cleanup.mesh_provider",
-        mesh_cleanup_provider_to_absent(paths.mesh_spec),
-    )
-    .await;
-    record_cleanup_failure(&mut failures, "mesh_provider_cleanup", result);
-
-    let result = timed_stage("cleanup.dns", dns_cleanup_to_absent(paths.dns_spec)).await;
-    record_cleanup_failure(&mut failures, "dns_cleanup", result);
-
-    if progress.vm_possible {
-        let result = timed_stage(
-            "cleanup.access",
-            acceptance_lease_release(vultr_spec, machine_id),
-        )
-        .await;
-        record_cleanup_failure(&mut failures, "access_release", result);
-
-        let result = timed_stage(
-            "cleanup.vm_support",
-            acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision),
-        )
-        .await;
-        record_cleanup_failure(&mut failures, "vm_support_cleanup", result);
-    }
-
-    // VPC cleanup intentionally follows VM destruction. That removes the strongest
-    // attachment dependency while the VPC owner still fresh-observes/fresh-plans
-    // every destructive transition.
-    let result = timed_stage("cleanup.vpc", vpc_cleanup_to_absent(paths.vpc_spec)).await;
-    record_cleanup_failure(&mut failures, "vpc_cleanup", result);
-
-    let final_zero_leak = timed_stage(
-        "final_zero_leak",
-        require_clean_room(paths, vultr_spec, machine_id),
-    )
-    .await;
-
-    match final_zero_leak {
-        Ok(()) => {
-            if !failures.is_empty() {
-                tracing::warn!(
-                    component = "edge-orchestrator",
-                    recovered_failures = %failures.join("; "),
-                    event = "application.acceptance.cleanup.recovered",
-                    "intermediate cleanup failures were superseded by independent final zero-leak proof"
-                );
+    for step in plan {
+        match step {
+            CleanupStep::MeshRuntime => {
+                let result = timed_stage(
+                    "cleanup.mesh_runtime",
+                    mesh_runtime_cleanup(paths.application_spec),
+                )
+                .await;
+                record_cleanup_failure(&mut failures, "mesh_runtime_cleanup", result);
             }
-            Ok(())
-        }
-        Err(err) => {
-            failures.push(format!("final_zero_leak: {err}"));
-            Err(failures.join("; "))
+            CleanupStep::MeshProvider => {
+                let result = timed_stage(
+                    "cleanup.mesh_provider",
+                    mesh_cleanup_provider_to_absent(paths.mesh_spec),
+                )
+                .await;
+                record_cleanup_failure(&mut failures, "mesh_provider_cleanup", result);
+            }
+            CleanupStep::Dns => {
+                let result = timed_stage("cleanup.dns", dns_cleanup_to_absent(paths.dns_spec)).await;
+                record_cleanup_failure(&mut failures, "dns_cleanup", result);
+            }
+            CleanupStep::Access => {
+                let result = timed_stage(
+                    "cleanup.access",
+                    acceptance_lease_release(vultr_spec, machine_id),
+                )
+                .await;
+                record_cleanup_failure(&mut failures, "access_release", result);
+            }
+            CleanupStep::VmSupport => {
+                let result = timed_stage(
+                    "cleanup.vm_support",
+                    acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision),
+                )
+                .await;
+                record_cleanup_failure(&mut failures, "vm_support_cleanup", result);
+            }
+            CleanupStep::Vpc => {
+                // VPC cleanup intentionally follows VM destruction. That removes the strongest
+                // attachment dependency while the VPC owner still fresh-observes/fresh-plans
+                // every destructive transition.
+                let result =
+                    timed_stage("cleanup.vpc", vpc_cleanup_to_absent(paths.vpc_spec)).await;
+                record_cleanup_failure(&mut failures, "vpc_cleanup", result);
+            }
+            CleanupStep::FinalZeroLeak => {
+                let final_zero_leak = timed_stage(
+                    "final_zero_leak",
+                    require_clean_room(paths, vultr_spec, machine_id),
+                )
+                .await;
+
+                return match final_zero_leak {
+                    Ok(()) => {
+                        if !failures.is_empty() {
+                            tracing::warn!(
+                                component = "edge-orchestrator",
+                                recovered_failures = %failures.join("; "),
+                                event = "application.acceptance.cleanup.recovered",
+                                "intermediate cleanup failures were superseded by independent final zero-leak proof"
+                            );
+                        }
+                        Ok(())
+                    }
+                    Err(err) => {
+                        failures.push(format!("final_zero_leak: {err}"));
+                        Err(failures.join("; "))
+                    }
+                };
+            }
         }
     }
+
+    Err("invalid acceptance cleanup plan: final zero-leak proof is missing".to_owned())
 }
 
 fn operational_failure(stage: &'static str, detail: impl Into<String>) -> AcceptanceFailure {
@@ -817,36 +870,68 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_contract_attempts_independent_owners_before_final_zero_leak_decision() {
-        let source = include_str!("application_acceptance_command.rs");
-        let runtime = source
-            .find("mesh_runtime_cleanup(paths.application_spec)")
-            .unwrap();
-        let provider = source
-            .find("mesh_cleanup_provider_to_absent(paths.mesh_spec)")
-            .unwrap();
-        let dns = source
-            .find("dns_cleanup_to_absent(paths.dns_spec)")
-            .unwrap();
-        let access = source
-            .find("acceptance_lease_release(vultr_spec, machine_id)")
-            .unwrap();
-        let vm = source
-            .find("acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision)")
-            .unwrap();
-        let vpc = source
-            .find("vpc_cleanup_to_absent(paths.vpc_spec)")
-            .unwrap();
-        let final_zero_leak = source.find("\"final_zero_leak\"").unwrap();
-        let implementation = source.split("\n#[cfg(test)]").next().unwrap();
+    fn cleanup_contract_orders_independent_owners_before_final_zero_leak() {
+        let progress = AcceptanceProgress {
+            mutation_started: true,
+            vm_possible: true,
+            mesh_runtime_possible: true,
+        };
 
-        assert!(runtime < provider);
-        assert!(provider < dns);
-        assert!(dns < access);
-        assert!(access < vm);
-        assert!(vm < vpc);
-        assert!(vpc < final_zero_leak);
-        assert!(!implementation.contains("cleanup_failure.is_none()"));
+        assert_eq!(
+            cleanup_plan(&progress).unwrap(),
+            vec![
+                CleanupStep::MeshRuntime,
+                CleanupStep::MeshProvider,
+                CleanupStep::Dns,
+                CleanupStep::Access,
+                CleanupStep::VmSupport,
+                CleanupStep::Vpc,
+                CleanupStep::FinalZeroLeak,
+            ]
+        );
+    }
+
+    #[test]
+    fn cleanup_contract_omits_only_resources_that_cannot_exist() {
+        let progress = AcceptanceProgress {
+            mutation_started: true,
+            vm_possible: false,
+            mesh_runtime_possible: false,
+        };
+
+        assert_eq!(
+            cleanup_plan(&progress).unwrap(),
+            vec![
+                CleanupStep::MeshProvider,
+                CleanupStep::Dns,
+                CleanupStep::Vpc,
+                CleanupStep::FinalZeroLeak,
+            ]
+        );
+    }
+
+    #[test]
+    fn cleanup_contract_is_noop_before_any_mutation() {
+        assert!(cleanup_plan(&AcceptanceProgress::default())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn cleanup_contract_rejects_impossible_progress_fail_closed() {
+        let resources_before_mutation = AcceptanceProgress {
+            mutation_started: false,
+            vm_possible: true,
+            mesh_runtime_possible: false,
+        };
+        assert!(cleanup_plan(&resources_before_mutation).is_err());
+
+        let mesh_without_vm = AcceptanceProgress {
+            mutation_started: true,
+            vm_possible: false,
+            mesh_runtime_possible: true,
+        };
+        assert!(cleanup_plan(&mesh_without_vm).is_err());
     }
 
     #[test]
