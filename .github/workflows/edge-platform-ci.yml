@@ -1569,18 +1569,3 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish accepted Linux artifact without rebuild
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: edge-platform-release-${{ steps.locate.outputs.accepted_revision }}
-          path: ${{ runner.temp }}/accepted/linux
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Publish accepted ReleaseSet without rebuild
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: edge-platform-release-set-${{ steps.locate.outputs.accepted_revision }}
-          path: ${{ runner.temp }}/accepted/release-set
-          if-no-files-found: error
-          retention-days: 30
