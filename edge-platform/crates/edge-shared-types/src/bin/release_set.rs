@@ -8,7 +8,8 @@ use build_manifest::{
 use edge_shared_types::{
     CONFIG_SCHEMA_VERSION, CloudflareRuntime, DB_SCHEMA_VERSION, OciImage,
     RELEASE_SET_SCHEMA_VERSION, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
-    WindowsRuntime, decode_release_set, encode_release_set, release_set_sha256,
+    WindowsActivationState, WindowsRuntime, decode_release_set, encode_release_set,
+    encode_windows_activation_state, release_set_sha256,
 };
 use ring::digest::{Context, SHA256};
 use std::collections::BTreeMap;
@@ -38,6 +39,29 @@ const VERIFY_VM_FLAGS: &[&str] = &[
     "source-revision",
     "edge-agent",
     "edge-controller",
+];
+
+const VERIFY_WINDOWS_FLAGS: &[&str] = &[
+    "input",
+    "sha256-file",
+    "source-revision",
+    "windows-artifact",
+    "windows-controller",
+    "windows-console",
+    "windows-diagnostic",
+    "windows-sing-box",
+];
+
+const WRITE_WINDOWS_ACTIVATION_FLAGS: &[&str] = &[
+    "input",
+    "sha256-file",
+    "source-revision",
+    "release-dir",
+    "controller",
+    "console",
+    "diagnostic",
+    "sing-box",
+    "output",
 ];
 
 const CREATE_FLAGS: &[&str] = &[
@@ -138,12 +162,14 @@ fn run() -> Result<(), String> {
         "verify" => verify_release_set(&flags),
         "verify-candidate" => verify_candidate_release_set(&flags),
         "verify-vm" => verify_vm_release_set(&flags),
+        "verify-windows" => verify_windows_release_set(&flags),
+        "write-windows-activation" => write_windows_activation_state(&flags),
         _ => Err(usage()),
     }
 }
 
 fn usage() -> String {
-    "usage: edge-release-set create|write-windows-manifest|write-linux-manifest|verify|verify-candidate|verify-vm --flag value ..."
+    "usage: edge-release-set create|write-windows-manifest|write-linux-manifest|verify|verify-candidate|verify-vm|verify-windows|write-windows-activation --flag value ..."
         .to_owned()
 }
 
@@ -611,6 +637,89 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
     }
 
     print_vm_evidence(&release, &digest)
+}
+
+fn verify_windows_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, VERIFY_WINDOWS_FLAGS)?;
+    let (release, digest) = load_verified_release_set(flags)?;
+    if release.schema_version < 6 {
+        return Err("verify-windows requires ReleaseSet schema_version >= 6".to_owned());
+    }
+    let windows = release
+        .windows_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set windows_runtime is required".to_owned())?;
+    for (label, flag_name, expected) in [
+        ("Windows artifact", "windows-artifact", windows.artifact_sha256.as_slice()),
+        ("Windows controller", "windows-controller", windows.controller_sha256.as_slice()),
+        ("Windows console", "windows-console", windows.console_sha256.as_slice()),
+        ("Windows diagnostic", "windows-diagnostic", windows.diagnostic_sha256.as_slice()),
+        ("Windows sing-box", "windows-sing-box", windows.sing_box_sha256.as_slice()),
+    ] {
+        verify_file_digest(label, Path::new(flag(flags, flag_name)?), expected)?;
+    }
+    println!("release_set_sha256={digest}");
+    println!("source_revision={}", release.source_revision);
+    println!(
+        "windows_controller_sha256={}",
+        digest_to_hex(&windows.controller_sha256)
+    );
+    println!(
+        "windows_console_sha256={}",
+        digest_to_hex(&windows.console_sha256)
+    );
+    println!(
+        "windows_diagnostic_sha256={}",
+        digest_to_hex(&windows.diagnostic_sha256)
+    );
+    println!(
+        "windows_sing_box_sha256={}",
+        digest_to_hex(&windows.sing_box_sha256)
+    );
+    Ok(())
+}
+
+fn write_windows_activation_state(flags: &BTreeMap<String, String>) -> Result<(), String> {
+    require_allowed(flags, WRITE_WINDOWS_ACTIVATION_FLAGS)?;
+    let (release, digest) = load_verified_release_set(flags)?;
+    if release.schema_version < 6 {
+        return Err("Windows activation requires ReleaseSet schema_version >= 6".to_owned());
+    }
+    let windows = release
+        .windows_runtime
+        .as_ref()
+        .ok_or_else(|| "release-set windows_runtime is required".to_owned())?;
+
+    let controller = PathBuf::from(flag(flags, "controller")?);
+    let console = PathBuf::from(flag(flags, "console")?);
+    let diagnostic = PathBuf::from(flag(flags, "diagnostic")?);
+    let sing_box = PathBuf::from(flag(flags, "sing-box")?);
+    verify_file_digest("Windows controller", &controller, &windows.controller_sha256)?;
+    verify_file_digest("Windows console", &console, &windows.console_sha256)?;
+    verify_file_digest("Windows diagnostic", &diagnostic, &windows.diagnostic_sha256)?;
+    verify_file_digest("Windows sing-box", &sing_box, &windows.sing_box_sha256)?;
+
+    let state = WindowsActivationState {
+        schema_version: 1,
+        release_set_sha256: digest,
+        source_revision: release.source_revision,
+        release_dir: flag(flags, "release-dir")?.to_owned(),
+        controller_path: controller.to_string_lossy().into_owned(),
+        console_path: console.to_string_lossy().into_owned(),
+        sing_box_path: sing_box.to_string_lossy().into_owned(),
+        diagnostic_path: diagnostic.to_string_lossy().into_owned(),
+        controller_sha256: windows.controller_sha256.clone(),
+        console_sha256: windows.console_sha256.clone(),
+        sing_box_sha256: windows.sing_box_sha256.clone(),
+        diagnostic_sha256: windows.diagnostic_sha256.clone(),
+    };
+    let bytes = encode_windows_activation_state(&state)?;
+    fs::write(Path::new(flag(flags, "output")?), bytes)
+        .map_err(|err| format!("failed to write Windows activation state: {err}"))?;
+    println!("release_set_sha256={}", state.release_set_sha256);
+    println!("release_dir={}", state.release_dir);
+    println!("diagnostic_path={}", state.diagnostic_path);
+    Ok(())
 }
 
 fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
