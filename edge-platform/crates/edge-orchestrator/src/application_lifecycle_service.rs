@@ -811,8 +811,7 @@ fn decode_hex_bytes(value: &str, label: &str) -> Result<Vec<u8>, String> {
         .map(|pair| {
             let text = std::str::from_utf8(pair)
                 .map_err(|_| format!("{label} returned invalid UTF-8 hex"))?;
-            u8::from_str_radix(text, 16)
-                .map_err(|_| format!("{label} returned invalid hex byte"))
+            u8::from_str_radix(text, 16).map_err(|_| format!("{label} returned invalid hex byte"))
         })
         .collect()
 }
@@ -1784,9 +1783,17 @@ fn published_release_to_proto(
 fn published_release_from_proto(
     release: PublishedApplicationReleaseState,
 ) -> Result<PublishedApplicationRelease, String> {
-    validate_lower_hex("published release source_revision", &release.source_revision, 40)?;
+    validate_lower_hex(
+        "published release source_revision",
+        &release.source_revision,
+        40,
+    )?;
     validate_lower_hex("published release agent_sha256", &release.agent_sha256, 64)?;
-    validate_lower_hex("published release bundle_digest", &release.bundle_digest, 64)?;
+    validate_lower_hex(
+        "published release bundle_digest",
+        &release.bundle_digest,
+        64,
+    )?;
     if release.release_id.trim().is_empty() {
         return Err("published release id must be non-empty".to_owned());
     }
@@ -1834,7 +1841,10 @@ fn application_control_from_proto(
     Ok(ApplicationControlState {
         schema: record.schema_version,
         current: published_release_from_proto(current)?,
-        previous: record.previous.map(published_release_from_proto).transpose()?,
+        previous: record
+            .previous
+            .map(published_release_from_proto)
+            .transpose()?,
     })
 }
 
