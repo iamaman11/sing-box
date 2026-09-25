@@ -67,6 +67,28 @@ def main() -> None:
             "production desired state must be protobuf/textproto, never production.json"
         )
 
+    required_protobuf_authority = {
+        "edge-platform/proto/edge/platform/v1/production.proto",
+        "infra/production/production.textproto",
+    }
+    tracked = {
+        line.strip()
+        for line in subprocess.run(
+            ["git", "ls-files"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        if line.strip()
+    }
+    missing_authority = sorted(required_protobuf_authority - tracked)
+    if missing_authority:
+        raise SystemExit(
+            "canonical production protobuf authority is incomplete: "
+            + ", ".join(missing_authority)
+        )
+
     legacy_remaining = sorted(observed & LEGACY_FIRST_PARTY_JSON_DEBT)
     print(
         "JSON policy PASS: "
