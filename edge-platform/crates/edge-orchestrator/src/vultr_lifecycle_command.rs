@@ -1323,8 +1323,7 @@ async fn acquire_transient_access_ready_exact(
     let authority_digest = planned.authority.authority_digest.clone();
 
     let attempt = async {
-        let access =
-            acquire_access_with_authority(desired, machine_id, &authority_digest).await?;
+        let access = acquire_access_with_authority(desired, machine_id, &authority_digest).await?;
         let mut lease = SupportAccessLeaseState::default();
         lease.acquired()?;
         let observed = exact_existing_machine_observation(desired, machine_id).await?;
