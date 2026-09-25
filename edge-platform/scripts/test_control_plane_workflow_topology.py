@@ -14,6 +14,7 @@ EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
+WINDOWS_ENSURE = Path("edge-platform/scripts/ensure-edge-controller.ps1")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
@@ -38,6 +39,7 @@ def main() -> None:
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
+    windows_ensure = WINDOWS_ENSURE.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
@@ -719,6 +721,21 @@ def main() -> None:
         and "gh run download" not in windows_installer
         and "workflow run" not in windows_installer,
         "Windows activation must never regress to JSON state or workflow-run artifact authority",
+    )
+
+    require(
+        "current.pb" in windows_ensure
+        and "edge-diagnostic.exe" in windows_ensure
+        and "doctor $currentPath" in windows_ensure
+        and 'exact_release_files' in windows_ensure
+        and "current.json" not in windows_ensure
+        and "ConvertFrom-Json" not in windows_ensure,
+        "Windows controller startup must resolve only the verified protobuf activation pointer",
+    )
+    require(
+        '"releases"' in windows_ensure
+        and "StartsWith($releaseRoot" in windows_ensure,
+        "Windows controller startup must refuse paths outside the immutable release root",
     )
 
     require(
