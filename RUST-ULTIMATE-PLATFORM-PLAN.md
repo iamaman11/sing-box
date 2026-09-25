@@ -49,16 +49,25 @@ This slice intentionally excludes:
 
 ## Contract format rule
 
-Controller, agent, and future local API contracts are proto-first.
+Controller, agent, local API, and machine-to-machine release/build contracts are proto-first.
 
 Rules:
 
-- no JSON request or response contracts
-- shared request/response schemas live in `.proto` files committed in the repo
-- wire encoding must be protobuf-compatible
-- Rust code may implement minimal encoding internally during the bootstrap
-  stage, but transport contracts remain proto, not ad-hoc text
-- shelling out to non-Rust tooling for normal contract handling is out of scope
+- no JSON request/response contracts for control-plane RPC boundaries
+- no JSON build manifests or competing JSON release-authority contracts
+- shared runtime request/response schemas live in `.proto` files committed in the repo
+- release-tool-local build manifests use protobuf wire encoding owned by Rust `prost` types inside `edge-release-set`; they do not expand the runtime API merely to share CI metadata
+- the durable release authority remains `ReleaseSet.pb`; build manifests are bounded candidate evidence, not a second durable authority
+- protobuf decoding at release-authority boundaries is fail-closed: unsupported schema versions and non-canonical/unknown-field encodings are rejected
+- JSON remains allowed where it is genuinely the simpler human/configuration/diagnostic boundary; it must not return as a machine release/build contract
+- shelling out to non-Rust tooling for normal contract semantics is out of scope
+- workflows may authorize, transport exact values, invoke typed owners, and publish bounded evidence; YAML/bash/PowerShell/jq must not own domain semantics
+
+### Deletion-first CI rule
+
+After a typed Rust owner replaces workflow semantics, follow-up hardening is deletion-first.
+Prefer removing obsolete GitHub outputs, YAML branches, shell/jq parsing, and duplicate validation over adding another abstraction.
+New workflow glue is acceptable only as a thin authorization/transport adapter when the typed owner cannot eliminate it yet.
 
 ## Migration blockers that must stay explicit
 

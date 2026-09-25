@@ -112,7 +112,11 @@ def _tracked_files(repo_root: Path) -> list[Path]:
             continue
         if not path.is_dir():
             raise ValueError(f"unsupported Windows input path type: {path}")
+        package_sources = (path / "Cargo.toml").is_file()
         for child in path.rglob("*"):
+            child_relative = child.relative_to(path)
+            if package_sources and child_relative.parts[:2] == ("src", "bin"):
+                continue
             if child.is_symlink():
                 raise ValueError(
                     f"Windows input symlink is forbidden: {child.relative_to(repo_root).as_posix()}"

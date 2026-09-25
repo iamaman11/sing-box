@@ -78,6 +78,11 @@ def test_digest_scope() -> None:
         (unrelated / "src/main.rs").write_text("fn main() { println!(\"changed\"); }\n", encoding="utf-8")
         assert subject.compute_digest(root, inputs()) == first
 
+        release_tool = root / "edge-platform/crates/edge-shared-types/src/bin/release_set.rs"
+        release_tool.parent.mkdir(parents=True)
+        release_tool.write_text("fn main() { println!(\"release-only\"); }\n", encoding="utf-8")
+        assert subject.compute_digest(root, inputs()) == first
+
         shared = root / "edge-platform/crates/edge-shared-types/src/lib.rs"
         shared.write_text("pub struct SharedChanged;\n", encoding="utf-8")
         assert subject.compute_digest(root, inputs()) != first
