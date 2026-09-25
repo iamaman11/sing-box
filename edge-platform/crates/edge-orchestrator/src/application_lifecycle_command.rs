@@ -16,6 +16,9 @@ use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationPlanClass, DesiredApplicationState, plan_application,
 };
 use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+};
 use edge_controller_core::vultr_lifecycle::PlanClass;
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::get_instance_typed;
@@ -376,6 +379,12 @@ pub(crate) async fn resolve_application_authority_from_spec(
 }
 
 pub(crate) fn load_application_desired(path: &Path) -> Result<DesiredApplicationState, String> {
+    if path == Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return ProductionComposition::canonical()
+            .map(|composition| composition.application)
+            .map_err(|err| err.to_string());
+    }
+
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read application spec {}: {err}", path.display()))?;
     DesiredApplicationState::parse_json(&raw)
