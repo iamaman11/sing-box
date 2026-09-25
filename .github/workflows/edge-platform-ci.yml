@@ -889,6 +889,7 @@ jobs:
             if ($singBoxSha -ne $env:BASE_SING_BOX_SHA256) { throw "reused Windows sing-box digest mismatch" }
           }
 
+          # WINDOWS_CANDIDATE_BUILD_CONTRACT_END
           $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
           $manifest = [ordered]@{
             schema_version = 1
@@ -906,8 +907,6 @@ jobs:
             console_sha256 = $consoleSha
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM (Join-Path $out "windows-build-manifest.json")
-      # WINDOWS_CANDIDATE_BUILD_CONTRACT_END
-
       - name: Store exact Windows candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
