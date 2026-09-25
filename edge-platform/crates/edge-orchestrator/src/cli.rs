@@ -122,6 +122,7 @@ impl DesiredApplicationAuthorizedArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationLifecycleCommand {
+    Materialize(DesiredApplicationArgs),
     Plan(DesiredApplicationArgs),
     Apply(DesiredApplicationAuthorizedArgs),
     Verify(DesiredApplicationArgs),
@@ -135,6 +136,7 @@ pub(crate) enum ApplicationLifecycleCommand {
 impl ApplicationLifecycleCommand {
     pub fn into_legacy_args(self) -> Vec<String> {
         match self {
+            Self::Materialize(args) => args.into_legacy("materialize"),
             Self::Plan(args) => args.into_legacy("plan"),
             Self::Apply(args) => args.into_legacy("apply"),
             Self::Verify(args) => args.into_legacy("verify"),

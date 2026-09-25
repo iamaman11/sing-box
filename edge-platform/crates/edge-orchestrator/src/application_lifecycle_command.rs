@@ -17,6 +17,7 @@ use edge_controller_core::application_lifecycle::{
 };
 use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use edge_controller_core::vultr_lifecycle::PlanClass;
+use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::get_instance_typed;
 use serde_json::json;
 use std::env;
@@ -24,13 +25,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub(crate) async fn run(args: Vec<String>) -> Result<(), String> {
+pub(crate) async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<(), String> {
+    context.application_release_authority()?;
     let operation = args.first().map(String::as_str).ok_or_else(usage)?;
     match operation {
-        "plan" => run_plan(&args[1..]).await,
-        "apply" => run_mutation(&args[1..], DesiredMutationMode::Apply).await,
-        "verify" => run_verify(&args[1..]).await,
-        "upgrade" => run_mutation(&args[1..], DesiredMutationMode::Upgrade).await,
+        "materialize" => run_materialize(&args[1..], context),
+        "plan" => run_plan(&args[1..], context).await,
+        "apply" => run_mutation(&args[1..], DesiredMutationMode::Apply, context).await,
+        "verify" => run_verify(&args[1..], context).await,
+        "upgrade" => run_mutation(&args[1..], DesiredMutationMode::Upgrade, context).await,
         "recover-plan" => run_recovery_plan(&args[1..]).await,
         "recover-apply" => run_recovery_apply(&args[1..]).await,
         "rollback-plan" => run_rollback_plan(&args[1..]).await,
@@ -39,11 +42,20 @@ pub(crate) async fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
-async fn run_plan(args: &[String]) -> Result<(), String> {
+fn run_materialize(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
+    let (spec_path, manifest_path, artifact_path) = desired_args(args, "materialize")?;
+    let desired = load_application_desired(&spec_path)?;
+    let bundle_root = Path::new(".").join(&desired.bundle_root);
+    context.materialize_application_inputs(&bundle_root, &manifest_path, &artifact_path)?;
+    let artifact = load_artifact_manifest(&manifest_path)?;
+    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)
+}
+
+async fn run_plan(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
     let (spec_path, manifest_path, artifact_path) = desired_args(args, "plan")?;
     let desired = load_application_desired(&spec_path)?;
     let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_exact_agent_artifact(&artifact, &artifact_path)?;
+    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
     let authority = resolve_application_authority(&desired).await?;
     let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
     let observation = observe_application(&authority, &desired).await?;
@@ -71,7 +83,11 @@ async fn run_plan(args: &[String]) -> Result<(), String> {
     }))
 }
 
-async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), String> {
+async fn run_mutation(
+    args: &[String],
+    mode: DesiredMutationMode,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
     let operation = match mode {
         DesiredMutationMode::Apply => "apply",
         DesiredMutationMode::Upgrade => "upgrade",
@@ -87,7 +103,7 @@ async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), 
     let authorized_plan_digest = &args[3];
     let desired = load_application_desired(&spec_path)?;
     let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_exact_agent_artifact(&artifact, &artifact_path)?;
+    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
     let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
     let authority = resolve_application_authority(&desired).await?;
     let report = execute_desired(
@@ -103,11 +119,11 @@ async fn run_mutation(args: &[String], mode: DesiredMutationMode) -> Result<(), 
     print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
 }
 
-async fn run_verify(args: &[String]) -> Result<(), String> {
+async fn run_verify(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
     let (spec_path, manifest_path, artifact_path) = desired_args(args, "verify")?;
     let desired = load_application_desired(&spec_path)?;
     let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_exact_agent_artifact(&artifact, &artifact_path)?;
+    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
     let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
     let authority = resolve_application_authority(&desired).await?;
     let (plan, observation) = verify_desired(&authority, &desired, &artifact, &prepared).await?;
@@ -233,6 +249,7 @@ fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, P
 }
 
 pub(crate) async fn acceptance_apply_desired(
+    context: &OrchestrationContext,
     desired: &DesiredApplicationState,
     manifest_path: &Path,
     artifact_path: &Path,
@@ -240,7 +257,7 @@ pub(crate) async fn acceptance_apply_desired(
     expected_initial_class: ApplicationPlanClass,
 ) -> Result<(String, String), String> {
     let artifact = load_artifact_manifest(manifest_path)?;
-    verify_exact_agent_artifact(&artifact, artifact_path)?;
+    verify_release_bound_application_inputs(context, desired, &artifact, artifact_path)?;
     let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
     let authority = resolve_application_authority(desired).await?;
     let observation = observe_application(&authority, desired).await?;
@@ -290,12 +307,13 @@ pub(crate) async fn acceptance_apply_desired(
 }
 
 pub(crate) async fn acceptance_verify_desired(
+    context: &OrchestrationContext,
     desired: &DesiredApplicationState,
     manifest_path: &Path,
     artifact_path: &Path,
 ) -> Result<(), String> {
     let artifact = load_artifact_manifest(manifest_path)?;
-    verify_exact_agent_artifact(&artifact, artifact_path)?;
+    verify_release_bound_application_inputs(context, desired, &artifact, artifact_path)?;
     let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
     let authority = resolve_application_authority(desired).await?;
     let (plan, _observation) = verify_desired(&authority, desired, &artifact, &prepared).await?;
@@ -310,6 +328,7 @@ pub(crate) async fn acceptance_verify_desired(
 }
 
 pub(crate) async fn acceptance_rollback(
+    context: &OrchestrationContext,
     desired: &DesiredApplicationState,
     expected_current_release: &str,
     expected_previous_release: &str,
@@ -334,7 +353,19 @@ pub(crate) async fn acceptance_rollback(
         &authorized.authority.authority_digest,
     )
     .await?;
-    acceptance_verify_desired(desired, manifest_path, artifact_path).await
+    acceptance_verify_desired(context, desired, manifest_path, artifact_path).await
+}
+
+fn verify_release_bound_application_inputs(
+    context: &OrchestrationContext,
+    desired: &DesiredApplicationState,
+    artifact: &AgentArtifactManifest,
+    artifact_path: &Path,
+) -> Result<(), String> {
+    context.validate_application_artifact(artifact, artifact_path)?;
+    let bundle_root = Path::new(".").join(&desired.bundle_root);
+    context.validate_application_image_environment(&bundle_root)?;
+    verify_exact_agent_artifact(artifact, artifact_path)
 }
 
 pub(crate) async fn resolve_application_authority_from_spec(
@@ -486,6 +517,7 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 fn usage() -> String {
     [
         "usage:",
+        "  edge-orchestrator application-lifecycle materialize <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
         "  edge-orchestrator application-lifecycle plan <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
         "  edge-orchestrator application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
         "  edge-orchestrator application-lifecycle verify <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
