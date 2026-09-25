@@ -6,11 +6,11 @@ use crate::vultr_lifecycle_command::{
     exact_existing_machine_observation, load_desired_state as load_vultr_desired_state,
 };
 use edge_controller_core::application_lifecycle::DesiredApplicationState;
+use edge_controller_core::cloudflare_dns_lifecycle::{ApplyAction, CleanupAction, DesiredDnsState};
+use edge_controller_core::orchestration::{MachineObservation, derive_dns_target};
 use edge_controller_core::production::{
     CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
 };
-use edge_controller_core::cloudflare_dns_lifecycle::{ApplyAction, CleanupAction, DesiredDnsState};
-use edge_controller_core::orchestration::{MachineObservation, derive_dns_target};
 use std::env;
 use std::fs;
 use std::path::Path;
