@@ -715,7 +715,8 @@ async fn cleanup_environment(
                 record_cleanup_failure(&mut failures, "mesh_provider_cleanup", result);
             }
             CleanupStep::Dns => {
-                let result = timed_stage("cleanup.dns", dns_cleanup_to_absent(paths.dns_spec)).await;
+                let result =
+                    timed_stage("cleanup.dns", dns_cleanup_to_absent(paths.dns_spec)).await;
                 record_cleanup_failure(&mut failures, "dns_cleanup", result);
             }
             CleanupStep::Access => {
@@ -931,9 +932,11 @@ mod tests {
 
     #[test]
     fn cleanup_contract_is_noop_before_any_mutation() {
-        assert!(cleanup_plan(&AcceptanceProgress::default())
-            .unwrap()
-            .is_empty());
+        assert!(
+            cleanup_plan(&AcceptanceProgress::default())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
