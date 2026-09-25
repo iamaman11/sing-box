@@ -383,7 +383,7 @@ def main() -> None:
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
-    execute_job = application.split("\n  execute:\n", 1)[1].split("\n  cleanup:\n", 1)[0]
+    execute_job = application.split("\n  execute:\n", 1)[1].split("\n  production:\n", 1)[0]
     require(
         "  cleanup:\n    needs: authorize" in application
         and "  acceptance:\n    needs: authorize" in application
