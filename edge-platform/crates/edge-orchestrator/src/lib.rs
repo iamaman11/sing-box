@@ -490,7 +490,6 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
                 "2".repeat(64),
                 "3".repeat(64),
                 "4".repeat(64),
-                "5".repeat(64),
                 "2".repeat(64),
                 "c".repeat(64),
                 "d".repeat(64),
@@ -518,6 +517,18 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
             OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
                 .unwrap_err()
                 .contains("EDGE_RUNTIME_INPUT_SHA256")
+        );
+
+        let missing_runtime_input = render("5", &"5".repeat(40), &"6".repeat(64))
+            .lines()
+            .filter(|line| !line.starts_with("EDGE_RUNTIME_INPUT_SHA256="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{missing_runtime_input}\n")).unwrap();
+        assert!(
+            OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
+                .unwrap_err()
+                .contains("missing EDGE_RUNTIME_INPUT_SHA256")
         );
 
         fs::remove_dir_all(root).unwrap();
