@@ -3009,6 +3009,7 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
+        "  edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle lease-acquire <spec-path> <machine-id>",
@@ -3341,6 +3342,7 @@ mod tests {
         let text = usage();
         assert!(text.contains("vultr-lifecycle plan"));
         assert!(text.contains("vultr-lifecycle destroy-apply"));
+        assert!(text.contains("vultr-lifecycle transport-proof"));
         assert!(text.contains("vultr-lifecycle acquire-access"));
         assert!(text.contains("vultr-lifecycle release-access"));
         assert!(!text.contains("exec"));
