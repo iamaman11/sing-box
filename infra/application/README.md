@@ -24,9 +24,12 @@ VM edge-agent typed RPC
 Docker Compose application bundle
 ```
 
-## Schema 1
+## Legacy Schema 1 — frozen JSON migration debt
 
-A desired-state file is a strict JSON object:
+The existing disposable acceptance specs are strict JSON objects. They are
+retained only as frozen migration debt and must not be used as the template for
+new production desired state:
+
 
 ```json
 {
@@ -97,8 +100,15 @@ Rollback is digest-authorized and re-observed. The VM keeps exactly one previous
 and one previous `edge-agent` artifact as recovery material. This is runtime recovery metadata, not
 a second desired-state database.
 
-No canonical production application JSON is committed here until the production VM desired-state
-composition is explicitly accepted.
+No canonical production JSON will be introduced. Slice 2 production desired
+state is human-authored protobuf text format at
+`infra/production/production.textproto`, validated against the
+`ProductionDesiredState` protobuf schema and canonicalized to protobuf bytes
+for machine use. Exact OCI identities remain ReleaseSet authority rather than
+being duplicated in desired state.
+
+Existing disposable JSON specs may be migrated to the same protobuf owner when
+their path is touched; they must not expand into new JSON contract families.
 
 ## Disposable acceptance
 

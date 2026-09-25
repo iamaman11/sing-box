@@ -87,6 +87,10 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_control_plane_workflow_topology.py
 
+      - name: Enforce protobuf-first JSON policy
+        shell: bash
+        run: python3 edge-platform/scripts/test_json_contract_policy.py
+
       - name: Validate Zero Trust ownership guardrails
         shell: bash
         run: |

@@ -74,15 +74,18 @@ The installer:
 4. verifies manifest schema, exact revision and both SHA-256 digests;
 5. stores the immutable release under:
    `%LOCALAPPDATA%\edge-platform\releases\<SHA>`;
-6. updates:
+6. currently updates the legacy local activation pointer
    `%LOCALAPPDATA%\edge-platform\current.json`;
 7. installs the stable console path:
    `%LOCALAPPDATA%\edge-platform\bin\edge-console.exe`.
 
-The controller is executed from the versioned release path recorded in
-`current.json`. `ensure-edge-controller.ps1` verifies its SHA-256 before
-starting it. If port 50051 is occupied by an unmanaged process, it fails closed
-instead of terminating that process.
+`current.json` is frozen first-party JSON migration debt, not an approved
+pattern for new state. Slice 2 must move the Windows activation/LKG state to the
+protobuf-owned release state while preserving atomic activation and digest
+verification. Until that migration lands, the controller is executed from the
+versioned release path recorded in the legacy pointer. `ensure-edge-controller.ps1`
+verifies its SHA-256 before starting it. If port 50051 is occupied by an
+unmanaged process, it fails closed instead of terminating that process.
 
 ## Normal Windows entrypoint
 
@@ -123,6 +126,13 @@ injects immutable image digest references as non-secret `.images.env`.
 Runtime secrets/configuration are separate in `.env.runtime`.
 
 The VM only pulls and runs exact image digests.
+
+## Serialization rule
+
+First-party durable contracts and desired state are protobuf-owned. Human-edited
+Git desired state uses protobuf text format. JSON is allowed only at physically
+required external boundaries; existing internal JSON is frozen migration debt
+and must only shrink. See `ARCHITECTURE.md`.
 
 ## Safety invariants
 
