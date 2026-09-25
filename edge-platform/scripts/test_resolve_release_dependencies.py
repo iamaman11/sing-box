@@ -73,6 +73,13 @@ class ReleaseInputLockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported release input lock schema"):
             normalize_release_inputs(value)
 
+    def test_rejects_non_integer_schema(self) -> None:
+        for invalid in (True, 1.0, "1"):
+            value = valid_lock()
+            value["schema_version"] = invalid
+            with self.assertRaisesRegex(ValueError, "unsupported release input lock schema"):
+                normalize_release_inputs(value)
+
     def test_rejects_missing_required_input(self) -> None:
         value = valid_lock()
         del value["docker"]["containerd_version"]
