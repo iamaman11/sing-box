@@ -40,8 +40,9 @@ def materialize(root: Path) -> None:
     crates = platform / "crates"
     controller = crates / "edge-controller"
     console = crates / "edge-console"
+    diagnostic = crates / "edge-diagnostic"
     shared = crates / "edge-shared-types"
-    for path in (controller, console, shared):
+    for path in (controller, console, diagnostic, shared):
         (path / "src").mkdir(parents=True, exist_ok=True)
 
     (controller / "Cargo.toml").write_text(
@@ -56,6 +57,12 @@ def materialize(root: Path) -> None:
         encoding="utf-8",
     )
     (console / "src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
+    (diagnostic / "Cargo.toml").write_text(
+        '[package]\nname="edge-diagnostic"\nversion="0.1.0"\n'
+        '[dependencies]\nedge-shared-types={path="../edge-shared-types"}\n',
+        encoding="utf-8",
+    )
+    (diagnostic / "src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
     (shared / "Cargo.toml").write_text(
         '[package]\nname="edge-shared-types"\nversion="0.1.0"\n',
         encoding="utf-8",
@@ -111,27 +118,28 @@ def test_contract_and_dependency_change_identity() -> None:
         assert subject.compute_digest(root, changed) != first
 
 
-def test_reuse_requires_schema_five_and_exact_identity() -> None:
+def test_reuse_requires_schema_six_and_exact_identity() -> None:
     digest = "a" * 64
     kwargs = dict(
         candidate_digest=digest,
-        base_schema="5",
+        base_schema="6",
         base_digest=digest,
         base_source_revision="b" * 40,
         base_artifact_sha256="c" * 64,
         base_controller_sha256="d" * 64,
         base_console_sha256="e" * 64,
         base_sing_box_sha256="f" * 64,
+        base_diagnostic_sha256="1" * 64,
     )
     assert subject.decide_reuse(**kwargs)
-    assert not subject.decide_reuse(**{**kwargs, "base_schema": "4"})
+    assert not subject.decide_reuse(**{**kwargs, "base_schema": "5"})
     assert not subject.decide_reuse(**{**kwargs, "base_digest": "0" * 64})
 
 
 def main() -> None:
     test_digest_scope()
     test_contract_and_dependency_change_identity()
-    test_reuse_requires_schema_five_and_exact_identity()
+    test_reuse_requires_schema_six_and_exact_identity()
     print("windows input digest tests: PASS")
 
 
