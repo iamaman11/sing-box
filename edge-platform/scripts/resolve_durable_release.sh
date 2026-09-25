@@ -229,7 +229,7 @@ containerd_version="$(extract_single containerd_version)"
 compose_version="$(extract_single compose_version)"
 runtime_source_revision="$verified_source_revision"
 runtime_input_sha=""
-if [[ "$schema_version" = "4" || "$schema_version" = "5" ]]; then
+if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = "6" ]]; then
   runtime_source_revision="$(extract_single runtime_source_revision)"
   runtime_input_sha="$(extract_single runtime_input_sha256)"
   [[ "$runtime_source_revision" =~ ^[0-9a-f]{40}$ ]]
@@ -242,19 +242,26 @@ windows_artifact_sha=""
 windows_controller_sha=""
 windows_console_sha=""
 windows_sing_box_sha=""
-if [[ "$schema_version" = "5" ]]; then
+windows_diagnostic_sha=""
+if [[ "$schema_version" = "5" || "$schema_version" = "6" ]]; then
   windows_source_revision="$(extract_single windows_source_revision)"
   windows_input_sha="$(extract_single windows_input_sha256)"
   windows_artifact_sha="$(extract_single windows_artifact_sha256)"
   windows_controller_sha="$(extract_single windows_controller_sha256)"
   windows_console_sha="$(extract_single windows_console_sha256)"
   windows_sing_box_sha="$(extract_single windows_sing_box_sha256)"
+  if [[ "$schema_version" = "6" ]]; then
+    windows_diagnostic_sha="$(extract_single windows_diagnostic_sha256)"
+  fi
   [[ "$windows_source_revision" =~ ^[0-9a-f]{40}$ ]]
   [[ "$windows_input_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_artifact_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_controller_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_console_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_sing_box_sha" =~ ^[0-9a-f]{64}$ ]]
+  if [[ "$schema_version" = "6" ]]; then
+    [[ "$windows_diagnostic_sha" =~ ^[0-9a-f]{64}$ ]]
+  fi
 fi
 
 for package_version in "$docker_engine_version" "$containerd_version" "$compose_version"; do
@@ -263,7 +270,7 @@ done
 
 test "$verified_release_set_sha" = "$release_set_sha"
 case "$schema_version" in
-  3|4|5) ;;
+  3|4|5|6) ;;
   *) echo "unsupported durable ReleaseSet schema_version=$schema_version" >&2; exit 1 ;;
 esac
 test "$verified_source_revision" = "$candidate_revision"
@@ -293,6 +300,7 @@ EDGE_WINDOWS_ARTIFACT_SHA256=$windows_artifact_sha
 EDGE_WINDOWS_CONTROLLER_SHA256=$windows_controller_sha
 EDGE_WINDOWS_CONSOLE_SHA256=$windows_console_sha
 EDGE_WINDOWS_SING_BOX_SHA256=$windows_sing_box_sha
+EDGE_WINDOWS_DIAGNOSTIC_SHA256=$windows_diagnostic_sha
 EDGE_CONTROLLER_SHA256=$controller_sha
 EDGE_ORCHESTRATOR_SHA256=$orchestrator_sha
 EDGE_AGENT_SHA256=$agent_sha
@@ -320,6 +328,7 @@ printf 'windows_artifact_sha256=%s\n' "$windows_artifact_sha"
 printf 'windows_controller_sha256=%s\n' "$windows_controller_sha"
 printf 'windows_console_sha256=%s\n' "$windows_console_sha"
 printf 'windows_sing_box_sha256=%s\n' "$windows_sing_box_sha"
+printf 'windows_diagnostic_sha256=%s\n' "$windows_diagnostic_sha"
   } >> "$GITHUB_OUTPUT"
 fi
 
