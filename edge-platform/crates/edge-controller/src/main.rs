@@ -3860,6 +3860,7 @@ async fn observe_agent(
                 direct_egress_ready: None,
                 warp_egress_ready: None,
                 mesh_runtime_ready: None,
+                containers: Vec::new(),
             };
             return (agent_state, RuntimeObservation::agent_unreachable(err));
         }
@@ -3883,6 +3884,7 @@ async fn observe_agent(
             direct_egress_ready: None,
             warp_egress_ready: None,
             mesh_runtime_ready: None,
+            containers: Vec::new(),
         };
         return (agent_state, RuntimeObservation::agent_unreachable(reason));
     };
@@ -3911,6 +3913,7 @@ async fn observe_agent(
             direct_egress_ready: None,
             warp_egress_ready: None,
             mesh_runtime_ready: None,
+            containers: Vec::new(),
         };
         return (agent_state, RuntimeObservation::agent_unreachable(reason));
     };
