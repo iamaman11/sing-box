@@ -587,19 +587,25 @@ def main() -> None:
         and "WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN" in edge_platform_ci
         and "WINDOWS_CANDIDATE_BUILD_CONTRACT_END" in edge_platform_ci
         and "needs.dependencies.outputs.windows_reuse != 'true'" in edge_platform_ci
-        and "gh release download $env:BASE_RELEASE_TAG" in edge_platform_ci
-        and "--windows-input-sha256" in edge_platform_ci
-        and "--windows-source-revision" in edge_platform_ci,
+        and "gh release download $env:BASE_RELEASE_TAG" in edge_platform_ci,
         "candidate CI must derive durable Windows identity and reuse only the exact accepted artifact",
     )
     require(
         edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 3
-        and "id: finalize" in edge_platform_ci
-        and "artifact_sha256: ${{ steps.finalize.outputs.artifact_sha256 }}" in edge_platform_ci
-        and "controller_sha256: ${{ steps.finalize.outputs.controller_sha256 }}" in edge_platform_ci
-        and "console_sha256: ${{ steps.finalize.outputs.console_sha256 }}" in edge_platform_ci
-        and "sing_box_binary_sha256: ${{ steps.finalize.outputs.sing_box_binary_sha256 }}" in edge_platform_ci,
-        "Windows reuse must skip only download/toolchain/build work while exact artifact finalization remains authoritative",
+        and "windows-build-manifest.json" in edge_platform_ci
+        and "linux-build-manifest.json" in edge_platform_ci
+        and "create-from-build-manifests" in edge_platform_ci
+        and edge_platform_ci.count("verify-candidate") == 2,
+        "candidate and promotion paths must converge through the typed platform build-manifest contract",
+    )
+    require(
+        "needs.windows.outputs.artifact_sha256" not in edge_platform_ci
+        and "needs.windows.outputs.controller_sha256" not in edge_platform_ci
+        and "needs.windows.outputs.console_sha256" not in edge_platform_ci
+        and "needs.linux_candidate.outputs.edge_agent_sha256" not in edge_platform_ci
+        and "needs.linux_candidate.outputs.edge_controller_sha256" not in edge_platform_ci
+        and "needs.linux_candidate.outputs.edge_orchestrator_sha256" not in edge_platform_ci,
+        "ReleaseSet assembly must consume typed build manifests instead of scattered build hash outputs",
     )
     require(
         "ROOT_PACKAGES = (\"edge-controller\", \"edge-console\")" in windows_input
