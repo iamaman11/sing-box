@@ -46,6 +46,49 @@ names, service names and RPC signatures are compatibility authority.
 The first lint baseline is Buf MINIMAL: package/directory correctness and import
 cycle safety without forcing a breaking rename of established v1 symbols.
 
+## First-party serialization policy: JSON prohibited by default
+
+New first-party JSON contracts are forbidden. This applies to desired state,
+release/build manifests, lifecycle authority, durable evidence, local control
+state, IPC, and machine-to-machine contracts.
+
+Use:
+
+- protobuf binary (`.pb`) for canonical machine contracts and durable machine
+  state;
+- protobuf text format (`.textproto`) for human-authored Git desired state that
+  must remain reviewable and diffable;
+- Rust semantic/domain types behind protobuf DTO boundaries.
+
+JSON is allowed only where an external consumer or protocol physically requires
+JSON and no project-controlled protobuf/textproto representation can replace
+that boundary. Examples are sing-box configuration files and third-party HTTP
+APIs whose wire protocol is JSON.
+
+Boundary rules:
+
+- external JSON must be decoded immediately into typed Rust/domain structures;
+  raw JSON must not become downstream lifecycle authority;
+- `serde_json`, `jq`, or equivalent tooling may exist only at such external
+  boundaries or as frozen migration debt; convenience is not an exception;
+- an exception must identify the external consumer that mandates JSON and why a
+  project-controlled protobuf/textproto contract cannot replace it;
+- existing first-party JSON is frozen migration debt: do not create new files,
+  new contract families, or new production authority on JSON; the debt set may
+  only shrink;
+- generated/transient first-party JSON and Windows-local `current.json` are
+  also legacy debt and must migrate when their owning Slice 2 path is touched;
+- production desired state is specifically
+  `infra/production/production.textproto` backed by a
+  `ProductionDesiredState` protobuf schema. Do not create
+  `infra/production/production.json`.
+
+CI enforces the tracked-file boundary in
+`edge-platform/scripts/test_json_contract_policy.py`. The only permanently
+allowlisted tracked JSON files are those physically consumed as JSON by an
+external runtime. Legacy internal entries are explicitly frozen and may be
+deleted without replacement by another JSON format.
+
 ## Typed process boundary (Gate C / C2)
 
 The controller, console and agent process entry points use a closed typed CLI
