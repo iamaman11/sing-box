@@ -29,7 +29,8 @@ use edge_secrets::ApplicationRuntimeSecrets;
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplyBundleRequest, ApplyBundleResponse, BootstrapMode,
-    BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, Empty, FileCategory,
+    BootstrapRuntimeRequest, BootstrapRuntimeResponse, BundleFile, ContainerRuntimeObservation,
+    Empty, FileCategory,
     FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
@@ -361,6 +362,7 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         direct_egress_ready: None,
         warp_egress_ready: None,
         mesh_runtime_ready: None,
+        containers: Vec::new(),
     };
 
     inspect_bundle_artifacts(stack_dir, &mut state);
@@ -407,6 +409,15 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         ));
     }
 
+    if docker.reachable {
+        collect_exact_container_evidence(
+            stack_dir,
+            &compose.expected_containers,
+            &mut state,
+        )
+        .await;
+    }
+
     let expected_tcp = compose.expected_tcp_ports;
     let expected_udp = compose.expected_udp_ports;
     let missing_tcp = expected_tcp
@@ -446,6 +457,10 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
             .any(|reason| reason.contains("bundle artifact"))
         && state.docker_reachable
         && state.missing_containers.is_empty()
+        && state
+            .containers
+            .iter()
+            .all(|container| container.exact_image_ready)
         && missing_tcp.is_empty()
         && missing_udp.is_empty()
         && datapaths_ready;
@@ -458,6 +473,99 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
     }
 
     state
+}
+
+async fn collect_exact_container_evidence(
+    stack_dir: &Path,
+    expected_containers: &[String],
+    state: &mut AgentState,
+) {
+    let images = match read_exact_image_environment(stack_dir) {
+        Ok(images) => images,
+        Err(err) => {
+            state
+                .degraded_reasons
+                .push(format!("exact ReleaseSet image authority is unavailable: {err}"));
+            return;
+        }
+    };
+
+    for name in expected_containers {
+        let expected_image = match name.as_str() {
+            WARP_CONTAINER => images.get(EDGE_WARP_EGRESS_IMAGE_KEY).cloned(),
+            LINE1_CONTAINER | LINE2_CONTAINER => images.get(EDGE_GATEWAY_IMAGE_KEY).cloned(),
+            MESH_CONTAINER => images.get(EDGE_MESH_IMAGE_KEY).cloned(),
+            _ => None,
+        };
+        let Some(expected_image) = expected_image else {
+            state.degraded_reasons.push(format!(
+                "no exact ReleaseSet image mapping exists for expected container {name}"
+            ));
+            continue;
+        };
+
+        match observe_container_runtime(name).await {
+            Ok(evidence) => {
+                let health_ready = !matches!(
+                    evidence.health.as_deref(),
+                    Some("UNHEALTHY") | Some("STARTING")
+                );
+                let exact_image_ready = evidence.present
+                    && evidence.running
+                    && evidence.image.as_deref() == Some(expected_image.as_str())
+                    && evidence.oom_killed != Some(true)
+                    && health_ready;
+
+                if !exact_image_ready {
+                    state.degraded_reasons.push(format!(
+                        "container {name} does not match exact accepted runtime: {}",
+                        evidence.summary()
+                    ));
+                }
+
+                state.containers.push(ContainerRuntimeObservation {
+                    name: evidence.name,
+                    present: evidence.present,
+                    running: evidence.running,
+                    expected_image: Some(expected_image),
+                    observed_image: evidence.image,
+                    exact_image_ready,
+                    health: evidence.health,
+                    exit_code: evidence.exit_code,
+                    restart_count: evidence.restart_count,
+                    oom_killed: evidence.oom_killed,
+                    networks: evidence.networks,
+                    published_ports: evidence.published_ports,
+                    mounts: evidence.mounts,
+                    runtime_error_present: evidence.runtime_error.is_some(),
+                    recent_events: evidence.log_tail,
+                });
+            }
+            Err(err) => {
+                state.degraded_reasons.push(format!(
+                    "typed Docker inspection failed for expected container {name}: {err}"
+                ));
+                state.containers.push(ContainerRuntimeObservation {
+                    name: name.clone(),
+                    present: false,
+                    running: false,
+                    expected_image: Some(expected_image),
+                    observed_image: None,
+                    exact_image_ready: false,
+                    health: None,
+                    exit_code: None,
+                    restart_count: None,
+                    oom_killed: None,
+                    networks: Vec::new(),
+                    published_ports: Vec::new(),
+                    mounts: Vec::new(),
+                    runtime_error_present: true,
+                    recent_events: Vec::new(),
+                });
+            }
+        }
+    }
+    state.containers.sort_by(|left, right| left.name.cmp(&right.name));
 }
 
 fn apply_bundle(
@@ -3433,7 +3541,10 @@ mod tests {
                 image: None,
                 restart_count: Some(0),
                 oom_killed: Some(false),
+                health: Some("HEALTHY".to_owned()),
                 networks: Vec::new(),
+                published_ports: Vec::new(),
+                mounts: Vec::new(),
             }),
             docker_observation_error: None,
         };
