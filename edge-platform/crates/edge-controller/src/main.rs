@@ -317,8 +317,11 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
     if is_installed_windows_root(&repo_root) {
         fs::create_dir_all(repo_root.join("state"))?;
         fs::create_dir_all(repo_root.join("runtime"))?;
-        let runtime_state = fs::read(windows_runtime_state_path(&repo_root))?;
-        decode_windows_runtime_state(&runtime_state)?;
+        let runtime_state_path = windows_runtime_state_path(&repo_root);
+        if runtime_state_path.is_file() {
+            let runtime_state = fs::read(&runtime_state_path)?;
+            decode_windows_runtime_state(&runtime_state)?;
+        }
     }
     let db_path = controller_state_db_path(&repo_root);
     if let Some(parent) = db_path.parent() {
