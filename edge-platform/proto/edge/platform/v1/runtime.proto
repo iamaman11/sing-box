@@ -133,6 +133,29 @@ message WindowsRuntimeState {
   WindowsTunnelBinding warp = 6;
 }
 
+enum WindowsPrivilegedOperation {
+  WINDOWS_PRIVILEGED_OPERATION_UNSPECIFIED = 0;
+  WINDOWS_PRIVILEGED_PING = 1;
+  WINDOWS_PRIVILEGED_ACTIVATE_RELEASE = 2;
+}
+
+message WindowsPrivilegedRequest {
+  uint32 schema_version = 1;
+  string request_id = 2;
+  WindowsPrivilegedOperation operation = 3;
+  optional string accepted_revision = 4;
+  optional string release_set_sha256 = 5;
+}
+
+message WindowsPrivilegedResult {
+  uint32 schema_version = 1;
+  string request_id = 2;
+  bool success = 3;
+  string code = 4;
+  string detail = 5;
+  optional string active_release_set_sha256 = 6;
+}
+
 message StartLocalRuntimeRequest {
   optional string singbox_binary_path = 1;
   optional string config_path = 2;
