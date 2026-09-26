@@ -35,6 +35,17 @@ Rules:
 - The Linux agent has no provider desired-state authority and no arbitrary
   shell/filesystem/Docker RPC surface.
 - `C:\sing-box` is the single project-owned Windows application root.
+- The one-time Windows trust bootstrap establishes the only privileged host boundary:
+  `EdgePlatformPrivilegedDispatch` is a SYSTEM Task Scheduler action that executes
+  the immutable current ReleaseSet `edge-console privileged-dispatch`. The GitHub
+  runner is `NetworkService` and can only write canonical protobuf requests into
+  the bounded exchange directory; it cannot replace binaries, activation pointers
+  or the protected installer.
+- Privileged release activation is not arbitrary remote execution: the request can
+  name only an exact accepted revision and ReleaseSet digest, and the protected
+  installer independently binds both to the current protected `main` and durable
+  release tag before mutation.
+
   Immutable releases, activation pointers, durable local state, generated
   runtime configuration and logs all live under that root. The GitHub runner
   lives outside it because transport is not application state.
