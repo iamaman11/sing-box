@@ -2,6 +2,7 @@ mod cli;
 mod error;
 
 use clap::Parser;
+use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
 use error::ConsoleError;
 use rusqlite::Connection;
@@ -116,6 +117,28 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     "doctor reported failing checks".to_owned(),
                 ))
             }
+        }
+        Command::SmokeRuntime => {
+            let install_root = installed_root_from_console()?;
+            let activation = load_verified_activation(&install_root)?;
+            let result = run_non_tun_loopback_smoke(
+                Path::new(&activation.sing_box_path),
+                &install_root.join("runtime"),
+            )?;
+            println!("status=PASS");
+            println!("mode=NON_TUN_LOOPBACK");
+            println!("release_set_sha256={}", activation.release_set_sha256);
+            println!("sing_box_path={}", activation.sing_box_path);
+            println!("sing_box_pid={}", result.singbox_pid);
+            println!("proxy_port={}", result.proxy_port);
+            println!("origin_port={}", result.origin_port);
+            println!("proxy_round_trip=PASS");
+            println!("tun_enabled=false");
+            println!("system_proxy_mutated=false");
+            println!("dns_mutated=false");
+            println!("routes_mutated=false");
+            println!("cleanup=PASS");
+            Ok(())
         }
         Command::Secrets(args) => {
             let secrets = list_secret_refs(args.resolve()).await?;
@@ -507,7 +530,7 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
     Command::new(&activation.controller_path)
         .arg("serve")
         .arg(&install_root)
-        .arg(DEFAULT_CONTROLLER_ADDR)
+        .arg(addr.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -516,7 +539,7 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
     if wait_for_controller(addr, Duration::from_secs(10)) {
         Ok(())
     } else {
-        Err("edge-controller did not start listening on 127.0.0.1:50051 in time".into())
+        Err(format!("edge-controller did not start listening on {addr} in time").into())
     }
 }
 

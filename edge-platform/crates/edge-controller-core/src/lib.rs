@@ -223,29 +223,40 @@ const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 pub fn collect_repo_inventory(repo_root: &Path) -> Result<InventoryReport, PlatformError> {
     let repo_root = canonical_repo_root(repo_root)?;
     if is_installed_windows_root(&repo_root) {
-        let required_paths = [
+        let authority_paths = [
             "current.pb",
-            "state/runtime-state.pb",
-            "runtime/sing-box.json",
             "bin/edge-console.exe",
             "bin/edge-diagnostic.exe",
         ];
-        let required_repo_files = required_paths
+        let required_repo_files = authority_paths
             .iter()
             .map(|path| file_presence(&repo_root, path, FileCategory::RequiredRepoInput))
             .collect::<Vec<_>>();
         let blockers = required_repo_files
             .iter()
             .filter(|file| !file.present)
-            .map(|file| format!("installed Windows runtime input is missing: {}", file.path))
+            .map(|file| format!("installed Windows authority file is missing: {}", file.path))
             .collect::<Vec<_>>();
+
+        let runtime_state_present = repo_root.join(INSTALLED_RUNTIME_STATE_PATH).is_file();
+        let runtime_config_present = repo_root.join(INSTALLED_LOCAL_CONFIG_PATH).is_file();
+        let mut warnings = Vec::new();
+        if !runtime_state_present && !runtime_config_present {
+            warnings.push("installed Windows application is NOT_CONFIGURED".to_owned());
+        } else if runtime_state_present != runtime_config_present {
+            warnings.push(
+                "installed Windows runtime state/configuration is incomplete and cannot be activated"
+                    .to_owned(),
+            );
+        }
+
         return Ok(InventoryReport {
             repo_root: repo_root.display().to_string(),
             rust_workspace_present: false,
             required_repo_files,
             local_only_files: Vec::new(),
             blockers,
-            warnings: Vec::new(),
+            warnings,
         });
     }
 
@@ -310,7 +321,9 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     let inventory = collect_repo_inventory(&repo_root)?;
     let agent_state = AgentState::bootstrap_placeholder();
     let controller_state = read_controller_state(&repo_root)?;
-    let installed_runtime = if is_installed_windows_root(&repo_root) {
+    let installed_runtime = if is_installed_windows_root(&repo_root)
+        && windows_runtime_state_path(&repo_root).is_file()
+    {
         Some(read_windows_runtime_state(&repo_root)?)
     } else {
         None
@@ -779,6 +792,24 @@ mod tests {
                 .blockers
                 .iter()
                 .any(|line| line.contains("required repository inputs are missing"))
+        );
+    }
+
+    #[test]
+    fn installed_release_only_inventory_is_not_configured_not_broken() {
+        let root = temp_repo_root("installed_release_only_inventory");
+        create_file(&root.join("current.pb"), "activation");
+        std::fs::create_dir_all(root.join("releases/release-a/bin")).unwrap();
+        create_file(&root.join("bin/edge-console.exe"), "");
+        create_file(&root.join("bin/edge-diagnostic.exe"), "");
+
+        let report = collect_repo_inventory(&root).unwrap();
+        assert!(report.blockers.is_empty());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|line| line == "installed Windows application is NOT_CONFIGURED")
         );
     }
 

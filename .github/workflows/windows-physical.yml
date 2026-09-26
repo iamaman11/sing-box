@@ -1,0 +1,206 @@
+name: Windows Physical Cycle
+
+on:
+  workflow_call:
+    inputs:
+      command_body:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: Authorize exact Windows smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      accepted_revision: ${{ steps.authorize.outputs.accepted_revision }}
+      release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+    steps:
+      - name: Authorize fixed command and current main
+        id: authorize
+        shell: bash
+        env:
+          COMMAND_BODY: ${{ inputs.command_body }}
+          CONTROL_SHA: ${{ github.sha }}
+          CONTROL_REF: ${{ github.ref }}
+          CONTROL_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          test "$COMMAND_BODY" = "/windows smoke"
+          test "$CONTROL_REF" = "refs/heads/main"
+          test "$CONTROL_PROTECTED" = "true"
+          [[ "$CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]
+          printf 'accepted_revision=%s\n' "$CONTROL_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact accepted control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.authorize.outputs.accepted_revision }}
+          persist-credentials: false
+          clean: true
+
+      - name: Resolve exact durable ReleaseSet
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ steps.authorize.outputs.accepted_revision }}
+          OUTPUT_DIR: ${{ runner.temp }}/windows-release-authority
+        run: |
+          set -euo pipefail
+          edge-platform/scripts/resolve_durable_release.sh
+          . "${OUTPUT_DIR}/resolved.env"
+          printf 'release_set_sha256=%s\n' "$EDGE_RELEASE_SET_SHA256" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=%s\n' "$EDGE_RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Publish authorization summary
+        shell: bash
+        run: |
+          {
+            echo '### Windows physical smoke authority'
+            echo '- Command: `/windows smoke`'
+            echo '- Accepted main: `${{ steps.authorize.outputs.accepted_revision }}`'
+            echo '- ReleaseSet: `${{ steps.release.outputs.release_set_sha256 }}`'
+            echo '- Physical mode: **NON_TUN_LOOPBACK**'
+            echo '- Legacy Windows runtime mutation: **FORBIDDEN**'
+            echo '- Local build on Windows: **NO**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  physical:
+    name: Install -> launch -> non-TUN smoke -> diagnose
+    needs: resolve
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - sing-box-windows-lab
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions: {}
+    env:
+      EDGE_INSTALL_ROOT: C:\sing-box
+      EDGE_CONTROLLER_ENDPOINT: http://127.0.0.1:51051
+      EDGE_ACCEPTED_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
+      EDGE_RELEASE_SET_SHA256: ${{ needs.resolve.outputs.release_set_sha256 }}
+    steps:
+      - name: Assert isolated physical execution root
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EDGE_INSTALL_ROOT -cne 'C:\sing-box') {
+            throw "Windows lab install root must be exactly C:\sing-box"
+          }
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $installRoot = [IO.Path]::GetFullPath($env:EDGE_INSTALL_ROOT)
+          if ($workspace.StartsWith($installRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'GitHub runner workspace must stay outside C:\sing-box'
+          }
+          foreach ($legacy in @(
+            'C:\Users\Bose\temp\sing-box',
+            'C:\Users\Bose\AppData\Local\sing-box-vultr-dual',
+            'C:\Users\Bose\AppData\Local\edge-platform-win-target'
+          )) {
+            if ($installRoot.StartsWith([IO.Path]::GetFullPath($legacy), [StringComparison]::OrdinalIgnoreCase)) {
+              throw "New install root overlaps legacy runtime: $legacy"
+            }
+          }
+          $client = [System.Net.Sockets.TcpClient]::new()
+          try {
+            $connect = $client.ConnectAsync('127.0.0.1', 51051)
+            if ($connect.Wait(300) -and $client.Connected) {
+              throw 'Isolated controller endpoint 127.0.0.1:51051 is already occupied'
+            }
+          } finally {
+            $client.Dispose()
+          }
+          New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+          Write-Host 'WINDOWS_ISOLATION_PRECONDITION=PASS'
+
+      - name: Fetch exact accepted installer
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EDGE_ACCEPTED_REVISION -notmatch '^[0-9a-f]{40}$') { throw 'Invalid accepted revision' }
+          $script = Join-Path $env:RUNNER_TEMP 'install-windows-release.ps1'
+          $uri = "https://raw.githubusercontent.com/iamaman11/sing-box/$env:EDGE_ACCEPTED_REVISION/edge-platform/scripts/install-windows-release.ps1"
+          Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $script
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { throw 'Installer download failed' }
+          "EDGE_INSTALLER=$script" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+
+      - name: Activate exact release authority only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:EDGE_INSTALLER `
+            -ReleaseSetSha256 $env:EDGE_RELEASE_SET_SHA256 `
+            -InstallRoot $env:EDGE_INSTALL_ROOT `
+            -ReleaseOnly
+          if ($LASTEXITCODE -ne 0) { throw "Release-only activation failed: $LASTEXITCODE" }
+
+      - name: Verify exact activation independently
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          & $diagnostic doctor $current
+          if ($LASTEXITCODE -ne 0) { throw "Independent activation doctor failed: $LASTEXITCODE" }
+
+      - name: Start isolated NOT_CONFIGURED controller
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $console = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          & $console ensure-controller $env:EDGE_CONTROLLER_ENDPOINT
+          if ($LASTEXITCODE -ne 0) { throw "Isolated controller startup failed: $LASTEXITCODE" }
+
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Exact controller-path diagnostic failed: $LASTEXITCODE" }
+          if ($doctor -notcontains 'controller_running=true') {
+            throw 'The exact controller from current.pb is not running'
+          }
+
+          & $console status $env:EDGE_CONTROLLER_ENDPOINT
+          if ($LASTEXITCODE -ne 0) { throw "Isolated controller status failed: $LASTEXITCODE" }
+
+      - name: Run exact non-TUN loopback proxy smoke
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $console = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          & $console smoke-runtime
+          if ($LASTEXITCODE -ne 0) { throw "Non-TUN smoke failed: $LASTEXITCODE" }
+
+      - name: Verify exact activation after runtime smoke
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          & $diagnostic doctor $current
+          if ($LASTEXITCODE -ne 0) { throw "Post-smoke activation doctor failed: $LASTEXITCODE" }
+
+      - name: Publish bounded physical evidence
+        if: ${{ always() }}
+        shell: powershell
+        run: |
+          @(
+            '### Windows physical non-TUN cycle',
+            '- Install root: `C:\sing-box`',
+            '- Accepted main: `${{ needs.resolve.outputs.accepted_revision }}`',
+            '- ReleaseSet: `${{ needs.resolve.outputs.release_set_sha256 }}`',
+            '- Local Windows build: **NO**',
+            '- TUN requested: **NO**',
+            '- DNS/route/system-proxy mutation requested: **NO**',
+            '- Legacy runtime mutation requested: **NO**',
+            '- Next action: **STOP_FOR_ANALYSIS**'
+          ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY

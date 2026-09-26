@@ -18,10 +18,12 @@ edge-agent                           sing-box.exe
 Linux bounded executor/observer      dataplane
 
 edge-diagnostic.exe
-Current Slice 2 independent read-only release/activation verifier
+Independent read-only release/activation verifier; extend with bounded one-shot
+native host/network diagnostics before introducing another resident service
 
 edge-windows-agent.exe
-Deferred richer Windows host-diagnostics service (#60), not part of the current cutover
+Deferred optional resident observer (#60), only if live evidence proves that
+one-shot native diagnostics cannot cover a required continuous observation
 ```
 
 Rules:
@@ -32,12 +34,17 @@ Rules:
   Windows controller.
 - The Linux agent has no provider desired-state authority and no arbitrary
   shell/filesystem/Docker RPC surface.
-- The current `edge-diagnostic.exe` is a narrow read-only ReleaseSet /
-  activation verifier and remains independent from `edge-controller.exe`.
-- The richer `edge-windows-agent.exe` service described in #60 is deferred
-  backlog for host/network/Event Log/ETW diagnostics; it is not required for
-  the current Slice 2 cutover and must not be confused with the implemented
-  minimal verifier.
+- `C:\sing-box` is the single project-owned Windows application root.
+  Immutable releases, activation pointers, durable local state, generated
+  runtime configuration and logs all live under that root. The GitHub runner
+  lives outside it because transport is not application state.
+- `edge-diagnostic.exe` remains independent from `edge-controller.exe`.
+  The default diagnostic growth path is bounded one-shot native observation
+  (processes, listeners, adapters/routes/DNS, Event Log and later TUN/WFP as
+  needed), invoked by the runner without creating another lifecycle owner.
+- A resident `edge-windows-agent.exe` service is optional and deferred. Add
+  it only if live evidence demonstrates a requirement that a one-shot process
+  cannot satisfy, such as continuous ETW buffering across a controller crash.
 - Neither Windows diagnostic surface is a repair or release-activation owner.
 - ReleaseSet bytes/digests remain immutable release authority.
 - Candidate artifacts build once; merge promotion reuses exact accepted bytes.

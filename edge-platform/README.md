@@ -58,18 +58,37 @@ Windows operation does not require a local Rust build.
 
 ## Install/update Windows control binaries
 
+The canonical new Windows application root is `C:\sing-box`. It is intentionally
+separate from historical checkout/runtime paths. All project-owned persistent files
+for the new Windows application live under `C:\sing-box`; anything outside that
+root must have a concrete external Windows/GitHub reason. The GitHub runner is
+transport only and lives separately (target `C:\sing-box-runner`).
+
 Prerequisites:
 
-- GitHub CLI `gh` installed and authenticated;
-- this repository available locally so the installer script can be invoked;
-- an exact accepted durable ReleaseSet SHA-256.
+- an exact accepted durable ReleaseSet SHA-256;
+- an exact copy of `install-windows-release.ps1` from the accepted Git
+  revision when bootstrapping a machine.
 
-Example:
+`gh.exe`, Cargo and a mutable repository checkout are not installed-runtime
+dependencies. The installer uses the GitHub Releases REST API directly. For a
+public repository no GitHub token is required; a private-repository bootstrap
+may provide `EDGE_GITHUB_TOKEN` / `-GitHubToken` with read access.
+
+Isolated first-stage activation:
 
 ```powershell
-& "C:\Users\Bose\temp\sing-box\edge-platform\scripts\install-windows-release.ps1" `
-  -ReleaseSetSha256 "<accepted-release-set-sha256>"
+& .\install-windows-release.ps1 `
+  -ReleaseSetSha256 "<accepted-release-set-sha256>" `
+  -InstallRoot "C:\sing-box" `
+  -ReleaseOnly
 ```
+
+`-ReleaseOnly` establishes exact release/activation authority without
+importing legacy runtime JSON/configuration and without registering scheduled
+automation. The controller may then run honestly as `NOT_CONFIGURED`; normal
+local runtime start remains fail-closed until typed runtime state/config is
+provisioned.
 
 The installer:
 
@@ -80,12 +99,10 @@ The installer:
 3. verifies the ReleaseSet digest and every Windows binary identity through
    `edge-release-set.exe verify-windows`;
 4. stores the immutable release under
-   `%LOCALAPPDATA%\edge-platform\releases\<ReleaseSetSha256>`;
-5. writes canonical protobuf activation state to
-   `%LOCALAPPDATA%\edge-platform\current.pb`;
+   `C:\sing-box\releases\<ReleaseSetSha256>`;
+5. writes canonical protobuf activation state to `C:\sing-box\current.pb`;
 6. moves the previous activation pointer to `previous.pb` for LKG rollback;
-7. installs only stable bootstrap entrypoints in
-   `%LOCALAPPDATA%\edge-platform\bin`.
+7. installs only stable bootstrap entrypoints in `C:\sing-box\bin`.
 
 `ensure-edge-controller.ps1` resolves the controller only from `current.pb`
 through the independent `edge-diagnostic.exe doctor` verification path. It
@@ -97,16 +114,40 @@ Rollback swaps the verified `current.pb` / `previous.pb` activation state
 through the installer `-Rollback` path and re-runs independent exact-file
 diagnostics.
 
+## Physical Windows runner bootstrap
+
+The GitHub runner is transport only and lives outside the application root:
+
+```text
+C:\sing-box           application
+C:\sing-box-runner    GitHub Actions transport
+```
+
+Before registration, `main` must report protected. The one-time bootstrap
+`edge-platform/scripts/bootstrap-windows-runner.ps1` checks this itself and
+refuses registration otherwise. It downloads only the pinned official GitHub
+Actions Runner, verifies its SHA-256, registers the repository-scoped
+`sing-box-windows-lab` service as `NetworkService`, and installs no Git/Rust/
+Java/provider credentials.
+
+The only interactive secret is GitHub's short-lived runner registration token
+from **Settings > Actions > Runners > New self-hosted runner**. The script reads
+it as a SecureString and does not persist it.
+
+After registration, physical work is invoked only through the owner-only
+`/windows smoke` route. The first cycle is intentionally non-TUN and does not
+touch DNS, routes, system proxy, Wintun, or the legacy Windows runtime.
+
 ## Normal Windows entrypoint
 
 ```powershell
-& "$env:LOCALAPPDATA\edge-platform\bin\edge-console.exe" status
+& "C:\sing-box\bin\edge-console.exe" status
 ```
 
 Interactive menu:
 
 ```powershell
-& "$env:LOCALAPPDATA\edge-platform\bin\edge-console.exe"
+& "C:\sing-box\bin\edge-console.exe"
 ```
 
 The repository helper `edge-platform/scripts/start-edge-console.cmd` ensures
