@@ -134,6 +134,7 @@ jobs:
             throw 'Current activation did not provide an immutable console path'
           }
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_ACTIVATION_REQUEST_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
 
       - name: Converge exact accepted ReleaseSet through privileged dispatcher
         shell: powershell
@@ -165,6 +166,23 @@ jobs:
             throw 'Verified activation did not provide current immutable console path'
           }
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+
+      - name: Complete exact release-owner handoff
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requestConsole = [IO.Path]::GetFullPath($env:EDGE_ACTIVATION_REQUEST_CONSOLE)
+          $currentConsole = [IO.Path]::GetFullPath($env:EDGE_CURRENT_CONSOLE)
+          if ($requestConsole -ceq $currentConsole) {
+            Write-Host 'ACTIVATION_HANDOFF=NOOP'
+            exit 0
+          }
+
+          & $currentConsole privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) {
+            throw "Exact release-owner handoff failed: $LASTEXITCODE"
+          }
+          Write-Host 'ACTIVATION_HANDOFF=PASS'
 
       - name: Verify SCM-owned controller authority
         shell: powershell
