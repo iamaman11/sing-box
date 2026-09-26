@@ -36,8 +36,8 @@ use edge_controller_core::vultr_lifecycle::{
 };
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::{VultrFirewallRule, VultrInstance};
-use edge_shared_types::{CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, Empty};
 use edge_shared_types::agent_service_client::AgentServiceClient;
+use edge_shared_types::{CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, Empty};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
