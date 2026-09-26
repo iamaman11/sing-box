@@ -117,7 +117,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         Command::EnsureController(args) => {
             ensure_controller_running(&args.resolve())?;
             println!("status=PASS");
-            println!("controller_start_owner=edge-console");
+            println!("controller_start_owner=windows_scm");
             println!("activation_authority=current.pb");
             Ok(())
         }
@@ -1117,7 +1117,7 @@ async fn connect_controller(
                 .map(|err| err.to_string())
                 .unwrap_or_else(|| "unknown error".to_owned());
             Err(format!(
-                "failed to connect to controller after autostart: first={first_err}; second={second_err}"
+                "failed to connect to SCM-owned controller: first={first_err}; second={second_err}"
             )
             .into())
         }
