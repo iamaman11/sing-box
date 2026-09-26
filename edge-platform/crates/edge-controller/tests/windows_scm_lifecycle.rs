@@ -151,7 +151,11 @@ fn scm_owned_controller_survives_start_caller_exit_and_keeps_listener() {
         .expect("start service through disposable caller");
     assert!(start.success(), "sc.exe failed to start {SERVICE_NAME}");
     assert!(
-        wait_for_state(&guard.service, ServiceState::Running, Duration::from_secs(15)),
+        wait_for_state(
+            &guard.service,
+            ServiceState::Running,
+            Duration::from_secs(15)
+        ),
         "service did not report Running: {:?}",
         guard.service.query_status()
     );
@@ -161,7 +165,10 @@ fn scm_owned_controller_survives_start_caller_exit_and_keeps_listener() {
         guard.service.query_status()
     );
 
-    let first = guard.service.query_status().expect("query initial ready service");
+    let first = guard
+        .service
+        .query_status()
+        .expect("query initial ready service");
     let first_pid = first.process_id.expect("running service process id");
 
     // sc.exe has already exited. Keep the service isolated from its start caller and
