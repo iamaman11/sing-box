@@ -477,7 +477,7 @@ fn collect_deployment_summary(
 fn read_controller_state(
     repo_root: &Path,
 ) -> Result<Option<edge_state::StoredControllerState>, PlatformError> {
-    let db_path = controller_state_db_path(repo_root);
+    let db_path = controller_state_db_path(&repo_root);
     if !db_path.is_file() {
         return Ok(None);
     }
