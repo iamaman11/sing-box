@@ -27,10 +27,12 @@ jobs:
           COMMAND_BODY: ${{ inputs.command_body }}
           CONTROL_SHA: ${{ github.sha }}
           CONTROL_REF: ${{ github.ref }}
+          CONTROL_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
           test "$COMMAND_BODY" = "/windows smoke"
           test "$CONTROL_REF" = "refs/heads/main"
+          test "$CONTROL_PROTECTED" = "true"
           [[ "$CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]
           printf 'accepted_revision=%s\n' "$CONTROL_SHA" >> "$GITHUB_OUTPUT"
 
