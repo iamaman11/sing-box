@@ -670,7 +670,10 @@ fn activate_privileged_release(
         return Err("updated Windows activation does not match requested ReleaseSet".to_owned());
     }
     if activation.source_revision != accepted_revision {
-        return Err("updated Windows activation source revision does not match accepted revision".to_owned());
+        return Err(
+            "updated Windows activation source revision does not match accepted revision"
+                .to_owned(),
+        );
     }
     retarget_privileged_task(install_root, &activation.console_path)?;
     Ok((
