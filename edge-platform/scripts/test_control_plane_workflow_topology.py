@@ -251,6 +251,7 @@ def main() -> None:
         and 'exchange\\results' in windows_runner_bootstrap
         and 'state\\secrets' in windows_runner_bootstrap
         and 'S-1-5-20' in windows_runner_bootstrap
+        and '/remove:g "NT AUTHORITY\\NETWORK SERVICE"' in windows_runner_bootstrap
         and 'NetworkService must have no ACL entry on protected Windows secret state' in windows_runner_bootstrap
         and 'NETWORK SERVICE:(OI)(CI)RX' in windows_runner_bootstrap
         and 'NETWORK SERVICE:(OI)(CI)M' in windows_runner_bootstrap
