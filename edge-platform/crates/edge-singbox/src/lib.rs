@@ -3,7 +3,9 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use edge_shared_types::{LocalSingboxState, SelectorState, UbuntuProxyState};
+use edge_shared_types::{
+    LocalSingboxState, SelectorState, UbuntuProxyState, WindowsRuntimeState, WindowsTunnelBinding,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -287,15 +289,57 @@ pub fn sync_local_config(
     state_path: &Path,
     runtime_root: &Path,
 ) -> Result<ConfigSyncSummary, String> {
+    let raw_state = fs::read_to_string(state_path)
+        .map_err(|err| format!("unable to read legacy state file: {err}"))?;
+    let legacy: SyncState = serde_json::from_str(&raw_state)
+        .map_err(|err| format!("legacy state file is invalid JSON: {err}"))?;
+    sync_local_config_from_bindings(config_path, &legacy, runtime_root)
+}
+
+pub fn sync_local_config_from_runtime_state(
+    config_path: &Path,
+    state: &WindowsRuntimeState,
+    runtime_root: &Path,
+) -> Result<ConfigSyncSummary, String> {
+    let direct = state
+        .direct
+        .as_ref()
+        .ok_or_else(|| "Windows runtime state direct tunnel is missing".to_owned())?;
+    let warp = state
+        .warp
+        .as_ref()
+        .ok_or_else(|| "Windows runtime state warp tunnel is missing".to_owned())?;
+    let typed = SyncState {
+        instance_id: Some(state.instance_id.clone()),
+        ip: Some(state.server_ip.clone()),
+        tunnel: sync_tunnel_state_from_proto(direct),
+        tunnel_warp: sync_tunnel_state_from_proto(warp),
+    };
+    sync_local_config_from_bindings(config_path, &typed, runtime_root)
+}
+
+fn sync_tunnel_state_from_proto(value: &WindowsTunnelBinding) -> SyncTunnelState {
+    SyncTunnelState {
+        domain: value.domain.clone(),
+        hy2_port: value.hy2_port,
+        hy2_password: value.hy2_password.clone(),
+        vless_port: value.vless_port,
+        vless_uuid: value.vless_uuid.clone(),
+        reality_public_key: value.reality_public_key.clone(),
+        reality_short_id: value.reality_short_id.clone(),
+    }
+}
+
+fn sync_local_config_from_bindings(
+    config_path: &Path,
+    state: &SyncState,
+    runtime_root: &Path,
+) -> Result<ConfigSyncSummary, String> {
     let raw_config = fs::read_to_string(config_path)
         .map_err(|err| format!("unable to read local sing-box config: {err}"))?;
-    let raw_state = fs::read_to_string(state_path)
-        .map_err(|err| format!("unable to read state file: {err}"))?;
 
     let mut config: Value = serde_json::from_str(&raw_config)
         .map_err(|err| format!("local sing-box config is not valid JSON: {err}"))?;
-    let state: SyncState = serde_json::from_str(&raw_state)
-        .map_err(|err| format!("state file is invalid JSON: {err}"))?;
 
     let runtime_root = runtime_root.display().to_string();
     if let Some(clash_api) = config
@@ -352,7 +396,7 @@ pub fn sync_local_config(
     fs::write(config_path, rendered).map_err(|err| format!("failed to write config: {err}"))?;
 
     Ok(ConfigSyncSummary {
-        instance_id: state.instance_id,
+        instance_id: state.instance_id.clone(),
         config_path: config_path.display().to_string(),
     })
 }
