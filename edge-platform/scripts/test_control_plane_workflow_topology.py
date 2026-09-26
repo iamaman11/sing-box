@@ -210,7 +210,10 @@ def main() -> None:
         and "github.ref_protected" in windows_physical
         and "edge-platform/scripts/resolve_durable_release.sh" in windows_physical
         and "C:\\sing-box" in windows_physical
-        and "privileged-activate" in windows_physical
+        and windows_physical.count("privileged-activate") == 2
+        and "EDGE_ACTIVATION_REQUEST_CONSOLE" in windows_physical
+        and "Complete exact release-owner handoff" in windows_physical
+        and "ACTIVATION_HANDOFF=PASS" in windows_physical
         and "privileged-ping" in windows_physical
         and "EDGE_CURRENT_CONSOLE" in windows_physical
         and "edge-diagnostic.exe" in windows_physical
