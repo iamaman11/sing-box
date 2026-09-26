@@ -114,6 +114,25 @@ message LocalSingboxState {
   repeated string warnings = 6;
 }
 
+message WindowsTunnelBinding {
+  string domain = 1;
+  uint32 hy2_port = 2;
+  string hy2_password = 3;
+  uint32 vless_port = 4;
+  string vless_uuid = 5;
+  string reality_public_key = 6;
+  string reality_short_id = 7;
+}
+
+message WindowsRuntimeState {
+  uint32 schema_version = 1;
+  optional string deployment_label = 2;
+  string instance_id = 3;
+  string server_ip = 4;
+  WindowsTunnelBinding direct = 5;
+  WindowsTunnelBinding warp = 6;
+}
+
 message StartLocalRuntimeRequest {
   optional string singbox_binary_path = 1;
   optional string config_path = 2;
