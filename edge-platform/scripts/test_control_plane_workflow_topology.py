@@ -219,6 +219,9 @@ def main() -> None:
         and "edge-diagnostic.exe" in windows_physical
         and "EdgePlatformController" in windows_physical
         and "NT SERVICE\\EdgePlatformController" in windows_physical
+        and "service.PathName" in windows_physical
+        and "controller_path" in windows_physical
+        and "controller_running=true" not in windows_physical
         and "NetworkService runner unexpectedly has direct access" in windows_physical
         and "smoke-runtime" not in windows_physical
         and "http://127.0.0.1:51051" in windows_physical
