@@ -25,6 +25,7 @@ pub(crate) enum Command {
     Reconcile(EndpointArgs),
     Status(EndpointArgs),
     Doctor(EndpointArgs),
+    SmokeRuntime,
     Secrets(EndpointArgs),
     GetSecret(NameEndpointArgs),
     SetSecret(SetSecretArgs),
@@ -51,6 +52,7 @@ impl Command {
             Self::Reconcile(_) => "reconcile",
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
+            Self::SmokeRuntime => "smoke-runtime",
             Self::Secrets(_) => "secrets",
             Self::GetSecret(_) => "get-secret",
             Self::SetSecret(_) => "set-secret",
@@ -130,6 +132,7 @@ mod tests {
     fn parses_installed_automation_commands() {
         assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "smoke-runtime"]).is_ok());
     }
 
     #[test]
