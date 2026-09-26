@@ -719,16 +719,34 @@ fn finish_privileged_result(
 }
 
 fn installed_root_from_console() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let executable = env::current_exe()?;
+    installed_root_from_executable(&env::current_exe()?)
+}
+
+fn installed_root_from_executable(
+    executable: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let bin_dir = executable
         .parent()
         .ok_or("failed to resolve edge-console binary directory")?;
     if bin_dir.file_name().and_then(|value| value.to_str()) != Some("bin") {
         return Err(
-            "edge-console installed startup requires <install-root>\\bin\\edge-console.exe".into(),
+            "edge-console installed startup requires <install-root>\\releases\\<release-set>\\bin\\edge-console.exe"
+                .into(),
         );
     }
-    let root = bin_dir
+    let release_dir = bin_dir
+        .parent()
+        .ok_or("failed to resolve immutable release directory")?;
+    let releases_dir = release_dir
+        .parent()
+        .ok_or("failed to resolve immutable releases root")?;
+    if releases_dir.file_name().and_then(|value| value.to_str()) != Some("releases") {
+        return Err(
+            "edge-console installed startup requires <install-root>\\releases\\<release-set>\\bin\\edge-console.exe"
+                .into(),
+        );
+    }
+    let root = releases_dir
         .parent()
         .ok_or("failed to resolve edge-platform install root")?
         .to_path_buf();
@@ -1777,6 +1795,28 @@ mod tests {
             "running"
         );
         assert_eq!(lifecycle_status_label(99), "unknown");
+    }
+
+    #[test]
+    fn resolves_install_root_from_immutable_release_console_path() {
+        let root = PathBuf::from("install-root");
+        let executable = root
+            .join("releases")
+            .join("release-set")
+            .join("bin")
+            .join("edge-console.exe");
+
+        assert_eq!(installed_root_from_executable(&executable).unwrap(), root);
+    }
+
+    #[test]
+    fn rejects_obsolete_root_bin_console_layout() {
+        let executable = PathBuf::from("install-root")
+            .join("bin")
+            .join("edge-console.exe");
+
+        let error = installed_root_from_executable(&executable).unwrap_err();
+        assert!(error.to_string().contains("releases"));
     }
 
     #[test]
