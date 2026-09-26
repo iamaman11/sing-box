@@ -8,6 +8,8 @@ use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
 use std::fs;
+#[cfg(windows)]
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -31,10 +33,23 @@ use edge_shared_types::{
 };
 use tonic::Request;
 use tonic::transport::Channel;
+#[cfg(windows)]
+use windows_service::service::{
+    Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl,
+    ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceSidType,
+    ServiceStartType, ServiceState, ServiceType,
+};
+#[cfg(windows)]
+use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 const DEFAULT_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:50051";
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
-const MAX_CONTROLLER_SERVICE_LOG_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(windows)]
+const INSTALLED_CONTROLLER_ADDR: &str = "127.0.0.1:51051";
+#[cfg(windows)]
+const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
+#[cfg(windows)]
+const WINDOWS_CONTROLLER_SERVICE_ACCOUNT: &str = r"NT SERVICE\EdgePlatformController";
 const PRIVILEGED_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_RESULT_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_TASK_NAME: &str = "EdgePlatformPrivilegedDispatch";
@@ -178,6 +193,22 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             )?;
             print_privileged_result(&result);
             finish_privileged_result(&result)?;
+            Ok(())
+        }
+        #[cfg(windows)]
+        Command::PrivilegedConvergeControllerService(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let activation = load_verified_activation(&install_root)?;
+            converge_controller_service(
+                &install_root,
+                Path::new(&activation.controller_path),
+            )
+            .map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("controller_service={WINDOWS_CONTROLLER_SERVICE_NAME}");
+            println!("controller_start_owner=windows_scm");
+            println!("secret_authority=controller_service");
+            println!("runner_secret_access=false");
             Ok(())
         }
         Command::PrivilegedDispatch(args) => {
@@ -668,10 +699,12 @@ fn activate_privileged_release(
     if activation.release_set_sha256 != target_release {
         return Err("updated Windows activation does not match requested ReleaseSet".to_owned());
     }
+    #[cfg(windows)]
+    converge_controller_service(install_root, Path::new(&activation.controller_path))?;
     retarget_privileged_task(install_root, &activation.console_path)?;
     Ok((
         "RELEASE_CONVERGED".to_owned(),
-        "exact accepted ReleaseSet is active".to_owned(),
+        "exact accepted ReleaseSet and controller service are active".to_owned(),
         Some(activation.release_set_sha256),
     ))
 }
@@ -806,58 +839,234 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
     }
 
     let install_root = installed_root_from_console()?;
-    let activation = load_verified_activation(&install_root)?;
-    let runtime_root = install_root.join("runtime");
-    std::fs::create_dir_all(&runtime_root)?;
-    rotate_service_log_if_needed(
-        &runtime_root.join("controller-service-stdout.log"),
-        MAX_CONTROLLER_SERVICE_LOG_BYTES,
-    )?;
-    rotate_service_log_if_needed(
-        &runtime_root.join("controller-service-stderr.log"),
-        MAX_CONTROLLER_SERVICE_LOG_BYTES,
-    )?;
-
-    let stdout = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(runtime_root.join("controller-service-stdout.log"))?;
-    let stderr = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(runtime_root.join("controller-service-stderr.log"))?;
-
-    Command::new(&activation.controller_path)
-        .arg("serve")
-        .arg(&install_root)
-        .arg(addr.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()?;
-
+    let _activation = load_verified_activation(&install_root)?;
     if wait_for_controller(addr, Duration::from_secs(10)) {
         Ok(())
     } else {
-        Err(format!("edge-controller did not start listening on {addr} in time").into())
+        Err(format!(
+            "SCM-owned EdgePlatformController is not listening on {addr}; edge-console does not own controller startup"
+        )
+        .into())
     }
 }
 
-fn rotate_service_log_if_needed(
-    path: &Path,
-    max_bytes: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err.into()),
-    };
-    if metadata.len() <= max_bytes {
-        return Ok(());
+#[cfg(windows)]
+fn wait_for_service_state(
+    service: &Service,
+    expected: ServiceState,
+    timeout: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        let status = service
+            .query_status()
+            .map_err(|err| format!("failed to query controller service state: {err}"))?;
+        if status.current_state == expected {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
     }
-    std::fs::write(path, b"")?;
+    Err(format!(
+        "controller service did not reach {expected:?} within {} seconds",
+        timeout.as_secs()
+    ))
+}
+
+#[cfg(windows)]
+fn run_icacls(path: &Path, arguments: &[&str]) -> Result<(), String> {
+    let mut command = Command::new("icacls.exe");
+    command.arg(path);
+    command.args(arguments);
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("failed to start icacls for {}: {err}", path.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "icacls failed for {} with exit code {}",
+            path.display(),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn protect_controller_owned_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path)
+        .map_err(|err| format!("failed to create controller-owned {}: {err}", path.display()))?;
+    run_icacls(
+        path,
+        &[
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            r"NT SERVICE\EdgePlatformController:(OI)(CI)M",
+            "/Q",
+        ],
+    )?;
+    run_icacls(path, &["/remove:g", "*S-1-5-20", "/Q"])?;
+    run_icacls(path, &["/inheritance:r", "/Q"])?;
+    let descendants = path.join("*");
+    run_icacls(&descendants, &["/reset", "/T", "/Q"])?;
     Ok(())
 }
+
+#[cfg(windows)]
+fn converge_application_acl(install_root: &Path) -> Result<(), String> {
+    for path in [
+        install_root.join("state"),
+        install_root.join("state").join("secrets"),
+        install_root.join("runtime"),
+        install_root.join("logs"),
+        install_root.join("exchange").join("requests"),
+        install_root.join("exchange").join("results"),
+    ] {
+        fs::create_dir_all(&path)
+            .map_err(|err| format!("failed to create {}: {err}", path.display()))?;
+    }
+
+    run_icacls(
+        install_root,
+        &[
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            "*S-1-5-20:(OI)(CI)RX",
+            r"NT SERVICE\EdgePlatformController:(OI)(CI)RX",
+            "/Q",
+        ],
+    )?;
+    run_icacls(install_root, &["/inheritance:r", "/Q"])?;
+    let descendants = install_root.join("*");
+    run_icacls(&descendants, &["/reset", "/T", "/Q"])?;
+
+    for path in [
+        install_root.join("state"),
+        install_root.join("runtime"),
+        install_root.join("logs"),
+    ] {
+        protect_controller_owned_directory(&path)?;
+    }
+
+    run_icacls(
+        &install_root.join("exchange").join("requests"),
+        &["/grant:r", "*S-1-5-20:(OI)(CI)M", "/Q"],
+    )?;
+    run_icacls(
+        &install_root.join("exchange").join("results"),
+        &["/grant:r", "*S-1-5-20:(OI)(CI)RX", "/Q"],
+    )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn converge_controller_service(
+    install_root: &Path,
+    controller_path: &Path,
+) -> Result<(), String> {
+    if !controller_path.is_file() {
+        return Err(format!(
+            "exact controller binary is missing: {}",
+            controller_path.display()
+        ));
+    }
+
+    let manager = ServiceManager::local_computer(
+        None::<&str>,
+        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+    )
+    .map_err(|err| format!("failed to open Windows Service Control Manager: {err}"))?;
+
+    let service_info = ServiceInfo {
+        name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
+        display_name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::AutoStart,
+        error_control: ServiceErrorControl::Normal,
+        executable_path: controller_path.to_path_buf(),
+        launch_arguments: vec![
+            OsString::from("windows-service"),
+            install_root.as_os_str().to_owned(),
+            OsString::from(INSTALLED_CONTROLLER_ADDR),
+        ],
+        dependencies: Vec::new(),
+        account_name: Some(OsString::from(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)),
+        account_password: None,
+    };
+    let access = ServiceAccess::QUERY_CONFIG
+        | ServiceAccess::CHANGE_CONFIG
+        | ServiceAccess::QUERY_STATUS
+        | ServiceAccess::START
+        | ServiceAccess::STOP;
+    let service = manager
+        .create_service(&service_info, access)
+        .or_else(|_| manager.open_service(WINDOWS_CONTROLLER_SERVICE_NAME, access))
+        .map_err(|err| format!("failed to create or open controller service: {err}"))?;
+
+    let status = service
+        .query_status()
+        .map_err(|err| format!("failed to query controller service before convergence: {err}"))?;
+    if status.current_state != ServiceState::Stopped {
+        if status.current_state != ServiceState::StopPending {
+            service
+                .stop()
+                .map_err(|err| format!("failed to stop controller service: {err}"))?;
+        }
+        wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
+    }
+
+    service
+        .change_config(&service_info)
+        .map_err(|err| format!("failed to retarget controller service: {err}"))?;
+    service
+        .set_config_service_sid_info(ServiceSidType::Unrestricted)
+        .map_err(|err| format!("failed to enable controller service SID: {err}"))?;
+    service
+        .set_delayed_auto_start(true)
+        .map_err(|err| format!("failed to enable delayed controller auto-start: {err}"))?;
+    service
+        .update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(vec![
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(5),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(15),
+                },
+            ]),
+        })
+        .map_err(|err| format!("failed to configure controller service recovery: {err}"))?;
+    service
+        .set_failure_actions_on_non_crash_failures(true)
+        .map_err(|err| format!("failed to enable controller recovery on failures: {err}"))?;
+
+    converge_application_acl(install_root)?;
+
+    service
+        .start::<&str>(&[])
+        .map_err(|err| format!("failed to start controller service: {err}"))?;
+    wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(15))?;
+
+    let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
+        .parse()
+        .map_err(|err| format!("invalid installed controller address: {err}"))?;
+    if !wait_for_controller(addr, Duration::from_secs(10)) {
+        return Err(format!(
+            "controller service is Running but is not listening on {INSTALLED_CONTROLLER_ADDR}"
+        ));
+    }
+    Ok(())
+}
+
 
 async fn reconcile_installed_runtime(endpoint: String) -> Result<(), Box<dyn std::error::Error>> {
     ensure_controller_running(&endpoint)?;
