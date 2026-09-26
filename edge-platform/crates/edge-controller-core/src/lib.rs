@@ -223,29 +223,40 @@ const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 pub fn collect_repo_inventory(repo_root: &Path) -> Result<InventoryReport, PlatformError> {
     let repo_root = canonical_repo_root(repo_root)?;
     if is_installed_windows_root(&repo_root) {
-        let required_paths = [
+        let authority_paths = [
             "current.pb",
-            "state/runtime-state.pb",
-            "runtime/sing-box.json",
             "bin/edge-console.exe",
             "bin/edge-diagnostic.exe",
         ];
-        let required_repo_files = required_paths
+        let required_repo_files = authority_paths
             .iter()
             .map(|path| file_presence(&repo_root, path, FileCategory::RequiredRepoInput))
             .collect::<Vec<_>>();
         let blockers = required_repo_files
             .iter()
             .filter(|file| !file.present)
-            .map(|file| format!("installed Windows runtime input is missing: {}", file.path))
+            .map(|file| format!("installed Windows authority file is missing: {}", file.path))
             .collect::<Vec<_>>();
+
+        let runtime_state_present = repo_root.join(INSTALLED_RUNTIME_STATE_PATH).is_file();
+        let runtime_config_present = repo_root.join(INSTALLED_LOCAL_CONFIG_PATH).is_file();
+        let mut warnings = Vec::new();
+        if !runtime_state_present && !runtime_config_present {
+            warnings.push("installed Windows application is NOT_CONFIGURED".to_owned());
+        } else if runtime_state_present != runtime_config_present {
+            warnings.push(
+                "installed Windows runtime state/configuration is incomplete and cannot be activated"
+                    .to_owned(),
+            );
+        }
+
         return Ok(InventoryReport {
             repo_root: repo_root.display().to_string(),
             rust_workspace_present: false,
             required_repo_files,
             local_only_files: Vec::new(),
             blockers,
-            warnings: Vec::new(),
+            warnings,
         });
     }
 
