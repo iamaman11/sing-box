@@ -349,6 +349,22 @@ if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact Release
 Assert-VerifiedSourceRevision -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
 $verificationOutput | Write-Output
 
+if ($ReleaseOnly -and (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
+    $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
+    if ($current["release_set_sha256"] -eq $ReleaseSetSha256) {
+        if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision) -and $current["source_revision"] -ne $AcceptedRevision) {
+            throw "Current Windows activation source_revision does not match AcceptedRevision"
+        }
+        Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
+        Write-Output "activation=NOOP"
+        Write-Output "current_state=$currentPath"
+        Write-Output "console=$($current["console_path"])"
+        Write-Output "diagnostic=$($current["diagnostic_path"])"
+        Write-Output "automation_registered=false"
+        exit 0
+    }
+}
+
 if ($ReleaseOnly) {
     $activation = Activate-ReleaseAuthority `
         -Tool $tool `
