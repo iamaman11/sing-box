@@ -6,6 +6,7 @@ ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 ROOT_OPS = WORKFLOWS / "vultr-root-ops.yml"
+WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
@@ -35,6 +36,7 @@ def main() -> None:
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     root_ops = ROOT_OPS.read_text(encoding="utf-8")
+    windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
@@ -66,6 +68,7 @@ def main() -> None:
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
     require("workflow_call:" in root_ops, "Vultr root ops must be reusable")
+    require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
@@ -73,6 +76,7 @@ def main() -> None:
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
     require("issue_comment:" not in root_ops, "Vultr root ops must not listen to comments")
+    require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
@@ -90,6 +94,12 @@ def main() -> None:
     require(
         "uses: ./.github/workflows/vultr-lifecycle.yml" in router,
         "router must call the Vultr backend",
+    )
+    require(
+        "uses: ./.github/workflows/windows-physical.yml" in router
+        and "github.event.comment.body == '/windows smoke'" in router
+        and "github.actor_id == '44100369'" in router,
+        "router must expose the physical Windows cycle only as the exact owner-only /windows smoke command",
     )
     require(
         "uses: ./.github/workflows/vultr-root-ops.yml" in router
@@ -185,6 +195,37 @@ def main() -> None:
         and 'sudo -n bash "${command_file}"' in root_ops
         and "base64.urlsafe_b64decode" in root_ops,
         "root ops must carry no GitHub token permission and execute only the explicitly owner-routed command as root",
+    )
+    require(
+        "runs-on:" in windows_physical
+        and "- self-hosted" in windows_physical
+        and "- Windows" in windows_physical
+        and "- X64" in windows_physical
+        and "- sing-box-windows-lab" in windows_physical,
+        "Windows physical cycle must target only the dedicated repository runner",
+    )
+    require(
+        'test "$COMMAND_BODY" = "/windows smoke"' in windows_physical
+        and "edge-platform/scripts/resolve_durable_release.sh" in windows_physical
+        and "C:\\sing-box" in windows_physical
+        and "-ReleaseOnly" in windows_physical
+        and "edge-diagnostic.exe" in windows_physical
+        and "smoke-runtime" in windows_physical
+        and "http://127.0.0.1:51051" in windows_physical,
+        "Windows physical cycle must resolve one accepted ReleaseSet and invoke only the isolated non-TUN install/diagnostic/smoke surface",
+    )
+    require(
+        "workflow_dispatch:" not in windows_physical
+        and "pull_request:" not in windows_physical
+        and "pull_request_target:" not in windows_physical
+        and "cargo build" not in windows_physical
+        and "cargo run" not in windows_physical
+        and "rustc " not in windows_physical
+        and "VULTR_API_KEY" not in windows_physical
+        and "CLOUDFLARE_API_TOKEN" not in windows_physical
+        and "LegacyRuntimeStatePath" not in windows_physical
+        and "LegacySingBoxConfigPath" not in windows_physical,
+        "Windows runner must have no untrusted trigger, local build, provider credential, or legacy-state migration path",
     )
     require(
         'verb == "runner-bootstrap" and len(tokens) == 4' in vultr
@@ -741,6 +782,14 @@ def main() -> None:
         "legacy Windows files may enter the installed model only through one explicit first-install migration",
     )
     require(
+        "[switch]$ReleaseOnly" in windows_installer
+        and "runtime_state=NOT_CONFIGURED" in windows_installer
+        and "runtime_config=NOT_CONFIGURED" in windows_installer
+        and "automation_registered=false" in windows_installer
+        and "Activate-ReleaseAuthority" in windows_installer,
+        "isolated Windows activation must support exact release authority without legacy runtime/config migration or scheduled automation",
+    )
+    require(
         '$quotedConsole ensure-controller' in windows_installer
         and '$quotedConsole reconcile' in windows_installer
         and '$quotedConsole stop-local' in windows_installer
@@ -765,6 +814,14 @@ def main() -> None:
         and "resolve_repo_root_for_controller" not in windows_console
         and 'parent.join("edge-controller.exe")' not in windows_console,
         "edge-console must be the sole current.pb resolver and exact controller startup owner without RepoRoot fallback",
+    )
+    require(
+        "SmokeRuntime" in WINDOWS_CONSOLE.with_name("cli.rs").read_text(encoding="utf-8")
+        and "run_non_tun_loopback_smoke" in windows_console
+        and "mode=NON_TUN_LOOPBACK" in windows_console
+        and "tun_enabled=false" in windows_console
+        and ".arg(addr.to_string())" in windows_console,
+        "installed console must own the exact non-TUN smoke and honor an isolated requested controller endpoint",
     )
     require(
         '"state/runtime-state.pb"' in windows_controller
