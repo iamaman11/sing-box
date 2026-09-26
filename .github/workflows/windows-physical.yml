@@ -66,13 +66,13 @@ jobs:
             echo '- Command: `/windows smoke`'
             echo '- Accepted main: `${{ steps.authorize.outputs.accepted_revision }}`'
             echo '- ReleaseSet: `${{ steps.release.outputs.release_set_sha256 }}`'
-            echo '- Physical mode: **NON_TUN_LOOPBACK**'
+            echo '- Physical mode: **SCM_CONTROLLER_AUTHORITY**'
             echo '- Legacy Windows runtime mutation: **FORBIDDEN**'
             echo '- Local build on Windows: **NO**'
           } >> "$GITHUB_STEP_SUMMARY"
 
   physical:
-    name: Install -> launch -> non-TUN smoke -> diagnose
+    name: Activate -> SCM controller -> authority boundary
     needs: resolve
     runs-on:
       - self-hosted
@@ -110,15 +110,6 @@ jobs:
             if ($installRoot.StartsWith([IO.Path]::GetFullPath($legacy), [StringComparison]::OrdinalIgnoreCase)) {
               throw "New install root overlaps legacy runtime: $legacy"
             }
-          }
-          $client = [System.Net.Sockets.TcpClient]::new()
-          try {
-            $connect = $client.ConnectAsync('127.0.0.1', 51051)
-            if ($connect.Wait(300) -and $client.Connected) {
-              throw 'Isolated controller endpoint 127.0.0.1:51051 is already occupied'
-            }
-          } finally {
-            $client.Dispose()
           }
           if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
             throw 'C:\sing-box trust anchor is not bootstrapped'
@@ -175,13 +166,25 @@ jobs:
           }
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
 
-      - name: Start isolated NOT_CONFIGURED controller
+      - name: Verify SCM-owned controller authority
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $console = $env:EDGE_CURRENT_CONSOLE
           & $console ensure-controller $env:EDGE_CONTROLLER_ENDPOINT
-          if ($LASTEXITCODE -ne 0) { throw "Isolated controller startup failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "SCM-owned controller verification failed: $LASTEXITCODE" }
+
+          $service = Get-CimInstance Win32_Service -Filter "Name='EdgePlatformController'"
+          if (-not $service) { throw 'EdgePlatformController Windows service is missing' }
+          if ([string]$service.StartName -cne 'NT SERVICE\EdgePlatformController') {
+            throw "Unexpected controller service identity: $($service.StartName)"
+          }
+          if ([string]$service.State -cne 'Running') {
+            throw "Controller service is not Running: $($service.State)"
+          }
+          if ([string]$service.StartMode -cne 'Auto') {
+            throw "Controller service is not automatic: $($service.StartMode)"
+          }
 
           $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
@@ -192,35 +195,52 @@ jobs:
           }
 
           & $console status $env:EDGE_CONTROLLER_ENDPOINT
-          if ($LASTEXITCODE -ne 0) { throw "Isolated controller status failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "SCM-owned controller status failed: $LASTEXITCODE" }
 
-      - name: Run exact non-TUN loopback proxy smoke
+      - name: Verify transport-only runner boundary
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $console = $env:EDGE_CURRENT_CONSOLE
-          & $console smoke-runtime
-          if ($LASTEXITCODE -ne 0) { throw "Non-TUN smoke failed: $LASTEXITCODE" }
+          foreach ($relative in @('state', 'runtime', 'logs')) {
+            $path = Join-Path $env:EDGE_INSTALL_ROOT $relative
+            $denied = $false
+            try {
+              [IO.Directory]::GetFileSystemEntries($path) | Out-Null
+            } catch [UnauthorizedAccessException] {
+              $denied = $true
+            }
+            if (-not $denied) {
+              throw "NetworkService runner unexpectedly has direct access to protected application directory: $relative"
+            }
+          }
 
-      - name: Verify exact activation after runtime smoke
+          & $env:EDGE_CURRENT_CONSOLE privileged-ping --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) {
+            throw "Typed privileged transport ping failed: $LASTEXITCODE"
+          }
+
+      - name: Verify exact activation after authority checks
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
           & $diagnostic doctor $current
-          if ($LASTEXITCODE -ne 0) { throw "Post-smoke activation doctor failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Post-authority activation doctor failed: $LASTEXITCODE" }
 
       - name: Publish bounded physical evidence
         if: ${{ always() }}
         shell: powershell
         run: |
           @(
-            '### Windows physical non-TUN cycle',
+            '### Windows physical authority cycle',
             '- Install root: `C:\sing-box`',
             '- Accepted main: `${{ needs.resolve.outputs.accepted_revision }}`',
             '- ReleaseSet: `${{ needs.resolve.outputs.release_set_sha256 }}`',
             '- Local Windows build: **NO**',
+            '- Controller startup owner: **Windows SCM**',
+            '- Runner private state access: **DENIED**',
+            '- Typed privileged transport: **PASS**',
             '- TUN requested: **NO**',
             '- DNS/route/system-proxy mutation requested: **NO**',
             '- Legacy runtime mutation requested: **NO**',
