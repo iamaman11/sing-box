@@ -1,2 +1,2 @@
 @echo off
-powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0ensure-edge-controller.ps1"
+"%LOCALAPPDATA%\edge-platform\bin\edge-console.exe" ensure-controller
