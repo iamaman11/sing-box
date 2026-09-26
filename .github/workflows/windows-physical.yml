@@ -111,6 +111,15 @@ jobs:
               throw "New install root overlaps legacy runtime: $legacy"
             }
           }
+          $client = [System.Net.Sockets.TcpClient]::new()
+          try {
+            $connect = $client.ConnectAsync('127.0.0.1', 51051)
+            if ($connect.Wait(300) -and $client.Connected) {
+              throw 'Isolated controller endpoint 127.0.0.1:51051 is already occupied'
+            }
+          } finally {
+            $client.Dispose()
+          }
           New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
           Write-Host 'WINDOWS_ISOLATION_PRECONDITION=PASS'
 
@@ -151,6 +160,15 @@ jobs:
           $console = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
           & $console ensure-controller $env:EDGE_CONTROLLER_ENDPOINT
           if ($LASTEXITCODE -ne 0) { throw "Isolated controller startup failed: $LASTEXITCODE" }
+
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Exact controller-path diagnostic failed: $LASTEXITCODE" }
+          if ($doctor -notcontains 'controller_running=true') {
+            throw 'The exact controller from current.pb is not running'
+          }
+
           & $console status $env:EDGE_CONTROLLER_ENDPOINT
           if ($LASTEXITCODE -ne 0) { throw "Isolated controller status failed: $LASTEXITCODE" }
 
