@@ -58,8 +58,11 @@ Windows operation does not require a local Rust build.
 
 ## Install/update Windows control binaries
 
-The canonical new Windows install root is `C:\sing-box`. It is intentionally
-separate from historical checkout/runtime paths.
+The canonical new Windows application root is `C:\sing-box`. It is intentionally
+separate from historical checkout/runtime paths. All project-owned persistent files
+for the new Windows application live under `C:\sing-box`; anything outside that
+root must have a concrete external Windows/GitHub reason. The GitHub runner is
+transport only and lives separately (target `C:\sing-box-runner`).
 
 Prerequisites:
 
@@ -114,13 +117,13 @@ diagnostics.
 ## Normal Windows entrypoint
 
 ```powershell
-& "$env:LOCALAPPDATA\edge-platform\bin\edge-console.exe" status
+& "C:\sing-box\bin\edge-console.exe" status
 ```
 
 Interactive menu:
 
 ```powershell
-& "$env:LOCALAPPDATA\edge-platform\bin\edge-console.exe"
+& "C:\sing-box\bin\edge-console.exe"
 ```
 
 The repository helper `edge-platform/scripts/start-edge-console.cmd` ensures
