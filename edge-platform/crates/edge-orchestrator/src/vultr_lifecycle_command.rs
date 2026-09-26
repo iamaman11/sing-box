@@ -36,7 +36,7 @@ use edge_controller_core::vultr_lifecycle::{
 };
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::{VultrFirewallRule, VultrInstance};
-use edge_shared_types::Empty;
+use edge_shared_types::{CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, Empty};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use std::collections::BTreeMap;
 use std::env;
@@ -1471,6 +1471,43 @@ impl AccessAuthorityMode {
     }
 }
 
+fn canonical_production_desired_state_sha256() -> String {
+    ring::digest::digest(
+        &ring::digest::SHA256,
+        CANONICAL_PRODUCTION_DESIRED_STATE_BYTES,
+    )
+    .as_ref()
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect()
+}
+
+fn load_access_authority_profile_source(
+    desired: &DesiredState,
+) -> Result<(FirewallProfileSet, serde_json::Value), String> {
+    if desired.environment == "production" {
+        let profiles = load_firewall_profiles_raw(desired)?.ok_or_else(|| {
+            "production support-access requires the canonical protobuf-derived firewall profile"
+                .to_owned()
+        })?;
+        return Ok((
+            profiles,
+            serde_json::Value::String(format!(
+                "production-desired-state-sha256:{}",
+                canonical_production_desired_state_sha256()
+            )),
+        ));
+    }
+
+    let path = Path::new(FIREWALL_PROFILES_PATH);
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
+    let profiles = FirewallProfileSet::parse_json(&raw)?;
+    let material = serde_json::from_str(&raw)
+        .map_err(|err| format!("invalid firewall profiles JSON: {err}"))?;
+    Ok((profiles, material))
+}
+
 fn load_access_authority_profiles(
     desired: &DesiredState,
 ) -> Result<
@@ -1482,10 +1519,7 @@ fn load_access_authority_profiles(
     ),
     String,
 > {
-    let path = Path::new(FIREWALL_PROFILES_PATH);
-    let raw = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read firewall profiles {}: {err}", path.display()))?;
-    let raw_profiles = FirewallProfileSet::parse_json(&raw)?;
+    let (raw_profiles, profile_material) = load_access_authority_profile_source(desired)?;
     let mut resolved_profiles = raw_profiles.clone();
     let profile_names = desired
         .machines
@@ -1499,9 +1533,12 @@ fn load_access_authority_profiles(
     for profile_name in &profile_names {
         resolved_profiles.profile(profile_name)?;
     }
-    let value = serde_json::from_str(&raw)
-        .map_err(|err| format!("invalid firewall profiles JSON: {err}"))?;
-    Ok((raw_profiles, resolved_profiles, value, controller_ipv4))
+    Ok((
+        raw_profiles,
+        resolved_profiles,
+        profile_material,
+        controller_ipv4,
+    ))
 }
 
 async fn observe_firewall_access_authority<P: SupportResourceProvider>(
@@ -3241,6 +3278,39 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("does not match desired profile"));
+    }
+
+    #[test]
+    fn production_support_access_profile_is_derived_from_protobuf_authority() {
+        let desired = ProductionComposition::canonical().unwrap().machines;
+        let (profiles, material) = load_access_authority_profile_source(&desired).unwrap();
+        let profile = profiles.profile("production").unwrap();
+
+        assert!(profile.rules.iter().any(|rule| {
+            rule.protocol == "tcp"
+                && rule.port == "22"
+                && rule.subnet == "@controller-ipv4"
+                && rule.subnet_size == 32
+        }));
+        assert_eq!(
+            material,
+            serde_json::Value::String(format!(
+                "production-desired-state-sha256:{}",
+                canonical_production_desired_state_sha256()
+            ))
+        );
+    }
+
+    #[test]
+    fn production_support_access_rejects_detached_machine_state() {
+        let mut desired = ProductionComposition::canonical().unwrap().machines;
+        desired.machines[0].tags.push("detached".to_owned());
+
+        let error = load_access_authority_profile_source(&desired).unwrap_err();
+        assert!(
+            error.contains("does not match canonical ProductionDesiredState"),
+            "{error}"
+        );
     }
 
     #[test]
