@@ -121,8 +121,7 @@ function Register-Runner {
                 --labels $RunnerLabel `
                 --work "_work" `
                 --runasservice `
-                --windowslogonaccount "NT AUTHORITY\NETWORK SERVICE" `
-                --disableupdate
+                --windowslogonaccount "NT AUTHORITY\NETWORK SERVICE"
             if ($LASTEXITCODE -ne 0) { throw "GitHub Actions Runner registration failed" }
         } finally {
             Pop-Location
@@ -163,5 +162,6 @@ Write-Output "application_root=$ApplicationRoot"
 Write-Output "runner_label=$RunnerLabel"
 Write-Output "runner_service=$serviceName"
 Write-Output "runner_identity=NT AUTHORITY\NETWORK SERVICE"
+Write-Output "runner_update_policy=github_auto"
 Write-Output "local_build_toolchain_installed=false"
 Write-Output "provider_credentials_installed=false"

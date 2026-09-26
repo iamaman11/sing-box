@@ -241,8 +241,9 @@ def main() -> None:
         and '--labels $RunnerLabel' in windows_runner_bootstrap
         and '--runasservice' in windows_runner_bootstrap
         and 'NT AUTHORITY\\NETWORK SERVICE' in windows_runner_bootstrap
-        and '--disableupdate' in windows_runner_bootstrap,
-        "Windows runner bootstrap must stay pinned, protected-main-gated and isolated from the application root",
+        and '--disableupdate' not in windows_runner_bootstrap
+        and 'runner_update_policy=github_auto' in windows_runner_bootstrap,
+        "Windows runner bootstrap must stay protected-main-gated, isolated, and use GitHub native runner updates",
     )
     require(
         "cargo " not in windows_runner_bootstrap
