@@ -3,6 +3,7 @@ param(
     [string]$Repository = "iamaman11/sing-box",
     [Parameter(ParameterSetName = "Activate", Mandatory = $true)]
     [string]$ReleaseSetSha256,
+    [string]$AcceptedRevision = "",
     [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [string]$LegacyRuntimeStatePath = "",
@@ -57,6 +58,37 @@ function Get-GitHubHeaders {
     return $headers
 }
 
+function Assert-LowerHexRevision {
+    param([string]$Value, [string]$Name)
+    if ($Value -notmatch "^[0-9a-f]{40}$") { throw "$Name must be an exact lowercase 40-character Git revision" }
+}
+
+function Assert-AcceptedReleaseAuthority {
+    param(
+        [Parameter(Mandatory)] [string]$AcceptedRevision,
+        [Parameter(Mandatory)] [string]$Tag
+    )
+    Assert-LowerHexRevision -Value $AcceptedRevision -Name "AcceptedRevision"
+
+    $branchUri = "https://api.github.com/repos/$Repository/branches/main"
+    $branch = Invoke-RestMethod -Method Get -Uri $branchUri -Headers (Get-GitHubHeaders)
+    if ([string]$branch.commit.sha -ne $AcceptedRevision) {
+        throw "AcceptedRevision is not the current canonical main"
+    }
+    if (-not [bool]$branch.protected) {
+        throw "Canonical main is not protected; refusing Windows release activation"
+    }
+
+    $tagUri = "https://api.github.com/repos/$Repository/git/ref/tags/$Tag"
+    $tagRef = Invoke-RestMethod -Method Get -Uri $tagUri -Headers (Get-GitHubHeaders)
+    if ([string]$tagRef.object.type -ne "commit") {
+        throw "Durable release tag must resolve directly to a commit"
+    }
+    if ([string]$tagRef.object.sha -ne $AcceptedRevision) {
+        throw "Durable release tag does not resolve to AcceptedRevision"
+    }
+}
+
 function Get-DurableRelease {
     param([Parameter(Mandatory)] [string]$Tag)
     $uri = "https://api.github.com/repos/$Repository/releases/tags/$Tag"
@@ -81,6 +113,23 @@ function Download-DurableReleaseAsset {
     if ([string]::IsNullOrWhiteSpace($assetUri)) { throw "Durable release asset $Name has no API URL" }
     Invoke-WebRequest -Method Get -Uri $assetUri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination
     if (-not (Test-Path -LiteralPath $Destination)) { throw "Durable release asset download did not create $Destination" }
+}
+
+function Assert-VerifiedSourceRevision {
+    param(
+        [Parameter(Mandatory)] [string[]]$VerificationOutput,
+        [string]$AcceptedRevision
+    )
+    if ([string]::IsNullOrWhiteSpace($AcceptedRevision)) { return }
+
+    $matches = @($VerificationOutput | Where-Object { ([string]$_).StartsWith("source_revision=") })
+    if ($matches.Count -ne 1) {
+        throw "Windows ReleaseSet verification must emit exactly one source_revision"
+    }
+    $observed = ([string]$matches[0]).Substring("source_revision=".Length)
+    if ($observed -ne $AcceptedRevision) {
+        throw "ReleaseSet.source_revision does not match AcceptedRevision"
+    }
 }
 
 function Invoke-Diagnostic {
@@ -215,6 +264,9 @@ if ($Rollback) {
 
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
+if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision)) {
+    Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag
+}
 $releaseDir = Join-Path $releasesDir $ReleaseSetSha256
 $releaseSetPath = Join-Path $releaseDir "release-set.pb"
 $releaseSetSidecar = Join-Path $releaseDir "release-set.pb.sha256"
@@ -259,8 +311,10 @@ if ($needsInstall) {
             "--windows-diagnostic", (Join-Path $unpacked "bin\edge-diagnostic.exe"),
             "--windows-sing-box", (Join-Path $unpacked "bin\sing-box.exe")
         )
-        & $tool @verifyArgs
+        $verificationOutput = @(& $tool @verifyArgs)
         if ($LASTEXITCODE -ne 0) { throw "Downloaded Windows release failed ReleaseSet verification" }
+        Assert-VerifiedSourceRevision -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+        $verificationOutput | Write-Output
 
         $releaseStage = "$releaseDir.new"
         if (Test-Path -LiteralPath $releaseStage) { Remove-Item -Recurse -Force $releaseStage }
@@ -290,8 +344,26 @@ $verifyArgs = @(
     "--windows-artifact", $packagePath, "--windows-controller", $controller,
     "--windows-console", $console, "--windows-diagnostic", $diagnostic, "--windows-sing-box", $singBox
 )
-& $tool @verifyArgs
+$verificationOutput = @(& $tool @verifyArgs)
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
+Assert-VerifiedSourceRevision -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+$verificationOutput | Write-Output
+
+if ($ReleaseOnly -and (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
+    $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
+    if ($current["release_set_sha256"] -eq $ReleaseSetSha256) {
+        if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision) -and $current["source_revision"] -ne $AcceptedRevision) {
+            throw "Current Windows activation source_revision does not match AcceptedRevision"
+        }
+        Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
+        Write-Output "activation=NOOP"
+        Write-Output "current_state=$currentPath"
+        Write-Output "console=$($current["console_path"])"
+        Write-Output "diagnostic=$($current["diagnostic_path"])"
+        Write-Output "automation_registered=false"
+        exit 0
+    }
+}
 
 if ($ReleaseOnly) {
     $activation = Activate-ReleaseAuthority `

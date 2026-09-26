@@ -254,6 +254,107 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
     Ok(())
 }
 
+pub fn encode_windows_privileged_request(
+    request: &WindowsPrivilegedRequest,
+) -> Result<Vec<u8>, String> {
+    validate_windows_privileged_request(request)?;
+    Ok(request.encode_to_vec())
+}
+
+pub fn decode_windows_privileged_request(bytes: &[u8]) -> Result<WindowsPrivilegedRequest, String> {
+    let request = WindowsPrivilegedRequest::decode(bytes)
+        .map_err(|err| format!("Windows privileged request protobuf decode failed: {err}"))?;
+    validate_windows_privileged_request(&request)?;
+    if request.encode_to_vec() != bytes {
+        return Err("Windows privileged request is not canonical protobuf encoding".to_owned());
+    }
+    Ok(request)
+}
+
+pub fn validate_windows_privileged_request(
+    request: &WindowsPrivilegedRequest,
+) -> Result<(), String> {
+    if request.schema_version != 1 {
+        return Err(format!(
+            "unsupported Windows privileged request schema_version {}",
+            request.schema_version
+        ));
+    }
+    validate_safe_runtime_token(
+        "WindowsPrivilegedRequest.request_id",
+        &request.request_id,
+        160,
+    )?;
+    let operation = WindowsPrivilegedOperation::try_from(request.operation)
+        .map_err(|_| "WindowsPrivilegedRequest.operation is invalid".to_owned())?;
+    match operation {
+        WindowsPrivilegedOperation::Unspecified => {
+            return Err("WindowsPrivilegedRequest.operation is required".to_owned());
+        }
+        WindowsPrivilegedOperation::Ping => {
+            if request.accepted_revision.is_some() || request.release_set_sha256.is_some() {
+                return Err("PING request must not carry release authority".to_owned());
+            }
+        }
+        WindowsPrivilegedOperation::ActivateRelease => {
+            let revision = request
+                .accepted_revision
+                .as_deref()
+                .ok_or_else(|| "ACTIVATE_RELEASE requires accepted_revision".to_owned())?;
+            let release = request
+                .release_set_sha256
+                .as_deref()
+                .ok_or_else(|| "ACTIVATE_RELEASE requires release_set_sha256".to_owned())?;
+            validate_lower_hex("WindowsPrivilegedRequest.accepted_revision", revision, 40)?;
+            validate_lower_hex("WindowsPrivilegedRequest.release_set_sha256", release, 64)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn encode_windows_privileged_result(
+    result: &WindowsPrivilegedResult,
+) -> Result<Vec<u8>, String> {
+    validate_windows_privileged_result(result)?;
+    Ok(result.encode_to_vec())
+}
+
+pub fn decode_windows_privileged_result(bytes: &[u8]) -> Result<WindowsPrivilegedResult, String> {
+    let result = WindowsPrivilegedResult::decode(bytes)
+        .map_err(|err| format!("Windows privileged result protobuf decode failed: {err}"))?;
+    validate_windows_privileged_result(&result)?;
+    if result.encode_to_vec() != bytes {
+        return Err("Windows privileged result is not canonical protobuf encoding".to_owned());
+    }
+    Ok(result)
+}
+
+pub fn validate_windows_privileged_result(result: &WindowsPrivilegedResult) -> Result<(), String> {
+    if result.schema_version != 1 {
+        return Err(format!(
+            "unsupported Windows privileged result schema_version {}",
+            result.schema_version
+        ));
+    }
+    validate_safe_runtime_token(
+        "WindowsPrivilegedResult.request_id",
+        &result.request_id,
+        160,
+    )?;
+    validate_safe_runtime_token("WindowsPrivilegedResult.code", &result.code, 96)?;
+    if result.detail.len() > 1024 || result.detail.chars().any(|ch| ch.is_control()) {
+        return Err("WindowsPrivilegedResult.detail is invalid".to_owned());
+    }
+    if let Some(release) = result.active_release_set_sha256.as_deref() {
+        validate_lower_hex(
+            "WindowsPrivilegedResult.active_release_set_sha256",
+            release,
+            64,
+        )?;
+    }
+    Ok(())
+}
+
 pub fn encode_windows_runtime_state(state: &WindowsRuntimeState) -> Result<Vec<u8>, String> {
     validate_windows_runtime_state(state)?;
     Ok(state.encode_to_vec())
@@ -1236,6 +1337,41 @@ mod tests {
             desired.encode_to_vec(),
             CANONICAL_PRODUCTION_DESIRED_STATE_BYTES
         );
+    }
+
+    #[test]
+    fn windows_privileged_request_is_canonical_and_bounded() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-1".to_owned(),
+            operation: WindowsPrivilegedOperation::ActivateRelease as i32,
+            accepted_revision: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            release_set_sha256: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            ),
+        };
+        let bytes = encode_windows_privileged_request(&request).unwrap();
+        assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), request);
+
+        let mut invalid = request.clone();
+        invalid.release_set_sha256 = Some("latest".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_ping_carries_no_release_authority() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-ping".to_owned(),
+            operation: WindowsPrivilegedOperation::Ping as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request;
+        invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
     #[test]

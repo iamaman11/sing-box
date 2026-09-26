@@ -120,44 +120,66 @@ jobs:
           } finally {
             $client.Dispose()
           }
-          New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+          if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
+            throw 'C:\sing-box trust anchor is not bootstrapped'
+          }
           Write-Host 'WINDOWS_ISOLATION_PRECONDITION=PASS'
 
-      - name: Fetch exact accepted installer
+      - name: Resolve current immutable console
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:EDGE_ACCEPTED_REVISION -notmatch '^[0-9a-f]{40}$') { throw 'Invalid accepted revision' }
-          $script = Join-Path $env:RUNNER_TEMP 'install-windows-release.ps1'
-          $uri = "https://raw.githubusercontent.com/iamaman11/sing-box/$env:EDGE_ACCEPTED_REVISION/edge-platform/scripts/install-windows-release.ps1"
-          Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $script
-          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { throw 'Installer download failed' }
-          "EDGE_INSTALLER=$script" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Initial activation doctor failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          $console = [string]$values['console_path']
+          if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'Current activation did not provide an immutable console path'
+          }
+          "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
 
-      - name: Activate exact release authority only
+      - name: Converge exact accepted ReleaseSet through privileged dispatcher
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & $env:EDGE_INSTALLER `
-            -ReleaseSetSha256 $env:EDGE_RELEASE_SET_SHA256 `
-            -InstallRoot $env:EDGE_INSTALL_ROOT `
-            -ReleaseOnly
-          if ($LASTEXITCODE -ne 0) { throw "Release-only activation failed: $LASTEXITCODE" }
-
+          & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Privileged exact-release activation failed: $LASTEXITCODE" }
       - name: Verify exact activation independently
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
-          & $diagnostic doctor $current
+          $doctor = @(& $diagnostic doctor $current)
           if ($LASTEXITCODE -ne 0) { throw "Independent activation doctor failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['release_set_sha256'] -ne $env:EDGE_RELEASE_SET_SHA256) {
+            throw 'Active Windows ReleaseSet does not match accepted authority'
+          }
+          if ([string]$values['exact_release_files'] -ne 'PASS') {
+            throw 'Independent diagnostic did not prove exact release files'
+          }
+          $console = [string]$values['console_path']
+          if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'Verified activation did not provide current immutable console path'
+          }
+          "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
 
       - name: Start isolated NOT_CONFIGURED controller
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $console = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          $console = $env:EDGE_CURRENT_CONSOLE
           & $console ensure-controller $env:EDGE_CONTROLLER_ENDPOINT
           if ($LASTEXITCODE -ne 0) { throw "Isolated controller startup failed: $LASTEXITCODE" }
 
@@ -176,7 +198,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $console = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          $console = $env:EDGE_CURRENT_CONSOLE
           & $console smoke-runtime
           if ($LASTEXITCODE -ne 0) { throw "Non-TUN smoke failed: $LASTEXITCODE" }
 

@@ -26,6 +26,9 @@ pub(crate) enum Command {
     Status(EndpointArgs),
     Doctor(EndpointArgs),
     SmokeRuntime,
+    PrivilegedPing(InstallRootArgs),
+    PrivilegedActivate(PrivilegedActivateArgs),
+    PrivilegedDispatch(InstallRootArgs),
     Secrets(EndpointArgs),
     GetSecret(NameEndpointArgs),
     SetSecret(SetSecretArgs),
@@ -53,6 +56,9 @@ impl Command {
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
             Self::SmokeRuntime => "smoke-runtime",
+            Self::PrivilegedPing(_) => "privileged-ping",
+            Self::PrivilegedActivate(_) => "privileged-activate",
+            Self::PrivilegedDispatch(_) => "privileged-dispatch",
             Self::Secrets(_) => "secrets",
             Self::GetSecret(_) => "get-secret",
             Self::SetSecret(_) => "set-secret",
@@ -82,6 +88,20 @@ impl EndpointArgs {
     pub fn resolve(self) -> String {
         controller_endpoint(self.endpoint)
     }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InstallRootArgs {
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedActivateArgs {
+    pub accepted_revision: String,
+    pub release_set_sha256: String,
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
 }
 
 #[derive(Debug, Args)]
@@ -133,6 +153,25 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "smoke-runtime"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "privileged-ping"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "privileged-activate",
+                "0123456789abcdef0123456789abcdef01234567",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "privileged-dispatch",
+                "--install-root",
+                r"C:\sing-box"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
