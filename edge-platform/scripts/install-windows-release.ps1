@@ -3,7 +3,7 @@ param(
     [string]$Repository = "iamaman11/sing-box",
     [Parameter(ParameterSetName = "Activate", Mandatory = $true)]
     [string]$ReleaseSetSha256,
-    [string]$InstallRoot = "C:\\sing-box",
+    [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [string]$LegacyRuntimeStatePath = "",
     [string]$LegacySingBoxConfigPath = "",
