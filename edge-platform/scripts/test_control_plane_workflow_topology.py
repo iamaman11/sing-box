@@ -246,11 +246,13 @@ def main() -> None:
         and 'exchange\\requests' in windows_runner_bootstrap
         and 'exchange\\results' in windows_runner_bootstrap
         and 'state\\secrets' in windows_runner_bootstrap
-        and 'S-1-5-20' in windows_runner_bootstrap
-        and '/remove:g "NT AUTHORITY\\NETWORK SERVICE"' in windows_runner_bootstrap
+        and '"*S-1-5-18:(OI)(CI)F"' in windows_runner_bootstrap
+        and '"*S-1-5-32-544:(OI)(CI)F"' in windows_runner_bootstrap
+        and '"*S-1-5-20:(OI)(CI)RX"' in windows_runner_bootstrap
+        and '"*S-1-5-20:(OI)(CI)M"' in windows_runner_bootstrap
+        and '/remove:g "*S-1-5-20"' in windows_runner_bootstrap
+        and 'BUILTIN\\Administrators:(OI)(CI)F' not in windows_runner_bootstrap
         and 'NetworkService must have no ACL entry on protected Windows secret state' in windows_runner_bootstrap
-        and 'NETWORK SERVICE:(OI)(CI)RX' in windows_runner_bootstrap
-        and 'NETWORK SERVICE:(OI)(CI)M' in windows_runner_bootstrap
         and 'RunnerVersion = "2.337.0"' in windows_runner_bootstrap
         and '1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc' in windows_runner_bootstrap
         and '--labels $RunnerLabel' in windows_runner_bootstrap
