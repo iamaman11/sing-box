@@ -206,6 +206,8 @@ def main() -> None:
     )
     require(
         'test "$COMMAND_BODY" = "/windows smoke"' in windows_physical
+        and 'test "$CONTROL_PROTECTED" = "true"' in windows_physical
+        and "github.ref_protected" in windows_physical
         and "edge-platform/scripts/resolve_durable_release.sh" in windows_physical
         and "C:\\sing-box" in windows_physical
         and "-ReleaseOnly" in windows_physical
