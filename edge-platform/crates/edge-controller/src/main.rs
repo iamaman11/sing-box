@@ -352,7 +352,9 @@ fn migrate_windows_runtime_state(legacy_json: &Path, output: &Path) -> Result<()
         ))
     })?;
     let value: Value = serde_json::from_str(&raw).map_err(|err| {
-        ControllerError::Command(format!("legacy Windows runtime state is invalid JSON: {err}"))
+        ControllerError::Command(format!(
+            "legacy Windows runtime state is invalid JSON: {err}"
+        ))
     })?;
 
     fn required_string(value: &Value, pointer: &str) -> Result<String, ControllerError> {
@@ -412,7 +414,9 @@ fn migrate_windows_runtime_state(legacy_json: &Path, output: &Path) -> Result<()
         ))
     })?;
     let verify = fs::read(&temporary).map_err(|err| {
-        ControllerError::Command(format!("failed to re-read typed Windows runtime state: {err}"))
+        ControllerError::Command(format!(
+            "failed to re-read typed Windows runtime state: {err}"
+        ))
     })?;
     decode_windows_runtime_state(&verify).map_err(ControllerError::Command)?;
     fs::rename(&temporary, output).map_err(|err| {
@@ -1781,7 +1785,6 @@ fn local_runtime_paths_from_restart(
         runtime_root: default_runtime_root(repo_root),
     }
 }
-
 
 fn merge_local_runtime(
     base: Option<edge_shared_types::LocalSingboxState>,
