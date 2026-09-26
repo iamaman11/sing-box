@@ -1,5 +1,5 @@
 param(
-    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "edge-platform"),
+    [string]$InstallRoot = "C:\sing-box",
     [string]$ControllerTaskName = "EdgePlatformController",
     [string]$ReconcileTaskName = "EdgePlatformReconcile",
     [string]$ShutdownTaskName = "EdgePlatformShutdown"
