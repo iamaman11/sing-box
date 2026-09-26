@@ -419,9 +419,7 @@ fn collect_deployment_summary(
         if live_state_present {
             return Ok(DeploymentSummary {
                 live_state_present: true,
-                source_state_path: Some(
-                    controller_state_db_path(repo_root).display().to_string(),
-                ),
+                source_state_path: Some(controller_state_db_path(repo_root).display().to_string()),
                 deployment_label: state
                     .active_deployment_label
                     .clone()
