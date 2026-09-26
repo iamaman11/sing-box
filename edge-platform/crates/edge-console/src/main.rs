@@ -675,7 +675,8 @@ fn provision_windows_runtime_state(install_root: &Path) -> Result<(), ConsoleErr
     println!("status=PASS");
     println!("runtime_state=PROVISIONED");
     println!("runtime_state_schema=1");
-    println!("secret_authority=controller_service");
+    println!("runtime_secret_store=controller_private");
+    println!("runtime_secret_consumer=controller_service");
     println!("runner_secret_access=false");
     Ok(())
 }
