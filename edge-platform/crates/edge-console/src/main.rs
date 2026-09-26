@@ -528,7 +528,6 @@ fn privileged_result_path(install_root: &Path) -> PathBuf {
         .join("result.pb")
 }
 
-
 fn required_provision_env<F>(get: &F, name: &str) -> Result<String, String>
 where
     F: Fn(&str) -> Option<String>,
@@ -548,7 +547,9 @@ where
         return Ok(None);
     };
     if value.is_empty() || value.trim() != value {
-        return Err(format!("{name} must be a non-empty canonical value when provided"));
+        return Err(format!(
+            "{name} must be a non-empty canonical value when provided"
+        ));
     }
     Ok(Some(value))
 }
@@ -2193,7 +2194,10 @@ mod tests {
             ("EDGE_WINDOWS_DIRECT_HY2_PORT", "8443".to_owned()),
             ("HY2_PASSWORD", "direct-password".to_owned()),
             ("EDGE_WINDOWS_DIRECT_VLESS_PORT", "443".to_owned()),
-            ("VLESS_UUID", "00000000-0000-4000-8000-000000000001".to_owned()),
+            (
+                "VLESS_UUID",
+                "00000000-0000-4000-8000-000000000001".to_owned(),
+            ),
             ("REALITY_PUBLIC_KEY", "direct-public-key".to_owned()),
             ("REALITY_SHORT_ID", "a1b2c3d4".to_owned()),
             ("EDGE_WINDOWS_WARP_DOMAIN", "edge.example.com".to_owned()),
@@ -2226,7 +2230,10 @@ mod tests {
             ("EDGE_WINDOWS_DIRECT_HY2_PORT", "8443".to_owned()),
             ("HY2_PASSWORD", "direct-password".to_owned()),
             ("EDGE_WINDOWS_DIRECT_VLESS_PORT", "443".to_owned()),
-            ("VLESS_UUID", "00000000-0000-4000-8000-000000000001".to_owned()),
+            (
+                "VLESS_UUID",
+                "00000000-0000-4000-8000-000000000001".to_owned(),
+            ),
             ("REALITY_PUBLIC_KEY", "direct-public-key".to_owned()),
             ("REALITY_SHORT_ID", "a1b2c3d4".to_owned()),
             ("EDGE_WINDOWS_WARP_DOMAIN", "edge.example.com".to_owned()),
