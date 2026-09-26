@@ -1,11 +1,25 @@
 use std::env;
 use std::fs;
+use std::future::Future;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::ffi::OsString;
+#[cfg(windows)]
+use windows_service::service::{
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+};
+#[cfg(windows)]
+use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+#[cfg(windows)]
+use windows_service::service_dispatcher;
 
 mod cli;
 mod deploy_orchestrator;
@@ -68,6 +82,8 @@ use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Status};
 
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
+#[cfg(windows)]
+const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 const DEFAULT_STATE_DB: &str = "edge-platform/.runtime/controller-state.sqlite";
 const DEFAULT_AGENT_ENDPOINT: &str = "http://127.0.0.1:50061";
 const DEFAULT_LOCAL_CONFIG_PATH: &str = "win/windows/edge-dns-clean-vultr-dual.json";
@@ -89,6 +105,22 @@ const EGRESS_TRACE_TIMEOUT_SECS: u64 = 60;
 const BOOTSTRAP_RPC_ATTEMPTS: usize = 3;
 const SECRET_SSH_PRIVATE_KEY_PATH: &str = "bootstrap.ssh.private_key_path";
 const KNOWN_SECRET_NAMES: &[&str] = &[SECRET_SSH_PRIVATE_KEY_PATH];
+
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+struct WindowsServiceConfig {
+    repo_root: PathBuf,
+    addr: SocketAddr,
+}
+
+#[cfg(windows)]
+static WINDOWS_SERVICE_CONFIG: OnceLock<WindowsServiceConfig> = OnceLock::new();
+
+#[cfg(windows)]
+windows_service::define_windows_service!(
+    ffi_edge_controller_service_main,
+    edge_controller_service_main
+);
 
 #[derive(Debug, Clone)]
 struct ResolvedDeployTarget {
@@ -185,18 +217,13 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
         .unwrap_or_else(|| Command::Serve(cli::ServeArgs::default()))
     {
         Command::Serve(args) => {
-            let repo_root = resolve_repo_root(args.repo_root)?;
-            let addr = match args.addr {
-                Some(addr) => addr,
-                None => DEFAULT_CONTROLLER_ADDR
-                    .parse::<SocketAddr>()
-                    .map_err(|err| {
-                        ControllerError::Command(format!(
-                            "invalid built-in controller address {DEFAULT_CONTROLLER_ADDR}: {err}"
-                        ))
-                    })?,
-            };
+            let (repo_root, addr) = resolve_serve_config(args)?;
             serve(repo_root, addr).await?;
+            Ok(())
+        }
+        #[cfg(windows)]
+        Command::WindowsService(args) => {
+            run_windows_service(args)?;
             Ok(())
         }
         Command::GetStatus(args) => {
@@ -308,9 +335,25 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
     }
 }
 
-async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+fn resolve_serve_config(
+    args: cli::ServeArgs,
+) -> Result<(PathBuf, SocketAddr), Box<dyn std::error::Error>> {
+    let repo_root = resolve_repo_root(args.repo_root)?;
+    let addr = match args.addr {
+        Some(addr) => addr,
+        None => DEFAULT_CONTROLLER_ADDR.parse::<SocketAddr>().map_err(|err| {
+            format!("invalid built-in controller address {DEFAULT_CONTROLLER_ADDR}: {err}")
+        })?,
+    };
+    Ok((repo_root, addr))
+}
+
+async fn controller_server(
+    repo_root: PathBuf,
+) -> Result<ControllerServerImpl, Box<dyn std::error::Error>> {
     if is_installed_windows_root(&repo_root) {
         fs::create_dir_all(repo_root.join("state"))?;
+        fs::create_dir_all(repo_root.join("state").join("secrets"))?;
         fs::create_dir_all(repo_root.join("runtime"))?;
         let runtime_state_path = windows_runtime_state_path(&repo_root);
         if runtime_state_path.is_file() {
@@ -329,17 +372,111 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
         reconcile_active_deployment_state(&repo_root, &state)?;
     }
     ensure_selector_intents_seeded(&repo_root, &state).await?;
-    let service = ControllerServerImpl {
+    Ok(ControllerServerImpl {
         repo_root,
         state,
         agent_endpoint: agent_endpoint_from_env(),
-    };
+    })
+}
 
+async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    let service = controller_server(repo_root).await?;
     Server::builder()
         .add_service(ControllerServiceServer::new(service))
         .serve(addr)
         .await?;
     Ok(())
+}
+
+#[cfg(windows)]
+async fn serve_with_shutdown<F>(
+    repo_root: PathBuf,
+    addr: SocketAddr,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let service = controller_server(repo_root).await?;
+    Server::builder()
+        .add_service(ControllerServiceServer::new(service))
+        .serve_with_shutdown(addr, shutdown)
+        .await?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_windows_service(args: cli::ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let (repo_root, addr) = resolve_serve_config(args)?;
+    WINDOWS_SERVICE_CONFIG
+        .set(WindowsServiceConfig { repo_root, addr })
+        .map_err(|_| "Windows controller service configuration is already initialized")?;
+    service_dispatcher::start(
+        WINDOWS_CONTROLLER_SERVICE_NAME,
+        ffi_edge_controller_service_main,
+    )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn edge_controller_service_main(_arguments: Vec<OsString>) {
+    if let Err(err) = run_edge_controller_service() {
+        eprintln!("EdgePlatformController service failed: {err}");
+    }
+}
+
+#[cfg(windows)]
+fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
+    let config = WINDOWS_SERVICE_CONFIG
+        .get()
+        .cloned()
+        .ok_or("Windows controller service configuration is unavailable")?;
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            ServiceControl::Stop | ServiceControl::Shutdown => {
+                let _ = shutdown_tx.send(());
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            _ => ServiceControlHandlerResult::NotImplemented,
+        }
+    };
+    let status_handle =
+        service_control_handler::register(WINDOWS_CONTROLLER_SERVICE_NAME, event_handler)?;
+
+    status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    })?;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(serve_with_shutdown(
+        config.repo_root,
+        config.addr,
+        async move {
+            let _ = tokio::task::spawn_blocking(move || shutdown_rx.recv()).await;
+        },
+    ));
+
+    status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(if result.is_ok() { 0 } else { 1 }),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    })?;
+
+    result
 }
 
 fn normalize_runtime_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<(), String> {
