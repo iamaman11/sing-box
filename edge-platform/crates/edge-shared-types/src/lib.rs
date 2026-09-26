@@ -14,13 +14,13 @@ pub mod release {
 
 pub use edge::platform::v1::*;
 use prost::Message;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
 pub use release::v1::{
     CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
     WindowsActivationState, WindowsRuntime,
 };
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 
 pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
 pub const RELEASE_SET_SCHEMA_VERSION: u32 = 6;
@@ -283,16 +283,25 @@ pub fn validate_windows_runtime_state(state: &WindowsRuntimeState) -> Result<(),
     validate_ipv4_literal("WindowsRuntimeState.server_ip", &state.server_ip)?;
     validate_windows_tunnel_binding(
         "WindowsRuntimeState.direct",
-        state.direct.as_ref().ok_or_else(|| "WindowsRuntimeState.direct is required".to_owned())?,
+        state
+            .direct
+            .as_ref()
+            .ok_or_else(|| "WindowsRuntimeState.direct is required".to_owned())?,
     )?;
     validate_windows_tunnel_binding(
         "WindowsRuntimeState.warp",
-        state.warp.as_ref().ok_or_else(|| "WindowsRuntimeState.warp is required".to_owned())?,
+        state
+            .warp
+            .as_ref()
+            .ok_or_else(|| "WindowsRuntimeState.warp is required".to_owned())?,
     )?;
     Ok(())
 }
 
-fn validate_windows_tunnel_binding(label: &str, value: &WindowsTunnelBinding) -> Result<(), String> {
+fn validate_windows_tunnel_binding(
+    label: &str,
+    value: &WindowsTunnelBinding,
+) -> Result<(), String> {
     validate_runtime_dns_name(&format!("{label}.domain"), &value.domain)?;
     if value.hy2_port == 0 || value.hy2_port > 65535 {
         return Err(format!("{label}.hy2_port must be in 1..=65535"));
@@ -303,7 +312,11 @@ fn validate_windows_tunnel_binding(label: &str, value: &WindowsTunnelBinding) ->
     for (field, token, max_len) in [
         ("hy2_password", value.hy2_password.as_str(), 256usize),
         ("vless_uuid", value.vless_uuid.as_str(), 128usize),
-        ("reality_public_key", value.reality_public_key.as_str(), 256usize),
+        (
+            "reality_public_key",
+            value.reality_public_key.as_str(),
+            256usize,
+        ),
         ("reality_short_id", value.reality_short_id.as_str(), 64usize),
     ] {
         validate_safe_runtime_token(&format!("{label}.{field}"), token, max_len)?;
@@ -312,10 +325,7 @@ fn validate_windows_tunnel_binding(label: &str, value: &WindowsTunnelBinding) ->
 }
 
 fn validate_safe_runtime_token(label: &str, value: &str, max_len: usize) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > max_len
-        || value.chars().any(|ch| ch.is_control())
-    {
+    if value.is_empty() || value.len() > max_len || value.chars().any(|ch| ch.is_control()) {
         return Err(format!("{label} is invalid"));
     }
     Ok(())
@@ -332,7 +342,9 @@ fn validate_runtime_dns_name(label: &str, value: &str) -> Result<(), String> {
                 || part.len() > 63
                 || part.starts_with('-')
                 || part.ends_with('-')
-                || !part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+                || !part
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
         })
     {
         return Err(format!("{label} must be a normalized lowercase DNS name"));
@@ -407,10 +419,26 @@ pub fn validate_windows_activation_state(state: &WindowsActivationState) -> Resu
 pub fn verify_windows_activation_files(state: &WindowsActivationState) -> Result<(), String> {
     validate_windows_activation_state(state)?;
     for (label, path, expected) in [
-        ("controller", state.controller_path.as_str(), state.controller_sha256.as_slice()),
-        ("console", state.console_path.as_str(), state.console_sha256.as_slice()),
-        ("sing-box", state.sing_box_path.as_str(), state.sing_box_sha256.as_slice()),
-        ("diagnostic", state.diagnostic_path.as_str(), state.diagnostic_sha256.as_slice()),
+        (
+            "controller",
+            state.controller_path.as_str(),
+            state.controller_sha256.as_slice(),
+        ),
+        (
+            "console",
+            state.console_path.as_str(),
+            state.console_sha256.as_slice(),
+        ),
+        (
+            "sing-box",
+            state.sing_box_path.as_str(),
+            state.sing_box_sha256.as_slice(),
+        ),
+        (
+            "diagnostic",
+            state.diagnostic_path.as_str(),
+            state.diagnostic_sha256.as_slice(),
+        ),
     ] {
         let actual = sha256_file(Path::new(path))?;
         if actual.as_slice() != expected {
