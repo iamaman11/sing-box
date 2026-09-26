@@ -9,8 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use windows_service::service::{
-    Service, ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceSidType, ServiceStartType,
-    ServiceState, ServiceType,
+    Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl,
+    ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceSidType,
+    ServiceStartType, ServiceState, ServiceType,
 };
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
@@ -77,18 +78,92 @@ fn wait_for_listener(addr: SocketAddr, timeout: Duration) -> bool {
     false
 }
 
-fn grant_service_access(root: &Path) {
-    let principal = format!(r"{SERVICE_ACCOUNT}:(OI)(CI)M");
+fn run_icacls(path: &Path, args: &[&str]) {
     let status = Command::new("icacls.exe")
-        .arg(root)
-        .args(["/grant:r", &principal, "/T", "/Q"])
+        .arg(path)
+        .args(args)
         .status()
-        .expect("start icacls for SCM lifecycle test");
-    assert!(status.success(), "grant virtual service account access");
+        .unwrap_or_else(|err| panic!("start icacls for {}: {err}", path.display()));
+    assert!(
+        status.success(),
+        "icacls failed for {} with args {args:?}",
+        path.display()
+    );
+}
+
+fn protect_controller_owned_directory(path: &Path) {
+    fs::create_dir_all(path).expect("create controller-owned directory");
+    run_icacls(
+        path,
+        &[
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            r"NT SERVICE\EdgePlatformController:(OI)(CI)M",
+            "/Q",
+        ],
+    );
+    run_icacls(path, &["/remove:g", "*S-1-5-20", "/Q"]);
+    run_icacls(path, &["/inheritance:r", "/Q"]);
+    run_icacls(&path.join("*"), &["/reset", "/T", "/Q"]);
+}
+
+fn converge_production_acl(root: &Path) {
+    for path in [
+        root.join("state"),
+        root.join("state").join("secrets"),
+        root.join("runtime"),
+        root.join("logs"),
+        root.join("exchange").join("requests"),
+        root.join("exchange").join("results"),
+    ] {
+        fs::create_dir_all(path).expect("create application ACL path");
+    }
+
+    run_icacls(
+        root,
+        &[
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            "*S-1-5-20:(OI)(CI)RX",
+            r"NT SERVICE\EdgePlatformController:(OI)(CI)RX",
+            "/Q",
+        ],
+    );
+    run_icacls(root, &["/inheritance:r", "/Q"]);
+    run_icacls(&root.join("*"), &["/reset", "/T", "/Q"]);
+
+    for path in [root.join("state"), root.join("runtime"), root.join("logs")] {
+        protect_controller_owned_directory(&path);
+    }
+
+    run_icacls(
+        &root.join("exchange").join("requests"),
+        &["/grant:r", "*S-1-5-20:(OI)(CI)M", "/Q"],
+    );
+    run_icacls(
+        &root.join("exchange").join("results"),
+        &["/grant:r", "*S-1-5-20:(OI)(CI)RX", "/Q"],
+    );
+}
+
+fn prepare_installed_root(root: &Path, source: &Path) -> PathBuf {
+    let release_bin = root.join("releases").join("test-release").join("bin");
+    fs::create_dir_all(&release_bin).expect("create immutable release bin");
+    fs::create_dir_all(root.join("bin")).expect("create active bin directory");
+    fs::write(root.join("current.pb"), b"installed-root-marker").expect("write current.pb marker");
+    fs::write(root.join("bin").join("edge-console.exe"), b"test").expect("write console marker");
+    fs::write(root.join("bin").join("edge-diagnostic.exe"), b"test")
+        .expect("write diagnostic marker");
+
+    let controller = release_bin.join("edge-controller.exe");
+    fs::copy(source, &controller).expect("copy exact controller under immutable release root");
+    controller
 }
 
 #[test]
-fn scm_owned_controller_survives_start_caller_exit_and_keeps_listener() {
+fn scm_owned_installed_controller_survives_start_caller_exit_and_keeps_listener() {
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
@@ -107,19 +182,17 @@ fn scm_owned_controller_survives_start_caller_exit_and_keeps_listener() {
         .expect("system clock")
         .as_nanos();
     let root = std::env::temp_dir().join(format!("edge-controller-scm-{unique}"));
-    let bin_dir = root.join("bin");
-    fs::create_dir_all(&bin_dir).expect("create SCM test root");
+    fs::create_dir_all(&root).expect("create SCM test root");
 
     let source = PathBuf::from(env!("CARGO_BIN_EXE_edge-controller"));
-    let controller = bin_dir.join("edge-controller.exe");
-    fs::copy(&source, &controller).expect("copy exact controller under SCM test root");
-
+    let controller = prepare_installed_root(&root, &source);
     let addr = free_loopback_addr();
+
     let service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
         display_name: OsString::from(SERVICE_NAME),
         service_type: ServiceType::OWN_PROCESS,
-        start_type: ServiceStartType::OnDemand,
+        start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
         executable_path: controller,
         launch_arguments: vec![
@@ -131,7 +204,8 @@ fn scm_owned_controller_survives_start_caller_exit_and_keeps_listener() {
         account_name: Some(OsString::from(SERVICE_ACCOUNT)),
         account_password: None,
     };
-    let access = ServiceAccess::QUERY_STATUS
+    let access = ServiceAccess::QUERY_CONFIG
+        | ServiceAccess::QUERY_STATUS
         | ServiceAccess::CHANGE_CONFIG
         | ServiceAccess::START
         | ServiceAccess::STOP
@@ -140,9 +214,35 @@ fn scm_owned_controller_survives_start_caller_exit_and_keeps_listener() {
         .create_service(&service_info, access)
         .expect("create disposable controller service");
     service
+        .change_config(&service_info)
+        .expect("retarget disposable controller service");
+    service
         .set_config_service_sid_info(ServiceSidType::Unrestricted)
         .expect("enable controller service SID");
-    grant_service_access(&root);
+    service
+        .set_delayed_auto_start(true)
+        .expect("enable delayed auto-start");
+    service
+        .update_failure_actions(ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
+            reboot_msg: None,
+            command: None,
+            actions: Some(vec![
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(5),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(15),
+                },
+            ]),
+        })
+        .expect("configure service recovery");
+    service
+        .set_failure_actions_on_non_crash_failures(true)
+        .expect("enable recovery on non-crash failures");
+    converge_production_acl(&root);
     let guard = ServiceGuard { service, root };
 
     let start = Command::new("sc.exe")
@@ -171,8 +271,8 @@ fn scm_owned_controller_survives_start_caller_exit_and_keeps_listener() {
         .expect("query initial ready service");
     let first_pid = first.process_id.expect("running service process id");
 
-    // sc.exe has already exited. Keep the service isolated from its start caller and
-    // prove that readiness is durable rather than a transient TCP observation.
+    // sc.exe has already exited. The exact installed-root ACL and virtual account
+    // must keep one SCM-owned controller alive without caller/process-tree ownership.
     thread::sleep(Duration::from_secs(12));
 
     let stable = guard.service.query_status().expect("query stable service");
