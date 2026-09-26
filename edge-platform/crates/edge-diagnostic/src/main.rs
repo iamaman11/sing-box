@@ -53,11 +53,10 @@ fn process_running_at(expected: &Path) -> bool {
         true,
         ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
     );
-    system.processes().values().any(|process| {
-        process
-            .exe()
-            .is_some_and(|path| same_path(path, expected))
-    })
+    system
+        .processes()
+        .values()
+        .any(|process| process.exe().is_some_and(|path| same_path(path, expected)))
 }
 
 fn same_path(observed: &Path, expected: &Path) -> bool {
@@ -73,7 +72,6 @@ fn same_path(observed: &Path, expected: &Path) -> bool {
 fn usage() -> String {
     "usage: edge-diagnostic doctor <current.pb>".to_owned()
 }
-
 
 #[cfg(test)]
 mod tests {
