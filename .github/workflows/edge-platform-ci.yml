@@ -93,7 +93,12 @@ jobs:
           $ErrorActionPreference = "Stop"
           foreach ($path in @(
             "edge-platform/scripts/install-windows-release.ps1",
-            "edge-platform/scripts/ensure-edge-controller.ps1"
+            "edge-platform/scripts/ensure-edge-controller.ps1",
+            "edge-platform/scripts/register-edge-platform-automation.ps1",
+            "edge-platform/scripts/register-edge-controller-task.ps1",
+            "edge-platform/scripts/start-edge-platform.ps1",
+            "edge-platform/scripts/reconcile-edge-platform.ps1",
+            "edge-platform/scripts/shutdown-edge-platform.ps1"
           )) {
             $tokens = $null
             $errors = $null
