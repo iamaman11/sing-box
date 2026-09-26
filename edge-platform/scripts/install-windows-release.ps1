@@ -3,6 +3,7 @@ param(
     [string]$Repository = "iamaman11/sing-box",
     [Parameter(ParameterSetName = "Activate", Mandatory = $true)]
     [string]$ReleaseSetSha256,
+    [string]$AcceptedRevision = "",
     [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [string]$LegacyRuntimeStatePath = "",
@@ -55,6 +56,37 @@ function Get-GitHubHeaders {
         $headers["Authorization"] = "Bearer $GitHubToken"
     }
     return $headers
+}
+
+function Assert-LowerHexRevision {
+    param([string]$Value, [string]$Name)
+    if ($Value -notmatch "^[0-9a-f]{40}$") { throw "$Name must be an exact lowercase 40-character Git revision" }
+}
+
+function Assert-AcceptedReleaseAuthority {
+    param(
+        [Parameter(Mandatory)] [string]$AcceptedRevision,
+        [Parameter(Mandatory)] [string]$Tag
+    )
+    Assert-LowerHexRevision -Value $AcceptedRevision -Name "AcceptedRevision"
+
+    $branchUri = "https://api.github.com/repos/$Repository/branches/main"
+    $branch = Invoke-RestMethod -Method Get -Uri $branchUri -Headers (Get-GitHubHeaders)
+    if ([string]$branch.commit.sha -ne $AcceptedRevision) {
+        throw "AcceptedRevision is not the current canonical main"
+    }
+    if (-not [bool]$branch.protected) {
+        throw "Canonical main is not protected; refusing Windows release activation"
+    }
+
+    $tagUri = "https://api.github.com/repos/$Repository/git/ref/tags/$Tag"
+    $tagRef = Invoke-RestMethod -Method Get -Uri $tagUri -Headers (Get-GitHubHeaders)
+    if ([string]$tagRef.object.type -ne "commit") {
+        throw "Durable release tag must resolve directly to a commit"
+    }
+    if ([string]$tagRef.object.sha -ne $AcceptedRevision) {
+        throw "Durable release tag does not resolve to AcceptedRevision"
+    }
 }
 
 function Get-DurableRelease {
@@ -215,6 +247,9 @@ if ($Rollback) {
 
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
+if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision)) {
+    Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag
+}
 $releaseDir = Join-Path $releasesDir $ReleaseSetSha256
 $releaseSetPath = Join-Path $releaseDir "release-set.pb"
 $releaseSetSidecar = Join-Path $releaseDir "release-set.pb.sha256"
