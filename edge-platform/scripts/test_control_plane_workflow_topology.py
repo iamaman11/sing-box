@@ -249,6 +249,9 @@ def main() -> None:
         and '-UserId "SYSTEM"' in windows_runner_bootstrap
         and 'exchange\\requests' in windows_runner_bootstrap
         and 'exchange\\results' in windows_runner_bootstrap
+        and 'state\\secrets' in windows_runner_bootstrap
+        and 'S-1-5-20' in windows_runner_bootstrap
+        and 'NetworkService must have no ACL entry on protected Windows secret state' in windows_runner_bootstrap
         and 'NETWORK SERVICE:(OI)(CI)RX' in windows_runner_bootstrap
         and 'NETWORK SERVICE:(OI)(CI)M' in windows_runner_bootstrap
         and 'RunnerVersion = "2.337.0"' in windows_runner_bootstrap
@@ -837,8 +840,10 @@ def main() -> None:
         and "branches/main" in windows_installer
         and "git/ref/tags/$Tag" in windows_installer
         and 'if (-not [bool]$branch.protected)' in windows_installer
-        and "Durable release tag does not resolve to AcceptedRevision" in windows_installer,
-        "privileged Windows activation must bind the requested ReleaseSet to the exact protected canonical main",
+        and "Durable release tag does not resolve to AcceptedRevision" in windows_installer
+        and "Assert-VerifiedSourceRevision" in windows_installer
+        and "ReleaseSet.source_revision does not match AcceptedRevision" in windows_installer,
+        "privileged Windows activation must bind the requested ReleaseSet source revision, tag and digest to the exact protected canonical main",
     )
     require(
         '$quotedConsole ensure-controller' in windows_installer
