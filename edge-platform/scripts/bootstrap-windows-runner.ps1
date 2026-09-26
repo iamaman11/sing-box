@@ -1,5 +1,9 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)]
+    [string]$AcceptedRevision,
+    [Parameter(Mandatory = $true)]
+    [string]$ReleaseSetSha256,
     [string]$RunnerRoot = "C:\sing-box-runner",
     [string]$ApplicationRoot = "C:\sing-box",
     [string]$RunnerName = ""
@@ -15,6 +19,7 @@ $RunnerAsset = "actions-runner-win-x64-$RunnerVersion.zip"
 $RunnerSha256 = "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc"
 $RunnerUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersion/$RunnerAsset"
 $RunnerLabel = "sing-box-windows-lab"
+$PrivilegedTaskName = "EdgePlatformPrivilegedDispatch"
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -40,6 +45,12 @@ function Assert-IsolatedRoots {
 }
 
 function Assert-MainProtected {
+    if ($AcceptedRevision -notmatch "^[0-9a-f]{40}$") {
+        throw "AcceptedRevision must be an exact lowercase Git commit"
+    }
+    if ($ReleaseSetSha256 -notmatch "^[0-9a-f]{64}$") {
+        throw "ReleaseSetSha256 must be an exact lowercase SHA-256 digest"
+    }
     $headers = @{
         Accept = "application/vnd.github+json"
         "X-GitHub-Api-Version" = "2022-11-28"
@@ -49,14 +60,104 @@ function Assert-MainProtected {
     if (-not [bool]$branch.protected) {
         throw "Refusing physical runner registration: GitHub main is not protected"
     }
+    if ([string]$branch.commit.sha -ne $AcceptedRevision) {
+        throw "AcceptedRevision is not the current protected main"
+    }
 }
 
-function Grant-RunnerApplicationAccess {
-    New-Item -ItemType Directory -Force -Path $ApplicationRoot | Out-Null
-    & icacls.exe $ApplicationRoot /grant "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)M" /T /C | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to grant NetworkService modify access to C:\sing-box" }
+function Install-InitialApplicationAuthority {
+    $tempRoot = Join-Path $env:TEMP ("sing-box-trust-anchor-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+    try {
+        $installer = Join-Path $tempRoot "install-windows-release.ps1"
+        $uri = "https://raw.githubusercontent.com/$Repository/$AcceptedRevision/edge-platform/scripts/install-windows-release.ps1"
+        Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $installer
+        & $installer `
+            -AcceptedRevision $AcceptedRevision `
+            -ReleaseSetSha256 $ReleaseSetSha256 `
+            -InstallRoot $ApplicationRoot `
+            -ReleaseOnly
+        if ($LASTEXITCODE -ne 0) {
+            throw "Initial exact ReleaseSet activation failed"
+        }
+
+        $bootstrapDir = Join-Path $ApplicationRoot "bootstrap"
+        New-Item -ItemType Directory -Force -Path $bootstrapDir | Out-Null
+        Copy-Item -LiteralPath $installer -Destination (Join-Path $bootstrapDir "install-windows-release.ps1") -Force
+    } finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
+function Configure-ApplicationAcl {
+    foreach ($path in @(
+        $ApplicationRoot,
+        (Join-Path $ApplicationRoot "state"),
+        (Join-Path $ApplicationRoot "runtime"),
+        (Join-Path $ApplicationRoot "logs"),
+        (Join-Path $ApplicationRoot "exchange\requests"),
+        (Join-Path $ApplicationRoot "exchange\results"),
+        (Join-Path $ApplicationRoot "bootstrap")
+    )) {
+        New-Item -ItemType Directory -Force -Path $path | Out-Null
+    }
+
+    & icacls.exe $ApplicationRoot /inheritance:r `
+        /grant:r "SYSTEM:(OI)(CI)F" `
+        "BUILTIN\Administrators:(OI)(CI)F" `
+        "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)RX" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to establish protected C:\sing-box ACL" }
+
+    foreach ($writable in @(
+        (Join-Path $ApplicationRoot "state"),
+        (Join-Path $ApplicationRoot "runtime"),
+        (Join-Path $ApplicationRoot "logs"),
+        (Join-Path $ApplicationRoot "exchange\requests")
+    )) {
+        & icacls.exe $writable /grant:r "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)M" /T /C | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to grant bounded runner write access: $writable" }
+    }
+
+    & icacls.exe (Join-Path $ApplicationRoot "exchange\results") `
+        /grant:r "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)RX" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to grant runner result read access" }
+}
+
+function Register-PrivilegedDispatcher {
+    $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
+    if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
+        throw "Exact immutable privileged console is missing: $console"
+    }
+
+    $action = New-ScheduledTaskAction `
+        -Execute $console `
+        -Argument ('privileged-dispatch --install-root "' + $ApplicationRoot + '"')
+    $trigger = New-ScheduledTaskTrigger `
+        -Once `
+        -At ((Get-Date).AddMinutes(1)) `
+        -RepetitionInterval (New-TimeSpan -Minutes 1)
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId "SYSTEM" `
+        -LogonType ServiceAccount `
+        -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet `
+        -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
+        -StartWhenAvailable
+
+    Register-ScheduledTask `
+        -TaskName $PrivilegedTaskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Settings $settings `
+        -Force | Out-Null
+
+    $task = Get-ScheduledTask -TaskName $PrivilegedTaskName
+    if ([string]$task.Principal.UserId -ine "SYSTEM") {
+        throw "Privileged dispatcher task is not owned by SYSTEM"
+    }
+}
 function Get-RunnerService {
     $serviceMarker = Join-Path $RunnerRoot ".service"
     $runnerMarker = Join-Path $RunnerRoot ".runner"
@@ -138,7 +239,9 @@ function Register-Runner {
 Assert-Administrator
 Assert-IsolatedRoots
 Assert-MainProtected
-Grant-RunnerApplicationAccess
+Install-InitialApplicationAuthority
+Configure-ApplicationAcl
+Register-PrivilegedDispatcher
 
 $service = Get-RunnerService
 if (-not $service) {
@@ -163,5 +266,10 @@ Write-Output "runner_label=$RunnerLabel"
 Write-Output "runner_service=$serviceName"
 Write-Output "runner_identity=NT AUTHORITY\NETWORK SERVICE"
 Write-Output "runner_update_policy=github_auto"
+Write-Output "accepted_revision=$AcceptedRevision"
+Write-Output "release_set_sha256=$ReleaseSetSha256"
+Write-Output "privileged_task=$PrivilegedTaskName"
+Write-Output "privileged_identity=SYSTEM"
+Write-Output "runner_application_access=BOUNDED"
 Write-Output "local_build_toolchain_installed=false"
 Write-Output "provider_credentials_installed=false"
