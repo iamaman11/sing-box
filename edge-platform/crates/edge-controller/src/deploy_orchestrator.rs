@@ -568,7 +568,7 @@ pub(crate) async fn execute(
         )),
     );
     let local_paths = LocalRuntimePaths {
-        singbox_binary_path: default_singbox_binary_path(),
+        singbox_binary_path: default_singbox_binary_path(&server.repo_root),
         config_path: default_local_config_path(&server.repo_root),
         state_path: default_live_state_path(&server.repo_root),
         runtime_root: default_runtime_root(&server.repo_root),
