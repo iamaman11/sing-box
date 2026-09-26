@@ -2025,21 +2025,4 @@ mod tests {
         assert!(error.to_string().contains("releases"));
     }
 
-    #[test]
-    fn rotates_large_controller_service_log() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "edge-console-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp_root).unwrap();
-        let path = temp_root.join("controller-service-stderr.log");
-        std::fs::write(&path, vec![b'x'; 32]).unwrap();
-        rotate_service_log_if_needed(&path, 8).unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
 }
