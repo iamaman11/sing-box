@@ -190,7 +190,7 @@ const CURRENT_STATE_PATH: &str = "win/vultr-waw/current-edge.json";
 const EXPECTED_LOCAL_CONFIG_PATH: &str = "win/windows/edge-dns-clean-vultr-dual.json";
 const DEFAULT_STATE_DB_PATH: &str = "edge-platform/.runtime/controller-state.sqlite";
 const INSTALLED_STATE_DB_PATH: &str = "state/controller-state.sqlite";
-const INSTALLED_RUNTIME_STATE_PATH: &str = "state/runtime-state.pb";
+const INSTALLED_RUNTIME_STATE_PATH: &str = "state/secrets/runtime-state.pb";
 const INSTALLED_LOCAL_CONFIG_PATH: &str = "runtime/sing-box.json";
 
 pub fn is_installed_windows_root(root: &Path) -> bool {
@@ -792,6 +792,15 @@ mod tests {
                 .blockers
                 .iter()
                 .any(|line| line.contains("required repository inputs are missing"))
+        );
+    }
+
+    #[test]
+    fn installed_windows_runtime_state_is_secret_state() {
+        let root = PathBuf::from(r"C:\sing-box");
+        assert_eq!(
+            windows_runtime_state_path(&root),
+            root.join("state/secrets/runtime-state.pb")
         );
     }
 

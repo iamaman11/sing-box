@@ -19,6 +19,7 @@ WINDOWS_RUNNER_BOOTSTRAP = Path("edge-platform/scripts/bootstrap-windows-runner.
 WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
+WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
@@ -48,6 +49,7 @@ def main() -> None:
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
+    windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
@@ -209,13 +211,17 @@ def main() -> None:
         and "edge-platform/scripts/resolve_durable_release.sh" in windows_physical
         and "C:\\sing-box" in windows_physical
         and "privileged-activate" in windows_physical
+        and "privileged-ping" in windows_physical
         and "EDGE_CURRENT_CONSOLE" in windows_physical
         and "edge-diagnostic.exe" in windows_physical
-        and "smoke-runtime" in windows_physical
+        and "EdgePlatformController" in windows_physical
+        and "NT SERVICE\\EdgePlatformController" in windows_physical
+        and "NetworkService runner unexpectedly has direct access" in windows_physical
+        and "smoke-runtime" not in windows_physical
         and "http://127.0.0.1:51051" in windows_physical
         and "install-windows-release.ps1" not in windows_physical
         and "-ReleaseOnly" not in windows_physical,
-        "Windows physical cycle must request exact activation only through the SYSTEM dispatcher and then run isolated non-TUN diagnostics/smoke",
+        "Windows physical cycle must prove exact SYSTEM activation, SCM controller ownership and transport-only runner isolation",
     )
     require(
         "workflow_dispatch:" not in windows_physical
@@ -238,32 +244,21 @@ def main() -> None:
         and 'Assert-MainProtected' in windows_runner_bootstrap
         and 'if (-not [bool]$branch.protected)' in windows_runner_bootstrap
         and 'Install-InitialApplicationAuthority' in windows_runner_bootstrap
-        and 'Configure-ApplicationAcl' in windows_runner_bootstrap
+        and 'Converge-ControllerService' in windows_runner_bootstrap
+        and 'privileged-converge-controller-service' in windows_runner_bootstrap
+        and 'Configure-ApplicationAcl' not in windows_runner_bootstrap
+        and 'icacls.exe' not in windows_runner_bootstrap
         and 'Register-PrivilegedDispatcher' in windows_runner_bootstrap
         and 'EdgePlatformPrivilegedDispatch' in windows_runner_bootstrap
         and 'New-ScheduledTaskPrincipal' in windows_runner_bootstrap
         and '$SystemSid = "S-1-5-18"' in windows_runner_bootstrap
-        and '$AdministratorsSid = "S-1-5-32-544"' in windows_runner_bootstrap
         and '$NetworkServiceSid = "S-1-5-20"' in windows_runner_bootstrap
         and 'Resolve-IdentitySid' in windows_runner_bootstrap
         and '-UserId $SystemSid' in windows_runner_bootstrap
-        and 'exchange\\requests' in windows_runner_bootstrap
-        and 'exchange\\results' in windows_runner_bootstrap
-        and 'state\\secrets' in windows_runner_bootstrap
-        and '"*S-1-5-18:(OI)(CI)F"' in windows_runner_bootstrap
-        and '"*S-1-5-32-544:(OI)(CI)F"' in windows_runner_bootstrap
-        and '"*S-1-5-20:(OI)(CI)RX"' in windows_runner_bootstrap
-        and '"*S-1-5-20:(OI)(CI)M"' in windows_runner_bootstrap
-        and '/remove:g "*S-1-5-20"' in windows_runner_bootstrap
-        and '(Join-Path $ApplicationRoot "*") /reset /T /Q' in windows_runner_bootstrap
-        and '(Join-Path $secretRoot "*") /reset /T /Q' in windows_runner_bootstrap
-        and 'Refusing empty DACL after Windows ACL bootstrap' in windows_runner_bootstrap
-        and '$ApplicationRoot /inheritance:r /Q' in windows_runner_bootstrap
-        and '$secretRoot /inheritance:r /Q' in windows_runner_bootstrap
-        and '/inheritance:r /T' not in windows_runner_bootstrap
-        and '/T /C' not in windows_runner_bootstrap
-        and 'BUILTIN\\Administrators:(OI)(CI)F' not in windows_runner_bootstrap
-        and 'NetworkService must have no ACL entry on protected Windows secret state' in windows_runner_bootstrap
+        and 'runner_application_access=TRANSPORT_ONLY' in windows_runner_bootstrap
+        and 'controller_service=EdgePlatformController' in windows_runner_bootstrap
+        and 'controller_start_owner=windows_scm' in windows_runner_bootstrap
+        and 'secret_authority=controller_service' in windows_runner_bootstrap
         and 'RunnerVersion = "2.337.0"' in windows_runner_bootstrap
         and '1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc' in windows_runner_bootstrap
         and '--labels $RunnerLabel' in windows_runner_bootstrap
@@ -274,7 +269,7 @@ def main() -> None:
         and '--disableupdate' not in windows_runner_bootstrap
         and 'runner_update_policy=github_auto' in windows_runner_bootstrap
         and "-ReleaseOnly" not in windows_runner_bootstrap,
-        "Windows bootstrap must establish the protected app authority, SYSTEM dispatcher, bounded runner ACL and native GitHub transport in one elevated session",
+        "Windows bootstrap must delegate application ACL/service ownership to one native controller convergence path while keeping the runner transport-only",
     )
     require(
         "cargo " not in windows_runner_bootstrap
@@ -897,20 +892,24 @@ def main() -> None:
         "current.pb" in windows_console
         and "decode_windows_activation_state" in windows_console
         and "verify_windows_activation_files" in windows_console
-        and '"serve"' in windows_console
-        and '.arg(&install_root)' in windows_console
+        and "WINDOWS_CONTROLLER_SERVICE_NAME" in windows_console
+        and "WINDOWS_CONTROLLER_SERVICE_ACCOUNT" in windows_console
+        and "converge_controller_service" in windows_console
+        and "windows_scm" in windows_console
+        and "edge-console does not own controller startup" in windows_console
+        and '.arg("serve")' not in windows_console
+        and ".spawn()?" not in windows_console
         and "EDGE_REPO_ROOT" not in windows_console
         and "resolve_repo_root_for_controller" not in windows_console
         and 'parent.join("edge-controller.exe")' not in windows_console,
-        "edge-console must be the sole current.pb resolver and exact controller startup owner without RepoRoot fallback",
+        "edge-console must resolve current.pb and converge exactly one SCM-owned controller without a child-process startup fallback",
     )
     require(
         "SmokeRuntime" in WINDOWS_CONSOLE.with_name("cli.rs").read_text(encoding="utf-8")
         and "run_non_tun_loopback_smoke" in windows_console
         and "mode=NON_TUN_LOOPBACK" in windows_console
-        and "tun_enabled=false" in windows_console
-        and ".arg(addr.to_string())" in windows_console,
-        "installed console must own the exact non-TUN smoke and honor an isolated requested controller endpoint",
+        and "tun_enabled=false" in windows_console,
+        "installed console may retain the bounded non-TUN artifact smoke, but it must not own controller startup",
     )
     require(
         "PrivilegedPing" in WINDOWS_CONSOLE.with_name("cli.rs").read_text(encoding="utf-8")
@@ -931,6 +930,12 @@ def main() -> None:
         or "windows_runtime_state_path" in windows_controller,
         "installed controller must consume typed Windows runtime state",
     )
+    require(
+        '"state/secrets/runtime-state.pb"' in windows_controller_core
+        and '"state/runtime-state.pb"' not in windows_controller_core,
+        "credential-bearing WindowsRuntimeState must remain under controller-only secret state",
+    )
+
     require(
         "migrate_windows_runtime_state" not in windows_controller
         and '"migrate-windows-runtime-state"' in windows_controller_cli

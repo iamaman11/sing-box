@@ -21,7 +21,6 @@ $RunnerUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersio
 $RunnerLabel = "sing-box-windows-lab"
 $PrivilegedTaskName = "EdgePlatformPrivilegedDispatch"
 $SystemSid = "S-1-5-18"
-$AdministratorsSid = "S-1-5-32-544"
 $NetworkServiceSid = "S-1-5-20"
 $RunnerServiceAccount = ([Security.Principal.SecurityIdentifier]::new($NetworkServiceSid)).Translate([Security.Principal.NTAccount]).Value
 
@@ -100,70 +99,17 @@ function Install-InitialApplicationAuthority {
     }
 }
 
-function Configure-ApplicationAcl {
-    foreach ($path in @(
-        $ApplicationRoot,
-        (Join-Path $ApplicationRoot "state"),
-        (Join-Path $ApplicationRoot "state\secrets"),
-        (Join-Path $ApplicationRoot "runtime"),
-        (Join-Path $ApplicationRoot "logs"),
-        (Join-Path $ApplicationRoot "exchange\requests"),
-        (Join-Path $ApplicationRoot "exchange\results"),
-        (Join-Path $ApplicationRoot "bootstrap")
-    )) {
-        New-Item -ItemType Directory -Force -Path $path | Out-Null
+function Converge-ControllerService {
+    $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
+    if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
+        throw "Exact immutable controller authority console is missing: $console"
     }
-
-    & icacls.exe $ApplicationRoot `
-        /grant:r "*S-1-5-18:(OI)(CI)F" `
-        "*S-1-5-32-544:(OI)(CI)F" `
-        "*S-1-5-20:(OI)(CI)RX" /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to establish explicit C:\sing-box root ACL" }
-    & icacls.exe $ApplicationRoot /inheritance:r /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to protect C:\sing-box root ACL" }
-    & icacls.exe (Join-Path $ApplicationRoot "*") /reset /T /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to reset C:\sing-box descendant ACL inheritance" }
-
-    foreach ($writable in @(
-        (Join-Path $ApplicationRoot "state"),
-        (Join-Path $ApplicationRoot "runtime"),
-        (Join-Path $ApplicationRoot "logs"),
-        (Join-Path $ApplicationRoot "exchange\requests")
-    )) {
-        & icacls.exe $writable /grant:r "*S-1-5-20:(OI)(CI)M" /Q | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Failed to grant bounded runner write access: $writable" }
-    }
-
-    & icacls.exe (Join-Path $ApplicationRoot "exchange\results") `
-        /grant:r "*S-1-5-20:(OI)(CI)RX" /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to grant runner result read access" }
-
-    $secretRoot = Join-Path $ApplicationRoot "state\secrets"
-    & icacls.exe $secretRoot `
-        /grant:r "*S-1-5-18:(OI)(CI)F" `
-        "*S-1-5-32-544:(OI)(CI)F" /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to establish explicit Windows secret-state ACL" }
-    & icacls.exe $secretRoot /inheritance:r /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to disable Windows secret-state ACL inheritance" }
-    & icacls.exe $secretRoot /remove:g "*S-1-5-20" /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to remove runner ACL from Windows secret state" }
-    & icacls.exe (Join-Path $secretRoot "*") /reset /T /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to reset Windows secret-state descendant ACL inheritance" }
-
-    foreach ($item in @($ApplicationRoot) + @(Get-ChildItem -LiteralPath $ApplicationRoot -Force -Recurse -ErrorAction Stop | ForEach-Object { $_.FullName })) {
-        $acl = Get-Acl -LiteralPath $item
-        if ($null -eq $acl.Access -or $acl.Access.Count -eq 0) {
-            throw "Refusing empty DACL after Windows ACL bootstrap: $item"
-        }
-    }
-    $runnerSid = [Security.Principal.SecurityIdentifier]::new("S-1-5-20")
-    foreach ($rule in (Get-Acl -LiteralPath $secretRoot).Access) {
-        $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier])
-        if ($sid -eq $runnerSid) {
-            throw "NetworkService must have no ACL entry on protected Windows secret state"
-        }
+    & $console privileged-converge-controller-service --install-root $ApplicationRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native Windows controller service convergence failed"
     }
 }
+
 
 function Register-PrivilegedDispatcher {
     $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
@@ -282,7 +228,7 @@ Assert-Administrator
 Assert-IsolatedRoots
 Assert-MainProtected
 Install-InitialApplicationAuthority
-Configure-ApplicationAcl
+Converge-ControllerService
 Register-PrivilegedDispatcher
 
 $service = Get-RunnerService
@@ -312,6 +258,9 @@ Write-Output "accepted_revision=$AcceptedRevision"
 Write-Output "release_set_sha256=$ReleaseSetSha256"
 Write-Output "privileged_task=$PrivilegedTaskName"
 Write-Output "privileged_identity=SYSTEM"
-Write-Output "runner_application_access=BOUNDED"
+Write-Output "runner_application_access=TRANSPORT_ONLY"
+Write-Output "controller_service=EdgePlatformController"
+Write-Output "controller_start_owner=windows_scm"
+Write-Output "secret_authority=controller_service"
 Write-Output "local_build_toolchain_installed=false"
 Write-Output "provider_credentials_installed=false"
