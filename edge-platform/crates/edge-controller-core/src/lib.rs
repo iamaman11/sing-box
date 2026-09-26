@@ -310,7 +310,9 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     let inventory = collect_repo_inventory(&repo_root)?;
     let agent_state = AgentState::bootstrap_placeholder();
     let controller_state = read_controller_state(&repo_root)?;
-    let installed_runtime = if is_installed_windows_root(&repo_root) {
+    let installed_runtime = if is_installed_windows_root(&repo_root)
+        && windows_runtime_state_path(&repo_root).is_file()
+    {
         Some(read_windows_runtime_state(&repo_root)?)
     } else {
         None
