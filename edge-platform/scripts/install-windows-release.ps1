@@ -115,7 +115,7 @@ function Download-DurableReleaseAsset {
     if (-not (Test-Path -LiteralPath $Destination)) { throw "Durable release asset download did not create $Destination" }
 }
 
-function Assert-VerifiedSourceRevision {
+function Assert-AcceptedCandidateSource {
     param(
         [Parameter(Mandatory)] [string[]]$VerificationOutput,
         [string]$AcceptedRevision
@@ -126,12 +126,20 @@ function Assert-VerifiedSourceRevision {
     if ($matches.Count -ne 1) {
         throw "Windows ReleaseSet verification must emit exactly one source_revision"
     }
-    $observed = ([string]$matches[0]).Substring("source_revision=".Length)
-    if ($observed -ne $AcceptedRevision) {
-        throw "ReleaseSet.source_revision does not match AcceptedRevision"
+    $sourceRevision = ([string]$matches[0]).Substring("source_revision=".Length)
+    Assert-LowerHexRevision -Value $sourceRevision -Name "ReleaseSet.source_revision"
+
+    $acceptedCommit = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/git/commits/$AcceptedRevision" -Headers (Get-GitHubHeaders)
+    $sourceCommit = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/git/commits/$sourceRevision" -Headers (Get-GitHubHeaders)
+
+    $parents = @($acceptedCommit.parents)
+    if ($parents.Count -ne 2 -or [string]$parents[1].sha -ne $sourceRevision) {
+        throw "ReleaseSet.source_revision is not the accepted PR-head parent of AcceptedRevision"
+    }
+    if ([string]$sourceCommit.tree.sha -ne [string]$acceptedCommit.tree.sha) {
+        throw "ReleaseSet source tree does not match AcceptedRevision tree"
     }
 }
-
 function Invoke-Diagnostic {
     param(
         [Parameter(Mandatory)] [string]$Diagnostic,
@@ -313,7 +321,7 @@ if ($needsInstall) {
         )
         $verificationOutput = @(& $tool @verifyArgs)
         if ($LASTEXITCODE -ne 0) { throw "Downloaded Windows release failed ReleaseSet verification" }
-        Assert-VerifiedSourceRevision -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+        Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
         $verificationOutput | Write-Output
 
         $releaseStage = "$releaseDir.new"
@@ -346,14 +354,14 @@ $verifyArgs = @(
 )
 $verificationOutput = @(& $tool @verifyArgs)
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
-Assert-VerifiedSourceRevision -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
 $verificationOutput | Write-Output
 
 if ($ReleaseOnly -and (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
     $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
     if ($current["release_set_sha256"] -eq $ReleaseSetSha256) {
-        if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision) -and $current["source_revision"] -ne $AcceptedRevision) {
-            throw "Current Windows activation source_revision does not match AcceptedRevision"
+        if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision)) {
+            Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
         }
         Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
         Write-Output "activation=NOOP"
