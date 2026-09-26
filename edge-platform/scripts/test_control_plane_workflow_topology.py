@@ -842,11 +842,13 @@ def main() -> None:
         and "git/ref/tags/$Tag" in windows_installer
         and 'if (-not [bool]$branch.protected)' in windows_installer
         and "Durable release tag does not resolve to AcceptedRevision" in windows_installer
-        and "Assert-VerifiedSourceRevision" in windows_installer
-        and "ReleaseSet.source_revision does not match AcceptedRevision" in windows_installer
-        and 'activation=NOOP' in windows_installer
-        and "Current Windows activation source_revision does not match AcceptedRevision" in windows_installer,
-        "protected installer must own accepted-release authority and idempotent NOOP without rotating activation pointers",
+        and "Assert-AcceptedCandidateSource" in windows_installer
+        and "ReleaseSet.source_revision is not the accepted PR-head parent of AcceptedRevision" in windows_installer
+        and "ReleaseSet source tree does not match AcceptedRevision tree" in windows_installer
+        and '$parents.Count -ne 2' in windows_installer
+        and '$parents[1].sha -ne $sourceRevision' in windows_installer
+        and 'activation=NOOP' in windows_installer,
+        "protected installer must mirror merge promotion authority and own idempotent NOOP without rotating activation pointers",
     )
     require(
         '$quotedConsole ensure-controller' in windows_installer

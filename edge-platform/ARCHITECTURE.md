@@ -44,8 +44,10 @@ Rules:
   disabled and SYSTEM/Admin-only ACL before any real credential is provisioned.
 - Privileged release activation is not arbitrary remote execution: the request can
   name only an exact accepted revision and ReleaseSet digest, and the protected
-  installer independently binds the durable tag **and ReleaseSet.source_revision**
-  to the current protected `main` before exact-byte verification and mutation.
+  installer independently binds the durable tag to the current protected merge
+  `main`, requires `ReleaseSet.source_revision` to be that merge commit's
+  accepted PR-head parent, and requires candidate/merge Git trees to be identical
+  before exact-byte verification and mutation.
 
   Immutable releases, activation pointers, durable local state, generated
   runtime configuration and logs all live under that root. The GitHub runner
