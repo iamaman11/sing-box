@@ -125,6 +125,7 @@ C:\sing-box
   exchange\requests                             runner write
   exchange\results                              runner read
   runtime/logs/state                             bounded W1 runner write
+  state\secrets                                  SYSTEM/Admin only; runner has no ACL
   EdgePlatformPrivilegedDispatch                 Task Scheduler / SYSTEM
 
 C:\sing-box-runner
@@ -142,11 +143,15 @@ accepts only an exact 40-character accepted revision plus exact 64-character
 ReleaseSet digest. The protected installer independently verifies that:
 - the requested revision is the current protected `main`;
 - the durable release tag resolves directly to that revision;
+- the canonical ReleaseSet protobuf reports that exact revision as its source_revision;
 - ReleaseSet and Windows artifact hashes match exact bytes.
 
 The dispatcher then activates the release and retargets its scheduled task to
-the new immutable release console. This means normal future release updates do
-not require another local administrator session.
+the new immutable release console. The bootstrap also reserves
+`C:\sing-box\state\secrets` with inheritance disabled and no NetworkService
+ACE, so later W2 credentials can remain local without changing the trust anchor.
+This means normal future release updates and later privileged application
+operations do not require another local administrator session.
 
 The GitHub runner lives outside the application root. It installs no Git/Rust/
 Java/provider toolchain and uses GitHub's native runner self-update mechanism.
