@@ -15,6 +15,7 @@ EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
+WINDOWS_RUNNER_BOOTSTRAP = Path("edge-platform/scripts/bootstrap-windows-runner.ps1")
 WINDOWS_ENSURE = Path("edge-platform/scripts/ensure-edge-controller.ps1")
 WINDOWS_AUTOMATION = Path("edge-platform/scripts/register-edge-platform-automation.ps1")
 WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
@@ -45,6 +46,7 @@ def main() -> None:
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
+    windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_ensure = WINDOWS_ENSURE.read_text(encoding="utf-8")
     windows_automation = WINDOWS_AUTOMATION.read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
@@ -228,6 +230,28 @@ def main() -> None:
         and "LegacyRuntimeStatePath" not in windows_physical
         and "LegacySingBoxConfigPath" not in windows_physical,
         "Windows runner must have no untrusted trigger, local build, provider credential, or legacy-state migration path",
+    )
+    require(
+        'RunnerRoot = "C:\\sing-box-runner"' in windows_runner_bootstrap
+        and 'ApplicationRoot = "C:\\sing-box"' in windows_runner_bootstrap
+        and 'Assert-MainProtected' in windows_runner_bootstrap
+        and 'if (-not [bool]$branch.protected)' in windows_runner_bootstrap
+        and 'RunnerVersion = "2.337.0"' in windows_runner_bootstrap
+        and '1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc' in windows_runner_bootstrap
+        and '--labels $RunnerLabel' in windows_runner_bootstrap
+        and '--runasservice' in windows_runner_bootstrap
+        and 'NT AUTHORITY\\NETWORK SERVICE' in windows_runner_bootstrap
+        and '--disableupdate' in windows_runner_bootstrap,
+        "Windows runner bootstrap must stay pinned, protected-main-gated and isolated from the application root",
+    )
+    require(
+        "cargo " not in windows_runner_bootstrap
+        and "rustup" not in windows_runner_bootstrap
+        and "winget" not in windows_runner_bootstrap
+        and "gh.exe" not in windows_runner_bootstrap
+        and "VULTR_API_KEY" not in windows_runner_bootstrap
+        and "CLOUDFLARE_API_TOKEN" not in windows_runner_bootstrap,
+        "physical Windows runner bootstrap must not install build toolchains or provider authority",
     )
     require(
         'verb == "runner-bootstrap" and len(tokens) == 4' in vultr
