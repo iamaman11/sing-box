@@ -212,11 +212,14 @@ def main() -> None:
         and "github.ref_protected" in windows_physical
         and "edge-platform/scripts/resolve_durable_release.sh" in windows_physical
         and "C:\\sing-box" in windows_physical
-        and "-ReleaseOnly" in windows_physical
+        and "privileged-activate" in windows_physical
+        and "EDGE_CURRENT_CONSOLE" in windows_physical
         and "edge-diagnostic.exe" in windows_physical
         and "smoke-runtime" in windows_physical
-        and "http://127.0.0.1:51051" in windows_physical,
-        "Windows physical cycle must resolve one accepted ReleaseSet and invoke only the isolated non-TUN install/diagnostic/smoke surface",
+        and "http://127.0.0.1:51051" in windows_physical
+        and "install-windows-release.ps1" not in windows_physical
+        and "-ReleaseOnly" not in windows_physical,
+        "Windows physical cycle must request exact activation only through the SYSTEM dispatcher and then run isolated non-TUN diagnostics/smoke",
     )
     require(
         "workflow_dispatch:" not in windows_physical
@@ -234,8 +237,20 @@ def main() -> None:
     require(
         'RunnerRoot = "C:\\sing-box-runner"' in windows_runner_bootstrap
         and 'ApplicationRoot = "C:\\sing-box"' in windows_runner_bootstrap
+        and '[string]$AcceptedRevision' in windows_runner_bootstrap
+        and '[string]$ReleaseSetSha256' in windows_runner_bootstrap
         and 'Assert-MainProtected' in windows_runner_bootstrap
         and 'if (-not [bool]$branch.protected)' in windows_runner_bootstrap
+        and 'Install-InitialApplicationAuthority' in windows_runner_bootstrap
+        and 'Configure-ApplicationAcl' in windows_runner_bootstrap
+        and 'Register-PrivilegedDispatcher' in windows_runner_bootstrap
+        and 'EdgePlatformPrivilegedDispatch' in windows_runner_bootstrap
+        and 'New-ScheduledTaskPrincipal' in windows_runner_bootstrap
+        and '-UserId "SYSTEM"' in windows_runner_bootstrap
+        and 'exchange\\requests' in windows_runner_bootstrap
+        and 'exchange\\results' in windows_runner_bootstrap
+        and 'NETWORK SERVICE:(OI)(CI)RX' in windows_runner_bootstrap
+        and 'NETWORK SERVICE:(OI)(CI)M' in windows_runner_bootstrap
         and 'RunnerVersion = "2.337.0"' in windows_runner_bootstrap
         and '1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc' in windows_runner_bootstrap
         and '--labels $RunnerLabel' in windows_runner_bootstrap
@@ -243,7 +258,7 @@ def main() -> None:
         and 'NT AUTHORITY\\NETWORK SERVICE' in windows_runner_bootstrap
         and '--disableupdate' not in windows_runner_bootstrap
         and 'runner_update_policy=github_auto' in windows_runner_bootstrap,
-        "Windows runner bootstrap must stay protected-main-gated, isolated, and use GitHub native runner updates",
+        "Windows bootstrap must establish the protected app authority, SYSTEM dispatcher, bounded runner ACL and native GitHub transport in one elevated session",
     )
     require(
         "cargo " not in windows_runner_bootstrap
@@ -817,6 +832,15 @@ def main() -> None:
         "isolated Windows activation must support exact release authority without legacy runtime/config migration or scheduled automation",
     )
     require(
+        "AcceptedRevision" in windows_installer
+        and "Assert-AcceptedReleaseAuthority" in windows_installer
+        and "branches/main" in windows_installer
+        and "git/ref/tags/$Tag" in windows_installer
+        and 'if (-not [bool]$branch.protected)' in windows_installer
+        and "Durable release tag does not resolve to AcceptedRevision" in windows_installer,
+        "privileged Windows activation must bind the requested ReleaseSet to the exact protected canonical main",
+    )
+    require(
         '$quotedConsole ensure-controller' in windows_installer
         and '$quotedConsole reconcile' in windows_installer
         and '$quotedConsole stop-local' in windows_installer
@@ -849,6 +873,17 @@ def main() -> None:
         and "tun_enabled=false" in windows_console
         and ".arg(addr.to_string())" in windows_console,
         "installed console must own the exact non-TUN smoke and honor an isolated requested controller endpoint",
+    )
+    require(
+        "PrivilegedPing" in WINDOWS_CONSOLE.with_name("cli.rs").read_text(encoding="utf-8")
+        and "PrivilegedActivate" in WINDOWS_CONSOLE.with_name("cli.rs").read_text(encoding="utf-8")
+        and "PrivilegedDispatch" in WINDOWS_CONSOLE.with_name("cli.rs").read_text(encoding="utf-8")
+        and "decode_windows_privileged_request" in windows_console
+        and "encode_windows_privileged_result" in windows_console
+        and "EdgePlatformPrivilegedDispatch" in windows_console
+        and "install-windows-release.ps1" in windows_console
+        and "schtasks.exe" in windows_console,
+        "edge-console must expose only the typed protobuf privileged request/dispatch boundary and retarget the immutable SYSTEM dispatcher after exact activation",
     )
     require(
         '"state/runtime-state.pb"' in windows_controller
