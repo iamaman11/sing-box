@@ -842,8 +842,10 @@ def main() -> None:
         and 'if (-not [bool]$branch.protected)' in windows_installer
         and "Durable release tag does not resolve to AcceptedRevision" in windows_installer
         and "Assert-VerifiedSourceRevision" in windows_installer
-        and "ReleaseSet.source_revision does not match AcceptedRevision" in windows_installer,
-        "privileged Windows activation must bind the requested ReleaseSet source revision, tag and digest to the exact protected canonical main",
+        and "ReleaseSet.source_revision does not match AcceptedRevision" in windows_installer
+        and 'activation=NOOP' in windows_installer
+        and "Current Windows activation source_revision does not match AcceptedRevision" in windows_installer,
+        "protected installer must own accepted-release authority and idempotent NOOP without rotating activation pointers",
     )
     require(
         '$quotedConsole ensure-controller' in windows_installer
@@ -887,6 +889,8 @@ def main() -> None:
         and "encode_windows_privileged_result" in windows_console
         and "EdgePlatformPrivilegedDispatch" in windows_console
         and "install-windows-release.ps1" in windows_console
+        and "RELEASE_ALREADY_ACTIVE" not in windows_console
+        and "updated Windows activation source revision does not match accepted revision" in windows_console
         and "schtasks.exe" in windows_console,
         "edge-console must expose only the typed protobuf privileged request/dispatch boundary and retarget the immutable SYSTEM dispatcher after exact activation",
     )
