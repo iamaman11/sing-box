@@ -24,7 +24,6 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     Serve(ServeArgs),
-    MigrateWindowsRuntimeState(MigrateWindowsRuntimeStateArgs),
     GetStatus(ControllerEndpointArgs),
     ControllerBootstrapRuntime(ControllerBootstrapArgs),
     BootstrapRuntime(AgentBootstrapArgs),
@@ -42,7 +41,6 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Serve(_) => "serve",
-            Self::MigrateWindowsRuntimeState(_) => "migrate-windows-runtime-state",
             Self::GetStatus(_) => "get-status",
             Self::ControllerBootstrapRuntime(_) => "controller-bootstrap-runtime",
             Self::BootstrapRuntime(_) => "bootstrap-runtime",
@@ -62,12 +60,6 @@ impl Command {
 pub(crate) struct ServeArgs {
     pub repo_root: Option<PathBuf>,
     pub addr: Option<SocketAddr>,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct MigrateWindowsRuntimeStateArgs {
-    pub legacy_json: PathBuf,
-    pub output: PathBuf,
 }
 
 #[derive(Debug, Args, Default)]
@@ -216,7 +208,7 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn parses_windows_runtime_migration_command() {
+    fn rejects_legacy_windows_runtime_migration_command() {
         assert!(
             Cli::try_parse_from([
                 "edge-controller",
@@ -224,7 +216,7 @@ mod tests {
                 "legacy.json",
                 "runtime-state.pb",
             ])
-            .is_ok()
+            .is_err()
         );
     }
 

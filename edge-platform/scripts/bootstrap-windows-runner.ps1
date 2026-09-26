@@ -75,8 +75,7 @@ function Install-InitialApplicationAuthority {
         & $installer `
             -AcceptedRevision $AcceptedRevision `
             -ReleaseSetSha256 $ReleaseSetSha256 `
-            -InstallRoot $ApplicationRoot `
-            -ReleaseOnly
+            -InstallRoot $ApplicationRoot
         if ($LASTEXITCODE -ne 0) {
             throw "Initial exact ReleaseSet activation failed"
         }

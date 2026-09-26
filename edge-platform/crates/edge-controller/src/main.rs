@@ -46,8 +46,7 @@ use edge_shared_types::{
     OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError, ProviderObservation,
     RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry, SelectorState,
     SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
-    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest, WindowsRuntimeState,
-    WindowsTunnelBinding, decode_windows_runtime_state, encode_windows_runtime_state,
+    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest, decode_windows_runtime_state,
     timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
@@ -200,10 +199,6 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
             serve(repo_root, addr).await?;
             Ok(())
         }
-        Command::MigrateWindowsRuntimeState(args) => {
-            migrate_windows_runtime_state(&args.legacy_json, &args.output)?;
-            Ok(())
-        }
         Command::GetStatus(args) => {
             let status = fetch_status(args.resolve()).await?;
             io::stdout().write_all(&status.encode_proto())?;
@@ -344,92 +339,6 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
         .add_service(ControllerServiceServer::new(service))
         .serve(addr)
         .await?;
-    Ok(())
-}
-
-fn migrate_windows_runtime_state(legacy_json: &Path, output: &Path) -> Result<(), ControllerError> {
-    let raw = fs::read_to_string(legacy_json).map_err(|err| {
-        ControllerError::Command(format!(
-            "failed to read legacy Windows runtime state {}: {err}",
-            legacy_json.display()
-        ))
-    })?;
-    let value: Value = serde_json::from_str(&raw).map_err(|err| {
-        ControllerError::Command(format!(
-            "legacy Windows runtime state is invalid JSON: {err}"
-        ))
-    })?;
-
-    fn required_string(value: &Value, pointer: &str) -> Result<String, ControllerError> {
-        value
-            .pointer(pointer)
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| ControllerError::Command(format!("legacy state is missing {pointer}")))
-    }
-    fn required_port(value: &Value, pointer: &str) -> Result<u32, ControllerError> {
-        value
-            .pointer(pointer)
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .filter(|value| *value > 0 && *value <= 65535)
-            .ok_or_else(|| ControllerError::Command(format!("legacy state has invalid {pointer}")))
-    }
-    fn binding(value: &Value, base: &str) -> Result<WindowsTunnelBinding, ControllerError> {
-        Ok(WindowsTunnelBinding {
-            domain: required_string(value, &format!("{base}/domain"))?,
-            hy2_port: required_port(value, &format!("{base}/hy2_port"))?,
-            hy2_password: required_string(value, &format!("{base}/hy2_password"))?,
-            vless_port: required_port(value, &format!("{base}/vless_port"))?,
-            vless_uuid: required_string(value, &format!("{base}/vless_uuid"))?,
-            reality_public_key: required_string(value, &format!("{base}/reality_public_key"))?,
-            reality_short_id: required_string(value, &format!("{base}/reality_short_id"))?,
-        })
-    }
-
-    let state = WindowsRuntimeState {
-        schema_version: 1,
-        deployment_label: value
-            .get("label")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(ToOwned::to_owned),
-        instance_id: required_string(&value, "/instance_id")?,
-        server_ip: required_string(&value, "/ip")?,
-        direct: Some(binding(&value, "/tunnel")?),
-        warp: Some(binding(&value, "/tunnel_warp")?),
-    };
-    let bytes = encode_windows_runtime_state(&state).map_err(ControllerError::Command)?;
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            ControllerError::Command(format!(
-                "failed to create Windows runtime-state directory {}: {err}",
-                parent.display()
-            ))
-        })?;
-    }
-    let temporary = output.with_extension("pb.new");
-    fs::write(&temporary, &bytes).map_err(|err| {
-        ControllerError::Command(format!(
-            "failed to write typed Windows runtime state {}: {err}",
-            temporary.display()
-        ))
-    })?;
-    let verify = fs::read(&temporary).map_err(|err| {
-        ControllerError::Command(format!(
-            "failed to re-read typed Windows runtime state: {err}"
-        ))
-    })?;
-    decode_windows_runtime_state(&verify).map_err(ControllerError::Command)?;
-    fs::rename(&temporary, output).map_err(|err| {
-        ControllerError::Command(format!(
-            "failed to activate typed Windows runtime state {}: {err}",
-            output.display()
-        ))
-    })?;
-    println!("status=PASS");
-    println!("windows_runtime_state={}", output.display());
     Ok(())
 }
 

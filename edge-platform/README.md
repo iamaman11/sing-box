@@ -75,20 +75,20 @@ dependencies. The installer uses the GitHub Releases REST API directly. For a
 public repository no GitHub token is required; a private-repository bootstrap
 may provide `EDGE_GITHUB_TOKEN` / `-GitHubToken` with read access.
 
-Isolated first-stage activation:
+Release activation has one mode only:
 
 ```powershell
 & .\install-windows-release.ps1 `
+  -AcceptedRevision "<protected-main-merge-sha>" `
   -ReleaseSetSha256 "<accepted-release-set-sha256>" `
-  -InstallRoot "C:\sing-box" `
-  -ReleaseOnly
+  -InstallRoot "C:\sing-box"
 ```
 
-`-ReleaseOnly` establishes exact release/activation authority without
-importing legacy runtime JSON/configuration and without registering scheduled
-automation. The controller may then run honestly as `NOT_CONFIGURED`; normal
-local runtime start remains fail-closed until typed runtime state/config is
-provisioned.
+The installer establishes exact release/activation authority only. It never
+imports legacy runtime JSON, copies a prebuilt `sing-box.json`, registers
+controller/reconcile/shutdown tasks, or owns runtime policy. The controller may
+therefore run honestly as `NOT_CONFIGURED`; runtime state and generated config
+arrive later through typed application-owned boundaries.
 
 The installer:
 
@@ -104,15 +104,15 @@ The installer:
 6. moves the previous activation pointer to `previous.pb` for LKG rollback;
 7. installs only stable bootstrap entrypoints in `C:\sing-box\bin`.
 
-`ensure-edge-controller.ps1` resolves the controller only from `current.pb`
-through the independent `edge-diagnostic.exe doctor` verification path. It
-refuses a controller path outside the immutable release root. There is no
-`current.json`, build-manifest, workflow-run, or mutable-latest authority in
-the accepted Windows activation path.
+Installed startup resolves the controller only from `current.pb` through
+`edge-console.exe`, while `edge-diagnostic.exe doctor` independently verifies
+exact release files. There is no `current.json`, build-manifest, workflow-run,
+mutable-latest authority, or repository startup wrapper in the accepted Windows
+path.
 
-Rollback swaps the verified `current.pb` / `previous.pb` activation state
-through the installer `-Rollback` path and re-runs independent exact-file
-diagnostics.
+`previous.pb` is retained as LKG release evidence. Rollback will be exposed only
+through the typed privileged boundary; the installer itself has no second
+runtime/startup or rollback mode.
 
 ## Physical Windows trust bootstrap
 
@@ -175,8 +175,8 @@ Interactive menu:
 & "C:\sing-box\bin\edge-console.exe"
 ```
 
-The repository helper `edge-platform/scripts/start-edge-console.cmd` ensures
-the matching accepted controller is running before launching the console.
+The optional repository helper `edge-platform/scripts/start-edge-console.cmd` only opens
+the installed console UI; it does not own controller lifecycle or release authority.
 
 ## Windows-local capabilities
 

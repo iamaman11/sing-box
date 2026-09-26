@@ -1,16 +1,12 @@
-[CmdletBinding(DefaultParameterSetName = "Activate")]
+[CmdletBinding()]
 param(
     [string]$Repository = "iamaman11/sing-box",
-    [Parameter(ParameterSetName = "Activate", Mandatory = $true)]
+    [Parameter(Mandatory = $true)]
     [string]$ReleaseSetSha256,
-    [string]$AcceptedRevision = "",
+    [Parameter(Mandatory = $true)]
+    [string]$AcceptedRevision,
     [string]$InstallRoot = "C:\sing-box",
-    [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
-    [string]$LegacyRuntimeStatePath = "",
-    [string]$LegacySingBoxConfigPath = "",
-    [switch]$ReleaseOnly,
-    [Parameter(ParameterSetName = "Rollback", Mandatory = $true)]
-    [switch]$Rollback
+    [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN
 )
 
 Set-StrictMode -Version Latest
@@ -217,64 +213,15 @@ function Activate-ReleaseAuthority {
     }
 }
 
-function Register-InstalledAutomation {
-    param([Parameter(Mandatory)] [string]$ConsolePath)
-    if (-not (Test-Path -LiteralPath $ConsolePath)) { throw "Installed console is missing: $ConsolePath" }
-
-    $quotedConsole = '"' + $ConsolePath + '"'
-    $controllerTask = "EdgePlatformController"
-    $reconcileTask = "EdgePlatformReconcile"
-    $shutdownTask = "EdgePlatformShutdown"
-
-    schtasks /Create /F /SC ONLOGON /DELAY 0001:30 /RL HIGHEST /IT /TN $controllerTask /TR "$quotedConsole ensure-controller" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to register $controllerTask" }
-
-    schtasks /Create /F /SC MINUTE /MO 15 /RL HIGHEST /IT /TN $reconcileTask /TR "$quotedConsole reconcile" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to register $reconcileTask" }
-
-    $shutdownSubscription = "*[System[Provider[@Name='USER32'] and (EventID=1074)]]"
-    schtasks /Create /F /SC ONEVENT /EC System /MO $shutdownSubscription /RL HIGHEST /IT /TN $shutdownTask /TR "$quotedConsole stop-local" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to register $shutdownTask" }
-
-    Unregister-ScheduledTask -TaskName "EdgePlatformSingboxLogCleanup" -Confirm:$false -ErrorAction SilentlyContinue
-}
-
 $binDir = Join-Path $InstallRoot "bin"
 $releasesDir = Join-Path $InstallRoot "releases"
-$stateDir = Join-Path $InstallRoot "state"
-$runtimeDir = Join-Path $InstallRoot "runtime"
 $currentPath = Join-Path $InstallRoot "current.pb"
 $previousPath = Join-Path $InstallRoot "previous.pb"
-$runtimeStatePath = Join-Path $stateDir "runtime-state.pb"
-$runtimeConfigPath = Join-Path $runtimeDir "sing-box.json"
-New-Item -ItemType Directory -Force -Path $binDir, $releasesDir, $stateDir, $runtimeDir | Out-Null
-
-if ($Rollback) {
-    if (-not (Test-Path -LiteralPath $currentPath) -or -not (Test-Path -LiteralPath $previousPath)) {
-        throw "Rollback requires both current.pb and previous.pb"
-    }
-    $stableDiagnostic = Join-Path $binDir "edge-diagnostic.exe"
-    if (-not (Test-Path -LiteralPath $stableDiagnostic)) { throw "Rollback diagnostic is missing: $stableDiagnostic" }
-    $previous = Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $previousPath
-    $oldCurrent = "$previousPath.next"
-    $newCurrent = "$currentPath.new"
-    Copy-Item -LiteralPath $currentPath -Destination $oldCurrent -Force
-    Copy-Item -LiteralPath $previousPath -Destination $newCurrent -Force
-    Copy-StableBinary -Source $previous["console_path"] -Target (Join-Path $binDir "edge-console.exe")
-    Copy-StableBinary -Source $previous["diagnostic_path"] -Target $stableDiagnostic
-    Move-Item -LiteralPath $newCurrent -Destination $currentPath -Force
-    Move-Item -LiteralPath $oldCurrent -Destination $previousPath -Force
-    [void](Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath)
-    Register-InstalledAutomation -ConsolePath (Join-Path $binDir "edge-console.exe")
-    Write-Output ("Rolled back Windows release to " + $previous["release_set_sha256"])
-    exit 0
-}
+New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
 
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
-if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision)) {
-    Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag
-}
+Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag
 $releaseDir = Join-Path $releasesDir $ReleaseSetSha256
 $releaseSetPath = Join-Path $releaseDir "release-set.pb"
 $releaseSetSidecar = Join-Path $releaseDir "release-set.pb.sha256"
@@ -357,60 +304,20 @@ if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact Release
 Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
 $verificationOutput | Write-Output
 
-if ($ReleaseOnly -and (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
+if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
     if ($current["release_set_sha256"] -eq $ReleaseSetSha256) {
-        if (-not [string]::IsNullOrWhiteSpace($AcceptedRevision)) {
-            Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
-        }
+        Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
         Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
         Write-Output "activation=NOOP"
         Write-Output "current_state=$currentPath"
         Write-Output "console=$($current["console_path"])"
         Write-Output "diagnostic=$($current["diagnostic_path"])"
+        Write-Output "runtime_state=NOT_CONFIGURED"
+        Write-Output "runtime_config=NOT_CONFIGURED"
         Write-Output "automation_registered=false"
         exit 0
     }
-}
-
-if ($ReleaseOnly) {
-    $activation = Activate-ReleaseAuthority `
-        -Tool $tool `
-        -ReleaseSetPath $releaseSetPath `
-        -ReleaseSetSidecar $releaseSetSidecar `
-        -ReleaseDir $releaseDir `
-        -Controller $controller `
-        -Console $console `
-        -Diagnostic $diagnostic `
-        -SingBox $singBox `
-        -InstallRoot $InstallRoot
-
-    Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256 (release authority only)"
-    Write-Output "current_state=$($activation.current_state)"
-    Write-Output "console=$($activation.console)"
-    Write-Output "diagnostic=$($activation.diagnostic)"
-    Write-Output "runtime_state=NOT_CONFIGURED"
-    Write-Output "runtime_config=NOT_CONFIGURED"
-    Write-Output "automation_registered=false"
-    exit 0
-}
-
-if (-not (Test-Path -LiteralPath $runtimeStatePath)) {
-    if ([string]::IsNullOrWhiteSpace($LegacyRuntimeStatePath) -or -not (Test-Path -LiteralPath $LegacyRuntimeStatePath)) {
-        throw "First install requires -LegacyRuntimeStatePath pointing to the existing local current-edge.json so it can be imported once into runtime-state.pb"
-    }
-    & $controller migrate-windows-runtime-state $LegacyRuntimeStatePath $runtimeStatePath
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $runtimeStatePath)) {
-        throw "Legacy Windows runtime-state migration failed"
-    }
-}
-
-if (-not (Test-Path -LiteralPath $runtimeConfigPath)) {
-    if ([string]::IsNullOrWhiteSpace($LegacySingBoxConfigPath) -or -not (Test-Path -LiteralPath $LegacySingBoxConfigPath)) {
-        throw "First install requires -LegacySingBoxConfigPath pointing to the currently accepted local sing-box JSON config"
-    }
-    Copy-Item -LiteralPath $LegacySingBoxConfigPath -Destination "$runtimeConfigPath.new" -Force
-    Move-Item -LiteralPath "$runtimeConfigPath.new" -Destination $runtimeConfigPath -Force
 }
 
 $activation = Activate-ReleaseAuthority `
@@ -424,12 +331,10 @@ $activation = Activate-ReleaseAuthority `
     -SingBox $singBox `
     -InstallRoot $InstallRoot
 
-Register-InstalledAutomation -ConsolePath $activation.console
-
 Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
 Write-Output "current_state=$($activation.current_state)"
-Write-Output "runtime_state=$runtimeStatePath"
-Write-Output "runtime_config=$runtimeConfigPath"
 Write-Output "console=$($activation.console)"
 Write-Output "diagnostic=$($activation.diagnostic)"
-Write-Output "automation_registered=true"
+Write-Output "runtime_state=NOT_CONFIGURED"
+Write-Output "runtime_config=NOT_CONFIGURED"
+Write-Output "automation_registered=false"
