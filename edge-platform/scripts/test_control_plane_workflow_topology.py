@@ -242,20 +242,28 @@ def main() -> None:
         and 'Register-PrivilegedDispatcher' in windows_runner_bootstrap
         and 'EdgePlatformPrivilegedDispatch' in windows_runner_bootstrap
         and 'New-ScheduledTaskPrincipal' in windows_runner_bootstrap
-        and '-UserId "SYSTEM"' in windows_runner_bootstrap
+        and '$SystemSid = "S-1-5-18"' in windows_runner_bootstrap
+        and '$AdministratorsSid = "S-1-5-32-544"' in windows_runner_bootstrap
+        and '$NetworkServiceSid = "S-1-5-20"' in windows_runner_bootstrap
+        and 'Resolve-IdentitySid' in windows_runner_bootstrap
+        and '-UserId $SystemSid' in windows_runner_bootstrap
         and 'exchange\\requests' in windows_runner_bootstrap
         and 'exchange\\results' in windows_runner_bootstrap
         and 'state\\secrets' in windows_runner_bootstrap
-        and 'S-1-5-20' in windows_runner_bootstrap
-        and '/remove:g "NT AUTHORITY\\NETWORK SERVICE"' in windows_runner_bootstrap
+        and '"*S-1-5-18:(OI)(CI)F"' in windows_runner_bootstrap
+        and '"*S-1-5-32-544:(OI)(CI)F"' in windows_runner_bootstrap
+        and '"*S-1-5-20:(OI)(CI)RX"' in windows_runner_bootstrap
+        and '"*S-1-5-20:(OI)(CI)M"' in windows_runner_bootstrap
+        and '/remove:g "*S-1-5-20"' in windows_runner_bootstrap
+        and 'BUILTIN\\Administrators:(OI)(CI)F' not in windows_runner_bootstrap
         and 'NetworkService must have no ACL entry on protected Windows secret state' in windows_runner_bootstrap
-        and 'NETWORK SERVICE:(OI)(CI)RX' in windows_runner_bootstrap
-        and 'NETWORK SERVICE:(OI)(CI)M' in windows_runner_bootstrap
         and 'RunnerVersion = "2.337.0"' in windows_runner_bootstrap
         and '1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc' in windows_runner_bootstrap
         and '--labels $RunnerLabel' in windows_runner_bootstrap
         and '--runasservice' in windows_runner_bootstrap
-        and 'NT AUTHORITY\\NETWORK SERVICE' in windows_runner_bootstrap
+        and '--windowslogonaccount $RunnerServiceAccount' in windows_runner_bootstrap
+        and 'Translate([Security.Principal.NTAccount])' in windows_runner_bootstrap
+        and 'runner_identity_sid=$NetworkServiceSid' in windows_runner_bootstrap
         and '--disableupdate' not in windows_runner_bootstrap
         and 'runner_update_policy=github_auto' in windows_runner_bootstrap
         and "-ReleaseOnly" not in windows_runner_bootstrap,
