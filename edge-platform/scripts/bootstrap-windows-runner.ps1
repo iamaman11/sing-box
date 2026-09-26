@@ -21,7 +21,6 @@ $RunnerUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersio
 $RunnerLabel = "sing-box-windows-lab"
 $PrivilegedTaskName = "EdgePlatformPrivilegedDispatch"
 $SystemSid = "S-1-5-18"
-$AdministratorsSid = "S-1-5-32-544"
 $NetworkServiceSid = "S-1-5-20"
 $RunnerServiceAccount = ([Security.Principal.SecurityIdentifier]::new($NetworkServiceSid)).Translate([Security.Principal.NTAccount]).Value
 
