@@ -29,13 +29,13 @@ fn run() -> Result<(), String> {
     let state = decode_windows_activation_state(&bytes)?;
     verify_windows_activation_files(&state)?;
 
+    let expected_controller = PathBuf::from(&state.controller_path);
     let mut system = System::new();
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let controller_running = system.processes().values().any(|process| {
         process
-            .name()
-            .to_string_lossy()
-            .eq_ignore_ascii_case("edge-controller.exe")
+            .exe()
+            .is_some_and(|path| same_path(path, &expected_controller))
     });
 
     println!("status=PASS");
@@ -50,6 +50,16 @@ fn run() -> Result<(), String> {
     println!("controller_required_for_diagnostics=false");
     println!("exact_release_files=PASS");
     Ok(())
+}
+
+fn same_path(observed: &std::path::Path, expected: &std::path::Path) -> bool {
+    if observed == expected {
+        return true;
+    }
+    match (observed.canonicalize(), expected.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn usage() -> String {
