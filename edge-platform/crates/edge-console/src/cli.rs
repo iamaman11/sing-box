@@ -26,6 +26,7 @@ pub(crate) enum Command {
     Status(EndpointArgs),
     Doctor(EndpointArgs),
     SmokeRuntime,
+    ProvisionRuntimeState(InstallRootArgs),
     PrivilegedPing(InstallRootArgs),
     PrivilegedActivate(PrivilegedActivateArgs),
     #[cfg(windows)]
@@ -58,6 +59,7 @@ impl Command {
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
             Self::SmokeRuntime => "smoke-runtime",
+            Self::ProvisionRuntimeState(_) => "provision-runtime-state",
             Self::PrivilegedPing(_) => "privileged-ping",
             Self::PrivilegedActivate(_) => "privileged-activate",
             #[cfg(windows)]
@@ -159,6 +161,15 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "smoke-runtime"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "provision-runtime-state",
+                "--install-root",
+                r"C:\sing-box"
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["edge-console", "privileged-ping"]).is_ok());
         assert!(
             Cli::try_parse_from([
