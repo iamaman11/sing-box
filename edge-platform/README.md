@@ -114,6 +114,30 @@ Rollback swaps the verified `current.pb` / `previous.pb` activation state
 through the installer `-Rollback` path and re-runs independent exact-file
 diagnostics.
 
+## Physical Windows runner bootstrap
+
+The GitHub runner is transport only and lives outside the application root:
+
+```text
+C:\sing-box           application
+C:\sing-box-runner    GitHub Actions transport
+```
+
+Before registration, `main` must report protected. The one-time bootstrap
+`edge-platform/scripts/bootstrap-windows-runner.ps1` checks this itself and
+refuses registration otherwise. It downloads only the pinned official GitHub
+Actions Runner, verifies its SHA-256, registers the repository-scoped
+`sing-box-windows-lab` service as `NetworkService`, and installs no Git/Rust/
+Java/provider credentials.
+
+The only interactive secret is GitHub's short-lived runner registration token
+from **Settings > Actions > Runners > New self-hosted runner**. The script reads
+it as a SecureString and does not persist it.
+
+After registration, physical work is invoked only through the owner-only
+`/windows smoke` route. The first cycle is intentionally non-TUN and does not
+touch DNS, routes, system proxy, Wintun, or the legacy Windows runtime.
+
 ## Normal Windows entrypoint
 
 ```powershell
