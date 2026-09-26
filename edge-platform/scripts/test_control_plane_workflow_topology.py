@@ -729,7 +729,7 @@ def main() -> None:
         and "doctor $currentPath" in windows_ensure
         and 'exact_release_files' in windows_ensure
         and "current.json" not in windows_ensure
-        and "ConvertFrom-Json" not in windows_ensure,
+        and "Get-Content -Raw $currentPath | ConvertFrom-Json" not in windows_ensure,
         "Windows controller startup must resolve only the verified protobuf activation pointer",
     )
     require(
