@@ -878,6 +878,12 @@ jobs:
             throw ("Windows operational/install scripts must consume GitHub-built artifacts, never build locally:" + [Environment]::NewLine + $detail)
           }
 
+          $legacyInstallRoot = @($operationalScripts | Select-String -SimpleMatch -Pattern '$env:LOCALAPPDATA "edge-platform"', '%LOCALAPPDATA%\edge-platform')
+          if ($legacyInstallRoot.Count -gt 0) {
+            $detail = ($legacyInstallRoot | ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line)" }) -join [Environment]::NewLine
+            throw ("Windows operational scripts must use the canonical C:\sing-box application root:" + [Environment]::NewLine + $detail)
+          }
+
           $runtimeBoundary = git grep -n -E 'Get-DnsClientServerAddress|Start-Process -FilePath.*sing-box|failed to capture sing-box pid from visible window launch' -- edge-platform/crates/edge-local-runtime
           if ($LASTEXITCODE -eq 0) { throw ("Typed Windows runtime boundary regressed to PowerShell/text observation:" + [Environment]::NewLine + $runtimeBoundary) }
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
