@@ -19,7 +19,10 @@ use edge_clash::{
     default_aux_groups, get_selector_state as get_live_selector_state,
     set_selector as set_live_selector,
 };
-use edge_controller_core::{collect_controller_status, validate_deploy_transition};
+use edge_controller_core::{
+    collect_controller_status, controller_state_db_path, is_installed_windows_root,
+    local_singbox_config_path, validate_deploy_transition, windows_runtime_state_path,
+};
 use edge_local_runtime::{
     LocalRuntimePaths, inspect_local_runtime, restart_local_runtime as restart_runtime_process,
     restart_local_runtime_visible as restart_runtime_process_visible, restore_windows_dns_if_owned,
@@ -43,7 +46,9 @@ use edge_shared_types::{
     OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError, ProviderObservation,
     RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry, SelectorState,
     SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
-    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest, timestamp_from_unix_seconds,
+    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest, WindowsRuntimeState,
+    WindowsTunnelBinding, decode_windows_runtime_state, encode_windows_runtime_state,
+    timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -195,6 +200,10 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
             serve(repo_root, addr).await?;
             Ok(())
         }
+        Command::MigrateWindowsRuntimeState(args) => {
+            migrate_windows_runtime_state(&args.legacy_json, &args.output)?;
+            Ok(())
+        }
         Command::GetStatus(args) => {
             let status = fetch_status(args.resolve()).await?;
             io::stdout().write_all(&status.encode_proto())?;
@@ -305,11 +314,22 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
 }
 
 async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
-    let db_path = repo_root.join(DEFAULT_STATE_DB);
+    if is_installed_windows_root(&repo_root) {
+        fs::create_dir_all(repo_root.join("state"))?;
+        fs::create_dir_all(repo_root.join("runtime"))?;
+        let runtime_state = fs::read(windows_runtime_state_path(&repo_root))?;
+        decode_windows_runtime_state(&runtime_state)?;
+    }
+    let db_path = controller_state_db_path(&repo_root);
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path)?));
     normalize_runtime_secret_refs(&state)?;
     interrupt_stale_running_operations(&state)?;
-    reconcile_active_deployment_state(&repo_root, &state)?;
+    if !is_installed_windows_root(&repo_root) {
+        reconcile_active_deployment_state(&repo_root, &state)?;
+    }
     ensure_selector_intents_seeded(&repo_root, &state).await?;
     let service = ControllerServerImpl {
         repo_root,
@@ -321,6 +341,88 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
         .add_service(ControllerServiceServer::new(service))
         .serve(addr)
         .await?;
+    Ok(())
+}
+
+fn migrate_windows_runtime_state(legacy_json: &Path, output: &Path) -> Result<(), ControllerError> {
+    let raw = fs::read_to_string(legacy_json).map_err(|err| {
+        ControllerError::Command(format!(
+            "failed to read legacy Windows runtime state {}: {err}",
+            legacy_json.display()
+        ))
+    })?;
+    let value: Value = serde_json::from_str(&raw).map_err(|err| {
+        ControllerError::Command(format!("legacy Windows runtime state is invalid JSON: {err}"))
+    })?;
+
+    fn required_string(value: &Value, pointer: &str) -> Result<String, ControllerError> {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| ControllerError::Command(format!("legacy state is missing {pointer}")))
+    }
+    fn required_port(value: &Value, pointer: &str) -> Result<u32, ControllerError> {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0 && *value <= 65535)
+            .ok_or_else(|| ControllerError::Command(format!("legacy state has invalid {pointer}")))
+    }
+    fn binding(value: &Value, base: &str) -> Result<WindowsTunnelBinding, ControllerError> {
+        Ok(WindowsTunnelBinding {
+            domain: required_string(value, &format!("{base}/domain"))?,
+            hy2_port: required_port(value, &format!("{base}/hy2_port"))?,
+            hy2_password: required_string(value, &format!("{base}/hy2_password"))?,
+            vless_port: required_port(value, &format!("{base}/vless_port"))?,
+            vless_uuid: required_string(value, &format!("{base}/vless_uuid"))?,
+            reality_public_key: required_string(value, &format!("{base}/reality_public_key"))?,
+            reality_short_id: required_string(value, &format!("{base}/reality_short_id"))?,
+        })
+    }
+
+    let state = WindowsRuntimeState {
+        schema_version: 1,
+        deployment_label: value
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned),
+        instance_id: required_string(&value, "/instance_id")?,
+        server_ip: required_string(&value, "/ip")?,
+        direct: Some(binding(&value, "/tunnel")?),
+        warp: Some(binding(&value, "/tunnel_warp")?),
+    };
+    let bytes = encode_windows_runtime_state(&state).map_err(ControllerError::Command)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            ControllerError::Command(format!(
+                "failed to create Windows runtime-state directory {}: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+    let temporary = output.with_extension("pb.new");
+    fs::write(&temporary, &bytes).map_err(|err| {
+        ControllerError::Command(format!(
+            "failed to write typed Windows runtime state {}: {err}",
+            temporary.display()
+        ))
+    })?;
+    let verify = fs::read(&temporary).map_err(|err| {
+        ControllerError::Command(format!("failed to re-read typed Windows runtime state: {err}"))
+    })?;
+    decode_windows_runtime_state(&verify).map_err(ControllerError::Command)?;
+    fs::rename(&temporary, output).map_err(|err| {
+        ControllerError::Command(format!(
+            "failed to activate typed Windows runtime state {}: {err}",
+            output.display()
+        ))
+    })?;
+    println!("status=PASS");
+    println!("windows_runtime_state={}", output.display());
     Ok(())
 }
 
@@ -1571,48 +1673,57 @@ impl ControllerService for ControllerServerImpl {
 }
 
 fn default_local_config_path(repo_root: &Path) -> PathBuf {
-    repo_root.join(DEFAULT_LOCAL_CONFIG_PATH)
+    local_singbox_config_path(repo_root)
 }
 
 fn default_live_state_path(repo_root: &Path) -> PathBuf {
-    repo_root.join(DEFAULT_LIVE_STATE_PATH)
+    if is_installed_windows_root(repo_root) {
+        windows_runtime_state_path(repo_root)
+    } else {
+        repo_root.join(DEFAULT_LIVE_STATE_PATH)
+    }
 }
 
 fn default_runtime_root(repo_root: &Path) -> PathBuf {
-    if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
-        return PathBuf::from(local_app_data)
-            .join("sing-box-vultr-dual")
-            .join("runtime");
-    }
-
-    repo_root
-        .join("edge-platform")
-        .join(".runtime")
-        .join("local-runtime")
-}
-
-fn default_singbox_binary_path() -> PathBuf {
-    if let Ok(explicit) = env::var("EDGE_SINGBOX_BINARY_PATH") {
-        return PathBuf::from(explicit);
-    }
-
-    let runtime_path = if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+    if is_installed_windows_root(repo_root) {
+        repo_root.join("runtime")
+    } else if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
         PathBuf::from(local_app_data)
             .join("sing-box-vultr-dual")
             .join("runtime")
-            .join("sing-box.exe")
     } else {
-        PathBuf::from("edge-platform")
+        repo_root
+            .join("edge-platform")
             .join(".runtime")
             .join("local-runtime")
-            .join("sing-box.exe")
-    };
+    }
+}
 
-    if runtime_path.is_file() {
-        return runtime_path;
+fn default_singbox_binary_path(repo_root: &Path) -> PathBuf {
+    if let Ok(explicit) = env::var("EDGE_SINGBOX_BINARY_PATH") {
+        return PathBuf::from(explicit);
+    }
+    if is_installed_windows_root(repo_root)
+        && let Ok(current) = env::current_exe()
+        && let Some(parent) = current.parent()
+    {
+        let installed = parent.join("sing-box.exe");
+        if installed.is_file() {
+            return installed;
+        }
     }
 
-    runtime_path
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local_app_data)
+            .join("sing-box-vultr-dual")
+            .join("runtime")
+            .join("sing-box.exe");
+    }
+
+    PathBuf::from("edge-platform")
+        .join(".runtime")
+        .join("local-runtime")
+        .join("sing-box.exe")
 }
 
 fn local_runtime_paths_from_start(
@@ -1624,7 +1735,7 @@ fn local_runtime_paths_from_start(
             .singbox_binary_path
             .clone()
             .map(PathBuf::from)
-            .unwrap_or_else(default_singbox_binary_path),
+            .unwrap_or_else(|| default_singbox_binary_path(repo_root)),
         config_path: request
             .config_path
             .clone()
@@ -1648,7 +1759,7 @@ fn local_runtime_paths_from_restart(
             .singbox_binary_path
             .clone()
             .map(PathBuf::from)
-            .unwrap_or_else(default_singbox_binary_path),
+            .unwrap_or_else(|| default_singbox_binary_path(repo_root)),
         config_path: request
             .config_path
             .clone()
@@ -1662,6 +1773,7 @@ fn local_runtime_paths_from_restart(
         runtime_root: default_runtime_root(repo_root),
     }
 }
+
 
 fn merge_local_runtime(
     base: Option<edge_shared_types::LocalSingboxState>,
