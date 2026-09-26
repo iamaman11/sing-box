@@ -419,7 +419,9 @@ fn installed_root_from_console() -> Result<PathBuf, Box<dyn std::error::Error>> 
         .parent()
         .ok_or("failed to resolve edge-console binary directory")?;
     if bin_dir.file_name().and_then(|value| value.to_str()) != Some("bin") {
-        return Err("edge-console installed startup requires <install-root>\\bin\\edge-console.exe".into());
+        return Err(
+            "edge-console installed startup requires <install-root>\\bin\\edge-console.exe".into(),
+        );
     }
     let root = bin_dir
         .parent()
@@ -534,9 +536,7 @@ fn rotate_service_log_if_needed(
     Ok(())
 }
 
-async fn reconcile_installed_runtime(
-    endpoint: String,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn reconcile_installed_runtime(endpoint: String) -> Result<(), Box<dyn std::error::Error>> {
     ensure_controller_running(&endpoint)?;
     let status = fetch_status(endpoint.clone()).await?;
     let Some(local) = status.local_singbox.as_ref() else {
@@ -1000,7 +1000,12 @@ fn print_lifecycle_status() {
         .map(|root| root.join("state").join("controller-state.sqlite"))
         .or_else(|_| {
             env::var("EDGE_REPO_ROOT")
-                .map(|root| PathBuf::from(root).join("edge-platform").join(".runtime").join("controller-state.sqlite"))
+                .map(|root| {
+                    PathBuf::from(root)
+                        .join("edge-platform")
+                        .join(".runtime")
+                        .join("controller-state.sqlite")
+                })
                 .map_err(|err| err.into())
         });
     let Ok(path) = path else { return };
