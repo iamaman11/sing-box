@@ -1354,6 +1354,43 @@ mod tests {
     }
 
     #[test]
+    fn windows_privileged_request_is_canonical_and_bounded() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-1".to_owned(),
+            operation: WindowsPrivilegedOperation::ActivateRelease as i32,
+            accepted_revision: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            release_set_sha256: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_owned(),
+            ),
+        };
+        let bytes = encode_windows_privileged_request(&request).unwrap();
+        assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), request);
+
+        let mut invalid = request.clone();
+        invalid.release_set_sha256 = Some("latest".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_ping_carries_no_release_authority() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-ping".to_owned(),
+            operation: WindowsPrivilegedOperation::Ping as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request;
+        invalid.accepted_revision =
+            Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
     fn encodes_agent_state_with_prost() {
         let bytes = AgentState::bootstrap_placeholder().encode_to_vec();
         assert!(!bytes.is_empty());
