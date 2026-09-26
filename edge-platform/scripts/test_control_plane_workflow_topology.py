@@ -717,8 +717,8 @@ def main() -> None:
         and "release-set.pb" in windows_installer
         and "current.pb" in windows_installer
         and "previous.pb" in windows_installer
-        and "state\\runtime-state.pb" in windows_installer
-        and "runtime\\sing-box.json" in windows_installer
+        and '$runtimeStatePath = Join-Path $stateDir "runtime-state.pb"' in windows_installer
+        and '$runtimeConfigPath = Join-Path $runtimeDir "sing-box.json"' in windows_installer
         and "edge-diagnostic.exe" in windows_installer
         and "verify-windows" in windows_installer
         and "write-windows-activation" in windows_installer,
