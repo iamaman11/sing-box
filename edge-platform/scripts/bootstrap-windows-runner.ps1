@@ -93,6 +93,7 @@ function Configure-ApplicationAcl {
     foreach ($path in @(
         $ApplicationRoot,
         (Join-Path $ApplicationRoot "state"),
+        (Join-Path $ApplicationRoot "state\secrets"),
         (Join-Path $ApplicationRoot "runtime"),
         (Join-Path $ApplicationRoot "logs"),
         (Join-Path $ApplicationRoot "exchange\requests"),
@@ -121,6 +122,20 @@ function Configure-ApplicationAcl {
     & icacls.exe (Join-Path $ApplicationRoot "exchange\results") `
         /grant:r "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)RX" /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to grant runner result read access" }
+
+    $secretRoot = Join-Path $ApplicationRoot "state\secrets"
+    & icacls.exe $secretRoot /inheritance:r `
+        /grant:r "SYSTEM:(OI)(CI)F" `
+        "BUILTIN\Administrators:(OI)(CI)F" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows secret state from runner access" }
+
+    $runnerSid = [Security.Principal.SecurityIdentifier]::new("S-1-5-20")
+    foreach ($rule in (Get-Acl -LiteralPath $secretRoot).Access) {
+        $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier])
+        if ($sid -eq $runnerSid) {
+            throw "NetworkService must have no ACL entry on protected Windows secret state"
+        }
+    }
 }
 
 function Register-PrivilegedDispatcher {
