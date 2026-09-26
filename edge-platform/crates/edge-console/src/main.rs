@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use std::env;
 #[cfg(windows)]
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -26,10 +26,11 @@ use edge_shared_types::{
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
-    WindowsPrivilegedRequest, WindowsPrivilegedResult, decode_windows_activation_state,
-    decode_windows_privileged_request, decode_windows_privileged_result,
+    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
+    decode_windows_activation_state, decode_windows_privileged_request,
+    decode_windows_privileged_result, decode_windows_runtime_state,
     encode_windows_privileged_request, encode_windows_privileged_result,
-    verify_windows_activation_files,
+    encode_windows_runtime_state, verify_windows_activation_files,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -161,6 +162,10 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("dns_mutated=false");
             println!("routes_mutated=false");
             println!("cleanup=PASS");
+            Ok(())
+        }
+        Command::ProvisionRuntimeState(args) => {
+            provision_windows_runtime_state(Path::new(&args.install_root))?;
             Ok(())
         }
         Command::PrivilegedPing(args) => {
@@ -521,6 +526,158 @@ fn privileged_result_path(install_root: &Path) -> PathBuf {
         .join("exchange")
         .join("results")
         .join("result.pb")
+}
+
+
+fn required_provision_env<F>(get: &F, name: &str) -> Result<String, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let value = get(name).ok_or_else(|| format!("{name} is required"))?;
+    if value.is_empty() || value.trim() != value {
+        return Err(format!("{name} must be a non-empty canonical value"));
+    }
+    Ok(value)
+}
+
+fn optional_provision_env<F>(get: &F, name: &str) -> Result<Option<String>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(value) = get(name) else {
+        return Ok(None);
+    };
+    if value.is_empty() || value.trim() != value {
+        return Err(format!("{name} must be a non-empty canonical value when provided"));
+    }
+    Ok(Some(value))
+}
+
+fn required_provision_port<F>(get: &F, name: &str) -> Result<u32, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    required_provision_env(get, name)?
+        .parse::<u32>()
+        .map_err(|err| format!("{name} must be an integer port: {err}"))
+}
+
+fn windows_runtime_state_from_provision_env<F>(get: F) -> Result<WindowsRuntimeState, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let direct = WindowsTunnelBinding {
+        domain: required_provision_env(&get, "EDGE_WINDOWS_DIRECT_DOMAIN")?,
+        hy2_port: required_provision_port(&get, "EDGE_WINDOWS_DIRECT_HY2_PORT")?,
+        hy2_password: required_provision_env(&get, "HY2_PASSWORD")?,
+        vless_port: required_provision_port(&get, "EDGE_WINDOWS_DIRECT_VLESS_PORT")?,
+        vless_uuid: required_provision_env(&get, "VLESS_UUID")?,
+        reality_public_key: required_provision_env(&get, "REALITY_PUBLIC_KEY")?,
+        reality_short_id: required_provision_env(&get, "REALITY_SHORT_ID")?,
+    };
+    let warp = WindowsTunnelBinding {
+        domain: required_provision_env(&get, "EDGE_WINDOWS_WARP_DOMAIN")?,
+        hy2_port: required_provision_port(&get, "EDGE_WINDOWS_WARP_HY2_PORT")?,
+        hy2_password: required_provision_env(&get, "HY2_WARP_PASSWORD")?,
+        vless_port: required_provision_port(&get, "EDGE_WINDOWS_WARP_VLESS_PORT")?,
+        vless_uuid: required_provision_env(&get, "VLESS_WARP_UUID")?,
+        reality_public_key: required_provision_env(&get, "REALITY_WARP_PUBLIC_KEY")?,
+        reality_short_id: required_provision_env(&get, "REALITY_WARP_SHORT_ID")?,
+    };
+    let state = WindowsRuntimeState {
+        schema_version: 1,
+        deployment_label: optional_provision_env(&get, "EDGE_WINDOWS_DEPLOYMENT_LABEL")?,
+        instance_id: required_provision_env(&get, "EDGE_WINDOWS_INSTANCE_ID")?,
+        server_ip: required_provision_env(&get, "EDGE_WINDOWS_SERVER_IP")?,
+        direct: Some(direct),
+        warp: Some(warp),
+    };
+    encode_windows_runtime_state(&state)?;
+    Ok(state)
+}
+
+fn provision_windows_runtime_state(install_root: &Path) -> Result<(), ConsoleError> {
+    if !install_root.join("current.pb").is_file() || !install_root.join("releases").is_dir() {
+        return Err(ConsoleError::Command(
+            "runtime-state provisioning requires an installed Windows application root".to_owned(),
+        ));
+    }
+
+    let secret_dir = install_root.join("state").join("secrets");
+    if !secret_dir.is_dir() {
+        return Err(ConsoleError::Command(format!(
+            "controller-private secret directory is missing: {}",
+            secret_dir.display()
+        )));
+    }
+
+    let target = secret_dir.join("runtime-state.pb");
+    if target.exists() {
+        return Err(ConsoleError::Command(
+            "runtime-state.pb already exists; credential rotation requires a separate explicit operation"
+                .to_owned(),
+        ));
+    }
+    let staged = target.with_extension("pb.new");
+    if staged.exists() {
+        return Err(ConsoleError::Command(format!(
+            "staged runtime state already exists: {}",
+            staged.display()
+        )));
+    }
+
+    let state = windows_runtime_state_from_provision_env(|name| env::var(name).ok())
+        .map_err(ConsoleError::Command)?;
+    let bytes = encode_windows_runtime_state(&state).map_err(ConsoleError::Command)?;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staged)
+        .map_err(|err| {
+            ConsoleError::Command(format!(
+                "failed to create staged runtime state {}: {err}",
+                staged.display()
+            ))
+        })?;
+    if let Err(err) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&staged);
+        return Err(ConsoleError::Command(format!(
+            "failed to write staged runtime state {}: {err}",
+            staged.display()
+        )));
+    }
+    drop(file);
+
+    if let Err(err) = fs::rename(&staged, &target) {
+        let _ = fs::remove_file(&staged);
+        return Err(ConsoleError::Command(format!(
+            "failed to publish runtime state {}: {err}",
+            target.display()
+        )));
+    }
+
+    let observed = fs::read(&target).map_err(|err| {
+        let _ = fs::remove_file(&target);
+        ConsoleError::Command(format!(
+            "failed to verify published runtime state {}: {err}",
+            target.display()
+        ))
+    })?;
+    if let Err(err) = decode_windows_runtime_state(&observed) {
+        let _ = fs::remove_file(&target);
+        return Err(ConsoleError::Command(format!(
+            "published runtime state failed canonical verification: {err}"
+        )));
+    }
+
+    println!("status=PASS");
+    println!("runtime_state=PROVISIONED");
+    println!("runtime_state_schema=1");
+    println!("secret_authority=controller_service");
+    println!("runner_secret_access=false");
+    Ok(())
 }
 
 fn new_privileged_request_id() -> Result<String, Box<dyn std::error::Error>> {
@@ -2023,5 +2180,68 @@ mod tests {
 
         let error = installed_root_from_executable(&executable).unwrap_err();
         assert!(error.to_string().contains("releases"));
+    }
+
+    #[test]
+    fn builds_canonical_windows_runtime_state_from_client_only_env() {
+        let values = std::collections::BTreeMap::from([
+            ("EDGE_WINDOWS_DEPLOYMENT_LABEL", "production".to_owned()),
+            ("EDGE_WINDOWS_INSTANCE_ID", "instance-1".to_owned()),
+            ("EDGE_WINDOWS_SERVER_IP", "203.0.113.10".to_owned()),
+            ("EDGE_WINDOWS_DIRECT_DOMAIN", "edge.example.com".to_owned()),
+            ("EDGE_WINDOWS_DIRECT_HY2_PORT", "8443".to_owned()),
+            ("HY2_PASSWORD", "direct-password".to_owned()),
+            ("EDGE_WINDOWS_DIRECT_VLESS_PORT", "443".to_owned()),
+            ("VLESS_UUID", "00000000-0000-4000-8000-000000000001".to_owned()),
+            ("REALITY_PUBLIC_KEY", "direct-public-key".to_owned()),
+            ("REALITY_SHORT_ID", "a1b2c3d4".to_owned()),
+            ("EDGE_WINDOWS_WARP_DOMAIN", "edge.example.com".to_owned()),
+            ("EDGE_WINDOWS_WARP_HY2_PORT", "9444".to_owned()),
+            ("HY2_WARP_PASSWORD", "warp-password".to_owned()),
+            ("EDGE_WINDOWS_WARP_VLESS_PORT", "5443".to_owned()),
+            (
+                "VLESS_WARP_UUID",
+                "00000000-0000-4000-8000-000000000002".to_owned(),
+            ),
+            ("REALITY_WARP_PUBLIC_KEY", "warp-public-key".to_owned()),
+            ("REALITY_WARP_SHORT_ID", "b1c2d3e4".to_owned()),
+        ]);
+        let state =
+            windows_runtime_state_from_provision_env(|name| values.get(name).cloned()).unwrap();
+        assert_eq!(state.schema_version, 1);
+        assert_eq!(state.instance_id, "instance-1");
+        assert_eq!(state.server_ip, "203.0.113.10");
+        assert_eq!(state.direct.as_ref().unwrap().hy2_port, 8443);
+        assert_eq!(state.warp.as_ref().unwrap().vless_port, 5443);
+        assert!(encode_windows_runtime_state(&state).is_ok());
+    }
+
+    #[test]
+    fn provisioning_requires_every_client_secret_but_no_server_private_key() {
+        let values = std::collections::BTreeMap::from([
+            ("EDGE_WINDOWS_INSTANCE_ID", "instance-1".to_owned()),
+            ("EDGE_WINDOWS_SERVER_IP", "203.0.113.10".to_owned()),
+            ("EDGE_WINDOWS_DIRECT_DOMAIN", "edge.example.com".to_owned()),
+            ("EDGE_WINDOWS_DIRECT_HY2_PORT", "8443".to_owned()),
+            ("HY2_PASSWORD", "direct-password".to_owned()),
+            ("EDGE_WINDOWS_DIRECT_VLESS_PORT", "443".to_owned()),
+            ("VLESS_UUID", "00000000-0000-4000-8000-000000000001".to_owned()),
+            ("REALITY_PUBLIC_KEY", "direct-public-key".to_owned()),
+            ("REALITY_SHORT_ID", "a1b2c3d4".to_owned()),
+            ("EDGE_WINDOWS_WARP_DOMAIN", "edge.example.com".to_owned()),
+            ("EDGE_WINDOWS_WARP_HY2_PORT", "9444".to_owned()),
+            ("HY2_WARP_PASSWORD", "warp-password".to_owned()),
+            ("EDGE_WINDOWS_WARP_VLESS_PORT", "5443".to_owned()),
+            (
+                "VLESS_WARP_UUID",
+                "00000000-0000-4000-8000-000000000002".to_owned(),
+            ),
+            ("REALITY_WARP_PUBLIC_KEY", "warp-public-key".to_owned()),
+        ]);
+        let err =
+            windows_runtime_state_from_provision_env(|name| values.get(name).cloned()).unwrap_err();
+        assert!(err.contains("REALITY_WARP_SHORT_ID"));
+        assert!(!err.contains("PRIVATE_KEY"));
+        assert!(!err.contains("PROXY_PASSWORD"));
     }
 }
