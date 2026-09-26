@@ -7,6 +7,7 @@ param(
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [string]$LegacyRuntimeStatePath = "",
     [string]$LegacySingBoxConfigPath = "",
+    [switch]$ReleaseOnly,
     [Parameter(ParameterSetName = "Rollback", Mandatory = $true)]
     [switch]$Rollback
 )
@@ -112,6 +113,51 @@ function Copy-StableBinary {
         throw "Stable binary copy failed SHA-256 verification: $Target"
     }
     Move-Item -LiteralPath $temp -Destination $Target -Force
+}
+function Activate-ReleaseAuthority {
+    param(
+        [Parameter(Mandatory)] [string]$Tool,
+        [Parameter(Mandatory)] [string]$ReleaseSetPath,
+        [Parameter(Mandatory)] [string]$ReleaseSetSidecar,
+        [Parameter(Mandatory)] [string]$ReleaseDir,
+        [Parameter(Mandatory)] [string]$Controller,
+        [Parameter(Mandatory)] [string]$Console,
+        [Parameter(Mandatory)] [string]$Diagnostic,
+        [Parameter(Mandatory)] [string]$SingBox,
+        [Parameter(Mandatory)] [string]$InstallRoot
+    )
+
+    $binDir = Join-Path $InstallRoot "bin"
+    $currentPath = Join-Path $InstallRoot "current.pb"
+    $previousPath = Join-Path $InstallRoot "previous.pb"
+    $currentTemp = "$currentPath.new"
+
+    $activationArgs = @(
+        "write-windows-activation", "--input", $ReleaseSetPath, "--sha256-file", $ReleaseSetSidecar,
+        "--release-dir", $ReleaseDir, "--controller", $Controller, "--console", $Console,
+        "--diagnostic", $Diagnostic, "--sing-box", $SingBox, "--output", $currentTemp
+    )
+    & $Tool @activationArgs
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create typed Windows activation state" }
+    [void](Invoke-Diagnostic -Diagnostic $Diagnostic -State $currentTemp)
+
+    $stableConsole = Join-Path $binDir "edge-console.exe"
+    $stableDiagnostic = Join-Path $binDir "edge-diagnostic.exe"
+    Copy-StableBinary -Source $Console -Target $stableConsole
+    Copy-StableBinary -Source $Diagnostic -Target $stableDiagnostic
+
+    if (Test-Path -LiteralPath $currentPath) {
+        Copy-Item -LiteralPath $currentPath -Destination "$previousPath.new" -Force
+        Move-Item -LiteralPath "$previousPath.new" -Destination $previousPath -Force
+    }
+    Move-Item -LiteralPath $currentTemp -Destination $currentPath -Force
+    [void](Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath)
+
+    return @{
+        current_state = $currentPath
+        console = $stableConsole
+        diagnostic = $stableDiagnostic
+    }
 }
 
 function Register-InstalledAutomation {
@@ -247,6 +293,28 @@ $verifyArgs = @(
 & $tool @verifyArgs
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
 
+if ($ReleaseOnly) {
+    $activation = Activate-ReleaseAuthority `
+        -Tool $tool `
+        -ReleaseSetPath $releaseSetPath `
+        -ReleaseSetSidecar $releaseSetSidecar `
+        -ReleaseDir $releaseDir `
+        -Controller $controller `
+        -Console $console `
+        -Diagnostic $diagnostic `
+        -SingBox $singBox `
+        -InstallRoot $InstallRoot
+
+    Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256 (release authority only)"
+    Write-Output "current_state=$($activation.current_state)"
+    Write-Output "console=$($activation.console)"
+    Write-Output "diagnostic=$($activation.diagnostic)"
+    Write-Output "runtime_state=NOT_CONFIGURED"
+    Write-Output "runtime_config=NOT_CONFIGURED"
+    Write-Output "automation_registered=false"
+    exit 0
+}
+
 if (-not (Test-Path -LiteralPath $runtimeStatePath)) {
     if ([string]::IsNullOrWhiteSpace($LegacyRuntimeStatePath) -or -not (Test-Path -LiteralPath $LegacyRuntimeStatePath)) {
         throw "First install requires -LegacyRuntimeStatePath pointing to the existing local current-edge.json so it can be imported once into runtime-state.pb"
@@ -265,32 +333,23 @@ if (-not (Test-Path -LiteralPath $runtimeConfigPath)) {
     Move-Item -LiteralPath "$runtimeConfigPath.new" -Destination $runtimeConfigPath -Force
 }
 
-$currentTemp = "$currentPath.new"
-$activationArgs = @(
-    "write-windows-activation", "--input", $releaseSetPath, "--sha256-file", $releaseSetSidecar,
-    "--release-dir", $releaseDir, "--controller", $controller, "--console", $console,
-    "--diagnostic", $diagnostic, "--sing-box", $singBox, "--output", $currentTemp
-)
-& $tool @activationArgs
-if ($LASTEXITCODE -ne 0) { throw "Failed to create typed Windows activation state" }
-[void](Invoke-Diagnostic -Diagnostic $diagnostic -State $currentTemp)
+$activation = Activate-ReleaseAuthority `
+    -Tool $tool `
+    -ReleaseSetPath $releaseSetPath `
+    -ReleaseSetSidecar $releaseSetSidecar `
+    -ReleaseDir $releaseDir `
+    -Controller $controller `
+    -Console $console `
+    -Diagnostic $diagnostic `
+    -SingBox $singBox `
+    -InstallRoot $InstallRoot
 
-$stableConsole = Join-Path $binDir "edge-console.exe"
-$stableDiagnostic = Join-Path $binDir "edge-diagnostic.exe"
-Copy-StableBinary -Source $console -Target $stableConsole
-Copy-StableBinary -Source $diagnostic -Target $stableDiagnostic
-
-if (Test-Path -LiteralPath $currentPath) {
-    Copy-Item -LiteralPath $currentPath -Destination "$previousPath.new" -Force
-    Move-Item -LiteralPath "$previousPath.new" -Destination $previousPath -Force
-}
-Move-Item -LiteralPath $currentTemp -Destination $currentPath -Force
-[void](Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath)
-Register-InstalledAutomation -ConsolePath $stableConsole
+Register-InstalledAutomation -ConsolePath $activation.console
 
 Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
-Write-Output "current_state=$currentPath"
+Write-Output "current_state=$($activation.current_state)"
 Write-Output "runtime_state=$runtimeStatePath"
 Write-Output "runtime_config=$runtimeConfigPath"
-Write-Output "console=$stableConsole"
-Write-Output "diagnostic=$stableDiagnostic"
+Write-Output "console=$($activation.console)"
+Write-Output "diagnostic=$($activation.diagnostic)"
+Write-Output "automation_registered=true"
