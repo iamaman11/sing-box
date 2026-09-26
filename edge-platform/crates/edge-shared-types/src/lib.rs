@@ -14,6 +14,9 @@ pub mod release {
 
 pub use edge::platform::v1::*;
 use prost::Message;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 pub use release::v1::{
     CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
     WindowsActivationState, WindowsRuntime,
@@ -251,6 +254,102 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
     Ok(())
 }
 
+pub fn encode_windows_runtime_state(state: &WindowsRuntimeState) -> Result<Vec<u8>, String> {
+    validate_windows_runtime_state(state)?;
+    Ok(state.encode_to_vec())
+}
+
+pub fn decode_windows_runtime_state(bytes: &[u8]) -> Result<WindowsRuntimeState, String> {
+    let state = WindowsRuntimeState::decode(bytes)
+        .map_err(|err| format!("Windows runtime-state protobuf decode failed: {err}"))?;
+    validate_windows_runtime_state(&state)?;
+    if state.encode_to_vec() != bytes {
+        return Err("Windows runtime state is not canonical protobuf encoding".to_owned());
+    }
+    Ok(state)
+}
+
+pub fn validate_windows_runtime_state(state: &WindowsRuntimeState) -> Result<(), String> {
+    if state.schema_version != 1 {
+        return Err(format!(
+            "unsupported Windows runtime-state schema_version {}",
+            state.schema_version
+        ));
+    }
+    if let Some(label) = state.deployment_label.as_deref() {
+        validate_safe_runtime_token("WindowsRuntimeState.deployment_label", label, 160)?;
+    }
+    validate_safe_runtime_token("WindowsRuntimeState.instance_id", &state.instance_id, 160)?;
+    validate_ipv4_literal("WindowsRuntimeState.server_ip", &state.server_ip)?;
+    validate_windows_tunnel_binding(
+        "WindowsRuntimeState.direct",
+        state.direct.as_ref().ok_or_else(|| "WindowsRuntimeState.direct is required".to_owned())?,
+    )?;
+    validate_windows_tunnel_binding(
+        "WindowsRuntimeState.warp",
+        state.warp.as_ref().ok_or_else(|| "WindowsRuntimeState.warp is required".to_owned())?,
+    )?;
+    Ok(())
+}
+
+fn validate_windows_tunnel_binding(label: &str, value: &WindowsTunnelBinding) -> Result<(), String> {
+    validate_runtime_dns_name(&format!("{label}.domain"), &value.domain)?;
+    if value.hy2_port == 0 || value.hy2_port > 65535 {
+        return Err(format!("{label}.hy2_port must be in 1..=65535"));
+    }
+    if value.vless_port == 0 || value.vless_port > 65535 {
+        return Err(format!("{label}.vless_port must be in 1..=65535"));
+    }
+    for (field, token, max_len) in [
+        ("hy2_password", value.hy2_password.as_str(), 256usize),
+        ("vless_uuid", value.vless_uuid.as_str(), 128usize),
+        ("reality_public_key", value.reality_public_key.as_str(), 256usize),
+        ("reality_short_id", value.reality_short_id.as_str(), 64usize),
+    ] {
+        validate_safe_runtime_token(&format!("{label}.{field}"), token, max_len)?;
+    }
+    Ok(())
+}
+
+fn validate_safe_runtime_token(label: &str, value: &str, max_len: usize) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > max_len
+        || value.chars().any(|ch| ch.is_control())
+    {
+        return Err(format!("{label} is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_runtime_dns_name(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 253
+        || value != value.to_ascii_lowercase()
+        || value.starts_with('.')
+        || value.ends_with('.')
+        || value.split('.').any(|part| {
+            part.is_empty()
+                || part.len() > 63
+                || part.starts_with('-')
+                || part.ends_with('-')
+                || !part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        })
+    {
+        return Err(format!("{label} must be a normalized lowercase DNS name"));
+    }
+    Ok(())
+}
+
+fn validate_ipv4_literal(label: &str, value: &str) -> Result<(), String> {
+    let parsed = value
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| format!("{label} must be an IPv4 literal"))?;
+    if !parsed.is_ipv4() {
+        return Err(format!("{label} must be an IPv4 literal"));
+    }
+    Ok(())
+}
+
 pub fn encode_windows_activation_state(state: &WindowsActivationState) -> Result<Vec<u8>, String> {
     validate_windows_activation_state(state)?;
     Ok(state.encode_to_vec())
@@ -303,6 +402,43 @@ pub fn validate_windows_activation_state(state: &WindowsActivationState) -> Resu
         validate_sha256_bytes(&format!("WindowsActivationState.{label}"), value)?;
     }
     Ok(())
+}
+
+pub fn verify_windows_activation_files(state: &WindowsActivationState) -> Result<(), String> {
+    validate_windows_activation_state(state)?;
+    for (label, path, expected) in [
+        ("controller", state.controller_path.as_str(), state.controller_sha256.as_slice()),
+        ("console", state.console_path.as_str(), state.console_sha256.as_slice()),
+        ("sing-box", state.sing_box_path.as_str(), state.sing_box_sha256.as_slice()),
+        ("diagnostic", state.diagnostic_path.as_str(), state.diagnostic_sha256.as_slice()),
+    ] {
+        let actual = sha256_file(Path::new(path))?;
+        if actual.as_slice() != expected {
+            return Err(format!(
+                "{label} SHA-256 mismatch: expected {}, got {}",
+                digest_to_lower_hex(expected),
+                digest_to_lower_hex(&actual)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<Vec<u8>, String> {
+    let mut file =
+        File::open(path).map_err(|err| format!("failed to open {}: {err}", path.display()))?;
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        context.update(&buffer[..count]);
+    }
+    Ok(context.finish().as_ref().to_vec())
 }
 
 pub fn digest_to_lower_hex(value: &[u8]) -> String {
