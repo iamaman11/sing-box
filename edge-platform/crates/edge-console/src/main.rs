@@ -21,7 +21,8 @@ use edge_shared_types::{
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState,
+    TraceObservation, UbuntuProxyState, WindowsActivationState, decode_windows_activation_state,
+    verify_windows_activation_files,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -87,6 +88,17 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
     {
         Command::Menu(args) => {
             run_menu(args.resolve()).await?;
+            Ok(())
+        }
+        Command::EnsureController(args) => {
+            ensure_controller_running(&args.resolve())?;
+            println!("status=PASS");
+            println!("controller_start_owner=edge-console");
+            println!("activation_authority=current.pb");
+            Ok(())
+        }
+        Command::Reconcile(args) => {
+            reconcile_installed_runtime(args.resolve()).await?;
             Ok(())
         }
         Command::Status(args) => {
@@ -401,60 +413,39 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
     }
 }
 
-fn looks_like_repo_root(path: &Path) -> bool {
-    path.join("edge-platform").join("Cargo.toml").is_file()
-        || (path.join("Cargo.toml").is_file() && path.join("crates").is_dir())
-}
-
-fn resolve_repo_root_for_controller() -> Option<PathBuf> {
-    if let Ok(value) = env::var("EDGE_PLATFORM_REPO_ROOT") {
-        let path = PathBuf::from(value);
-        if looks_like_repo_root(&path) {
-            return Some(path);
-        }
-    }
-
-    if let Ok(cwd) = env::current_dir() {
-        if looks_like_repo_root(&cwd) {
-            return Some(cwd);
-        }
-        if let Some(parent) = cwd.parent()
-            && looks_like_repo_root(parent)
-        {
-            return Some(parent.to_path_buf());
-        }
-    }
-
-    if let Ok(user_profile) = env::var("USERPROFILE") {
-        for candidate in [
-            PathBuf::from(&user_profile).join("temp").join("sing-box"),
-            PathBuf::from(&user_profile)
-                .join("temp")
-                .join("sing-box")
-                .join("edge-platform"),
-            PathBuf::from(&user_profile)
-                .join("projects")
-                .join("sing-box"),
-            PathBuf::from(&user_profile)
-                .join("projects")
-                .join("sing-box")
-                .join("edge-platform"),
-        ] {
-            if looks_like_repo_root(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
-}
-
-fn controller_binary_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let current = env::current_exe()?;
-    let parent = current
+fn installed_root_from_console() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let executable = env::current_exe()?;
+    let bin_dir = executable
         .parent()
-        .ok_or("failed to resolve console binary directory")?;
-    Ok(parent.join("edge-controller.exe"))
+        .ok_or("failed to resolve edge-console binary directory")?;
+    if bin_dir.file_name().and_then(|value| value.to_str()) != Some("bin") {
+        return Err("edge-console installed startup requires <install-root>\\bin\\edge-console.exe".into());
+    }
+    let root = bin_dir
+        .parent()
+        .ok_or("failed to resolve edge-platform install root")?
+        .to_path_buf();
+    Ok(root)
+}
+
+fn load_verified_activation(
+    install_root: &Path,
+) -> Result<WindowsActivationState, Box<dyn std::error::Error>> {
+    let state_path = install_root.join("current.pb");
+    let bytes = std::fs::read(&state_path)?;
+    let state = decode_windows_activation_state(&bytes)?;
+    verify_windows_activation_files(&state)?;
+
+    let releases_root = install_root.join("releases").canonicalize()?;
+    let release_dir = PathBuf::from(&state.release_dir).canonicalize()?;
+    let controller = PathBuf::from(&state.controller_path).canonicalize()?;
+    if !release_dir.starts_with(&releases_root) {
+        return Err("current.pb release_dir is outside the immutable releases root".into());
+    }
+    if !controller.starts_with(&release_dir) {
+        return Err("current.pb controller_path is outside its immutable release directory".into());
+    }
+    Ok(state)
 }
 
 fn parse_loopback_addr(endpoint: &str) -> Option<SocketAddr> {
@@ -489,14 +480,9 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
         return Ok(());
     }
 
-    let controller_binary = controller_binary_path()?;
-    let repo_root = resolve_repo_root_for_controller()
-        .ok_or("failed to resolve EDGE_PLATFORM_REPO_ROOT for controller autostart")?;
-    let runtime_root = if repo_root.join("edge-platform").is_dir() {
-        repo_root.join("edge-platform").join(".runtime")
-    } else {
-        repo_root.join(".runtime")
-    };
+    let install_root = installed_root_from_console()?;
+    let activation = load_verified_activation(&install_root)?;
+    let runtime_root = install_root.join("runtime");
     std::fs::create_dir_all(&runtime_root)?;
     rotate_service_log_if_needed(
         &runtime_root.join("controller-service-stdout.log"),
@@ -516,9 +502,9 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
         .append(true)
         .open(runtime_root.join("controller-service-stderr.log"))?;
 
-    Command::new(controller_binary)
+    Command::new(&activation.controller_path)
         .arg("serve")
-        .arg(repo_root)
+        .arg(&install_root)
         .arg(DEFAULT_CONTROLLER_ADDR)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
@@ -545,6 +531,36 @@ fn rotate_service_log_if_needed(
         return Ok(());
     }
     std::fs::write(path, b"")?;
+    Ok(())
+}
+
+async fn reconcile_installed_runtime(
+    endpoint: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ensure_controller_running(&endpoint)?;
+    let status = fetch_status(endpoint.clone()).await?;
+    let Some(local) = status.local_singbox.as_ref() else {
+        return Err("controller status has no local sing-box observation".into());
+    };
+    if !local.managed_config {
+        println!("status=PASS");
+        println!("reconcile=NOOP");
+        println!("reason=no_managed_local_config");
+        return Ok(());
+    }
+    if local.process_running {
+        println!("status=PASS");
+        println!("reconcile=NOOP");
+        println!("reason=local_runtime_already_running");
+        return Ok(());
+    }
+
+    let response = start_local(endpoint).await?;
+    if !response.success {
+        return Err(format!("local runtime reconcile failed: {}", response.note).into());
+    }
+    println!("status=PASS");
+    println!("reconcile=STARTED_LOCAL_RUNTIME");
     Ok(())
 }
 
@@ -980,12 +996,14 @@ fn print_status(status: &ControllerStatus) {
 }
 
 fn print_lifecycle_status() {
-    let root =
-        env::var("EDGE_REPO_ROOT").unwrap_or_else(|_| "C:\\Users\\Bose\\temp\\sing-box".to_owned());
-    let path = Path::new(&root)
-        .join("edge-platform")
-        .join(".runtime")
-        .join("controller-state.sqlite");
+    let path = installed_root_from_console()
+        .map(|root| root.join("state").join("controller-state.sqlite"))
+        .or_else(|_| {
+            env::var("EDGE_REPO_ROOT")
+                .map(|root| PathBuf::from(root).join("edge-platform").join(".runtime").join("controller-state.sqlite"))
+                .map_err(|err| err.into())
+        });
+    let Ok(path) = path else { return };
     let Ok(conn) = Connection::open(path) else {
         return;
     };
