@@ -7,12 +7,13 @@ use edge_observability::init as init_observability;
 use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
+use std::fs;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
@@ -22,7 +23,10 @@ use edge_shared_types::{
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState, WindowsActivationState, decode_windows_activation_state,
+    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
+    WindowsPrivilegedRequest, WindowsPrivilegedResult, decode_windows_activation_state,
+    decode_windows_privileged_request, decode_windows_privileged_result,
+    encode_windows_privileged_request, encode_windows_privileged_result,
     verify_windows_activation_files,
 };
 use tonic::Request;
@@ -31,6 +35,10 @@ use tonic::transport::Channel;
 const DEFAULT_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:50051";
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
 const MAX_CONTROLLER_SERVICE_LOG_BYTES: u64 = 8 * 1024 * 1024;
+const PRIVILEGED_REQUEST_SCHEMA_VERSION: u32 = 1;
+const PRIVILEGED_RESULT_SCHEMA_VERSION: u32 = 1;
+const PRIVILEGED_TASK_NAME: &str = "EdgePlatformPrivilegedDispatch";
+const PRIVILEGED_WAIT_SECS: u64 = 180;
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 
@@ -138,6 +146,43 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("dns_mutated=false");
             println!("routes_mutated=false");
             println!("cleanup=PASS");
+            Ok(())
+        }
+        Command::PrivilegedPing(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::Ping as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedActivate(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::ActivateRelease as i32,
+                    accepted_revision: Some(args.accepted_revision),
+                    release_set_sha256: Some(args.release_set_sha256),
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedDispatch(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            dispatch_privileged_request(&install_root)?;
             Ok(())
         }
         Command::Secrets(args) => {
@@ -433,6 +478,257 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             "0" => return Ok(()),
             _ => println!("Unknown option"),
         }
+    }
+}
+
+fn privileged_request_path(install_root: &Path) -> PathBuf {
+    install_root.join("exchange").join("requests").join("request.pb")
+}
+
+fn privileged_result_path(install_root: &Path) -> PathBuf {
+    install_root.join("exchange").join("results").join("result.pb")
+}
+
+fn new_privileged_request_id() -> Result<String, Box<dyn std::error::Error>> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    Ok(format!("{}-{}", now.as_millis(), std::process::id()))
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = path.parent().ok_or("atomic write path has no parent")?;
+    fs::create_dir_all(parent)?;
+    let temp = path.with_extension("pb.new");
+    fs::write(&temp, bytes)?;
+    fs::rename(&temp, path)?;
+    Ok(())
+}
+
+fn submit_privileged_request(
+    install_root: &Path,
+    request: WindowsPrivilegedRequest,
+) -> Result<WindowsPrivilegedResult, Box<dyn std::error::Error>> {
+    let request_path = privileged_request_path(install_root);
+    if request_path.exists() {
+        return Err("a privileged Windows request is already pending".into());
+    }
+    let bytes = encode_windows_privileged_request(&request)?;
+    write_atomic(&request_path, &bytes)?;
+
+    let result_path = privileged_result_path(install_root);
+    let deadline = Instant::now() + Duration::from_secs(PRIVILEGED_WAIT_SECS);
+    while Instant::now() < deadline {
+        match fs::read(&result_path) {
+            Ok(bytes) => {
+                let result = decode_windows_privileged_result(&bytes)?;
+                if result.request_id == request.request_id {
+                    return Ok(result);
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    Err(format!(
+        "timed out waiting {} seconds for privileged Windows request {}",
+        PRIVILEGED_WAIT_SECS, request.request_id
+    )
+    .into())
+}
+
+fn dispatch_privileged_request(
+    install_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request_path = privileged_request_path(install_root);
+    let bytes = match fs::read(&request_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            println!("status=PASS");
+            println!("privileged_dispatch=NOOP");
+            return Ok(());
+        }
+        Err(err) => return Err(err.into()),
+    };
+    let request = decode_windows_privileged_request(&bytes)?;
+    let result = process_privileged_request(install_root, &request);
+    let result_bytes = encode_windows_privileged_result(&result)?;
+    write_atomic(&privileged_result_path(install_root), &result_bytes)?;
+    fs::remove_file(&request_path)?;
+
+    print_privileged_result(&result);
+    finish_privileged_result(&result)?;
+    Ok(())
+}
+
+fn process_privileged_request(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+) -> WindowsPrivilegedResult {
+    let outcome = match WindowsPrivilegedOperation::try_from(request.operation) {
+        Ok(WindowsPrivilegedOperation::Ping) => {
+            let active = load_verified_activation(install_root)
+                .ok()
+                .map(|state| state.release_set_sha256);
+            Ok((
+                "PING_PASS".to_owned(),
+                "privileged dispatcher is reachable".to_owned(),
+                active,
+            ))
+        }
+        Ok(WindowsPrivilegedOperation::ActivateRelease) => {
+            activate_privileged_release(install_root, request)
+        }
+        Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
+            Err("unsupported privileged Windows operation".to_owned())
+        }
+    };
+
+    match outcome {
+        Ok((code, detail, active)) => WindowsPrivilegedResult {
+            schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
+            request_id: request.request_id.clone(),
+            success: true,
+            code,
+            detail,
+            active_release_set_sha256: active,
+        },
+        Err(detail) => WindowsPrivilegedResult {
+            schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
+            request_id: request.request_id.clone(),
+            success: false,
+            code: "PRIVILEGED_OPERATION_FAILED".to_owned(),
+            detail,
+            active_release_set_sha256: load_verified_activation(install_root)
+                .ok()
+                .map(|state| state.release_set_sha256),
+        },
+    }
+}
+
+fn activate_privileged_release(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+) -> Result<(String, String, Option<String>), String> {
+    let accepted_revision = request
+        .accepted_revision
+        .as_deref()
+        .ok_or_else(|| "accepted_revision is required".to_owned())?;
+    let target_release = request
+        .release_set_sha256
+        .as_deref()
+        .ok_or_else(|| "release_set_sha256 is required".to_owned())?;
+
+    if let Ok(current) = load_verified_activation(install_root) {
+        if current.release_set_sha256 == target_release {
+            retarget_privileged_task(install_root, &current.console_path)?;
+            return Ok((
+                "RELEASE_ALREADY_ACTIVE".to_owned(),
+                "exact accepted ReleaseSet is already active".to_owned(),
+                Some(current.release_set_sha256),
+            ));
+        }
+    }
+
+    let installer = install_root
+        .join("bootstrap")
+        .join("install-windows-release.ps1");
+    if !installer.is_file() {
+        return Err(format!(
+            "protected Windows installer is missing: {}",
+            installer.display()
+        ));
+    }
+    let root = install_root
+        .to_str()
+        .ok_or_else(|| "Windows install root is not UTF-8".to_owned())?;
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&installer)
+        .args([
+            "-AcceptedRevision",
+            accepted_revision,
+            "-ReleaseSetSha256",
+            target_release,
+            "-InstallRoot",
+            root,
+            "-ReleaseOnly",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("failed to start protected Windows installer: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "protected Windows installer failed with exit code {}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+
+    let activation = load_verified_activation(install_root)
+        .map_err(|err| format!("updated Windows activation failed verification: {err}"))?;
+    if activation.release_set_sha256 != target_release {
+        return Err("updated Windows activation does not match requested ReleaseSet".to_owned());
+    }
+    retarget_privileged_task(install_root, &activation.console_path)?;
+    Ok((
+        "RELEASE_ACTIVATED".to_owned(),
+        "exact accepted ReleaseSet activated".to_owned(),
+        Some(activation.release_set_sha256),
+    ))
+}
+
+fn retarget_privileged_task(install_root: &Path, console_path: &str) -> Result<(), String> {
+    let action = format!(
+        "\"{}\" privileged-dispatch --install-root \"{}\"",
+        console_path,
+        install_root.display()
+    );
+    let status = Command::new("schtasks.exe")
+        .args([
+            "/Change",
+            "/TN",
+            PRIVILEGED_TASK_NAME,
+            "/TR",
+            &action,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("failed to retarget privileged Windows task: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "failed to retarget privileged Windows task, exit code {}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(())
+}
+
+fn print_privileged_result(result: &WindowsPrivilegedResult) {
+    println!("status={}", if result.success { "PASS" } else { "FAIL" });
+    println!("request_id={}", result.request_id);
+    println!("code={}", result.code);
+    println!("detail={}", result.detail);
+    if let Some(release) = result.active_release_set_sha256.as_deref() {
+        println!("active_release_set_sha256={release}");
+    }
+}
+
+fn finish_privileged_result(
+    result: &WindowsPrivilegedResult,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if result.success {
+        Ok(())
+    } else {
+        Err(format!("privileged Windows operation failed: {}", result.code).into())
     }
 }
 
