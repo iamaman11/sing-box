@@ -126,9 +126,11 @@ C:\sing-box-runner    GitHub Actions transport
 Before registration, `main` must report protected. The one-time bootstrap
 `edge-platform/scripts/bootstrap-windows-runner.ps1` checks this itself and
 refuses registration otherwise. It downloads only the pinned official GitHub
-Actions Runner, verifies its SHA-256, registers the repository-scoped
-`sing-box-windows-lab` service as `NetworkService`, and installs no Git/Rust/
-Java/provider credentials.
+Actions Runner bootstrap archive, verifies its SHA-256, registers the
+repository-scoped `sing-box-windows-lab` service as `NetworkService`, and
+installs no Git/Rust/Java/provider credentials. After registration, runner
+software updates are left to GitHub's native self-update mechanism; runner
+version is transport plumbing and is not ReleaseSet/application authority.
 
 The only interactive secret is GitHub's short-lived runner registration token
 from **Settings > Actions > Runners > New self-hosted runner**. The script reads
