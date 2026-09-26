@@ -871,10 +871,12 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
 
-          $localBuild = git grep -n -E '(cargo|rustc)(\.exe)?[[:space:]]+(build|install|run)' -- edge-platform/scripts win/windows
-          if ($LASTEXITCODE -eq 0) { throw ("Windows operational/install scripts must consume GitHub-built artifacts, never build locally:" + [Environment]::NewLine + $localBuild) }
-          if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
-          $global:LASTEXITCODE = 0
+          $operationalScripts = Get-ChildItem edge-platform/scripts,win/windows -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.cmd', '.bat' }
+          $localBuild = @($operationalScripts | Select-String -Pattern '(cargo|rustc)(\.exe)?\s+(build|install|run)')
+          if ($localBuild.Count -gt 0) {
+            $detail = ($localBuild | ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line)" }) -join [Environment]::NewLine
+            throw ("Windows operational/install scripts must consume GitHub-built artifacts, never build locally:" + [Environment]::NewLine + $detail)
+          }
 
           $runtimeBoundary = git grep -n -E 'Get-DnsClientServerAddress|Start-Process -FilePath.*sing-box|failed to capture sing-box pid from visible window launch' -- edge-platform/crates/edge-local-runtime
           if ($LASTEXITCODE -eq 0) { throw ("Typed Windows runtime boundary regressed to PowerShell/text observation:" + [Environment]::NewLine + $runtimeBoundary) }
