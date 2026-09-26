@@ -539,7 +539,7 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
     if wait_for_controller(addr, Duration::from_secs(10)) {
         Ok(())
     } else {
-        Err("edge-controller did not start listening on 127.0.0.1:50051 in time".into())
+        Err(format!("edge-controller did not start listening on {addr} in time").into())
     }
 }
 
