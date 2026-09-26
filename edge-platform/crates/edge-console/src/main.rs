@@ -996,19 +996,10 @@ fn print_status(status: &ControllerStatus) {
 }
 
 fn print_lifecycle_status() {
-    let path = installed_root_from_console()
-        .map(|root| root.join("state").join("controller-state.sqlite"))
-        .or_else(|_| {
-            env::var("EDGE_REPO_ROOT")
-                .map(|root| {
-                    PathBuf::from(root)
-                        .join("edge-platform")
-                        .join(".runtime")
-                        .join("controller-state.sqlite")
-                })
-                .map_err(|err| err.into())
-        });
-    let Ok(path) = path else { return };
+    let Ok(root) = installed_root_from_console() else {
+        return;
+    };
+    let path = root.join("state").join("controller-state.sqlite");
     let Ok(conn) = Connection::open(path) else {
         return;
     };
