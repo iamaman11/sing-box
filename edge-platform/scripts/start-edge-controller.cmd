@@ -1,2 +1,2 @@
 @echo off
-"%LOCALAPPDATA%\edge-platform\bin\edge-console.exe" ensure-controller
+"C:\sing-box\bin\edge-console.exe" ensure-controller
