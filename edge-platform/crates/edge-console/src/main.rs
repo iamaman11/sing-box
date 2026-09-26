@@ -2024,5 +2024,4 @@ mod tests {
         let error = installed_root_from_executable(&executable).unwrap_err();
         assert!(error.to_string().contains("releases"));
     }
-
 }
