@@ -181,12 +181,7 @@ pub fn run_non_tun_loopback_smoke(
     origin_result?;
     cleanup_result?;
 
-    if TcpStream::connect_timeout(
-        &SocketAddr::V4(proxy_addr),
-        Duration::from_millis(400),
-    )
-    .is_ok()
-    {
+    if TcpStream::connect_timeout(&SocketAddr::V4(proxy_addr), Duration::from_millis(400)).is_ok() {
         return Err("non-TUN smoke proxy listener leaked after cleanup".to_owned());
     }
 
@@ -215,11 +210,7 @@ fn wait_for_smoke_listener(child: &mut Child, address: SocketAddrV4) -> Result<(
             ));
         }
 
-        if TcpStream::connect_timeout(
-            &SocketAddr::V4(address),
-            Duration::from_millis(200),
-        )
-        .is_ok()
+        if TcpStream::connect_timeout(&SocketAddr::V4(address), Duration::from_millis(200)).is_ok()
         {
             return Ok(());
         }
@@ -276,10 +267,7 @@ fn serve_smoke_origin(listener: TcpListener) -> Result<(), String> {
     }
 }
 
-fn request_through_smoke_proxy(
-    proxy_addr: SocketAddrV4,
-    origin_port: u16,
-) -> Result<(), String> {
+fn request_through_smoke_proxy(proxy_addr: SocketAddrV4, origin_port: u16) -> Result<(), String> {
     let mut stream = TcpStream::connect_timeout(
         &SocketAddr::V4(proxy_addr),
         Duration::from_secs(SMOKE_IO_TIMEOUT_SECS),
@@ -308,7 +296,9 @@ fn request_through_smoke_proxy(
         .read_to_string(&mut response)
         .map_err(|err| format!("failed to read non-TUN smoke proxy response: {err}"))?;
     if !response.contains(" 200 ") || !response.contains(SMOKE_RESPONSE_BODY) {
-        return Err("non-TUN smoke proxy round-trip did not return the expected response".to_owned());
+        return Err(
+            "non-TUN smoke proxy round-trip did not return the expected response".to_owned(),
+        );
     }
     Ok(())
 }
