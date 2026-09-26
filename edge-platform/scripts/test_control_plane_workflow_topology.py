@@ -255,6 +255,13 @@ def main() -> None:
         and '"*S-1-5-20:(OI)(CI)RX"' in windows_runner_bootstrap
         and '"*S-1-5-20:(OI)(CI)M"' in windows_runner_bootstrap
         and '/remove:g "*S-1-5-20"' in windows_runner_bootstrap
+        and '(Join-Path $ApplicationRoot "*") /reset /T /Q' in windows_runner_bootstrap
+        and '(Join-Path $secretRoot "*") /reset /T /Q' in windows_runner_bootstrap
+        and 'Refusing empty DACL after Windows ACL bootstrap' in windows_runner_bootstrap
+        and '$ApplicationRoot /inheritance:r /Q' in windows_runner_bootstrap
+        and '$secretRoot /inheritance:r /Q' in windows_runner_bootstrap
+        and '/inheritance:r /T' not in windows_runner_bootstrap
+        and '/T /C' not in windows_runner_bootstrap
         and 'BUILTIN\\Administrators:(OI)(CI)F' not in windows_runner_bootstrap
         and 'NetworkService must have no ACL entry on protected Windows secret state' in windows_runner_bootstrap
         and 'RunnerVersion = "2.337.0"' in windows_runner_bootstrap
