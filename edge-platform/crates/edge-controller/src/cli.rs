@@ -24,6 +24,8 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     Serve(ServeArgs),
+    #[cfg(windows)]
+    WindowsService(ServeArgs),
     GetStatus(ControllerEndpointArgs),
     ControllerBootstrapRuntime(ControllerBootstrapArgs),
     BootstrapRuntime(AgentBootstrapArgs),
@@ -41,6 +43,8 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Serve(_) => "serve",
+            #[cfg(windows)]
+            Self::WindowsService(_) => "windows-service",
             Self::GetStatus(_) => "get-status",
             Self::ControllerBootstrapRuntime(_) => "controller-bootstrap-runtime",
             Self::BootstrapRuntime(_) => "bootstrap-runtime",
