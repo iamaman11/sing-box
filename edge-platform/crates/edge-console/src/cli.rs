@@ -28,6 +28,8 @@ pub(crate) enum Command {
     SmokeRuntime,
     PrivilegedPing(InstallRootArgs),
     PrivilegedActivate(PrivilegedActivateArgs),
+    #[cfg(windows)]
+    PrivilegedConvergeControllerService(InstallRootArgs),
     PrivilegedDispatch(InstallRootArgs),
     Secrets(EndpointArgs),
     GetSecret(NameEndpointArgs),
@@ -58,6 +60,10 @@ impl Command {
             Self::SmokeRuntime => "smoke-runtime",
             Self::PrivilegedPing(_) => "privileged-ping",
             Self::PrivilegedActivate(_) => "privileged-activate",
+            #[cfg(windows)]
+            Self::PrivilegedConvergeControllerService(_) => {
+                "privileged-converge-controller-service"
+            }
             Self::PrivilegedDispatch(_) => "privileged-dispatch",
             Self::Secrets(_) => "secrets",
             Self::GetSecret(_) => "get-secret",
