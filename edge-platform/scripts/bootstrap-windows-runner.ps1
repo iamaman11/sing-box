@@ -103,9 +103,9 @@ function Configure-ApplicationAcl {
     }
 
     & icacls.exe $ApplicationRoot /inheritance:r `
-        /grant:r "SYSTEM:(OI)(CI)F" `
-        "BUILTIN\Administrators:(OI)(CI)F" `
-        "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)RX" /T /C | Out-Null
+        /grant:r "*S-1-5-18:(OI)(CI)F" `
+        "*S-1-5-32-544:(OI)(CI)F" `
+        "*S-1-5-20:(OI)(CI)RX" /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to establish protected C:\sing-box ACL" }
 
     foreach ($writable in @(
@@ -114,22 +114,22 @@ function Configure-ApplicationAcl {
         (Join-Path $ApplicationRoot "logs"),
         (Join-Path $ApplicationRoot "exchange\requests")
     )) {
-        & icacls.exe $writable /grant:r "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)M" /T /C | Out-Null
+        & icacls.exe $writable /grant:r "*S-1-5-20:(OI)(CI)M" /T /C | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to grant bounded runner write access: $writable" }
     }
 
     & icacls.exe (Join-Path $ApplicationRoot "exchange\results") `
-        /grant:r "NT AUTHORITY\NETWORK SERVICE:(OI)(CI)RX" /T /C | Out-Null
+        /grant:r "*S-1-5-20:(OI)(CI)RX" /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to grant runner result read access" }
 
     $secretRoot = Join-Path $ApplicationRoot "state\secrets"
     & icacls.exe $secretRoot /inheritance:r /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to disable Windows secret-state ACL inheritance" }
-    & icacls.exe $secretRoot /remove:g "NT AUTHORITY\NETWORK SERVICE" /T /C | Out-Null
+    & icacls.exe $secretRoot /remove:g "*S-1-5-20" /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to remove runner ACL from Windows secret state" }
     & icacls.exe $secretRoot `
-        /grant:r "SYSTEM:(OI)(CI)F" `
-        "BUILTIN\Administrators:(OI)(CI)F" /T /C | Out-Null
+        /grant:r "*S-1-5-18:(OI)(CI)F" `
+        "*S-1-5-32-544:(OI)(CI)F" /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows secret state from runner access" }
 
     $runnerSid = [Security.Principal.SecurityIdentifier]::new("S-1-5-20")
