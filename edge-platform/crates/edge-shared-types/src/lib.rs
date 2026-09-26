@@ -261,9 +261,7 @@ pub fn encode_windows_privileged_request(
     Ok(request.encode_to_vec())
 }
 
-pub fn decode_windows_privileged_request(
-    bytes: &[u8],
-) -> Result<WindowsPrivilegedRequest, String> {
+pub fn decode_windows_privileged_request(bytes: &[u8]) -> Result<WindowsPrivilegedRequest, String> {
     let request = WindowsPrivilegedRequest::decode(bytes)
         .map_err(|err| format!("Windows privileged request protobuf decode failed: {err}"))?;
     validate_windows_privileged_request(&request)?;
@@ -307,16 +305,8 @@ pub fn validate_windows_privileged_request(
                 .release_set_sha256
                 .as_deref()
                 .ok_or_else(|| "ACTIVATE_RELEASE requires release_set_sha256".to_owned())?;
-            validate_lower_hex(
-                "WindowsPrivilegedRequest.accepted_revision",
-                revision,
-                40,
-            )?;
-            validate_lower_hex(
-                "WindowsPrivilegedRequest.release_set_sha256",
-                release,
-                64,
-            )?;
+            validate_lower_hex("WindowsPrivilegedRequest.accepted_revision", revision, 40)?;
+            validate_lower_hex("WindowsPrivilegedRequest.release_set_sha256", release, 64)?;
         }
     }
     Ok(())
@@ -329,9 +319,7 @@ pub fn encode_windows_privileged_result(
     Ok(result.encode_to_vec())
 }
 
-pub fn decode_windows_privileged_result(
-    bytes: &[u8],
-) -> Result<WindowsPrivilegedResult, String> {
+pub fn decode_windows_privileged_result(bytes: &[u8]) -> Result<WindowsPrivilegedResult, String> {
     let result = WindowsPrivilegedResult::decode(bytes)
         .map_err(|err| format!("Windows privileged result protobuf decode failed: {err}"))?;
     validate_windows_privileged_result(&result)?;
@@ -341,9 +329,7 @@ pub fn decode_windows_privileged_result(
     Ok(result)
 }
 
-pub fn validate_windows_privileged_result(
-    result: &WindowsPrivilegedResult,
-) -> Result<(), String> {
+pub fn validate_windows_privileged_result(result: &WindowsPrivilegedResult) -> Result<(), String> {
     if result.schema_version != 1 {
         return Err(format!(
             "unsupported Windows privileged result schema_version {}",
@@ -1361,8 +1347,7 @@ mod tests {
             operation: WindowsPrivilegedOperation::ActivateRelease as i32,
             accepted_revision: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             release_set_sha256: Some(
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                    .to_owned(),
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             ),
         };
         let bytes = encode_windows_privileged_request(&request).unwrap();
@@ -1385,8 +1370,7 @@ mod tests {
         assert!(encode_windows_privileged_request(&request).is_ok());
 
         let mut invalid = request;
-        invalid.accepted_revision =
-            Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
