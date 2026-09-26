@@ -115,6 +115,23 @@ function Download-DurableReleaseAsset {
     if (-not (Test-Path -LiteralPath $Destination)) { throw "Durable release asset download did not create $Destination" }
 }
 
+function Assert-VerifiedSourceRevision {
+    param(
+        [Parameter(Mandatory)] [string[]]$VerificationOutput,
+        [string]$AcceptedRevision
+    )
+    if ([string]::IsNullOrWhiteSpace($AcceptedRevision)) { return }
+
+    $matches = @($VerificationOutput | Where-Object { ([string]$_).StartsWith("source_revision=") })
+    if ($matches.Count -ne 1) {
+        throw "Windows ReleaseSet verification must emit exactly one source_revision"
+    }
+    $observed = ([string]$matches[0]).Substring("source_revision=".Length)
+    if ($observed -ne $AcceptedRevision) {
+        throw "ReleaseSet.source_revision does not match AcceptedRevision"
+    }
+}
+
 function Invoke-Diagnostic {
     param(
         [Parameter(Mandatory)] [string]$Diagnostic,
@@ -294,8 +311,10 @@ if ($needsInstall) {
             "--windows-diagnostic", (Join-Path $unpacked "bin\edge-diagnostic.exe"),
             "--windows-sing-box", (Join-Path $unpacked "bin\sing-box.exe")
         )
-        & $tool @verifyArgs
+        $verificationOutput = @(& $tool @verifyArgs)
         if ($LASTEXITCODE -ne 0) { throw "Downloaded Windows release failed ReleaseSet verification" }
+        Assert-VerifiedSourceRevision -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+        $verificationOutput | Write-Output
 
         $releaseStage = "$releaseDir.new"
         if (Test-Path -LiteralPath $releaseStage) { Remove-Item -Recurse -Force $releaseStage }
@@ -325,8 +344,10 @@ $verifyArgs = @(
     "--windows-artifact", $packagePath, "--windows-controller", $controller,
     "--windows-console", $console, "--windows-diagnostic", $diagnostic, "--windows-sing-box", $singBox
 )
-& $tool @verifyArgs
+$verificationOutput = @(& $tool @verifyArgs)
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
+Assert-VerifiedSourceRevision -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+$verificationOutput | Write-Output
 
 if ($ReleaseOnly) {
     $activation = Activate-ReleaseAuthority `
