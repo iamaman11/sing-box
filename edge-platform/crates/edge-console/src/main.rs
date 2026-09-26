@@ -622,17 +622,6 @@ fn activate_privileged_release(
         .as_deref()
         .ok_or_else(|| "release_set_sha256 is required".to_owned())?;
 
-    if let Ok(current) = load_verified_activation(install_root) {
-        if current.release_set_sha256 == target_release {
-            retarget_privileged_task(install_root, &current.console_path)?;
-            return Ok((
-                "RELEASE_ALREADY_ACTIVE".to_owned(),
-                "exact accepted ReleaseSet is already active".to_owned(),
-                Some(current.release_set_sha256),
-            ));
-        }
-    }
-
     let installer = install_root
         .join("bootstrap")
         .join("install-windows-release.ps1");
@@ -680,10 +669,13 @@ fn activate_privileged_release(
     if activation.release_set_sha256 != target_release {
         return Err("updated Windows activation does not match requested ReleaseSet".to_owned());
     }
+    if activation.source_revision != accepted_revision {
+        return Err("updated Windows activation source revision does not match accepted revision".to_owned());
+    }
     retarget_privileged_task(install_root, &activation.console_path)?;
     Ok((
-        "RELEASE_ACTIVATED".to_owned(),
-        "exact accepted ReleaseSet activated".to_owned(),
+        "RELEASE_CONVERGED".to_owned(),
+        "exact accepted ReleaseSet is active".to_owned(),
         Some(activation.release_set_sha256),
     ))
 }
