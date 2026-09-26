@@ -20,6 +20,10 @@ $RunnerSha256 = "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cf
 $RunnerUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersion/$RunnerAsset"
 $RunnerLabel = "sing-box-windows-lab"
 $PrivilegedTaskName = "EdgePlatformPrivilegedDispatch"
+$SystemSid = "S-1-5-18"
+$AdministratorsSid = "S-1-5-32-544"
+$NetworkServiceSid = "S-1-5-20"
+$RunnerServiceAccount = ([Security.Principal.SecurityIdentifier]::new($NetworkServiceSid)).Translate([Security.Principal.NTAccount]).Value
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -27,6 +31,14 @@ function Assert-Administrator {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw "Run this bootstrap once from an elevated PowerShell session"
     }
+}
+
+function Resolve-IdentitySid {
+    param([Parameter(Mandatory)] [string]$Identity)
+    if ($Identity -match "^S-1-") {
+        return [Security.Principal.SecurityIdentifier]::new($Identity).Value
+    }
+    return ([Security.Principal.NTAccount]::new($Identity)).Translate([Security.Principal.SecurityIdentifier]).Value
 }
 
 function Assert-IsolatedRoots {
@@ -155,7 +167,7 @@ function Register-PrivilegedDispatcher {
         -At ((Get-Date).AddMinutes(1)) `
         -RepetitionInterval (New-TimeSpan -Minutes 1)
     $principal = New-ScheduledTaskPrincipal `
-        -UserId "SYSTEM" `
+        -UserId $SystemSid `
         -LogonType ServiceAccount `
         -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet `
@@ -172,8 +184,8 @@ function Register-PrivilegedDispatcher {
         -Force | Out-Null
 
     $task = Get-ScheduledTask -TaskName $PrivilegedTaskName
-    if ([string]$task.Principal.UserId -ine "SYSTEM") {
-        throw "Privileged dispatcher task is not owned by SYSTEM"
+    if ((Resolve-IdentitySid -Identity ([string]$task.Principal.UserId)) -ne $SystemSid) {
+        throw "Privileged dispatcher task is not owned by LocalSystem SID"
     }
 }
 function Get-RunnerService {
@@ -189,8 +201,8 @@ function Get-RunnerService {
     if (-not $serviceName) { throw "Runner service marker is empty" }
     $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
     if (-not $service) { throw "Configured runner service was not found: $serviceName" }
-    if ([string]$service.StartName -ine "NT AUTHORITY\NETWORK SERVICE") {
-        throw "Configured runner service must run as NetworkService"
+    if ((Resolve-IdentitySid -Identity ([string]$service.StartName)) -ne $NetworkServiceSid) {
+        throw "Configured runner service must run as NetworkService SID"
     }
     return $service
 }
@@ -240,7 +252,7 @@ function Register-Runner {
                 --labels $RunnerLabel `
                 --work "_work" `
                 --runasservice `
-                --windowslogonaccount "NT AUTHORITY\NETWORK SERVICE"
+                --windowslogonaccount $RunnerServiceAccount
             if ($LASTEXITCODE -ne 0) { throw "GitHub Actions Runner registration failed" }
         } finally {
             Pop-Location
@@ -282,7 +294,7 @@ Write-Output "runner_root=$RunnerRoot"
 Write-Output "application_root=$ApplicationRoot"
 Write-Output "runner_label=$RunnerLabel"
 Write-Output "runner_service=$serviceName"
-Write-Output "runner_identity=NT AUTHORITY\NETWORK SERVICE"
+Write-Output "runner_identity_sid=$NetworkServiceSid"
 Write-Output "runner_update_policy=github_auto"
 Write-Output "accepted_revision=$AcceptedRevision"
 Write-Output "release_set_sha256=$ReleaseSetSha256"
