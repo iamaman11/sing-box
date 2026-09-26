@@ -190,7 +190,7 @@ function Activate-ReleaseAuthority {
         "--release-dir", $ReleaseDir, "--controller", $Controller, "--console", $Console,
         "--diagnostic", $Diagnostic, "--sing-box", $SingBox, "--output", $currentTemp
     )
-    & $Tool @activationArgs
+    $null = & $Tool @activationArgs
     if ($LASTEXITCODE -ne 0) { throw "Failed to create typed Windows activation state" }
     [void](Invoke-Diagnostic -Diagnostic $Diagnostic -State $currentTemp)
 
@@ -332,9 +332,9 @@ $activation = Activate-ReleaseAuthority `
     -InstallRoot $InstallRoot
 
 Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
-Write-Output "current_state=$($activation.current_state)"
-Write-Output "console=$($activation.console)"
-Write-Output "diagnostic=$($activation.diagnostic)"
+Write-Output "current_state=$($activation["current_state"])"
+Write-Output "console=$($activation["console"])"
+Write-Output "diagnostic=$($activation["diagnostic"])"
 Write-Output "runtime_state=NOT_CONFIGURED"
 Write-Output "runtime_config=NOT_CONFIGURED"
 Write-Output "automation_registered=false"
