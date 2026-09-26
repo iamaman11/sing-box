@@ -114,11 +114,15 @@ function Configure-ApplicationAcl {
         New-Item -ItemType Directory -Force -Path $path | Out-Null
     }
 
-    & icacls.exe $ApplicationRoot /inheritance:r `
+    & icacls.exe $ApplicationRoot `
         /grant:r "*S-1-5-18:(OI)(CI)F" `
         "*S-1-5-32-544:(OI)(CI)F" `
-        "*S-1-5-20:(OI)(CI)RX" /T /C | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to establish protected C:\sing-box ACL" }
+        "*S-1-5-20:(OI)(CI)RX" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to establish explicit C:\sing-box root ACL" }
+    & icacls.exe $ApplicationRoot /inheritance:r /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to protect C:\sing-box root ACL" }
+    & icacls.exe (Join-Path $ApplicationRoot "*") /reset /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to reset C:\sing-box descendant ACL inheritance" }
 
     foreach ($writable in @(
         (Join-Path $ApplicationRoot "state"),
@@ -126,24 +130,32 @@ function Configure-ApplicationAcl {
         (Join-Path $ApplicationRoot "logs"),
         (Join-Path $ApplicationRoot "exchange\requests")
     )) {
-        & icacls.exe $writable /grant:r "*S-1-5-20:(OI)(CI)M" /T /C | Out-Null
+        & icacls.exe $writable /grant:r "*S-1-5-20:(OI)(CI)M" /Q | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to grant bounded runner write access: $writable" }
     }
 
     & icacls.exe (Join-Path $ApplicationRoot "exchange\results") `
-        /grant:r "*S-1-5-20:(OI)(CI)RX" /T /C | Out-Null
+        /grant:r "*S-1-5-20:(OI)(CI)RX" /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to grant runner result read access" }
 
     $secretRoot = Join-Path $ApplicationRoot "state\secrets"
-    & icacls.exe $secretRoot /inheritance:r /T /C | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to disable Windows secret-state ACL inheritance" }
-    & icacls.exe $secretRoot /remove:g "*S-1-5-20" /T /C | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to remove runner ACL from Windows secret state" }
     & icacls.exe $secretRoot `
         /grant:r "*S-1-5-18:(OI)(CI)F" `
-        "*S-1-5-32-544:(OI)(CI)F" /T /C | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows secret state from runner access" }
+        "*S-1-5-32-544:(OI)(CI)F" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to establish explicit Windows secret-state ACL" }
+    & icacls.exe $secretRoot /inheritance:r /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to disable Windows secret-state ACL inheritance" }
+    & icacls.exe $secretRoot /remove:g "*S-1-5-20" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to remove runner ACL from Windows secret state" }
+    & icacls.exe (Join-Path $secretRoot "*") /reset /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to reset Windows secret-state descendant ACL inheritance" }
 
+    foreach ($item in @($ApplicationRoot) + @(Get-ChildItem -LiteralPath $ApplicationRoot -Force -Recurse -ErrorAction Stop | ForEach-Object { $_.FullName })) {
+        $acl = Get-Acl -LiteralPath $item
+        if ($null -eq $acl.Access -or $acl.Access.Count -eq 0) {
+            throw "Refusing empty DACL after Windows ACL bootstrap: $item"
+        }
+    }
     $runnerSid = [Security.Principal.SecurityIdentifier]::new("S-1-5-20")
     foreach ($rule in (Get-Acl -LiteralPath $secretRoot).Access) {
         $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier])
