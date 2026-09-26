@@ -58,18 +58,34 @@ Windows operation does not require a local Rust build.
 
 ## Install/update Windows control binaries
 
+The canonical new Windows install root is `C:\sing-box`. It is intentionally
+separate from historical checkout/runtime paths.
+
 Prerequisites:
 
-- GitHub CLI `gh` installed and authenticated;
-- this repository available locally so the installer script can be invoked;
-- an exact accepted durable ReleaseSet SHA-256.
+- an exact accepted durable ReleaseSet SHA-256;
+- an exact copy of `install-windows-release.ps1` from the accepted Git
+  revision when bootstrapping a machine.
 
-Example:
+`gh.exe`, Cargo and a mutable repository checkout are not installed-runtime
+dependencies. The installer uses the GitHub Releases REST API directly. For a
+public repository no GitHub token is required; a private-repository bootstrap
+may provide `EDGE_GITHUB_TOKEN` / `-GitHubToken` with read access.
+
+Isolated first-stage activation:
 
 ```powershell
-& "C:\Users\Bose\temp\sing-box\edge-platform\scripts\install-windows-release.ps1" `
-  -ReleaseSetSha256 "<accepted-release-set-sha256>"
+& .\install-windows-release.ps1 `
+  -ReleaseSetSha256 "<accepted-release-set-sha256>" `
+  -InstallRoot "C:\sing-box" `
+  -ReleaseOnly
 ```
+
+`-ReleaseOnly` establishes exact release/activation authority without
+importing legacy runtime JSON/configuration and without registering scheduled
+automation. The controller may then run honestly as `NOT_CONFIGURED`; normal
+local runtime start remains fail-closed until typed runtime state/config is
+provisioned.
 
 The installer:
 
@@ -80,12 +96,10 @@ The installer:
 3. verifies the ReleaseSet digest and every Windows binary identity through
    `edge-release-set.exe verify-windows`;
 4. stores the immutable release under
-   `%LOCALAPPDATA%\edge-platform\releases\<ReleaseSetSha256>`;
-5. writes canonical protobuf activation state to
-   `%LOCALAPPDATA%\edge-platform\current.pb`;
+   `C:\sing-box\releases\<ReleaseSetSha256>`;
+5. writes canonical protobuf activation state to `C:\sing-box\current.pb`;
 6. moves the previous activation pointer to `previous.pb` for LKG rollback;
-7. installs only stable bootstrap entrypoints in
-   `%LOCALAPPDATA%\edge-platform\bin`.
+7. installs only stable bootstrap entrypoints in `C:\sing-box\bin`.
 
 `ensure-edge-controller.ps1` resolves the controller only from `current.pb`
 through the independent `edge-diagnostic.exe doctor` verification path. It
