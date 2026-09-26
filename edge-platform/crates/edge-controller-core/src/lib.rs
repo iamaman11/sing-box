@@ -823,7 +823,7 @@ mod tests {
     fn collects_controller_status_from_authoritative_controller_snapshot() {
         let repo_root = temp_repo_root("controller_status_controller_snapshot");
         create_required_repo_files(&repo_root);
-        let db_path = controller_state_db_path(repo_root);
+        let db_path = controller_state_db_path(&repo_root);
         let state = edge_state::EdgeState::open_or_create(&db_path).unwrap();
         state
             .upsert_controller_state(edge_state::NewControllerState {
