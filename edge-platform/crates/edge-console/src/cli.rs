@@ -21,6 +21,8 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     Menu(EndpointArgs),
+    EnsureController(EndpointArgs),
+    Reconcile(EndpointArgs),
     Status(EndpointArgs),
     Doctor(EndpointArgs),
     Secrets(EndpointArgs),
@@ -45,6 +47,8 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Menu(_) => "menu",
+            Self::EnsureController(_) => "ensure-controller",
+            Self::Reconcile(_) => "reconcile",
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
             Self::Secrets(_) => "secrets",
@@ -121,6 +125,12 @@ fn non_blank(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn parses_installed_automation_commands() {
+        assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
+    }
 
     #[test]
     fn parses_operation_id_as_typed_integer() {
