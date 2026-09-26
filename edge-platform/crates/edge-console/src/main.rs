@@ -482,11 +482,17 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
 }
 
 fn privileged_request_path(install_root: &Path) -> PathBuf {
-    install_root.join("exchange").join("requests").join("request.pb")
+    install_root
+        .join("exchange")
+        .join("requests")
+        .join("request.pb")
 }
 
 fn privileged_result_path(install_root: &Path) -> PathBuf {
-    install_root.join("exchange").join("results").join("result.pb")
+    install_root
+        .join("exchange")
+        .join("results")
+        .join("result.pb")
 }
 
 fn new_privileged_request_id() -> Result<String, Box<dyn std::error::Error>> {
@@ -536,9 +542,7 @@ fn submit_privileged_request(
     .into())
 }
 
-fn dispatch_privileged_request(
-    install_root: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn dispatch_privileged_request(install_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let request_path = privileged_request_path(install_root);
     let bytes = match fs::read(&request_path) {
         Ok(bytes) => bytes,
@@ -691,13 +695,7 @@ fn retarget_privileged_task(install_root: &Path, console_path: &str) -> Result<(
         install_root.display()
     );
     let status = Command::new("schtasks.exe")
-        .args([
-            "/Change",
-            "/TN",
-            PRIVILEGED_TASK_NAME,
-            "/TR",
-            &action,
-        ])
+        .args(["/Change", "/TN", PRIVILEGED_TASK_NAME, "/TR", &action])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
