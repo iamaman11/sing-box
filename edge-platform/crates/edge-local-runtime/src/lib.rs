@@ -11,8 +11,8 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use std::ptr::null_mut;
 
-use edge_shared_types::LocalSingboxState;
-use edge_singbox::sync_local_config;
+use edge_shared_types::{LocalSingboxState, decode_windows_runtime_state};
+use edge_singbox::{sync_local_config, sync_local_config_from_runtime_state};
 use sysinfo::{Pid, Signal, System};
 
 #[cfg(windows)]
@@ -271,7 +271,22 @@ fn stage_and_validate_config(paths: &LocalRuntimePaths) -> Result<StagedConfig, 
         )
     })?;
 
-    if let Err(err) = sync_local_config(&candidate_path, &paths.state_path, &paths.runtime_root) {
+    let sync_result = if paths
+        .state_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("pb"))
+    {
+        fs::read(&paths.state_path)
+            .map_err(|err| format!("unable to read typed Windows runtime state: {err}"))
+            .and_then(|bytes| decode_windows_runtime_state(&bytes))
+            .and_then(|state| {
+                sync_local_config_from_runtime_state(&candidate_path, &state, &paths.runtime_root)
+            })
+    } else {
+        sync_local_config(&candidate_path, &paths.state_path, &paths.runtime_root)
+    };
+    if let Err(err) = sync_result {
         let _ = fs::remove_file(&candidate_path);
         return Err(err);
     }

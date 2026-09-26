@@ -17,8 +17,11 @@ GitHub-only provider/VM owner      Windows-local TUN/runtime owner
 edge-agent                           sing-box.exe
 Linux bounded executor/observer      dataplane
 
+edge-diagnostic.exe
+Current Slice 2 independent read-only release/activation verifier
+
 edge-windows-agent.exe
-Windows-local independent read-only diagnostics
+Deferred richer Windows host-diagnostics service (#60), not part of the current cutover
 ```
 
 Rules:
@@ -29,8 +32,13 @@ Rules:
   Windows controller.
 - The Linux agent has no provider desired-state authority and no arbitrary
   shell/filesystem/Docker RPC surface.
-- The Windows diagnostic agent is read-only and is never a repair or release
-  activation surface.
+- The current `edge-diagnostic.exe` is a narrow read-only ReleaseSet /
+  activation verifier and remains independent from `edge-controller.exe`.
+- The richer `edge-windows-agent.exe` service described in #60 is deferred
+  backlog for host/network/Event Log/ETW diagnostics; it is not required for
+  the current Slice 2 cutover and must not be confused with the implemented
+  minimal verifier.
+- Neither Windows diagnostic surface is a repair or release-activation owner.
 - ReleaseSet bytes/digests remain immutable release authority.
 - Candidate artifacts build once; merge promotion reuses exact accepted bytes.
 - Mutations use observe -> plan -> bounded apply -> re-observe -> verify and
@@ -76,8 +84,9 @@ Boundary rules:
 - existing first-party JSON is frozen migration debt: do not create new files,
   new contract families, or new production authority on JSON; the debt set may
   only shrink;
-- generated/transient first-party JSON and Windows-local `current.json` are
-  also legacy debt and must migrate when their owning Slice 2 path is touched;
+- generated/transient first-party JSON remains legacy debt and must migrate
+  when its owning path is touched; Windows activation has already migrated from
+  `current.json` to canonical `current.pb` / `previous.pb`;
 - production desired state is specifically
   `infra/production/production.textproto` backed by a
   `ProductionDesiredState` protobuf schema. Do not create

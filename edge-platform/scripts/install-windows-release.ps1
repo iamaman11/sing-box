@@ -4,7 +4,9 @@ param(
     [Parameter(ParameterSetName = "Activate", Mandatory = $true)]
     [string]$ReleaseSetSha256,
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "edge-platform"),
-    [string]$GhExe = "gh.exe",
+    [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
+    [string]$LegacyRuntimeStatePath = "",
+    [string]$LegacySingBoxConfigPath = "",
     [Parameter(ParameterSetName = "Rollback", Mandatory = $true)]
     [switch]$Rollback
 )
@@ -41,6 +43,45 @@ function Assert-ShaSidecar {
     return $sidecarDigest
 }
 
+function Get-GitHubHeaders {
+    param([string]$Accept = "application/vnd.github+json")
+    $headers = @{
+        Accept = $Accept
+        "X-GitHub-Api-Version" = "2022-11-28"
+        "User-Agent" = "sing-box-edge-platform"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($GitHubToken)) {
+        $headers["Authorization"] = "Bearer $GitHubToken"
+    }
+    return $headers
+}
+
+function Get-DurableRelease {
+    param([Parameter(Mandatory)] [string]$Tag)
+    $uri = "https://api.github.com/repos/$Repository/releases/tags/$Tag"
+    try {
+        return Invoke-RestMethod -Method Get -Uri $uri -Headers (Get-GitHubHeaders)
+    } catch {
+        throw "Failed to resolve exact durable GitHub Release $Tag. For a private repository provide EDGE_GITHUB_TOKEN with read access. $($_.Exception.Message)"
+    }
+}
+
+function Download-DurableReleaseAsset {
+    param(
+        [Parameter(Mandatory)] $Release,
+        [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] [string]$Destination
+    )
+    $matches = @($Release.assets | Where-Object { [string]$_.name -eq $Name })
+    if ($matches.Count -ne 1) {
+        throw "Durable release must contain exactly one asset named $Name; observed $($matches.Count)"
+    }
+    $assetUri = [string]$matches[0].url
+    if ([string]::IsNullOrWhiteSpace($assetUri)) { throw "Durable release asset $Name has no API URL" }
+    Invoke-WebRequest -Method Get -Uri $assetUri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination
+    if (-not (Test-Path -LiteralPath $Destination)) { throw "Durable release asset download did not create $Destination" }
+}
+
 function Invoke-Diagnostic {
     param(
         [Parameter(Mandatory)] [string]$Diagnostic,
@@ -73,15 +114,37 @@ function Copy-StableBinary {
     Move-Item -LiteralPath $temp -Destination $Target -Force
 }
 
-if (-not (Get-Command $GhExe -ErrorAction SilentlyContinue)) { throw "GitHub CLI not found: $GhExe" }
-& $GhExe auth status 1>$null 2>$null
-if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not authenticated" }
+function Register-InstalledAutomation {
+    param([Parameter(Mandatory)] [string]$ConsolePath)
+    if (-not (Test-Path -LiteralPath $ConsolePath)) { throw "Installed console is missing: $ConsolePath" }
+
+    $quotedConsole = '"' + $ConsolePath + '"'
+    $controllerTask = "EdgePlatformController"
+    $reconcileTask = "EdgePlatformReconcile"
+    $shutdownTask = "EdgePlatformShutdown"
+
+    schtasks /Create /F /SC ONLOGON /DELAY 0001:30 /RL HIGHEST /IT /TN $controllerTask /TR "$quotedConsole ensure-controller" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to register $controllerTask" }
+
+    schtasks /Create /F /SC MINUTE /MO 15 /RL HIGHEST /IT /TN $reconcileTask /TR "$quotedConsole reconcile" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to register $reconcileTask" }
+
+    $shutdownSubscription = "*[System[Provider[@Name='USER32'] and (EventID=1074)]]"
+    schtasks /Create /F /SC ONEVENT /EC System /MO $shutdownSubscription /RL HIGHEST /IT /TN $shutdownTask /TR "$quotedConsole stop-local" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to register $shutdownTask" }
+
+    Unregister-ScheduledTask -TaskName "EdgePlatformSingboxLogCleanup" -Confirm:$false -ErrorAction SilentlyContinue
+}
 
 $binDir = Join-Path $InstallRoot "bin"
 $releasesDir = Join-Path $InstallRoot "releases"
+$stateDir = Join-Path $InstallRoot "state"
+$runtimeDir = Join-Path $InstallRoot "runtime"
 $currentPath = Join-Path $InstallRoot "current.pb"
 $previousPath = Join-Path $InstallRoot "previous.pb"
-New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
+$runtimeStatePath = Join-Path $stateDir "runtime-state.pb"
+$runtimeConfigPath = Join-Path $runtimeDir "sing-box.json"
+New-Item -ItemType Directory -Force -Path $binDir, $releasesDir, $stateDir, $runtimeDir | Out-Null
 
 if ($Rollback) {
     if (-not (Test-Path -LiteralPath $currentPath) -or -not (Test-Path -LiteralPath $previousPath)) {
@@ -99,6 +162,7 @@ if ($Rollback) {
     Move-Item -LiteralPath $newCurrent -Destination $currentPath -Force
     Move-Item -LiteralPath $oldCurrent -Destination $previousPath -Force
     [void](Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath)
+    Register-InstalledAutomation -ConsolePath (Join-Path $binDir "edge-console.exe")
     Write-Output ("Rolled back Windows release to " + $previous["release_set_sha256"])
     exit 0
 }
@@ -122,11 +186,10 @@ if ($needsInstall) {
     $stage = Join-Path $env:TEMP ("edge-platform-release-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     try {
-        $patterns = @("release-set.pb", "release-set.pb.sha256", "edge-platform-windows.zip", "edge-platform-windows.zip.sha256")
-        $downloadArgs = @("release", "download", $tag, "-R", $Repository, "--dir", $stage)
-        foreach ($pattern in $patterns) { $downloadArgs += @("--pattern", $pattern) }
-        & $GhExe @downloadArgs
-        if ($LASTEXITCODE -ne 0) { throw "Failed to download durable release $tag" }
+        $release = Get-DurableRelease -Tag $tag
+        foreach ($name in @("release-set.pb", "release-set.pb.sha256", "edge-platform-windows.zip", "edge-platform-windows.zip.sha256")) {
+            Download-DurableReleaseAsset -Release $release -Name $name -Destination (Join-Path $stage $name)
+        }
 
         $stageReleaseSet = Join-Path $stage "release-set.pb"
         $stageReleaseSetSidecar = Join-Path $stage "release-set.pb.sha256"
@@ -184,6 +247,24 @@ $verifyArgs = @(
 & $tool @verifyArgs
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
 
+if (-not (Test-Path -LiteralPath $runtimeStatePath)) {
+    if ([string]::IsNullOrWhiteSpace($LegacyRuntimeStatePath) -or -not (Test-Path -LiteralPath $LegacyRuntimeStatePath)) {
+        throw "First install requires -LegacyRuntimeStatePath pointing to the existing local current-edge.json so it can be imported once into runtime-state.pb"
+    }
+    & $controller migrate-windows-runtime-state $LegacyRuntimeStatePath $runtimeStatePath
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $runtimeStatePath)) {
+        throw "Legacy Windows runtime-state migration failed"
+    }
+}
+
+if (-not (Test-Path -LiteralPath $runtimeConfigPath)) {
+    if ([string]::IsNullOrWhiteSpace($LegacySingBoxConfigPath) -or -not (Test-Path -LiteralPath $LegacySingBoxConfigPath)) {
+        throw "First install requires -LegacySingBoxConfigPath pointing to the currently accepted local sing-box JSON config"
+    }
+    Copy-Item -LiteralPath $LegacySingBoxConfigPath -Destination "$runtimeConfigPath.new" -Force
+    Move-Item -LiteralPath "$runtimeConfigPath.new" -Destination $runtimeConfigPath -Force
+}
+
 $currentTemp = "$currentPath.new"
 $activationArgs = @(
     "write-windows-activation", "--input", $releaseSetPath, "--sha256-file", $releaseSetSidecar,
@@ -205,7 +286,11 @@ if (Test-Path -LiteralPath $currentPath) {
 }
 Move-Item -LiteralPath $currentTemp -Destination $currentPath -Force
 [void](Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath)
+Register-InstalledAutomation -ConsolePath $stableConsole
 
 Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
 Write-Output "current_state=$currentPath"
+Write-Output "runtime_state=$runtimeStatePath"
+Write-Output "runtime_config=$runtimeConfigPath"
+Write-Output "console=$stableConsole"
 Write-Output "diagnostic=$stableDiagnostic"

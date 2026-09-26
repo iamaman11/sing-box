@@ -14,6 +14,11 @@ EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
+WINDOWS_ENSURE = Path("edge-platform/scripts/ensure-edge-controller.ps1")
+WINDOWS_AUTOMATION = Path("edge-platform/scripts/register-edge-platform-automation.ps1")
+WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
+WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
+WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
@@ -38,6 +43,11 @@ def main() -> None:
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
+    windows_ensure = WINDOWS_ENSURE.read_text(encoding="utf-8")
+    windows_automation = WINDOWS_AUTOMATION.read_text(encoding="utf-8")
+    windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
+    windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
+    windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
@@ -704,21 +714,75 @@ def main() -> None:
     )
     require(
         "edge-release-$ReleaseSetSha256" in windows_installer
-        and '$downloadArgs = @("release", "download", $tag' in windows_installer
+        and "https://api.github.com/repos/$Repository/releases/tags/$Tag" in windows_installer
+        and "application/octet-stream" in windows_installer
         and "release-set.pb" in windows_installer
         and "current.pb" in windows_installer
         and "previous.pb" in windows_installer
+        and '$runtimeStatePath = Join-Path $stateDir "runtime-state.pb"' in windows_installer
+        and '$runtimeConfigPath = Join-Path $runtimeDir "sing-box.json"' in windows_installer
         and "edge-diagnostic.exe" in windows_installer
         and "verify-windows" in windows_installer
         and "write-windows-activation" in windows_installer,
-        "Windows activation must be bound to the exact durable ReleaseSet and protobuf current/LKG state",
+        "Windows activation must be one durable ReleaseSet plus one install-root protobuf/local-runtime boundary",
     )
     require(
         "current.json" not in windows_installer
         and "manifest.json" not in windows_installer
+        and "gh.exe" not in windows_installer.lower()
         and "gh run download" not in windows_installer
         and "workflow run" not in windows_installer,
-        "Windows activation must never regress to JSON state or workflow-run artifact authority",
+        "Windows activation must never regress to JSON pointers, gh.exe, or workflow-run artifact authority",
+    )
+    require(
+        "migrate-windows-runtime-state" in windows_installer
+        and "LegacyRuntimeStatePath" in windows_installer
+        and "LegacySingBoxConfigPath" in windows_installer,
+        "legacy Windows files may enter the installed model only through one explicit first-install migration",
+    )
+    require(
+        '$quotedConsole ensure-controller' in windows_installer
+        and '$quotedConsole reconcile' in windows_installer
+        and '$quotedConsole stop-local' in windows_installer
+        and "RepoRoot" not in windows_installer,
+        "installed scheduled tasks must target only stable edge-console commands and carry no RepoRoot",
+    )
+
+    require(
+        "edge-console.exe" in windows_ensure
+        and "ensure-controller" in windows_ensure
+        and "RepoRoot" not in windows_ensure
+        and "current.json" not in windows_ensure,
+        "legacy ensure wrapper must delegate only to the installed console owner",
+    )
+    require(
+        "current.pb" in windows_console
+        and "decode_windows_activation_state" in windows_console
+        and "verify_windows_activation_files" in windows_console
+        and '"serve"' in windows_console
+        and '.arg(&install_root)' in windows_console
+        and "EDGE_REPO_ROOT" not in windows_console
+        and "resolve_repo_root_for_controller" not in windows_console
+        and 'parent.join("edge-controller.exe")' not in windows_console,
+        "edge-console must be the sole current.pb resolver and exact controller startup owner without RepoRoot fallback",
+    )
+    require(
+        '"state/runtime-state.pb"' in windows_controller
+        or "windows_runtime_state_path" in windows_controller,
+        "installed controller must consume typed Windows runtime state",
+    )
+    require(
+        "migrate_windows_runtime_state" in windows_controller
+        and "MigrateWindowsRuntimeState" in windows_controller_cli
+        and '"migrate-windows-runtime-state"' in windows_controller_cli,
+        "controller must expose only the bounded one-time legacy JSON to protobuf migration",
+    )
+    require(
+        '$quotedConsole ensure-controller' in windows_automation
+        and '$quotedConsole reconcile' in windows_automation
+        and '$quotedConsole stop-local' in windows_automation
+        and "RepoRoot" not in windows_automation,
+        "manual automation registration must match installer-owned stable console tasks",
     )
 
     require(

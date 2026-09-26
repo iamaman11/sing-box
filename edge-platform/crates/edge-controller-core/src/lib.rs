@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ControllerStatus, DeployPhase, DeploymentSummary,
     ErrorSubsystem, FileCategory, FilePresence, InventoryReport, PlatformError,
-    ProviderObservation, RuntimeObservation,
+    ProviderObservation, RuntimeObservation, WindowsRuntimeState, decode_windows_runtime_state,
 };
 use edge_singbox::{
     ExpectedTunnelBindings, LocalConfigObservation, TunnelBinding, inspect_local_config,
@@ -189,11 +189,65 @@ const LOCAL_ONLY_FILES: &[&str] = &[
 const CURRENT_STATE_PATH: &str = "win/vultr-waw/current-edge.json";
 const EXPECTED_LOCAL_CONFIG_PATH: &str = "win/windows/edge-dns-clean-vultr-dual.json";
 const DEFAULT_STATE_DB_PATH: &str = "edge-platform/.runtime/controller-state.sqlite";
+const INSTALLED_STATE_DB_PATH: &str = "state/controller-state.sqlite";
+const INSTALLED_RUNTIME_STATE_PATH: &str = "state/runtime-state.pb";
+const INSTALLED_LOCAL_CONFIG_PATH: &str = "runtime/sing-box.json";
+
+pub fn is_installed_windows_root(root: &Path) -> bool {
+    root.join("current.pb").is_file() && root.join("releases").is_dir()
+}
+
+pub fn controller_state_db_path(root: &Path) -> PathBuf {
+    if is_installed_windows_root(root) {
+        root.join(INSTALLED_STATE_DB_PATH)
+    } else {
+        root.join(DEFAULT_STATE_DB_PATH)
+    }
+}
+
+pub fn local_singbox_config_path(root: &Path) -> PathBuf {
+    if is_installed_windows_root(root) {
+        root.join(INSTALLED_LOCAL_CONFIG_PATH)
+    } else {
+        root.join(EXPECTED_LOCAL_CONFIG_PATH)
+    }
+}
+
+pub fn windows_runtime_state_path(root: &Path) -> PathBuf {
+    root.join(INSTALLED_RUNTIME_STATE_PATH)
+}
+
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 
 pub fn collect_repo_inventory(repo_root: &Path) -> Result<InventoryReport, PlatformError> {
     let repo_root = canonical_repo_root(repo_root)?;
+    if is_installed_windows_root(&repo_root) {
+        let required_paths = [
+            "current.pb",
+            "state/runtime-state.pb",
+            "runtime/sing-box.json",
+            "bin/edge-console.exe",
+            "bin/edge-diagnostic.exe",
+        ];
+        let required_repo_files = required_paths
+            .iter()
+            .map(|path| file_presence(&repo_root, path, FileCategory::RequiredRepoInput))
+            .collect::<Vec<_>>();
+        let blockers = required_repo_files
+            .iter()
+            .filter(|file| !file.present)
+            .map(|file| format!("installed Windows runtime input is missing: {}", file.path))
+            .collect::<Vec<_>>();
+        return Ok(InventoryReport {
+            repo_root: repo_root.display().to_string(),
+            rust_workspace_present: false,
+            required_repo_files,
+            local_only_files: Vec::new(),
+            blockers,
+            warnings: Vec::new(),
+        });
+    }
 
     let required_repo_files = REQUIRED_REPO_FILES
         .iter()
@@ -256,8 +310,21 @@ pub fn collect_controller_status(repo_root: &Path) -> Result<ControllerStatus, P
     let inventory = collect_repo_inventory(&repo_root)?;
     let agent_state = AgentState::bootstrap_placeholder();
     let controller_state = read_controller_state(&repo_root)?;
-    let mut singbox = collect_local_singbox_state(&repo_root, controller_state.as_ref());
-    let deployment = collect_deployment_summary(&repo_root, controller_state.as_ref())?;
+    let installed_runtime = if is_installed_windows_root(&repo_root) {
+        Some(read_windows_runtime_state(&repo_root)?)
+    } else {
+        None
+    };
+    let mut singbox = collect_local_singbox_state(
+        &repo_root,
+        controller_state.as_ref(),
+        installed_runtime.as_ref(),
+    );
+    let deployment = collect_deployment_summary(
+        &repo_root,
+        controller_state.as_ref(),
+        installed_runtime.as_ref(),
+    )?;
     let provider = ProviderObservation::placeholder();
     let runtime = RuntimeObservation::placeholder();
     apply_selector_intents(&repo_root, &mut singbox);
@@ -313,16 +380,30 @@ fn canonical_repo_root(repo_root: &Path) -> Result<PathBuf, PlatformError> {
 fn collect_local_singbox_state(
     repo_root: &Path,
     controller_state: Option<&edge_state::StoredControllerState>,
+    installed_runtime: Option<&WindowsRuntimeState>,
 ) -> LocalConfigObservation {
-    let expected_config_path = repo_root.join(EXPECTED_LOCAL_CONFIG_PATH);
-    let expected_bindings = read_expected_tunnel_bindings(repo_root, controller_state);
+    let expected_config_path = local_singbox_config_path(repo_root);
+    let expected_bindings = installed_runtime
+        .and_then(expected_tunnel_bindings_from_runtime_state)
+        .or_else(|| read_expected_tunnel_bindings(repo_root, controller_state));
     inspect_local_config(&expected_config_path, expected_bindings.as_ref())
 }
 
 fn collect_deployment_summary(
     repo_root: &Path,
     controller_state: Option<&edge_state::StoredControllerState>,
+    installed_runtime: Option<&WindowsRuntimeState>,
 ) -> Result<DeploymentSummary, PlatformError> {
+    if let Some(runtime) = installed_runtime {
+        return Ok(DeploymentSummary {
+            live_state_present: true,
+            source_state_path: Some(windows_runtime_state_path(repo_root).display().to_string()),
+            deployment_label: runtime.deployment_label.clone(),
+            instance_id: Some(runtime.instance_id.clone()),
+            server_ip: Some(runtime.server_ip.clone()),
+            tunnel_domain: runtime.direct.as_ref().map(|value| value.domain.clone()),
+        });
+    }
     if let Some(state) = controller_state {
         let parsed = state
             .active_deployment_state_json
@@ -338,9 +419,7 @@ fn collect_deployment_summary(
         if live_state_present {
             return Ok(DeploymentSummary {
                 live_state_present: true,
-                source_state_path: Some(
-                    repo_root.join(DEFAULT_STATE_DB_PATH).display().to_string(),
-                ),
+                source_state_path: Some(controller_state_db_path(repo_root).display().to_string()),
                 deployment_label: state
                     .active_deployment_label
                     .clone()
@@ -398,7 +477,7 @@ fn collect_deployment_summary(
 fn read_controller_state(
     repo_root: &Path,
 ) -> Result<Option<edge_state::StoredControllerState>, PlatformError> {
-    let db_path = repo_root.join(DEFAULT_STATE_DB_PATH);
+    let db_path = controller_state_db_path(&repo_root);
     if !db_path.is_file() {
         return Ok(None);
     }
@@ -423,7 +502,7 @@ fn read_controller_state(
 }
 
 fn apply_selector_intents(repo_root: &Path, singbox: &mut LocalConfigObservation) {
-    let db_path = repo_root.join(DEFAULT_STATE_DB_PATH);
+    let db_path = controller_state_db_path(repo_root);
     let Ok(state) = EdgeState::open_or_create(&db_path) else {
         return;
     };
@@ -433,6 +512,55 @@ fn apply_selector_intents(repo_root: &Path, singbox: &mut LocalConfigObservation
     if let Ok(Some(intent)) = state.get_selector_intent(UBUNTU_SELECTOR_GROUP) {
         singbox.ubuntu_selector.desired_main_route = Some(intent.desired_route);
     }
+}
+
+fn read_windows_runtime_state(repo_root: &Path) -> Result<WindowsRuntimeState, PlatformError> {
+    let path = windows_runtime_state_path(repo_root);
+    let bytes = fs::read(&path).map_err(|err| {
+        PlatformError::new(
+            "windows_runtime_state_read_failed",
+            "controller.status",
+            format!("failed to read {}: {err}", path.display()),
+            true,
+            ErrorSubsystem::State,
+        )
+    })?;
+    decode_windows_runtime_state(&bytes).map_err(|err| {
+        PlatformError::new(
+            "windows_runtime_state_parse_failed",
+            "controller.status",
+            format!("failed to decode {}: {err}", path.display()),
+            false,
+            ErrorSubsystem::State,
+        )
+    })
+}
+
+fn expected_tunnel_bindings_from_runtime_state(
+    state: &WindowsRuntimeState,
+) -> Option<ExpectedTunnelBindings> {
+    let direct = state.direct.as_ref()?;
+    let warp = state.warp.as_ref()?;
+    Some(ExpectedTunnelBindings {
+        direct: TunnelBinding {
+            domain: direct.domain.clone(),
+            hy2_port: direct.hy2_port,
+            hy2_password: direct.hy2_password.clone(),
+            vless_port: direct.vless_port,
+            vless_uuid: direct.vless_uuid.clone(),
+            reality_public_key: direct.reality_public_key.clone(),
+            reality_short_id: direct.reality_short_id.clone(),
+        },
+        warp: TunnelBinding {
+            domain: warp.domain.clone(),
+            hy2_port: warp.hy2_port,
+            hy2_password: warp.hy2_password.clone(),
+            vless_port: warp.vless_port,
+            vless_uuid: warp.vless_uuid.clone(),
+            reality_public_key: warp.reality_public_key.clone(),
+            reality_short_id: warp.reality_short_id.clone(),
+        },
+    })
 }
 
 fn parse_current_edge_state(raw: &str, source: &str) -> Result<CurrentEdgeState, PlatformError> {
@@ -695,7 +823,7 @@ mod tests {
     fn collects_controller_status_from_authoritative_controller_snapshot() {
         let repo_root = temp_repo_root("controller_status_controller_snapshot");
         create_required_repo_files(&repo_root);
-        let db_path = repo_root.join(DEFAULT_STATE_DB_PATH);
+        let db_path = controller_state_db_path(&repo_root);
         let state = edge_state::EdgeState::open_or_create(&db_path).unwrap();
         state
             .upsert_controller_state(edge_state::NewControllerState {
