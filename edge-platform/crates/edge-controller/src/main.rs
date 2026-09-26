@@ -776,9 +776,13 @@ impl ControllerService for ControllerServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ControllerStatus>, Status> {
-        let reconcile_warning = reconcile_active_deployment_state(&self.repo_root, &self.state)
-            .err()
-            .map(|err| format!("local deployment-state reconciliation unavailable: {err}"));
+        let reconcile_warning = if is_installed_windows_root(&self.repo_root) {
+            None
+        } else {
+            reconcile_active_deployment_state(&self.repo_root, &self.state)
+                .err()
+                .map(|err| format!("local deployment-state reconciliation unavailable: {err}"))
+        };
         ensure_selector_intents_seeded(&self.repo_root, &self.state)
             .await
             .map_err(Status::internal)?;
@@ -808,8 +812,12 @@ impl ControllerService for ControllerServerImpl {
         }
         if backend_ready_from_state && !live_state_artifact_present {
             status.status_notes.push(
-                "local runtime artifact current-edge.json is missing; start-local cannot be trusted"
-                    .to_owned(),
+                if is_installed_windows_root(&self.repo_root) {
+                    "typed Windows runtime-state.pb is missing; start-local cannot be trusted"
+                } else {
+                    "legacy local runtime artifact current-edge.json is missing; start-local cannot be trusted"
+                }
+                .to_owned(),
             );
         }
         status.agent_state = Some(agent_state);
@@ -2860,7 +2868,14 @@ fn backend_ready_for_local_runtime(repo_root: &Path) -> bool {
     if !live_state_artifact_present(repo_root) {
         return false;
     }
-    let db_path = repo_root.join(DEFAULT_STATE_DB);
+    if is_installed_windows_root(repo_root) {
+        let Ok(bytes) = fs::read(windows_runtime_state_path(repo_root)) else {
+            return false;
+        };
+        return decode_windows_runtime_state(&bytes).is_ok()
+            && default_local_config_path(repo_root).is_file();
+    }
+    let db_path = controller_state_db_path(repo_root);
     let Ok(state) = EdgeState::open_or_create(&db_path) else {
         return false;
     };
