@@ -114,31 +114,48 @@ Rollback swaps the verified `current.pb` / `previous.pb` activation state
 through the installer `-Rollback` path and re-runs independent exact-file
 diagnostics.
 
-## Physical Windows runner bootstrap
+## Physical Windows trust bootstrap
 
-The GitHub runner is transport only and lives outside the application root:
+The one-time elevated bootstrap establishes **both** the application trust anchor and
+the low-privilege GitHub transport:
 
 ```text
-C:\sing-box           application
-C:\sing-box-runner    GitHub Actions transport
+C:\sing-box
+  immutable releases/current.pb/bin/bootstrap   SYSTEM/Admin write only
+  exchange\requests                             runner write
+  exchange\results                              runner read
+  runtime/logs/state                             bounded W1 runner write
+  EdgePlatformPrivilegedDispatch                 Task Scheduler / SYSTEM
+
+C:\sing-box-runner
+  official GitHub Actions Runner / NetworkService
 ```
 
-Before registration, `main` must report protected. The one-time bootstrap
-`edge-platform/scripts/bootstrap-windows-runner.ps1` checks this itself and
-refuses registration otherwise. It downloads only the pinned official GitHub
-Actions Runner bootstrap archive, verifies its SHA-256, registers the
-repository-scoped `sing-box-windows-lab` service as `NetworkService`, and
-installs no Git/Rust/Java/provider credentials. After registration, runner
-software updates are left to GitHub's native self-update mechanism; runner
-version is transport plumbing and is not ReleaseSet/application authority.
+The bootstrap requires the exact protected-main revision and exact durable
+ReleaseSet digest. It activates that ReleaseSet first, stores a protected copy
+of the accepted installer, creates the SYSTEM privileged dispatcher task, applies
+ACLs, and only then registers the repository-scoped runner.
 
-The only interactive secret is GitHub's short-lived runner registration token
-from **Settings > Actions > Runners > New self-hosted runner**. The script reads
-it as a SecureString and does not persist it.
+The runner never receives administrator authority. Release updates are requested
+as canonical protobuf through `privileged-activate`; the SYSTEM dispatcher
+accepts only an exact 40-character accepted revision plus exact 64-character
+ReleaseSet digest. The protected installer independently verifies that:
+- the requested revision is the current protected `main`;
+- the durable release tag resolves directly to that revision;
+- ReleaseSet and Windows artifact hashes match exact bytes.
 
-After registration, physical work is invoked only through the owner-only
-`/windows smoke` route. The first cycle is intentionally non-TUN and does not
-touch DNS, routes, system proxy, Wintun, or the legacy Windows runtime.
+The dispatcher then activates the release and retargets its scheduled task to
+the new immutable release console. This means normal future release updates do
+not require another local administrator session.
+
+The GitHub runner lives outside the application root. It installs no Git/Rust/
+Java/provider toolchain and uses GitHub's native runner self-update mechanism.
+The only interactive secret during the one-time bootstrap is GitHub's short-lived
+runner registration token; it is read as a SecureString and not persisted.
+
+After trust bootstrap, physical work is driven through owner-only typed commands.
+The first `/windows smoke` remains deliberately non-TUN and does not modify DNS,
+routes, system proxy, Wintun, firewall/WFP, or the legacy Windows runtime.
 
 ## Normal Windows entrypoint
 
