@@ -124,7 +124,11 @@ function Configure-ApplicationAcl {
     if ($LASTEXITCODE -ne 0) { throw "Failed to grant runner result read access" }
 
     $secretRoot = Join-Path $ApplicationRoot "state\secrets"
-    & icacls.exe $secretRoot /inheritance:r `
+    & icacls.exe $secretRoot /inheritance:r /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to disable Windows secret-state ACL inheritance" }
+    & icacls.exe $secretRoot /remove:g "NT AUTHORITY\NETWORK SERVICE" /T /C | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to remove runner ACL from Windows secret state" }
+    & icacls.exe $secretRoot `
         /grant:r "SYSTEM:(OI)(CI)F" `
         "BUILTIN\Administrators:(OI)(CI)F" /T /C | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows secret state from runner access" }
