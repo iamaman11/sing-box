@@ -761,9 +761,10 @@ def main() -> None:
         and "verify_windows_activation_files" in windows_console
         and '"serve"' in windows_console
         and '.arg(&install_root)' in windows_console
+        and "EDGE_REPO_ROOT" not in windows_console
         and "resolve_repo_root_for_controller" not in windows_console
         and 'parent.join("edge-controller.exe")' not in windows_console,
-        "edge-console must be the sole current.pb resolver and exact controller startup owner",
+        "edge-console must be the sole current.pb resolver and exact controller startup owner without RepoRoot fallback",
     )
     require(
         '"state/runtime-state.pb"' in windows_controller
