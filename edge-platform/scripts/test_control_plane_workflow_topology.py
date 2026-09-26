@@ -18,6 +18,7 @@ WINDOWS_ENSURE = Path("edge-platform/scripts/ensure-edge-controller.ps1")
 WINDOWS_AUTOMATION = Path("edge-platform/scripts/register-edge-platform-automation.ps1")
 WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
+WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
@@ -46,6 +47,7 @@ def main() -> None:
     windows_automation = WINDOWS_AUTOMATION.read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
+    windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
@@ -770,7 +772,8 @@ def main() -> None:
     )
     require(
         "migrate_windows_runtime_state" in windows_controller
-        and '"migrate-windows-runtime-state"' in windows_controller,
+        and "MigrateWindowsRuntimeState" in windows_controller_cli
+        and '"migrate-windows-runtime-state"' in windows_controller_cli,
         "controller must expose only the bounded one-time legacy JSON to protobuf migration",
     )
     require(
