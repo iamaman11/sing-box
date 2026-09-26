@@ -350,6 +350,7 @@ version = "0.1.0"
 dependencies = [
  "tracing",
  "thiserror",
+ "edge-local-runtime",
  "edge-observability",
  "clap",
  "edge-shared-types",
