@@ -1,11 +1,11 @@
 param(
-    [string]$RepoRoot = "C:\Users\Bose\temp\sing-box",
+    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "edge-platform"),
     [int]$NetworkWaitSeconds = 120
 )
 
 $ErrorActionPreference = "Stop"
-$runtimeDir = Join-Path $RepoRoot "edge-platform\.runtime"
-New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+$console = Join-Path $InstallRoot "bin\edge-console.exe"
+if (-not (Test-Path -LiteralPath $console)) { throw "Installed edge-console is missing: $console" }
 
 $deadline = (Get-Date).AddSeconds($NetworkWaitSeconds)
 do {
@@ -13,5 +13,7 @@ do {
     Start-Sleep -Seconds 5
 } while ((Get-Date) -lt $deadline)
 
-& (Join-Path $RepoRoot "edge-platform\scripts\ensure-edge-controller.ps1") -RepoRoot $RepoRoot
-& (Join-Path $RepoRoot "edge-platform\scripts\reconcile-edge-platform.ps1") -RepoRoot $RepoRoot
+& $console ensure-controller
+if ($LASTEXITCODE -ne 0) { throw "Controller startup failed" }
+& $console reconcile
+if ($LASTEXITCODE -ne 0) { throw "Local runtime reconcile failed" }
