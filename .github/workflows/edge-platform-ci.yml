@@ -87,6 +87,27 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_control_plane_workflow_topology.py
 
+      - name: Parse critical Windows activation scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($path in @(
+            "edge-platform/scripts/install-windows-release.ps1",
+            "edge-platform/scripts/ensure-edge-controller.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $path).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              $detail = ($errors | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+              throw ("PowerShell parse failure in " + $path + [Environment]::NewLine + $detail)
+            }
+          }
+
       - name: Enforce protobuf-first JSON policy
         shell: bash
         run: python3 edge-platform/scripts/test_json_contract_policy.py
