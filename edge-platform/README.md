@@ -143,7 +143,8 @@ accepts only an exact 40-character accepted revision plus exact 64-character
 ReleaseSet digest. The protected installer independently verifies that:
 - the requested revision is the current protected `main`;
 - the durable release tag resolves directly to that revision;
-- the canonical ReleaseSet protobuf reports that exact revision as its source_revision;
+- the ReleaseSet `source_revision` is the accepted PR-head parent of that merge commit;
+- that candidate parent has the same Git tree as the accepted merge commit;
 - ReleaseSet and Windows artifact hashes match exact bytes.
 
 The dispatcher then activates the release and retargets its scheduled task to
