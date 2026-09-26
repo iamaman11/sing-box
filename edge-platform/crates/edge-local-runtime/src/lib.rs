@@ -1,8 +1,10 @@
 use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use std::mem::size_of;
@@ -25,10 +27,13 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW};
 
 const STARTUP_OBSERVATION_SECS: u64 = 10;
 const STARTUP_OBSERVATION_INTERVAL_MS: u64 = 500;
+const SMOKE_STARTUP_TIMEOUT_SECS: u64 = 8;
+const SMOKE_IO_TIMEOUT_SECS: u64 = 5;
+const SMOKE_RESPONSE_BODY: &str = "EDGE_NON_TUN_SMOKE_OK";
 const WINDOWS_OWNED_DNS_IPV4: [[u8; 4]; 2] = [[127, 0, 2, 2], [127, 0, 2, 3]];
 
 fn is_owned_windows_dns_ipv4(address: [u8; 4]) -> bool {
@@ -58,6 +63,13 @@ pub struct RuntimeOperationResult {
     pub local_singbox: LocalSingboxState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonTunSmokeResult {
+    pub singbox_pid: u32,
+    pub proxy_port: u16,
+    pub origin_port: u16,
+}
+
 /// A candidate configuration which has been rendered and validated while the
 /// currently running TUN is still serving traffic.  The active configuration
 /// is never changed until this candidate has passed `sing-box check`.
@@ -75,6 +87,253 @@ pub fn restore_windows_dns_if_owned() -> Vec<String> {
     {
         Vec::new()
     }
+}
+
+pub fn run_non_tun_loopback_smoke(
+    singbox_binary_path: &Path,
+    runtime_root: &Path,
+) -> Result<NonTunSmokeResult, String> {
+    if !singbox_binary_path.is_file() {
+        return Err(format!(
+            "sing-box binary was not found: {}",
+            singbox_binary_path.display()
+        ));
+    }
+
+    let smoke_root = runtime_root.join("smoke");
+    fs::create_dir_all(&smoke_root).map_err(|err| {
+        format!(
+            "failed to prepare non-TUN smoke directory {}: {err}",
+            smoke_root.display()
+        )
+    })?;
+
+    let origin_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .map_err(|err| format!("failed to reserve loopback smoke origin: {err}"))?;
+    origin_listener
+        .set_nonblocking(true)
+        .map_err(|err| format!("failed to make smoke origin nonblocking: {err}"))?;
+    let origin_port = origin_listener
+        .local_addr()
+        .map_err(|err| format!("failed to observe smoke origin address: {err}"))?
+        .port();
+
+    let proxy_reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .map_err(|err| format!("failed to reserve loopback smoke proxy port: {err}"))?;
+    let proxy_port = proxy_reservation
+        .local_addr()
+        .map_err(|err| format!("failed to observe smoke proxy address: {err}"))?
+        .port();
+    drop(proxy_reservation);
+
+    let config_path = smoke_root.join("non-tun-smoke.json");
+    let config = render_non_tun_smoke_config(proxy_port);
+    fs::write(&config_path, config).map_err(|err| {
+        format!(
+            "failed to write non-TUN smoke config {}: {err}",
+            config_path.display()
+        )
+    })?;
+    validate_singbox_config(singbox_binary_path, &config_path)?;
+
+    let stdout = File::create(smoke_root.join("sing-box.stdout.log"))
+        .map_err(|err| format!("failed to open bounded smoke stdout log: {err}"))?;
+    let stderr = File::create(smoke_root.join("sing-box.stderr.log"))
+        .map_err(|err| format!("failed to open bounded smoke stderr log: {err}"))?;
+
+    let mut command = Command::new(singbox_binary_path);
+    command
+        .arg("run")
+        .arg("-c")
+        .arg(&config_path)
+        .current_dir(&smoke_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("failed to start exact sing-box smoke runtime: {err}"))?;
+    let singbox_pid = child.id();
+    let proxy_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, proxy_port);
+
+    if let Err(err) = wait_for_smoke_listener(&mut child, proxy_addr) {
+        best_effort_terminate(&mut child);
+        return Err(err);
+    }
+
+    let origin_thread = thread::spawn(move || serve_smoke_origin(origin_listener));
+    let request_result = request_through_smoke_proxy(proxy_addr, origin_port);
+    let origin_result = origin_thread
+        .join()
+        .map_err(|_| "smoke origin thread panicked".to_owned())?;
+
+    let cleanup_result = terminate_smoke_child(&mut child);
+    if let Err(err) = request_result {
+        return Err(match cleanup_result {
+            Ok(()) => err,
+            Err(cleanup_err) => format!("{err}; cleanup also failed: {cleanup_err}"),
+        });
+    }
+    origin_result?;
+    cleanup_result?;
+
+    if TcpStream::connect_timeout(
+        &SocketAddr::V4(proxy_addr),
+        Duration::from_millis(400),
+    )
+    .is_ok()
+    {
+        return Err("non-TUN smoke proxy listener leaked after cleanup".to_owned());
+    }
+
+    Ok(NonTunSmokeResult {
+        singbox_pid,
+        proxy_port,
+        origin_port,
+    })
+}
+
+fn render_non_tun_smoke_config(proxy_port: u16) -> String {
+    format!(
+        r#"{{"log":{{"level":"info","timestamp":true}},"inbounds":[{{"type":"mixed","tag":"smoke-in","listen":"127.0.0.1","listen_port":{proxy_port}}}],"outbounds":[{{"type":"direct","tag":"direct-out"}}],"route":{{"final":"direct-out"}}}}"#
+    )
+}
+
+fn wait_for_smoke_listener(child: &mut Child, address: SocketAddrV4) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(SMOKE_STARTUP_TIMEOUT_SECS);
+    while Instant::now() < deadline {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("failed to observe sing-box smoke startup: {err}"))?
+        {
+            return Err(format!(
+                "sing-box smoke runtime exited before listener readiness with status {status}"
+            ));
+        }
+
+        if TcpStream::connect_timeout(
+            &SocketAddr::V4(address),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+        {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    Err(format!(
+        "sing-box smoke listener 127.0.0.1:{} did not become ready within {} seconds",
+        address.port(),
+        SMOKE_STARTUP_TIMEOUT_SECS
+    ))
+}
+
+fn serve_smoke_origin(listener: TcpListener) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(SMOKE_IO_TIMEOUT_SECS);
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(SMOKE_IO_TIMEOUT_SECS)))
+                    .map_err(|err| format!("failed to bound smoke origin read: {err}"))?;
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(SMOKE_IO_TIMEOUT_SECS)))
+                    .map_err(|err| format!("failed to bound smoke origin write: {err}"))?;
+                let mut request = [0u8; 4096];
+                let read = stream
+                    .read(&mut request)
+                    .map_err(|err| format!("failed to read proxied smoke request: {err}"))?;
+                let request = String::from_utf8_lossy(&request[..read]);
+                if !request.starts_with("GET /edge-smoke HTTP/") {
+                    return Err("smoke origin received an unexpected request".to_owned());
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    SMOKE_RESPONSE_BODY.len(),
+                    SMOKE_RESPONSE_BODY
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .map_err(|err| format!("failed to write smoke origin response: {err}"))?;
+                stream
+                    .flush()
+                    .map_err(|err| format!("failed to flush smoke origin response: {err}"))?;
+                return Ok(());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err("smoke origin did not receive a proxied request in time".to_owned());
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => return Err(format!("smoke origin accept failed: {err}")),
+        }
+    }
+}
+
+fn request_through_smoke_proxy(
+    proxy_addr: SocketAddrV4,
+    origin_port: u16,
+) -> Result<(), String> {
+    let mut stream = TcpStream::connect_timeout(
+        &SocketAddr::V4(proxy_addr),
+        Duration::from_secs(SMOKE_IO_TIMEOUT_SECS),
+    )
+    .map_err(|err| format!("failed to connect to non-TUN smoke proxy: {err}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(SMOKE_IO_TIMEOUT_SECS)))
+        .map_err(|err| format!("failed to bound smoke proxy read: {err}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(SMOKE_IO_TIMEOUT_SECS)))
+        .map_err(|err| format!("failed to bound smoke proxy write: {err}"))?;
+
+    let request = format!(
+        "GET http://127.0.0.1:{origin_port}/edge-smoke HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("failed to write non-TUN smoke proxy request: {err}"))?;
+    stream
+        .flush()
+        .map_err(|err| format!("failed to flush non-TUN smoke proxy request: {err}"))?;
+
+    let mut response = String::new();
+    stream
+        .take(64 * 1024)
+        .read_to_string(&mut response)
+        .map_err(|err| format!("failed to read non-TUN smoke proxy response: {err}"))?;
+    if !response.contains(" 200 ") || !response.contains(SMOKE_RESPONSE_BODY) {
+        return Err("non-TUN smoke proxy round-trip did not return the expected response".to_owned());
+    }
+    Ok(())
+}
+
+fn terminate_smoke_child(child: &mut Child) -> Result<(), String> {
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|err| format!("failed to inspect smoke process before cleanup: {err}"))?
+    {
+        return Err(format!(
+            "sing-box smoke runtime exited before explicit cleanup with status {status}"
+        ));
+    }
+    child
+        .kill()
+        .map_err(|err| format!("failed to terminate sing-box smoke runtime: {err}"))?;
+    child
+        .wait()
+        .map_err(|err| format!("failed to reap sing-box smoke runtime: {err}"))?;
+    Ok(())
+}
+
+fn best_effort_terminate(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 pub fn inspect_local_runtime(config_path: &Path) -> LocalSingboxState {
@@ -690,6 +949,17 @@ mod tests {
         assert!(is_owned_windows_dns_ipv4([127, 0, 2, 3]));
         assert!(!is_owned_windows_dns_ipv4([127, 0, 2, 4]));
         assert!(!is_owned_windows_dns_ipv4([8, 8, 8, 8]));
+    }
+
+    #[test]
+    fn non_tun_smoke_config_is_loopback_mixed_only() {
+        let config = render_non_tun_smoke_config(32123);
+        assert!(config.contains(r#""type":"mixed""#));
+        assert!(config.contains(r#""listen":"127.0.0.1""#));
+        assert!(config.contains(r#""listen_port":32123"#));
+        assert!(!config.contains(r#""type":"tun""#));
+        assert!(!config.contains("auto_route"));
+        assert!(!config.contains("strict_route"));
     }
 
     #[cfg(windows)]
