@@ -40,11 +40,12 @@ Rules:
   the immutable current ReleaseSet `edge-console privileged-dispatch`. The GitHub
   runner is `NetworkService` and can only write canonical protobuf requests into
   the bounded exchange directory; it cannot replace binaries, activation pointers
-  or the protected installer.
+  or the protected installer. `state\secrets` is reserved with inheritance
+  disabled and SYSTEM/Admin-only ACL before any real credential is provisioned.
 - Privileged release activation is not arbitrary remote execution: the request can
   name only an exact accepted revision and ReleaseSet digest, and the protected
-  installer independently binds both to the current protected `main` and durable
-  release tag before mutation.
+  installer independently binds the durable tag **and ReleaseSet.source_revision**
+  to the current protected `main` before exact-byte verification and mutation.
 
   Immutable releases, activation pointers, durable local state, generated
   runtime configuration and logs all live under that root. The GitHub runner
