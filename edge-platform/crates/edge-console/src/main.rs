@@ -7,9 +7,9 @@ use edge_observability::init as init_observability;
 use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
-use std::fs;
 #[cfg(windows)]
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -199,11 +199,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         Command::PrivilegedConvergeControllerService(args) => {
             let install_root = PathBuf::from(args.install_root);
             let activation = load_verified_activation(&install_root)?;
-            converge_controller_service(
-                &install_root,
-                Path::new(&activation.controller_path),
-            )
-            .map_err(ConsoleError::Command)?;
+            converge_controller_service(&install_root, Path::new(&activation.controller_path))
+                .map_err(ConsoleError::Command)?;
             println!("status=PASS");
             println!("controller_service={WINDOWS_CONTROLLER_SERVICE_NAME}");
             println!("controller_start_owner=windows_scm");
@@ -896,8 +893,12 @@ fn run_icacls(path: &Path, arguments: &[&str]) -> Result<(), String> {
 
 #[cfg(windows)]
 fn protect_controller_owned_directory(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|err| format!("failed to create controller-owned {}: {err}", path.display()))?;
+    fs::create_dir_all(path).map_err(|err| {
+        format!(
+            "failed to create controller-owned {}: {err}",
+            path.display()
+        )
+    })?;
     run_icacls(
         path,
         &[
@@ -964,10 +965,7 @@ fn converge_application_acl(install_root: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn converge_controller_service(
-    install_root: &Path,
-    controller_path: &Path,
-) -> Result<(), String> {
+fn converge_controller_service(install_root: &Path, controller_path: &Path) -> Result<(), String> {
     if !controller_path.is_file() {
         return Err(format!(
             "exact controller binary is missing: {}",
@@ -1066,7 +1064,6 @@ fn converge_controller_service(
     }
     Ok(())
 }
-
 
 async fn reconcile_installed_runtime(endpoint: String) -> Result<(), Box<dyn std::error::Error>> {
     ensure_controller_running(&endpoint)?;
