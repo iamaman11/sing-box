@@ -341,9 +341,11 @@ fn resolve_serve_config(
     let repo_root = resolve_repo_root(args.repo_root)?;
     let addr = match args.addr {
         Some(addr) => addr,
-        None => DEFAULT_CONTROLLER_ADDR.parse::<SocketAddr>().map_err(|err| {
-            format!("invalid built-in controller address {DEFAULT_CONTROLLER_ADDR}: {err}")
-        })?,
+        None => DEFAULT_CONTROLLER_ADDR
+            .parse::<SocketAddr>()
+            .map_err(|err| {
+                format!("invalid built-in controller address {DEFAULT_CONTROLLER_ADDR}: {err}")
+            })?,
     };
     Ok((repo_root, addr))
 }
