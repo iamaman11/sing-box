@@ -805,8 +805,12 @@ def main() -> None:
         and "previous.pb" in windows_installer
         and "edge-diagnostic.exe" in windows_installer
         and "verify-windows" in windows_installer
-        and "write-windows-activation" in windows_installer,
-        "Windows activation must be one durable ReleaseSet plus one protobuf activation boundary",
+        and "write-windows-activation" in windows_installer
+        and '$null = & $Tool @activationArgs' in windows_installer
+        and '$activation["current_state"]' in windows_installer
+        and '$activation["console"]' in windows_installer
+        and '$activation["diagnostic"]' in windows_installer,
+        "Windows activation must keep helper stdout out of the PowerShell function result and return one typed activation boundary",
     )
     require(
         "current.json" not in windows_installer
