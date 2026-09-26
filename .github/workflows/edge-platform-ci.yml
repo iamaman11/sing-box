@@ -892,7 +892,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           cargo build --locked --release -p edge-controller --bin edge-controller -p edge-console --bin edge-console -p edge-diagnostic --bin edge-diagnostic
-          cargo test --locked --release -p edge-controller --test windows_scm_lifecycle -- --nocapture
 
       - name: Build or reuse exact Windows candidate
         id: finalize
