@@ -1,6 +1,6 @@
 use edge_shared_types::{decode_windows_activation_state, verify_windows_activation_files};
-use std::path::PathBuf;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use std::path::{Path, PathBuf};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 fn main() {
     if let Err(err) = run() {
@@ -30,13 +30,7 @@ fn run() -> Result<(), String> {
     verify_windows_activation_files(&state)?;
 
     let expected_controller = PathBuf::from(&state.controller_path);
-    let mut system = System::new();
-    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-    let controller_running = system.processes().values().any(|process| {
-        process
-            .exe()
-            .is_some_and(|path| same_path(path, &expected_controller))
-    });
+    let controller_running = process_running_at(&expected_controller);
 
     println!("status=PASS");
     println!("release_set_sha256={}", state.release_set_sha256);
@@ -52,7 +46,21 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn same_path(observed: &std::path::Path, expected: &std::path::Path) -> bool {
+fn process_running_at(expected: &Path) -> bool {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+    );
+    system.processes().values().any(|process| {
+        process
+            .exe()
+            .is_some_and(|path| same_path(path, expected))
+    })
+}
+
+fn same_path(observed: &Path, expected: &Path) -> bool {
     if observed == expected {
         return true;
     }
@@ -64,4 +72,16 @@ fn same_path(observed: &std::path::Path, expected: &std::path::Path) -> bool {
 
 fn usage() -> String {
     "usage: edge-diagnostic doctor <current.pb>".to_owned()
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observes_current_process_by_exact_executable_path() {
+        let current = std::env::current_exe().unwrap();
+        assert!(process_running_at(&current));
+    }
 }
