@@ -55,4 +55,3 @@ fn run() -> Result<(), String> {
 fn usage() -> String {
     "usage: edge-diagnostic doctor <current.pb>".to_owned()
 }
-
