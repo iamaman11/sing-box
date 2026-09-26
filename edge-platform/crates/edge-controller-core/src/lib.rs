@@ -796,6 +796,24 @@ mod tests {
     }
 
     #[test]
+    fn installed_release_only_inventory_is_not_configured_not_broken() {
+        let root = temp_repo_root("installed_release_only_inventory");
+        create_file(&root.join("current.pb"), "activation");
+        std::fs::create_dir_all(root.join("releases/release-a/bin")).unwrap();
+        create_file(&root.join("bin/edge-console.exe"), "");
+        create_file(&root.join("bin/edge-diagnostic.exe"), "");
+
+        let report = collect_repo_inventory(&root).unwrap();
+        assert!(report.blockers.is_empty());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|line| line == "installed Windows application is NOT_CONFIGURED")
+        );
+    }
+
+    #[test]
     fn collects_controller_status() {
         let repo_root = temp_repo_root("controller_status");
         create_required_repo_files(&repo_root);
