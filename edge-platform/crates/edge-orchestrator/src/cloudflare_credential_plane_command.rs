@@ -727,7 +727,9 @@ fn require_allowed(
         || payload.projection != expected_projection as i32
         || !payload.dummy_non_secret
     {
-        return Err(format!("{name} returned a non-canonical or incorrect typed dummy payload"));
+        return Err(format!(
+            "{name} returned a non-canonical or incorrect typed dummy payload"
+        ));
     }
     Ok(())
 }
@@ -948,8 +950,7 @@ async fn observe(
             service_token_duration: token.and_then(|value| value.duration.clone()),
             access_application_id: app.map(|value| value.id.clone()),
             access_application_type: app.map(|value| value.app_type.clone()),
-            access_service_auth_401_redirect: app
-                .and_then(|value| value.service_auth_401_redirect),
+            access_service_auth_401_redirect: app.and_then(|value| value.service_auth_401_redirect),
             access_destination_worker_id: destination.and_then(|value| value.worker_id.clone()),
             access_destination_has_overrides: destination.map(|value| value.has_overrides),
             access_policies: policies,
@@ -1163,7 +1164,10 @@ mod tests {
         assert_ne!(windows.version_tag, vm.version_tag);
         let windows_probe = CredentialIsolationProbe::decode(windows.payload.as_slice()).unwrap();
         let vm_probe = CredentialIsolationProbe::decode(vm.payload.as_slice()).unwrap();
-        assert_eq!(windows_probe.projection, CredentialProjectionKind::Windows as i32);
+        assert_eq!(
+            windows_probe.projection,
+            CredentialProjectionKind::Windows as i32
+        );
         assert_eq!(vm_probe.projection, CredentialProjectionKind::Vm as i32);
         assert!(windows_probe.dummy_non_secret);
         assert!(vm_probe.dummy_non_secret);
