@@ -578,6 +578,11 @@ jobs:
       compose_version: ${{ steps.resolve.outputs.compose_version }}
       release_input_sha256: ${{ steps.resolve.outputs.release_input_sha256 }}
       runtime_input_sha256: ${{ steps.resolve.outputs.runtime_input_sha256 }}
+      runtime_reuse: ${{ steps.resolve.outputs.runtime_reuse }}
+      runtime_source_revision: ${{ steps.resolve.outputs.runtime_source_revision }}
+      base_runtime_agent_sha256: ${{ steps.resolve.outputs.base_runtime_agent_sha256 }}
+      base_gateway_ref: ${{ steps.resolve.outputs.base_gateway_ref }}
+      base_warp_ref: ${{ steps.resolve.outputs.base_warp_ref }}
       windows_input_sha256: ${{ steps.resolve.outputs.windows_input_sha256 }}
       windows_reuse: ${{ steps.resolve.outputs.windows_reuse }}
       windows_source_revision: ${{ steps.resolve.outputs.windows_source_revision }}
@@ -694,6 +699,25 @@ jobs:
             bash edge-platform/scripts/resolve_durable_release.sh
           source "${base_dir}/resolved.env"
 
+          runtime_decision="$(python3 edge-platform/scripts/runtime_input_digest.py decide \
+            --candidate-digest "${runtime_input_sha}" \
+            --base-schema "${EDGE_RELEASE_SCHEMA_VERSION}" \
+            --base-digest "${EDGE_RUNTIME_INPUT_SHA256}" \
+            --base-runtime-source-revision "${EDGE_RUNTIME_SOURCE_REVISION}" \
+            --base-agent-sha256 "${EDGE_AGENT_SHA256}" \
+            --gateway-ref "${EDGE_GATEWAY_IMAGE}" \
+            --warp-ref "${EDGE_WARP_EGRESS_IMAGE}")"
+          test "${runtime_decision}" = "REUSE" || test "${runtime_decision}" = "BUILD"
+
+          runtime_reuse=false
+          runtime_source_revision="${CANDIDATE_REVISION}"
+          if [[ "${runtime_decision}" = "REUSE" ]]; then
+            test -f "${base_dir}/edge-agent-linux-amd64"
+            test "$(sha256sum "${base_dir}/edge-agent-linux-amd64" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+            runtime_reuse=true
+            runtime_source_revision="${EDGE_RUNTIME_SOURCE_REVISION}"
+          fi
+
           windows_decision="$(python3 edge-platform/scripts/windows_input_digest.py decide \
             --candidate-digest "${windows_input_sha}" \
             --base-schema "${EDGE_RELEASE_SCHEMA_VERSION}" \
@@ -730,6 +754,11 @@ jobs:
             printf 'compose_version=%s\n' "${compose_version}"
             printf 'release_input_sha256=%s\n' "${release_input_sha}"
             printf 'runtime_input_sha256=%s\n' "${runtime_input_sha}"
+            printf 'runtime_reuse=%s\n' "${runtime_reuse}"
+            printf 'runtime_source_revision=%s\n' "${runtime_source_revision}"
+            printf 'base_runtime_agent_sha256=%s\n' "${EDGE_AGENT_SHA256}"
+            printf 'base_gateway_ref=%s\n' "${EDGE_GATEWAY_IMAGE}"
+            printf 'base_warp_ref=%s\n' "${EDGE_WARP_EGRESS_IMAGE}"
             printf 'windows_input_sha256=%s\n' "${windows_input_sha}"
             printf 'windows_reuse=%s\n' "${windows_reuse}"
             printf 'windows_source_revision=%s\n' "${windows_source_revision}"
@@ -756,10 +785,21 @@ jobs:
             echo "- containerd package: \`${containerd_version}\`"
             echo "- Compose package: \`${compose_version}\`"
             echo "- VM runtime input SHA-256: \`${runtime_input_sha}\`"
+            echo "- VM runtime decision: \`${runtime_decision}\`"
+            echo "- VM runtime source revision: \`${runtime_source_revision}\`"
             echo "- Windows candidate input SHA-256: \`${windows_input_sha}\`"
             echo "- Windows candidate decision: \`${windows_decision}\`"
             echo "- Windows artifact source revision: \`${windows_source_revision}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Store exact accepted VM runtime reuse bytes
+        if: steps.resolve.outputs.runtime_reuse == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: edge-platform-base-runtime-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/base-edge-platform-release/edge-agent-linux-amd64
+          if-no-files-found: error
+          retention-days: 1
 
   windows:
     name: Build Windows candidate
@@ -1001,6 +1041,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
+      actions: read
       contents: read
       packages: write
     steps:
@@ -1016,6 +1057,25 @@ jobs:
           git fetch --no-tags --depth=1 origin "${REVISION}"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${REVISION}"
+
+      - name: Materialize exact accepted VM runtime reuse bytes
+        if: needs.dependencies.outputs.runtime_reuse == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_AGENT_SHA256: ${{ needs.dependencies.outputs.base_runtime_agent_sha256 }}
+        run: |
+          set -euo pipefail
+          base_dir="${RUNNER_TEMP}/base-edge-platform-release"
+          install -d "${base_dir}"
+          gh run download "${GITHUB_RUN_ID}" -R "${REPOSITORY}" \
+            -n "edge-platform-base-runtime-${CANDIDATE_REVISION}-${GITHUB_RUN_ATTEMPT}" \
+            -D "${base_dir}"
+          test -f "${base_dir}/edge-agent-linux-amd64"
+          test "$(sha256sum "${base_dir}/edge-agent-linux-amd64" | awk '{print $1}')" = "${EXPECTED_AGENT_SHA256}"
+          chmod 0755 "${base_dir}/edge-agent-linux-amd64"
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -1038,70 +1098,19 @@ jobs:
           restore-keys: |
             cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
 
-      - name: Build exact reusable Linux binaries
+      - name: Build exact required Linux binaries
         working-directory: edge-platform
         shell: bash
+        env:
+          RUNTIME_REUSE: ${{ needs.dependencies.outputs.runtime_reuse }}
         run: |
           set -euo pipefail
           cargo build --locked --release -p edge-controller --bin edge-controller
           cargo build --locked --release -p edge-orchestrator --bin edge-orchestrator
-          cargo build --locked --release -p edge-agent --bin edge-agent
-          cargo build --locked --release -p edge-shared-types --bin edge-release-set
-
-      - name: Resolve exact accepted VM runtime reuse
-        id: runtime_reuse
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
-          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
-          RUNTIME_INPUT_SHA256: ${{ needs.dependencies.outputs.runtime_input_sha256 }}
-        run: |
-          set -euo pipefail
-          base_dir="${RUNNER_TEMP}/base-edge-platform-release"
-          ACCEPTED_REVISION="${BASE_REVISION}" OUTPUT_DIR="${base_dir}" \
-            bash edge-platform/scripts/resolve_durable_release.sh
-          source "${base_dir}/resolved.env"
-
-          decision="$(python3 edge-platform/scripts/runtime_input_digest.py decide \
-            --candidate-digest "${RUNTIME_INPUT_SHA256}" \
-            --base-schema "${EDGE_RELEASE_SCHEMA_VERSION}" \
-            --base-digest "${EDGE_RUNTIME_INPUT_SHA256}" \
-            --base-runtime-source-revision "${EDGE_RUNTIME_SOURCE_REVISION}" \
-            --base-agent-sha256 "${EDGE_AGENT_SHA256}" \
-            --gateway-ref "${EDGE_GATEWAY_IMAGE}" \
-            --warp-ref "${EDGE_WARP_EGRESS_IMAGE}")"
-          test "${decision}" = "REUSE" || test "${decision}" = "BUILD"
-
-          reuse=false
-          runtime_source_revision="${CANDIDATE_REVISION}"
-          if [[ "${decision}" = "REUSE" ]]; then
-            candidate_agent_sha="$(sha256sum edge-platform/target/release/edge-agent | awk '{print $1}')"
-            test "${candidate_agent_sha}" = "${EDGE_AGENT_SHA256}" || {
-              echo "equal runtime input digest produced different edge-agent bytes" >&2
-              exit 1
-            }
-            reuse=true
-            runtime_source_revision="${EDGE_RUNTIME_SOURCE_REVISION}"
-            printf 'base_agent_path=%s\n' "${base_dir}/edge-agent-linux-amd64" >> "${GITHUB_OUTPUT}"
-            printf 'gateway_ref=%s\n' "${EDGE_GATEWAY_IMAGE}" >> "${GITHUB_OUTPUT}"
-            printf 'warp_ref=%s\n' "${EDGE_WARP_EGRESS_IMAGE}" >> "${GITHUB_OUTPUT}"
+          if [[ "${RUNTIME_REUSE}" != "true" ]]; then
+            cargo build --locked --release -p edge-agent --bin edge-agent
           fi
-
-          printf 'reuse=%s\n' "${reuse}" >> "${GITHUB_OUTPUT}"
-          printf 'runtime_source_revision=%s\n' "${runtime_source_revision}" >> "${GITHUB_OUTPUT}"
-          printf 'runtime_input_sha256=%s\n' "${RUNTIME_INPUT_SHA256}" >> "${GITHUB_OUTPUT}"
-
-          {
-            echo '### VM runtime reuse decision'
-            echo
-            echo "- decision: \`${decision}\`"
-            echo "- candidate runtime input: \`${RUNTIME_INPUT_SHA256}\`"
-            echo "- base schema: \`${EDGE_RELEASE_SCHEMA_VERSION}\`"
-            echo "- base runtime input: \`${EDGE_RUNTIME_INPUT_SHA256:-legacy-missing}\`"
-            echo "- runtime source revision: \`${runtime_source_revision}\`"
-          } >> "${GITHUB_STEP_SUMMARY}"
+          cargo build --locked --release -p edge-shared-types --bin edge-release-set
 
       - name: Build or reuse exact candidate images
         id: images
@@ -1109,9 +1118,9 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
-          REUSE_RUNTIME: ${{ steps.runtime_reuse.outputs.reuse }}
-          REUSED_GATEWAY_REF: ${{ steps.runtime_reuse.outputs.gateway_ref }}
-          REUSED_WARP_REF: ${{ steps.runtime_reuse.outputs.warp_ref }}
+          REUSE_RUNTIME: ${{ needs.dependencies.outputs.runtime_reuse }}
+          REUSED_GATEWAY_REF: ${{ needs.dependencies.outputs.base_gateway_ref }}
+          REUSED_WARP_REF: ${{ needs.dependencies.outputs.base_warp_ref }}
           SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
           SING_BOX_URL: ${{ needs.dependencies.outputs.sing_box_linux_url }}
           SING_BOX_SHA256: ${{ needs.dependencies.outputs.sing_box_linux_sha256 }}
@@ -1244,10 +1253,10 @@ jobs:
         env:
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
           RELEASE_INPUT_SHA256: ${{ needs.dependencies.outputs.release_input_sha256 }}
-          RUNTIME_REUSE: ${{ steps.runtime_reuse.outputs.reuse }}
-          REUSED_AGENT_PATH: ${{ steps.runtime_reuse.outputs.base_agent_path }}
-          RUNTIME_SOURCE_REVISION: ${{ steps.runtime_reuse.outputs.runtime_source_revision }}
-          RUNTIME_INPUT_SHA256: ${{ steps.runtime_reuse.outputs.runtime_input_sha256 }}
+          RUNTIME_REUSE: ${{ needs.dependencies.outputs.runtime_reuse }}
+          REUSED_AGENT_PATH: ${{ runner.temp }}/base-edge-platform-release/edge-agent-linux-amd64
+          RUNTIME_SOURCE_REVISION: ${{ needs.dependencies.outputs.runtime_source_revision }}
+          RUNTIME_INPUT_SHA256: ${{ needs.dependencies.outputs.runtime_input_sha256 }}
           EDGE_GATEWAY_IMAGE: ${{ steps.images.outputs.gateway_ref }}
           EDGE_WARP_EGRESS_IMAGE: ${{ steps.images.outputs.warp_ref }}
           SING_BOX_VERSION: ${{ needs.dependencies.outputs.sing_box_version }}
