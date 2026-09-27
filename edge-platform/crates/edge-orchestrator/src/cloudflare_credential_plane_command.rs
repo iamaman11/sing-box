@@ -495,8 +495,6 @@ async fn apply_action(
                 &desired.target_account_id,
                 &projection.access_application_name,
                 worker_id,
-                &projection.access_policy_name,
-                token_id,
             )
             .await?;
             Ok((None, 1))
