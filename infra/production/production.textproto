@@ -53,7 +53,6 @@ cloudflare {
     vm_access_policy_name: "sing-box-credentials-vm-service-auth"
     windows_service_token_name: "sing-box-credentials-windows-phase2-proof"
     vm_service_token_name: "sing-box-credentials-vm-phase2-proof"
-    dummy_payload_schema: "sing-box.credentials.dummy.v1"
     worker_compatibility_date: "2026-09-28"
     proof_token_duration: "1h"
   }
