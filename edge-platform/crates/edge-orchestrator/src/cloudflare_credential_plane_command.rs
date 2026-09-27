@@ -792,76 +792,23 @@ async fn observe(
         (Vec::new(), Vec::new())
     };
 
-    let expected = projections(desired);
-    let expected_worker_names = expected
-        .iter()
-        .map(|projection| projection.worker_name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let expected_token_names = expected
-        .iter()
-        .map(|projection| projection.service_token_name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let expected_application_names = expected
-        .iter()
-        .map(|projection| projection.access_application_name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+    // This owner is deliberately name-scoped. Other Workers, Access applications,
+    // service tokens and domains may coexist in the dedicated account as later
+    // Cloudflare phases converge; they are neither adopted nor rejected here.
+    let owned_worker_script_present = projections(desired).iter().any(|projection| {
+        scripts
+            .iter()
+            .any(|script| script.id == projection.worker_name)
+    });
 
-    if let Some(script) = scripts
-        .iter()
-        .find(|script| !expected_worker_names.contains(script.id.as_str()))
-    {
-        return Err(format!(
-            "Phase 2 target account contains unexpected Worker script {}; refusing adoption",
-            script.id
-        ));
-    }
-    if let Some(worker) = workers
-        .iter()
-        .find(|worker| !expected_worker_names.contains(worker.name.as_str()))
-    {
-        return Err(format!(
-            "Phase 2 target account contains unexpected immutable Worker {}; refusing adoption",
-            worker.name
-        ));
-    }
-    if let Some(token) = service_tokens.iter().find(|token| {
-        token
-            .name
-            .as_deref()
-            .is_none_or(|name| !expected_token_names.contains(name))
-    }) {
-        return Err(format!(
-            "Phase 2 target account contains unexpected Access service token {}; refusing adoption",
-            token.name.as_deref().unwrap_or("UNNAMED")
-        ));
-    }
-    if let Some(application) = access_applications
-        .iter()
-        .find(|application| !expected_application_names.contains(application.name.as_str()))
-    {
-        return Err(format!(
-            "Phase 2 target account contains unexpected Access application {}; refusing adoption",
-            application.name
-        ));
-    }
-    if let Some(domain) = worker_domains
-        .iter()
-        .find(|domain| !expected_worker_names.contains(domain.service.as_str()))
-    {
-        return Err(format!(
-            "Phase 2 target account contains unexpected Worker custom domain {}; refusing adoption",
-            domain.hostname
-        ));
-    }
-
-    let workers_dev_subdomain = if scripts.is_empty() {
-        None
-    } else {
+    let workers_dev_subdomain = if owned_worker_script_present {
         Some(
             cloudflare::get_workers_subdomain(api_token, &desired.target_account_id)
                 .await?
                 .subdomain,
         )
+    } else {
+        None
     };
 
     let mut projections_observed = Vec::new();
