@@ -161,6 +161,7 @@ impl ApplicationLifecycleCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ProductionCommand {
     Validate,
+    Diagnose,
     Converge(ProductionRuntimeArgs),
     Verify(ProductionRuntimeArgs),
     Rollback,
