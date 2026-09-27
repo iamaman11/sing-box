@@ -1157,7 +1157,8 @@ fn split_tunnel_result_values(value: Value) -> Result<Vec<Value>, String> {
             ))
         }
         _ => Err(
-            "Cloudflare split tunnel list result must be an array, null, or empty object".to_owned(),
+            "Cloudflare split tunnel list result must be an array, null, or empty object"
+                .to_owned(),
         ),
     }
 }
@@ -1986,7 +1987,6 @@ mod tests {
         .unwrap();
         assert_eq!(dns.name, "miu.example.com");
         assert_eq!(dns.record_type, "A");
-
     }
 
     #[test]
