@@ -175,8 +175,21 @@ def main() -> None:
         )
 
     require(
-        application.count("group: vultr-control-plane-production") == 4,
-        "application backend must serialize execute, production, cleanup and acceptance mutation jobs",
+        application.count("group: vultr-control-plane-production") == 5,
+        "application backend must serialize execute, production, read-only production observation, cleanup and acceptance jobs",
+    )
+    production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
+    require(
+        '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
+        and ".mutations_performed == 0" in production_observe
+        and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_observe
+        and "VULTR_API_KEY" not in production_observe
+        and "VULTR_SSH_PRIVATE_KEY" not in production_observe
+        and "EDGE_SSH_PRIVATE_KEY_PATH" not in production_observe
+        and "api.ipify.org" not in production_observe
+        and "lease-acquire" not in production_observe
+        and "lease-release" not in production_observe,
+        "production diagnose must remain GET-only Cloudflare observation with shared serialization and no Vultr/SSH authority",
     )
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
