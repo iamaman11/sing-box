@@ -2088,6 +2088,92 @@ mod tests {
     }
 
     #[test]
+    fn parses_phase0_inventory_shapes_without_secret_material() {
+        let account = account_from_value(serde_json::json!({
+            "id": "account-1",
+            "name": "sing-box"
+        }))
+        .unwrap();
+        assert_eq!(account.name, "sing-box");
+
+        let script = worker_script_from_value(serde_json::json!({
+            "id": "sing-box-credentials-windows"
+        }))
+        .unwrap();
+        assert_eq!(script.id, "sing-box-credentials-windows");
+
+        let domain = worker_domain_from_value(serde_json::json!({
+            "id": "domain-1",
+            "hostname": "credentials.example.com",
+            "service": "sing-box-credentials-windows",
+            "zone_id": "zone-1",
+            "zone_name": "example.com"
+        }))
+        .unwrap();
+        assert_eq!(domain.service, "sing-box-credentials-windows");
+
+        let route = worker_route_from_value(serde_json::json!({
+            "id": "route-1",
+            "pattern": "credentials.example.com/*",
+            "script": "sing-box-credentials-windows"
+        }))
+        .unwrap();
+        assert_eq!(route.script.as_deref(), Some("sing-box-credentials-windows"));
+
+        let token = access_service_token_from_value(serde_json::json!({
+            "id": "service-token-1",
+            "name": "sing-box-windows",
+            "enabled": true,
+            "expires_at": "2027-01-01T00:00:00Z",
+            "client_secret": "must-not-be-parsed"
+        }))
+        .unwrap();
+        assert_eq!(token.name, "sing-box-windows");
+        assert_eq!(token.enabled, Some(true));
+
+        let dns = dns_record_summary_from_value(
+            "zone-1",
+            serde_json::json!({
+                "id": "record-1",
+                "type": "A",
+                "name": "miu.example.com",
+                "content": "203.0.113.9",
+                "proxied": false
+            }),
+        )
+        .unwrap();
+        assert_eq!(dns.name, "miu.example.com");
+        assert_eq!(dns.record_type, "A");
+
+        let policy = api_token_policy_from_value(&serde_json::json!({
+            "effect": "allow",
+            "permission_groups": [
+                {"id": "group-1", "name": "Workers Scripts Read"}
+            ],
+            "resources": {
+                "com.cloudflare.api.account.account-1": "*"
+            }
+        }))
+        .unwrap();
+        assert_eq!(policy.permission_groups, vec!["Workers Scripts Read"]);
+    }
+
+    #[test]
+    fn phase0_inventory_parsers_fail_closed_on_missing_identity() {
+        assert!(account_from_value(serde_json::json!({"name": "sing-box"})).is_err());
+        assert!(worker_script_from_value(serde_json::json!({})).is_err());
+        assert!(worker_domain_from_value(serde_json::json!({"id": "domain-1"})).is_err());
+        assert!(access_service_token_from_value(serde_json::json!({"id": "token-1"})).is_err());
+        assert!(
+            dns_record_summary_from_value(
+                "zone-1",
+                serde_json::json!({"id": "record-1", "name": "miu.example.com"})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn malformed_zero_trust_objects_fail_closed() {
         assert!(device_profile_from_value(serde_json::json!({"name": "missing id"})).is_err());
         assert!(gateway_rule_from_value(serde_json::json!({"id": "rule-1"})).is_err());
