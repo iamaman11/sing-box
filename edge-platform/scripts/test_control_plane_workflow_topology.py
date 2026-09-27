@@ -186,6 +186,9 @@ def main() -> None:
         and "cloudflare-phase0-inventory.txt" in production_observe
         and "~~~text" in production_observe
         and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_observe
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_observe
+        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_observe
+        and "CLOUDFLARE_TARGET_ACCOUNT_ID: ${{ vars.CLOUDFLARE_TARGET_ACCOUNT_ID }}" in production_observe
         and "jq " not in production_observe
         and ".mutations_performed" not in production_observe
         and ".observation_status" not in production_observe
@@ -201,6 +204,10 @@ def main() -> None:
     require(
         "serde_json::to_string" not in phase0_inventory
         and "serde::Serialize" not in phase0_inventory
+        and "list_membership_accounts" not in phase0_inventory
+        and "CLOUDFLARE_TARGET_ACCOUNT_ID" in phase0_inventory
+        and "CLOUDFLARE_CONTROL_TOKEN" in phase0_inventory
+        and "CLOUDFLARE_DNS_TOKEN" in phase0_inventory
         and "Cloudflare Phase 0 inventory BLOCKED by" in phase0_inventory
         and 'println!("{inventory:#?}")' in phase0_inventory,
         "Phase 0 Rust owner must own fail-closed status and emit text evidence without a first-party JSON contract",

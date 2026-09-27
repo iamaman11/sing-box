@@ -148,12 +148,6 @@ pub struct CloudflareAccessPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareAccount {
-    pub id: String,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareWorkerScript {
     pub id: String,
 }
@@ -189,104 +183,6 @@ pub struct CloudflareDnsRecordSummary {
     pub record_type: String,
     pub name: String,
     pub proxied: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareApiTokenPolicy {
-    pub effect: String,
-    pub permission_groups: Vec<String>,
-    pub resources: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareApiTokenMetadata {
-    pub id: String,
-    pub name: Option<String>,
-    pub status: String,
-    pub policies: Vec<CloudflareApiTokenPolicy>,
-}
-
-pub async fn current_api_token_metadata(
-    api_token: &str,
-) -> Result<CloudflareApiTokenMetadata, String> {
-    let client = authorized_client(api_token)?;
-    let verify_response = client
-        .get(format!("{API_ROOT}/user/tokens/verify"))
-        .send()
-        .await
-        .map_err(|err| format!("failed to verify Cloudflare API token: {err}"))?;
-    let verify: ApiEnvelope<Value> = parse_success_json(verify_response).await?;
-    let verify_object = verify
-        .result
-        .as_object()
-        .ok_or_else(|| "Cloudflare API token verification result must be an object".to_owned())?;
-    let token_id = required_value_string(verify_object, "id", "Cloudflare API token verification")?;
-    let verified_status =
-        required_value_string(verify_object, "status", "Cloudflare API token verification")?;
-
-    let detail_response = client
-        .get(format!("{API_ROOT}/user/tokens/{token_id}"))
-        .send()
-        .await
-        .map_err(|err| format!("failed to read current Cloudflare API token metadata: {err}"))?;
-    let detail: ApiEnvelope<Value> = parse_success_json(detail_response).await?;
-    let object = detail
-        .result
-        .as_object()
-        .ok_or_else(|| "Cloudflare API token metadata result must be an object".to_owned())?;
-    let status = optional_value_string(object, "status").unwrap_or(verified_status);
-    let policies = object
-        .get("policies")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Cloudflare API token metadata policies must be an array".to_owned())?
-        .iter()
-        .map(api_token_policy_from_value)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(CloudflareApiTokenMetadata {
-        id: token_id,
-        name: optional_value_string(object, "name"),
-        status,
-        policies,
-    })
-}
-
-pub async fn list_membership_accounts(api_token: &str) -> Result<Vec<CloudflareAccount>, String> {
-    let client = authorized_client(api_token)?;
-    let mut accounts = Vec::new();
-    for page in 1..=MAX_API_PAGES {
-        let response = client
-            .get(format!("{API_ROOT}/memberships"))
-            .query(&[
-                ("status", "accepted".to_owned()),
-                ("page", page.to_string()),
-                ("per_page", "50".to_owned()),
-            ])
-            .send()
-            .await
-            .map_err(|err| format!("failed to list Cloudflare memberships: {err}"))?;
-        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-        let values = value_array(payload.result, "Cloudflare memberships")?;
-        let page_count = values.len();
-        for value in values {
-            let object = value
-                .as_object()
-                .ok_or_else(|| "Cloudflare membership must be an object".to_owned())?;
-            let account = object
-                .get("account")
-                .cloned()
-                .ok_or_else(|| "Cloudflare membership account is required".to_owned())?;
-            accounts.push(account_from_value(account)?);
-        }
-        if page_count < 50 {
-            accounts.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-            accounts.dedup_by(|left, right| left.id == right.id);
-            return Ok(accounts);
-        }
-    }
-    Err(format!(
-        "Cloudflare membership pagination exceeded {MAX_API_PAGES} pages"
-    ))
 }
 
 pub async fn list_worker_scripts(
@@ -1250,6 +1146,7 @@ fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, St
 fn split_tunnel_result_values(value: Value) -> Result<Vec<Value>, String> {
     match value {
         Value::Array(values) => Ok(values),
+        Value::Null => Ok(Vec::new()),
         Value::Object(object) if object.is_empty() => Ok(Vec::new()),
         Value::Object(object) => {
             let mut keys = object.keys().cloned().collect::<Vec<_>>();
@@ -1259,7 +1156,10 @@ fn split_tunnel_result_values(value: Value) -> Result<Vec<Value>, String> {
                 keys.join(",")
             ))
         }
-        _ => Err("Cloudflare split tunnel list result must be an array or empty object".to_owned()),
+        _ => Err(
+            "Cloudflare split tunnel list result must be an array, null, or empty object"
+                .to_owned(),
+        ),
     }
 }
 
@@ -1371,46 +1271,6 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             .get("decision")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-    })
-}
-
-fn api_token_policy_from_value(value: &Value) -> Result<CloudflareApiTokenPolicy, String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "Cloudflare API token policy must be an object".to_owned())?;
-    let permission_groups = object
-        .get("permission_groups")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Cloudflare API token permission_groups must be an array".to_owned())?
-        .iter()
-        .map(|entry| {
-            entry
-                .as_object()
-                .and_then(|group| group.get("name"))
-                .and_then(Value::as_str)
-                .filter(|name| !name.trim().is_empty())
-                .map(ToOwned::to_owned)
-                .ok_or_else(|| "Cloudflare API token permission group name is required".to_owned())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let resources = object
-        .get("resources")
-        .cloned()
-        .ok_or_else(|| "Cloudflare API token policy resources are required".to_owned())?;
-    Ok(CloudflareApiTokenPolicy {
-        effect: required_value_string(object, "effect", "Cloudflare API token policy")?,
-        permission_groups,
-        resources,
-    })
-}
-
-fn account_from_value(value: Value) -> Result<CloudflareAccount, String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "Cloudflare account must be an object".to_owned())?;
-    Ok(CloudflareAccount {
-        id: required_value_string(object, "id", "Cloudflare account")?,
-        name: required_value_string(object, "name", "Cloudflare account")?,
     })
 }
 
@@ -2076,13 +1936,6 @@ mod tests {
 
     #[test]
     fn parses_phase0_inventory_shapes_without_secret_material() {
-        let account = account_from_value(serde_json::json!({
-            "id": "account-1",
-            "name": "sing-box"
-        }))
-        .unwrap();
-        assert_eq!(account.name, "sing-box");
-
         let script = worker_script_from_value(serde_json::json!({
             "id": "sing-box-credentials-windows"
         }))
@@ -2134,22 +1987,10 @@ mod tests {
         .unwrap();
         assert_eq!(dns.name, "miu.example.com");
         assert_eq!(dns.record_type, "A");
-
-        let policy = api_token_policy_from_value(&serde_json::json!({
-            "effect": "allow",
-            "permission_groups": [
-                {"id": "group-1", "name": "Workers Scripts Read"}
-            ],
-            "resources": {
-                "com.cloudflare.api.account.account-1": "*"
-            }
-        }))
-        .unwrap();
-        assert_eq!(policy.permission_groups, vec!["Workers Scripts Read"]);
     }
 
     #[test]
-    fn split_tunnel_result_accepts_documented_array_and_live_empty_object() {
+    fn split_tunnel_result_accepts_documented_array_and_live_empty_shapes() {
         assert_eq!(
             split_tunnel_result_values(serde_json::json!([
                 {"address": "100.96.0.0/12"}
@@ -2158,6 +1999,7 @@ mod tests {
             .len(),
             1
         );
+        assert!(split_tunnel_result_values(Value::Null).unwrap().is_empty());
         assert!(
             split_tunnel_result_values(serde_json::json!({}))
                 .unwrap()
@@ -2179,7 +2021,6 @@ mod tests {
 
     #[test]
     fn phase0_inventory_parsers_fail_closed_on_missing_identity() {
-        assert!(account_from_value(serde_json::json!({"name": "sing-box"})).is_err());
         assert!(worker_script_from_value(serde_json::json!({})).is_err());
         assert!(worker_domain_from_value(serde_json::json!({"id": "domain-1"})).is_err());
         assert!(access_service_token_from_value(serde_json::json!({})).is_err());

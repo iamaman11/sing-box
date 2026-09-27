@@ -1,11 +1,10 @@
 use edge_controller_core::production::ProductionComposition;
 use edge_provider_cloudflare::{
     self as cloudflare, CloudflareAccessApplication, CloudflareAccessPolicy,
-    CloudflareAccessServiceToken, CloudflareAccount, CloudflareApiTokenMetadata,
-    CloudflareDevicePostureRule, CloudflareDeviceProfile, CloudflareDnsObservedRecord,
-    CloudflareDnsRecordSummary, CloudflareGatewayRule, CloudflareMeshNode, CloudflareMeshRoute,
-    CloudflareSplitTunnelEntry, CloudflareWorkerDomain, CloudflareWorkerRoute,
-    CloudflareWorkerScript, CloudflareZeroTrustDeviceSettings,
+    CloudflareAccessServiceToken, CloudflareDevicePostureRule, CloudflareDeviceProfile,
+    CloudflareDnsObservedRecord, CloudflareDnsRecordSummary, CloudflareGatewayRule,
+    CloudflareMeshNode, CloudflareMeshRoute, CloudflareSplitTunnelEntry, CloudflareWorkerDomain,
+    CloudflareWorkerRoute, CloudflareWorkerScript, CloudflareZeroTrustDeviceSettings,
 };
 use std::env;
 
@@ -124,12 +123,6 @@ impl SharedDnsSnapshot {
 }
 
 #[derive(Debug)]
-struct AccountDiscovery {
-    memberships_api: ReadObservation<Vec<CloudflareAccount>>,
-    discovered_accounts: Vec<CloudflareAccount>,
-}
-
-#[derive(Debug)]
 struct Phase0Inventory {
     schema_version: u32,
     mutations_performed: u32,
@@ -137,8 +130,7 @@ struct Phase0Inventory {
     blockers: Vec<String>,
     historical_account_id: String,
     target_account_name: &'static str,
-    current_api_token: ReadObservation<CloudflareApiTokenMetadata>,
-    account_discovery: AccountDiscovery,
+    target_account_id: Option<String>,
     historical_account: AccountSnapshot,
     target_account: ReadObservation<AccountSnapshot>,
     shared_dns: SharedDnsSnapshot,
@@ -146,72 +138,56 @@ struct Phase0Inventory {
 
 pub(crate) async fn run() -> Result<(), String> {
     let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    let api_token = env::var("CLOUDFLARE_API_TOKEN")
-        .map_err(|_| "CLOUDFLARE_API_TOKEN is required for Cloudflare inventory".to_owned())?;
-    if api_token.trim().is_empty() {
+    let historical_token = env::var("CLOUDFLARE_API_TOKEN").map_err(|_| {
+        "CLOUDFLARE_API_TOKEN is required for historical-account inventory".to_owned()
+    })?;
+    if historical_token.trim().is_empty() {
         return Err("CLOUDFLARE_API_TOKEN must be non-empty".to_owned());
     }
 
     let historical_account_id = composition.mesh.account_id.clone();
+    let target_account_id = nonempty_env("CLOUDFLARE_TARGET_ACCOUNT_ID");
+    let control_token = nonempty_env("CLOUDFLARE_CONTROL_TOKEN");
+    let dns_token = nonempty_env("CLOUDFLARE_DNS_TOKEN");
 
-    let token_metadata =
-        ReadObservation::from(cloudflare::current_api_token_metadata(&api_token).await);
+    let historical_account = observe_account(&historical_token, &historical_account_id).await;
 
-    // Cloudflare's account list endpoint is not an API-token discovery authority.
-    // Memberships is the typed user-scoped discovery surface when Memberships Read is granted.
-    let memberships_result = cloudflare::list_membership_accounts(&api_token).await;
-    let discovered_accounts = memberships_result.as_ref().cloned().unwrap_or_default();
-    let account_discovery = AccountDiscovery {
-        memberships_api: ReadObservation::from(memberships_result),
-        discovered_accounts: discovered_accounts.clone(),
-    };
-
-    let historical_account = observe_account(&api_token, &historical_account_id).await;
-
-    let target_matches = discovered_accounts
-        .iter()
-        .filter(|account| account.name == TARGET_ACCOUNT_NAME)
-        .cloned()
-        .collect::<Vec<_>>();
-    let target_account = match target_matches.as_slice() {
-        [target] if target.id != historical_account_id => {
-            ReadObservation::Pass(observe_account(&api_token, &target.id).await)
-        }
-        [target] => ReadObservation::Blocked {
+    let target_account = match target_account_id.as_deref() {
+        None => ReadObservation::Blocked {
+            error: "CLOUDFLARE_TARGET_ACCOUNT_ID is required for dedicated sing-box account observation"
+                .to_owned(),
+        },
+        Some(account_id) if !is_cloudflare_id(account_id) => ReadObservation::Blocked {
+            error: "CLOUDFLARE_TARGET_ACCOUNT_ID must be exactly 32 hexadecimal characters"
+                .to_owned(),
+        },
+        Some(account_id) if account_id == historical_account_id => ReadObservation::Blocked {
             error: format!(
-                "target account {TARGET_ACCOUNT_NAME} resolves to historical account {}",
-                target.id
+                "target account {TARGET_ACCOUNT_NAME} must differ from historical account {historical_account_id}"
             ),
         },
-        [] => ReadObservation::Blocked {
-            error: format!(
-                "target account {TARGET_ACCOUNT_NAME} was not visible through account discovery"
-            ),
-        },
-        _ => ReadObservation::Blocked {
-            error: format!(
-                "target account {TARGET_ACCOUNT_NAME} is ambiguous: {} matches",
-                target_matches.len()
-            ),
+        Some(account_id) => match control_token.as_deref() {
+            Some(token) => ReadObservation::Pass(observe_account(token, account_id).await),
+            None => ReadObservation::Blocked {
+                error: "CLOUDFLARE_CONTROL_TOKEN is required for dedicated sing-box account read-only observation"
+                    .to_owned(),
+            },
         },
     };
 
-    let shared_dns = SharedDnsSnapshot {
-        zone_name: composition.dns.zone_name.clone(),
-        production_record_name: composition.dns.record_name.clone(),
-        record_summaries: ReadObservation::from(
-            cloudflare::list_dns_record_summaries(&api_token, &composition.dns.zone_name).await,
-        ),
-        production_a_records: ReadObservation::from(
-            cloudflare::list_a_records(
-                &api_token,
+    let shared_dns = match dns_token.as_deref() {
+        Some(token) => {
+            observe_shared_dns(
+                token,
                 &composition.dns.zone_name,
                 &composition.dns.record_name,
             )
-            .await,
-        ),
-        worker_routes: ReadObservation::from(
-            cloudflare::list_worker_routes(&api_token, &composition.dns.zone_name).await,
+            .await
+        }
+        None => blocked_shared_dns(
+            &composition.dns.zone_name,
+            &composition.dns.record_name,
+            "CLOUDFLARE_DNS_TOKEN is required for shared alegria.by read-only observation",
         ),
     };
 
@@ -242,8 +218,7 @@ pub(crate) async fn run() -> Result<(), String> {
         blockers,
         historical_account_id,
         target_account_name: TARGET_ACCOUNT_NAME,
-        current_api_token: token_metadata,
-        account_discovery,
+        target_account_id,
         historical_account,
         target_account,
         shared_dns,
@@ -254,6 +229,13 @@ pub(crate) async fn run() -> Result<(), String> {
     println!("mutations_performed={}", inventory.mutations_performed);
     println!("historical_account_id={}", inventory.historical_account_id);
     println!("target_account_name={}", inventory.target_account_name);
+    println!(
+        "target_account_id={}",
+        inventory
+            .target_account_id
+            .as_deref()
+            .unwrap_or("<missing>")
+    );
     println!();
     println!("{inventory:#?}");
 
@@ -264,6 +246,57 @@ pub(crate) async fn run() -> Result<(), String> {
             "Cloudflare Phase 0 inventory BLOCKED by {} read/ownership condition(s)",
             inventory.blockers.len()
         ))
+    }
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn is_cloudflare_id(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+async fn observe_shared_dns(
+    api_token: &str,
+    zone_name: &str,
+    production_record_name: &str,
+) -> SharedDnsSnapshot {
+    SharedDnsSnapshot {
+        zone_name: zone_name.to_owned(),
+        production_record_name: production_record_name.to_owned(),
+        record_summaries: ReadObservation::from(
+            cloudflare::list_dns_record_summaries(api_token, zone_name).await,
+        ),
+        production_a_records: ReadObservation::from(
+            cloudflare::list_a_records(api_token, zone_name, production_record_name).await,
+        ),
+        worker_routes: ReadObservation::from(
+            cloudflare::list_worker_routes(api_token, zone_name).await,
+        ),
+    }
+}
+
+fn blocked_shared_dns(
+    zone_name: &str,
+    production_record_name: &str,
+    error: &str,
+) -> SharedDnsSnapshot {
+    SharedDnsSnapshot {
+        zone_name: zone_name.to_owned(),
+        production_record_name: production_record_name.to_owned(),
+        record_summaries: ReadObservation::Blocked {
+            error: error.to_owned(),
+        },
+        production_a_records: ReadObservation::Blocked {
+            error: error.to_owned(),
+        },
+        worker_routes: ReadObservation::Blocked {
+            error: error.to_owned(),
+        },
     }
 }
 
