@@ -2072,9 +2072,11 @@ mod tests {
 
     #[test]
     fn worker_domain_list_accepts_only_array_or_null_empty_shapes() {
-        assert!(value_array_or_null_empty(Value::Null, "Cloudflare Worker domains")
-            .unwrap()
-            .is_empty());
+        assert!(
+            value_array_or_null_empty(Value::Null, "Cloudflare Worker domains")
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             value_array_or_null_empty(
                 serde_json::json!([{"id": "domain-1"}]),
@@ -2085,8 +2087,7 @@ mod tests {
             1
         );
         assert!(
-            value_array_or_null_empty(serde_json::json!({}), "Cloudflare Worker domains")
-                .is_err()
+            value_array_or_null_empty(serde_json::json!({}), "Cloudflare Worker domains").is_err()
         );
         assert!(
             value_array_or_null_empty(serde_json::json!("unexpected"), "Cloudflare Worker domains")
@@ -2114,11 +2115,13 @@ mod tests {
         assert_eq!(identity.id, "ed17574386854bf78a67040be0a770b0");
         assert_eq!(identity.status, "active");
 
-        assert!(api_token_identity_from_record(ApiTokenVerifyRecord {
-            id: "token-id".to_owned(),
-            status: "unknown".to_owned(),
-        })
-        .is_err());
+        assert!(
+            api_token_identity_from_record(ApiTokenVerifyRecord {
+                id: "token-id".to_owned(),
+                status: "unknown".to_owned(),
+            })
+            .is_err()
+        );
     }
 
     #[test]
