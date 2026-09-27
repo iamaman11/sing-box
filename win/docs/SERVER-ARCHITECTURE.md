@@ -1,85 +1,149 @@
-# Server Architecture
+# Server architecture
 
-## Production shape
+Execution order is owned by GitHub Issue #26.
+Stable ownership/invariants are in `edge-platform/ARCHITECTURE.md`.
 
-The server-side control plane is:
+## Control plane
 
-- `edge-agent` as a Linux host daemon
-- `docker compose` for the dataplane
-- `systemd` supervising `edge-agent`
+Canonical production server control path:
 
-The control path is:
+```text
+Git / protected main
+        |
+        v
+edge-orchestrator
+GitHub-only production owner
+        |
+        +-- Vultr API
+        +-- Cloudflare API
+        |
+        v
+temporary strict SSH support-access path
+        |
+        v
+OpenSSH local forward
+        |
+        v
+127.0.0.1:50061
+edge-agent
+        |
+        v
+Docker Compose / host runtime
+```
 
-- `edge-console` -> `edge-controller` -> `edge-agent`
+`edge-agent` is supervised by systemd and is not a public management service.
 
-PowerShell is no longer part of the normal server control path.
+The historical `edge-console -> edge-controller -> edge-agent` remote-provider model is retired.
 
 ## Host model
 
-The target host layout is:
+Canonical host root:
 
-- `/opt/vultr-edge-stack/bin/edge-agent`
-- `/opt/vultr-edge-stack/stack`
-- `/opt/vultr-edge-stack/tls`
+```text
+/opt/vultr-edge-stack/
+  bin/
+  stack/
+  runtime-secrets/
+  warp-state/
+  mesh-state/
+  certificate-state/
+```
 
-`cloud-init` installs Docker and prepares the host directories. The controller
-then installs or updates `edge-agent`, applies the rendered bundle, and drives
-bootstrap over gRPC.
+Exact details are owned by the current Rust/application lifecycle, not by this document.
 
-## Runtime contract
+Cloud-init prepares only host/bootstrap prerequisites. It must not become full application
+deployment or a durable secret store.
 
-`edge-agent` is responsible for:
+## Current dataplane services
 
-- health/readiness
-- runtime inspection
-- bundle apply
-- bootstrap `base` / `tunnel`
-- rendered artifact checks
-- bundle identity reporting
+Canonical `win/vultr-waw/stack/docker-compose.yml` currently defines:
 
-Steady-state observation is gRPC-based. SSH is reserved for first-host bootstrap
-and controlled maintenance.
+1. `warp-egress` — Cloudflare WARP egress;
+2. `line1-gateway` — profile `tunnel`, direct/WARP VLESS + Hysteria gateway;
+3. `line2-proxy` — authenticated remote proxy services;
+4. `cloudflare-mesh` — profile `mesh`, Cloudflare Mesh connector/egress.
 
-## Dataplane topology
+Profiles allow bounded composition without creating separate host control planes.
 
-The current 5-container topology remains unchanged:
+Project-owned OCI images are pulled by exact digest from the accepted ReleaseSet. No normal
+production image build occurs on the VM.
 
-1. `vultr-warp-egress`
-2. `vultr-edge-gateway`
-3. `vultr-edge-gateway-direct`
-4. `vultr-tunnel-edge`
-5. `vultr-tunnel-edge-warp`
+## edge-agent responsibilities
 
-This is intentionally preserved during the control-plane migration.
+Allowed responsibilities:
+- exact bundle/apply/rollback;
+- Docker/container/image observation;
+- host/network observation;
+- runtime rendering/validation;
+- bounded Mesh/runtime convergence;
+- secret-safe diagnostics;
+- exact readiness/functional verification.
 
-## Deploy model
+Forbidden responsibilities:
+- Vultr/Cloudflare desired-state ownership;
+- production ReleaseSet selection;
+- arbitrary shell RPC;
+- arbitrary filesystem RPC;
+- arbitrary Docker API passthrough;
+- second desired-state database.
 
-The Rust deploy sequence is:
+## Transport
 
-1. resolve or create the target instance
-2. wait for SSH, cloud-init, and Docker when first bootstrap is required
-3. install or update `edge-agent`
-4. generate trust material and prepared bundle locally
-5. apply bundle to `edge-agent`
-6. bootstrap base runtime
-7. optionally update DNS
-8. bootstrap tunnel runtime
-9. verify runtime and sync local config
-10. persist deployment, trust, secret refs, and operation events
+Strict OpenSSH host-certificate verification remains the bootstrap/control transport.
+Canonical application lifecycle forwards to loopback `edge-agent`.
 
-## Recovery model
+Do not add:
+- public agent management port;
+- TOFU success path;
+- generic remote shell API;
+- another resident control daemon merely to avoid SSH local forwarding.
 
-On failed deploy, the controller rolls back:
+Historical Agent custom TLS/`edge-trust` is targeted for deletion after live-consumer proof.
 
-- DNS changes when applicable
-- freshly created instance when applicable
-- local live deployment state
-- deployment rows
-- trust rows
+## Secret/runtime model
 
-The goal is to keep controller state internally consistent after a failed run.
+Provider API tokens never belong on the VM application runtime.
 
-## Legacy boundary
+Target after Issue #169:
+- VM receives only the VM credential projection required by its runtime;
+- local active/candidate typed secret state is root/private;
+- missing desired generation fails closed;
+- generated `.env.runtime` and rendered sing-box JSON are derived artifacts;
+- Cloudflare credential delivery is not required for every runtime request/start once active local
+  state exists.
 
-Legacy scripts under `win/vultr-waw` are retained only for migration review and
-historical comparison. They are not the primary deployment architecture.
+Mesh node token remains tied to the Mesh-node/provider lifecycle, not to Windows client credential
+rotation.
+
+## Lifecycle
+
+Normal production path:
+
+```text
+observe provider
+ -> plan
+ -> converge machine/VPC/support resources
+ -> materialize exact accepted application
+ -> install/update exact edge-agent
+ -> apply runtime
+ -> DNS/Mesh/Zero Trust composition
+ -> verify
+ -> release support access
+ -> prove cleanup
+```
+
+Rollback restores the previous exact accepted application release and re-verifies runtime.
+
+Credential rollback is independent from application-release rollback.
+
+## Recovery
+
+A replacement VM must be reconstructible from:
+- Git desired state;
+- exact accepted ReleaseSet;
+- Vultr API;
+- dedicated Cloudflare account/shared DNS boundaries;
+- credential plane;
+- bootstrap trust credentials.
+
+No Windows legacy checkout or old DPAPI/Vault state is part of server recovery.
