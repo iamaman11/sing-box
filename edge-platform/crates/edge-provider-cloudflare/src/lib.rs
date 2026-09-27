@@ -1,5 +1,5 @@
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -1565,8 +1565,16 @@ async fn parse_success_json<T: for<'de> Deserialize<'de>>(
 struct ApiEnvelope<T> {
     success: bool,
     result: T,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_nullable_vec")]
     errors: Vec<ApiResponseInfo>,
+}
+
+fn deserialize_nullable_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1636,6 +1644,20 @@ struct DnsRecordWriteRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_envelope_accepts_null_error_metadata_without_relaxing_result_shape() {
+        let envelope: ApiEnvelope<Value> = serde_json::from_value(serde_json::json!({
+            "success": true,
+            "result": null,
+            "errors": null
+        }))
+        .unwrap();
+
+        assert!(envelope.success);
+        assert!(envelope.result.is_null());
+        assert!(envelope.errors.is_empty());
+    }
 
     #[test]
     fn creates_mock_cloudflare_record() {
