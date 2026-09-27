@@ -46,6 +46,7 @@ struct ProjectionObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct CredentialPlaneObservation {
+    control_token_identity: cloudflare::CloudflareApiTokenIdentity,
     access_organization: Option<cloudflare::CloudflareAccessOrganization>,
     workers_dev_subdomain: Option<String>,
     projections: Vec<ProjectionObservation>,
@@ -765,6 +766,14 @@ async fn observe(
     api_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
 ) -> Result<CredentialPlaneObservation, String> {
+    let control_token_identity = cloudflare::verify_api_token(api_token).await?;
+    if control_token_identity.status != "active" {
+        return Err(format!(
+            "CLOUDFLARE_CONTROL_TOKEN exact identity {} is not active: {}",
+            control_token_identity.id, control_token_identity.status
+        ));
+    }
+
     let scripts = cloudflare::list_worker_scripts(api_token, &desired.target_account_id).await?;
     let workers = cloudflare::list_workers(api_token, &desired.target_account_id).await?;
     let worker_domains =
@@ -929,6 +938,7 @@ async fn observe(
     }
 
     Ok(CredentialPlaneObservation {
+        control_token_identity,
         access_organization,
         workers_dev_subdomain,
         projections: projections_observed,
@@ -1047,6 +1057,14 @@ fn print_observation(
     observed: &CredentialPlaneObservation,
 ) {
     println!("target_account_id={}", desired.target_account_id);
+    println!(
+        "control_token_id={}",
+        observed.control_token_identity.id
+    );
+    println!(
+        "control_token_status={}",
+        observed.control_token_identity.status
+    );
     println!(
         "access_organization={}",
         observed
