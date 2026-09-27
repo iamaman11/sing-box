@@ -194,7 +194,8 @@ pub struct CloudflareWorkersSubdomain {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareWorkerProbe {
     pub status: u16,
-    pub body: String,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -613,6 +614,11 @@ pub async fn probe_worker(
         .await
         .map_err(|err| format!("Cloudflare Worker probe request failed: {err}"))?;
     let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
     let bytes = response
         .bytes()
         .await
@@ -620,9 +626,11 @@ pub async fn probe_worker(
     if bytes.len() > 4096 {
         return Err("Cloudflare Worker probe body exceeded 4096-byte bound".to_owned());
     }
-    let body = String::from_utf8(bytes.to_vec())
-        .map_err(|_| "Cloudflare Worker probe body was not UTF-8".to_owned())?;
-    Ok(CloudflareWorkerProbe { status, body })
+    Ok(CloudflareWorkerProbe {
+        status,
+        content_type,
+        body: bytes.to_vec(),
+    })
 }
 
 pub async fn list_worker_scripts(
