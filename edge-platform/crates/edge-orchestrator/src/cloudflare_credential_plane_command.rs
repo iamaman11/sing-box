@@ -4,6 +4,8 @@ use edge_controller_core::lifecycle::{
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_provider_cloudflare as cloudflare;
+use edge_shared_types::{CredentialIsolationProbe, CredentialProjectionKind};
+use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
 use std::env;
@@ -61,7 +63,7 @@ enum CredentialPlaneAction {
 
 #[derive(Debug, Clone)]
 struct WorkerMaterial {
-    payload: String,
+    payload: Vec<u8>,
     source: String,
     version_tag: String,
 }
@@ -536,11 +538,11 @@ async fn prove_isolation(
         .ok_or_else(|| "workers.dev account subdomain is missing".to_owned())?;
 
     let windows_url = format!(
-        "https://{}.{}.workers.dev/",
+        "https://{}.{}.workers.dev/v1/credentials?generation=1",
         windows.worker_name, workers_subdomain
     );
     let vm_url = format!(
-        "https://{}.{}.workers.dev/",
+        "https://{}.{}.workers.dev/v1/credentials?generation=1",
         vm.worker_name, workers_subdomain
     );
 
@@ -600,9 +602,19 @@ async fn prove_isolation(
         let aw = cloudflare::probe_worker(&windows_url, None).await?;
         let av = cloudflare::probe_worker(&vm_url, None).await?;
 
-        require_allowed("windows_to_windows", &ww, &windows_material.payload)?;
+        require_allowed(
+            "windows_to_windows",
+            &ww,
+            &windows_material.payload,
+            CredentialProjectionKind::Windows,
+        )?;
         require_denied("windows_to_vm", &wv)?;
-        require_allowed("vm_to_vm", &vv, &vm_material.payload)?;
+        require_allowed(
+            "vm_to_vm",
+            &vv,
+            &vm_material.payload,
+            CredentialProjectionKind::Vm,
+        )?;
         require_denied("vm_to_windows", &vw)?;
         require_denied("anonymous_to_windows", &aw)?;
         require_denied("anonymous_to_vm", &av)?;
@@ -687,14 +699,32 @@ async fn prove_isolation(
 fn require_allowed(
     name: &str,
     probe: &cloudflare::CloudflareWorkerProbe,
-    expected_body: &str,
+    expected_body: &[u8],
+    expected_projection: CredentialProjectionKind,
 ) -> Result<(), String> {
     if probe.status != 200 || probe.body != expected_body {
         return Err(format!(
-            "{name} expected exact HTTP 200 dummy payload, observed status={} body_len={}",
+            "{name} expected exact HTTP 200 typed dummy payload, observed status={} body_len={}",
             probe.status,
             probe.body.len()
         ));
+    }
+    if !probe
+        .content_type
+        .as_deref()
+        .is_some_and(|value| value.starts_with("application/x-protobuf"))
+    {
+        return Err(format!("{name} did not return application/x-protobuf"));
+    }
+    let payload = CredentialIsolationProbe::decode(probe.body.as_slice())
+        .map_err(|err| format!("{name} returned invalid CredentialIsolationProbe: {err}"))?;
+    if payload.encode_to_vec() != probe.body
+        || payload.schema_version != 1
+        || payload.generation != 1
+        || payload.projection != expected_projection as i32
+        || !payload.dummy_non_secret
+    {
+        return Err(format!("{name} returned a non-canonical or incorrect typed dummy payload"));
     }
     Ok(())
 }
@@ -907,23 +937,27 @@ fn projection_observation<'a>(
 }
 
 fn worker_material(
-    desired: &ProductionCredentialPlaneOwnership,
+    _desired: &ProductionCredentialPlaneOwnership,
     projection: &str,
 ) -> Result<WorkerMaterial, String> {
-    if projection != "windows" && projection != "vm" {
-        return Err(format!("unsupported credential projection {projection}"));
+    let projection_kind = match projection {
+        "windows" => CredentialProjectionKind::Windows,
+        "vm" => CredentialProjectionKind::Vm,
+        _ => return Err(format!("unsupported credential projection {projection}")),
+    };
+    let payload = CredentialIsolationProbe {
+        schema_version: 1,
+        generation: 1,
+        projection: projection_kind as i32,
+        dummy_non_secret: true,
     }
-    let payload = serde_json::json!({
-        "schema": desired.dummy_payload_schema,
-        "projection": projection,
-        "generation": "phase2-dummy",
-        "credentials": []
-    })
-    .to_string();
-    let js_payload = serde_json::to_string(&payload)
-        .map_err(|err| format!("failed to encode dummy Worker payload: {err}"))?;
+    .encode_to_vec();
+    let payload_hex = payload
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let source = format!(
-        "const PAYLOAD={js_payload};\nexport default {{async fetch(request){{const url=new URL(request.url);if(request.method!==\"GET\"||url.pathname!==\"/\"){{return new Response(null,{{status:404}});}}return new Response(PAYLOAD,{{status:200,headers:{{\"Content-Type\":\"application/json; charset=utf-8\",\"Cache-Control\":\"no-store\"}}}});}}}};\n"
+        "const H=\"{payload_hex}\";const B=new Uint8Array(H.length/2);for(let i=0;i<B.length;i++)B[i]=Number.parseInt(H.slice(i*2,i*2+2),16);export default{{async fetch(request){{const u=new URL(request.url);if(request.method!==\"GET\"||u.pathname!==\"/v1/credentials\"||u.searchParams.size!==1||u.searchParams.get(\"generation\")!==\"1\")return new Response(null,{{status:404,headers:{{\"Cache-Control\":\"no-store\"}}}});return new Response(B,{{status:200,headers:{{\"Content-Type\":\"application/x-protobuf\",\"Cache-Control\":\"no-store\"}}}})}} }};\n"
     );
     let source_hash = sha256_hex(source.as_bytes());
     let version_tag = format!("sing-box-phase2-{projection}-{}", &source_hash[..16]);
@@ -1021,7 +1055,8 @@ fn print_terminal(
         println!("isolation_proof=NOT_RUN_STRUCTURAL_NOOP");
     }
     println!("credential_plane_status=PASS");
-    println!("dummy_payload_schema={}", desired.dummy_payload_schema);
+    println!("credential_isolation_probe_schema=1");
+    println!("dummy_non_secret=true");
     println!("real_credentials_created=0");
     println!("proof_tokens_enabled=false");
     println!("previews_enabled=false");
@@ -1047,7 +1082,6 @@ mod tests {
             vm_access_policy_name: "sing-box-credentials-vm-service-auth".to_owned(),
             windows_service_token_name: "sing-box-credentials-windows-phase2-proof".to_owned(),
             vm_service_token_name: "sing-box-credentials-vm-phase2-proof".to_owned(),
-            dummy_payload_schema: "sing-box.credentials.dummy.v1".to_owned(),
             worker_compatibility_date: "2026-09-28".to_owned(),
             proof_token_duration: "1h".to_owned(),
         }
@@ -1060,10 +1094,16 @@ mod tests {
         let vm = worker_material(&desired, "vm").unwrap();
         assert_ne!(windows.source, vm.source);
         assert_ne!(windows.version_tag, vm.version_tag);
-        assert!(windows.payload.contains("\"credentials\":[]"));
-        assert!(vm.payload.contains("\"credentials\":[]"));
+        let windows_probe = CredentialIsolationProbe::decode(windows.payload.as_slice()).unwrap();
+        let vm_probe = CredentialIsolationProbe::decode(vm.payload.as_slice()).unwrap();
+        assert_eq!(windows_probe.projection, CredentialProjectionKind::Windows as i32);
+        assert_eq!(vm_probe.projection, CredentialProjectionKind::Vm as i32);
+        assert!(windows_probe.dummy_non_secret);
+        assert!(vm_probe.dummy_non_secret);
         assert!(!windows.source.contains("private_key"));
         assert!(!vm.source.contains("password"));
+        assert!(!windows.source.contains("0x08"));
+        assert!(!vm.source.contains("0x08"));
     }
 
     #[test]
