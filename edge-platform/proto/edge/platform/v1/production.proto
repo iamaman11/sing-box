@@ -81,6 +81,15 @@ message ProductionCloudflare {
   // Transitional typed migration intent only. Empty after the authority flip;
   // it is never an active provider owner.
   string migration_target_account_id = 2;
+
+  ProductionCredentialPlane credential_plane = 3;
+}
+
+message ProductionCredentialPlane {
+  string windows_worker_name = 1;
+  string vm_worker_name = 2;
+  string windows_service_token_name = 3;
+  string vm_service_token_name = 4;
 }
 
 message ProductionDns {
