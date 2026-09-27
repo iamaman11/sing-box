@@ -1,75 +1,29 @@
 # WSL historical reference
 
-This directory is retained as historical material from the older Ubuntu-side `sing-box` model.
+This directory contains historical material from the older Ubuntu-side sing-box/transparent-routing
+model.
 
-## Current supported model
+It is **not** a current runbook and does not define supported Windows/WSL production behavior.
 
-The primary supported Ubuntu WSL integration is no longer:
+## Historical scope
 
-- Linux-side `sing-box`
-- Linux-side `tun`
-- Linux-side `systemd` tunnel routing
+Material here may describe:
+- Linux-side sing-box;
+- Linux-side TUN/systemd routing;
+- the earlier Windows WSL mixed-proxy bridge;
+- old selector names/ports;
+- old debug binary paths.
 
-The supported model is now:
+Keep it only for migration archaeology until the corresponding legacy files are deleted.
 
-- Windows-side `sing-box`
-- dedicated WSL inbound:
-  - `wsl-mixed-in`
-- dedicated WSL selector:
-  - `wsl-selector`
-- Ubuntu uses the Windows proxy endpoint:
+## Current authority
 
-```bash
-http://$(ip route show default | cut -d' ' -f3):17890
-```
+For current Windows architecture and operational commands use:
+- GitHub Issue #26 — execution cursor;
+- `edge-platform/ARCHITECTURE.md`;
+- `win/docs/LOCAL-ARCHITECTURE.md`;
+- `win/docs/RUNBOOK.md`;
+- Issue #154 when #26 returns to the Windows implementation slice.
 
-## What remains useful here
-
-Only historical reference files:
-
-- previous Ubuntu-side configs
-- notes from the older transparent-routing setup
-- migration context
-
-These files should not be treated as the current production architecture.
-
-## Current Ubuntu setup
-
-Current Ubuntu shells are configured by:
-
-- `~/.edge-platform-wsl-proxy.sh`
-- `~/.profile`
-- `~/.bashrc`
-
-Current apt proxy autodetect:
-
-- `/usr/local/bin/edge-wsl-proxy-autodetect`
-- `/etc/apt/apt.conf.d/99edge-platform-proxy`
-
-## Current verification commands
-
-Check the current Ubuntu route selected in Windows:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" get-ubuntu-selector
-```
-
-Check the current Ubuntu egress IP through the Windows-side WSL path:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" trace-ubuntu
-```
-
-Check from inside Ubuntu:
-
-```bash
-curl -4 https://api.ipify.org
-```
-
-For new shell sessions this should already use the exported proxy environment.
-
-Explicit proxy check:
-
-```bash
-curl -4 --proxy http://$(ip route show default | cut -d' ' -f3):17890 https://api.ipify.org
-```
+Do not copy commands or paths from this directory into the new `C:\sing-box` runtime without an
+explicit current design decision and acceptance test.
