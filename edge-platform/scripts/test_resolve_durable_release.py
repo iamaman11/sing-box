@@ -53,7 +53,7 @@ def exe(path, content):
 
 def make_state(accepted_override=None, ambiguous=False, schema=3):
     accepted="a"*40; candidate="b"*40; tree="c"*40
-    assert schema in (3, 4, 5)
+    assert schema in (3, 4, 5, 6)
     runtime_input="d"*64
     runtime_source="e"*40
     runtime_lines=(
@@ -66,15 +66,19 @@ def make_state(accepted_override=None, ambiguous=False, schema=3):
     windows_controller="9"*64
     windows_console="a"*64
     windows_sing_box="b"*64
-    windows_lines=(
-      f'print("windows_input_sha256={windows_input}")\n'
-      f'print("windows_source_revision={windows_source}")\n'
-      f'print("windows_artifact_sha256={windows_artifact}")\n'
-      f'print("windows_controller_sha256={windows_controller}")\n'
-      f'print("windows_console_sha256={windows_console}")\n'
-      f'print("windows_sing_box_sha256={windows_sing_box}")'
-      if schema == 5 else ""
-    )
+    windows_diagnostic="c"*64
+    windows_lines=""
+    if schema in (5, 6):
+      windows_lines=(
+        f'print("windows_input_sha256={windows_input}")\n'
+        f'print("windows_source_revision={windows_source}")\n'
+        f'print("windows_artifact_sha256={windows_artifact}")\n'
+        f'print("windows_controller_sha256={windows_controller}")\n'
+        f'print("windows_console_sha256={windows_console}")\n'
+        f'print("windows_sing_box_sha256={windows_sing_box}")'
+      )
+      if schema == 6:
+        windows_lines += f'\nprint("windows_diagnostic_sha256={windows_diagnostic}")'
     pb=b"release-set-v2"; pbsha=sha(pb); tag="edge-release-"+pbsha
     agent=b"agent"; controller=b"controller"; orchestrator=b"orchestrator"
     asha=sha(agent); csha=sha(controller); osha=sha(orchestrator)
@@ -133,12 +137,13 @@ print("compose_version=5.5.1-1~debian.13~trixie")
     meta={"accepted":accepted,"candidate":candidate,"tree":tree,"tag":tag,"pbsha":pbsha,"asha":asha,"csha":csha,"osha":osha,
       "schema":schema,"runtime_input":runtime_input if schema >= 4 else "",
       "runtime_source":runtime_source if schema >= 4 else candidate,
-      "windows_input":windows_input if schema == 5 else "",
-      "windows_source":windows_source if schema == 5 else candidate,
-      "windows_artifact":windows_artifact if schema == 5 else "",
-      "windows_controller":windows_controller if schema == 5 else "",
-      "windows_console":windows_console if schema == 5 else "",
-      "windows_sing_box":windows_sing_box if schema == 5 else "",
+      "windows_input":windows_input if schema in (5, 6) else "",
+      "windows_source":windows_source if schema in (5, 6) else candidate,
+      "windows_artifact":windows_artifact if schema in (5, 6) else "",
+      "windows_controller":windows_controller if schema in (5, 6) else "",
+      "windows_console":windows_console if schema in (5, 6) else "",
+      "windows_sing_box":windows_sing_box if schema in (5, 6) else "",
+      "windows_diagnostic":windows_diagnostic if schema == 6 else "",
       "controller_id":next(x["id"] for x in assets if x["name"]=="edge-controller-linux-amd64")}
     return state,meta
 
@@ -169,6 +174,7 @@ def run(state,meta,expected=None,ok=False):
         assert vals["EDGE_WINDOWS_CONTROLLER_SHA256"]==meta["windows_controller"]
         assert vals["EDGE_WINDOWS_CONSOLE_SHA256"]==meta["windows_console"]
         assert vals["EDGE_WINDOWS_SING_BOX_SHA256"]==meta["windows_sing_box"]
+        assert vals["EDGE_WINDOWS_DIAGNOSTIC_SHA256"]==meta["windows_diagnostic"]
         assert vals["EDGE_DOCKER_ENGINE_VERSION"]=="5:29.8.1-1~debian.13~trixie"
         assert vals["EDGE_CONTAINERD_VERSION"]=="2.3.5-1~debian.13~trixie"
         assert vals["EDGE_COMPOSE_VERSION"]=="5.5.1-1~debian.13~trixie"
@@ -179,6 +185,7 @@ def main():
     s,m=make_state(schema=3); run(s,m,expected=m["tag"],ok=True)
     s,m=make_state(schema=4); run(s,m,expected=m["tag"],ok=True)
     s,m=make_state(schema=5); run(s,m,expected=m["tag"],ok=True)
+    s,m=make_state(schema=6); run(s,m,expected=m["tag"],ok=True)
     s,m=make_state(ambiguous=True); run(s,m)
     s,m=make_state(accepted_override="e"*40); run(s,m)
     s,m=make_state(); run(s,m,expected="edge-release-"+"f"*64)

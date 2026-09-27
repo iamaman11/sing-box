@@ -143,7 +143,7 @@ def decide_reuse(
     gateway_ref: str,
     warp_ref: str,
 ) -> bool:
-    if base_schema not in {"4", "5"}:
+    if base_schema not in {"4", "5", "6"}:
         return False
     if not LOWER_HEX_64.fullmatch(candidate_digest):
         raise ValueError("candidate runtime input digest must be a lowercase SHA-256")

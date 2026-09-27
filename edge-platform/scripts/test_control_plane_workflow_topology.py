@@ -827,8 +827,9 @@ def main() -> None:
         "runtime_input_sha256" in edge_platform_ci
         and "runtime_input_digest.py compute" in edge_platform_ci
         and "runtime_input_digest.py decide" in edge_platform_ci
+        and "python3 edge-platform/scripts/test_runtime_input_digest.py" in edge_platform_ci
         and "Resolve exact accepted VM runtime reuse" in edge_platform_ci,
-        "candidate CI must derive and consume one conservative VM runtime input identity",
+        "candidate CI must derive, test, and consume one conservative VM runtime input identity",
     )
     require(
         'test "${candidate_agent_sha}" = "${EDGE_AGENT_SHA256}"' in edge_platform_ci
@@ -844,9 +845,8 @@ def main() -> None:
     require(
         '"edge-platform/crates/edge-agent"' in runtime_input
         and '"win/vultr-waw/stack/edge-gateway"' in runtime_input
-        and '"win/vultr-waw/stack/warp-egress"' in runtime_input
-        and 'base_schema not in {"4", "5"}' in runtime_input,
-        "runtime identity must cover runtime sources and fail closed for pre-v4 ReleaseSets",
+        and '"win/vultr-waw/stack/warp-egress"' in runtime_input,
+        "runtime identity must cover the VM runtime source/build surface; schema reuse semantics belong to the runtime input owner tests",
     )
     require(
         "edge-release-$ReleaseSetSha256" in windows_installer
