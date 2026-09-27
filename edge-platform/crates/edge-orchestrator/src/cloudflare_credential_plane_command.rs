@@ -25,7 +25,8 @@ struct ProjectionDesired {
 struct ProjectionObservation {
     projection: String,
     worker_name: String,
-    worker_present: bool,
+    worker_script_present: bool,
+    worker_identity_present: bool,
     worker_id: Option<String>,
     worker_binding_count: Option<usize>,
     worker_version_tag: Option<String>,
@@ -54,7 +55,8 @@ struct CredentialPlaneObservation {
 enum CredentialPlaneAction {
     Noop,
     CreateAccessOrganization,
-    CreateWorkerLocked { projection: String },
+    CreateWorkerIdentityLocked { projection: String },
+    UploadWorkerModuleLocked { projection: String },
     CreateServiceToken { projection: String },
     CreateAccessApplication { projection: String },
     CreateAccessPolicy { projection: String },
@@ -283,17 +285,29 @@ fn plan(
         let observed = projection_observation(observed, &projection.projection)?;
         let material = worker_material(desired, &projection.projection)?;
 
-        if !observed.worker_present {
-            return Ok(CredentialPlaneAction::CreateWorkerLocked {
+        if !observed.worker_identity_present {
+            if observed.worker_script_present {
+                return Err(format!(
+                    "Worker {} exists as script without immutable Worker identity",
+                    projection.worker_name
+                ));
+            }
+            return Ok(CredentialPlaneAction::CreateWorkerIdentityLocked {
                 projection: projection.projection,
             });
         }
         let worker_id = observed.worker_id.as_deref().ok_or_else(|| {
             format!(
-                "Worker {} exists as script but immutable Worker identity is missing",
+                "immutable Worker identity {} is missing its provider ID",
                 projection.worker_name
             )
         })?;
+        if !observed.worker_script_present {
+            ensure_projection_locked(&projection, observed)?;
+            return Ok(CredentialPlaneAction::UploadWorkerModuleLocked {
+                projection: projection.projection,
+            });
+        }
         if observed.worker_binding_count != Some(0) {
             return Err(format!(
                 "Worker {} has bindings; Phase 2 requires physical absence of credential bindings",
@@ -314,6 +328,7 @@ fn plan(
         }
 
         if observed.service_token_id.is_none() {
+            ensure_projection_locked(&projection, observed)?;
             return Ok(CredentialPlaneAction::CreateServiceToken {
                 projection: projection.projection,
             });
@@ -330,6 +345,7 @@ fn plan(
         let token_id = observed.service_token_id.as_deref().unwrap();
         match observed.access_application_id.as_deref() {
             None => {
+                ensure_projection_locked(&projection, observed)?;
                 return Ok(CredentialPlaneAction::CreateAccessApplication {
                     projection: projection.projection,
                 });
@@ -346,6 +362,7 @@ fn plan(
                     ));
                 }
                 if observed.access_policies.is_empty() {
+                    ensure_projection_locked(&projection, observed)?;
                     return Ok(CredentialPlaneAction::CreateAccessPolicy {
                         projection: projection.projection,
                     });
@@ -418,7 +435,26 @@ async fn apply_action(
             .await?;
             Ok((None, 1))
         }
-        CredentialPlaneAction::CreateWorkerLocked { projection } => {
+        CredentialPlaneAction::CreateWorkerIdentityLocked { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let worker = cloudflare::create_worker_identity_locked(
+                api_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+            )
+            .await?;
+            if worker.name != projection.worker_name
+                || worker.workers_dev_enabled != Some(false)
+                || worker.previews_enabled != Some(false)
+            {
+                return Err(format!(
+                    "Worker identity {} was not created atomically locked",
+                    projection.worker_name
+                ));
+            }
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::UploadWorkerModuleLocked { projection } => {
             let projection = projection_desired(desired, projection)?;
             let material = worker_material(desired, &projection.projection)?;
             cloudflare::upload_worker_module(
@@ -430,20 +466,7 @@ async fn apply_action(
                 &material.version_tag,
             )
             .await?;
-            cloudflare::set_worker_script_subdomain(
-                api_token,
-                &desired.target_account_id,
-                &projection.worker_name,
-                false,
-                false,
-            )
-            .await
-            .map_err(|err| {
-                format!(
-                    "Worker upload succeeded but immediate workers.dev lock failed; mutation was not replayed: {err}"
-                )
-            })?;
-            Ok((None, 2))
+            Ok((None, 1))
         }
         CredentialPlaneAction::CreateServiceToken { projection } => {
             let projection = projection_desired(desired, projection)?;
@@ -853,7 +876,7 @@ async fn observe(
                 projection.worker_name
             ));
         }
-        let worker_present = matching_scripts.len() == 1;
+        let worker_script_present = matching_scripts.len() == 1;
         let matching_workers = workers
             .iter()
             .filter(|worker| worker.name == projection.worker_name)
@@ -864,9 +887,17 @@ async fn observe(
                 projection.worker_name
             ));
         }
-        let worker_id = matching_workers.first().map(|worker| worker.id.clone());
+        let worker_identity = matching_workers.first().copied();
+        let worker_identity_present = worker_identity.is_some();
+        let worker_id = worker_identity.map(|worker| worker.id.clone());
 
-        let (settings, subdomain) = if worker_present {
+        let (settings, workers_dev_enabled, previews_enabled) = if worker_script_present {
+            let subdomain = cloudflare::get_worker_script_subdomain(
+                api_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+            )
+            .await?;
             (
                 Some(
                     cloudflare::get_worker_script_settings(
@@ -876,17 +907,15 @@ async fn observe(
                     )
                     .await?,
                 ),
-                Some(
-                    cloudflare::get_worker_script_subdomain(
-                        api_token,
-                        &desired.target_account_id,
-                        &projection.worker_name,
-                    )
-                    .await?,
-                ),
+                Some(subdomain.enabled),
+                Some(subdomain.previews_enabled),
             )
         } else {
-            (None, None)
+            (
+                None,
+                worker_identity.and_then(|worker| worker.workers_dev_enabled),
+                worker_identity.and_then(|worker| worker.previews_enabled),
+            )
         };
 
         let matching_tokens = service_tokens
@@ -938,12 +967,13 @@ async fn observe(
         projections_observed.push(ProjectionObservation {
             projection: projection.projection,
             worker_name: projection.worker_name,
-            worker_present,
+            worker_script_present,
+            worker_identity_present,
             worker_id,
             worker_binding_count: settings.as_ref().map(|value| value.binding_count),
             worker_version_tag: settings.and_then(|value| value.version_tag),
-            workers_dev_enabled: subdomain.as_ref().map(|value| value.enabled),
-            previews_enabled: subdomain.map(|value| value.previews_enabled),
+            workers_dev_enabled,
+            previews_enabled,
             custom_domain_count,
             service_token_id: token.map(|value| value.id.clone()),
             service_token_enabled: token.and_then(|value| value.enabled),
@@ -962,6 +992,19 @@ async fn observe(
         workers_dev_subdomain,
         projections: projections_observed,
     })
+}
+
+fn ensure_projection_locked(
+    projection: &ProjectionDesired,
+    observed: &ProjectionObservation,
+) -> Result<(), String> {
+    if observed.workers_dev_enabled != Some(false) || observed.previews_enabled != Some(false) {
+        return Err(format!(
+            "Worker {} must remain workers.dev=false and previews=false until exact Access isolation is complete",
+            projection.worker_name
+        ));
+    }
+    Ok(())
 }
 
 fn projections(desired: &ProductionCredentialPlaneOwnership) -> [ProjectionDesired; 2] {
@@ -1048,7 +1091,8 @@ fn action_name(action: &CredentialPlaneAction) -> &'static str {
     match action {
         CredentialPlaneAction::Noop => "NOOP",
         CredentialPlaneAction::CreateAccessOrganization => "CREATE_ACCESS_ORGANIZATION",
-        CredentialPlaneAction::CreateWorkerLocked { .. } => "CREATE_WORKER_LOCKED",
+        CredentialPlaneAction::CreateWorkerIdentityLocked { .. } => "CREATE_WORKER_IDENTITY_LOCKED",
+        CredentialPlaneAction::UploadWorkerModuleLocked { .. } => "UPLOAD_WORKER_MODULE_LOCKED",
         CredentialPlaneAction::CreateServiceToken { .. } => "CREATE_SERVICE_TOKEN",
         CredentialPlaneAction::CreateAccessApplication { .. } => "CREATE_ACCESS_APPLICATION",
         CredentialPlaneAction::CreateAccessPolicy { .. } => "CREATE_ACCESS_POLICY",
@@ -1072,10 +1116,11 @@ fn print_observation(
     );
     for projection in &observed.projections {
         println!(
-            "projection={} worker={} worker_present={} worker_id={} bindings={} workers_dev={} previews={} custom_domains={} service_token_id={} service_token_enabled={} access_application_id={} policies={}",
+            "projection={} worker={} worker_identity_present={} worker_script_present={} worker_id={} bindings={} workers_dev={} previews={} custom_domains={} service_token_id={} service_token_enabled={} access_application_id={} policies={}",
             projection.projection,
             projection.worker_name,
-            projection.worker_present,
+            projection.worker_identity_present,
+            projection.worker_script_present,
             projection.worker_id.as_deref().unwrap_or("ABSENT"),
             projection
                 .worker_binding_count
