@@ -7,14 +7,12 @@ use edge_provider_cloudflare::{
     CloudflareSplitTunnelEntry, CloudflareWorkerDomain, CloudflareWorkerRoute,
     CloudflareWorkerScript, CloudflareZeroTrustDeviceSettings,
 };
-use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
 
 const TARGET_ACCOUNT_NAME: &str = "sing-box";
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "status", content = "value", rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Debug)]
 enum ReadObservation<T> {
     Pass(T),
     Blocked { error: String },
@@ -35,7 +33,7 @@ impl<T> From<Result<T, String>> for ReadObservation<T> {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct MeshNodeSnapshot {
     id: String,
     name: String,
@@ -43,7 +41,7 @@ struct MeshNodeSnapshot {
     routes: ReadObservation<Vec<CloudflareMeshRoute>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct DeviceProfileSnapshot {
     id: String,
     name: String,
@@ -59,7 +57,7 @@ struct DeviceProfileSnapshot {
     excludes: ReadObservation<Vec<CloudflareSplitTunnelEntry>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct GatewayRuleSnapshot {
     id: String,
     name: String,
@@ -73,7 +71,7 @@ struct GatewayRuleSnapshot {
     device_posture_present: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct AccessApplicationSnapshot {
     id: String,
     name: String,
@@ -81,7 +79,7 @@ struct AccessApplicationSnapshot {
     policies: ReadObservation<Vec<CloudflareAccessPolicy>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct AccountSnapshot {
     account_id: String,
     device_settings: ReadObservation<CloudflareZeroTrustDeviceSettings>,
@@ -109,7 +107,7 @@ impl AccountSnapshot {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct SharedDnsSnapshot {
     zone_name: String,
     production_record_name: String,
@@ -126,14 +124,14 @@ impl SharedDnsSnapshot {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct AccountDiscovery {
     accounts_api: ReadObservation<Vec<CloudflareAccount>>,
     memberships_api: ReadObservation<Vec<CloudflareAccount>>,
     merged_accounts: Vec<CloudflareAccount>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct Phase0Inventory {
     schema_version: u32,
     mutations_performed: u32,
@@ -262,12 +260,22 @@ pub(crate) async fn run() -> Result<(), String> {
         shared_dns,
     };
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&inventory)
-            .map_err(|err| format!("failed to serialize Cloudflare Phase 0 inventory: {err}"))?
-    );
-    Ok(())
+    println!("Cloudflare Phase 0 read-only inventory");
+    println!("observation_status={}", inventory.observation_status);
+    println!("mutations_performed={}", inventory.mutations_performed);
+    println!("historical_account_id={}", inventory.historical_account_id);
+    println!("target_account_name={}", inventory.target_account_name);
+    println!();
+    println!("{inventory:#?}");
+
+    if inventory.blockers.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Cloudflare Phase 0 inventory BLOCKED by {} read/ownership condition(s)",
+            inventory.blockers.len()
+        ))
+    }
 }
 
 fn merge_accounts(
