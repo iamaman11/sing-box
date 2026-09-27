@@ -1,4 +1,5 @@
 pub mod application_lifecycle;
+pub mod cloudflare_credential_plane;
 pub mod cloudflare_dns_lifecycle;
 pub mod cloudflare_mesh_lifecycle;
 pub mod cloudflare_zero_trust_lifecycle;
