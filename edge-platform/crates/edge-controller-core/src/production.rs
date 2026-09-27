@@ -14,13 +14,22 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 2;
+pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 3;
 pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str = "infra/production/production.textproto";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionCredentialPlane {
+    pub windows_worker_name: String,
+    pub vm_worker_name: String,
+    pub windows_service_token_name: String,
+    pub vm_service_token_name: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionCloudflareOwnership {
     pub active_account_id: String,
     pub migration_target_account_id: Option<String>,
+    pub credential_plane: ProductionCredentialPlane,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,16 +229,29 @@ impl ProductionComposition {
             }
             Some(cloudflare.migration_target_account_id.clone())
         };
+        let credential_plane = cloudflare
+            .credential_plane
+            .as_ref()
+            .ok_or_else(|| validation("cloudflare.credential_plane is required"))?;
+        let credential_plane = ProductionCredentialPlane {
+            windows_worker_name: credential_plane.windows_worker_name.clone(),
+            vm_worker_name: credential_plane.vm_worker_name.clone(),
+            windows_service_token_name: credential_plane.windows_service_token_name.clone(),
+            vm_service_token_name: credential_plane.vm_service_token_name.clone(),
+        };
+        validate_credential_plane(&credential_plane)?;
+
         validate_cloudflare_account_id("dns.account_id", &dns.account_id)?;
         if !mesh.account_id.is_empty() {
             return Err(validation(
-                "mesh.account_id is deprecated in production schema v2; use cloudflare.active_account_id",
+                "mesh.account_id is deprecated in production schema v3; use cloudflare.active_account_id",
             ));
         }
 
         let cloudflare = ProductionCloudflareOwnership {
             active_account_id: cloudflare.active_account_id.clone(),
             migration_target_account_id,
+            credential_plane,
         };
         let shared_dns_account_id = dns.account_id.clone();
 
@@ -383,6 +405,47 @@ fn validate_root_identity(root: &ProductionDesiredState) -> Result<(), Productio
     }
     validate_identifier("machine_id", &root.machine_id)?;
     validate_dns_name("public_hostname", &root.public_hostname)?;
+    Ok(())
+}
+
+fn validate_credential_plane(value: &ProductionCredentialPlane) -> Result<(), ProductionSpecError> {
+    validate_worker_name("cloudflare.credential_plane.windows_worker_name", &value.windows_worker_name)?;
+    validate_worker_name("cloudflare.credential_plane.vm_worker_name", &value.vm_worker_name)?;
+    validate_identifier(
+        "cloudflare.credential_plane.windows_service_token_name",
+        &value.windows_service_token_name,
+    )?;
+    validate_identifier(
+        "cloudflare.credential_plane.vm_service_token_name",
+        &value.vm_service_token_name,
+    )?;
+    if value.windows_worker_name == value.vm_worker_name {
+        return Err(validation(
+            "credential-plane Windows and VM Worker identities must differ",
+        ));
+    }
+    if value.windows_service_token_name == value.vm_service_token_name {
+        return Err(validation(
+            "credential-plane Windows and VM service-token identities must differ",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_worker_name(label: &str, value: &str) -> Result<(), ProductionSpecError> {
+    if value.is_empty()
+        || value.len() > 63
+        || value != value.to_ascii_lowercase()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || value.starts_with('-')
+        || value.ends_with('-')
+    {
+        return Err(validation(format!(
+            "{label} must be a canonical workers.dev-compatible lowercase DNS label"
+        )));
+    }
     Ok(())
 }
 
@@ -564,6 +627,22 @@ mod tests {
             Some("6be6e4b6340822dbeb18cb6c2f09c660")
         );
         assert_eq!(
+            composition.cloudflare.credential_plane.windows_worker_name,
+            "sing-box-credentials-windows"
+        );
+        assert_eq!(
+            composition.cloudflare.credential_plane.vm_worker_name,
+            "sing-box-credentials-vm"
+        );
+        assert_eq!(
+            composition.cloudflare.credential_plane.windows_service_token_name,
+            "sing-box-windows"
+        );
+        assert_eq!(
+            composition.cloudflare.credential_plane.vm_service_token_name,
+            "sing-box-vm-production-1"
+        );
+        assert_eq!(
             composition.shared_dns_account_id,
             "4426df1449e417511bc7697d60b7f62f"
         );
@@ -609,6 +688,44 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("migration target must differ")
+        );
+    }
+
+    #[test]
+    fn production_authority_rejects_aliased_credential_projection_workers() {
+        let mut desired = canonical();
+        let plane = desired
+            .cloudflare
+            .as_mut()
+            .unwrap()
+            .credential_plane
+            .as_mut()
+            .unwrap();
+        plane.vm_worker_name = plane.windows_worker_name.clone();
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("Worker identities must differ")
+        );
+    }
+
+    #[test]
+    fn production_authority_rejects_invalid_credential_worker_name() {
+        let mut desired = canonical();
+        desired
+            .cloudflare
+            .as_mut()
+            .unwrap()
+            .credential_plane
+            .as_mut()
+            .unwrap()
+            .windows_worker_name = "Bad Worker".to_owned();
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("workers.dev-compatible")
         );
     }
 
