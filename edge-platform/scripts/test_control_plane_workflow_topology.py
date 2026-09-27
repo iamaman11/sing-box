@@ -21,6 +21,7 @@ WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
+PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 ROOT_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-root-runner.sh")
@@ -51,6 +52,7 @@ def main() -> None:
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
+    phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     root_runner_installer = ROOT_RUNNER_INSTALLER.read_text(encoding="utf-8")
@@ -175,9 +177,35 @@ def main() -> None:
         )
 
     require(
-        application.count("group: vultr-control-plane-production") == 4,
-        "application backend must serialize execute, production, cleanup and acceptance mutation jobs",
+        application.count("group: vultr-control-plane-production") == 5,
+        "application backend must serialize execute, production, read-only production observation, cleanup and acceptance jobs",
     )
+    production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
+    require(
+        '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
+        and "cloudflare-phase0-inventory.txt" in production_observe
+        and "~~~text" in production_observe
+        and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_observe
+        and "jq " not in production_observe
+        and ".mutations_performed" not in production_observe
+        and ".observation_status" not in production_observe
+        and "cloudflare-phase0-inventory.json" not in production_observe
+        and "VULTR_API_KEY" not in production_observe
+        and "VULTR_SSH_PRIVATE_KEY" not in production_observe
+        and "EDGE_SSH_PRIVATE_KEY_PATH" not in production_observe
+        and "api.ipify.org" not in production_observe
+        and "lease-acquire" not in production_observe
+        and "lease-release" not in production_observe,
+        "production diagnose workflow must remain a thin GET-only wrapper: no jq/JSON lifecycle semantics and no Vultr/SSH authority",
+    )
+    require(
+        "serde_json::to_string" not in phase0_inventory
+        and "serde::Serialize" not in phase0_inventory
+        and "Cloudflare Phase 0 inventory BLOCKED by" in phase0_inventory
+        and 'println!("{inventory:#?}")' in phase0_inventory,
+        "Phase 0 Rust owner must own fail-closed status and emit text evidence without a first-party JSON contract",
+    )
+
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
         "Vultr backend must serialize its execute mutation job",
@@ -445,13 +473,14 @@ def main() -> None:
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
-    production_job = application.split("\n  production:\n", 1)[1].split("\n  cleanup:\n", 1)[0]
+    production_job = application.split("\n  production:\n", 1)[1].split("\n  production_observe:\n", 1)[0]
     require(
         'tokens == ["/production", "converge"]' in application
+        and 'tokens == ["/production", "diagnose"]' in application
         and 'tokens == ["/production", "verify"]' in application
         and 'tokens == ["/production", "rollback"]' in application
         and 'spec_path = "infra/production/production.textproto"' in application,
-        "production command grammar must be fixed to converge/verify/rollback and the sole canonical textproto",
+        "production command grammar must be fixed to converge/diagnose/verify/rollback and the sole canonical textproto",
     )
     require(
         "needs.authorize.outputs.command_family == 'production'" in production_job
