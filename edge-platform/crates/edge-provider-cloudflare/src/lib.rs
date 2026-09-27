@@ -185,6 +185,23 @@ pub struct CloudflareDnsRecordSummary {
     pub proxied: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareApiTokenIdentity {
+    pub id: String,
+    pub status: String,
+}
+
+pub async fn verify_api_token(api_token: &str) -> Result<CloudflareApiTokenIdentity, String> {
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!("{API_ROOT}/user/tokens/verify"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to verify Cloudflare API token: {err}"))?;
+    let payload: ApiEnvelope<ApiTokenVerifyRecord> = parse_success_json(response).await?;
+    api_token_identity_from_record(payload.result)
+}
+
 pub async fn list_worker_scripts(
     api_token: &str,
     account_id: &str,
@@ -217,7 +234,7 @@ pub async fn list_worker_domains(
         .await
         .map_err(|err| format!("failed to list Cloudflare Worker domains: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    let mut domains = value_array(payload.result, "Cloudflare Worker domains")?
+    let mut domains = value_array_or_null_empty(payload.result, "Cloudflare Worker domains")?
         .into_iter()
         .map(worker_domain_from_value)
         .collect::<Result<Vec<_>, _>>()?;
@@ -1363,6 +1380,34 @@ fn value_array(value: Value, label: &str) -> Result<Vec<Value>, String> {
         .ok_or_else(|| format!("{label} result must be an array"))
 }
 
+fn value_array_or_null_empty(value: Value, label: &str) -> Result<Vec<Value>, String> {
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(values) => Ok(values),
+        _ => Err(format!("{label} result must be an array or null")),
+    }
+}
+
+pub fn is_access_not_enabled_error(error: &str) -> bool {
+    error.contains("access.api.error.not_enabled: Access is not enabled")
+}
+
+fn api_token_identity_from_record(
+    record: ApiTokenVerifyRecord,
+) -> Result<CloudflareApiTokenIdentity, String> {
+    require_non_empty("Cloudflare API token ID", &record.id)?;
+    match record.status.as_str() {
+        "active" | "disabled" | "expired" => Ok(CloudflareApiTokenIdentity {
+            id: record.id,
+            status: record.status,
+        }),
+        _ => Err(format!(
+            "Cloudflare API token status is unsupported: {}",
+            record.status
+        )),
+    }
+}
+
 pub fn mock_upsert_a_record(zone_name: &str, record_name: &str, ip: &str) -> CloudflareDnsRecord {
     CloudflareDnsRecord {
         zone_name: zone_name.to_owned(),
@@ -1527,6 +1572,12 @@ struct ApiEnvelope<T> {
 #[derive(Debug, Deserialize)]
 struct ApiResponseInfo {
     message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiTokenVerifyRecord {
+    id: String,
+    status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2017,6 +2068,60 @@ mod tests {
         .unwrap();
         assert_eq!(token.id, "service-token-1");
         assert_eq!(token.name, None);
+    }
+
+    #[test]
+    fn worker_domain_list_accepts_only_array_or_null_empty_shapes() {
+        assert!(
+            value_array_or_null_empty(Value::Null, "Cloudflare Worker domains")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            value_array_or_null_empty(
+                serde_json::json!([{"id": "domain-1"}]),
+                "Cloudflare Worker domains"
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(
+            value_array_or_null_empty(serde_json::json!({}), "Cloudflare Worker domains").is_err()
+        );
+        assert!(
+            value_array_or_null_empty(serde_json::json!("unexpected"), "Cloudflare Worker domains")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn access_not_enabled_classification_is_narrow() {
+        assert!(is_access_not_enabled_error(
+            "Cloudflare API returned 403 Forbidden: {\"errors\":[{\"code\":9999,\"message\":\"access.api.error.not_enabled: Access is not enabled\"}]}"
+        ));
+        assert!(!is_access_not_enabled_error(
+            "Cloudflare API returned 403 Forbidden: Authentication error"
+        ));
+    }
+
+    #[test]
+    fn api_token_identity_keeps_only_safe_metadata() {
+        let identity = api_token_identity_from_record(ApiTokenVerifyRecord {
+            id: "ed17574386854bf78a67040be0a770b0".to_owned(),
+            status: "active".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(identity.id, "ed17574386854bf78a67040be0a770b0");
+        assert_eq!(identity.status, "active");
+
+        assert!(
+            api_token_identity_from_record(ApiTokenVerifyRecord {
+                id: "token-id".to_owned(),
+                status: "unknown".to_owned(),
+            })
+            .is_err()
+        );
     }
 
     #[test]
