@@ -520,6 +520,7 @@ pub async fn probe_access_url(
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|err| format!("failed to build Cloudflare Access probe client: {err}"))?;
     let mut request = client.get(url);
