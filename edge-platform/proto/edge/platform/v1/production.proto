@@ -17,6 +17,7 @@ message ProductionDesiredState {
   ProductionMesh mesh = 9;
   ProductionFirewallPolicy firewall = 10;
   ProductionSupportAccess support_access = 11;
+  ProductionCloudflare cloudflare = 12;
 }
 
 message ProductionSupportAccess {
@@ -71,13 +72,31 @@ message ProductionLine2Policy {
   string proxy_cert_cn = 2;
 }
 
+message ProductionCloudflare {
+  // Sole active account authority for application-exclusive account-scoped
+  // Cloudflare resources. Phase 1 intentionally keeps this on the historical
+  // account; Phase 5 is the only production authority flip.
+  string active_account_id = 1;
+
+  // Transitional typed migration intent only. Empty after the authority flip;
+  // it is never an active provider owner.
+  string migration_target_account_id = 2;
+}
+
 message ProductionDns {
   string zone_name = 1;
   string record_name = 2;
+
+  // Account containing the intentionally shared DNS zone. This boundary is
+  // independent from the active application-exclusive Cloudflare account.
+  string account_id = 3;
 }
 
 message ProductionMesh {
-  string account_id = 1;
+  // Retained only for protobuf wire compatibility. Canonical production schema
+  // v2 requires this field to be empty; account ownership comes from
+  // ProductionCloudflare.active_account_id.
+  string account_id = 1 [deprecated = true];
   string node_name = 2;
   repeated string routes = 3;
 }
