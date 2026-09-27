@@ -623,6 +623,7 @@ mod tests {
     fn parses_typed_orchestrator_commands() {
         let digest = "a".repeat(64);
         let cases = [
+            vec!["edge-orchestrator", "production", "diagnose"],
             vec![
                 "edge-orchestrator",
                 "application-cleanup",
