@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       command_body:
-        description: Authorized /application command from the control-plane router
+        description: Authorized /application or /production command from the control-plane router
         required: true
         type: string
 
@@ -61,6 +61,20 @@ jobs:
           elif tokens == ["/production", "rollback"]:
               command_family = "production"
               operation = "rollback"
+              spec_path = "infra/production/production.textproto"
+          elif (
+              len(tokens) == 2
+              and tokens[0] == "/production"
+              and tokens[1] in {
+                  "credential-inventory",
+                  "credential-plan",
+                  "credential-converge",
+                  "credential-verify",
+                  "credential-prove",
+              }
+          ):
+              command_family = "production_credentials"
+              operation = tokens[1].removeprefix("credential-")
               spec_path = "infra/production/production.textproto"
           elif tokens == ["/application", "acceptance"]:
               command_family = "application"
@@ -318,6 +332,88 @@ jobs:
             echo 'The EXIT trap releases the exact runner /32 and fails the job if absence is not verified.'
             echo
             echo '~~~json'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  production_credentials:
+    needs: authorize
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    if: needs.authorize.outputs.command_family == 'production_credentials'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test "${SPEC_PATH}" = "infra/production/production.textproto"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+
+      - name: Materialize verified credential-plane owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_CREDENTIAL_PLANE_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Execute typed credential-plane operation
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/credential-plane-result.txt"
+          test -x "${EDGE_CREDENTIAL_PLANE_ORCHESTRATOR}"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          "${EDGE_CREDENTIAL_PLANE_ORCHESTRATOR}" cloudflare-credential-plane "${REQUESTED_OPERATION}"             | tee "${result}"
+
+          {
+            echo '### Production credential-plane result'
+            echo
+            printf 'Operation: `credential-%s`\n' "${REQUESTED_OPERATION}"
+            echo
+            echo 'Execution used the exact accepted durable Edge Platform orchestrator.'
+            echo 'No Vultr, SSH, shared-DNS, historical-account or runtime authority was materialized.'
+            echo
+            echo '~~~text'
             cat "${result}"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
