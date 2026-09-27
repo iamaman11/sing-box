@@ -174,6 +174,8 @@ pub struct CloudflareWorkerScript {
 pub struct CloudflareWorkerIdentity {
     pub id: String,
     pub name: String,
+    pub workers_dev_enabled: Option<bool>,
+    pub previews_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -332,6 +334,30 @@ pub async fn list_workers(
         .collect::<Result<Vec<_>, _>>()?;
     workers.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     Ok(workers)
+}
+
+pub async fn create_worker_identity_locked(
+    api_token: &str,
+    account_id: &str,
+    worker_name: &str,
+) -> Result<CloudflareWorkerIdentity, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker name", worker_name)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!("{API_ROOT}/accounts/{account_id}/workers/workers"))
+        .json(&serde_json::json!({
+            "name": worker_name,
+            "subdomain": {
+                "enabled": false,
+                "previews_enabled": false
+            }
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("failed to create locked Cloudflare Worker identity: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    worker_identity_from_value(payload.result)
 }
 
 pub async fn get_worker_script_settings(
@@ -1812,9 +1838,16 @@ fn worker_identity_from_value(value: Value) -> Result<CloudflareWorkerIdentity, 
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare Worker identity must be an object".to_owned())?;
+    let subdomain = object.get("subdomain").and_then(Value::as_object);
     Ok(CloudflareWorkerIdentity {
         id: required_value_string(object, "id", "Cloudflare Worker identity")?,
         name: required_value_string(object, "name", "Cloudflare Worker identity")?,
+        workers_dev_enabled: subdomain
+            .and_then(|subdomain| subdomain.get("enabled"))
+            .and_then(Value::as_bool),
+        previews_enabled: subdomain
+            .and_then(|subdomain| subdomain.get("previews_enabled"))
+            .and_then(Value::as_bool),
     })
 }
 
