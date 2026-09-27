@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import tempfile
+import tomllib
 from pathlib import Path
 
 import runtime_input_digest as subject
@@ -22,6 +23,30 @@ def inputs() -> dict[str, str]:
         "containerd_version": "2.3.5-1~debian.13~trixie",
         "compose_version": "5.5.1-1~debian.13~trixie",
     }
+
+
+def test_tracked_paths_cover_agent_local_dependency_closure() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    tracked = set(subject.TRACKED_PATHS)
+    pending = [repo_root / "edge-platform/crates/edge-agent"]
+    visited: set[Path] = set()
+
+    while pending:
+        crate_dir = pending.pop().resolve()
+        if crate_dir in visited:
+            continue
+        visited.add(crate_dir)
+
+        relative = crate_dir.relative_to(repo_root).as_posix()
+        assert relative in tracked, f"runtime digest misses local dependency crate: {relative}"
+
+        manifest = tomllib.loads((crate_dir / "Cargo.toml").read_text(encoding="utf-8"))
+        for dependency in manifest.get("dependencies", {}).values():
+            if not isinstance(dependency, dict) or "path" not in dependency:
+                continue
+            dependency_dir = (crate_dir / dependency["path"]).resolve()
+            dependency_dir.relative_to(repo_root)
+            pending.append(dependency_dir)
 
 
 def materialize(root: Path) -> None:
@@ -109,6 +134,7 @@ def test_reuse_is_fail_closed() -> None:
 
 
 if __name__ == "__main__":
+    test_tracked_paths_cover_agent_local_dependency_closure()
     test_digest_scope()
     test_dependency_change_invalidates_digest()
     test_reuse_is_fail_closed()
