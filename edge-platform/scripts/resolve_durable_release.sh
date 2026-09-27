@@ -47,11 +47,12 @@ matching_releases="${out}/.matching-releases.jsonl"
 page=1
 while :; do
   page_json="$(gh api "repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
-  jq -c '
+  jq -c --arg accepted "$ACCEPTED_REVISION" '
     .[]
     | select(.draft == false)
     | select(.prerelease == false)
     | select(.tag_name | test("^edge-release-[0-9a-f]{64}$"))
+    | select(.target_commitish == $accepted)
   ' <<<"$page_json" >> "$candidate_releases"
   page_count="$(jq 'length' <<<"$page_json")"
   [[ "$page_count" =~ ^[0-9]+$ ]]
