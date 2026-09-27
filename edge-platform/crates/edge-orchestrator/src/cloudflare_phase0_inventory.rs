@@ -466,7 +466,10 @@ async fn observe_access_applications(
     let mut applications = cloudflare::list_access_applications(api_token, account_id).await?;
     applications.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     let mut snapshots = Vec::with_capacity(applications.len());
-    for CloudflareAccessApplication { id, name, app_type, .. } in applications {
+    for CloudflareAccessApplication {
+        id, name, app_type, ..
+    } in applications
+    {
         let policies = ReadObservation::from(
             cloudflare::list_access_application_policies(api_token, account_id, &id).await,
         );
