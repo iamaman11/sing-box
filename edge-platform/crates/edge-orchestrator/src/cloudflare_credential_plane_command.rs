@@ -1057,10 +1057,7 @@ fn print_observation(
     observed: &CredentialPlaneObservation,
 ) {
     println!("target_account_id={}", desired.target_account_id);
-    println!(
-        "control_token_id={}",
-        observed.control_token_identity.id
-    );
+    println!("control_token_id={}", observed.control_token_identity.id);
     println!(
         "control_token_status={}",
         observed.control_token_identity.status
