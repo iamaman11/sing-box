@@ -2,9 +2,7 @@ use crate::cli::CloudflareCredentialPlaneCommand;
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
-use edge_controller_core::production::{
-    ProductionComposition, ProductionCredentialPlaneOwnership,
-};
+use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_provider_cloudflare as cloudflare;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
@@ -108,21 +106,12 @@ pub async fn run(command: CloudflareCredentialPlaneCommand) -> Result<(), String
             print_observation(&desired, &observed);
             println!("plan_action={}", action_name(&authorized.plan));
             println!("plan_authority={}", authorized.authority.authority_digest);
-            println!(
-                "plan_disposition={:?}",
-                authorized.disposition
-            );
+            println!("plan_disposition={:?}", authorized.disposition);
             Ok(())
         }
-        CloudflareCredentialPlaneCommand::Converge => {
-            converge(&control_token, &desired).await
-        }
-        CloudflareCredentialPlaneCommand::Verify => {
-            verify_locked(&control_token, &desired).await
-        }
-        CloudflareCredentialPlaneCommand::Prove => {
-            prove_locked(&control_token, &desired).await
-        }
+        CloudflareCredentialPlaneCommand::Converge => converge(&control_token, &desired).await,
+        CloudflareCredentialPlaneCommand::Verify => verify_locked(&control_token, &desired).await,
+        CloudflareCredentialPlaneCommand::Prove => prove_locked(&control_token, &desired).await,
     }
 }
 
@@ -145,12 +134,8 @@ async fn converge(
             return Ok(());
         }
 
-        let (after, next, proof, performed) = apply_once(
-            api_token,
-            desired,
-            &authorized.authority.authority_digest,
-        )
-        .await?;
+        let (after, next, proof, performed) =
+            apply_once(api_token, desired, &authorized.authority.authority_digest).await?;
         mutations = mutations.saturating_add(performed);
         if proof.is_some() {
             terminal_proof = proof;
@@ -239,8 +224,11 @@ async fn prove_locked(
         PlanDisposition::Mutate,
     )
     .map_err(|err| err.to_string())?;
-    verify_exact_authority(&authorized.authority.authority_digest, &authorized.authority)
-        .map_err(|err| err.to_string())?;
+    verify_exact_authority(
+        &authorized.authority.authority_digest,
+        &authorized.authority,
+    )
+    .map_err(|err| err.to_string())?;
     let (proof, mutations) = apply_action(api_token, desired, &observed, &forced).await?;
     let after = observe(api_token, desired).await?;
     if plan(desired, &after)? != CredentialPlaneAction::Noop {
@@ -380,9 +368,7 @@ fn plan(
 
     for projection in projections(desired) {
         let observed = projection_observation(observed, &projection.projection)?;
-        if observed.workers_dev_enabled != Some(true)
-            || observed.previews_enabled != Some(false)
-        {
+        if observed.workers_dev_enabled != Some(true) || observed.previews_enabled != Some(false) {
             return Ok(CredentialPlaneAction::ConfigureWorkersDev {
                 projection: projection.projection,
             });
@@ -469,10 +455,9 @@ async fn apply_action(
         CredentialPlaneAction::CreateAccessApplication { projection } => {
             let projection = projection_desired(desired, projection)?;
             let current = projection_observation(observed, &projection.projection)?;
-            let worker_id = current
-                .worker_id
-                .as_deref()
-                .ok_or_else(|| "immutable Worker ID is required before Access creation".to_owned())?;
+            let worker_id = current.worker_id.as_deref().ok_or_else(|| {
+                "immutable Worker ID is required before Access creation".to_owned()
+            })?;
             let token_id = current
                 .service_token_id
                 .as_deref()
@@ -491,10 +476,9 @@ async fn apply_action(
         CredentialPlaneAction::CreateAccessPolicy { projection } => {
             let projection = projection_desired(desired, projection)?;
             let current = projection_observation(observed, &projection.projection)?;
-            let application_id = current
-                .access_application_id
-                .as_deref()
-                .ok_or_else(|| "Access application ID is required before policy creation".to_owned())?;
+            let application_id = current.access_application_id.as_deref().ok_or_else(|| {
+                "Access application ID is required before policy creation".to_owned()
+            })?;
             let token_id = current
                 .service_token_id
                 .as_deref()
@@ -555,7 +539,10 @@ async fn prove_isolation(
         "https://{}.{}.workers.dev/",
         windows.worker_name, workers_subdomain
     );
-    let vm_url = format!("https://{}.{}.workers.dev/", vm.worker_name, workers_subdomain);
+    let vm_url = format!(
+        "https://{}.{}.workers.dev/",
+        vm.worker_name, workers_subdomain
+    );
 
     let mut mutations = 0u32;
     let mut windows_enabled_by_proof = false;
@@ -622,12 +609,36 @@ async fn prove_isolation(
 
         Ok(ProofReport {
             cases: vec![
-                ProofCase { name: "windows_to_windows", outcome: "PASS", status: ww.status },
-                ProofCase { name: "windows_to_vm", outcome: "DENIED", status: wv.status },
-                ProofCase { name: "vm_to_vm", outcome: "PASS", status: vv.status },
-                ProofCase { name: "vm_to_windows", outcome: "DENIED", status: vw.status },
-                ProofCase { name: "anonymous_to_windows", outcome: "DENIED", status: aw.status },
-                ProofCase { name: "anonymous_to_vm", outcome: "DENIED", status: av.status },
+                ProofCase {
+                    name: "windows_to_windows",
+                    outcome: "PASS",
+                    status: ww.status,
+                },
+                ProofCase {
+                    name: "windows_to_vm",
+                    outcome: "DENIED",
+                    status: wv.status,
+                },
+                ProofCase {
+                    name: "vm_to_vm",
+                    outcome: "PASS",
+                    status: vv.status,
+                },
+                ProofCase {
+                    name: "vm_to_windows",
+                    outcome: "DENIED",
+                    status: vw.status,
+                },
+                ProofCase {
+                    name: "anonymous_to_windows",
+                    outcome: "DENIED",
+                    status: aw.status,
+                },
+                ProofCase {
+                    name: "anonymous_to_vm",
+                    outcome: "DENIED",
+                    status: av.status,
+                },
             ],
         })
     }
@@ -688,10 +699,7 @@ fn require_allowed(
     Ok(())
 }
 
-fn require_denied(
-    name: &str,
-    probe: &cloudflare::CloudflareWorkerProbe,
-) -> Result<(), String> {
+fn require_denied(name: &str, probe: &cloudflare::CloudflareWorkerProbe) -> Result<(), String> {
     if probe.status != 401 {
         return Err(format!(
             "{name} expected exact HTTP 401 Access denial, observed status={}",
@@ -710,16 +718,12 @@ async fn observe(
     let worker_domains =
         cloudflare::list_worker_domains(api_token, &desired.target_account_id).await?;
 
-    let access_organization = match cloudflare::get_access_organization(
-        api_token,
-        &desired.target_account_id,
-    )
-    .await
-    {
-        Ok(value) => Some(value),
-        Err(err) if cloudflare::is_access_not_enabled_error(&err) => None,
-        Err(err) => return Err(err),
-    };
+    let access_organization =
+        match cloudflare::get_access_organization(api_token, &desired.target_account_id).await {
+            Ok(value) => Some(value),
+            Err(err) if cloudflare::is_access_not_enabled_error(&err) => None,
+            Err(err) => return Err(err),
+        };
 
     let (service_tokens, access_applications) = if access_organization.is_some() {
         (
@@ -922,10 +926,7 @@ fn worker_material(
         "const PAYLOAD={js_payload};\nexport default {{async fetch(request){{const url=new URL(request.url);if(request.method!==\"GET\"||url.pathname!==\"/\"){{return new Response(null,{{status:404}});}}return new Response(PAYLOAD,{{status:200,headers:{{\"Content-Type\":\"application/json; charset=utf-8\",\"Cache-Control\":\"no-store\"}}}});}}}};\n"
     );
     let source_hash = sha256_hex(source.as_bytes());
-    let version_tag = format!(
-        "sing-box-phase2-{projection}-{}",
-        &source_hash[..16]
-    );
+    let version_tag = format!("sing-box-phase2-{projection}-{}", &source_hash[..16]);
     Ok(WorkerMaterial {
         payload,
         source,

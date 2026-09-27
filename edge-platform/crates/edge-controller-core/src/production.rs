@@ -240,13 +240,12 @@ impl ProductionComposition {
             }
             Some(cloudflare.migration_target_account_id.clone())
         };
-        let credential_plane = cloudflare
-            .credential_plane
-            .as_ref()
-            .ok_or_else(|| validation("cloudflare.credential_plane is required in production schema v3"))?;
-        let target_account_id = migration_target_account_id
-            .clone()
-            .ok_or_else(|| validation("credential plane requires cloudflare.migration_target_account_id"))?;
+        let credential_plane = cloudflare.credential_plane.as_ref().ok_or_else(|| {
+            validation("cloudflare.credential_plane is required in production schema v3")
+        })?;
+        let target_account_id = migration_target_account_id.clone().ok_or_else(|| {
+            validation("credential plane requires cloudflare.migration_target_account_id")
+        })?;
         validate_identifier(
             "cloudflare.credential_plane.access_organization_name",
             &credential_plane.access_organization_name,
@@ -264,7 +263,10 @@ impl ProductionComposition {
             ));
         }
         for (label, value) in [
-            ("windows_worker_name", credential_plane.windows_worker_name.as_str()),
+            (
+                "windows_worker_name",
+                credential_plane.windows_worker_name.as_str(),
+            ),
             ("vm_worker_name", credential_plane.vm_worker_name.as_str()),
             (
                 "windows_access_application_name",

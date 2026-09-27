@@ -262,7 +262,9 @@ pub async fn get_access_organization(
     require_non_empty("Cloudflare account ID", account_id)?;
     let client = authorized_client(api_token)?;
     let response = client
-        .get(format!("{API_ROOT}/accounts/{account_id}/access/organizations"))
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/access/organizations"
+        ))
         .send()
         .await
         .map_err(|err| format!("failed to get Cloudflare Access organization: {err}"))?;
@@ -281,7 +283,9 @@ pub async fn create_access_organization(
     require_non_empty("Cloudflare Access auth domain", auth_domain)?;
     let client = authorized_client(api_token)?;
     let response = client
-        .post(format!("{API_ROOT}/accounts/{account_id}/access/organizations"))
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/access/organizations"
+        ))
         .json(&serde_json::json!({
             "name": name,
             "auth_domain": auth_domain,
@@ -439,7 +443,9 @@ pub async fn get_workers_subdomain(
     require_non_empty("Cloudflare account ID", account_id)?;
     let client = authorized_client(api_token)?;
     let response = client
-        .get(format!("{API_ROOT}/accounts/{account_id}/workers/subdomain"))
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/subdomain"
+        ))
         .send()
         .await
         .map_err(|err| format!("failed to get Cloudflare workers.dev subdomain: {err}"))?;
@@ -1767,7 +1773,9 @@ fn worker_identity_from_value(value: Value) -> Result<CloudflareWorkerIdentity, 
     })
 }
 
-fn worker_script_settings_from_value(value: Value) -> Result<CloudflareWorkerScriptSettings, String> {
+fn worker_script_settings_from_value(
+    value: Value,
+) -> Result<CloudflareWorkerScriptSettings, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare Worker settings must be an object".to_owned())?;
@@ -1818,7 +1826,11 @@ fn access_organization_from_value(value: Value) -> Result<CloudflareAccessOrgani
         .ok_or_else(|| "Cloudflare Access organization must be an object".to_owned())?;
     Ok(CloudflareAccessOrganization {
         name: required_value_string(object, "name", "Cloudflare Access organization")?,
-        auth_domain: required_value_string(object, "auth_domain", "Cloudflare Access organization")?,
+        auth_domain: required_value_string(
+            object,
+            "auth_domain",
+            "Cloudflare Access organization",
+        )?,
         deny_unmatched_requests: object
             .get("deny_unmatched_requests")
             .and_then(Value::as_bool),
@@ -1840,7 +1852,11 @@ fn access_service_credential_from_value(
         .ok_or_else(|| "Cloudflare Access service credential id is required".to_owned())?;
     Ok(CloudflareAccessServiceCredential {
         id,
-        client_id: required_value_string(object, "client_id", "Cloudflare Access service credential")?,
+        client_id: required_value_string(
+            object,
+            "client_id",
+            "Cloudflare Access service credential",
+        )?,
         client_secret: required_value_string(
             object,
             "client_secret",
