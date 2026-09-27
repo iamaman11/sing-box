@@ -18,6 +18,9 @@ s=json.loads(Path(os.environ["FAKE_GITHUB_STATE"]).read_text())
 a=sys.argv[1:]
 assert a and a[0]=="api"
 e=a[-1]
+call_log=os.environ.get("FAKE_GITHUB_CALL_LOG")
+if call_log:
+    with open(call_log,"a",encoding="utf-8") as handle: handle.write(e+"\\n")
 repo="iamaman11/sing-box"
 if e.startswith(f"repos/{repo}/releases?"):
     page=int(dict(x.split("=",1) for x in e.split("?",1)[1].split("&")).get("page","1"))
@@ -51,7 +54,7 @@ def sha(data):
 def exe(path, content):
     path.write_text(content); path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-def make_state(accepted_override=None, ambiguous=False, schema=3):
+def make_state(accepted_override=None, ambiguous=False, schema=3, unrelated_count=0):
     accepted="a"*40; candidate="b"*40; tree="c"*40
     assert schema in (3, 4, 5, 6)
     runtime_input="d"*64
@@ -127,11 +130,17 @@ print("compose_version=5.5.1-1~debian.13~trixie")
     for i,(name,data) in enumerate(files.items(),700000001):
       assets.append({"id":i,"name":name,"size":len(data),"digest":"sha256:"+sha(data)})
       blobs[str(i)]=base64.b64encode(data).decode()
-    release={"id":500000001,"tag_name":tag,"draft":False,"prerelease":False,"assets":assets}
-    releases=[release]; refs={tag:accepted}
+    release={"id":500000001,"tag_name":tag,"target_commitish":accepted,"draft":False,"prerelease":False,"assets":assets}
+    releases=[]
+    for offset in range(unrelated_count):
+      unrelated_tag="edge-release-"+f"{offset+16:064x}"
+      releases.append({"id":510000000+offset,"tag_name":unrelated_tag,"target_commitish":"f"*40,
+        "draft":False,"prerelease":False,"assets":assets})
+    releases.append(release); refs={tag:accepted}
     if ambiguous:
       tag2="edge-release-"+"d"*64
-      releases.append({"id":500000002,"tag_name":tag2,"draft":False,"prerelease":False,"assets":assets})
+      releases.append({"id":500000002,"tag_name":tag2,"target_commitish":accepted,
+        "draft":False,"prerelease":False,"assets":assets})
       refs[tag2]=accepted
     state={"releases":releases,"tag_refs":refs,"commit_trees":{accepted:tree,candidate:tree},"asset_bytes":blobs}
     meta={"accepted":accepted,"candidate":candidate,"tree":tree,"tag":tag,"pbsha":pbsha,"asha":asha,"csha":csha,"osha":osha,
@@ -147,16 +156,22 @@ print("compose_version=5.5.1-1~debian.13~trixie")
       "controller_id":next(x["id"] for x in assets if x["name"]=="edge-controller-linux-amd64")}
     return state,meta
 
-def run(state,meta,expected=None,ok=False):
+def run(state,meta,expected=None,ok=False,expected_tag_ref_calls=None):
     with tempfile.TemporaryDirectory() as td:
       root=Path(td); bindir=root/"bin"; bindir.mkdir()
       exe(bindir/"gh",FAKE_GH); exe(bindir/"curl",FAKE_CURL)
       sp=root/"state.json"; sp.write_text(json.dumps(state))
+      call_log=root/"gh-calls.log"
       out=root/"out"; env=os.environ.copy()
       env.update({"GH_TOKEN":"x","REPOSITORY":"iamaman11/sing-box","ACCEPTED_REVISION":meta["accepted"],
-        "OUTPUT_DIR":str(out),"FAKE_GITHUB_STATE":str(sp),"PATH":str(bindir)+os.pathsep+env["PATH"]})
+        "OUTPUT_DIR":str(out),"FAKE_GITHUB_STATE":str(sp),"FAKE_GITHUB_CALL_LOG":str(call_log),
+        "PATH":str(bindir)+os.pathsep+env["PATH"]})
       if expected: env["EXPECTED_RELEASE_TAG"]=expected
       p=subprocess.run(["bash",str(RESOLVER)],env=env,text=True,capture_output=True)
+      calls=call_log.read_text().splitlines() if call_log.exists() else []
+      if expected_tag_ref_calls is not None:
+        tag_ref_calls=sum("/git/ref/tags/" in call for call in calls)
+        assert tag_ref_calls==expected_tag_ref_calls,(tag_ref_calls,calls,p.stdout,p.stderr)
       if ok:
         assert p.returncode==0,(p.stdout,p.stderr)
         vals=dict(x.split("=",1) for x in (out/"resolved.env").read_text().splitlines())
@@ -182,14 +197,17 @@ def run(state,meta,expected=None,ok=False):
         assert p.returncode!=0,p.stdout
 
 def main():
-    s,m=make_state(schema=3); run(s,m,expected=m["tag"],ok=True)
-    s,m=make_state(schema=4); run(s,m,expected=m["tag"],ok=True)
-    s,m=make_state(schema=5); run(s,m,expected=m["tag"],ok=True)
-    s,m=make_state(schema=6); run(s,m,expected=m["tag"],ok=True)
+    s,m=make_state(schema=3); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
+    s,m=make_state(schema=4); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
+    s,m=make_state(schema=5); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
+    s,m=make_state(schema=6,unrelated_count=25)
+    run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
     s,m=make_state(ambiguous=True); run(s,m)
     s,m=make_state(accepted_override="e"*40); run(s,m)
     s,m=make_state(); run(s,m,expected="edge-release-"+"f"*64)
     s,m=make_state(); s["corrupt_asset_id"]=m["controller_id"]; run(s,m)
+    s,m=make_state(); s["tag_refs"][m["tag"]]="f"*40; run(s,m)
+    s,m=make_state(); s["releases"][-1]["target_commitish"]="f"*40; run(s,m)
     print("durable release resolver tests: OK")
 
 if __name__=="__main__":
