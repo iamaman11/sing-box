@@ -18,7 +18,9 @@ Read authority in this order:
 
 Historical plans are never execution authority. If any document conflicts with #26, #26 wins after live repository state is re-read.
 
-## Current architecture
+## Accepted architecture and convergence target
+
+The ownership model below is accepted. Cloudflare account convergence and deletion-first cleanup are still in progress under #169; do not interpret the target placement of Mesh/Zero Trust/credential Workers as already migrated provider state.
 
 ```text
 Git / protected main
