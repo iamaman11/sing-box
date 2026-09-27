@@ -50,6 +50,10 @@ jobs:
               command_family = "production"
               operation = "converge"
               spec_path = "infra/production/production.textproto"
+          elif tokens == ["/production", "diagnose"]:
+              command_family = "production"
+              operation = "diagnose"
+              spec_path = "infra/production/production.textproto"
           elif tokens == ["/production", "verify"]:
               command_family = "production"
               operation = "verify"
@@ -323,7 +327,9 @@ jobs:
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
-    if: needs.authorize.outputs.command_family == 'production'
+    if: >-
+      needs.authorize.outputs.command_family == 'production' &&
+      needs.authorize.outputs.operation != 'diagnose'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -444,6 +450,82 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-${RUNNER_TEMP}/singbox-vultr-ops}"
+
+  production_observe:
+    needs: authorize
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    if: >-
+      needs.authorize.outputs.command_family == 'production' &&
+      needs.authorize.outputs.operation == 'diagnose'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test "${SPEC_PATH}" = "infra/production/production.textproto"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Execute read-only Cloudflare Phase 0 inventory
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/cloudflare-phase0-inventory.json"
+          "${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose | tee "${result}"
+          jq -e '
+            .mutations_performed == 0
+            and (.observation_status == "COMPLETE" or .observation_status == "BLOCKED")
+          ' "${result}" >/dev/null
+          {
+            echo '### Cloudflare Phase 0 read-only inventory'
+            echo
+            echo 'Typed provider GET-only observation. No Vultr API, SSH authority, provider mutation, or secret value is requested.'
+            echo
+            echo '~~~json'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   cleanup:
     needs: authorize
