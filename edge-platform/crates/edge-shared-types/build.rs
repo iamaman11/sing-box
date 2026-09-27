@@ -17,6 +17,7 @@ fn main() {
         "runtime.proto",
         "bundle.proto",
         "secrets.proto",
+        "credential_plane.proto",
         "diagnostics.proto",
         "controller.proto",
         "orchestrator.proto",
