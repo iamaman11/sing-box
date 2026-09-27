@@ -20,7 +20,7 @@ assert a and a[0]=="api"
 e=a[-1]
 call_log=os.environ.get("FAKE_GITHUB_CALL_LOG")
 if call_log:
-    with open(call_log,"a",encoding="utf-8") as handle: handle.write(e+"\n")
+    with open(call_log,"a",encoding="utf-8") as handle: handle.write(e+"\\n")
 repo="iamaman11/sing-box"
 if e.startswith(f"repos/{repo}/releases?"):
     page=int(dict(x.split("=",1) for x in e.split("?",1)[1].split("&")).get("page","1"))
