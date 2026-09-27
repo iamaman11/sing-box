@@ -1,217 +1,179 @@
-# RUNBOOK
+# Operator runbook
 
-## Primary entrypoint
+This runbook intentionally contains only stable supported boundaries.
+For the exact current step always read GitHub Issue #26 first.
 
-The normal operator workflow is Rust-first and production-first.
+## 1. Authority check
 
-Open the console:
+Before any mutation:
 
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe"
-```
+1. read protected `main`;
+2. read #26 current cursor;
+3. read the bounded issue selected by #26 (currently #169 for Cloudflare/credential convergence);
+4. inspect open PR/CI state;
+5. resolve the durable ReleaseSet only when release authority is required.
 
-The console autostarts `edge-controller.exe` on `127.0.0.1:50051` if needed.
+Never operate from a saved SHA in old chat/documentation.
 
-You can also use command mode:
+## 2. Production control
 
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" status
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" trace
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy
-```
+The normal production owner is the GitHub-only typed orchestrator.
 
-## Main console actions
-
-- `status`
-  - local runtime state
-  - deployment summary
-  - agent/runtime reachability
-  - selector state
-
-- `start-local`
-- `stop-local`
-- `restart-local`
-
-- `get-selector`
-- `set-selector <name>`
-- `get-ubuntu-selector`
-- `set-ubuntu-selector <name>`
-
-- `trace`
-- `trace-ubuntu`
-
-- `deploy`
-- `destroy`
-
-- `secrets`
-- `get-secret <name>`
-- `set-secret <name> <secret-ref>`
-
-- `get-operation <id>`
-- `watch-operation <id>`
-
-## Secret names
-
-The controller persists secret references in SQLite.
-
-Supported names:
-
-- `provider.vultr.api_key`
-- `provider.cloudflare.api_token`
-- `bootstrap.vultr.ssh_key_id`
-- `bootstrap.ssh.private_key_path`
-
-Supported secret reference formats:
-
-- `env:NAME`
-- `file:/abs/path`
-- `path:/abs/path`
-
-Example:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-secret provider.vultr.api_key env:VULTR_API_KEY
-```
-
-## Recommended flows
-
-### 1. Inspect current state
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" status
-```
-
-### 2. Start the local client
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" start-local
-```
-
-### 3. Switch desktop route
-
-Direct:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-selector auto-direct-tunnel
-```
-
-WARP:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-selector auto-warp-tunnel
-```
-
-### 4. Switch Ubuntu WSL route
-
-Direct:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-ubuntu-selector auto-direct-tunnel
-```
-
-WARP:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" set-ubuntu-selector auto-warp-tunnel
-```
-
-Show Ubuntu route and egress:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" get-ubuntu-selector
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" trace-ubuntu
-```
-
-### 5. Ubuntu-side usage
-
-The supported Ubuntu path is now Windows-side proxying, not Linux-side `tun`.
-
-Current endpoint from Ubuntu:
-
-```bash
-http://$(ip route show default | cut -d' ' -f3):17890
-```
-
-Ad-hoc command:
-
-```bash
-curl -4 --proxy http://$(ip route show default | cut -d' ' -f3):17890 https://api.ipify.org
-```
-
-The user shell helper installed in Ubuntu exports proxy env vars automatically for new shells:
-
-- `http_proxy`
-- `https_proxy`
-- `all_proxy`
-
-`git` should use these shell environment variables too. Do not hardcode:
-
-- `git config --global http.proxy ...`
-- `git config --global https.proxy ...`
-
-to a specific WSL gateway IP, because the gateway can change between WSL sessions.
-
-### 6. Deploy or redeploy
-
-Before repeated destroy/create cycles, make sure the local durable ACME cache exists:
-
-```powershell
-Test-Path "C:\Users\Bose\temp\sing-box\edge-platform\.runtime\cert-cache\acme"
-```
-
-This cache contains the `edge.alegria.by` ACME account, certificate, and private key used by the tunnel containers. It is intentionally local-only and ignored by git.
-
-Normal deploys upload that cache to the VM and start tunnels with the official sing-box ACME manager pointed at the preloaded cache. They should not request a fresh Let's Encrypt certificate on every VM recreation, but renewal remains possible before expiry.
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" deploy
-```
-
-If the deploy output returns an operation id, follow it with:
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" watch-operation <id>
-```
-
-### 7. Destroy
-
-```powershell
-& "C:\Users\Bose\AppData\Local\edge-platform-win-target\x86_64-pc-windows-msvc\debug\edge-console.exe" destroy
-```
-
-Destroying a VM must not delete the local ACME cache:
-
-```powershell
-Get-ChildItem -Recurse "C:\Users\Bose\temp\sing-box\edge-platform\.runtime\cert-cache\acme\certificates" -Filter "*.crt"
-```
-
-If the cache is missing, recover it from a known-good server or from:
+Accepted owner-gated production commands include:
 
 ```text
-C:\Users\Bose\temp\sing-box\recovered\vm\vultr-edge-stack\stack\tunnel-state\acme
+/production verify
+/production converge
+/production rollback
 ```
 
-`recovered/` is only a seed source. The working source is always:
+Use only commands currently authorized by #26.
+
+Separate historical `/dns`, `/mesh` and `/zero-trust` surfaces are migration debt and are
+planned to collapse into canonical production composition after #169 proves the replacement path.
+
+Do not use direct Windows Vultr/Cloudflare deployment.
+
+## 3. Windows local status
+
+Installed application root:
 
 ```text
-C:\Users\Bose\temp\sing-box\edge-platform\.runtime\cert-cache\acme
+C:\sing-box
 ```
 
-## Current WSL proxy behavior
+Local console:
 
-- Windows `sing-box` exposes:
-  - `wsl-mixed-in`
-  - port `17890`
-- the inbound is routed to:
-  - `wsl-selector`
-- `wsl-selector` is independent from:
-  - `proxy-selector`
+```powershell
+& "C:\sing-box\bin\edge-console.exe" status
+```
 
-That means:
+The controller is owned by Windows SCM. Do not start a second controller manually merely because a
+console/status command fails.
 
-- desktop selector changes do not change Ubuntu selector
-- Ubuntu selector changes do not change desktop selector
+Independent release/runtime diagnostics use the installed exact diagnostic binary and canonical
+activation state, for example the accepted doctor path:
 
-## Historical note
+```powershell
+& "C:\sing-box\bin\edge-diagnostic.exe" doctor "C:\sing-box\current.pb"
+```
 
-PowerShell scripts under `win/windows` and `win/vultr-waw`, and the old Linux-side WSL `tun` setup, are retained only as historical reference. They are not the primary supported control path anymore.
+If the installed stable `bin` layout differs in a later accepted release, use the exact path
+reported by that release/diagnostic authority rather than a legacy checkout.
+
+## 4. Windows physical GitHub operations
+
+The repository self-hosted runner is transport only.
+
+`/windows smoke` is an acceptance operation that has already passed for W1; do not replay it for
+confidence. Use a Windows command only when #26 explicitly returns the cursor to that slice.
+
+No arbitrary issue-comment PowerShell/exec command exists.
+
+## 5. Secrets
+
+Never paste or publish application/provider secrets into:
+- Git;
+- Issues;
+- Actions logs/artifacts;
+- Release assets;
+- chat instructions.
+
+Do not copy legacy VLESS/Hysteria/Reality/Line2 credentials into the new runtime.
+
+Issue #169 defines fresh credential generations and Cloudflare Access delivery. Until its gates pass,
+do not improvise another SSH/DPAPI/Vault/GitHub-secret transport.
+
+## 6. VM operations
+
+Normal VM/application lifecycle is GitHub/orchestrator owned.
+
+Canonical transport:
+- provider support-access lease where required;
+- strict OpenSSH host-certificate trust;
+- local forward to loopback `edge-agent`;
+- typed apply/verify/rollback;
+- guaranteed support-access cleanup/re-observation.
+
+Do not use TOFU, `StrictHostKeyChecking=no`, direct Windows SSH deployment or production builds on
+the VM.
+
+## 7. Diagnosis before repair
+
+Default order:
+
+```text
+observe
+ -> diagnose
+ -> exact plan
+ -> one bounded mutation
+ -> re-observe
+ -> functional verify
+```
+
+An unknown mutation outcome is never solved by replaying the same mutation blindly.
+
+Diagnostics are read-only. Repair/converge is a separate explicit operation.
+
+## 8. Release update
+
+Normal release update:
+
+```text
+PR exact-head CI
+ -> candidate acceptance
+ -> protected merge
+ -> promotion without rebuild
+ -> durable ReleaseSet
+ -> converge
+ -> verify
+```
+
+No local Rust/OCI build occurs on production Windows/VM.
+
+Keep the previous accepted release long enough for bounded rollback.
+
+## 9. Credential rotation
+
+Credential rotation is not part of every release.
+
+The target flow from #169 is:
+
+```text
+write candidate into inactive A/B slots
+ -> verify isolated Workers/Access
+ -> Git declares candidate generation
+ -> server accepts active + candidate
+ -> Windows proves candidate direct/WARP traffic
+ -> promote candidate to active
+ -> keep previous generation for bounded rollback/grace
+```
+
+This flow is not authorized for real values until #26 reaches that checkpoint.
+
+## 10. Recovery
+
+Target recovery must not need the legacy checkout.
+
+VM recovery:
+```text
+Git desired state + exact ReleaseSet + provider APIs + credential plane
+```
+
+Windows recovery:
+```text
+exact ReleaseSet + one-time machine enrollment + active credential generation
+```
+
+Generated env/JSON may be recreated. Loss of Cloudflare availability must not stop an already
+healthy runtime.
+
+## 11. Stop conditions
+
+Stop before mutation when:
+- ownership is ambiguous;
+- current main/ReleaseSet authority cannot be proven;
+- secret boundary would be widened;
+- a mutation outcome is uncertain and has not been re-observed;
+- the requested operation would touch legacy runtime before its cutover gate;
+- the operation is not authorized by the current #26 cursor.
