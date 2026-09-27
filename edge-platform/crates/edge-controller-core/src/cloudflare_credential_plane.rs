@@ -53,6 +53,7 @@ pub struct CredentialProjectionObservation {
     pub service_token_enabled: Option<bool>,
     pub access_application_id: Option<String>,
     pub access_destination_worker_id: Option<String>,
+    pub access_application_has_extra_destinations: bool,
     pub access_policy_id: Option<String>,
     pub access_policy_decision: Option<String>,
     pub access_policy_service_token_ids: Vec<String>,
@@ -179,6 +180,12 @@ fn validate_exact_access_binding(
     projection: CredentialProjection,
     actual: &CredentialProjectionObservation,
 ) -> Result<(), String> {
+    if actual.access_application_has_extra_destinations {
+        return Err(format!(
+            "{} projection Access application has non-canonical destinations or overrides",
+            projection.as_str()
+        ));
+    }
     if actual.access_policy_id.is_none() {
         return Err(format!(
             "{} projection Access application has no exact service-auth policy",
@@ -269,6 +276,7 @@ mod tests {
             service_token_enabled: Some(true),
             access_application_id: Some(format!("app-{worker_tag}")),
             access_destination_worker_id: Some(worker_tag.to_owned()),
+            access_application_has_extra_destinations: false,
             access_policy_id: Some(format!("policy-{worker_tag}")),
             access_policy_decision: Some("non_identity".to_owned()),
             access_policy_service_token_ids: vec![token.to_owned()],
