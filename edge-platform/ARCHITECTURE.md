@@ -158,6 +158,17 @@ Owns all application-exclusive account-scoped resources:
 The dedicated account ID is non-secret desired state and should be declared once in the typed
 production composition rather than duplicated across subsystems.
 
+During the bounded migration, the typed production composition separates **active ownership** from
+**migration intent**:
+- `cloudflare.active_account_id` is the sole active account owner for application-exclusive
+  account-scoped resources and remains on the historical account until the Phase 5 cutover;
+- `cloudflare.migration_target_account_id` names the dedicated `sing-box` target but is never
+  an active owner;
+- the shared DNS account coordinate is stored separately with the DNS boundary, so the Phase 5
+  application-account flip cannot accidentally move or adopt the shared `alegria.by` zone.
+
+The deprecated Mesh-local account field is not an authority in canonical production schema v2.
+
 ### Shared zone `alegria.by`
 
 Remains intentionally external/shared.

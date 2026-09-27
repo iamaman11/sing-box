@@ -1329,10 +1329,24 @@ mod tests {
     #[test]
     fn canonical_production_desired_state_is_protobuf_and_canonical() {
         let desired = canonical_production_desired_state().unwrap();
-        assert_eq!(desired.schema_version, 1);
+        assert_eq!(desired.schema_version, 2);
         assert_eq!(desired.environment, "production");
         assert_eq!(desired.machine_id, "production-1");
         assert_eq!(desired.public_hostname, "miu.alegria.by");
+        let cloudflare = desired.cloudflare.as_ref().unwrap();
+        assert_eq!(
+            cloudflare.active_account_id,
+            "4426df1449e417511bc7697d60b7f62f"
+        );
+        assert_eq!(
+            cloudflare.migration_target_account_id,
+            "6be6e4b6340822dbeb18cb6c2f09c660"
+        );
+        assert_eq!(
+            desired.dns.as_ref().unwrap().account_id,
+            "4426df1449e417511bc7697d60b7f62f"
+        );
+        assert!(desired.mesh.as_ref().unwrap().account_id.is_empty());
         assert_eq!(
             desired.encode_to_vec(),
             CANONICAL_PRODUCTION_DESIRED_STATE_BYTES

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 environment: "production"
 machine_id: "production-1"
 public_hostname: "miu.alegria.by"
@@ -39,13 +39,18 @@ application {
   }
 }
 
+cloudflare {
+  active_account_id: "4426df1449e417511bc7697d60b7f62f"
+  migration_target_account_id: "6be6e4b6340822dbeb18cb6c2f09c660"
+}
+
 dns {
   zone_name: "alegria.by"
   record_name: "miu.alegria.by"
+  account_id: "4426df1449e417511bc7697d60b7f62f"
 }
 
 mesh {
-  account_id: "4426df1449e417511bc7697d60b7f62f"
   node_name: "singbox-line3-production"
 }
 

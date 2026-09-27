@@ -14,8 +14,14 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 1;
+pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 2;
 pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str = "infra/production/production.textproto";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionCloudflareOwnership {
+    pub active_account_id: String,
+    pub migration_target_account_id: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionFirewallRule {
@@ -32,6 +38,8 @@ pub struct ProductionComposition {
     pub machines: DesiredMachineState,
     pub vpc: DesiredVpcState,
     pub application: DesiredApplicationState,
+    pub cloudflare: ProductionCloudflareOwnership,
+    pub shared_dns_account_id: String,
     pub dns: DesiredDnsState,
     pub mesh: DesiredMeshState,
     pub firewall_rules: Vec<ProductionFirewallRule>,
@@ -79,6 +87,10 @@ impl ProductionComposition {
             .application
             .as_ref()
             .ok_or_else(|| validation("application is required"))?;
+        let cloudflare = root
+            .cloudflare
+            .as_ref()
+            .ok_or_else(|| validation("cloudflare is required"))?;
         let dns = root
             .dns
             .as_ref()
@@ -190,6 +202,37 @@ impl ProductionComposition {
             .validate()
             .map_err(|err| component("application", err))?;
 
+        validate_cloudflare_account_id(
+            "cloudflare.active_account_id",
+            &cloudflare.active_account_id,
+        )?;
+        let migration_target_account_id = if cloudflare.migration_target_account_id.is_empty() {
+            None
+        } else {
+            validate_cloudflare_account_id(
+                "cloudflare.migration_target_account_id",
+                &cloudflare.migration_target_account_id,
+            )?;
+            if cloudflare.migration_target_account_id == cloudflare.active_account_id {
+                return Err(validation(
+                    "cloudflare migration target must differ from the active account",
+                ));
+            }
+            Some(cloudflare.migration_target_account_id.clone())
+        };
+        validate_cloudflare_account_id("dns.account_id", &dns.account_id)?;
+        if !mesh.account_id.is_empty() {
+            return Err(validation(
+                "mesh.account_id is deprecated in production schema v2; use cloudflare.active_account_id",
+            ));
+        }
+
+        let cloudflare = ProductionCloudflareOwnership {
+            active_account_id: cloudflare.active_account_id.clone(),
+            migration_target_account_id,
+        };
+        let shared_dns_account_id = dns.account_id.clone();
+
         let dns = DesiredDnsState {
             schema: 1,
             environment: root.environment.clone(),
@@ -200,7 +243,7 @@ impl ProductionComposition {
 
         let mesh = DesiredMeshState {
             schema: 1,
-            account_id: mesh.account_id.clone(),
+            account_id: cloudflare.active_account_id.clone(),
             environment: root.environment.clone(),
             node_name: mesh.node_name.clone(),
             routes: mesh
@@ -222,6 +265,8 @@ impl ProductionComposition {
             machines,
             vpc,
             application,
+            cloudflare,
+            shared_dns_account_id,
             dns,
             mesh,
             firewall_rules,
@@ -307,6 +352,12 @@ impl ProductionComposition {
             ));
         }
 
+        if self.mesh.account_id != self.cloudflare.active_account_id {
+            return Err(validation(
+                "Mesh account identity must come only from cloudflare.active_account_id",
+            ));
+        }
+
         let expected_mesh_name = format!("singbox-line3-{}", self.environment);
         if self.mesh.node_name != expected_mesh_name {
             return Err(validation(format!(
@@ -332,6 +383,19 @@ fn validate_root_identity(root: &ProductionDesiredState) -> Result<(), Productio
     }
     validate_identifier("machine_id", &root.machine_id)?;
     validate_dns_name("public_hostname", &root.public_hostname)?;
+    Ok(())
+}
+
+fn validate_cloudflare_account_id(label: &str, value: &str) -> Result<(), ProductionSpecError> {
+    if value.len() != 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(validation(format!(
+            "{label} must be exactly 32 lowercase hexadecimal characters"
+        )));
+    }
     Ok(())
 }
 
@@ -488,6 +552,25 @@ mod tests {
         let composition = ProductionComposition::from_proto(&canonical()).unwrap();
         assert_eq!(composition.machine_id, "production-1");
         assert_eq!(composition.public_hostname, "miu.alegria.by");
+        assert_eq!(
+            composition.cloudflare.active_account_id,
+            "4426df1449e417511bc7697d60b7f62f"
+        );
+        assert_eq!(
+            composition
+                .cloudflare
+                .migration_target_account_id
+                .as_deref(),
+            Some("6be6e4b6340822dbeb18cb6c2f09c660")
+        );
+        assert_eq!(
+            composition.shared_dns_account_id,
+            "4426df1449e417511bc7697d60b7f62f"
+        );
+        assert_eq!(
+            composition.mesh.account_id,
+            composition.cloudflare.active_account_id
+        );
         assert_eq!(composition.machines.machines.len(), 1);
         assert_eq!(composition.firewall_rules.len(), 11);
     }
@@ -501,6 +584,55 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("exactly production")
+        );
+    }
+
+    #[test]
+    fn production_authority_rejects_legacy_mesh_account_owner() {
+        let mut desired = canonical();
+        desired.mesh.as_mut().unwrap().account_id = "4426df1449e417511bc7697d60b7f62f".to_owned();
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("mesh.account_id is deprecated")
+        );
+    }
+
+    #[test]
+    fn production_authority_rejects_equal_active_and_target_accounts() {
+        let mut desired = canonical();
+        let cloudflare = desired.cloudflare.as_mut().unwrap();
+        cloudflare.migration_target_account_id = cloudflare.active_account_id.clone();
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("migration target must differ")
+        );
+    }
+
+    #[test]
+    fn production_authority_rejects_invalid_cloudflare_account_identity() {
+        let mut desired = canonical();
+        desired.cloudflare.as_mut().unwrap().active_account_id = "not-an-account".to_owned();
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("32 lowercase hexadecimal")
+        );
+    }
+
+    #[test]
+    fn production_authority_requires_explicit_shared_dns_account_boundary() {
+        let mut desired = canonical();
+        desired.dns.as_mut().unwrap().account_id.clear();
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("dns.account_id")
         );
     }
 
