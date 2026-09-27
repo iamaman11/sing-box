@@ -37,6 +37,7 @@ struct ProjectionObservation {
     service_token_duration: Option<String>,
     access_application_id: Option<String>,
     access_application_type: Option<String>,
+    access_service_auth_401_redirect: Option<bool>,
     access_destination_worker_id: Option<String>,
     access_destination_has_overrides: Option<bool>,
     access_policies: Vec<cloudflare::CloudflareAccessPolicy>,
@@ -335,6 +336,7 @@ fn plan(
             }
             Some(_) => {
                 if observed.access_application_type.as_deref() != Some("self_hosted")
+                    || observed.access_service_auth_401_redirect != Some(true)
                     || observed.access_destination_worker_id.as_deref() != Some(worker_id)
                     || observed.access_destination_has_overrides != Some(false)
                 {
@@ -946,6 +948,8 @@ async fn observe(
             service_token_duration: token.and_then(|value| value.duration.clone()),
             access_application_id: app.map(|value| value.id.clone()),
             access_application_type: app.map(|value| value.app_type.clone()),
+            access_service_auth_401_redirect: app
+                .and_then(|value| value.service_auth_401_redirect),
             access_destination_worker_id: destination.and_then(|value| value.worker_id.clone()),
             access_destination_has_overrides: destination.map(|value| value.has_overrides),
             access_policies: policies,
