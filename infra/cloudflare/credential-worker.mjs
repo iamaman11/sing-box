@@ -1,9 +1,15 @@
 const PROBE_GENERATION = "1";
-const PROBE_BASE64 = "__PROBE_BASE64__";
+const PROBE_HEX = "__PROBE_HEX__";
 
-function decodeBase64(value) {
-  const raw = atob(value);
-  return Uint8Array.from(raw, (char) => char.charCodeAt(0));
+function decodeHex(value) {
+  if (value.length === 0 || value.length % 2 !== 0 || !/^[0-9a-f]+$/.test(value)) {
+    throw new Error("invalid embedded credential probe");
+  }
+  const bytes = new Uint8Array(value.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
 }
 
 function requestIsExactProbe(request) {
@@ -18,7 +24,7 @@ function requestIsExactProbe(request) {
   );
 }
 
-const PROBE_BYTES = decodeBase64(PROBE_BASE64);
+const PROBE_BYTES = decodeHex(PROBE_HEX);
 
 export default {
   async fetch(request) {
