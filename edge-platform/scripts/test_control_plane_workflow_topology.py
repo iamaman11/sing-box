@@ -458,13 +458,14 @@ def main() -> None:
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
-    production_job = application.split("\n  production:\n", 1)[1].split("\n  cleanup:\n", 1)[0]
+    production_job = application.split("\n  production:\n", 1)[1].split("\n  production_observe:\n", 1)[0]
     require(
         'tokens == ["/production", "converge"]' in application
+        and 'tokens == ["/production", "diagnose"]' in application
         and 'tokens == ["/production", "verify"]' in application
         and 'tokens == ["/production", "rollback"]' in application
         and 'spec_path = "infra/production/production.textproto"' in application,
-        "production command grammar must be fixed to converge/verify/rollback and the sole canonical textproto",
+        "production command grammar must be fixed to converge/diagnose/verify/rollback and the sole canonical textproto",
     )
     require(
         "needs.authorize.outputs.command_family == 'production'" in production_job
