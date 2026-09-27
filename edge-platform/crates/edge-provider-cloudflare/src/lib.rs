@@ -134,10 +134,18 @@ pub struct CloudflareGatewayRuleWrite {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareAccessDestination {
+    pub destination_type: String,
+    pub worker_id: Option<String>,
+    pub overrides_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareAccessApplication {
     pub id: String,
     pub name: String,
     pub app_type: String,
+    pub destinations: Vec<CloudflareAccessDestination>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -145,11 +153,40 @@ pub struct CloudflareAccessPolicy {
     pub id: String,
     pub name: String,
     pub decision: Option<String>,
+    pub service_token_ids: Vec<String>,
+    pub has_extra_rules: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareWorkerScript {
     pub id: String,
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareWorkerSubdomain {
+    pub enabled: bool,
+    pub previews_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareWorkersSubdomain {
+    pub subdomain: String,
+}
+
+pub struct CloudflareAccessServiceTokenSecret {
+    pub id: String,
+    pub name: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareAccessProbeResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -222,6 +259,110 @@ pub async fn list_worker_scripts(
     Ok(scripts)
 }
 
+pub async fn get_workers_subdomain(
+    api_token: &str,
+    account_id: &str,
+) -> Result<CloudflareWorkersSubdomain, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!("{API_ROOT}/accounts/{account_id}/workers/subdomain"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to get Cloudflare Workers subdomain: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    let object = payload
+        .result
+        .as_object()
+        .ok_or_else(|| "Cloudflare Workers subdomain result must be an object".to_owned())?;
+    Ok(CloudflareWorkersSubdomain {
+        subdomain: required_value_string(object, "subdomain", "Cloudflare Workers subdomain")?,
+    })
+}
+
+pub async fn get_worker_script_subdomain(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+) -> Result<CloudflareWorkerSubdomain, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/subdomain"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to get Cloudflare Worker script subdomain: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    worker_subdomain_from_value(payload.result)
+}
+
+pub async fn upload_worker_module(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    compatibility_date: &str,
+    module_source: &str,
+) -> Result<CloudflareWorkerScript, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
+    require_non_empty("Cloudflare Worker module source", module_source)?;
+    let client = authorized_client(api_token)?;
+    let module_name = format!("{script_name}.mjs");
+    let metadata = serde_json::json!({
+        "main_module": module_name,
+        "compatibility_date": compatibility_date,
+    });
+    let metadata_part = reqwest::multipart::Part::text(metadata.to_string())
+        .mime_str("application/json")
+        .map_err(|err| format!("failed to build Cloudflare Worker metadata part: {err}"))?;
+    let module_part = reqwest::multipart::Part::text(module_source.to_owned())
+        .file_name(module_name.clone())
+        .mime_str("application/javascript+module")
+        .map_err(|err| format!("failed to build Cloudflare Worker module part: {err}"))?;
+    let form = reqwest::multipart::Form::new()
+        .part("metadata", metadata_part)
+        .part(module_name, module_part);
+    let response = client
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}"
+        ))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|err| format!("failed to upload Cloudflare Worker module: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    worker_script_from_value(payload.result)
+}
+
+pub async fn configure_worker_script_subdomain(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    enabled: bool,
+    previews_enabled: bool,
+) -> Result<CloudflareWorkerSubdomain, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/subdomain"
+        ))
+        .json(&serde_json::json!({
+            "enabled": enabled,
+            "previews_enabled": previews_enabled,
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("failed to configure Cloudflare Worker script subdomain: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    worker_subdomain_from_value(payload.result)
+}
+
 pub async fn list_worker_domains(
     api_token: &str,
     account_id: &str,
@@ -276,6 +417,139 @@ pub async fn list_access_service_tokens(
     Err(format!(
         "Cloudflare Access service token pagination exceeded {MAX_API_PAGES} pages"
     ))
+}
+
+pub async fn create_access_service_token(
+    api_token: &str,
+    account_id: &str,
+    name: &str,
+    duration: &str,
+) -> Result<CloudflareAccessServiceTokenSecret, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access service token name", name)?;
+    require_non_empty("Cloudflare Access service token duration", duration)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/access/service_tokens"
+        ))
+        .json(&serde_json::json!({
+            "name": name,
+            "duration": duration,
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare Access service token: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    access_service_token_secret_from_value(payload.result)
+}
+
+pub async fn rotate_access_service_token(
+    api_token: &str,
+    account_id: &str,
+    service_token_id: &str,
+) -> Result<CloudflareAccessServiceTokenSecret, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access service token ID", service_token_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/access/service_tokens/{service_token_id}/rotate"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|err| format!("failed to rotate Cloudflare Access service token: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    access_service_token_secret_from_value(payload.result)
+}
+
+pub async fn create_worker_access_application(
+    api_token: &str,
+    account_id: &str,
+    application_name: &str,
+    worker_id: &str,
+    policy_name: &str,
+    service_token_id: &str,
+) -> Result<CloudflareAccessApplication, String> {
+    for (label, value) in [
+        ("Cloudflare account ID", account_id),
+        ("Cloudflare Access application name", application_name),
+        ("Cloudflare Worker immutable ID", worker_id),
+        ("Cloudflare Access policy name", policy_name),
+        ("Cloudflare Access service token ID", service_token_id),
+    ] {
+        require_non_empty(label, value)?;
+    }
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!("{API_ROOT}/accounts/{account_id}/access/apps"))
+        .json(&serde_json::json!({
+            "type": "self_hosted",
+            "name": application_name,
+            "destinations": [{
+                "type": "worker",
+                "worker_id": worker_id,
+            }],
+            "policies": [{
+                "name": policy_name,
+                "decision": "non_identity",
+                "include": [{
+                    "service_token": {
+                        "token_id": service_token_id,
+                    }
+                }],
+            }],
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare Worker Access application: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    access_application_from_value(payload.result)
+}
+
+pub async fn probe_access_url(
+    url: &str,
+    client_id: Option<&str>,
+    client_secret: Option<&str>,
+) -> Result<CloudflareAccessProbeResponse, String> {
+    require_non_empty("Cloudflare Access probe URL", url)?;
+    if client_id.is_some() != client_secret.is_some() {
+        return Err("Cloudflare Access probe credentials must provide both client ID and secret".to_owned());
+    }
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("failed to build Cloudflare Access probe client: {err}"))?;
+    let mut request = client.get(url);
+    if let (Some(client_id), Some(client_secret)) = (client_id, client_secret) {
+        request = request
+            .header("CF-Access-Client-Id", client_id)
+            .header("CF-Access-Client-Secret", client_secret);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("Cloudflare Access probe failed: {err}"))?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| format!("failed to read Cloudflare Access probe body: {err}"))?;
+    if body.len() > 4096 {
+        return Err("Cloudflare Access probe response exceeded 4096 bytes".to_owned());
+    }
+    Ok(CloudflareAccessProbeResponse {
+        status,
+        content_type,
+        body: body.to_vec(),
+    })
 }
 
 pub async fn list_dns_record_summaries(
@@ -1270,10 +1544,36 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare Access application must be an object".to_owned())?;
+    let destinations = match object.get("destinations") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(value) => value_array(value.clone(), "Cloudflare Access application destinations")?
+            .into_iter()
+            .map(access_destination_from_value)
+            .collect::<Result<Vec<_>, _>>()?,
+    };
     Ok(CloudflareAccessApplication {
         id: required_value_string(object, "id", "Cloudflare Access application")?,
         name: required_value_string(object, "name", "Cloudflare Access application")?,
         app_type: required_value_string(object, "type", "Cloudflare Access application")?,
+        destinations,
+    })
+}
+
+fn access_destination_from_value(value: Value) -> Result<CloudflareAccessDestination, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Access destination must be an object".to_owned())?;
+    let overrides_count = match object.get("overrides") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Array(values)) => values.len(),
+        Some(_) => {
+            return Err("Cloudflare Access destination overrides must be an array".to_owned());
+        }
+    };
+    Ok(CloudflareAccessDestination {
+        destination_type: required_value_string(object, "type", "Cloudflare Access destination")?,
+        worker_id: optional_value_string(object, "worker_id"),
+        overrides_count,
     })
 }
 
@@ -1281,6 +1581,31 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare Access policy must be an object".to_owned())?;
+    let include = object
+        .get("include")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let include = value_array(include, "Cloudflare Access policy include")?;
+    let mut service_token_ids = Vec::new();
+    let mut include_other_rule_count = 0usize;
+    for rule in include {
+        let Some(rule) = rule.as_object() else {
+            return Err("Cloudflare Access policy include rule must be an object".to_owned());
+        };
+        match rule.get("service_token") {
+            Some(Value::Object(service_token)) if rule.len() == 1 => {
+                service_token_ids.push(required_value_string(
+                    service_token,
+                    "token_id",
+                    "Cloudflare Access service-token rule",
+                )?);
+            }
+            _ => include_other_rule_count += 1,
+        }
+    }
+    service_token_ids.sort();
+    let require_count = policy_rule_count(object, "require")?;
+    let exclude_count = policy_rule_count(object, "exclude")?;
     Ok(CloudflareAccessPolicy {
         id: required_value_string(object, "id", "Cloudflare Access policy")?,
         name: required_value_string(object, "name", "Cloudflare Access policy")?,
@@ -1288,7 +1613,20 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             .get("decision")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+        service_token_ids,
+        has_extra_rules: include_other_rule_count != 0 || require_count != 0 || exclude_count != 0,
     })
+}
+
+fn policy_rule_count(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<usize, String> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(0),
+        Some(Value::Array(values)) => Ok(values.len()),
+        Some(_) => Err(format!("Cloudflare Access policy {key} must be an array")),
+    }
 }
 
 fn worker_script_from_value(value: Value) -> Result<CloudflareWorkerScript, String> {
@@ -1297,6 +1635,25 @@ fn worker_script_from_value(value: Value) -> Result<CloudflareWorkerScript, Stri
         .ok_or_else(|| "Cloudflare Worker script must be an object".to_owned())?;
     Ok(CloudflareWorkerScript {
         id: required_value_string(object, "id", "Cloudflare Worker script")?,
+        tag: optional_value_string(object, "tag"),
+    })
+}
+
+fn worker_subdomain_from_value(value: Value) -> Result<CloudflareWorkerSubdomain, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Worker subdomain must be an object".to_owned())?;
+    Ok(CloudflareWorkerSubdomain {
+        enabled: object
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "Cloudflare Worker subdomain field enabled is required".to_owned())?,
+        previews_enabled: object
+            .get("previews_enabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                "Cloudflare Worker subdomain field previews_enabled is required".to_owned()
+            })?,
     })
 }
 
@@ -1333,6 +1690,32 @@ fn access_service_token_from_value(value: Value) -> Result<CloudflareAccessServi
         name: optional_value_string(object, "name"),
         enabled: object.get("enabled").and_then(Value::as_bool),
         expires_at: optional_value_string(object, "expires_at"),
+    })
+}
+
+fn access_service_token_secret_from_value(
+    value: Value,
+) -> Result<CloudflareAccessServiceTokenSecret, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Access service token secret result must be an object".to_owned())?;
+    Ok(CloudflareAccessServiceTokenSecret {
+        id: required_value_string(object, "id", "Cloudflare Access service token secret result")?,
+        name: required_value_string(object, "name", "Cloudflare Access service token secret result")?,
+        client_id: required_value_string(
+            object,
+            "client_id",
+            "Cloudflare Access service token secret result",
+        )?,
+        client_secret: required_value_string(
+            object,
+            "client_secret",
+            "Cloudflare Access service token secret result",
+        )?,
+        enabled: object
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "Cloudflare Access service token secret result field enabled is required".to_owned())?,
     })
 }
 
@@ -1999,7 +2382,8 @@ mod tests {
         let policy = access_policy_from_value(serde_json::json!({
             "id": "policy-1",
             "name": "Allow enrollment",
-            "decision": "allow"
+            "decision": "allow",
+            "include": []
         }))
         .unwrap();
 
@@ -2010,10 +2394,15 @@ mod tests {
     #[test]
     fn parses_phase0_inventory_shapes_without_secret_material() {
         let script = worker_script_from_value(serde_json::json!({
-            "id": "sing-box-credentials-windows"
+            "id": "sing-box-credentials-windows",
+            "tag": "0123456789abcdef0123456789abcdef"
         }))
         .unwrap();
         assert_eq!(script.id, "sing-box-credentials-windows");
+        assert_eq!(
+            script.tag.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
 
         let domain = worker_domain_from_value(serde_json::json!({
             "id": "domain-1",
@@ -2079,6 +2468,42 @@ mod tests {
                 .is_empty()
         );
         assert!(split_tunnel_result_values(serde_json::json!({"unexpected": []})).is_err());
+    }
+
+    #[test]
+    fn parses_exact_worker_access_binding() {
+        let application = access_application_from_value(serde_json::json!({
+            "id": "app-1",
+            "name": "sing-box-credentials-windows",
+            "type": "self_hosted",
+            "destinations": [{
+                "type": "worker",
+                "worker_id": "worker-tag",
+                "overrides": []
+            }]
+        }))
+        .unwrap();
+        assert_eq!(application.destinations.len(), 1);
+        assert_eq!(
+            application.destinations[0].worker_id.as_deref(),
+            Some("worker-tag")
+        );
+
+        let policy = access_policy_from_value(serde_json::json!({
+            "id": "policy-1",
+            "name": "sing-box-credentials-windows-service-auth",
+            "decision": "non_identity",
+            "include": [{
+                "service_token": {
+                    "token_id": "token-1"
+                }
+            }],
+            "require": [],
+            "exclude": []
+        }))
+        .unwrap();
+        assert_eq!(policy.service_token_ids, vec!["token-1"]);
+        assert!(!policy.has_extra_rules);
     }
 
     #[test]
