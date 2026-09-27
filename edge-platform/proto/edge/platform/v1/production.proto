@@ -98,9 +98,8 @@ message ProductionCredentialPlane {
   string vm_access_policy_name = 8;
   string windows_service_token_name = 9;
   string vm_service_token_name = 10;
-  string dummy_payload_schema = 11;
-  string worker_compatibility_date = 12;
-  string proof_token_duration = 13;
+  string worker_compatibility_date = 11;
+  string proof_token_duration = 12;
 }
 
 message ProductionDns {
@@ -114,7 +113,7 @@ message ProductionDns {
 
 message ProductionMesh {
   // Retained only for protobuf wire compatibility. Canonical production schema
-  // v2 requires this field to be empty; account ownership comes from
+  // v3 requires this field to be empty; account ownership comes from
   // ProductionCloudflare.active_account_id.
   string account_id = 1 [deprecated = true];
   string node_name = 2;
