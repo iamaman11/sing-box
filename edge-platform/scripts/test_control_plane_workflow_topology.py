@@ -181,15 +181,20 @@ def main() -> None:
     production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
     require(
         '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
-        and ".mutations_performed == 0" in production_observe
+        and "cloudflare-phase0-inventory.txt" in production_observe
+        and "~~~text" in production_observe
         and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_observe
+        and "jq " not in production_observe
+        and ".mutations_performed" not in production_observe
+        and ".observation_status" not in production_observe
+        and "cloudflare-phase0-inventory.json" not in production_observe
         and "VULTR_API_KEY" not in production_observe
         and "VULTR_SSH_PRIVATE_KEY" not in production_observe
         and "EDGE_SSH_PRIVATE_KEY_PATH" not in production_observe
         and "api.ipify.org" not in production_observe
         and "lease-acquire" not in production_observe
         and "lease-release" not in production_observe,
-        "production diagnose must remain GET-only Cloudflare observation with shared serialization and no Vultr/SSH authority",
+        "production diagnose workflow must remain a thin GET-only wrapper: no jq/JSON lifecycle semantics and no Vultr/SSH authority",
     )
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
