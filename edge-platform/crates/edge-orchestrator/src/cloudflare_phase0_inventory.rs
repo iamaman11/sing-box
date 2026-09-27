@@ -158,7 +158,8 @@ pub(crate) async fn run() -> Result<(), String> {
 
     let historical_account_id = composition.mesh.account_id.clone();
 
-    let token_metadata = ReadObservation::from(cloudflare::current_api_token_metadata(&api_token).await);
+    let token_metadata =
+        ReadObservation::from(cloudflare::current_api_token_metadata(&api_token).await);
 
     let accounts_result = cloudflare::list_accounts(&api_token).await;
     let memberships_result = cloudflare::list_membership_accounts(&api_token).await;
@@ -287,8 +288,9 @@ fn merge_accounts(
 }
 
 async fn observe_account(api_token: &str, account_id: &str) -> AccountSnapshot {
-    let device_settings =
-        ReadObservation::from(cloudflare::get_zero_trust_device_settings(api_token, account_id).await);
+    let device_settings = ReadObservation::from(
+        cloudflare::get_zero_trust_device_settings(api_token, account_id).await,
+    );
     let mesh_nodes = ReadObservation::from(observe_mesh_nodes(api_token, account_id).await);
     let device_profiles =
         ReadObservation::from(observe_device_profiles(api_token, account_id).await);
