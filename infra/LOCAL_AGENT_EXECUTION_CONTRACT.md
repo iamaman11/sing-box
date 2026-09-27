@@ -1,50 +1,81 @@
 # Local Agent Execution Contract
 
-The local agent is an **executor**, not a researcher or architect.
+The local execution agent is an **executor**, not an architecture or desired-state owner.
 
 ## Canonical authority
 
-- The only project source of truth is this repository.
-- Every task must pin the exact repository revision before execution.
-- If the pinned revision differs from current `origin/main`, report `MAIN_DRIFT` and stop before mutation.
+- The remote repository is the only long-term project source of truth.
+- GitHub Issue #26 is the sole current execution-order authority.
+- Every mutation task pins the exact repository/release authority required by that operation.
+- If the pinned authority differs from current accepted authority, report drift and stop before mutation.
 
 ## Scope discipline
 
 For every instruction:
 
-1. Execute only the explicitly listed commands, API endpoints, files and object identifiers.
-2. Do not broaden a failed lookup into generic repository, issue, commit, provider or internet research.
-3. If exact evidence is absent, return `UNKNOWN` or `UNPROVEN` and stop that line of investigation.
-4. Do not infer ownership from names, dates, nearby history, similar resources or keyword matches.
-5. Do not make architectural decisions.
-6. Do not advance to a later checkpoint without a separate instruction.
+1. Execute only explicitly authorized typed commands/resources.
+2. Do not broaden a failed lookup into unrelated mutation or generic provider exploration.
+3. If exact evidence is absent, return `UNKNOWN` / `UNPROVEN` and stop that decision path.
+4. Do not infer ownership from names, dates, nearby resources or similar configuration.
+5. Do not make a new architecture decision during execution.
+6. Do not advance a master-plan checkpoint unless #26 authorizes it.
 
 ## Mutation discipline
 
-- Read-only means no POST, PUT, PATCH, DELETE or equivalent provider mutation.
-- Every allowed mutation requires an exact current plan/authority immediately before the mutation.
+- Read-only means no provider/host mutation.
+- Every allowed mutation requires a fresh exact plan/authority immediately before mutation.
 - One authority decision permits at most one mutation attempt.
-- An uncertain outcome is resolved only by bounded read-only re-observation. Never replay a mutation because its response was lost.
-- Never perform emergency cleanup unless explicitly authorized.
+- An uncertain mutation outcome is resolved by bounded read-only re-observation, never blind replay.
+- Cleanup/repair is explicit and separately authorized.
 
-## Protected external state
+## Current Cloudflare boundaries
 
-Existing Zero Trust user devices, registrations, default/custom device profiles and pre-existing WARP Connectors are external protected state unless a canonical project spec explicitly owns them.
+Issue #169 owns the bounded convergence design while #26 owns ordering.
 
-The current Cloudflare boundary is defined by:
+Target boundaries:
 
-`infra/cloudflare/zero-trust-guardrails.json`
+```text
+Cloudflare account: sing-box
+  application-exclusive account-scoped resources
+  - Mesh
+  - project Zero Trust / Gateway / Access
+  - credential-delivery Workers / machine identities
 
-The agent must not modify protected Zero Trust state merely to make the current project pass.
+Shared external zone: alegria.by
+  DNS only
+  - explicit sing-box-owned record set
+```
+
+Do not treat historical `infra/cloudflare/zero-trust-guardrails.json` or other legacy JSON files
+as the long-term production authority. They are frozen migration debt unless an accepted legacy
+path still physically consumes them.
+
+Protected external/shared state must never be adopted merely because names match.
+
+## Secrets
+
+Never print, persist in evidence, or publish:
+- provider API tokens;
+- Cloudflare Access machine credentials;
+- Mesh node tokens;
+- SSH private keys;
+- VLESS/Hysteria/Reality/Line2 credential values;
+- secret hashes intended as fingerprints of secret values.
+
+The Windows self-hosted runner is transport only and must not receive plaintext/decrypted
+application credential generations.
+
+Generated runtime env/JSON is consumer output, not desired-state authority.
 
 ## Evidence
 
 - Never write diagnostic evidence into the repository worktree.
-- Use an external bounded evidence directory.
-- Never print or persist provider tokens, Mesh node tokens, SSH private keys, application credentials or secret hashes.
-- Configuration digests must exclude volatile observations such as status and last-seen timestamps.
-- Final conclusions must be mechanically consistent with the reported fields. `ownership=UNPROVEN` cannot produce `classified=YES`.
+- Use a bounded external evidence directory or the typed workflow evidence path.
+- Configuration/authority digests exclude volatile status/last-seen fields.
+- Conclusions must be mechanically consistent with evidence. `ownership=UNPROVEN` cannot produce
+  a destructive action.
 
 ## Output
 
-Return only the requested schema plus explicit blockers. Do not append exploratory research, recommendations or unrelated findings unless the instruction asks for them.
+Return only the requested schema/evidence plus explicit blockers. Do not silently perform repair,
+cleanup or unrelated discovery.
