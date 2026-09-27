@@ -220,16 +220,9 @@ pub async fn current_api_token_metadata(
         .result
         .as_object()
         .ok_or_else(|| "Cloudflare API token verification result must be an object".to_owned())?;
-    let token_id = required_value_string(
-        verify_object,
-        "id",
-        "Cloudflare API token verification",
-    )?;
-    let verified_status = required_value_string(
-        verify_object,
-        "status",
-        "Cloudflare API token verification",
-    )?;
+    let token_id = required_value_string(verify_object, "id", "Cloudflare API token verification")?;
+    let verified_status =
+        required_value_string(verify_object, "status", "Cloudflare API token verification")?;
 
     let detail_response = client
         .get(format!("{API_ROOT}/user/tokens/{token_id}"))
@@ -284,9 +277,7 @@ pub async fn list_accounts(api_token: &str) -> Result<Vec<CloudflareAccount>, St
     ))
 }
 
-pub async fn list_membership_accounts(
-    api_token: &str,
-) -> Result<Vec<CloudflareAccount>, String> {
+pub async fn list_membership_accounts(api_token: &str) -> Result<Vec<CloudflareAccount>, String> {
     let client = authorized_client(api_token)?;
     let mut accounts = Vec::new();
     for page in 1..=MAX_API_PAGES {
@@ -360,7 +351,11 @@ pub async fn list_worker_domains(
         .into_iter()
         .map(worker_domain_from_value)
         .collect::<Result<Vec<_>, _>>()?;
-    domains.sort_by(|left, right| left.hostname.cmp(&right.hostname).then(left.id.cmp(&right.id)));
+    domains.sort_by(|left, right| {
+        left.hostname
+            .cmp(&right.hostname)
+            .then(left.id.cmp(&right.id))
+    });
     Ok(domains)
 }
 
@@ -449,7 +444,11 @@ pub async fn list_worker_routes(
         .into_iter()
         .map(worker_route_from_value)
         .collect::<Result<Vec<_>, _>>()?;
-    routes.sort_by(|left, right| left.pattern.cmp(&right.pattern).then(left.id.cmp(&right.id)));
+    routes.sort_by(|left, right| {
+        left.pattern
+            .cmp(&right.pattern)
+            .then(left.id.cmp(&right.id))
+    });
     Ok(routes)
 }
 
@@ -1401,9 +1400,7 @@ fn api_token_policy_from_value(value: &Value) -> Result<CloudflareApiTokenPolicy
                 .and_then(Value::as_str)
                 .filter(|name| !name.trim().is_empty())
                 .map(ToOwned::to_owned)
-                .ok_or_else(|| {
-                    "Cloudflare API token permission group name is required".to_owned()
-                })
+                .ok_or_else(|| "Cloudflare API token permission group name is required".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
     let resources = object
@@ -2118,7 +2115,10 @@ mod tests {
             "script": "sing-box-credentials-windows"
         }))
         .unwrap();
-        assert_eq!(route.script.as_deref(), Some("sing-box-credentials-windows"));
+        assert_eq!(
+            route.script.as_deref(),
+            Some("sing-box-credentials-windows")
+        );
 
         let token = access_service_token_from_value(serde_json::json!({
             "id": "service-token-1",
