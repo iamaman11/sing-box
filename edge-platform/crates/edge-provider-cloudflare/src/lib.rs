@@ -191,6 +191,73 @@ pub struct CloudflareDnsRecordSummary {
     pub proxied: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareApiTokenPolicy {
+    pub effect: String,
+    pub permission_groups: Vec<String>,
+    pub resources: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareApiTokenMetadata {
+    pub id: String,
+    pub name: Option<String>,
+    pub status: String,
+    pub policies: Vec<CloudflareApiTokenPolicy>,
+}
+
+pub async fn current_api_token_metadata(
+    api_token: &str,
+) -> Result<CloudflareApiTokenMetadata, String> {
+    let client = authorized_client(api_token)?;
+    let verify_response = client
+        .get(format!("{API_ROOT}/user/tokens/verify"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to verify Cloudflare API token: {err}"))?;
+    let verify: ApiEnvelope<Value> = parse_success_json(verify_response).await?;
+    let verify_object = verify
+        .result
+        .as_object()
+        .ok_or_else(|| "Cloudflare API token verification result must be an object".to_owned())?;
+    let token_id = required_value_string(
+        verify_object,
+        "id",
+        "Cloudflare API token verification",
+    )?;
+    let verified_status = required_value_string(
+        verify_object,
+        "status",
+        "Cloudflare API token verification",
+    )?;
+
+    let detail_response = client
+        .get(format!("{API_ROOT}/user/tokens/{token_id}"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to read current Cloudflare API token metadata: {err}"))?;
+    let detail: ApiEnvelope<Value> = parse_success_json(detail_response).await?;
+    let object = detail
+        .result
+        .as_object()
+        .ok_or_else(|| "Cloudflare API token metadata result must be an object".to_owned())?;
+    let status = optional_value_string(object, "status").unwrap_or(verified_status);
+    let policies = object
+        .get("policies")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Cloudflare API token metadata policies must be an array".to_owned())?
+        .iter()
+        .map(api_token_policy_from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CloudflareApiTokenMetadata {
+        id: token_id,
+        name: optional_value_string(object, "name"),
+        status,
+        policies,
+    })
+}
+
 pub async fn list_accounts(api_token: &str) -> Result<Vec<CloudflareAccount>, String> {
     let client = authorized_client(api_token)?;
     let mut accounts = Vec::new();
@@ -1275,6 +1342,38 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             .get("decision")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+    })
+}
+
+fn api_token_policy_from_value(value: &Value) -> Result<CloudflareApiTokenPolicy, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare API token policy must be an object".to_owned())?;
+    let permission_groups = object
+        .get("permission_groups")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Cloudflare API token permission_groups must be an array".to_owned())?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_object()
+                .and_then(|group| group.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    "Cloudflare API token permission group name is required".to_owned()
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let resources = object
+        .get("resources")
+        .cloned()
+        .ok_or_else(|| "Cloudflare API token policy resources are required".to_owned())?;
+    Ok(CloudflareApiTokenPolicy {
+        effect: required_value_string(object, "effect", "Cloudflare API token policy")?,
+        permission_groups,
+        resources,
     })
 }
 
