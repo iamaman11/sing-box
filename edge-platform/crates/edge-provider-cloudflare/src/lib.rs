@@ -251,32 +251,6 @@ pub async fn current_api_token_metadata(
     })
 }
 
-pub async fn list_accounts(api_token: &str) -> Result<Vec<CloudflareAccount>, String> {
-    let client = authorized_client(api_token)?;
-    let mut accounts = Vec::new();
-    for page in 1..=MAX_API_PAGES {
-        let response = client
-            .get(format!("{API_ROOT}/accounts"))
-            .query(&[("page", page.to_string()), ("per_page", "50".to_owned())])
-            .send()
-            .await
-            .map_err(|err| format!("failed to list Cloudflare accounts: {err}"))?;
-        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-        let values = value_array(payload.result, "Cloudflare accounts")?;
-        let page_count = values.len();
-        for value in values {
-            accounts.push(account_from_value(value)?);
-        }
-        if page_count < 50 {
-            accounts.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-            return Ok(accounts);
-        }
-    }
-    Err(format!(
-        "Cloudflare account pagination exceeded {MAX_API_PAGES} pages"
-    ))
-}
-
 pub async fn list_membership_accounts(api_token: &str) -> Result<Vec<CloudflareAccount>, String> {
     let client = authorized_client(api_token)?;
     let mut accounts = Vec::new();
