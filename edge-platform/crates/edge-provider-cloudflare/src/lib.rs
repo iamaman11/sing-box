@@ -154,6 +154,7 @@ pub struct CloudflareAccessPolicy {
     pub name: String,
     pub decision: Option<String>,
     pub include_service_token_ids: Vec<String>,
+    pub has_extra_rules: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1718,9 +1719,11 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
                         .get("worker_id")
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned),
-                    has_overrides: destination.get("uri").is_some()
-                        || destination.get("hostname").is_some()
-                        || destination.get("cidr").is_some(),
+                    has_overrides: match destination.get("overrides") {
+                        None | Some(Value::Null) => false,
+                        Some(Value::Array(values)) => !values.is_empty(),
+                        Some(_) => true,
+                    },
                 })
                 .collect::<Vec<_>>()
         })
@@ -1737,20 +1740,43 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare Access policy must be an object".to_owned())?;
-    let mut include_service_token_ids = object
+    let include = object
         .get("include")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_object)
-        .filter_map(|entry| entry.get("service_token"))
-        .filter_map(Value::as_object)
-        .filter_map(|service_token| service_token.get("token_id"))
-        .filter_map(Value::as_str)
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
+        .cloned()
+        .unwrap_or_default();
+    let mut include_service_token_ids = Vec::new();
+    let mut include_other_rule_count = 0usize;
+    for entry in include {
+        let Some(entry) = entry.as_object() else {
+            include_other_rule_count += 1;
+            continue;
+        };
+        match entry.get("service_token") {
+            Some(Value::Object(service_token)) if entry.len() == 1 => {
+                if let Some(token_id) = service_token
+                    .get("token_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                {
+                    include_service_token_ids.push(token_id.to_owned());
+                } else {
+                    include_other_rule_count += 1;
+                }
+            }
+            _ => include_other_rule_count += 1,
+        }
+    }
     include_service_token_ids.sort();
     include_service_token_ids.dedup();
+    let require_count = object
+        .get("require")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let exclude_count = object
+        .get("exclude")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     Ok(CloudflareAccessPolicy {
         id: required_value_string(object, "id", "Cloudflare Access policy")?,
         name: required_value_string(object, "name", "Cloudflare Access policy")?,
@@ -1759,6 +1785,7 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
         include_service_token_ids,
+        has_extra_rules: include_other_rule_count != 0 || require_count != 0 || exclude_count != 0,
     })
 }
 
