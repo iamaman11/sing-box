@@ -509,13 +509,16 @@ jobs:
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}
+          CLOUDFLARE_TARGET_ACCOUNT_ID: ${{ vars.CLOUDFLARE_TARGET_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           result="${RUNNER_TEMP}/cloudflare-phase0-inventory.txt"
           {
             echo '### Cloudflare Phase 0 read-only inventory'
             echo
-            echo 'Typed Rust owns COMPLETE/BLOCKED/failure semantics and zero-mutation safety. The workflow only invokes the bounded GET-only owner and publishes its secret-safe text evidence.'
+            echo 'Typed Rust owns COMPLETE/BLOCKED/failure semantics and zero-mutation safety. Read authority is split by final responsibility: historical transition token, dedicated sing-box account control token, and shared-zone DNS token. The workflow only invokes the bounded GET-only owner and publishes secret-safe text evidence.'
             echo
             echo '~~~text'
           } >> "${GITHUB_STEP_SUMMARY}"
