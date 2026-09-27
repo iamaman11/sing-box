@@ -93,6 +93,7 @@ elif endpoint == "repos/iamaman11/sing-box/releases" and method == "POST":
     release = {
         "id": state["next_release_id"],
         "tag_name": fields["tag_name"],
+        "target_commitish": fields["target_commitish"],
         "name": fields["name"],
         "draft": fields["draft"] == "true",
         "prerelease": fields["prerelease"] == "true",
@@ -267,7 +268,7 @@ def run_publisher(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def scenario(existing_draft: bool) -> None:
+def scenario(existing_draft: bool, mismatched_target: bool = False) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         fake_bin = root / "bin"
@@ -286,6 +287,7 @@ def scenario(existing_draft: bool) -> None:
             release = {
                 "id": 392256134,
                 "tag_name": tag,
+                "target_commitish": "f" * 40 if mismatched_target else accepted,
                 "name": "Edge Platform release test",
                 "draft": True,
                 "prerelease": False,
@@ -306,10 +308,19 @@ def scenario(existing_draft: bool) -> None:
         env["FAKE_GITHUB_STATE"] = str(state_path)
         env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
 
+        if mismatched_target:
+            try:
+                run_publisher(env)
+            except subprocess.CalledProcessError as err:
+                assert "target_commitish does not match accepted revision" in err.stderr
+                return
+            raise AssertionError("publisher accepted mismatched target_commitish")
+
         first = run_publisher(env)
         state = json.loads(state_path.read_text())
         assert state["release"]["draft"] is False
         assert state["release"]["prerelease"] is False
+        assert state["release"]["target_commitish"] == accepted
         assert len(state["release"]["assets"]) == 13
         assert f"release_id={state['release']['id']}" in first.stdout
         assert "durable_assets=13" in first.stdout
@@ -318,6 +329,7 @@ def scenario(existing_draft: bool) -> None:
         second = run_publisher(env)
         state_again = json.loads(state_path.read_text())
         assert state_again["release"]["draft"] is False
+        assert state_again["release"]["target_commitish"] == accepted
         assert len(state_again["release"]["assets"]) == 13
         assert {asset["name"]: asset["id"] for asset in state_again["release"]["assets"]} == asset_ids
         assert "durable_assets=13" in second.stdout
@@ -326,6 +338,7 @@ def scenario(existing_draft: bool) -> None:
 def main() -> None:
     scenario(existing_draft=True)
     scenario(existing_draft=False)
+    scenario(existing_draft=True, mismatched_target=True)
     print("durable release publisher tests: OK")
 
 
