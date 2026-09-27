@@ -558,8 +558,6 @@ pub async fn create_worker_access_application(
     account_id: &str,
     name: &str,
     worker_id: &str,
-    policy_name: &str,
-    service_token_id: &str,
 ) -> Result<(), String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Access application name", name)?;
@@ -575,15 +573,6 @@ pub async fn create_worker_access_application(
             "destinations": [{
                 "type": "worker",
                 "worker_id": worker_id
-            }],
-            "policies": [{
-                "name": policy_name,
-                "decision": "non_identity",
-                "include": [{
-                    "service_token": {
-                        "token_id": service_token_id
-                    }
-                }]
             }]
         }))
         .send()
