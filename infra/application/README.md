@@ -1,131 +1,111 @@
 # VM application desired state
 
-This directory is the Git authority for VM application composition. It does not contain provider
-instance UUIDs, provider IPs, runtime credentials, or Cloudflare node tokens.
+## Authority
 
-The application lifecycle is separate from the generic Vultr VM lifecycle:
+Canonical production desired state is:
 
-```text
-Git desired application state
-        |
-        v
-edge-controller-core::application_lifecycle
-        |
-        v
-edge-controller application-lifecycle
-        |
-        +-- accepted Vultr lifecycle observation
-        +-- accepted strict SSH host-certificate trust
-        |
-        v
-VM edge-agent typed RPC
-        |
-        v
-Docker Compose application bundle
-```
+`infra/production/production.textproto`
 
-## Legacy Schema 1 — frozen JSON migration debt
+backed by `ProductionDesiredState` protobuf.
 
-The existing disposable acceptance specs are strict JSON objects. They are
-retained only as frozen migration debt and must not be used as the template for
-new production desired state:
+Production does not use a graph of JSON sub-specs as authority.
 
-
-```json
-{
-  "schema": 1,
-  "environment": "production",
-  "vultr_spec_path": "infra/vultr/<canonical-vm-spec>.json",
-  "machine_id": "<logical-machine-id>",
-  "application_profile": "<profile-declared-by-machine>",
-  "bundle_root": "win/vultr-waw/stack",
-  "runtime_env_required": true,
-  "bootstrap_mode": "base"
-}
-```
-
-`bootstrap_mode` is currently one of `base`, `tunnel`, or `full`. Mesh is deliberately not
-part of this contract yet; it is added only after this GitHub-controlled deployment path is
-accepted.
-
-The exact Linux `edge-agent` artifact is not named by a mutable path in desired state. Production
-automation builds it from the exact Git revision, computes SHA-256, creates an ephemeral artifact
-manifest bound to that revision, verifies the local digest, verifies the uploaded digest, and
-re-observes the installed digest after service restart.
-
-`.env.runtime` must never be present under `bundle_root` in Git. When a composition needs runtime
-secret material, the caller provides a private file through
-`EDGE_APPLICATION_RUNTIME_ENV_PATH`. Its bytes participate in the exact bundle digest and are sent
-to `edge-agent` as a sensitive `0600` bundle file.
-
-The generic `VM Application Lifecycle` GitHub workflow intentionally uses only the
-`production-vultr` environment and does not source application or Cloudflare secrets. Therefore a
-secret-requiring spec is observable/plannable there but cannot be mutated there without a separate,
-narrow orchestration authority. Line-specific orchestration (for example Line 3) must inject its
-runtime secret only for the job that actually requires it.
-
-GitHub-hosted runners have ephemeral egress IPs. SSH transport is therefore a temporary
-provider-lifecycle lease, not application authority. The workflow discovers its runner IPv4 and
-invokes the existing Vultr support-resource boundary:
+Current production ownership:
 
 ```text
-vultr-lifecycle acquire-access
-application-lifecycle <operation>
-vultr-lifecycle release-access   # guaranteed EXIT/finally path
+Git production.textproto
+        |
+        v
+edge-orchestrator
+        |
+        +-- Vultr provider lifecycle
+        +-- shared alegria.by DNS lifecycle
+        +-- Cloudflare Mesh / production composition
+        |
+        v
+strict SSH local forward
+        |
+        v
+edge-agent (loopback)
+        |
+        v
+Docker Compose application runtime
 ```
 
-`acquire-access` is allowed to reconcile only firewall-only `UPDATE_IN_PLACE` drift. It cannot
-create, replace, destroy, resize, or retag a VM. `release-access` removes only the exact dynamic
-`@controller-ipv4` rule for the current runner, preserves permanent service rules, uses one-shot
-DELETE plus exact re-observation, and must prove the /32 absent. A cleanup failure fails the GitHub
-job. Application `plan`/verification remain free of application-state mutation; the transport
-lease is separately reported as provider support-resource authority.
+Issue #169 defines the accepted migration of application-exclusive Cloudflare account-scoped
+resources into the dedicated `sing-box` account and the new credential-delivery model.
 
-## Operations
+## Application/runtime ownership
 
-```text
-application-lifecycle plan
-application-lifecycle apply
-application-lifecycle verify
-application-lifecycle upgrade
-application-lifecycle rollback-plan
-application-lifecycle rollback-apply
-```
+The VM `edge-agent`:
+- receives an exact accepted application artifact/bundle;
+- owns bounded local apply/rollback/observation;
+- observes Docker/runtime/network state;
+- does not own provider desired state;
+- does not select the production ReleaseSet;
+- does not expose arbitrary shell/filesystem/Docker mutation APIs.
 
-`apply` creates the first published application release and refuses to overwrite an existing
-release; `upgrade` requires an existing published release. Successful convergence is a NOOP on the
-next observation.
+The orchestrator owns provider/application composition and exact lifecycle sequencing.
 
-Rollback is digest-authorized and re-observed. The VM keeps exactly one previous application bundle
-and one previous `edge-agent` artifact as recovery material. This is runtime recovery metadata, not
-a second desired-state database.
+## Runtime secrets
 
-No canonical production JSON will be introduced. Slice 2 production desired
-state is one human-authored protobuf text-format composition at
-`infra/production/production.textproto`, validated against
-`ProductionDesiredState` and compiled to canonical protobuf bytes for machine
-use. Machine, VPC, application, DNS, Mesh and public firewall policy are fields
-of that single production composition rather than a graph of production
-sub-spec paths. Exact OCI identities remain ReleaseSet authority rather than
-being duplicated in desired state.
+Application secret values are never Git desired state.
 
-The Rust production semantic owner converts the protobuf composition directly
-into the existing machine/VPC/application/DNS/Mesh domain types, so production
-does not need intermediate JSON files. Existing disposable JSON specs remain
-frozen migration debt and may be migrated when their legacy path is touched.
+Historical/current compatibility code may materialize `.env.runtime` for the container stack.
+That file is a generated consumer artifact and must not become a second durable source of truth.
+
+Accepted target after #169:
+- typed local active/candidate credential state;
+- fresh generations, not imported legacy Windows credentials;
+- VM/Windows receive separate credential projections;
+- generated `.env.runtime` and sing-box JSON are reproducible from typed policy + typed local
+  secret state;
+- missing desired production generation fails closed instead of silently generating a new identity.
+
+Secret lifecycle classes remain separate: client tunnel credentials, server identity, Line 2
+authentication, Cloudflare Access machine identities, Mesh node token and provider API credentials
+do not rotate as one monolithic bundle unless their actual lifecycle requires it.
+
+## VM control transport
+
+Canonical production uses strict SSH host-certificate trust and a bounded local forward to
+loopback `edge-agent`.
+
+GitHub-hosted runner egress support access is a temporary provider-lifecycle lease and is cleaned
+up/re-observed after use.
+
+The target is not a new remote shell or second control daemon.
+
+## Application operations
+
+Lower-level typed application operations remain implementation boundaries for:
+- materialize/apply;
+- verify;
+- upgrade;
+- rollback.
+
+Normal production operation converges toward the single `/production` composition surface rather
+than exposing independent production-facing DNS/Mesh/Zero Trust owners.
+
+## Rollback
+
+Keep one previous accepted application release/artifact identity for bounded runtime rollback.
+
+Credential rollback is separate from release rollback. Issue #169 uses a fixed A/B credential
+buffer so a previous accepted credential generation remains available for a bounded grace/recovery
+period without introducing a secret-history database.
+
+## Legacy JSON
+
+Files under `infra/application/*.json`, `infra/cloudflare/*.json` and similar acceptance paths
+are frozen migration debt unless an active disposable/legacy test still consumes them.
+
+Rules:
+- no new production authority in JSON;
+- migrate/delete a legacy JSON contract when its owning path is touched;
+- never replace one internal JSON contract with another internal JSON contract.
 
 ## Disposable acceptance
 
-The permanent workflow exposes one fixed acceptance command:
-
-```text
-/application acceptance
-```
-
-It is not a general parameterized deployment entry point. It creates only the canonical
-`lifecycle-acceptance-1` disposable VM, proves first application apply, repeated NOOP, exact
-verification, configuration-only upgrade, digest-authorized rollback, verified release of the
-ephemeral runner SSH `/32`, exact VM destruction, support-resource cleanup, and final
-`CREATE` plan. Acceptance uses generated non-account runtime material and no Cloudflare account
-secret. Account-backed Line-specific acceptance remains a later, narrower orchestration layer.
-
+Disposable acceptance may keep legacy JSON inputs until its path is deliberately migrated.
+It must remain isolated from permanent production state and must leave zero leaked resources.

@@ -1,61 +1,61 @@
-# Vultr WAW Stack
+# Vultr WAW application stack
 
 ## Current role
 
-This directory contains only canonical Linux host/bootstrap and application
-bundle inputs for the Warsaw edge VM.
+This directory contains canonical Linux host/bootstrap and application bundle inputs for the Warsaw
+production edge VM.
 
-Server lifecycle authority is intentionally outside Windows:
-
-- `.github/workflows/vultr-lifecycle.yml` owns VM create, observe, actions,
-  destroy-plan, destroy-apply, and support-resource cleanup.
-- `.github/workflows/vm-application-lifecycle.yml` owns exact edge-agent and
-  application bundle apply, verify, upgrade, and rollback.
-- `edge-provider-vultr` is the only Vultr HTTP/provider adapter.
-- Windows automation owns only the Windows-local controller, configuration,
-  selectors, and local sing-box runtime.
+Server/provider lifecycle authority is outside Windows:
+- `edge-orchestrator` owns production composition;
+- `edge-provider-vultr` is the only Vultr API adapter;
+- GitHub workflows provide owner/environment authorization and invoke exact typed owners;
+- Windows owns only Windows-local runtime/configuration.
 
 There is no supported direct PowerShell VM create/delete/SSH deployment path.
 
-## Inputs kept here
+## Stack
 
-- `cloud-init.yaml` — minimal host preparation used by the typed Vultr
-  lifecycle.
-- `stack/` — application bundle source:
-  - Compose definition;
-  - typed bootstrap script;
-  - sing-box configuration templates;
-  - Dockerfiles used only by accepted-main CI to build immutable images.
+`stack/docker-compose.yml` currently defines:
+- `warp-egress`;
+- `line1-gateway` (tunnel profile);
+- `line2-proxy`;
+- `cloudflare-mesh` (mesh profile).
 
-Production VM bootstrap never builds application images. Accepted-main CI
-publishes exact image digests; application lifecycle injects those non-secret
-digest references as `.images.env`; the VM only pulls and runs those exact
-digests.
+Accepted-main CI publishes exact immutable image identities. Production pulls exact digests and does
+not build project images on the VM.
 
 ## Control flow
 
 ```text
-accepted main
-  -> Edge Platform CI verify
-  -> one immutable release set
-       edge-controller SHA-256
-       edge-agent SHA-256
-       edge-gateway image digest
-       warp-egress image digest
-  -> GitHub Vultr/Application lifecycle
-  -> strict SSH transport
-  -> edge-agent typed apply/bootstrap
-  -> observed readiness
+protected main
+  -> exact-head CI / candidate acceptance
+  -> immutable ReleaseSet
+  -> edge-orchestrator
+       -> Vultr lifecycle
+       -> strict SSH local-forward
+       -> loopback edge-agent
+       -> exact application apply/verify/rollback
+       -> Cloudflare/DNS production composition
 ```
 
-VM destruction is only:
+## Runtime secrets
 
-```text
-vultr-lifecycle destroy-plan
-  -> exact digest authority
-  -> vultr-lifecycle destroy-apply
-  -> observed ABSENT
-```
+Do not commit `.env.runtime` or rendered credential-bearing config.
 
-Do not reintroduce direct Windows Vultr API mutation, TOFU SSH enrollment,
-runtime Docker builds, mutable image tags, or an external VM reaper.
+Issue #169 owns the transition to fresh typed credential generations delivered through isolated
+VM/Windows Cloudflare projections. Generated runtime env/JSON remains a consumer artifact.
+
+Do not reintroduce:
+- legacy credential import;
+- direct Windows provider credentials;
+- TOFU SSH;
+- runtime Docker builds;
+- mutable image tags;
+- generic remote shell/agent APIs.
+
+## Destruction / cleanup
+
+Destructive provider operations remain exact-plan/digest authorized and must re-observe absence.
+
+A successful full lifecycle must prove support-resource cleanup and zero leaked disposable
+resources.
