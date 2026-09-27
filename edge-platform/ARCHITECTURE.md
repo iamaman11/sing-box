@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the stable ownership/invariant model for the current project.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Some #169 Cloudflare convergence and deletion-first cleanup steps are not implemented yet; provider reality must always be re-observed before claiming migration complete.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 owns the bounded Cloudflare/credential convergence vertical. Issue #58 is a closed
