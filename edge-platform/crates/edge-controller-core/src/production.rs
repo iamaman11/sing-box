@@ -386,10 +386,7 @@ fn validate_root_identity(root: &ProductionDesiredState) -> Result<(), Productio
     Ok(())
 }
 
-fn validate_cloudflare_account_id(
-    label: &str,
-    value: &str,
-) -> Result<(), ProductionSpecError> {
+fn validate_cloudflare_account_id(label: &str, value: &str) -> Result<(), ProductionSpecError> {
     if value.len() != 32
         || !value
             .bytes()
@@ -560,7 +557,10 @@ mod tests {
             "4426df1449e417511bc7697d60b7f62f"
         );
         assert_eq!(
-            composition.cloudflare.migration_target_account_id.as_deref(),
+            composition
+                .cloudflare
+                .migration_target_account_id
+                .as_deref(),
             Some("6be6e4b6340822dbeb18cb6c2f09c660")
         );
         assert_eq!(
@@ -590,8 +590,7 @@ mod tests {
     #[test]
     fn production_authority_rejects_legacy_mesh_account_owner() {
         let mut desired = canonical();
-        desired.mesh.as_mut().unwrap().account_id =
-            "4426df1449e417511bc7697d60b7f62f".to_owned();
+        desired.mesh.as_mut().unwrap().account_id = "4426df1449e417511bc7697d60b7f62f".to_owned();
         assert!(
             ProductionComposition::from_proto(&desired)
                 .unwrap_err()
