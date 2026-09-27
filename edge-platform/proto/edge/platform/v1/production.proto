@@ -81,6 +81,26 @@ message ProductionCloudflare {
   // Transitional typed migration intent only. Empty after the authority flip;
   // it is never an active provider owner.
   string migration_target_account_id = 2;
+
+  // Phase 2 credential-delivery isolation desired state. This plane is created
+  // only in migration_target_account_id and does not make that account active.
+  ProductionCredentialPlane credential_plane = 3;
+}
+
+message ProductionCredentialPlane {
+  string access_organization_name = 1;
+  string access_auth_domain = 2;
+  string windows_worker_name = 3;
+  string vm_worker_name = 4;
+  string windows_access_application_name = 5;
+  string vm_access_application_name = 6;
+  string windows_access_policy_name = 7;
+  string vm_access_policy_name = 8;
+  string windows_service_token_name = 9;
+  string vm_service_token_name = 10;
+  string dummy_payload_schema = 11;
+  string worker_compatibility_date = 12;
+  string proof_token_duration = 13;
 }
 
 message ProductionDns {

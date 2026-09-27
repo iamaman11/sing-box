@@ -10,17 +10,37 @@ use edge_shared_types::{
     ProductionBootstrapMode, ProductionDesiredState, ProductionIpFamily,
     ProductionTransportProtocol, canonical_production_desired_state, production_machine,
 };
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 2;
+pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 3;
 pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str = "infra/production/production.textproto";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProductionCredentialPlaneOwnership {
+    pub target_account_id: String,
+    pub access_organization_name: String,
+    pub access_auth_domain: String,
+    pub windows_worker_name: String,
+    pub vm_worker_name: String,
+    pub windows_access_application_name: String,
+    pub vm_access_application_name: String,
+    pub windows_access_policy_name: String,
+    pub vm_access_policy_name: String,
+    pub windows_service_token_name: String,
+    pub vm_service_token_name: String,
+    pub dummy_payload_schema: String,
+    pub worker_compatibility_date: String,
+    pub proof_token_duration: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProductionCloudflareOwnership {
     pub active_account_id: String,
     pub migration_target_account_id: Option<String>,
+    pub credential_plane: ProductionCredentialPlaneOwnership,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,16 +240,120 @@ impl ProductionComposition {
             }
             Some(cloudflare.migration_target_account_id.clone())
         };
+        let credential_plane = cloudflare
+            .credential_plane
+            .as_ref()
+            .ok_or_else(|| validation("cloudflare.credential_plane is required in production schema v3"))?;
+        let target_account_id = migration_target_account_id
+            .clone()
+            .ok_or_else(|| validation("credential plane requires cloudflare.migration_target_account_id"))?;
+        validate_identifier(
+            "cloudflare.credential_plane.access_organization_name",
+            &credential_plane.access_organization_name,
+        )?;
+        validate_dns_name(
+            "cloudflare.credential_plane.access_auth_domain",
+            &credential_plane.access_auth_domain,
+        )?;
+        if !credential_plane
+            .access_auth_domain
+            .ends_with(".cloudflareaccess.com")
+        {
+            return Err(validation(
+                "credential-plane Access auth domain must end in .cloudflareaccess.com",
+            ));
+        }
+        for (label, value) in [
+            ("windows_worker_name", credential_plane.windows_worker_name.as_str()),
+            ("vm_worker_name", credential_plane.vm_worker_name.as_str()),
+            (
+                "windows_access_application_name",
+                credential_plane.windows_access_application_name.as_str(),
+            ),
+            (
+                "vm_access_application_name",
+                credential_plane.vm_access_application_name.as_str(),
+            ),
+            (
+                "windows_access_policy_name",
+                credential_plane.windows_access_policy_name.as_str(),
+            ),
+            (
+                "vm_access_policy_name",
+                credential_plane.vm_access_policy_name.as_str(),
+            ),
+            (
+                "windows_service_token_name",
+                credential_plane.windows_service_token_name.as_str(),
+            ),
+            (
+                "vm_service_token_name",
+                credential_plane.vm_service_token_name.as_str(),
+            ),
+            (
+                "dummy_payload_schema",
+                credential_plane.dummy_payload_schema.as_str(),
+            ),
+        ] {
+            validate_identifier(&format!("cloudflare.credential_plane.{label}"), value)?;
+        }
+        if credential_plane.windows_worker_name == credential_plane.vm_worker_name
+            || credential_plane.windows_access_application_name
+                == credential_plane.vm_access_application_name
+            || credential_plane.windows_access_policy_name == credential_plane.vm_access_policy_name
+            || credential_plane.windows_service_token_name == credential_plane.vm_service_token_name
+        {
+            return Err(validation(
+                "credential-plane Windows and VM identities must be physically distinct",
+            ));
+        }
+        let compatibility_date = credential_plane.worker_compatibility_date.as_bytes();
+        if compatibility_date.len() != 10
+            || compatibility_date[4] != b'-'
+            || compatibility_date[7] != b'-'
+            || compatibility_date
+                .iter()
+                .enumerate()
+                .any(|(index, byte)| index != 4 && index != 7 && !byte.is_ascii_digit())
+        {
+            return Err(validation(
+                "credential-plane worker_compatibility_date must be YYYY-MM-DD",
+            ));
+        }
+        if credential_plane.proof_token_duration != "1h" {
+            return Err(validation(
+                "Phase 2 proof service tokens must have exact 1h duration",
+            ));
+        }
+
         validate_cloudflare_account_id("dns.account_id", &dns.account_id)?;
         if !mesh.account_id.is_empty() {
             return Err(validation(
-                "mesh.account_id is deprecated in production schema v2; use cloudflare.active_account_id",
+                "mesh.account_id is deprecated in production schema v3; use cloudflare.active_account_id",
             ));
         }
 
         let cloudflare = ProductionCloudflareOwnership {
             active_account_id: cloudflare.active_account_id.clone(),
             migration_target_account_id,
+            credential_plane: ProductionCredentialPlaneOwnership {
+                target_account_id,
+                access_organization_name: credential_plane.access_organization_name.clone(),
+                access_auth_domain: credential_plane.access_auth_domain.clone(),
+                windows_worker_name: credential_plane.windows_worker_name.clone(),
+                vm_worker_name: credential_plane.vm_worker_name.clone(),
+                windows_access_application_name: credential_plane
+                    .windows_access_application_name
+                    .clone(),
+                vm_access_application_name: credential_plane.vm_access_application_name.clone(),
+                windows_access_policy_name: credential_plane.windows_access_policy_name.clone(),
+                vm_access_policy_name: credential_plane.vm_access_policy_name.clone(),
+                windows_service_token_name: credential_plane.windows_service_token_name.clone(),
+                vm_service_token_name: credential_plane.vm_service_token_name.clone(),
+                dummy_payload_schema: credential_plane.dummy_payload_schema.clone(),
+                worker_compatibility_date: credential_plane.worker_compatibility_date.clone(),
+                proof_token_duration: credential_plane.proof_token_duration.clone(),
+            },
         };
         let shared_dns_account_id = dns.account_id.clone();
 
@@ -571,6 +695,22 @@ mod tests {
             composition.mesh.account_id,
             composition.cloudflare.active_account_id
         );
+        assert_eq!(
+            composition.cloudflare.credential_plane.target_account_id,
+            "6be6e4b6340822dbeb18cb6c2f09c660"
+        );
+        assert_eq!(
+            composition.cloudflare.credential_plane.windows_worker_name,
+            "sing-box-credentials-windows"
+        );
+        assert_eq!(
+            composition.cloudflare.credential_plane.vm_worker_name,
+            "sing-box-credentials-vm"
+        );
+        assert_eq!(
+            composition.cloudflare.credential_plane.dummy_payload_schema,
+            "sing-box.credentials.dummy.v1"
+        );
         assert_eq!(composition.machines.machines.len(), 1);
         assert_eq!(composition.firewall_rules.len(), 11);
     }
@@ -633,6 +773,37 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("dns.account_id")
+        );
+    }
+
+    #[test]
+    fn production_authority_rejects_missing_credential_plane() {
+        let mut desired = canonical();
+        desired.cloudflare.as_mut().unwrap().credential_plane = None;
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("credential_plane is required")
+        );
+    }
+
+    #[test]
+    fn production_authority_rejects_credential_plane_identity_aliasing() {
+        let mut desired = canonical();
+        let credential_plane = desired
+            .cloudflare
+            .as_mut()
+            .unwrap()
+            .credential_plane
+            .as_mut()
+            .unwrap();
+        credential_plane.vm_worker_name = credential_plane.windows_worker_name.clone();
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("physically distinct")
         );
     }
 

@@ -8,6 +8,7 @@ VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 ROOT_OPS = WORKFLOWS / "vultr-root-ops.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
+CREDENTIAL_PLANE = WORKFLOWS / "cloudflare-credential-plane.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
 MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
@@ -39,6 +40,7 @@ def main() -> None:
     root_ops = ROOT_OPS.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
+    credential_plane = CREDENTIAL_PLANE.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
     mesh = MESH.read_text(encoding="utf-8")
@@ -72,6 +74,7 @@ def main() -> None:
     require("workflow_call:" in root_ops, "Vultr root ops must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
+    require("workflow_call:" in credential_plane, "credential plane must be reusable")
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")
@@ -80,6 +83,7 @@ def main() -> None:
     require("issue_comment:" not in root_ops, "Vultr root ops must not listen to comments")
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
+    require("issue_comment:" not in credential_plane, "credential-plane backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
     require("issue_comment:" not in mesh, "Mesh backend must not listen to comments")
@@ -113,6 +117,11 @@ def main() -> None:
         "router must call the Zero Trust backend",
     )
     require(
+        "uses: ./.github/workflows/cloudflare-credential-plane.yml" in router
+        and "startsWith(github.event.comment.body, '/credential-plane ')" in router,
+        "router must expose credential-plane only through the sole owner-gated listener",
+    )
+    require(
         "uses: ./.github/workflows/vultr-vpc-lifecycle.yml" in router,
         "router must call the VPC backend",
     )
@@ -142,6 +151,7 @@ def main() -> None:
         ("application", application),
         ("vultr", vultr),
         ("zero-trust", zero_trust),
+        ("credential-plane", credential_plane),
         ("vpc", vpc),
         ("dns", dns),
         ("mesh", mesh),
@@ -175,6 +185,19 @@ def main() -> None:
             "\n  verify:\n" not in backend,
             f"{name} backend must resolve its immutable ReleaseSet only in the actual command job",
         )
+
+    require(
+        'allowed = {"inventory", "plan", "converge", "verify", "prove"}' in credential_plane
+        and 'tokens[0] != "/credential-plane"' in credential_plane
+        and '"${bin}" cloudflare-credential-plane "${operation}"' in credential_plane
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in credential_plane
+        and "jq " not in credential_plane
+        and "VULTR_API_KEY" not in credential_plane
+        and "VULTR_SSH_PRIVATE_KEY" not in credential_plane
+        and "CLOUDFLARE_API_TOKEN" not in credential_plane
+        and "CLOUDFLARE_DNS_TOKEN" not in credential_plane,
+        "credential-plane workflow must remain a thin target-account-only transport with no shell lifecycle semantics",
+    )
 
     require(
         application.count("group: vultr-control-plane-production") == 5,

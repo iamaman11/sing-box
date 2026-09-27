@@ -12,6 +12,7 @@ on:
       - "infra/LOCAL_AGENT_EXECUTION_CONTRACT.md"
       - "win/**"
       - ".github/workflows/edge-platform-ci.yml"
+      - ".github/workflows/cloudflare-credential-plane.yml"
       - ".github/workflows/vultr-lifecycle.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
 
