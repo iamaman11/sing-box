@@ -145,6 +145,7 @@ pub struct CloudflareAccessApplication {
     pub id: String,
     pub name: String,
     pub app_type: String,
+    pub service_auth_401_redirect: Option<bool>,
     pub destinations: Vec<CloudflareAccessDestination>,
 }
 
@@ -1702,14 +1703,15 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare Access application must be an object".to_owned())?;
-    let destinations = object
-        .get("destinations")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_object)
-                .map(|destination| CloudflareAccessDestination {
+    let destinations = match object.get("destinations") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                let destination = value.as_object().ok_or_else(|| {
+                    "Cloudflare Access destination must be an object".to_owned()
+                })?;
+                Ok(CloudflareAccessDestination {
                     destination_type: destination
                         .get("type")
                         .and_then(Value::as_str)
@@ -1725,13 +1727,19 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
                         Some(_) => true,
                     },
                 })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        Some(_) => {
+            return Err("Cloudflare Access application destinations must be an array".to_owned());
+        }
+    };
     Ok(CloudflareAccessApplication {
         id: required_value_string(object, "id", "Cloudflare Access application")?,
         name: required_value_string(object, "name", "Cloudflare Access application")?,
         app_type: required_value_string(object, "type", "Cloudflare Access application")?,
+        service_auth_401_redirect: object
+            .get("service_auth_401_redirect")
+            .and_then(Value::as_bool),
         destinations,
     })
 }
@@ -1753,7 +1761,9 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             continue;
         };
         match entry.get("service_token") {
-            Some(Value::Object(service_token)) if entry.len() == 1 => {
+            Some(Value::Object(service_token))
+                if entry.len() == 1 && service_token.len() == 1 =>
+            {
                 if let Some(token_id) = service_token
                     .get("token_id")
                     .and_then(Value::as_str)
@@ -1769,14 +1779,16 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
     }
     include_service_token_ids.sort();
     include_service_token_ids.dedup();
-    let require_count = object
-        .get("require")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let exclude_count = object
-        .get("exclude")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
+    let require_count = match object.get("require") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Array(values)) => values.len(),
+        Some(_) => 1,
+    };
+    let exclude_count = match object.get("exclude") {
+        None | Some(Value::Null) => 0,
+        Some(Value::Array(values)) => values.len(),
+        Some(_) => 1,
+    };
     Ok(CloudflareAccessPolicy {
         id: required_value_string(object, "id", "Cloudflare Access policy")?,
         name: required_value_string(object, "name", "Cloudflare Access policy")?,
