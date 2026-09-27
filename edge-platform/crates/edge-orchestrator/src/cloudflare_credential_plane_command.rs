@@ -358,6 +358,7 @@ fn plan(
                 if policy.name != projection.access_policy_name
                     || policy.decision.as_deref() != Some("non_identity")
                     || policy.include_service_token_ids != vec![token_id.to_owned()]
+                    || policy.has_extra_rules
                 {
                     return Err(format!(
                         "Access policy for {} differs from exact service-token isolation policy",
@@ -763,6 +764,68 @@ async fn observe(
     } else {
         (Vec::new(), Vec::new())
     };
+
+    let expected = projections(desired);
+    let expected_worker_names = expected
+        .iter()
+        .map(|projection| projection.worker_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_token_names = expected
+        .iter()
+        .map(|projection| projection.service_token_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_application_names = expected
+        .iter()
+        .map(|projection| projection.access_application_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    if let Some(script) = scripts
+        .iter()
+        .find(|script| !expected_worker_names.contains(script.id.as_str()))
+    {
+        return Err(format!(
+            "Phase 2 target account contains unexpected Worker script {}; refusing adoption",
+            script.id
+        ));
+    }
+    if let Some(worker) = workers
+        .iter()
+        .find(|worker| !expected_worker_names.contains(worker.name.as_str()))
+    {
+        return Err(format!(
+            "Phase 2 target account contains unexpected immutable Worker {}; refusing adoption",
+            worker.name
+        ));
+    }
+    if let Some(token) = service_tokens.iter().find(|token| {
+        token
+            .name
+            .as_deref()
+            .is_none_or(|name| !expected_token_names.contains(name))
+    }) {
+        return Err(format!(
+            "Phase 2 target account contains unexpected Access service token {}; refusing adoption",
+            token.name.as_deref().unwrap_or("UNNAMED")
+        ));
+    }
+    if let Some(application) = access_applications
+        .iter()
+        .find(|application| !expected_application_names.contains(application.name.as_str()))
+    {
+        return Err(format!(
+            "Phase 2 target account contains unexpected Access application {}; refusing adoption",
+            application.name
+        ));
+    }
+    if let Some(domain) = worker_domains
+        .iter()
+        .find(|domain| !expected_worker_names.contains(domain.service.as_str()))
+    {
+        return Err(format!(
+            "Phase 2 target account contains unexpected Worker custom domain {}; refusing adoption",
+            domain.hostname
+        ));
+    }
 
     let workers_dev_subdomain = if scripts.is_empty() {
         None
