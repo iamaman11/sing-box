@@ -1,10 +1,11 @@
 use edge_controller_core::production::ProductionComposition;
 use edge_provider_cloudflare::{
     self as cloudflare, CloudflareAccessApplication, CloudflareAccessPolicy,
-    CloudflareAccessServiceToken, CloudflareDevicePostureRule, CloudflareDeviceProfile,
-    CloudflareDnsObservedRecord, CloudflareDnsRecordSummary, CloudflareGatewayRule,
-    CloudflareMeshNode, CloudflareMeshRoute, CloudflareSplitTunnelEntry, CloudflareWorkerDomain,
-    CloudflareWorkerRoute, CloudflareWorkerScript, CloudflareZeroTrustDeviceSettings,
+    CloudflareAccessServiceToken, CloudflareApiTokenIdentity, CloudflareDevicePostureRule,
+    CloudflareDeviceProfile, CloudflareDnsObservedRecord, CloudflareDnsRecordSummary,
+    CloudflareGatewayRule, CloudflareMeshNode, CloudflareMeshRoute, CloudflareSplitTunnelEntry,
+    CloudflareWorkerDomain, CloudflareWorkerRoute, CloudflareWorkerScript,
+    CloudflareZeroTrustDeviceSettings,
 };
 use std::env;
 
@@ -13,12 +14,17 @@ const TARGET_ACCOUNT_NAME: &str = "sing-box";
 #[derive(Debug)]
 enum ReadObservation<T> {
     Pass(T),
+    NotConfigured { reason: String },
     Blocked { error: String },
 }
 
 impl<T> ReadObservation<T> {
     fn is_pass(&self) -> bool {
         matches!(self, Self::Pass(_))
+    }
+
+    fn is_observed(&self) -> bool {
+        matches!(self, Self::Pass(_) | Self::NotConfigured { .. })
     }
 }
 
@@ -97,9 +103,9 @@ impl AccountSnapshot {
             && self.mesh_nodes.is_pass()
             && self.device_profiles.is_pass()
             && self.gateway_rules.is_pass()
-            && self.posture_rules.is_pass()
-            && self.access_applications.is_pass()
-            && self.service_tokens.is_pass()
+            && self.posture_rules.is_observed()
+            && self.access_applications.is_observed()
+            && self.service_tokens.is_observed()
             && self.worker_scripts.is_pass()
             && self.worker_domains.is_pass()
     }
@@ -131,6 +137,7 @@ struct Phase0Inventory {
     historical_account_id: String,
     target_account_name: &'static str,
     target_account_id: Option<String>,
+    historical_token_identity: ReadObservation<CloudflareApiTokenIdentity>,
     historical_account: AccountSnapshot,
     target_account: ReadObservation<AccountSnapshot>,
     shared_dns: SharedDnsSnapshot,
@@ -149,6 +156,8 @@ pub(crate) async fn run() -> Result<(), String> {
     let target_account_id = nonempty_env("CLOUDFLARE_TARGET_ACCOUNT_ID");
     let control_token = nonempty_env("CLOUDFLARE_CONTROL_TOKEN");
     let dns_token = nonempty_env("CLOUDFLARE_DNS_TOKEN");
+    let historical_token_identity =
+        ReadObservation::from(cloudflare::verify_api_token(&historical_token).await);
 
     let historical_account = observe_account(&historical_token, &historical_account_id).await;
 
@@ -192,6 +201,9 @@ pub(crate) async fn run() -> Result<(), String> {
     };
 
     let mut blockers = Vec::new();
+    if !historical_token_identity.is_pass() {
+        blockers.push("historical automation token identity has blocked read surface".to_owned());
+    }
     if !historical_account.complete() {
         blockers.push("historical account inventory has blocked read surfaces".to_owned());
     }
@@ -200,6 +212,7 @@ pub(crate) async fn run() -> Result<(), String> {
         ReadObservation::Pass(_) => {
             blockers.push("target account inventory has blocked read surfaces".to_owned())
         }
+        ReadObservation::NotConfigured { reason } => blockers.push(reason.clone()),
         ReadObservation::Blocked { error } => blockers.push(error.clone()),
     }
     if !shared_dns.complete() {
@@ -219,6 +232,7 @@ pub(crate) async fn run() -> Result<(), String> {
         historical_account_id,
         target_account_name: TARGET_ACCOUNT_NAME,
         target_account_id,
+        historical_token_identity,
         historical_account,
         target_account,
         shared_dns,
@@ -236,6 +250,20 @@ pub(crate) async fn run() -> Result<(), String> {
             .as_deref()
             .unwrap_or("<missing>")
     );
+    match &inventory.historical_token_identity {
+        ReadObservation::Pass(identity) => {
+            println!("historical_token_id={}", identity.id);
+            println!("historical_token_status={}", identity.status);
+        }
+        ReadObservation::NotConfigured { reason } => {
+            println!("historical_token_id=<not-configured>");
+            println!("historical_token_status={reason}");
+        }
+        ReadObservation::Blocked { .. } => {
+            println!("historical_token_id=<blocked>");
+            println!("historical_token_status=<blocked>");
+        }
+    }
     println!();
     println!("{inventory:#?}");
 
@@ -258,6 +286,18 @@ fn nonempty_env(name: &str) -> Option<String> {
 
 fn is_cloudflare_id(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn access_read_observation<T>(value: Result<T, String>) -> ReadObservation<T> {
+    match value {
+        Ok(value) => ReadObservation::Pass(value),
+        Err(error) if cloudflare::is_access_not_enabled_error(&error) => {
+            ReadObservation::NotConfigured {
+                reason: "Cloudflare Access is not enabled".to_owned(),
+            }
+        }
+        Err(error) => ReadObservation::Blocked { error },
+    }
 }
 
 async fn observe_shared_dns(
@@ -313,11 +353,12 @@ async fn observe_account(api_token: &str, account_id: &str) -> AccountSnapshot {
             .map(|rules| rules.into_iter().map(gateway_rule_snapshot).collect()),
     );
     let posture_rules =
-        ReadObservation::from(cloudflare::list_device_posture_rules(api_token, account_id).await);
+        access_read_observation(cloudflare::list_device_posture_rules(api_token, account_id).await);
     let access_applications =
-        ReadObservation::from(observe_access_applications(api_token, account_id).await);
-    let service_tokens =
-        ReadObservation::from(cloudflare::list_access_service_tokens(api_token, account_id).await);
+        access_read_observation(observe_access_applications(api_token, account_id).await);
+    let service_tokens = access_read_observation(
+        cloudflare::list_access_service_tokens(api_token, account_id).await,
+    );
     let worker_scripts =
         ReadObservation::from(cloudflare::list_worker_scripts(api_token, account_id).await);
     let worker_domains =
@@ -437,4 +478,29 @@ async fn observe_access_applications(
         });
     }
     Ok(snapshots)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReadObservation, access_read_observation};
+
+    #[test]
+    fn access_not_enabled_is_observed_but_not_passed() {
+        let observation: ReadObservation<()> = access_read_observation(Err(
+            "access.api.error.not_enabled: Access is not enabled".to_owned(),
+        ));
+
+        assert!(matches!(observation, ReadObservation::NotConfigured { .. }));
+        assert!(observation.is_observed());
+        assert!(!observation.is_pass());
+    }
+
+    #[test]
+    fn unrelated_access_error_remains_blocked() {
+        let observation: ReadObservation<()> =
+            access_read_observation(Err("403 Forbidden: Authentication error".to_owned()));
+
+        assert!(matches!(observation, ReadObservation::Blocked { .. }));
+        assert!(!observation.is_observed());
+    }
 }
