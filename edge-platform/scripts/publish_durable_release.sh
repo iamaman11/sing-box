@@ -161,6 +161,10 @@ if [[ -z "$release_json" ]]; then
 fi
 
 test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
+test "$(jq -er '.target_commitish' <<<"$release_json")" = "$ACCEPTED_REVISION" || {
+  echo "canonical release target_commitish does not match accepted revision" >&2
+  exit 1
+}
 jq -e '(.id | type) == "number"' <<<"$release_json" >/dev/null
 jq -e '(.draft | type) == "boolean"' <<<"$release_json" >/dev/null
 jq -e '(.prerelease | type) == "boolean"' <<<"$release_json" >/dev/null
@@ -274,6 +278,7 @@ published_by_tag="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
 test "$(jq -r '.id' <<<"$published_by_tag")" = "$release_id"
 test "$(jq -r '.draft' <<<"$published_by_tag")" = "false"
 test "$(jq -r '.prerelease' <<<"$published_by_tag")" = "false"
+test "$(jq -er '.target_commitish' <<<"$published_by_tag")" = "$ACCEPTED_REVISION"
 
 ref_json="$(gh api "repos/${REPOSITORY}/git/ref/tags/${release_tag}")"
 test "$(jq -er '.object.type' <<<"$ref_json")" = "commit"
