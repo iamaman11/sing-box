@@ -520,7 +520,7 @@ jobs:
           {
             echo '### Cloudflare Phase 0 read-only inventory'
             echo
-            echo 'Typed provider GET-only observation. No Vultr API, SSH authority, provider mutation, or secret value is requested.'
+            echo 'Typed provider GET-only observation. No Vultr API, SSH authority, provider mutation, or application/runtime secret value is requested or emitted; the Cloudflare control token is used only for authenticated reads and is never printed.'
             echo
             echo '~~~json'
             cat "${result}"
