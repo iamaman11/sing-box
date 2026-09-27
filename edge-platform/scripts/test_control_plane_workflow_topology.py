@@ -21,6 +21,7 @@ WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
+PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 ROOT_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-root-runner.sh")
@@ -51,6 +52,7 @@ def main() -> None:
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
+    phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     root_runner_installer = ROOT_RUNNER_INSTALLER.read_text(encoding="utf-8")
@@ -196,6 +198,14 @@ def main() -> None:
         and "lease-release" not in production_observe,
         "production diagnose workflow must remain a thin GET-only wrapper: no jq/JSON lifecycle semantics and no Vultr/SSH authority",
     )
+    require(
+        "serde_json::to_string" not in phase0_inventory
+        and "serde::Serialize" not in phase0_inventory
+        and "Cloudflare Phase 0 inventory BLOCKED by" in phase0_inventory
+        and 'println!("{inventory:#?}")' in phase0_inventory,
+        "Phase 0 Rust owner must own fail-closed status and emit text evidence without a first-party JSON contract",
+    )
+
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
         "Vultr backend must serialize its execute mutation job",
