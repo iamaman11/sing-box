@@ -15,7 +15,7 @@ pub struct CloudflareDnsRecord {
     pub ip: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareDnsObservedRecord {
     pub id: String,
     pub zone_id: String,
@@ -23,14 +23,14 @@ pub struct CloudflareDnsObservedRecord {
     pub ip: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareMeshNode {
     pub id: String,
     pub name: String,
     pub status: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareMeshRoute {
     pub id: String,
     pub network: String,
