@@ -31,7 +31,6 @@ pub struct ProductionCredentialPlaneOwnership {
     pub vm_access_policy_name: String,
     pub windows_service_token_name: String,
     pub vm_service_token_name: String,
-    pub dummy_payload_schema: String,
     pub worker_compatibility_date: String,
     pub proof_token_duration: String,
 }
@@ -292,10 +291,6 @@ impl ProductionComposition {
                 "vm_service_token_name",
                 credential_plane.vm_service_token_name.as_str(),
             ),
-            (
-                "dummy_payload_schema",
-                credential_plane.dummy_payload_schema.as_str(),
-            ),
         ] {
             validate_identifier(&format!("cloudflare.credential_plane.{label}"), value)?;
         }
@@ -352,7 +347,6 @@ impl ProductionComposition {
                 vm_access_policy_name: credential_plane.vm_access_policy_name.clone(),
                 windows_service_token_name: credential_plane.windows_service_token_name.clone(),
                 vm_service_token_name: credential_plane.vm_service_token_name.clone(),
-                dummy_payload_schema: credential_plane.dummy_payload_schema.clone(),
                 worker_compatibility_date: credential_plane.worker_compatibility_date.clone(),
                 proof_token_duration: credential_plane.proof_token_duration.clone(),
             },
@@ -708,10 +702,6 @@ mod tests {
         assert_eq!(
             composition.cloudflare.credential_plane.vm_worker_name,
             "sing-box-credentials-vm"
-        );
-        assert_eq!(
-            composition.cloudflare.credential_plane.dummy_payload_schema,
-            "sing-box.credentials.dummy.v1"
         );
         assert_eq!(composition.machines.machines.len(), 1);
         assert_eq!(composition.firewall_rules.len(), 11);
