@@ -177,7 +177,7 @@ pub struct CloudflareWorkerRoute {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareAccessServiceToken {
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
     pub enabled: Option<bool>,
     pub expires_at: Option<String>,
 }
@@ -953,7 +953,7 @@ async fn get_device_profile_split_tunnels(
         .await
         .map_err(|err| format!("failed to get Cloudflare device profile {kind} list: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    value_array(payload.result, "Cloudflare split tunnel list")?
+    split_tunnel_result_values(payload.result)?
         .into_iter()
         .map(split_tunnel_from_value)
         .collect()
@@ -1273,6 +1273,22 @@ fn device_profile_from_value(value: Value) -> Result<CloudflareDeviceProfile, St
     })
 }
 
+fn split_tunnel_result_values(value: Value) -> Result<Vec<Value>, String> {
+    match value {
+        Value::Array(values) => Ok(values),
+        Value::Object(object) if object.is_empty() => Ok(Vec::new()),
+        Value::Object(object) => {
+            let mut keys = object.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            Err(format!(
+                "Cloudflare split tunnel list result must be an array or empty object; object keys: {}",
+                keys.join(",")
+            ))
+        }
+        _ => Err("Cloudflare split tunnel list result must be an array or empty object".to_owned()),
+    }
+}
+
 fn split_tunnel_from_value(value: Value) -> Result<CloudflareSplitTunnelEntry, String> {
     let object = value
         .as_object()
@@ -1463,7 +1479,7 @@ fn access_service_token_from_value(value: Value) -> Result<CloudflareAccessServi
         .ok_or_else(|| "Cloudflare Access service token must be an object".to_owned())?;
     Ok(CloudflareAccessServiceToken {
         id: required_value_string(object, "id", "Cloudflare Access service token")?,
-        name: required_value_string(object, "name", "Cloudflare Access service token")?,
+        name: optional_value_string(object, "name"),
         enabled: object.get("enabled").and_then(Value::as_bool),
         expires_at: optional_value_string(object, "expires_at"),
     })
@@ -2128,7 +2144,7 @@ mod tests {
             "client_secret": "must-not-be-parsed"
         }))
         .unwrap();
-        assert_eq!(token.name, "sing-box-windows");
+        assert_eq!(token.name.as_deref(), Some("sing-box-windows"));
         assert_eq!(token.enabled, Some(true));
 
         let dns = dns_record_summary_from_value(
@@ -2159,11 +2175,38 @@ mod tests {
     }
 
     #[test]
+    fn split_tunnel_result_accepts_documented_array_and_live_empty_object() {
+        assert_eq!(
+            split_tunnel_result_values(serde_json::json!([
+                {"address": "100.96.0.0/12"}
+            ]))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(split_tunnel_result_values(serde_json::json!({}))
+            .unwrap()
+            .is_empty());
+        assert!(split_tunnel_result_values(serde_json::json!({"unexpected": []})).is_err());
+    }
+
+    #[test]
+    fn service_token_name_is_optional_provider_metadata() {
+        let token = access_service_token_from_value(serde_json::json!({
+            "id": "service-token-1",
+            "enabled": true
+        }))
+        .unwrap();
+        assert_eq!(token.id, "service-token-1");
+        assert_eq!(token.name, None);
+    }
+
+    #[test]
     fn phase0_inventory_parsers_fail_closed_on_missing_identity() {
         assert!(account_from_value(serde_json::json!({"name": "sing-box"})).is_err());
         assert!(worker_script_from_value(serde_json::json!({})).is_err());
         assert!(worker_domain_from_value(serde_json::json!({"id": "domain-1"})).is_err());
-        assert!(access_service_token_from_value(serde_json::json!({"id": "token-1"})).is_err());
+        assert!(access_service_token_from_value(serde_json::json!({})).is_err());
         assert!(
             dns_record_summary_from_value(
                 "zone-1",
