@@ -1,0 +1,1174 @@
+use crate::cli::CloudflareCredentialPlaneCommand;
+use edge_controller_core::lifecycle::{
+    AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
+};
+use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
+use edge_provider_cloudflare as cloudflare;
+use edge_shared_types::{CredentialIsolationProbe, CredentialProjectionKind};
+use prost::Message;
+use ring::digest::{SHA256, digest};
+use serde::Serialize;
+use std::env;
+
+const MAX_CONVERGENCE_STEPS: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProjectionDesired {
+    projection: String,
+    worker_name: String,
+    access_application_name: String,
+    access_policy_name: String,
+    service_token_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProjectionObservation {
+    projection: String,
+    worker_name: String,
+    worker_script_present: bool,
+    worker_identity_present: bool,
+    worker_id: Option<String>,
+    worker_binding_count: Option<usize>,
+    worker_version_tag: Option<String>,
+    workers_dev_enabled: Option<bool>,
+    previews_enabled: Option<bool>,
+    custom_domain_count: usize,
+    service_token_id: Option<String>,
+    service_token_enabled: Option<bool>,
+    service_token_duration: Option<String>,
+    access_application_id: Option<String>,
+    access_application_type: Option<String>,
+    access_service_auth_401_redirect: Option<bool>,
+    access_destination_worker_id: Option<String>,
+    access_destination_has_overrides: Option<bool>,
+    access_policies: Vec<cloudflare::CloudflareAccessPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CredentialPlaneObservation {
+    access_organization: Option<cloudflare::CloudflareAccessOrganization>,
+    workers_dev_subdomain: Option<String>,
+    projections: Vec<ProjectionObservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+enum CredentialPlaneAction {
+    Noop,
+    CreateAccessOrganization,
+    CreateWorkerIdentityLocked { projection: String },
+    UploadWorkerModuleLocked { projection: String },
+    CreateServiceToken { projection: String },
+    CreateAccessApplication { projection: String },
+    CreateAccessPolicy { projection: String },
+    ConfigureWorkersDev { projection: String },
+    ProveIsolationAndLock,
+}
+
+#[derive(Debug, Clone)]
+struct WorkerMaterial {
+    payload: Vec<u8>,
+    source: String,
+    version_tag: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProofCase {
+    name: &'static str,
+    outcome: &'static str,
+    status: u16,
+}
+
+#[derive(Debug, Clone)]
+struct ProofReport {
+    cases: Vec<ProofCase>,
+}
+
+pub async fn run(command: CloudflareCredentialPlaneCommand) -> Result<(), String> {
+    let control_token = env::var("CLOUDFLARE_CONTROL_TOKEN")
+        .map_err(|_| "CLOUDFLARE_CONTROL_TOKEN is required".to_owned())?;
+    if control_token.trim().is_empty() {
+        return Err("CLOUDFLARE_CONTROL_TOKEN must not be blank".to_owned());
+    }
+
+    let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let desired = production.cloudflare.credential_plane.clone();
+    if production.cloudflare.active_account_id == desired.target_account_id {
+        return Err(
+            "Phase 2 refuses to operate when credential target equals active production account"
+                .to_owned(),
+        );
+    }
+
+    match command {
+        CloudflareCredentialPlaneCommand::Inventory => {
+            let observed = observe(&control_token, &desired).await?;
+            print_observation(&desired, &observed);
+            Ok(())
+        }
+        CloudflareCredentialPlaneCommand::Plan => {
+            let observed = observe(&control_token, &desired).await?;
+            let authorized = authorized_plan(&desired, &observed)?;
+            print_observation(&desired, &observed);
+            println!("plan_action={}", action_name(&authorized.plan));
+            println!("plan_authority={}", authorized.authority.authority_digest);
+            println!("plan_disposition={:?}", authorized.disposition);
+            Ok(())
+        }
+        CloudflareCredentialPlaneCommand::Converge => converge(&control_token, &desired).await,
+        CloudflareCredentialPlaneCommand::Verify => verify_locked(&control_token, &desired).await,
+        CloudflareCredentialPlaneCommand::Prove => prove_locked(&control_token, &desired).await,
+    }
+}
+
+async fn converge(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let mut mutations = 0u32;
+    let mut terminal_proof = None;
+
+    for step in 1..=MAX_CONVERGENCE_STEPS {
+        let before = observe(api_token, desired).await?;
+        let authorized = authorized_plan(desired, &before)?;
+        println!("convergence_step={step}");
+        println!("action={}", action_name(&authorized.plan));
+        println!("plan_authority={}", authorized.authority.authority_digest);
+
+        if matches!(authorized.plan, CredentialPlaneAction::Noop) {
+            print_terminal(desired, &before, mutations, terminal_proof.as_ref());
+            return Ok(());
+        }
+
+        let (after, next, proof, performed) =
+            apply_once(api_token, desired, &authorized.authority.authority_digest).await?;
+        mutations = mutations.saturating_add(performed);
+        if proof.is_some() {
+            terminal_proof = proof;
+        }
+        if next == authorized.plan {
+            return Err(format!(
+                "credential-plane action made no observable progress; mutation was not replayed: {}",
+                action_name(&next)
+            ));
+        }
+        println!("next_action={}", action_name(&next));
+        print_observation(desired, &after);
+    }
+
+    Err(format!(
+        "credential-plane convergence exceeded bounded {MAX_CONVERGENCE_STEPS}-step limit"
+    ))
+}
+
+async fn apply_once(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    authorized_digest: &str,
+) -> Result<
+    (
+        CredentialPlaneObservation,
+        CredentialPlaneAction,
+        Option<ProofReport>,
+        u32,
+    ),
+    String,
+> {
+    let before = observe(api_token, desired).await?;
+    let authorized = authorized_plan(desired, &before)?;
+    verify_exact_authority(authorized_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
+
+    let (proof, mutations) = apply_action(api_token, desired, &before, &authorized.plan).await?;
+    let after = observe(api_token, desired).await?;
+    let next = plan(desired, &after)?;
+    Ok((after, next, proof, mutations))
+}
+
+async fn verify_locked(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let observed = observe(api_token, desired).await?;
+    let action = plan(desired, &observed)?;
+    if action != CredentialPlaneAction::Noop {
+        return Err(format!(
+            "credential-plane verify requires exact locked state; observed next action {}",
+            action_name(&action)
+        ));
+    }
+    print_observation(desired, &observed);
+    println!("credential_plane_status=PASS");
+    println!("structural_verification=PASS");
+    println!("proof_tokens_enabled=false");
+    println!("previews_enabled=false");
+    println!("provider_mutations=0");
+    println!("production_runtime_mutations=0");
+    println!("real_credentials_created=0");
+    println!("active_account_unchanged=true");
+    Ok(())
+}
+
+async fn prove_locked(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let observed = observe(api_token, desired).await?;
+    let action = plan(desired, &observed)?;
+    if action != CredentialPlaneAction::Noop {
+        return Err(format!(
+            "explicit proof requires structurally converged locked state; observed next action {}",
+            action_name(&action)
+        ));
+    }
+    let forced = CredentialPlaneAction::ProveIsolationAndLock;
+    let authorized = authorize_plan(
+        "cloudflare_credential_plane_phase2_proof",
+        desired,
+        &observed,
+        forced.clone(),
+        PlanDisposition::Mutate,
+    )
+    .map_err(|err| err.to_string())?;
+    verify_exact_authority(
+        &authorized.authority.authority_digest,
+        &authorized.authority,
+    )
+    .map_err(|err| err.to_string())?;
+    let (proof, mutations) = apply_action(api_token, desired, &observed, &forced).await?;
+    let after = observe(api_token, desired).await?;
+    if plan(desired, &after)? != CredentialPlaneAction::Noop {
+        return Err("credential-plane proof did not return to exact locked state".to_owned());
+    }
+    print_terminal(desired, &after, mutations, proof.as_ref());
+    Ok(())
+}
+
+fn authorized_plan(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<AuthorizedPlan<CredentialPlaneAction>, String> {
+    let action = plan(desired, observed)?;
+    let disposition = if matches!(action, CredentialPlaneAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    authorize_plan(
+        "cloudflare_credential_plane_phase2",
+        desired,
+        observed,
+        action,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
+fn plan(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<CredentialPlaneAction, String> {
+    match observed.access_organization.as_ref() {
+        None => return Ok(CredentialPlaneAction::CreateAccessOrganization),
+        Some(organization) => {
+            if organization.name != desired.access_organization_name
+                || organization.auth_domain != desired.access_auth_domain
+                || organization.deny_unmatched_requests != Some(true)
+            {
+                return Err(format!(
+                    "existing target Access organization differs from Phase 2 desired boundary: {organization:?}"
+                ));
+            }
+        }
+    }
+
+    for projection in projections(desired) {
+        let observed = projection_observation(observed, &projection.projection)?;
+        let material = worker_material(desired, &projection.projection)?;
+
+        if !observed.worker_identity_present {
+            if observed.worker_script_present {
+                return Err(format!(
+                    "Worker {} exists as script without immutable Worker identity",
+                    projection.worker_name
+                ));
+            }
+            return Ok(CredentialPlaneAction::CreateWorkerIdentityLocked {
+                projection: projection.projection,
+            });
+        }
+        let worker_id = observed.worker_id.as_deref().ok_or_else(|| {
+            format!(
+                "immutable Worker identity {} is missing its provider ID",
+                projection.worker_name
+            )
+        })?;
+        if !observed.worker_script_present {
+            ensure_projection_locked(&projection, observed)?;
+            return Ok(CredentialPlaneAction::UploadWorkerModuleLocked {
+                projection: projection.projection,
+            });
+        }
+        if observed.worker_binding_count != Some(0) {
+            return Err(format!(
+                "Worker {} has bindings; Phase 2 requires physical absence of credential bindings",
+                projection.worker_name
+            ));
+        }
+        if observed.worker_version_tag.as_deref() != Some(material.version_tag.as_str()) {
+            return Err(format!(
+                "Worker {} exists but is not the exact Phase 2 dummy payload version",
+                projection.worker_name
+            ));
+        }
+        if observed.custom_domain_count != 0 {
+            return Err(format!(
+                "Worker {} has custom Worker domains; Phase 2 permits workers.dev only",
+                projection.worker_name
+            ));
+        }
+
+        if observed.service_token_id.is_none() {
+            ensure_projection_locked(&projection, observed)?;
+            return Ok(CredentialPlaneAction::CreateServiceToken {
+                projection: projection.projection,
+            });
+        }
+        if let Some(duration) = observed.service_token_duration.as_deref() {
+            if duration != desired.proof_token_duration {
+                return Err(format!(
+                    "service token {} has unexpected duration {duration}",
+                    projection.service_token_name
+                ));
+            }
+        }
+
+        let token_id = observed.service_token_id.as_deref().unwrap();
+        match observed.access_application_id.as_deref() {
+            None => {
+                ensure_projection_locked(&projection, observed)?;
+                return Ok(CredentialPlaneAction::CreateAccessApplication {
+                    projection: projection.projection,
+                });
+            }
+            Some(_) => {
+                if observed.access_application_type.as_deref() != Some("self_hosted")
+                    || observed.access_service_auth_401_redirect != Some(true)
+                    || observed.access_destination_worker_id.as_deref() != Some(worker_id)
+                    || observed.access_destination_has_overrides != Some(false)
+                {
+                    return Err(format!(
+                        "Access application {} is not an exact whole-Worker destination",
+                        projection.access_application_name
+                    ));
+                }
+                if observed.access_policies.is_empty() {
+                    ensure_projection_locked(&projection, observed)?;
+                    return Ok(CredentialPlaneAction::CreateAccessPolicy {
+                        projection: projection.projection,
+                    });
+                }
+                if observed.access_policies.len() != 1 {
+                    return Err(format!(
+                        "Access application {} must have exactly one service-auth policy",
+                        projection.access_application_name
+                    ));
+                }
+                let policy = &observed.access_policies[0];
+                if policy.name != projection.access_policy_name
+                    || policy.decision.as_deref() != Some("non_identity")
+                    || policy.include_service_token_ids != vec![token_id.to_owned()]
+                    || policy.has_extra_rules
+                {
+                    return Err(format!(
+                        "Access policy for {} differs from exact service-token isolation policy",
+                        projection.projection
+                    ));
+                }
+            }
+        }
+    }
+
+    for projection in projections(desired) {
+        let observed = projection_observation(observed, &projection.projection)?;
+        if observed.workers_dev_enabled != Some(true) || observed.previews_enabled != Some(false) {
+            return Ok(CredentialPlaneAction::ConfigureWorkersDev {
+                projection: projection.projection,
+            });
+        }
+    }
+
+    let mut any_enabled = false;
+    for projection in projections(desired) {
+        let observed = projection_observation(observed, &projection.projection)?;
+        match observed.service_token_enabled {
+            Some(enabled) => any_enabled |= enabled,
+            None => {
+                return Err(format!(
+                    "service token enabled state is missing for {}",
+                    projection.projection
+                ));
+            }
+        }
+    }
+    if any_enabled {
+        return Ok(CredentialPlaneAction::ProveIsolationAndLock);
+    }
+
+    Ok(CredentialPlaneAction::Noop)
+}
+
+async fn apply_action(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    action: &CredentialPlaneAction,
+) -> Result<(Option<ProofReport>, u32), String> {
+    match action {
+        CredentialPlaneAction::Noop => Ok((None, 0)),
+        CredentialPlaneAction::CreateAccessOrganization => {
+            cloudflare::create_access_organization(
+                api_token,
+                &desired.target_account_id,
+                &desired.access_organization_name,
+                &desired.access_auth_domain,
+            )
+            .await?;
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::CreateWorkerIdentityLocked { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let worker = cloudflare::create_worker_identity_locked(
+                api_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+            )
+            .await?;
+            if worker.name != projection.worker_name
+                || worker.workers_dev_enabled != Some(false)
+                || worker.previews_enabled != Some(false)
+            {
+                return Err(format!(
+                    "Worker identity {} was not created atomically locked",
+                    projection.worker_name
+                ));
+            }
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::UploadWorkerModuleLocked { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let material = worker_material(desired, &projection.projection)?;
+            cloudflare::upload_worker_module(
+                api_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+                &material.source,
+                &desired.worker_compatibility_date,
+                &material.version_tag,
+            )
+            .await?;
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::CreateServiceToken { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let credential = cloudflare::create_access_service_token(
+                api_token,
+                &desired.target_account_id,
+                &projection.service_token_name,
+                &desired.proof_token_duration,
+            )
+            .await?;
+            drop(credential);
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::CreateAccessApplication { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let current = projection_observation(observed, &projection.projection)?;
+            let worker_id = current.worker_id.as_deref().ok_or_else(|| {
+                "immutable Worker ID is required before Access creation".to_owned()
+            })?;
+            cloudflare::create_worker_access_application(
+                api_token,
+                &desired.target_account_id,
+                &projection.access_application_name,
+                worker_id,
+            )
+            .await?;
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::CreateAccessPolicy { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let current = projection_observation(observed, &projection.projection)?;
+            let application_id = current.access_application_id.as_deref().ok_or_else(|| {
+                "Access application ID is required before policy creation".to_owned()
+            })?;
+            let token_id = current
+                .service_token_id
+                .as_deref()
+                .ok_or_else(|| "service token ID is required before policy creation".to_owned())?;
+            cloudflare::create_access_service_policy(
+                api_token,
+                &desired.target_account_id,
+                application_id,
+                &projection.access_policy_name,
+                token_id,
+            )
+            .await?;
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::ConfigureWorkersDev { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            cloudflare::set_worker_script_subdomain(
+                api_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+                true,
+                false,
+            )
+            .await?;
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::ProveIsolationAndLock => {
+            let (report, mutations) = prove_isolation(api_token, desired, observed).await?;
+            Ok((Some(report), mutations))
+        }
+    }
+}
+
+async fn prove_isolation(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<(ProofReport, u32), String> {
+    let windows = projection_desired(desired, "windows")?;
+    let vm = projection_desired(desired, "vm")?;
+    let windows_observed = projection_observation(observed, "windows")?;
+    let vm_observed = projection_observation(observed, "vm")?;
+
+    let windows_token_id = windows_observed
+        .service_token_id
+        .as_deref()
+        .ok_or_else(|| "Windows proof token ID is missing".to_owned())?;
+    let vm_token_id = vm_observed
+        .service_token_id
+        .as_deref()
+        .ok_or_else(|| "VM proof token ID is missing".to_owned())?;
+    let workers_subdomain = observed
+        .workers_dev_subdomain
+        .as_deref()
+        .ok_or_else(|| "workers.dev account subdomain is missing".to_owned())?;
+
+    let windows_url = format!(
+        "https://{}.{}.workers.dev/v1/credentials?generation=1",
+        windows.worker_name, workers_subdomain
+    );
+    let vm_url = format!(
+        "https://{}.{}.workers.dev/v1/credentials?generation=1",
+        vm.worker_name, workers_subdomain
+    );
+
+    let mut mutations = 0u32;
+    let mut windows_enabled_by_proof = false;
+    let mut vm_enabled_by_proof = false;
+
+    let proof_result: Result<ProofReport, String> = async {
+        if windows_observed.service_token_enabled != Some(true) {
+            cloudflare::set_access_service_token_enabled(
+                api_token,
+                &desired.target_account_id,
+                windows_token_id,
+                &windows.service_token_name,
+                &desired.proof_token_duration,
+                true,
+            )
+            .await?;
+            mutations += 1;
+            windows_enabled_by_proof = true;
+        }
+        if vm_observed.service_token_enabled != Some(true) {
+            cloudflare::set_access_service_token_enabled(
+                api_token,
+                &desired.target_account_id,
+                vm_token_id,
+                &vm.service_token_name,
+                &desired.proof_token_duration,
+                true,
+            )
+            .await?;
+            mutations += 1;
+            vm_enabled_by_proof = true;
+        }
+
+        let windows_credential = cloudflare::rotate_access_service_token(
+            api_token,
+            &desired.target_account_id,
+            windows_token_id,
+        )
+        .await?;
+        mutations += 1;
+        let vm_credential = cloudflare::rotate_access_service_token(
+            api_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        mutations += 1;
+
+        let windows_material = worker_material(desired, "windows")?;
+        let vm_material = worker_material(desired, "vm")?;
+        let ww = cloudflare::probe_worker(&windows_url, Some(&windows_credential)).await?;
+        let wv = cloudflare::probe_worker(&vm_url, Some(&windows_credential)).await?;
+        let vv = cloudflare::probe_worker(&vm_url, Some(&vm_credential)).await?;
+        let vw = cloudflare::probe_worker(&windows_url, Some(&vm_credential)).await?;
+        let aw = cloudflare::probe_worker(&windows_url, None).await?;
+        let av = cloudflare::probe_worker(&vm_url, None).await?;
+
+        require_allowed(
+            "windows_to_windows",
+            &ww,
+            &windows_material.payload,
+            CredentialProjectionKind::Windows,
+        )?;
+        require_denied("windows_to_vm", &wv)?;
+        require_allowed(
+            "vm_to_vm",
+            &vv,
+            &vm_material.payload,
+            CredentialProjectionKind::Vm,
+        )?;
+        require_denied("vm_to_windows", &vw)?;
+        require_denied("anonymous_to_windows", &aw)?;
+        require_denied("anonymous_to_vm", &av)?;
+
+        Ok(ProofReport {
+            cases: vec![
+                ProofCase {
+                    name: "windows_to_windows",
+                    outcome: "PASS",
+                    status: ww.status,
+                },
+                ProofCase {
+                    name: "windows_to_vm",
+                    outcome: "DENIED",
+                    status: wv.status,
+                },
+                ProofCase {
+                    name: "vm_to_vm",
+                    outcome: "PASS",
+                    status: vv.status,
+                },
+                ProofCase {
+                    name: "vm_to_windows",
+                    outcome: "DENIED",
+                    status: vw.status,
+                },
+                ProofCase {
+                    name: "anonymous_to_windows",
+                    outcome: "DENIED",
+                    status: aw.status,
+                },
+                ProofCase {
+                    name: "anonymous_to_vm",
+                    outcome: "DENIED",
+                    status: av.status,
+                },
+            ],
+        })
+    }
+    .await;
+
+    let disable_windows = cloudflare::set_access_service_token_enabled(
+        api_token,
+        &desired.target_account_id,
+        windows_token_id,
+        &windows.service_token_name,
+        &desired.proof_token_duration,
+        false,
+    )
+    .await;
+    if disable_windows.is_ok() {
+        mutations += 1;
+    }
+    let disable_vm = cloudflare::set_access_service_token_enabled(
+        api_token,
+        &desired.target_account_id,
+        vm_token_id,
+        &vm.service_token_name,
+        &desired.proof_token_duration,
+        false,
+    )
+    .await;
+    if disable_vm.is_ok() {
+        mutations += 1;
+    }
+
+    if let Err(err) = disable_windows {
+        return Err(format!(
+            "credential proof cleanup failed to disable Windows proof token: {err}; VM cleanup={:?}; windows_enabled_by_proof={windows_enabled_by_proof}; vm_enabled_by_proof={vm_enabled_by_proof}",
+            disable_vm.err()
+        ));
+    }
+    if let Err(err) = disable_vm {
+        return Err(format!(
+            "credential proof cleanup failed to disable VM proof token: {err}; windows_enabled_by_proof={windows_enabled_by_proof}; vm_enabled_by_proof={vm_enabled_by_proof}"
+        ));
+    }
+
+    proof_result.map(|report| (report, mutations))
+}
+
+fn require_allowed(
+    name: &str,
+    probe: &cloudflare::CloudflareWorkerProbe,
+    expected_body: &[u8],
+    expected_projection: CredentialProjectionKind,
+) -> Result<(), String> {
+    if probe.status != 200 || probe.body != expected_body {
+        return Err(format!(
+            "{name} expected exact HTTP 200 typed dummy payload, observed status={} body_len={}",
+            probe.status,
+            probe.body.len()
+        ));
+    }
+    if !probe
+        .content_type
+        .as_deref()
+        .is_some_and(|value| value.starts_with("application/x-protobuf"))
+    {
+        return Err(format!("{name} did not return application/x-protobuf"));
+    }
+    let payload = CredentialIsolationProbe::decode(probe.body.as_slice())
+        .map_err(|err| format!("{name} returned invalid CredentialIsolationProbe: {err}"))?;
+    if payload.encode_to_vec() != probe.body
+        || payload.schema_version != 1
+        || payload.generation != 1
+        || payload.projection != expected_projection as i32
+        || !payload.dummy_non_secret
+    {
+        return Err(format!(
+            "{name} returned a non-canonical or incorrect typed dummy payload"
+        ));
+    }
+    Ok(())
+}
+
+fn require_denied(name: &str, probe: &cloudflare::CloudflareWorkerProbe) -> Result<(), String> {
+    if probe.status != 401 {
+        return Err(format!(
+            "{name} expected exact HTTP 401 Access denial, observed status={}",
+            probe.status
+        ));
+    }
+    Ok(())
+}
+
+async fn observe(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<CredentialPlaneObservation, String> {
+    let scripts = cloudflare::list_worker_scripts(api_token, &desired.target_account_id).await?;
+    let workers = cloudflare::list_workers(api_token, &desired.target_account_id).await?;
+    let worker_domains =
+        cloudflare::list_worker_domains(api_token, &desired.target_account_id).await?;
+
+    let access_organization =
+        match cloudflare::get_access_organization(api_token, &desired.target_account_id).await {
+            Ok(value) => Some(value),
+            Err(err) if cloudflare::is_access_not_enabled_error(&err) => None,
+            Err(err) => return Err(err),
+        };
+
+    let (service_tokens, access_applications) = if access_organization.is_some() {
+        (
+            cloudflare::list_access_service_tokens(api_token, &desired.target_account_id).await?,
+            cloudflare::list_access_applications(api_token, &desired.target_account_id).await?,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    // This owner is deliberately name-scoped. Other Workers, Access applications,
+    // service tokens and domains may coexist in the dedicated account as later
+    // Cloudflare phases converge; they are neither adopted nor rejected here.
+    let owned_worker_script_present = projections(desired).iter().any(|projection| {
+        scripts
+            .iter()
+            .any(|script| script.id == projection.worker_name)
+    });
+
+    let workers_dev_subdomain = if owned_worker_script_present {
+        Some(
+            cloudflare::get_workers_subdomain(api_token, &desired.target_account_id)
+                .await?
+                .subdomain,
+        )
+    } else {
+        None
+    };
+
+    let mut projections_observed = Vec::new();
+    for projection in projections(desired) {
+        let matching_scripts = scripts
+            .iter()
+            .filter(|script| script.id == projection.worker_name)
+            .collect::<Vec<_>>();
+        if matching_scripts.len() > 1 {
+            return Err(format!(
+                "duplicate Worker script identity observed for {}",
+                projection.worker_name
+            ));
+        }
+        let worker_script_present = matching_scripts.len() == 1;
+        let matching_workers = workers
+            .iter()
+            .filter(|worker| worker.name == projection.worker_name)
+            .collect::<Vec<_>>();
+        if matching_workers.len() > 1 {
+            return Err(format!(
+                "duplicate immutable Worker identity observed for {}",
+                projection.worker_name
+            ));
+        }
+        let worker_identity = matching_workers.first().copied();
+        let worker_identity_present = worker_identity.is_some();
+        let worker_id = worker_identity.map(|worker| worker.id.clone());
+
+        let (settings, workers_dev_enabled, previews_enabled) = if worker_script_present {
+            let subdomain = cloudflare::get_worker_script_subdomain(
+                api_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+            )
+            .await?;
+            (
+                Some(
+                    cloudflare::get_worker_script_settings(
+                        api_token,
+                        &desired.target_account_id,
+                        &projection.worker_name,
+                    )
+                    .await?,
+                ),
+                Some(subdomain.enabled),
+                Some(subdomain.previews_enabled),
+            )
+        } else {
+            (
+                None,
+                worker_identity.and_then(|worker| worker.workers_dev_enabled),
+                worker_identity.and_then(|worker| worker.previews_enabled),
+            )
+        };
+
+        let matching_tokens = service_tokens
+            .iter()
+            .filter(|token| token.name.as_deref() == Some(projection.service_token_name.as_str()))
+            .collect::<Vec<_>>();
+        if matching_tokens.len() > 1 {
+            return Err(format!(
+                "duplicate service-token identity observed for {}",
+                projection.service_token_name
+            ));
+        }
+        let token = matching_tokens.first().copied();
+
+        let matching_apps = access_applications
+            .iter()
+            .filter(|app| app.name == projection.access_application_name)
+            .collect::<Vec<_>>();
+        if matching_apps.len() > 1 {
+            return Err(format!(
+                "duplicate Access application identity observed for {}",
+                projection.access_application_name
+            ));
+        }
+        let app = matching_apps.first().copied();
+        let policies = match app {
+            Some(app) => {
+                cloudflare::list_access_application_policies(
+                    api_token,
+                    &desired.target_account_id,
+                    &app.id,
+                )
+                .await?
+            }
+            None => Vec::new(),
+        };
+        let destination = app.and_then(|app| {
+            if app.destinations.len() == 1 {
+                app.destinations.first()
+            } else {
+                None
+            }
+        });
+        let custom_domain_count = worker_domains
+            .iter()
+            .filter(|domain| domain.service == projection.worker_name)
+            .count();
+
+        projections_observed.push(ProjectionObservation {
+            projection: projection.projection,
+            worker_name: projection.worker_name,
+            worker_script_present,
+            worker_identity_present,
+            worker_id,
+            worker_binding_count: settings.as_ref().map(|value| value.binding_count),
+            worker_version_tag: settings.and_then(|value| value.version_tag),
+            workers_dev_enabled,
+            previews_enabled,
+            custom_domain_count,
+            service_token_id: token.map(|value| value.id.clone()),
+            service_token_enabled: token.and_then(|value| value.enabled),
+            service_token_duration: token.and_then(|value| value.duration.clone()),
+            access_application_id: app.map(|value| value.id.clone()),
+            access_application_type: app.map(|value| value.app_type.clone()),
+            access_service_auth_401_redirect: app.and_then(|value| value.service_auth_401_redirect),
+            access_destination_worker_id: destination.and_then(|value| value.worker_id.clone()),
+            access_destination_has_overrides: destination.map(|value| value.has_overrides),
+            access_policies: policies,
+        });
+    }
+
+    Ok(CredentialPlaneObservation {
+        access_organization,
+        workers_dev_subdomain,
+        projections: projections_observed,
+    })
+}
+
+fn ensure_projection_locked(
+    projection: &ProjectionDesired,
+    observed: &ProjectionObservation,
+) -> Result<(), String> {
+    if observed.workers_dev_enabled != Some(false) || observed.previews_enabled != Some(false) {
+        return Err(format!(
+            "Worker {} must remain workers.dev=false and previews=false until exact Access isolation is complete",
+            projection.worker_name
+        ));
+    }
+    Ok(())
+}
+
+fn projections(desired: &ProductionCredentialPlaneOwnership) -> [ProjectionDesired; 2] {
+    [
+        ProjectionDesired {
+            projection: "windows".to_owned(),
+            worker_name: desired.windows_worker_name.clone(),
+            access_application_name: desired.windows_access_application_name.clone(),
+            access_policy_name: desired.windows_access_policy_name.clone(),
+            service_token_name: desired.windows_service_token_name.clone(),
+        },
+        ProjectionDesired {
+            projection: "vm".to_owned(),
+            worker_name: desired.vm_worker_name.clone(),
+            access_application_name: desired.vm_access_application_name.clone(),
+            access_policy_name: desired.vm_access_policy_name.clone(),
+            service_token_name: desired.vm_service_token_name.clone(),
+        },
+    ]
+}
+
+fn projection_desired(
+    desired: &ProductionCredentialPlaneOwnership,
+    projection: &str,
+) -> Result<ProjectionDesired, String> {
+    projections(desired)
+        .into_iter()
+        .find(|candidate| candidate.projection == projection)
+        .ok_or_else(|| format!("unsupported credential projection {projection}"))
+}
+
+fn projection_observation<'a>(
+    observed: &'a CredentialPlaneObservation,
+    projection: &str,
+) -> Result<&'a ProjectionObservation, String> {
+    observed
+        .projections
+        .iter()
+        .find(|candidate| candidate.projection == projection)
+        .ok_or_else(|| format!("missing credential projection observation {projection}"))
+}
+
+fn worker_material(
+    _desired: &ProductionCredentialPlaneOwnership,
+    projection: &str,
+) -> Result<WorkerMaterial, String> {
+    let projection_kind = match projection {
+        "windows" => CredentialProjectionKind::Windows,
+        "vm" => CredentialProjectionKind::Vm,
+        _ => return Err(format!("unsupported credential projection {projection}")),
+    };
+    let payload = CredentialIsolationProbe {
+        schema_version: 1,
+        generation: 1,
+        projection: projection_kind as i32,
+        dummy_non_secret: true,
+    }
+    .encode_to_vec();
+    let payload_hex = payload
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let source = format!(
+        "const H=\"{payload_hex}\";const B=new Uint8Array(H.length/2);for(let i=0;i<B.length;i++)B[i]=Number.parseInt(H.slice(i*2,i*2+2),16);export default{{async fetch(request){{const u=new URL(request.url);if(request.method!==\"GET\"||u.pathname!==\"/v1/credentials\"||u.searchParams.size!==1||u.searchParams.get(\"generation\")!==\"1\")return new Response(null,{{status:404,headers:{{\"Cache-Control\":\"no-store\"}}}});return new Response(B,{{status:200,headers:{{\"Content-Type\":\"application/x-protobuf\",\"Cache-Control\":\"no-store\"}}}})}} }};\n"
+    );
+    let source_hash = sha256_hex(source.as_bytes());
+    let version_tag = format!("sing-box-phase2-{projection}-{}", &source_hash[..16]);
+    Ok(WorkerMaterial {
+        payload,
+        source,
+        version_tag,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    digest(&SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn action_name(action: &CredentialPlaneAction) -> &'static str {
+    match action {
+        CredentialPlaneAction::Noop => "NOOP",
+        CredentialPlaneAction::CreateAccessOrganization => "CREATE_ACCESS_ORGANIZATION",
+        CredentialPlaneAction::CreateWorkerIdentityLocked { .. } => "CREATE_WORKER_IDENTITY_LOCKED",
+        CredentialPlaneAction::UploadWorkerModuleLocked { .. } => "UPLOAD_WORKER_MODULE_LOCKED",
+        CredentialPlaneAction::CreateServiceToken { .. } => "CREATE_SERVICE_TOKEN",
+        CredentialPlaneAction::CreateAccessApplication { .. } => "CREATE_ACCESS_APPLICATION",
+        CredentialPlaneAction::CreateAccessPolicy { .. } => "CREATE_ACCESS_POLICY",
+        CredentialPlaneAction::ConfigureWorkersDev { .. } => "CONFIGURE_WORKERS_DEV",
+        CredentialPlaneAction::ProveIsolationAndLock => "PROVE_ISOLATION_AND_LOCK",
+    }
+}
+
+fn print_observation(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) {
+    println!("target_account_id={}", desired.target_account_id);
+    println!(
+        "access_organization={}",
+        observed
+            .access_organization
+            .as_ref()
+            .map(|value| value.name.as_str())
+            .unwrap_or("NOT_CONFIGURED")
+    );
+    for projection in &observed.projections {
+        println!(
+            "projection={} worker={} worker_identity_present={} worker_script_present={} worker_id={} bindings={} workers_dev={} previews={} custom_domains={} service_token_id={} service_token_enabled={} access_application_id={} policies={}",
+            projection.projection,
+            projection.worker_name,
+            projection.worker_identity_present,
+            projection.worker_script_present,
+            projection.worker_id.as_deref().unwrap_or("ABSENT"),
+            projection
+                .worker_binding_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            projection
+                .workers_dev_enabled
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            projection
+                .previews_enabled
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            projection.custom_domain_count,
+            projection.service_token_id.as_deref().unwrap_or("ABSENT"),
+            projection
+                .service_token_enabled
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            projection
+                .access_application_id
+                .as_deref()
+                .unwrap_or("ABSENT"),
+            projection.access_policies.len(),
+        );
+    }
+}
+
+fn print_terminal(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    mutations: u32,
+    proof: Option<&ProofReport>,
+) {
+    print_observation(desired, observed);
+    if let Some(proof) = proof {
+        for case in &proof.cases {
+            println!(
+                "auth_matrix={} outcome={} status={}",
+                case.name, case.outcome, case.status
+            );
+        }
+        println!("isolation_proof=PASS");
+    } else {
+        println!("isolation_proof=NOT_RUN_STRUCTURAL_NOOP");
+    }
+    println!("credential_plane_status=PASS");
+    println!("credential_isolation_probe_schema=1");
+    println!("dummy_non_secret=true");
+    println!("real_credentials_created=0");
+    println!("proof_tokens_enabled=false");
+    println!("previews_enabled=false");
+    println!("provider_mutations={mutations}");
+    println!("production_runtime_mutations=0");
+    println!("active_account_unchanged=true");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desired() -> ProductionCredentialPlaneOwnership {
+        ProductionCredentialPlaneOwnership {
+            target_account_id: "6be6e4b6340822dbeb18cb6c2f09c660".to_owned(),
+            access_organization_name: "sing-box".to_owned(),
+            access_auth_domain: "sing-box-6be6e4b6.cloudflareaccess.com".to_owned(),
+            windows_worker_name: "sing-box-credentials-windows".to_owned(),
+            vm_worker_name: "sing-box-credentials-vm".to_owned(),
+            windows_access_application_name: "sing-box-credentials-windows-access".to_owned(),
+            vm_access_application_name: "sing-box-credentials-vm-access".to_owned(),
+            windows_access_policy_name: "sing-box-credentials-windows-service-auth".to_owned(),
+            vm_access_policy_name: "sing-box-credentials-vm-service-auth".to_owned(),
+            windows_service_token_name: "sing-box-credentials-windows-phase2-proof".to_owned(),
+            vm_service_token_name: "sing-box-credentials-vm-phase2-proof".to_owned(),
+            worker_compatibility_date: "2026-09-28".to_owned(),
+            proof_token_duration: "1h".to_owned(),
+        }
+    }
+
+    #[test]
+    fn dummy_workers_are_physically_projection_specific_and_secret_free() {
+        let desired = desired();
+        let windows = worker_material(&desired, "windows").unwrap();
+        let vm = worker_material(&desired, "vm").unwrap();
+        assert_ne!(windows.source, vm.source);
+        assert_ne!(windows.version_tag, vm.version_tag);
+        let windows_probe = CredentialIsolationProbe::decode(windows.payload.as_slice()).unwrap();
+        let vm_probe = CredentialIsolationProbe::decode(vm.payload.as_slice()).unwrap();
+        assert_eq!(
+            windows_probe.projection,
+            CredentialProjectionKind::Windows as i32
+        );
+        assert_eq!(vm_probe.projection, CredentialProjectionKind::Vm as i32);
+        assert!(windows_probe.dummy_non_secret);
+        assert!(vm_probe.dummy_non_secret);
+        assert!(!windows.source.contains("private_key"));
+        assert!(!vm.source.contains("password"));
+        assert!(!windows.source.contains("0x08"));
+        assert!(!vm.source.contains("0x08"));
+    }
+
+    #[test]
+    fn action_names_are_bounded_and_explicit() {
+        assert_eq!(
+            action_name(&CredentialPlaneAction::ProveIsolationAndLock),
+            "PROVE_ISOLATION_AND_LOCK"
+        );
+        assert_eq!(action_name(&CredentialPlaneAction::Noop), "NOOP");
+    }
+}

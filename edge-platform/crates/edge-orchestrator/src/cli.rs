@@ -30,6 +30,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: CloudflareDnsCommand,
     },
+    CloudflareCredentialPlane {
+        #[command(subcommand)]
+        command: CloudflareCredentialPlaneCommand,
+    },
     CloudflareZeroTrust {
         #[command(subcommand)]
         command: CloudflareZeroTrustCommand,
@@ -60,6 +64,7 @@ impl Command {
             Self::ApplicationAcceptance(_) => "application-acceptance",
             Self::ApplicationCleanup(_) => "application-cleanup",
             Self::CloudflareDns { .. } => "cloudflare-dns",
+            Self::CloudflareCredentialPlane { .. } => "cloudflare-credential-plane",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Line3Mesh { .. } => "line3-mesh",
             Self::Production { .. } => "production",
@@ -231,6 +236,15 @@ impl CloudflareDnsCommand {
             Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub(crate) enum CloudflareCredentialPlaneCommand {
+    Inventory,
+    Plan,
+    Converge,
+    Verify,
+    Prove,
 }
 
 #[derive(Debug, Subcommand)]
@@ -624,6 +638,7 @@ mod tests {
         let digest = "a".repeat(64);
         let cases = [
             vec!["edge-orchestrator", "production", "diagnose"],
+            vec!["edge-orchestrator", "cloudflare-credential-plane", "verify"],
             vec![
                 "edge-orchestrator",
                 "application-cleanup",

@@ -113,6 +113,11 @@ def main() -> None:
         "router must call the Zero Trust backend",
     )
     require(
+        "/credential-plane " not in router
+        and "cloudflare-credential-plane.yml" not in router,
+        "router must not introduce a second credential-plane authority namespace",
+    )
+    require(
         "uses: ./.github/workflows/vultr-vpc-lifecycle.yml" in router,
         "router must call the VPC backend",
     )
@@ -177,8 +182,36 @@ def main() -> None:
         )
 
     require(
-        application.count("group: vultr-control-plane-production") == 5,
-        "application backend must serialize execute, production, read-only production observation, cleanup and acceptance jobs",
+        '"credential-inventory"' in application
+        and '"credential-plan"' in application
+        and '"credential-converge"' in application
+        and '"credential-verify"' in application
+        and '"credential-prove"' in application
+        and 'command_family = "production_credentials"' in application,
+        "credential-plane operations must remain under the canonical /production command family",
+    )
+    production_credentials = application.split(
+        "  production_credentials:\n", 1
+    )[1].split("\n  production:", 1)[0]
+    require(
+        '"${EDGE_CREDENTIAL_PLANE_ORCHESTRATOR}" cloudflare-credential-plane "${REQUESTED_OPERATION}"'
+        in production_credentials
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}"
+        in production_credentials
+        and "jq " not in production_credentials
+        and "VULTR_API_KEY" not in production_credentials
+        and "VULTR_SSH_PRIVATE_KEY" not in production_credentials
+        and "CLOUDFLARE_API_TOKEN" not in production_credentials
+        and "CLOUDFLARE_DNS_TOKEN" not in production_credentials
+        and "api.ipify.org" not in production_credentials
+        and "lease-acquire" not in production_credentials
+        and "lease-release" not in production_credentials,
+        "production credential transport must be target-account-only and contain no lifecycle semantics",
+    )
+
+    require(
+        application.count("group: vultr-control-plane-production") == 6,
+        "application backend must serialize execute, production, credentials, read-only observation, cleanup and acceptance jobs",
     )
     production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
     require(
@@ -529,7 +562,9 @@ def main() -> None:
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
-    execute_job = application.split("\n  execute:\n", 1)[1].split("\n  production:\n", 1)[0]
+    execute_job = application.split("\n  execute:\n", 1)[1].split(
+        "\n  production_credentials:\n", 1
+    )[0]
     require(
         "  cleanup:\n    needs: authorize" in application
         and "  acceptance:\n    needs: authorize" in application

@@ -1329,7 +1329,7 @@ mod tests {
     #[test]
     fn canonical_production_desired_state_is_protobuf_and_canonical() {
         let desired = canonical_production_desired_state().unwrap();
-        assert_eq!(desired.schema_version, 2);
+        assert_eq!(desired.schema_version, 3);
         assert_eq!(desired.environment, "production");
         assert_eq!(desired.machine_id, "production-1");
         assert_eq!(desired.public_hostname, "miu.alegria.by");
