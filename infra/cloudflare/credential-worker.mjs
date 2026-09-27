@@ -1,25 +1,9 @@
-const PROBE_SCHEMA_VERSION = 1;
-const PROBE_GENERATION = 1;
+const PROBE_GENERATION = "1";
+const PROBE_BASE64 = "__PROBE_BASE64__";
 
-function projectionValue(value) {
-  if (value === "windows") return 1;
-  if (value === "vm") return 2;
-  return 0;
-}
-
-function encodeIsolationProbe(projection) {
-  // CredentialIsolationProbe {
-  //   schema_version: 1,
-  //   generation: 1,
-  //   projection: WINDOWS|VM,
-  //   dummy_non_secret: true
-  // }
-  return Uint8Array.of(
-    0x08, PROBE_SCHEMA_VERSION,
-    0x10, PROBE_GENERATION,
-    0x18, projection,
-    0x20, 0x01,
-  );
+function decodeBase64(value) {
+  const raw = atob(value);
+  return Uint8Array.from(raw, (char) => char.charCodeAt(0));
 }
 
 function requestIsExactProbe(request) {
@@ -30,12 +14,14 @@ function requestIsExactProbe(request) {
   return (
     keys.length === 1 &&
     keys[0] === "generation" &&
-    url.searchParams.get("generation") === String(PROBE_GENERATION)
+    url.searchParams.get("generation") === PROBE_GENERATION
   );
 }
 
+const PROBE_BYTES = decodeBase64(PROBE_BASE64);
+
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     if (!requestIsExactProbe(request)) {
       return new Response("bounded credential probe only", {
         status: 404,
@@ -43,15 +29,7 @@ export default {
       });
     }
 
-    const projection = projectionValue(env.EDGE_PROJECTION);
-    if (projection === 0) {
-      return new Response("credential projection is not configured", {
-        status: 503,
-        headers: { "cache-control": "no-store" },
-      });
-    }
-
-    return new Response(encodeIsolationProbe(projection), {
+    return new Response(PROBE_BYTES, {
       status: 200,
       headers: {
         "cache-control": "no-store",
