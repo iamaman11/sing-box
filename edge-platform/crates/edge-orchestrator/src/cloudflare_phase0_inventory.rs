@@ -160,10 +160,7 @@ pub(crate) async fn run() -> Result<(), String> {
     // Cloudflare's account list endpoint is not an API-token discovery authority.
     // Memberships is the typed user-scoped discovery surface when Memberships Read is granted.
     let memberships_result = cloudflare::list_membership_accounts(&api_token).await;
-    let discovered_accounts = memberships_result
-        .as_ref()
-        .cloned()
-        .unwrap_or_default();
+    let discovered_accounts = memberships_result.as_ref().cloned().unwrap_or_default();
     let account_discovery = AccountDiscovery {
         memberships_api: ReadObservation::from(memberships_result),
         discovered_accounts: discovered_accounts.clone(),
