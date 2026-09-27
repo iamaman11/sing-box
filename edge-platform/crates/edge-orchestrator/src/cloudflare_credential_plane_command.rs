@@ -486,10 +486,6 @@ async fn apply_action(
             let worker_id = current.worker_id.as_deref().ok_or_else(|| {
                 "immutable Worker ID is required before Access creation".to_owned()
             })?;
-            let token_id = current
-                .service_token_id
-                .as_deref()
-                .ok_or_else(|| "service token ID is required before Access creation".to_owned())?;
             cloudflare::create_worker_access_application(
                 api_token,
                 &desired.target_account_id,
