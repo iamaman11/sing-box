@@ -2158,9 +2158,11 @@ mod tests {
             .len(),
             1
         );
-        assert!(split_tunnel_result_values(serde_json::json!({}))
-            .unwrap()
-            .is_empty());
+        assert!(
+            split_tunnel_result_values(serde_json::json!({}))
+                .unwrap()
+                .is_empty()
+        );
         assert!(split_tunnel_result_values(serde_json::json!({"unexpected": []})).is_err());
     }
 
