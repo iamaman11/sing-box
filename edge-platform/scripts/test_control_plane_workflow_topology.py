@@ -827,14 +827,22 @@ def main() -> None:
         "runtime_input_sha256" in edge_platform_ci
         and "runtime_input_digest.py compute" in edge_platform_ci
         and "runtime_input_digest.py decide" in edge_platform_ci
-        and "python3 edge-platform/scripts/test_runtime_input_digest.py" in edge_platform_ci
-        and "Resolve exact accepted VM runtime reuse" in edge_platform_ci,
+        and "python3 edge-platform/scripts/test_runtime_input_digest.py" in edge_platform_ci,
         "candidate CI must derive, test, and consume one conservative VM runtime input identity",
     )
     require(
-        'test "${candidate_agent_sha}" = "${EDGE_AGENT_SHA256}"' in edge_platform_ci
-        and 'runtime_source_revision="${EDGE_RUNTIME_SOURCE_REVISION}"' in edge_platform_ci,
-        "runtime reuse must prove deterministic edge-agent bytes and preserve original runtime provenance",
+        edge_platform_ci.count("bash edge-platform/scripts/resolve_durable_release.sh") == 1
+        and "Store exact accepted VM runtime reuse bytes" in edge_platform_ci
+        and "Materialize exact accepted VM runtime reuse bytes" in edge_platform_ci
+        and "Resolve exact accepted VM runtime reuse" not in edge_platform_ci,
+        "candidate CI must resolve the accepted base once and transport only exact verified reuse bytes to the Linux job",
+    )
+    require(
+        'runtime_source_revision="${EDGE_RUNTIME_SOURCE_REVISION}"' in edge_platform_ci
+        and 'EXPECTED_AGENT_SHA256: ${{ needs.dependencies.outputs.base_runtime_agent_sha256 }}' in edge_platform_ci
+        and 'test "$(sha256sum "${base_dir}/edge-agent-linux-amd64" | awk \'{print $1}\')" = "${EXPECTED_AGENT_SHA256}"' in edge_platform_ci
+        and 'if [[ "${RUNTIME_REUSE}" != "true" ]]; then' in edge_platform_ci,
+        "runtime reuse must preserve accepted provenance, verify transported bytes, and skip edge-agent rebuild only after the typed reuse decision",
     )
     require(
         '    ".github/workflows/edge-platform-ci.yml",' not in runtime_input
