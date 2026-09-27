@@ -2,10 +2,9 @@ use edge_controller_core::production::ProductionComposition;
 use edge_provider_cloudflare::{
     self as cloudflare, CloudflareAccessApplication, CloudflareAccessPolicy,
     CloudflareAccessServiceToken, CloudflareDevicePostureRule, CloudflareDeviceProfile,
-    CloudflareDnsObservedRecord,
-    CloudflareDnsRecordSummary, CloudflareGatewayRule, CloudflareMeshNode, CloudflareMeshRoute,
-    CloudflareSplitTunnelEntry, CloudflareWorkerDomain, CloudflareWorkerRoute,
-    CloudflareWorkerScript, CloudflareZeroTrustDeviceSettings,
+    CloudflareDnsObservedRecord, CloudflareDnsRecordSummary, CloudflareGatewayRule,
+    CloudflareMeshNode, CloudflareMeshRoute, CloudflareSplitTunnelEntry, CloudflareWorkerDomain,
+    CloudflareWorkerRoute, CloudflareWorkerScript, CloudflareZeroTrustDeviceSettings,
 };
 use std::env;
 
@@ -139,8 +138,9 @@ struct Phase0Inventory {
 
 pub(crate) async fn run() -> Result<(), String> {
     let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    let historical_token = env::var("CLOUDFLARE_API_TOKEN")
-        .map_err(|_| "CLOUDFLARE_API_TOKEN is required for historical-account inventory".to_owned())?;
+    let historical_token = env::var("CLOUDFLARE_API_TOKEN").map_err(|_| {
+        "CLOUDFLARE_API_TOKEN is required for historical-account inventory".to_owned()
+    })?;
     if historical_token.trim().is_empty() {
         return Err("CLOUDFLARE_API_TOKEN must be non-empty".to_owned());
     }
@@ -231,7 +231,10 @@ pub(crate) async fn run() -> Result<(), String> {
     println!("target_account_name={}", inventory.target_account_name);
     println!(
         "target_account_id={}",
-        inventory.target_account_id.as_deref().unwrap_or("<missing>")
+        inventory
+            .target_account_id
+            .as_deref()
+            .unwrap_or("<missing>")
     );
     println!();
     println!("{inventory:#?}");
