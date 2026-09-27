@@ -1708,9 +1708,9 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
         Some(Value::Array(values)) => values
             .iter()
             .map(|value| {
-                let destination = value.as_object().ok_or_else(|| {
-                    "Cloudflare Access destination must be an object".to_owned()
-                })?;
+                let destination = value
+                    .as_object()
+                    .ok_or_else(|| "Cloudflare Access destination must be an object".to_owned())?;
                 Ok(CloudflareAccessDestination {
                     destination_type: destination
                         .get("type")
@@ -1761,9 +1761,7 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             continue;
         };
         match entry.get("service_token") {
-            Some(Value::Object(service_token))
-                if entry.len() == 1 && service_token.len() == 1 =>
-            {
+            Some(Value::Object(service_token)) if entry.len() == 1 && service_token.len() == 1 => {
                 if let Some(token_id) = service_token
                     .get("token_id")
                     .and_then(Value::as_str)
