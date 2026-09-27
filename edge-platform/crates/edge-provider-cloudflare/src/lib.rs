@@ -2622,6 +2622,72 @@ mod tests {
     }
 
     #[test]
+    fn worker_access_parser_exposes_public_override_as_conflict() {
+        let application = access_application_from_value(serde_json::json!({
+            "id": "app-worker",
+            "name": "sing-box-credentials-windows-access",
+            "type": "self_hosted",
+            "service_auth_401_redirect": true,
+            "destinations": [{
+                "type": "worker",
+                "worker_id": "worker-id",
+                "overrides": [{
+                    "behavior": "public",
+                    "path_pattern": "/public/*"
+                }]
+            }]
+        }))
+        .unwrap();
+
+        assert_eq!(application.service_auth_401_redirect, Some(true));
+        assert_eq!(application.destinations.len(), 1);
+        assert!(application.destinations[0].has_overrides);
+    }
+
+    #[test]
+    fn service_auth_policy_parser_rejects_extra_identity_rules() {
+        let exact = access_policy_from_value(serde_json::json!({
+            "id": "policy-exact",
+            "name": "service-auth",
+            "decision": "non_identity",
+            "include": [{
+                "service_token": {
+                    "token_id": "token-1"
+                }
+            }],
+            "require": [],
+            "exclude": []
+        }))
+        .unwrap();
+        assert_eq!(exact.include_service_token_ids, vec!["token-1"]);
+        assert!(!exact.has_extra_rules);
+
+        let extra = access_policy_from_value(serde_json::json!({
+            "id": "policy-extra",
+            "name": "service-auth",
+            "decision": "non_identity",
+            "include": [
+                {
+                    "service_token": {
+                        "token_id": "token-1"
+                    }
+                },
+                {
+                    "email": {
+                        "email": "unexpected@example.com"
+                    }
+                }
+            ],
+            "require": [{
+                "everyone": {}
+            }]
+        }))
+        .unwrap();
+        assert_eq!(extra.include_service_token_ids, vec!["token-1"]);
+        assert!(extra.has_extra_rules);
+    }
+
+    #[test]
     fn parses_phase0_inventory_shapes_without_secret_material() {
         let script = worker_script_from_value(serde_json::json!({
             "id": "sing-box-credentials-windows"
