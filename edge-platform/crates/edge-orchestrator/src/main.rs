@@ -134,6 +134,9 @@ async fn run(
         Command::CloudflareZeroTrust { command } => {
             cloudflare_zero_trust_lifecycle_command::run(command.into_legacy_args()).await
         }
+        Command::Credentials { command } => {
+            cloudflare_credential_plane_command::run_delivery(command).await
+        }
         Command::Line3Mesh { command } => {
             cloudflare_mesh_lifecycle_command::run(command.into_legacy_args()).await
         }
