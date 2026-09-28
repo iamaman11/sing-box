@@ -152,8 +152,12 @@ async fn converge(
             return Ok(());
         }
 
-        let (after, next, performed) =
-            apply_once(control_token, desired, &authorized.authority.authority_digest).await?;
+        let (after, next, performed) = apply_once(
+            control_token,
+            desired,
+            &authorized.authority.authority_digest,
+        )
+        .await?;
         mutations = mutations.saturating_add(performed);
         if next == authorized.plan {
             return Err(format!(
@@ -185,8 +189,7 @@ async fn apply_once(
         CredentialDeliveryAction::UploadWorkerContract { projection } => {
             let projection = projection_desired(desired, projection)?;
             let current = projection_observation(&before, &projection.projection)?;
-            if current.worker_binding_count != Some(0)
-                || !current.worker_secret_bindings.is_empty()
+            if current.worker_binding_count != Some(0) || !current.worker_secret_bindings.is_empty()
             {
                 return Err(format!(
                     "refusing Worker code transition with existing bindings for {}",
@@ -414,7 +417,8 @@ fn validate_access_boundary(
                 projection.projection
             ));
         }
-        if current.service_token_duration.as_deref() != Some(desired.proof_token_duration.as_str()) {
+        if current.service_token_duration.as_deref() != Some(desired.proof_token_duration.as_str())
+        {
             return Err(format!(
                 "{} proof service token duration drifted",
                 projection.projection
@@ -490,14 +494,15 @@ async fn prove(
 
     let mut mutations = 0u32;
     for projection in projections(desired) {
-        mutations = mutations.saturating_add(
-            prove_projection(control_token, desired, &before, &projection).await?,
-        );
+        mutations = mutations
+            .saturating_add(prove_projection(control_token, desired, &before, &projection).await?);
     }
 
     let after = observe(control_token, desired).await?;
     if plan(desired, &after)? != CredentialDeliveryAction::Noop {
-        return Err("credential-delivery proof did not return to exact terminal A/B state".to_owned());
+        return Err(
+            "credential-delivery proof did not return to exact terminal A/B state".to_owned(),
+        );
     }
     println!("credential_delivery_status=PASS");
     println!("credential_delivery_contract=FIXED_A_B");
@@ -643,12 +648,10 @@ fn validate_enabled_proof_token(
             projection.projection
         ));
     }
-    token.client_id.clone().ok_or_else(|| {
-        format!(
-            "{} proof token client_id is missing",
-            projection.projection
-        )
-    })
+    token
+        .client_id
+        .clone()
+        .ok_or_else(|| format!("{} proof token client_id is missing", projection.projection))
 }
 
 fn require_allowed(
@@ -680,7 +683,9 @@ fn require_allowed(
         || payload.projection != expected_projection as i32
         || !payload.dummy_non_secret
     {
-        return Err(format!("{name} returned an incorrect or non-canonical A/B probe bundle"));
+        return Err(format!(
+            "{name} returned an incorrect or non-canonical A/B probe bundle"
+        ));
     }
     Ok(())
 }
@@ -922,11 +927,7 @@ fn workers_dev_hostname(
     )
 }
 
-fn probe_url(
-    projection: &ProjectionDesired,
-    workers_subdomain: &str,
-    generation: u64,
-) -> String {
+fn probe_url(projection: &ProjectionDesired, workers_subdomain: &str, generation: u64) -> String {
     format!(
         "https://{}.{}.workers.dev/v1/credentials?generation={generation}",
         projection.worker_name, workers_subdomain
@@ -1173,10 +1174,7 @@ mod tests {
         }
     }
 
-    fn make_terminal(
-        observed: &mut CredentialPlaneObservation,
-        projection_name: &str,
-    ) {
+    fn make_terminal(observed: &mut CredentialPlaneObservation, projection_name: &str) {
         let current = observed
             .projections
             .iter_mut()
@@ -1193,8 +1191,11 @@ mod tests {
                 binding_type: "secret_text".to_owned(),
             },
         ];
-        current.worker_version_tag =
-            Some(delivery_worker_material(projection_name).unwrap().version_tag);
+        current.worker_version_tag = Some(
+            delivery_worker_material(projection_name)
+                .unwrap()
+                .version_tag,
+        );
     }
 
     #[test]
