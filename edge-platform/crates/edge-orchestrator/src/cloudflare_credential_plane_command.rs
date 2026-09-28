@@ -1824,6 +1824,117 @@ mod tests {
         }
     }
 
+    fn exact_projection_observation(
+        desired: &ProductionCredentialPlaneOwnership,
+        projection_name: &str,
+        destination_type: &str,
+    ) -> ProjectionObservation {
+        let projection = projection_desired(desired, projection_name).unwrap();
+        let worker_id = format!("{projection_name}-worker-id");
+        let token_id = format!("{projection_name}-token-id");
+        let hostname = workers_dev_hostname(desired, &projection);
+        let (destination_worker_id, destination_uri) = match destination_type {
+            "worker" => (Some(worker_id.clone()), None),
+            "public" => (None, Some(hostname)),
+            other => (None, Some(format!("{other}.invalid"))),
+        };
+        ProjectionObservation {
+            projection: projection.projection.clone(),
+            worker_name: projection.worker_name,
+            worker_script_present: true,
+            worker_identity_present: true,
+            worker_id: Some(worker_id),
+            worker_binding_count: Some(0),
+            worker_version_tag: Some(
+                worker_material(desired, &projection.projection)
+                    .unwrap()
+                    .version_tag,
+            ),
+            workers_dev_enabled: Some(true),
+            previews_enabled: Some(false),
+            custom_domain_count: 0,
+            service_token_id: Some(token_id.clone()),
+            service_token_enabled: Some(false),
+            service_token_duration: Some(desired.proof_token_duration.clone()),
+            access_application_id: Some(format!("{projection_name}-app-id")),
+            access_application_type: Some("self_hosted".to_owned()),
+            access_service_auth_401_redirect: Some(true),
+            access_destination_type: Some(destination_type.to_owned()),
+            access_destination_worker_id: destination_worker_id,
+            access_destination_uri: destination_uri,
+            access_destination_has_overrides: Some(false),
+            access_policies: vec![cloudflare::CloudflareAccessPolicy {
+                id: format!("{projection_name}-policy-id"),
+                name: projection.access_policy_name,
+                decision: Some("non_identity".to_owned()),
+                include_service_token_ids: vec![token_id],
+                has_extra_rules: false,
+                precedence: Some(1),
+                reusable: Some(false),
+                app_count: None,
+            }],
+        }
+    }
+
+    fn exact_observation(
+        desired: &ProductionCredentialPlaneOwnership,
+        windows_destination: &str,
+        vm_destination: &str,
+    ) -> CredentialPlaneObservation {
+        CredentialPlaneObservation {
+            control_token_identity: cloudflare::CloudflareApiTokenIdentity {
+                id: "control-token-id".to_owned(),
+                status: "active".to_owned(),
+            },
+            access_organization: Some(cloudflare::CloudflareAccessOrganization {
+                name: desired.access_organization_name.clone(),
+                auth_domain: desired.access_auth_domain.clone(),
+                deny_unmatched_requests: Some(true),
+            }),
+            workers_dev_subdomain: Some(desired.workers_dev_subdomain.clone()),
+            projections: vec![
+                exact_projection_observation(desired, "windows", windows_destination),
+                exact_projection_observation(desired, "vm", vm_destination),
+            ],
+        }
+    }
+
+    #[test]
+    fn exact_hostname_access_destination_is_terminal_noop() {
+        let desired = desired();
+        let observed = exact_observation(&desired, "public", "public");
+        assert_eq!(plan(&desired, &observed).unwrap(), CredentialPlaneAction::Noop);
+    }
+
+    #[test]
+    fn exact_legacy_worker_destination_plans_one_in_place_update() {
+        let desired = desired();
+        let observed = exact_observation(&desired, "worker", "public");
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialPlaneAction::UpdateAccessApplication {
+                projection: "windows".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn unrelated_access_destination_fails_closed() {
+        let desired = desired();
+        let observed = exact_observation(&desired, "unexpected", "public");
+        assert!(plan(&desired, &observed).is_err());
+    }
+
+    #[test]
+    fn workers_dev_hostname_is_exact_and_scheme_free() {
+        let desired = desired();
+        let projection = projection_desired(&desired, "windows").unwrap();
+        assert_eq!(
+            workers_dev_hostname(&desired, &projection),
+            "sing-box-credentials-windows.sing-box-6be6e4b6340822dbeb18cb6c2f09c660.workers.dev"
+        );
+    }
+
     #[test]
     fn dummy_workers_are_physically_projection_specific_and_secret_free() {
         let desired = desired();
@@ -1985,6 +2096,12 @@ mod tests {
                 projection: "windows".to_owned(),
             }),
             "DISABLE_PROOF_TOKEN"
+        );
+        assert_eq!(
+            action_name(&CredentialPlaneAction::UpdateAccessApplication {
+                projection: "windows".to_owned(),
+            }),
+            "UPDATE_ACCESS_APPLICATION"
         );
         assert_eq!(action_name(&CredentialPlaneAction::Noop), "NOOP");
     }
