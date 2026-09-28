@@ -648,10 +648,19 @@ pub async fn probe_worker(
             .header("CF-Access-Client-ID", &credential.client_id)
             .header("CF-Access-Client-Secret", &credential.client_secret);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|err| format!("Cloudflare Worker probe request failed: {err}"))?;
+    let response = request.send().await.map_err(|err| {
+        format!(
+            "Cloudflare Worker probe request failed: {err}; timeout={} connect={} request={} body={} decode={} status={}",
+            err.is_timeout(),
+            err.is_connect(),
+            err.is_request(),
+            err.is_body(),
+            err.is_decode(),
+            err.status()
+                .map(|status| status.as_u16().to_string())
+                .unwrap_or_else(|| "NONE".to_owned())
+        )
+    })?;
     let status = response.status().as_u16();
     let content_type = response
         .headers()
