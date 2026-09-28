@@ -221,7 +221,7 @@ async fn run_runtime_apply_with_desired(
     desired: DesiredMeshState,
     application_spec: &Path,
 ) -> Result<(), String> {
-    let mut provider = provider_from_env(&desired)?;
+    let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
     let node_token = exact_mesh_node_token(&mut provider, &desired).await?;
     let authority = resolve_application_authority_from_spec(application_spec).await?;
     let state = converge_mesh_runtime_remote(&authority, node_token).await?;
@@ -278,7 +278,7 @@ async fn run_runtime_verify_with_desired(
     desired: DesiredMeshState,
     application_spec: &Path,
 ) -> Result<(), String> {
-    let mut provider = provider_from_env(&desired)?;
+    let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
     let provider_observation =
         wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
     let authority = resolve_application_authority_from_spec(application_spec).await?;
@@ -711,7 +711,7 @@ pub(crate) async fn acceptance_converge_provider(
         application_spec_path,
     )
     .await?;
-    let mut provider = provider_from_env(&desired)?;
+    let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
     for _ in 0..4 {
         let (observed, plan) = plan_mesh_apply(&mut provider, &desired).await?;
         if matches!(plan.action, ApplyAction::Noop) {
@@ -1022,6 +1022,18 @@ fn validate_verified_private_network(cidr: &str, private_ipv4: &str) -> Result<u
 fn provider_from_env(desired: &DesiredMeshState) -> Result<CloudflareMeshApiProvider, String> {
     let api_token = env::var("CLOUDFLARE_API_TOKEN")
         .map_err(|_| "CLOUDFLARE_API_TOKEN is required".to_owned())?;
+    CloudflareMeshApiProvider::new(api_token, desired.account_id.clone())
+}
+
+fn production_provider_from_env(
+    spec_path: &Path,
+    desired: &DesiredMeshState,
+) -> Result<CloudflareMeshApiProvider, String> {
+    if spec_path != Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return provider_from_env(desired);
+    }
+    let api_token = env::var("CLOUDFLARE_CONTROL_TOKEN")
+        .map_err(|_| "CLOUDFLARE_CONTROL_TOKEN is required for canonical production Mesh".to_owned())?;
     CloudflareMeshApiProvider::new(api_token, desired.account_id.clone())
 }
 
