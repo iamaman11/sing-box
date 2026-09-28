@@ -558,6 +558,331 @@ fn require_exact_delivery_secret_bindings(
     Ok(())
 }
 
+
+async fn delivery_prove(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let observed = observe(control_token, desired).await?;
+    let action = delivery_plan(desired, &observed)?;
+    if action != CredentialDeliveryAction::Noop {
+        return Err(format!(
+            "credential-delivery proof requires exact terminal A/B state; observed next action {}",
+            delivery_action_name(&action)
+        ));
+    }
+
+    let windows = projection_desired(desired, "windows")?;
+    let vm = projection_desired(desired, "vm")?;
+    let windows_observed = projection_observation(&observed, "windows")?;
+    let vm_observed = projection_observation(&observed, "vm")?;
+    let windows_token_id = windows_observed
+        .service_token_id
+        .as_deref()
+        .ok_or_else(|| "Windows proof token ID is missing".to_owned())?;
+    let vm_token_id = vm_observed
+        .service_token_id
+        .as_deref()
+        .ok_or_else(|| "VM proof token ID is missing".to_owned())?;
+
+    let mut mutations = 0u32;
+    let proof_result: Result<(), String> = async {
+        cloudflare::set_access_service_token_enabled(
+            control_token,
+            &desired.target_account_id,
+            windows_token_id,
+            &windows.service_token_name,
+            &desired.proof_token_duration,
+            true,
+        )
+        .await?;
+        mutations += 1;
+        cloudflare::set_access_service_token_enabled(
+            control_token,
+            &desired.target_account_id,
+            vm_token_id,
+            &vm.service_token_name,
+            &desired.proof_token_duration,
+            true,
+        )
+        .await?;
+        mutations += 1;
+
+        let windows_enabled = cloudflare::get_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            windows_token_id,
+        )
+        .await?;
+        let windows_client_id = validate_proof_token_state(
+            &windows,
+            windows_token_id,
+            &desired.proof_token_duration,
+            None,
+            &windows_enabled,
+        )?;
+        let vm_enabled = cloudflare::get_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        let vm_client_id = validate_proof_token_state(
+            &vm,
+            vm_token_id,
+            &desired.proof_token_duration,
+            None,
+            &vm_enabled,
+        )?;
+
+        let windows_credential = cloudflare::rotate_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            windows_token_id,
+        )
+        .await?;
+        mutations += 1;
+        validate_rotated_credential(
+            &windows,
+            windows_token_id,
+            &windows_client_id,
+            &desired.proof_token_duration,
+            &windows_credential,
+        )?;
+        let vm_credential = cloudflare::rotate_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        mutations += 1;
+        validate_rotated_credential(
+            &vm,
+            vm_token_id,
+            &vm_client_id,
+            &desired.proof_token_duration,
+            &vm_credential,
+        )?;
+
+        let windows_material = delivery_worker_material("windows")?;
+        let vm_material = delivery_worker_material("vm")?;
+        let workers_subdomain = observed
+            .workers_dev_subdomain
+            .as_deref()
+            .ok_or_else(|| "workers.dev account subdomain is missing".to_owned())?;
+
+        let windows_a = delivery_probe_url(
+            desired,
+            &windows,
+            workers_subdomain,
+            DELIVERY_PROBE_GENERATION_A,
+        );
+        let windows_b = delivery_probe_url(
+            desired,
+            &windows,
+            workers_subdomain,
+            DELIVERY_PROBE_GENERATION_B,
+        );
+        let windows_invalid = delivery_probe_url(
+            desired,
+            &windows,
+            workers_subdomain,
+            DELIVERY_INVALID_PROBE_GENERATION,
+        );
+        let vm_a = delivery_probe_url(
+            desired,
+            &vm,
+            workers_subdomain,
+            DELIVERY_PROBE_GENERATION_A,
+        );
+        let vm_b = delivery_probe_url(
+            desired,
+            &vm,
+            workers_subdomain,
+            DELIVERY_PROBE_GENERATION_B,
+        );
+        let vm_invalid = delivery_probe_url(
+            desired,
+            &vm,
+            workers_subdomain,
+            DELIVERY_INVALID_PROBE_GENERATION,
+        );
+
+        let wa = cloudflare::probe_worker(&windows_a, Some(&windows_credential)).await?;
+        let wb = cloudflare::probe_worker(&windows_b, Some(&windows_credential)).await?;
+        let wi = cloudflare::probe_worker(&windows_invalid, Some(&windows_credential)).await?;
+        let va = cloudflare::probe_worker(&vm_a, Some(&vm_credential)).await?;
+        let vb = cloudflare::probe_worker(&vm_b, Some(&vm_credential)).await?;
+        let vi = cloudflare::probe_worker(&vm_invalid, Some(&vm_credential)).await?;
+        let wv = cloudflare::probe_worker(&vm_a, Some(&windows_credential)).await?;
+        let vw = cloudflare::probe_worker(&windows_a, Some(&vm_credential)).await?;
+        let aw = cloudflare::probe_worker(&windows_a, None).await?;
+        let av = cloudflare::probe_worker(&vm_a, None).await?;
+
+        require_delivery_allowed(
+            "windows_slot_a",
+            &wa,
+            &windows_material.slots[0].payload,
+            DELIVERY_PROBE_GENERATION_A,
+            CredentialProjectionKind::Windows,
+        )?;
+        require_delivery_allowed(
+            "windows_slot_b",
+            &wb,
+            &windows_material.slots[1].payload,
+            DELIVERY_PROBE_GENERATION_B,
+            CredentialProjectionKind::Windows,
+        )?;
+        require_delivery_not_found("windows_invalid_generation", &wi)?;
+        require_delivery_allowed(
+            "vm_slot_a",
+            &va,
+            &vm_material.slots[0].payload,
+            DELIVERY_PROBE_GENERATION_A,
+            CredentialProjectionKind::Vm,
+        )?;
+        require_delivery_allowed(
+            "vm_slot_b",
+            &vb,
+            &vm_material.slots[1].payload,
+            DELIVERY_PROBE_GENERATION_B,
+            CredentialProjectionKind::Vm,
+        )?;
+        require_delivery_not_found("vm_invalid_generation", &vi)?;
+        require_denied("windows_to_vm", &wv)?;
+        require_denied("vm_to_windows", &vw)?;
+        require_denied("anonymous_to_windows", &aw)?;
+        require_denied("anonymous_to_vm", &av)?;
+
+        println!("credential_delivery_proof_case=windows_slot_a outcome=PASS status={}", wa.status);
+        println!("credential_delivery_proof_case=windows_slot_b outcome=PASS status={}", wb.status);
+        println!("credential_delivery_proof_case=windows_invalid_generation outcome=NOT_FOUND status={}", wi.status);
+        println!("credential_delivery_proof_case=vm_slot_a outcome=PASS status={}", va.status);
+        println!("credential_delivery_proof_case=vm_slot_b outcome=PASS status={}", vb.status);
+        println!("credential_delivery_proof_case=vm_invalid_generation outcome=NOT_FOUND status={}", vi.status);
+        println!("credential_delivery_proof_case=windows_to_vm outcome=DENIED status={}", wv.status);
+        println!("credential_delivery_proof_case=vm_to_windows outcome=DENIED status={}", vw.status);
+        println!("credential_delivery_proof_case=anonymous_to_windows outcome=DENIED status={}", aw.status);
+        println!("credential_delivery_proof_case=anonymous_to_vm outcome=DENIED status={}", av.status);
+        Ok(())
+    }
+    .await;
+
+    let disable_windows = cloudflare::set_access_service_token_enabled(
+        control_token,
+        &desired.target_account_id,
+        windows_token_id,
+        &windows.service_token_name,
+        &desired.proof_token_duration,
+        false,
+    )
+    .await;
+    if disable_windows.is_ok() {
+        mutations += 1;
+    }
+    let disable_vm = cloudflare::set_access_service_token_enabled(
+        control_token,
+        &desired.target_account_id,
+        vm_token_id,
+        &vm.service_token_name,
+        &desired.proof_token_duration,
+        false,
+    )
+    .await;
+    if disable_vm.is_ok() {
+        mutations += 1;
+    }
+    if let Err(err) = disable_windows {
+        return Err(format!(
+            "credential-delivery proof cleanup failed to disable Windows proof token: {err}"
+        ));
+    }
+    if let Err(err) = disable_vm {
+        return Err(format!(
+            "credential-delivery proof cleanup failed to disable VM proof token: {err}"
+        ));
+    }
+    proof_result?;
+
+    let after = observe(control_token, desired).await?;
+    if delivery_plan(desired, &after)? != CredentialDeliveryAction::Noop {
+        return Err("credential-delivery proof did not return to exact terminal A/B state".to_owned());
+    }
+    println!("credential_delivery_status=PASS");
+    println!("credential_delivery_contract=FIXED_A_B");
+    println!("exact_generation_selection=PASS");
+    println!("cross_projection_isolation=PASS");
+    println!("proof_tokens_enabled=false");
+    println!("proof_provider_mutations={mutations}");
+    println!("credential_secret_mutations=0");
+    println!("real_credentials_created=0");
+    println!("production_runtime_mutations=0");
+    Ok(())
+}
+
+fn delivery_probe_url(
+    _desired: &ProductionCredentialPlaneOwnership,
+    projection: &ProjectionDesired,
+    workers_subdomain: &str,
+    generation: u64,
+) -> String {
+    format!(
+        "https://{}.{}.workers.dev/v1/credentials?generation={generation}",
+        projection.worker_name, workers_subdomain
+    )
+}
+
+fn require_delivery_allowed(
+    name: &str,
+    probe: &cloudflare::CloudflareWorkerProbe,
+    expected_body: &[u8],
+    expected_generation: u64,
+    expected_projection: CredentialProjectionKind,
+) -> Result<(), String> {
+    if probe.status != 200 || probe.body != expected_body {
+        return Err(format!(
+            "{name} expected exact HTTP 200 A/B typed payload, observed status={} body_len={}",
+            probe.status,
+            probe.body.len()
+        ));
+    }
+    if !probe
+        .content_type
+        .as_deref()
+        .is_some_and(|value| value.starts_with("application/x-protobuf"))
+    {
+        return Err(format!("{name} did not return application/x-protobuf"));
+    }
+    let payload = CredentialDeliveryBundle::decode(probe.body.as_slice())
+        .map_err(|err| format!("{name} returned invalid CredentialDeliveryBundle: {err}"))?;
+    if payload.encode_to_vec() != probe.body
+        || payload.schema_version != 1
+        || payload.generation != expected_generation
+        || payload.projection != expected_projection as i32
+        || !payload.dummy_non_secret
+    {
+        return Err(format!(
+            "{name} returned a non-canonical or incorrect credential-delivery probe bundle"
+        ));
+    }
+    Ok(())
+}
+
+fn require_delivery_not_found(
+    name: &str,
+    probe: &cloudflare::CloudflareWorkerProbe,
+) -> Result<(), String> {
+    if probe.status != 404 || !probe.body.is_empty() {
+        return Err(format!(
+            "{name} expected exact HTTP 404 with empty body, observed status={} body_len={}",
+            probe.status,
+            probe.body.len()
+        ));
+    }
+    Ok(())
+}
+
+
 async fn delivery_verify(
     control_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
@@ -2056,6 +2381,127 @@ fn workers_dev_hostname(
         projection.worker_name, desired.workers_dev_subdomain
     )
 }
+
+
+fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, String> {
+    let projection_kind = match projection {
+        "windows" => CredentialProjectionKind::Windows,
+        "vm" => CredentialProjectionKind::Vm,
+        _ => return Err(format!("unsupported credential projection {projection}")),
+    };
+    let slots = [
+        (DELIVERY_SLOT_A, DELIVERY_PROBE_GENERATION_A),
+        (DELIVERY_SLOT_B, DELIVERY_PROBE_GENERATION_B),
+    ]
+    .into_iter()
+    .map(|(name, generation)| {
+        let payload = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation,
+            projection: projection_kind as i32,
+            dummy_non_secret: true,
+        }
+        .encode_to_vec();
+        DeliverySlot {
+            name,
+            generation,
+            secret_text: hex_encode(&payload),
+            payload,
+        }
+    })
+    .collect::<Vec<_>>();
+
+    let source = r#"const SLOT_NAMES=["EDGE_CREDENTIAL_BUNDLE_A","EDGE_CREDENTIAL_BUNDLE_B"];
+const EXPECTED_PROJECTION=__EXPECTED_PROJECTION__;
+function hexBytes(value){
+  if(typeof value!=="string"||value.length===0||value.length%2!==0||!/^[0-9a-f]+$/.test(value)) return null;
+  const out=new Uint8Array(value.length/2);
+  for(let i=0;i<out.length;i++) out[i]=Number.parseInt(value.slice(i*2,i*2+2),16);
+  return out;
+}
+function readVarint(bytes,pos){
+  let value=0n,shift=0n;
+  for(let i=0;i<10;i++){
+    if(pos>=bytes.length) return null;
+    const byte=BigInt(bytes[pos++]);
+    value|=(byte&127n)<<shift;
+    if((byte&128n)===0n) return [value,pos];
+    shift+=7n;
+  }
+  return null;
+}
+function inspect(bytes){
+  let pos=0,schema=null,generation=null,projection=null;
+  while(pos<bytes.length){
+    const key=readVarint(bytes,pos);
+    if(!key) return null;
+    const field=Number(key[0]>>3n),wire=Number(key[0]&7n);
+    pos=key[1];
+    if(field===0) return null;
+    if(wire===0){
+      const value=readVarint(bytes,pos);
+      if(!value) return null;
+      pos=value[1];
+      if(field===1) schema=Number(value[0]);
+      else if(field===2) generation=value[0];
+      else if(field===3) projection=Number(value[0]);
+      continue;
+    }
+    if(wire===1){
+      if(pos+8>bytes.length) return null;
+      pos+=8;
+      continue;
+    }
+    if(wire===2){
+      const size=readVarint(bytes,pos);
+      if(!size||size[0]>BigInt(bytes.length)) return null;
+      pos=size[1];
+      const length=Number(size[0]);
+      if(pos+length>bytes.length) return null;
+      pos+=length;
+      continue;
+    }
+    if(wire===5){
+      if(pos+4>bytes.length) return null;
+      pos+=4;
+      continue;
+    }
+    return null;
+  }
+  if(schema!==1||generation===null||projection!==EXPECTED_PROJECTION) return null;
+  return generation;
+}
+export default {async fetch(request,env){
+  const url=new URL(request.url);
+  const raw=url.searchParams.get("generation");
+  if(request.method!=="GET"||url.pathname!=="/v1/credentials"||url.searchParams.size!==1||raw===null||!/^(0|[1-9][0-9]*)$/.test(raw))
+    return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});
+  let wanted;
+  try{wanted=BigInt(raw);}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});}
+  const matches=[];
+  for(const name of SLOT_NAMES){
+    const bytes=hexBytes(env[name]);
+    if(bytes!==null&&inspect(bytes)===wanted) matches.push(bytes);
+  }
+  if(matches.length!==1)
+    return new Response(null,{status:matches.length===0?404:409,headers:{"Cache-Control":"no-store"}});
+  return new Response(matches[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}});
+}};
+"#
+    .replace("__EXPECTED_PROJECTION__", &(projection_kind as i32).to_string());
+    let source_hash = sha256_hex(source.as_bytes());
+    let version_tag = format!("sing-box-phase6-ab-{projection}-{}", &source_hash[..16]);
+    Ok(DeliveryWorkerMaterial {
+        source,
+        version_tag,
+        slots,
+    })
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 
 fn worker_material(
     _desired: &ProductionCredentialPlaneOwnership,
