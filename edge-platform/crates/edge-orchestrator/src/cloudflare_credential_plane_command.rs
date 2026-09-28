@@ -1,10 +1,10 @@
-use crate::cli::CloudflareCredentialPlaneCommand;
+use crate::cli::{CloudflareCredentialPlaneCommand, CredentialDeliveryCommand};
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_provider_cloudflare as cloudflare;
-use edge_shared_types::{CredentialIsolationProbe, CredentialProjectionKind};
+use edge_shared_types::{CredentialDeliveryBundle, CredentialIsolationProbe, CredentialProjectionKind};
 use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
@@ -12,6 +12,12 @@ use std::env;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONVERGENCE_STEPS: usize = 16;
+const DELIVERY_MAX_CONVERGENCE_STEPS: usize = 4;
+const DELIVERY_SLOT_A: &str = "EDGE_CREDENTIAL_BUNDLE_A";
+const DELIVERY_SLOT_B: &str = "EDGE_CREDENTIAL_BUNDLE_B";
+const DELIVERY_PROBE_GENERATION_A: u64 = 9_000_001;
+const DELIVERY_PROBE_GENERATION_B: u64 = 9_000_002;
+const DELIVERY_INVALID_PROBE_GENERATION: u64 = 9_000_003;
 const ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS: usize = 6;
 const ACCESS_ANALYTICS_EVIDENCE_INTERVAL_SECONDS: u64 = 60;
 
@@ -32,6 +38,7 @@ struct ProjectionObservation {
     worker_identity_present: bool,
     worker_id: Option<String>,
     worker_binding_count: Option<usize>,
+    worker_secret_bindings: Vec<cloudflare::CloudflareWorkerSecretBinding>,
     worker_version_tag: Option<String>,
     workers_dev_enabled: Option<bool>,
     previews_enabled: Option<bool>,
@@ -71,6 +78,28 @@ enum CredentialPlaneAction {
     ConfigureWorkersDev { projection: String },
     DisableProofToken { projection: String },
     ProveIsolationAndLock,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+enum CredentialDeliveryAction {
+    Noop,
+    UploadWorkerContract { projection: String },
+    SeedDummySlots { projection: String },
+}
+
+#[derive(Debug, Clone)]
+struct DeliverySlot {
+    name: &'static str,
+    generation: u64,
+    payload: Vec<u8>,
+    secret_text: String,
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryWorkerMaterial {
+    source: String,
+    version_tag: String,
+    slots: Vec<DeliverySlot>,
 }
 
 #[derive(Debug, Clone)]
@@ -1396,7 +1425,7 @@ async fn observe(
         let worker_identity_present = worker_identity.is_some();
         let worker_id = worker_identity.map(|worker| worker.id.clone());
 
-        let (settings, workers_dev_enabled, previews_enabled) = if worker_script_present {
+        let (settings, worker_secret_bindings, workers_dev_enabled, previews_enabled) = if worker_script_present {
             let subdomain = cloudflare::get_worker_script_subdomain(
                 api_token,
                 &desired.target_account_id,
@@ -1412,12 +1441,19 @@ async fn observe(
                     )
                     .await?,
                 ),
+                cloudflare::list_worker_script_secrets(
+                    api_token,
+                    &desired.target_account_id,
+                    &projection.worker_name,
+                )
+                .await?,
                 Some(subdomain.enabled),
                 Some(subdomain.previews_enabled),
             )
         } else {
             (
                 None,
+                Vec::new(),
                 worker_identity.and_then(|worker| worker.workers_dev_enabled),
                 worker_identity.and_then(|worker| worker.previews_enabled),
             )
@@ -1476,6 +1512,7 @@ async fn observe(
             worker_identity_present,
             worker_id,
             worker_binding_count: settings.as_ref().map(|value| value.binding_count),
+            worker_secret_bindings,
             worker_version_tag: settings.and_then(|value| value.version_tag),
             workers_dev_enabled,
             previews_enabled,
