@@ -1329,7 +1329,7 @@ mod tests {
     #[test]
     fn canonical_production_desired_state_is_protobuf_and_canonical() {
         let desired = canonical_production_desired_state().unwrap();
-        assert_eq!(desired.schema_version, 3);
+        assert_eq!(desired.schema_version, 4);
         assert_eq!(desired.environment, "production");
         assert_eq!(desired.machine_id, "production-1");
         assert_eq!(desired.public_hostname, "miu.alegria.by");
@@ -1341,6 +1341,14 @@ mod tests {
         assert_eq!(
             cloudflare.migration_target_account_id,
             "6be6e4b6340822dbeb18cb6c2f09c660"
+        );
+        let target_plane = cloudflare.target_plane.as_ref().unwrap();
+        assert_eq!(target_plane.mesh_profile_name, "sing-box Mesh nodes");
+        assert_eq!(target_plane.mesh_profile_service_mode, "warp");
+        assert_eq!(target_plane.mesh_profile_tunnel_protocol, "masque");
+        assert_eq!(
+            target_plane.mesh_profile_include_cidrs,
+            vec!["100.64.0.0/12".to_owned(), "100.96.0.0/12".to_owned()]
         );
         assert_eq!(
             desired.dns.as_ref().unwrap().account_id,

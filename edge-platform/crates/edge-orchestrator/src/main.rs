@@ -10,6 +10,7 @@ mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
 mod cloudflare_phase0_inventory;
+mod cloudflare_target_plane_command;
 mod cloudflare_zero_trust_doctor;
 mod cloudflare_zero_trust_lifecycle_command;
 mod cloudflare_zero_trust_lifecycle_service;
@@ -116,6 +117,20 @@ async fn run(
         Command::CloudflareCredentialPlane { command } => {
             cloudflare_credential_plane_command::run(command).await
         }
+        Command::CloudflareTargetPlane { command } => match command {
+            cli::CloudflareTargetPlaneCommand::Inventory => {
+                cloudflare_target_plane_command::inventory().await
+            }
+            cli::CloudflareTargetPlaneCommand::Plan => {
+                cloudflare_target_plane_command::plan_command().await
+            }
+            cli::CloudflareTargetPlaneCommand::Converge => {
+                cloudflare_target_plane_command::converge().await
+            }
+            cli::CloudflareTargetPlaneCommand::Verify => {
+                cloudflare_target_plane_command::verify().await
+            }
+        },
         Command::CloudflareZeroTrust { command } => {
             cloudflare_zero_trust_lifecycle_command::run(command.into_legacy_args()).await
         }

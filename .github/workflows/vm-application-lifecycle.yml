@@ -76,6 +76,19 @@ jobs:
               command_family = "production_credentials"
               operation = tokens[1].removeprefix("credential-")
               spec_path = "infra/production/production.textproto"
+          elif (
+              len(tokens) == 2
+              and tokens[0] == "/production"
+              and tokens[1] in {
+                  "target-plane-inventory",
+                  "target-plane-plan",
+                  "target-plane-converge",
+                  "target-plane-verify",
+              }
+          ):
+              command_family = "production_target_plane"
+              operation = tokens[1].removeprefix("target-plane-")
+              spec_path = "infra/production/production.textproto"
           elif tokens == ["/application", "acceptance"]:
               command_family = "application"
               operation = "acceptance"
@@ -135,6 +148,93 @@ jobs:
               handle.write(f"rollback_digest={rollback_digest}\n")
               handle.write(f"recovery_authority_digest={recovery_authority_digest}\n")
           PY
+
+  production_target_plane:
+    needs: authorize
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    if: needs.authorize.outputs.command_family == 'production_target_plane'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test "${SPEC_PATH}" = "infra/production/production.textproto"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+
+      - name: Materialize verified target-plane owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_TARGET_PLANE_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Execute aggregate Vertical B target-plane operation
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/target-plane-result.txt"
+          test -x "${EDGE_TARGET_PLANE_ORCHESTRATOR}"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          test -n "${CLOUDFLARE_DNS_TOKEN}"
+          test -n "${VULTR_API_KEY}"
+          "${EDGE_TARGET_PLANE_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}" | tee "${result}"
+
+          {
+            echo '### Vertical B target-plane result'
+            echo
+            printf 'Operation: `target-plane-%s`\n' "${REQUESTED_OPERATION}"
+            echo
+            echo 'One canonical production.textproto and one exact durable ReleaseSet were used.'
+            echo 'The job materialized only target-account control, shared-zone DNS and Vultr provider authority.'
+            echo 'No SSH key, historical Cloudflare mutation token or runtime agent was materialized.'
+            echo
+            echo '~~~text'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   execute:
     needs: authorize
@@ -417,6 +517,7 @@ jobs:
             cat "${result}"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
+
 
   production:
     needs: authorize

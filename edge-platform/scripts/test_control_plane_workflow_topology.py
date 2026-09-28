@@ -210,8 +210,37 @@ def main() -> None:
     )
 
     require(
-        application.count("group: vultr-control-plane-production") == 6,
-        "application backend must serialize execute, production, credentials, read-only observation, cleanup and acceptance jobs",
+        '"target-plane-inventory"' in application
+        and '"target-plane-plan"' in application
+        and '"target-plane-converge"' in application
+        and '"target-plane-verify"' in application
+        and 'command_family = "production_target_plane"' in application,
+        "Vertical B target-plane operations must remain under the canonical /production command family",
+    )
+    production_target_plane = application.split(
+        "  production_target_plane:\n", 1
+    )[1].split("\n  execute:", 1)[0]
+    require(
+        '"${EDGE_TARGET_PLANE_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
+        in production_target_plane
+        and production_target_plane.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}"
+        in production_target_plane
+        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}"
+        in production_target_plane
+        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_target_plane
+        and "CLOUDFLARE_API_TOKEN" not in production_target_plane
+        and "VULTR_SSH_PRIVATE_KEY" not in production_target_plane
+        and "EDGE_SSH_PRIVATE_KEY_PATH" not in production_target_plane
+        and "api.ipify.org" not in production_target_plane
+        and "lease-acquire" not in production_target_plane
+        and "lease-release" not in production_target_plane
+        and "jq " not in production_target_plane,
+        "target-plane transport must expose only target-account, shared-DNS and Vultr provider authority",
+    )
+    require(
+        application.count("group: vultr-control-plane-production") == 7,
+        "application backend must serialize target-plane, execute, production, credentials, read-only observation, cleanup and acceptance jobs",
     )
     production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
     require(
