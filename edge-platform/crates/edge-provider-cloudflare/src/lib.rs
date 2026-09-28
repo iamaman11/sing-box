@@ -645,13 +645,13 @@ pub async fn update_hostname_access_application(
         ))
         .send()
         .await
-        .map_err(|err| format!("failed to get Cloudflare Access application before update: {err}"))?;
+        .map_err(|err| {
+            format!("failed to get Cloudflare Access application before update: {err}")
+        })?;
     let payload: ApiEnvelope<Value> = parse_success_json(get_response).await?;
-    let mut application = payload
-        .result
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "Cloudflare Access application update source must be an object".to_owned())?;
+    let mut application = payload.result.as_object().cloned().ok_or_else(|| {
+        "Cloudflare Access application update source must be an object".to_owned()
+    })?;
     if application.get("id").and_then(Value::as_str) != Some(application_id)
         || application.get("name").and_then(Value::as_str) != Some(name)
         || application.get("type").and_then(Value::as_str) != Some("self_hosted")
