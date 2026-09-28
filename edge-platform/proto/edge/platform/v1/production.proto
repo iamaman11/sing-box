@@ -85,6 +85,21 @@ message ProductionCloudflare {
   // Phase 2 credential-delivery isolation desired state. This plane is created
   // only in migration_target_account_id and does not make that account active.
   ProductionCredentialPlane credential_plane = 3;
+
+  // Parallel target-plane desired state used by Vertical B before the account
+  // becomes active. This owns only sing-box-exclusive account-scoped resources.
+  ProductionTargetPlane target_plane = 4;
+}
+
+message ProductionTargetPlane {
+  string mesh_profile_name = 1;
+  string mesh_profile_description = 2;
+  uint64 mesh_profile_precedence_start = 3;
+  string mesh_profile_service_mode = 4;
+  string mesh_profile_tunnel_protocol = 5;
+  uint64 mesh_profile_auto_connect = 6;
+  bool mesh_profile_switch_locked = 7;
+  repeated string mesh_profile_include_cidrs = 8;
 }
 
 message ProductionCredentialPlane {
