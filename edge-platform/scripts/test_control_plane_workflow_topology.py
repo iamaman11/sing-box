@@ -608,7 +608,7 @@ def main() -> None:
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
     execute_job = application.split("\n  execute:\n", 1)[1].split(
-        "\n  production_credentials:\n", 1
+        "\n  production:\n", 1
     )[0]
     require(
         "  cleanup:\n    needs: authorize" in application
