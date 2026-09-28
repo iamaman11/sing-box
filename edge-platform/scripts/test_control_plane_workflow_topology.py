@@ -560,9 +560,11 @@ def main() -> None:
     )
     require(
         "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_job
-        and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_job
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_job
+        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_job
+        and "CLOUDFLARE_API_TOKEN" not in production_job
         and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in production_job,
-        "production backend must receive only the bounded provider and strict-SSH authorities required by the typed coordinator",
+        "production backend must receive dedicated account control, shared-DNS and strict-SSH authority without historical Cloudflare mutation authority",
     )
     for forbidden in [
         "INSTANCE_ID",
