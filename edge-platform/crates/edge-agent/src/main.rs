@@ -56,6 +56,8 @@ const RUNTIME_SECRET_DIR: &str = "runtime-secrets";
 const RUNTIME_SECRET_FILE: &str = "application-runtime-v1.env";
 const MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env";
 const MESH_RUNTIME_FAILURE_FILE: &str = "last-readiness-failure-v1.pb";
+const MESH_ACTIVE_REGISTRATION_FILE: &str = "active-registration-v1";
+const MESH_STATE_DIR_KEY: &str = "MESH_STATE_DIR";
 const MAX_MESH_FAILURE_REASONS: usize = 12;
 const MAX_MESH_FAILURE_REASON_CHARS: usize = 512;
 const IMAGE_ENV_FILE: &str = ".images.env";
@@ -309,11 +311,16 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<MeshRuntimeConvergeRequest>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
-        let state = converge_mesh_runtime(&self.stack_dir, &request.into_inner().node_token)
-            .await
-            .map_err(|err| {
-                Status::failed_precondition(format!("Mesh runtime convergence failed: {err}"))
-            })?;
+        let request = request.into_inner();
+        let state = converge_mesh_runtime(
+            &self.stack_dir,
+            &request.registration_id,
+            &request.node_token,
+        )
+        .await
+        .map_err(|err| {
+            Status::failed_precondition(format!("Mesh runtime convergence failed: {err}"))
+        })?;
         Ok(Response::new(state))
     }
 
@@ -1354,6 +1361,70 @@ fn mesh_runtime_state_dir(stack_dir: &Path) -> Result<PathBuf, String> {
     Ok(host_root.join("mesh-state"))
 }
 
+fn validate_mesh_registration_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(
+            "Mesh registration identity must be a non-empty bounded path-safe provider identity"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn mesh_registration_state_dir(
+    stack_dir: &Path,
+    registration_id: &str,
+) -> Result<PathBuf, String> {
+    validate_mesh_registration_id(registration_id)?;
+    Ok(mesh_runtime_state_dir(stack_dir)?.join(registration_id))
+}
+
+fn mesh_active_registration_path(stack_dir: &Path) -> Result<PathBuf, String> {
+    Ok(mesh_runtime_state_dir(stack_dir)?.join(MESH_ACTIVE_REGISTRATION_FILE))
+}
+
+fn read_mesh_registration_id(stack_dir: &Path) -> Result<Option<String>, String> {
+    let path = mesh_active_registration_path(stack_dir)?;
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(format!(
+                "failed to read active Mesh registration identity: {err}"
+            ));
+        }
+    };
+    let value = raw
+        .strip_suffix('\n')
+        .ok_or_else(|| "active Mesh registration identity must end with one newline".to_owned())?;
+    if value.contains('\n') || value.contains('\r') {
+        return Err("active Mesh registration identity must contain exactly one line".to_owned());
+    }
+    validate_mesh_registration_id(value)?;
+    Ok(Some(value.to_owned()))
+}
+
+fn persist_mesh_registration_id(stack_dir: &Path, registration_id: &str) -> Result<(), String> {
+    validate_mesh_registration_id(registration_id)?;
+    prepare_mesh_runtime_state(stack_dir)?;
+    let path = mesh_active_registration_path(stack_dir)?;
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, format!("{registration_id}\n"))
+        .map_err(|err| format!("failed to write active Mesh registration identity: {err}"))?;
+    set_bundle_file_permissions(&temporary, false, false)?;
+    fs::rename(&temporary, &path)
+        .map_err(|err| format!("failed to publish active Mesh registration identity: {err}"))?;
+    if read_mesh_registration_id(stack_dir)?.as_deref() != Some(registration_id) {
+        return Err("active Mesh registration identity failed exact verification".to_owned());
+    }
+    Ok(())
+}
+
 fn read_mesh_node_token(stack_dir: &Path) -> Result<String, String> {
     let path = mesh_runtime_secret_path(stack_dir)?;
     let raw = fs::read_to_string(&path)
@@ -1411,10 +1482,14 @@ fn prepare_mesh_runtime_state(stack_dir: &Path) -> Result<(), String> {
 fn run_mesh_compose(
     stack_dir: &Path,
     images: &BTreeMap<String, String>,
+    registration_state_dir: &Path,
     node_token: &str,
     args: &[&str],
 ) -> Result<(), String> {
     validate_mesh_node_token(node_token)?;
+    if !registration_state_dir.is_dir() {
+        return Err("Mesh registration state directory is not materialized".to_owned());
+    }
     let mut command = Command::new("docker");
     command
         .arg("compose")
@@ -1435,6 +1510,7 @@ fn run_mesh_compose(
             images.get(EDGE_MESH_IMAGE_KEY).unwrap(),
         )
         .env(MESH_NODE_TOKEN_KEY, node_token)
+        .env(MESH_STATE_DIR_KEY, registration_state_dir)
         .env_remove("COMPOSE_FILE")
         .env_remove("COMPOSE_PROFILES")
         .stdout(Stdio::null())
@@ -1651,26 +1727,38 @@ async fn inspect_mesh_runtime(
         warnings,
         diagnostics,
         last_failure_snapshot,
+        registration_id: read_mesh_registration_id(stack_dir).unwrap_or(None),
     }
 }
 
 async fn converge_mesh_runtime(
     stack_dir: &Path,
+    registration_id: &str,
     node_token: &str,
 ) -> Result<MeshRuntimeState, String> {
+    validate_mesh_registration_id(registration_id)?;
     validate_mesh_node_token(node_token)?;
     let images = read_exact_image_environment(stack_dir)?;
     prepare_mesh_runtime_state(stack_dir)?;
+    let registration_state = mesh_registration_state_dir(stack_dir, registration_id)?;
+    fs::create_dir_all(&registration_state).map_err(|err| {
+        format!(
+            "failed to create identity-scoped Mesh registration state: {err}"
+        )
+    })?;
+    set_private_directory_permissions(&registration_state)?;
     persist_mesh_node_token(stack_dir, node_token)?;
     run_mesh_compose(
         stack_dir,
         &images,
+        &registration_state,
         node_token,
         &["--profile", "mesh", "pull", "cloudflare-mesh"],
     )?;
     run_mesh_compose(
         stack_dir,
         &images,
+        &registration_state,
         node_token,
         &[
             "--profile",
@@ -1682,6 +1770,7 @@ async fn converge_mesh_runtime(
             "cloudflare-mesh",
         ],
     )?;
+    persist_mesh_registration_id(stack_dir, registration_id)?;
 
     let mut last = inspect_mesh_runtime(stack_dir, MeshDiagnosticDepth::Basic).await;
     for _ in 0..45 {
