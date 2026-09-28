@@ -885,7 +885,9 @@ pub async fn list_access_login_events(
         .and_then(|value| value.get("viewer"))
         .and_then(|value| value.get("accounts"))
         .and_then(Value::as_array)
-        .ok_or_else(|| "Cloudflare GraphQL Access response is missing data.viewer.accounts".to_owned())?;
+        .ok_or_else(|| {
+            "Cloudflare GraphQL Access response is missing data.viewer.accounts".to_owned()
+        })?;
     if accounts.len() != 1 {
         return Err(format!(
             "Cloudflare GraphQL Access response expected one account, observed {}",
@@ -2224,7 +2226,9 @@ fn access_login_event_from_value(value: Value) -> Result<CloudflareAccessLoginEv
     let dimensions = value
         .get("dimensions")
         .and_then(Value::as_object)
-        .ok_or_else(|| "Cloudflare GraphQL Access login event dimensions must be an object".to_owned())?;
+        .ok_or_else(|| {
+            "Cloudflare GraphQL Access login event dimensions must be an object".to_owned()
+        })?;
     Ok(CloudflareAccessLoginEvent {
         datetime: optional_value_string(dimensions, "datetime"),
         is_successful_login: optional_boolish(dimensions, "isSuccessfulLogin")?,
