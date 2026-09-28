@@ -8,9 +8,12 @@ use edge_shared_types::{CredentialIsolationProbe, CredentialProjectionKind};
 use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
-use std::env;
+use std::{env, time::Duration};
+use tokio::time::sleep;
 
 const MAX_CONVERGENCE_STEPS: usize = 16;
+const MAX_ROUTE_READINESS_ATTEMPTS: usize = 12;
+const ROUTE_READINESS_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProjectionDesired {
@@ -594,6 +597,9 @@ async fn prove_isolation(
         vm.worker_name, workers_subdomain
     );
 
+    wait_for_access_barrier("windows", &windows_url).await?;
+    wait_for_access_barrier("vm", &vm_url).await?;
+
     let mut mutations = 0u32;
     let mut windows_enabled_by_proof = false;
     let mut vm_enabled_by_proof = false;
@@ -742,6 +748,42 @@ async fn prove_isolation(
     }
 
     proof_result.map(|report| (report, mutations))
+}
+
+async fn wait_for_access_barrier(projection: &str, url: &str) -> Result<(), String> {
+    for attempt in 1..=MAX_ROUTE_READINESS_ATTEMPTS {
+        match cloudflare::probe_worker(url, None).await {
+            Ok(probe) => {
+                if probe.status == 401 {
+                    println!(
+                        "route_readiness={} outcome=PASS status=401 attempt={attempt}",
+                        projection
+                    );
+                    return Ok(());
+                }
+                return Err(format!(
+                    "{projection} workers.dev route reached HTTP before proof but Access barrier was not exact 401: status={} body_len={}",
+                    probe.status,
+                    probe.body.len()
+                ));
+            }
+            Err(err) if attempt < MAX_ROUTE_READINESS_ATTEMPTS => {
+                println!(
+                    "route_readiness={} outcome=WAIT attempt={attempt} transport_error={err}",
+                    projection
+                );
+                sleep(ROUTE_READINESS_RETRY_DELAY).await;
+            }
+            Err(err) => {
+                return Err(format!(
+                    "{projection} workers.dev route did not become reachable behind Access within bounded {MAX_ROUTE_READINESS_ATTEMPTS} attempts: {err}"
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "{projection} workers.dev route readiness exhausted unexpectedly"
+    ))
 }
 
 fn require_allowed(
@@ -1206,6 +1248,12 @@ mod tests {
         assert!(!vm.source.contains("password"));
         assert!(!windows.source.contains("0x08"));
         assert!(!vm.source.contains("0x08"));
+    }
+
+    #[test]
+    fn readiness_policy_is_bounded_and_requires_access_denial() {
+        assert_eq!(MAX_ROUTE_READINESS_ATTEMPTS, 12);
+        assert_eq!(ROUTE_READINESS_RETRY_DELAY, Duration::from_secs(5));
     }
 
     #[test]
