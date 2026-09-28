@@ -1349,9 +1349,12 @@ async fn print_access_evaluation_inventory(
         } else {
             app.policy_ids.join(",")
         };
-        let legacy =
-            cloudflare::list_access_application_policies(api_token, &desired.target_account_id, &app.id)
-                .await?;
+        let legacy = cloudflare::list_access_application_policies(
+            api_token,
+            &desired.target_account_id,
+            &app.id,
+        )
+        .await?;
         println!(
             "access_application id={} name={} type={} service_auth_401_redirect={} destinations={} policy_refs={} legacy_policy_count={}",
             app.id,
