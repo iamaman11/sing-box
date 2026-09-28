@@ -42,6 +42,12 @@ pub struct MeshCleanupReport {
     pub next_plan: CleanupPlan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshRuntimeCredential {
+    pub registration_id: String,
+    pub node_token: String,
+}
+
 #[allow(async_fn_in_trait)]
 pub trait MeshProvider {
     async fn list_nodes(&mut self, exact_name: &str) -> Result<Vec<CloudflareMeshNode>, String>;
@@ -197,7 +203,7 @@ pub async fn apply_mesh_once<P: MeshProvider>(
 pub async fn exact_mesh_node_token<P: MeshProvider>(
     provider: &mut P,
     desired: &DesiredMeshState,
-) -> Result<String, String> {
+) -> Result<MeshRuntimeCredential, String> {
     let (observed, plan) = plan_mesh_apply(provider, desired).await?;
     if plan.action != ApplyAction::Noop {
         return Err(format!(
@@ -218,7 +224,10 @@ pub async fn exact_mesh_node_token<P: MeshProvider>(
     {
         return Err("Cloudflare Mesh node token has an invalid bounded shape".to_owned());
     }
-    Ok(token)
+    Ok(MeshRuntimeCredential {
+        registration_id: node.provider_id.clone(),
+        node_token: token,
+    })
 }
 
 pub async fn wait_mesh_provider_healthy<P: MeshProvider>(
@@ -686,12 +695,11 @@ mod tests {
 
         let (_observed, plan) = plan_mesh_apply(&mut provider, &desired).await.unwrap();
         assert_eq!(plan.action, ApplyAction::Noop);
-        assert_eq!(
-            exact_mesh_node_token(&mut provider, &desired)
-                .await
-                .unwrap(),
-            "opaque-mesh-node-token"
-        );
+        let credential = exact_mesh_node_token(&mut provider, &desired)
+            .await
+            .unwrap();
+        assert_eq!(credential.registration_id, "node-1");
+        assert_eq!(credential.node_token, "opaque-mesh-node-token");
         assert!(
             wait_mesh_provider_healthy(&mut provider, &desired, policy())
                 .await

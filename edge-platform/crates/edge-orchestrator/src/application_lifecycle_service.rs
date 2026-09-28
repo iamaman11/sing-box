@@ -1460,11 +1460,15 @@ pub(crate) async fn observe_ipv4_network_remote(
 
 pub(crate) async fn converge_mesh_runtime_remote(
     authority: &ApplicationAuthority,
+    registration_id: String,
     node_token: String,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
     match client
-        .converge_mesh_runtime(Request::new(MeshRuntimeConvergeRequest { node_token }))
+        .converge_mesh_runtime(Request::new(MeshRuntimeConvergeRequest {
+            node_token,
+            registration_id,
+        }))
         .await
     {
         Ok(response) => Ok(response.into_inner()),
@@ -1591,9 +1595,10 @@ fn mesh_runtime_evidence_summary(state: &MeshRuntimeState) -> String {
         .unwrap_or_else(|| "none".to_owned());
 
     format!(
-        "runtime_ready={} exact_image_ready={} warp_state={} tunnel_protocol={} warp_status={} warp_settings={} container_present={} container_running={} container_image={} container_networks={:?} restart_count={} oom_killed={} host_identity={} host_time={} host_resources={} last_failure_at={} last_failure_reasons={}",
+        "runtime_ready={} exact_image_ready={} registration_id={} warp_state={} tunnel_protocol={} warp_status={} warp_settings={} container_present={} container_running={} container_image={} container_networks={:?} restart_count={} oom_killed={} host_identity={} host_time={} host_resources={} last_failure_at={} last_failure_reasons={}",
         state.runtime_ready,
         state.exact_image_ready,
+        state.registration_id.as_deref().unwrap_or("missing"),
         diagnostics
             .and_then(|value| value.warp_connection_state.as_deref())
             .unwrap_or("UNKNOWN"),

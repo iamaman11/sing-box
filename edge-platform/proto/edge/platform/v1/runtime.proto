@@ -271,6 +271,10 @@ message TraceObservation {
 
 message MeshRuntimeConvergeRequest {
   string node_token = 1;
+  // Non-secret exact provider Mesh node identity. Registration state is
+  // isolated by this identity so account/node cutovers never reuse another
+  // node's persisted Cloudflare One registration.
+  string registration_id = 2;
 }
 
 enum RuntimeProbeStatus {
@@ -444,4 +448,5 @@ message MeshRuntimeState {
   repeated string warnings = 5;
   MeshRuntimeDiagnostics diagnostics = 6;
   MeshRuntimeFailureSnapshot last_failure_snapshot = 7;
+  optional string registration_id = 8;
 }
