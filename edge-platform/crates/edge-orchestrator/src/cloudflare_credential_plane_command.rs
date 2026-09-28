@@ -873,10 +873,12 @@ fn validate_proof_token_state(
             token.duration.as_deref().unwrap_or("ABSENT")
         ));
     }
-    let client_id = token
-        .client_id
-        .as_deref()
-        .ok_or_else(|| format!("{} proof service token client_id is missing", projection.projection))?;
+    let client_id = token.client_id.as_deref().ok_or_else(|| {
+        format!(
+            "{} proof service token client_id is missing",
+            projection.projection
+        )
+    })?;
     if let Some(expected) = expected_client_id
         && client_id != expected
     {
@@ -885,10 +887,12 @@ fn validate_proof_token_state(
             projection.projection, expected, client_id
         ));
     }
-    let expires_at = token
-        .expires_at
-        .as_deref()
-        .ok_or_else(|| format!("{} proof service token expires_at is missing", projection.projection))?;
+    let expires_at = token.expires_at.as_deref().ok_or_else(|| {
+        format!(
+            "{} proof service token expires_at is missing",
+            projection.projection
+        )
+    })?;
     let expires = OffsetDateTime::parse(expires_at, &Rfc3339).map_err(|err| {
         format!(
             "{} proof service token expires_at is not RFC3339: {err}",
@@ -1477,9 +1481,7 @@ mod tests {
 
         let mut expired = token.clone();
         expired.expires_at = Some("2000-01-01T00:00:00Z".to_owned());
-        assert!(
-            validate_proof_token_state(&projection, "token-id", "1h", None, &expired).is_err()
-        );
+        assert!(validate_proof_token_state(&projection, "token-id", "1h", None, &expired).is_err());
     }
 
     #[test]
@@ -1494,14 +1496,8 @@ mod tests {
             name: Some(projection.service_token_name.clone()),
         };
         assert!(
-            validate_rotated_credential(
-                &projection,
-                "token-id",
-                "client-id",
-                "1h",
-                &credential
-            )
-            .is_ok()
+            validate_rotated_credential(&projection, "token-id", "client-id", "1h", &credential)
+                .is_ok()
         );
     }
 
