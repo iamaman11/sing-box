@@ -107,6 +107,7 @@ pub async fn run(command: CloudflareCredentialPlaneCommand) -> Result<(), String
         CloudflareCredentialPlaneCommand::Inventory => {
             let observed = observe(&control_token, &desired).await?;
             print_observation(&desired, &observed);
+            print_access_evaluation_inventory(&control_token, &desired).await?;
             Ok(())
         }
         CloudflareCredentialPlaneCommand::Plan => {
@@ -1317,6 +1318,112 @@ fn action_name(action: &CredentialPlaneAction) -> &'static str {
         CredentialPlaneAction::DisableProofToken { .. } => "DISABLE_PROOF_TOKEN",
         CredentialPlaneAction::ProveIsolationAndLock => "PROVE_ISOLATION_AND_LOCK",
     }
+}
+
+async fn print_access_evaluation_inventory(
+    api_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let applications =
+        cloudflare::list_access_applications(api_token, &desired.target_account_id).await?;
+    let reusable =
+        cloudflare::list_access_reusable_policies(api_token, &desired.target_account_id).await?;
+    println!("access_application_total={}", applications.len());
+    for app in applications {
+        let destinations = app
+            .destinations
+            .iter()
+            .map(|destination| {
+                format!(
+                    "{}:worker_id={}:uri={}:overrides={}",
+                    destination.destination_type,
+                    destination.worker_id.as_deref().unwrap_or("ABSENT"),
+                    destination.uri.as_deref().unwrap_or("ABSENT"),
+                    destination.has_overrides
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let policy_refs = if app.policy_ids.is_empty() {
+            "NONE".to_owned()
+        } else {
+            app.policy_ids.join(",")
+        };
+        let legacy =
+            cloudflare::list_access_application_policies(api_token, &desired.target_account_id, &app.id)
+                .await?;
+        println!(
+            "access_application id={} name={} type={} service_auth_401_redirect={} destinations={} policy_refs={} legacy_policy_count={}",
+            app.id,
+            app.name,
+            app.app_type,
+            app.service_auth_401_redirect
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            if destinations.is_empty() {
+                "NONE".to_owned()
+            } else {
+                destinations
+            },
+            policy_refs,
+            legacy.len()
+        );
+        for policy in legacy {
+            println!(
+                "access_application_policy app_id={} id={} name={} decision={} precedence={} reusable={} app_count={} service_token_ids={} extra_rules={}",
+                app.id,
+                policy.id,
+                policy.name,
+                policy.decision.as_deref().unwrap_or("ABSENT"),
+                policy
+                    .precedence
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "ABSENT".to_owned()),
+                policy
+                    .reusable
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "ABSENT".to_owned()),
+                policy
+                    .app_count
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "ABSENT".to_owned()),
+                if policy.include_service_token_ids.is_empty() {
+                    "NONE".to_owned()
+                } else {
+                    policy.include_service_token_ids.join(",")
+                },
+                policy.has_extra_rules
+            );
+        }
+    }
+    println!("access_reusable_policy_total={}", reusable.len());
+    for policy in reusable {
+        println!(
+            "access_reusable_policy id={} name={} decision={} precedence={} reusable={} app_count={} service_token_ids={} extra_rules={}",
+            policy.id,
+            policy.name,
+            policy.decision.as_deref().unwrap_or("ABSENT"),
+            policy
+                .precedence
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            policy
+                .reusable
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            policy
+                .app_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            if policy.include_service_token_ids.is_empty() {
+                "NONE".to_owned()
+            } else {
+                policy.include_service_token_ids.join(",")
+            },
+            policy.has_extra_rules
+        );
+    }
+    Ok(())
 }
 
 fn print_observation(
