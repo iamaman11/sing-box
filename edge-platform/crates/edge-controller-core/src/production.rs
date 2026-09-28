@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 3;
+pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 4;
 pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str = "infra/production/production.textproto";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -37,10 +37,24 @@ pub struct ProductionCredentialPlaneOwnership {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProductionTargetPlaneOwnership {
+    pub target_account_id: String,
+    pub mesh_profile_name: String,
+    pub mesh_profile_description: String,
+    pub mesh_profile_precedence_start: u64,
+    pub mesh_profile_service_mode: String,
+    pub mesh_profile_tunnel_protocol: String,
+    pub mesh_profile_auto_connect: u64,
+    pub mesh_profile_switch_locked: bool,
+    pub mesh_profile_include_cidrs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProductionCloudflareOwnership {
     pub active_account_id: String,
     pub migration_target_account_id: Option<String>,
     pub credential_plane: ProductionCredentialPlaneOwnership,
+    pub target_plane: ProductionTargetPlaneOwnership,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,7 +255,10 @@ impl ProductionComposition {
             Some(cloudflare.migration_target_account_id.clone())
         };
         let credential_plane = cloudflare.credential_plane.as_ref().ok_or_else(|| {
-            validation("cloudflare.credential_plane is required in production schema v3")
+            validation("cloudflare.credential_plane is required in production schema v4")
+        })?;
+        let target_plane = cloudflare.target_plane.as_ref().ok_or_else(|| {
+            validation("cloudflare.target_plane is required in production schema v4")
         })?;
         let target_account_id = migration_target_account_id.clone().ok_or_else(|| {
             validation("credential plane requires cloudflare.migration_target_account_id")
@@ -333,6 +350,49 @@ impl ProductionComposition {
             ));
         }
 
+        if target_plane.mesh_profile_name != "sing-box Mesh nodes" {
+            return Err(validation(
+                "cloudflare.target_plane.mesh_profile_name must be exactly sing-box Mesh nodes",
+            ));
+        }
+        if target_plane.mesh_profile_description
+            != "Project Mesh nodes: Traffic and DNS over MASQUE with required Cloudflare Mesh ranges"
+        {
+            return Err(validation(
+                "cloudflare.target_plane.mesh_profile_description differs from the accepted project-owned profile",
+            ));
+        }
+        if target_plane.mesh_profile_precedence_start == 0 {
+            return Err(validation(
+                "cloudflare.target_plane.mesh_profile_precedence_start must be greater than zero",
+            ));
+        }
+        if target_plane.mesh_profile_service_mode != "warp"
+            || target_plane.mesh_profile_tunnel_protocol != "masque"
+            || target_plane.mesh_profile_auto_connect == 0
+            || !target_plane.mesh_profile_switch_locked
+        {
+            return Err(validation(
+                "target Mesh profile must be always-on WARP over MASQUE with a locked switch",
+            ));
+        }
+        let target_mesh_cidrs = target_plane
+            .mesh_profile_include_cidrs
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let expected_target_mesh_cidrs = BTreeSet::from([
+            "100.64.0.0/12".to_owned(),
+            "100.96.0.0/12".to_owned(),
+        ]);
+        if target_mesh_cidrs != expected_target_mesh_cidrs
+            || target_plane.mesh_profile_include_cidrs.len() != expected_target_mesh_cidrs.len()
+        {
+            return Err(validation(
+                "target Mesh profile must include exactly 100.64.0.0/12 and 100.96.0.0/12",
+            ));
+        }
+
         validate_cloudflare_account_id("dns.account_id", &dns.account_id)?;
         if !mesh.account_id.is_empty() {
             return Err(validation(
@@ -344,7 +404,7 @@ impl ProductionComposition {
             active_account_id: cloudflare.active_account_id.clone(),
             migration_target_account_id,
             credential_plane: ProductionCredentialPlaneOwnership {
-                target_account_id,
+                target_account_id: target_account_id.clone(),
                 access_organization_name: credential_plane.access_organization_name.clone(),
                 access_auth_domain: credential_plane.access_auth_domain.clone(),
                 windows_worker_name: credential_plane.windows_worker_name.clone(),
@@ -360,6 +420,17 @@ impl ProductionComposition {
                 worker_compatibility_date: credential_plane.worker_compatibility_date.clone(),
                 proof_token_duration: credential_plane.proof_token_duration.clone(),
                 workers_dev_subdomain: credential_plane.workers_dev_subdomain.clone(),
+            },
+            target_plane: ProductionTargetPlaneOwnership {
+                target_account_id,
+                mesh_profile_name: target_plane.mesh_profile_name.clone(),
+                mesh_profile_description: target_plane.mesh_profile_description.clone(),
+                mesh_profile_precedence_start: target_plane.mesh_profile_precedence_start,
+                mesh_profile_service_mode: target_plane.mesh_profile_service_mode.clone(),
+                mesh_profile_tunnel_protocol: target_plane.mesh_profile_tunnel_protocol.clone(),
+                mesh_profile_auto_connect: target_plane.mesh_profile_auto_connect,
+                mesh_profile_switch_locked: target_plane.mesh_profile_switch_locked,
+                mesh_profile_include_cidrs: target_plane.mesh_profile_include_cidrs.clone(),
             },
         };
         let shared_dns_account_id = dns.account_id.clone();
