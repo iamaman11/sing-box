@@ -1545,9 +1545,8 @@ pub async fn list_access_applications(
             applications.push(access_application_from_value(value)?);
         }
         if page_count < 50 {
-            applications.sort_by(|left, right| {
-                left.name.cmp(&right.name).then(left.id.cmp(&right.id))
-            });
+            applications
+                .sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
             return Ok(applications);
         }
     }
@@ -1599,9 +1598,7 @@ pub async fn list_access_reusable_policies(
             policies.push(access_policy_from_value(value)?);
         }
         if page_count < 50 {
-            policies.sort_by(|left, right| {
-                left.name.cmp(&right.name).then(left.id.cmp(&right.id))
-            });
+            policies.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
             return Ok(policies);
         }
     }
