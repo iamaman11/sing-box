@@ -2255,9 +2255,7 @@ fn worker_script_settings_from_value(
     })
 }
 
-fn worker_secret_binding_from_value(
-    value: Value,
-) -> Result<CloudflareWorkerSecretBinding, String> {
+fn worker_secret_binding_from_value(value: Value) -> Result<CloudflareWorkerSecretBinding, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "Cloudflare Worker secret binding must be an object".to_owned())?;
