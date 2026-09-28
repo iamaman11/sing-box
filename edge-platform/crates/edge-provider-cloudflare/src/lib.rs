@@ -595,15 +595,15 @@ pub async fn set_access_service_token_enabled(
     ensure_success(response).await
 }
 
-pub async fn create_worker_access_application(
+pub async fn create_hostname_access_application(
     api_token: &str,
     account_id: &str,
     name: &str,
-    worker_id: &str,
+    hostname: &str,
 ) -> Result<(), String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Access application name", name)?;
-    require_non_empty("Cloudflare Worker immutable ID", worker_id)?;
+    require_non_empty("Cloudflare Access public hostname", hostname)?;
     let client = authorized_client(api_token)?;
     let response = client
         .post(format!("{API_ROOT}/accounts/{account_id}/access/apps"))
@@ -613,13 +613,69 @@ pub async fn create_worker_access_application(
             "session_duration": "1h",
             "service_auth_401_redirect": true,
             "destinations": [{
-                "type": "worker",
-                "worker_id": worker_id
+                "type": "public",
+                "uri": hostname
             }]
         }))
         .send()
         .await
-        .map_err(|err| format!("failed to create Cloudflare Worker Access application: {err}"))?;
+        .map_err(|err| format!("failed to create Cloudflare hostname Access application: {err}"))?;
+    ensure_success(response).await
+}
+
+pub async fn update_hostname_access_application(
+    api_token: &str,
+    account_id: &str,
+    application_id: &str,
+    name: &str,
+    hostname: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access application ID", application_id)?;
+    require_non_empty("Cloudflare Access application name", name)?;
+    require_non_empty("Cloudflare Access public hostname", hostname)?;
+    let client = authorized_client(api_token)?;
+
+    // Cloudflare documents Access application updates as PUT and recommends
+    // preserving the existing application fields. Read the exact application,
+    // validate its identity, and replace only the destination contract.
+    let get_response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{application_id}"
+        ))
+        .send()
+        .await
+        .map_err(|err| {
+            format!("failed to get Cloudflare Access application before update: {err}")
+        })?;
+    let payload: ApiEnvelope<Value> = parse_success_json(get_response).await?;
+    let mut application = payload.result.as_object().cloned().ok_or_else(|| {
+        "Cloudflare Access application update source must be an object".to_owned()
+    })?;
+    if application.get("id").and_then(Value::as_str) != Some(application_id)
+        || application.get("name").and_then(Value::as_str) != Some(name)
+        || application.get("type").and_then(Value::as_str) != Some("self_hosted")
+    {
+        return Err(
+            "Cloudflare Access application identity changed before destination update".to_owned(),
+        );
+    }
+    application.insert(
+        "destinations".to_owned(),
+        serde_json::json!([{
+            "type": "public",
+            "uri": hostname
+        }]),
+    );
+
+    let response = client
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{application_id}"
+        ))
+        .json(&application)
+        .send()
+        .await
+        .map_err(|err| format!("failed to update Cloudflare hostname Access application: {err}"))?;
     ensure_success(response).await
 }
 
