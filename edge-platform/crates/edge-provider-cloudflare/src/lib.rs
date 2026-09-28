@@ -495,13 +495,18 @@ pub async fn upload_worker_module(
     require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
     require_non_empty("Cloudflare Worker version tag", version_tag)?;
     let client = authorized_client(api_token)?;
+    let version_message = if version_tag.starts_with("sing-box-phase6-ab-") {
+        "sing-box Phase 6 fixed A/B credential delivery contract"
+    } else {
+        "sing-box Phase 2 dummy credential projection"
+    };
     let metadata = serde_json::json!({
         "main_module": "worker.js",
         "compatibility_date": compatibility_date,
         "bindings": [],
         "annotations": {
             "workers/tag": version_tag,
-            "workers/message": "sing-box Phase 2 dummy credential projection"
+            "workers/message": version_message
         }
     })
     .to_string();
