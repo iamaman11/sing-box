@@ -42,6 +42,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: CloudflareZeroTrustCommand,
     },
+    Credentials {
+        #[command(subcommand)]
+        command: CredentialDeliveryCommand,
+    },
     #[command(name = "line3-mesh")]
     Line3Mesh {
         #[command(subcommand)]
@@ -71,6 +75,7 @@ impl Command {
             Self::CloudflareCredentialPlane { .. } => "cloudflare-credential-plane",
             Self::CloudflareTargetPlane { .. } => "cloudflare-target-plane",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
+            Self::Credentials { .. } => "credentials",
             Self::Line3Mesh { .. } => "line3-mesh",
             Self::Production { .. } => "production",
             Self::VultrLifecycle { .. } => "vultr-lifecycle",
@@ -250,6 +255,14 @@ pub(crate) enum CloudflareCredentialPlaneCommand {
     Converge,
     Verify,
     Prove,
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub(crate) enum CredentialDeliveryCommand {
+    ContractPlan,
+    ContractConverge,
+    ContractVerify,
+    ContractProve,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
