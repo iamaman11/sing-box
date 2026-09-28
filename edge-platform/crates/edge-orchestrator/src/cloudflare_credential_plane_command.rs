@@ -42,7 +42,9 @@ struct ProjectionObservation {
     access_application_id: Option<String>,
     access_application_type: Option<String>,
     access_service_auth_401_redirect: Option<bool>,
+    access_destination_type: Option<String>,
     access_destination_worker_id: Option<String>,
+    access_destination_uri: Option<String>,
     access_destination_has_overrides: Option<bool>,
     access_policies: Vec<cloudflare::CloudflareAccessPolicy>,
 }
@@ -64,6 +66,7 @@ enum CredentialPlaneAction {
     UploadWorkerModuleLocked { projection: String },
     CreateServiceToken { projection: String },
     CreateAccessApplication { projection: String },
+    UpdateAccessApplication { projection: String },
     CreateAccessPolicy { projection: String },
     ConfigureWorkersDev { projection: String },
     DisableProofToken { projection: String },
@@ -410,6 +413,7 @@ fn plan(
         }
 
         let token_id = observed.service_token_id.as_deref().unwrap();
+        let expected_hostname = workers_dev_hostname(desired, &projection);
         match observed.access_application_id.as_deref() {
             None => {
                 ensure_projection_locked(&projection, observed)?;
@@ -420,11 +424,9 @@ fn plan(
             Some(_) => {
                 if observed.access_application_type.as_deref() != Some("self_hosted")
                     || observed.access_service_auth_401_redirect != Some(true)
-                    || observed.access_destination_worker_id.as_deref() != Some(worker_id)
-                    || observed.access_destination_has_overrides != Some(false)
                 {
                     return Err(format!(
-                        "Access application {} is not an exact whole-Worker destination",
+                        "Access application {} differs from the exact self-hosted Service Auth contract",
                         projection.access_application_name
                     ));
                 }
@@ -451,6 +453,32 @@ fn plan(
                         projection.projection
                     ));
                 }
+
+                let destination_is_exact_hostname =
+                    observed.access_destination_type.as_deref() == Some("public")
+                        && observed.access_destination_uri.as_deref()
+                            == Some(expected_hostname.as_str())
+                        && observed.access_destination_worker_id.is_none()
+                        && observed.access_destination_has_overrides == Some(false);
+                if destination_is_exact_hostname {
+                    continue;
+                }
+
+                let destination_is_exact_legacy_worker =
+                    observed.access_destination_type.as_deref() == Some("worker")
+                        && observed.access_destination_worker_id.as_deref() == Some(worker_id)
+                        && observed.access_destination_uri.is_none()
+                        && observed.access_destination_has_overrides == Some(false);
+                if destination_is_exact_legacy_worker {
+                    return Ok(CredentialPlaneAction::UpdateAccessApplication {
+                        projection: projection.projection,
+                    });
+                }
+
+                return Err(format!(
+                    "Access application {} has an ambiguous destination; expected exact public hostname {} or the exact migratable Worker destination",
+                    projection.access_application_name, expected_hostname
+                ));
             }
         }
     }
@@ -566,15 +594,29 @@ async fn apply_action(
         }
         CredentialPlaneAction::CreateAccessApplication { projection } => {
             let projection = projection_desired(desired, projection)?;
-            let current = projection_observation(observed, &projection.projection)?;
-            let worker_id = current.worker_id.as_deref().ok_or_else(|| {
-                "immutable Worker ID is required before Access creation".to_owned()
-            })?;
-            cloudflare::create_worker_access_application(
+            let hostname = workers_dev_hostname(desired, &projection);
+            cloudflare::create_hostname_access_application(
                 api_token,
                 &desired.target_account_id,
                 &projection.access_application_name,
-                worker_id,
+                &hostname,
+            )
+            .await?;
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::UpdateAccessApplication { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let current = projection_observation(observed, &projection.projection)?;
+            let application_id = current.access_application_id.as_deref().ok_or_else(|| {
+                "Access application ID is required before destination update".to_owned()
+            })?;
+            let hostname = workers_dev_hostname(desired, &projection);
+            cloudflare::update_hostname_access_application(
+                api_token,
+                &desired.target_account_id,
+                application_id,
+                &projection.access_application_name,
+                &hostname,
             )
             .await?;
             Ok((None, 1))
@@ -1425,7 +1467,9 @@ async fn observe(
             access_application_id: app.map(|value| value.id.clone()),
             access_application_type: app.map(|value| value.app_type.clone()),
             access_service_auth_401_redirect: app.and_then(|value| value.service_auth_401_redirect),
+            access_destination_type: destination.map(|value| value.destination_type.clone()),
             access_destination_worker_id: destination.and_then(|value| value.worker_id.clone()),
+            access_destination_uri: destination.and_then(|value| value.uri.clone()),
             access_destination_has_overrides: destination.map(|value| value.has_overrides),
             access_policies: policies,
         });
@@ -1492,6 +1536,16 @@ fn projection_observation<'a>(
         .ok_or_else(|| format!("missing credential projection observation {projection}"))
 }
 
+fn workers_dev_hostname(
+    desired: &ProductionCredentialPlaneOwnership,
+    projection: &ProjectionDesired,
+) -> String {
+    format!(
+        "{}.{}.workers.dev",
+        projection.worker_name, desired.workers_dev_subdomain
+    )
+}
+
 fn worker_material(
     _desired: &ProductionCredentialPlaneOwnership,
     projection: &str,
@@ -1541,6 +1595,7 @@ fn action_name(action: &CredentialPlaneAction) -> &'static str {
         CredentialPlaneAction::UploadWorkerModuleLocked { .. } => "UPLOAD_WORKER_MODULE_LOCKED",
         CredentialPlaneAction::CreateServiceToken { .. } => "CREATE_SERVICE_TOKEN",
         CredentialPlaneAction::CreateAccessApplication { .. } => "CREATE_ACCESS_APPLICATION",
+        CredentialPlaneAction::UpdateAccessApplication { .. } => "UPDATE_ACCESS_APPLICATION",
         CredentialPlaneAction::CreateAccessPolicy { .. } => "CREATE_ACCESS_POLICY",
         CredentialPlaneAction::ConfigureWorkersDev { .. } => "CONFIGURE_WORKERS_DEV",
         CredentialPlaneAction::DisableProofToken { .. } => "DISABLE_PROOF_TOKEN",
