@@ -232,6 +232,9 @@ pub struct CloudflareAccessServiceCredential {
     pub id: String,
     pub client_id: String,
     pub client_secret: String,
+    pub enabled: Option<bool>,
+    pub duration: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -763,6 +766,25 @@ pub async fn list_access_service_tokens(
     Err(format!(
         "Cloudflare Access service token pagination exceeded {MAX_API_PAGES} pages"
     ))
+}
+
+pub async fn get_access_service_token(
+    api_token: &str,
+    account_id: &str,
+    token_id: &str,
+) -> Result<CloudflareAccessServiceToken, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access service token ID", token_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/access/service_tokens/{token_id}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to get Cloudflare Access service token: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    access_service_token_from_value(payload.result)
 }
 
 pub async fn list_dns_record_summaries(
@@ -1968,6 +1990,9 @@ fn access_service_credential_from_value(
             "client_secret",
             "Cloudflare Access service credential",
         )?,
+        enabled: object.get("enabled").and_then(Value::as_bool),
+        duration: optional_value_string(object, "duration"),
+        name: optional_value_string(object, "name"),
     })
 }
 
@@ -2334,6 +2359,41 @@ mod tests {
         assert!(envelope.success);
         assert!(envelope.result.is_null());
         assert!(envelope.errors.is_empty());
+    }
+
+    #[test]
+    fn parses_service_token_and_rotation_metadata_without_secret_serializing() {
+        let token = access_service_token_from_value(serde_json::json!({
+            "id": "token-id",
+            "name": "proof-token",
+            "enabled": true,
+            "expires_at": "2026-09-28T02:00:00Z",
+            "duration": "1h",
+            "client_id": "client-id"
+        }))
+        .unwrap();
+        assert_eq!(token.id, "token-id");
+        assert_eq!(token.client_id.as_deref(), Some("client-id"));
+        assert_eq!(token.enabled, Some(true));
+        assert_eq!(token.duration.as_deref(), Some("1h"));
+
+        let credential = access_service_credential_from_value(
+            serde_json::json!({
+                "id": "token-id",
+                "client_id": "client-id",
+                "client_secret": "secret-value",
+                "enabled": true,
+                "duration": "1h",
+                "name": "proof-token"
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(credential.id, "token-id");
+        assert_eq!(credential.client_id, "client-id");
+        assert_eq!(credential.enabled, Some(true));
+        assert_eq!(credential.duration.as_deref(), Some("1h"));
+        assert_eq!(credential.name.as_deref(), Some("proof-token"));
     }
 
     #[test]
