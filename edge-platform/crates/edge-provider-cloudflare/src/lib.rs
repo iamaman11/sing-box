@@ -209,14 +209,13 @@ pub struct CloudflareWorkerProbe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareAccessRequest {
-    pub action: Option<String>,
-    pub allowed: Option<bool>,
-    pub app_domain: Option<String>,
-    pub app_uid: Option<String>,
-    pub connection: Option<String>,
-    pub created_at: Option<String>,
-    pub ray_id: Option<String>,
+pub struct CloudflareAccessLoginEvent {
+    pub datetime: Option<String>,
+    pub is_successful_login: Option<bool>,
+    pub approving_policy_id: Option<String>,
+    pub cf_ray_id: Option<String>,
+    pub identity_provider: Option<String>,
+    pub service_token_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -811,31 +810,107 @@ pub async fn get_access_service_token(
     access_service_token_from_value(payload.result)
 }
 
-pub async fn list_access_requests(
+pub async fn list_access_login_events(
     api_token: &str,
     account_id: &str,
-    since: Option<&str>,
-) -> Result<Vec<CloudflareAccessRequest>, String> {
+    ray_id: &str,
+    datetime_start: &str,
+    datetime_end: &str,
+) -> Result<Vec<CloudflareAccessLoginEvent>, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access login Ray ID", ray_id)?;
+    require_non_empty("Cloudflare Access login datetime_start", datetime_start)?;
+    require_non_empty("Cloudflare Access login datetime_end", datetime_end)?;
+
+    const QUERY: &str = r#"query accessLoginRequestsAdaptiveGroups($accountTag: string, $rayId: string, $datetimeStart: string, $datetimeEnd: string) {
+  viewer {
+    accounts(filter: {accountTag: $accountTag}) {
+      accessLoginRequestsAdaptiveGroups(
+        limit: 100
+        filter: {datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd, cfRayId: $rayId}
+        orderBy: [datetime_ASC]
+      ) {
+        dimensions {
+          datetime
+          isSuccessfulLogin
+          approvingPolicyId
+          cfRayId
+          identityProvider
+          serviceTokenId
+        }
+      }
+    }
+  }
+}"#;
+
     let client = authorized_client(api_token)?;
-    let request = client.get(format!(
-        "{API_ROOT}/accounts/{account_id}/access/logs/access_requests"
-    ));
-    let request = if let Some(since) = since {
-        require_non_empty("Cloudflare Access log since timestamp", since)?;
-        request.query(&[("limit", "25"), ("direction", "desc"), ("since", since)])
-    } else {
-        request
-    };
-    let response = request
+    let response = client
+        .post(format!("{API_ROOT}/graphql"))
+        .json(&serde_json::json!({
+            "query": QUERY,
+            "variables": {
+                "accountTag": account_id,
+                "rayId": ray_id,
+                "datetimeStart": datetime_start,
+                "datetimeEnd": datetime_end
+            }
+        }))
         .send()
         .await
-        .map_err(|err| format!("failed to list Cloudflare Access authentication logs: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    value_array_or_null_empty(payload.result, "Cloudflare Access authentication logs")?
-        .into_iter()
-        .map(access_request_from_value)
+        .map_err(|err| format!("failed to query Cloudflare GraphQL Access login events: {err}"))?;
+    let status = response.status();
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|err| format!("failed to decode Cloudflare GraphQL response: {err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Cloudflare GraphQL returned {status}: {}",
+            graphql_error_summary(&payload)
+        ));
+    }
+    if payload
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(|errors| !errors.is_empty())
+    {
+        return Err(format!(
+            "Cloudflare GraphQL returned errors: {}",
+            graphql_error_summary(&payload)
+        ));
+    }
+
+    let accounts = payload
+        .get("data")
+        .and_then(|value| value.get("viewer"))
+        .and_then(|value| value.get("accounts"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Cloudflare GraphQL Access response is missing data.viewer.accounts".to_owned())?;
+    if accounts.len() != 1 {
+        return Err(format!(
+            "Cloudflare GraphQL Access response expected one account, observed {}",
+            accounts.len()
+        ));
+    }
+    accounts[0]
+        .get("accessLoginRequestsAdaptiveGroups")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "Cloudflare GraphQL Access response is missing accessLoginRequestsAdaptiveGroups"
+                .to_owned()
+        })?
+        .iter()
+        .cloned()
+        .map(access_login_event_from_value)
         .collect()
+}
+
+pub fn is_graphql_authorization_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("403")
+        || error.contains("unauthorized")
+        || error.contains("not authorized for that account")
+        || error.contains("does not have access to the path")
 }
 
 pub async fn list_dns_record_summaries(
@@ -2145,19 +2220,49 @@ fn access_service_token_from_value(value: Value) -> Result<CloudflareAccessServi
     })
 }
 
-fn access_request_from_value(value: Value) -> Result<CloudflareAccessRequest, String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "Cloudflare Access authentication log must be an object".to_owned())?;
-    Ok(CloudflareAccessRequest {
-        action: optional_value_string(object, "action"),
-        allowed: object.get("allowed").and_then(Value::as_bool),
-        app_domain: optional_value_string(object, "app_domain"),
-        app_uid: optional_value_string(object, "app_uid"),
-        connection: optional_value_string(object, "connection"),
-        created_at: optional_value_string(object, "created_at"),
-        ray_id: optional_value_string(object, "ray_id"),
+fn access_login_event_from_value(value: Value) -> Result<CloudflareAccessLoginEvent, String> {
+    let dimensions = value
+        .get("dimensions")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Cloudflare GraphQL Access login event dimensions must be an object".to_owned())?;
+    Ok(CloudflareAccessLoginEvent {
+        datetime: optional_value_string(dimensions, "datetime"),
+        is_successful_login: optional_boolish(dimensions, "isSuccessfulLogin")?,
+        approving_policy_id: optional_value_string(dimensions, "approvingPolicyId"),
+        cf_ray_id: optional_value_string(dimensions, "cfRayId"),
+        identity_provider: optional_value_string(dimensions, "identityProvider"),
+        service_token_id: optional_value_string(dimensions, "serviceTokenId"),
     })
+}
+
+fn optional_boolish(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<bool>, String> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(Value::Number(value)) if value.as_i64() == Some(0) => Ok(Some(false)),
+        Some(Value::Number(value)) if value.as_i64() == Some(1) => Ok(Some(true)),
+        Some(other) => Err(format!(
+            "Cloudflare GraphQL field {key} must be bool or 0/1, observed {other}"
+        )),
+    }
+}
+
+fn graphql_error_summary(payload: &Value) -> String {
+    payload
+        .get("errors")
+        .and_then(Value::as_array)
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(|error| error.get("message").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or_else(|| "response did not include GraphQL error messages".to_owned())
 }
 
 fn dns_record_summary_from_value(
@@ -2488,20 +2593,36 @@ mod tests {
     }
 
     #[test]
-    fn parses_access_request_correlation_without_identity_secrets() {
-        let request = access_request_from_value(serde_json::json!({
-            "action": "login",
-            "allowed": false,
-            "app_domain": "worker.example",
-            "app_uid": "app-id",
-            "connection": "service_token",
-            "created_at": "2026-09-28T12:00:00Z",
-            "ray_id": "187d944c61940c77"
+    fn parses_graphql_access_login_correlation_without_identity_secrets() {
+        let event = access_login_event_from_value(serde_json::json!({
+            "dimensions": {
+                "datetime": "2026-09-28T12:00:00Z",
+                "isSuccessfulLogin": 1,
+                "approvingPolicyId": "policy-id",
+                "cfRayId": "187d944c61940c77",
+                "identityProvider": "nonidentity",
+                "serviceTokenId": "token-id"
+            }
         }))
         .unwrap();
-        assert_eq!(request.allowed, Some(false));
-        assert_eq!(request.app_uid.as_deref(), Some("app-id"));
-        assert_eq!(request.ray_id.as_deref(), Some("187d944c61940c77"));
+        assert_eq!(event.is_successful_login, Some(true));
+        assert_eq!(event.approving_policy_id.as_deref(), Some("policy-id"));
+        assert_eq!(event.cf_ray_id.as_deref(), Some("187d944c61940c77"));
+        assert_eq!(event.identity_provider.as_deref(), Some("nonidentity"));
+        assert_eq!(event.service_token_id.as_deref(), Some("token-id"));
+    }
+
+    #[test]
+    fn recognizes_graphql_authorization_errors_without_hiding_schema_errors() {
+        assert!(is_graphql_authorization_error(
+            "Cloudflare GraphQL returned 403 Forbidden: not authorized for that account"
+        ));
+        assert!(is_graphql_authorization_error(
+            "Cloudflare GraphQL returned errors: does not have access to the path viewer.accounts"
+        ));
+        assert!(!is_graphql_authorization_error(
+            "Cloudflare GraphQL returned errors: unknown field accessLoginRequestsAdaptiveGroups"
+        ));
     }
 
     #[test]
