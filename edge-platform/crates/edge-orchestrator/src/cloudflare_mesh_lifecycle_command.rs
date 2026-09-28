@@ -221,7 +221,7 @@ async fn run_runtime_apply_with_desired(
     desired: DesiredMeshState,
     application_spec: &Path,
 ) -> Result<(), String> {
-    let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
+    let mut provider = provider_from_env(&desired)?;
     let node_token = exact_mesh_node_token(&mut provider, &desired).await?;
     let authority = resolve_application_authority_from_spec(application_spec).await?;
     let state = converge_mesh_runtime_remote(&authority, node_token).await?;
@@ -278,7 +278,7 @@ async fn run_runtime_verify_with_desired(
     desired: DesiredMeshState,
     application_spec: &Path,
 ) -> Result<(), String> {
-    let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
+    let mut provider = provider_from_env(&desired)?;
     let provider_observation =
         wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
     let authority = resolve_application_authority_from_spec(application_spec).await?;
