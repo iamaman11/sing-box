@@ -811,7 +811,6 @@ pub async fn get_access_service_token(
     access_service_token_from_value(payload.result)
 }
 
-
 pub async fn list_access_requests(
     api_token: &str,
     account_id: &str,
@@ -2153,7 +2152,6 @@ fn access_service_token_from_value(value: Value) -> Result<CloudflareAccessServi
         client_id: optional_value_string(object, "client_id"),
     })
 }
-
 
 fn access_request_from_value(value: Value) -> Result<CloudflareAccessRequest, String> {
     let object = value
