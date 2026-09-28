@@ -33,6 +33,7 @@ pub struct ProductionCredentialPlaneOwnership {
     pub vm_service_token_name: String,
     pub worker_compatibility_date: String,
     pub proof_token_duration: String,
+    pub workers_dev_subdomain: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -322,6 +323,15 @@ impl ProductionComposition {
                 "Phase 2 proof service tokens must have exact 1h duration",
             ));
         }
+        validate_dns_name(
+            "cloudflare.credential_plane.workers_dev_subdomain",
+            &credential_plane.workers_dev_subdomain,
+        )?;
+        if credential_plane.workers_dev_subdomain.contains('.') {
+            return Err(validation(
+                "credential-plane workers_dev_subdomain must be one DNS label, not a hostname",
+            ));
+        }
 
         validate_cloudflare_account_id("dns.account_id", &dns.account_id)?;
         if !mesh.account_id.is_empty() {
@@ -349,6 +359,7 @@ impl ProductionComposition {
                 vm_service_token_name: credential_plane.vm_service_token_name.clone(),
                 worker_compatibility_date: credential_plane.worker_compatibility_date.clone(),
                 proof_token_duration: credential_plane.proof_token_duration.clone(),
+                workers_dev_subdomain: credential_plane.workers_dev_subdomain.clone(),
             },
         };
         let shared_dns_account_id = dns.account_id.clone();
@@ -694,6 +705,13 @@ mod tests {
         assert_eq!(
             composition.cloudflare.credential_plane.target_account_id,
             "6be6e4b6340822dbeb18cb6c2f09c660"
+        );
+        assert_eq!(
+            composition
+                .cloudflare
+                .credential_plane
+                .workers_dev_subdomain,
+            "sing-box-6be6e4b6340822dbeb18cb6c2f09c660"
         );
         assert_eq!(
             composition.cloudflare.credential_plane.windows_worker_name,
