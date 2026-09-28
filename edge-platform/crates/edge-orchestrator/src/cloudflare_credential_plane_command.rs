@@ -1094,7 +1094,10 @@ fn print_observation(
     );
     println!(
         "workers_dev_subdomain={}",
-        observed.workers_dev_subdomain.as_deref().unwrap_or("NOT_CONFIGURED")
+        observed
+            .workers_dev_subdomain
+            .as_deref()
+            .unwrap_or("NOT_CONFIGURED")
     );
     for projection in &observed.projections {
         println!(
