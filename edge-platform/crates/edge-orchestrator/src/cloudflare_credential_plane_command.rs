@@ -9,6 +9,7 @@ use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
 use std::env;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONVERGENCE_STEPS: usize = 16;
 
@@ -633,6 +634,21 @@ async fn prove_isolation(
             mutations += 1;
             windows_enabled_by_proof = true;
         }
+        let windows_enabled_state = cloudflare::get_access_service_token(
+            api_token,
+            &desired.target_account_id,
+            windows_token_id,
+        )
+        .await?;
+        let windows_client_id = validate_proof_token_state(
+            &windows,
+            windows_token_id,
+            &desired.proof_token_duration,
+            None,
+            &windows_enabled_state,
+        )?;
+        print_proof_token_state("enabled", &windows, &windows_enabled_state);
+
         if vm_observed.service_token_enabled != Some(true) {
             cloudflare::set_access_service_token_enabled(
                 api_token,
@@ -646,6 +662,20 @@ async fn prove_isolation(
             mutations += 1;
             vm_enabled_by_proof = true;
         }
+        let vm_enabled_state = cloudflare::get_access_service_token(
+            api_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        let vm_client_id = validate_proof_token_state(
+            &vm,
+            vm_token_id,
+            &desired.proof_token_duration,
+            None,
+            &vm_enabled_state,
+        )?;
+        print_proof_token_state("enabled", &vm, &vm_enabled_state);
 
         let windows_credential = cloudflare::rotate_access_service_token(
             api_token,
@@ -654,6 +684,29 @@ async fn prove_isolation(
         )
         .await?;
         mutations += 1;
+        validate_rotated_credential(
+            &windows,
+            windows_token_id,
+            &windows_client_id,
+            &desired.proof_token_duration,
+            &windows_credential,
+        )?;
+        print_rotated_credential(&windows, &windows_credential);
+        let windows_rotated_state = cloudflare::get_access_service_token(
+            api_token,
+            &desired.target_account_id,
+            windows_token_id,
+        )
+        .await?;
+        validate_proof_token_state(
+            &windows,
+            windows_token_id,
+            &desired.proof_token_duration,
+            Some(&windows_client_id),
+            &windows_rotated_state,
+        )?;
+        print_proof_token_state("rotated", &windows, &windows_rotated_state);
+
         let vm_credential = cloudflare::rotate_access_service_token(
             api_token,
             &desired.target_account_id,
@@ -661,6 +714,28 @@ async fn prove_isolation(
         )
         .await?;
         mutations += 1;
+        validate_rotated_credential(
+            &vm,
+            vm_token_id,
+            &vm_client_id,
+            &desired.proof_token_duration,
+            &vm_credential,
+        )?;
+        print_rotated_credential(&vm, &vm_credential);
+        let vm_rotated_state = cloudflare::get_access_service_token(
+            api_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        validate_proof_token_state(
+            &vm,
+            vm_token_id,
+            &desired.proof_token_duration,
+            Some(&vm_client_id),
+            &vm_rotated_state,
+        )?;
+        print_proof_token_state("rotated", &vm, &vm_rotated_state);
 
         let windows_material = worker_material(desired, "windows")?;
         let vm_material = worker_material(desired, "vm")?;
@@ -763,6 +838,150 @@ async fn prove_isolation(
     }
 
     proof_result.map(|report| (report, mutations))
+}
+
+fn validate_proof_token_state(
+    projection: &ProjectionDesired,
+    expected_token_id: &str,
+    expected_duration: &str,
+    expected_client_id: Option<&str>,
+    token: &cloudflare::CloudflareAccessServiceToken,
+) -> Result<String, String> {
+    if token.id != expected_token_id {
+        return Err(format!(
+            "{} proof service token ID changed: expected={} observed={}",
+            projection.projection, expected_token_id, token.id
+        ));
+    }
+    if token.name.as_deref() != Some(projection.service_token_name.as_str()) {
+        return Err(format!(
+            "{} proof service token name mismatch",
+            projection.projection
+        ));
+    }
+    if token.enabled != Some(true) {
+        return Err(format!(
+            "{} proof service token is not enabled after proof-local enable/rotation: {:?}",
+            projection.projection, token.enabled
+        ));
+    }
+    if token.duration.as_deref() != Some(expected_duration) {
+        return Err(format!(
+            "{} proof service token duration mismatch: expected={} observed={}",
+            projection.projection,
+            expected_duration,
+            token.duration.as_deref().unwrap_or("ABSENT")
+        ));
+    }
+    let client_id = token
+        .client_id
+        .as_deref()
+        .ok_or_else(|| format!("{} proof service token client_id is missing", projection.projection))?;
+    if let Some(expected) = expected_client_id
+        && client_id != expected
+    {
+        return Err(format!(
+            "{} proof service token client_id changed: expected={} observed={}",
+            projection.projection, expected, client_id
+        ));
+    }
+    let expires_at = token
+        .expires_at
+        .as_deref()
+        .ok_or_else(|| format!("{} proof service token expires_at is missing", projection.projection))?;
+    let expires = OffsetDateTime::parse(expires_at, &Rfc3339).map_err(|err| {
+        format!(
+            "{} proof service token expires_at is not RFC3339: {err}",
+            projection.projection
+        )
+    })?;
+    if expires <= OffsetDateTime::now_utc() {
+        return Err(format!(
+            "{} proof service token is expired: expires_at={expires_at}",
+            projection.projection
+        ));
+    }
+    Ok(client_id.to_owned())
+}
+
+fn validate_rotated_credential(
+    projection: &ProjectionDesired,
+    expected_token_id: &str,
+    expected_client_id: &str,
+    expected_duration: &str,
+    credential: &cloudflare::CloudflareAccessServiceCredential,
+) -> Result<(), String> {
+    if credential.id != expected_token_id {
+        return Err(format!(
+            "{} rotated proof credential token ID changed: expected={} observed={}",
+            projection.projection, expected_token_id, credential.id
+        ));
+    }
+    if credential.client_id != expected_client_id {
+        return Err(format!(
+            "{} rotated proof credential client_id changed: expected={} observed={}",
+            projection.projection, expected_client_id, credential.client_id
+        ));
+    }
+    if credential.enabled != Some(true) {
+        return Err(format!(
+            "{} rotated proof credential is not enabled: {:?}",
+            projection.projection, credential.enabled
+        ));
+    }
+    if credential.duration.as_deref() != Some(expected_duration) {
+        return Err(format!(
+            "{} rotated proof credential duration mismatch: expected={} observed={}",
+            projection.projection,
+            expected_duration,
+            credential.duration.as_deref().unwrap_or("ABSENT")
+        ));
+    }
+    if credential.name.as_deref() != Some(projection.service_token_name.as_str()) {
+        return Err(format!(
+            "{} rotated proof credential name mismatch",
+            projection.projection
+        ));
+    }
+    Ok(())
+}
+
+fn print_proof_token_state(
+    stage: &str,
+    projection: &ProjectionDesired,
+    token: &cloudflare::CloudflareAccessServiceToken,
+) {
+    println!(
+        "proof_token_state projection={} stage={} token_id={} client_id={} enabled={} duration={} expires_at={}",
+        projection.projection,
+        stage,
+        token.id,
+        token.client_id.as_deref().unwrap_or("ABSENT"),
+        token
+            .enabled
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        token.duration.as_deref().unwrap_or("ABSENT"),
+        token.expires_at.as_deref().unwrap_or("ABSENT")
+    );
+}
+
+fn print_rotated_credential(
+    projection: &ProjectionDesired,
+    credential: &cloudflare::CloudflareAccessServiceCredential,
+) {
+    println!(
+        "proof_token_rotation projection={} token_id={} client_id={} enabled={} duration={} name={}",
+        projection.projection,
+        credential.id,
+        credential.client_id,
+        credential
+            .enabled
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        credential.duration.as_deref().unwrap_or("ABSENT"),
+        credential.name.as_deref().unwrap_or("ABSENT")
+    );
 }
 
 fn require_allowed(
@@ -1228,6 +1447,62 @@ mod tests {
         assert!(!vm.source.contains("password"));
         assert!(!windows.source.contains("0x08"));
         assert!(!vm.source.contains("0x08"));
+    }
+
+    #[test]
+    fn proof_token_state_requires_exact_live_identity_and_future_expiry() {
+        let projection = projection_desired(&desired(), "windows").unwrap();
+        let token = cloudflare::CloudflareAccessServiceToken {
+            id: "token-id".to_owned(),
+            name: Some(projection.service_token_name.clone()),
+            enabled: Some(true),
+            expires_at: Some("9999-12-31T23:59:59Z".to_owned()),
+            duration: Some("1h".to_owned()),
+            client_id: Some("client-id".to_owned()),
+        };
+        assert_eq!(
+            validate_proof_token_state(&projection, "token-id", "1h", None, &token).unwrap(),
+            "client-id"
+        );
+        assert!(
+            validate_proof_token_state(
+                &projection,
+                "token-id",
+                "1h",
+                Some("different-client"),
+                &token
+            )
+            .is_err()
+        );
+
+        let mut expired = token.clone();
+        expired.expires_at = Some("2000-01-01T00:00:00Z".to_owned());
+        assert!(
+            validate_proof_token_state(&projection, "token-id", "1h", None, &expired).is_err()
+        );
+    }
+
+    #[test]
+    fn rotated_credential_must_preserve_token_and_client_identity() {
+        let projection = projection_desired(&desired(), "windows").unwrap();
+        let credential = cloudflare::CloudflareAccessServiceCredential {
+            id: "token-id".to_owned(),
+            client_id: "client-id".to_owned(),
+            client_secret: "secret-value".to_owned(),
+            enabled: Some(true),
+            duration: Some("1h".to_owned()),
+            name: Some(projection.service_token_name.clone()),
+        };
+        assert!(
+            validate_rotated_credential(
+                &projection,
+                "token-id",
+                "client-id",
+                "1h",
+                &credential
+            )
+            .is_ok()
+        );
     }
 
     #[test]
