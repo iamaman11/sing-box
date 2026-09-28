@@ -695,7 +695,9 @@ mod tests {
 
         let (_observed, plan) = plan_mesh_apply(&mut provider, &desired).await.unwrap();
         assert_eq!(plan.action, ApplyAction::Noop);
-        let credential = exact_mesh_node_token(&mut provider, &desired).await.unwrap();
+        let credential = exact_mesh_node_token(&mut provider, &desired)
+            .await
+            .unwrap();
         assert_eq!(credential.registration_id, "node-1");
         assert_eq!(credential.node_token, "opaque-mesh-node-token");
         assert!(
