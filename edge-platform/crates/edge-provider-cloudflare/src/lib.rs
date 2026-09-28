@@ -204,7 +204,19 @@ pub struct CloudflareWorkersSubdomain {
 pub struct CloudflareWorkerProbe {
     pub status: u16,
     pub content_type: Option<String>,
+    pub cf_ray: Option<String>,
     pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareAccessRequest {
+    pub action: Option<String>,
+    pub allowed: Option<bool>,
+    pub app_domain: Option<String>,
+    pub app_uid: Option<String>,
+    pub connection: Option<String>,
+    pub created_at: Option<String>,
+    pub ray_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -676,10 +688,16 @@ pub async fn probe_worker(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
+    let cf_ray = response
+        .headers()
+        .get("cf-ray")
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
     if status != 200 {
         return Ok(CloudflareWorkerProbe {
             status,
             content_type,
+            cf_ray,
             body: Vec::new(),
         });
     }
@@ -693,6 +711,7 @@ pub async fn probe_worker(
     Ok(CloudflareWorkerProbe {
         status,
         content_type,
+        cf_ray,
         body: bytes.to_vec(),
     })
 }
@@ -790,6 +809,42 @@ pub async fn get_access_service_token(
         .map_err(|err| format!("failed to get Cloudflare Access service token: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
     access_service_token_from_value(payload.result)
+}
+
+
+pub async fn list_access_requests(
+    api_token: &str,
+    account_id: &str,
+    ray_id: Option<&str>,
+) -> Result<Vec<CloudflareAccessRequest>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let mut query = vec![
+        ("limit", "2".to_owned()),
+        ("direction", "desc".to_owned()),
+        (
+            "fields",
+            "action,allowed,app_domain,app_uid,connection,created_at,ray_id".to_owned(),
+        ),
+    ];
+    if let Some(ray_id) = ray_id {
+        require_non_empty("Cloudflare Access Ray ID", ray_id)?;
+        query.push(("ray_id", ray_id.to_owned()));
+        query.push(("ray_idOp", "eq".to_owned()));
+    }
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/access/logs/access_requests"
+        ))
+        .query(&query)
+        .send()
+        .await
+        .map_err(|err| format!("failed to list Cloudflare Access authentication logs: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    value_array_or_null_empty(payload.result, "Cloudflare Access authentication logs")?
+        .into_iter()
+        .map(access_request_from_value)
+        .collect()
 }
 
 pub async fn list_dns_record_summaries(
@@ -2099,6 +2154,22 @@ fn access_service_token_from_value(value: Value) -> Result<CloudflareAccessServi
     })
 }
 
+
+fn access_request_from_value(value: Value) -> Result<CloudflareAccessRequest, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Access authentication log must be an object".to_owned())?;
+    Ok(CloudflareAccessRequest {
+        action: optional_value_string(object, "action"),
+        allowed: object.get("allowed").and_then(Value::as_bool),
+        app_domain: optional_value_string(object, "app_domain"),
+        app_uid: optional_value_string(object, "app_uid"),
+        connection: optional_value_string(object, "connection"),
+        created_at: optional_value_string(object, "created_at"),
+        ray_id: optional_value_string(object, "ray_id"),
+    })
+}
+
 fn dns_record_summary_from_value(
     zone_id: &str,
     value: Value,
@@ -2424,6 +2495,23 @@ mod tests {
         assert!(envelope.success);
         assert!(envelope.result.is_null());
         assert!(envelope.errors.is_empty());
+    }
+
+    #[test]
+    fn parses_access_request_correlation_without_identity_secrets() {
+        let request = access_request_from_value(serde_json::json!({
+            "action": "login",
+            "allowed": false,
+            "app_domain": "worker.example",
+            "app_uid": "app-id",
+            "connection": "service_token",
+            "created_at": "2026-09-28T12:00:00Z",
+            "ray_id": "187d944c61940c77"
+        }))
+        .unwrap();
+        assert_eq!(request.allowed, Some(false));
+        assert_eq!(request.app_uid.as_deref(), Some("app-id"));
+        assert_eq!(request.ray_id.as_deref(), Some("187d944c61940c77"));
     }
 
     #[test]
