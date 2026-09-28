@@ -110,7 +110,7 @@ pub(crate) async fn inventory() -> Result<(), String> {
 }
 
 pub(crate) async fn plan_command() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_migration()?;
     let desired = desired(&inputs).await?;
     let observed = observe(&inputs, &desired).await?;
     let authorized = authorized_plan(&desired, &observed)?;
@@ -122,7 +122,7 @@ pub(crate) async fn plan_command() -> Result<(), String> {
 }
 
 pub(crate) async fn converge() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_migration()?;
     let desired = desired(&inputs).await?;
     let mut mutations = 0u32;
 
