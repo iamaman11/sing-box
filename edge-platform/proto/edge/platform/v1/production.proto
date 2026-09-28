@@ -78,16 +78,18 @@ message ProductionCloudflare {
   // account; Phase 5 is the only production authority flip.
   string active_account_id = 1;
 
-  // Transitional typed migration intent only. Empty after the authority flip;
-  // it is never an active provider owner.
+  // Transitional migration intent only. Canonical schema v5 leaves this empty
+  // after the Phase 5 authority flip. When present during migration it must
+  // differ from active_account_id.
   string migration_target_account_id = 2;
 
-  // Phase 2 credential-delivery isolation desired state. This plane is created
-  // only in migration_target_account_id and does not make that account active.
+  // Credential-delivery desired state. During migration this is owned by
+  // migration_target_account_id; after cutover it is owned by active_account_id.
   ProductionCredentialPlane credential_plane = 3;
 
-  // Parallel target-plane desired state used by Vertical B before the account
-  // becomes active. This owns only sing-box-exclusive account-scoped resources.
+  // Project-owned Mesh/Zero Trust desired state. During migration this is
+  // owned by migration_target_account_id; after cutover it is owned by
+  // active_account_id.
   ProductionTargetPlane target_plane = 4;
 }
 
