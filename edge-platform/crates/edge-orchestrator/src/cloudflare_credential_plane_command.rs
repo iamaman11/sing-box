@@ -880,10 +880,9 @@ async fn classify_access_request(
     expected_app_id: &str,
     probe: &cloudflare::CloudflareWorkerProbe,
 ) -> Result<&'static str, String> {
-    let raw_cf_ray = probe
-        .cf_ray
-        .as_deref()
-        .ok_or_else(|| "REQUEST_NOT_SEEN_BY_ACCESS: Worker response did not include CF-Ray".to_owned())?;
+    let raw_cf_ray = probe.cf_ray.as_deref().ok_or_else(|| {
+        "REQUEST_NOT_SEEN_BY_ACCESS: Worker response did not include CF-Ray".to_owned()
+    })?;
     let ray_id = normalize_cf_ray(raw_cf_ray)?;
     let requests = cloudflare::list_access_requests(api_token, account_id, Some(ray_id)).await?;
     if requests.is_empty() {
