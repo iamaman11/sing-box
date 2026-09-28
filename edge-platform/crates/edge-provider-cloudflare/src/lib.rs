@@ -504,7 +504,7 @@ pub async fn create_workers_subdomain(
     workers_subdomain_from_value(payload.result)
 }
 
-pub async fn create_access_service_token(
+pub async fn create_disabled_access_service_token(
     api_token: &str,
     account_id: &str,
     name: &str,
@@ -521,11 +521,11 @@ pub async fn create_access_service_token(
         .json(&serde_json::json!({
             "name": name,
             "duration": duration,
-            "enabled": true
+            "enabled": false
         }))
         .send()
         .await
-        .map_err(|err| format!("failed to create Cloudflare Access service token: {err}"))?;
+        .map_err(|err| format!("failed to create disabled Cloudflare Access service token: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
     access_service_credential_from_value(payload.result, None)
 }
@@ -648,10 +648,14 @@ pub async fn probe_worker(
             .header("CF-Access-Client-ID", &credential.client_id)
             .header("CF-Access-Client-Secret", &credential.client_secret);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|err| format!("Cloudflare Worker probe request failed: {err}"))?;
+    let response = request.send().await.map_err(|err| {
+        format!(
+            "Cloudflare Worker probe request failed: {err}; connect={}; timeout={}; request={}",
+            err.is_connect(),
+            err.is_timeout(),
+            err.is_request()
+        )
+    })?;
     let status = response.status().as_u16();
     let content_type = response
         .headers()
