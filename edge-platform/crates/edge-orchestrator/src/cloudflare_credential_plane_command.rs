@@ -215,6 +215,33 @@ async fn apply_once(
     Ok((after, next, proof, mutations))
 }
 
+pub(crate) async fn verify_target_plane_invariant() -> Result<(), String> {
+    let control_token = env::var("CLOUDFLARE_CONTROL_TOKEN")
+        .map_err(|_| "CLOUDFLARE_CONTROL_TOKEN is required".to_owned())?;
+    if control_token.trim().is_empty() {
+        return Err("CLOUDFLARE_CONTROL_TOKEN must not be blank".to_owned());
+    }
+    let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    if production.cloudflare.active_account_id
+        == production.cloudflare.credential_plane.target_account_id
+    {
+        return Err(
+            "target-plane invariant refuses to operate after the production account flip"
+                .to_owned(),
+        );
+    }
+    let desired = &production.cloudflare.credential_plane;
+    let observed = observe(&control_token, desired).await?;
+    let action = plan(desired, &observed)?;
+    if action != CredentialPlaneAction::Noop {
+        return Err(format!(
+            "accepted Phase 2 credential-plane invariant drifted; observed next action {}",
+            action_name(&action)
+        ));
+    }
+    Ok(())
+}
+
 async fn verify_locked(
     api_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
