@@ -167,7 +167,12 @@ pub(crate) async fn verify() -> Result<(), String> {
 
 pub(crate) async fn verify_active_invariant() -> Result<(), String> {
     let inputs = Inputs::load_verify()?;
-    if inputs.production.cloudflare.migration_target_account_id.is_some() {
+    if inputs
+        .production
+        .cloudflare
+        .migration_target_account_id
+        .is_some()
+    {
         return Err(
             "active Cloudflare invariant requires migration_target_account_id to be empty"
                 .to_owned(),
