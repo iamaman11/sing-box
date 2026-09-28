@@ -1032,8 +1032,9 @@ fn production_provider_from_env(
     if spec_path != Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
         return provider_from_env(desired);
     }
-    let api_token = env::var("CLOUDFLARE_CONTROL_TOKEN")
-        .map_err(|_| "CLOUDFLARE_CONTROL_TOKEN is required for canonical production Mesh".to_owned())?;
+    let api_token = env::var("CLOUDFLARE_CONTROL_TOKEN").map_err(|_| {
+        "CLOUDFLARE_CONTROL_TOKEN is required for canonical production Mesh".to_owned()
+    })?;
     CloudflareMeshApiProvider::new(api_token, desired.account_id.clone())
 }
 
