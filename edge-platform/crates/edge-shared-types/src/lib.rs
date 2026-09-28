@@ -1329,19 +1329,16 @@ mod tests {
     #[test]
     fn canonical_production_desired_state_is_protobuf_and_canonical() {
         let desired = canonical_production_desired_state().unwrap();
-        assert_eq!(desired.schema_version, 4);
+        assert_eq!(desired.schema_version, 5);
         assert_eq!(desired.environment, "production");
         assert_eq!(desired.machine_id, "production-1");
         assert_eq!(desired.public_hostname, "miu.alegria.by");
         let cloudflare = desired.cloudflare.as_ref().unwrap();
         assert_eq!(
             cloudflare.active_account_id,
-            "4426df1449e417511bc7697d60b7f62f"
-        );
-        assert_eq!(
-            cloudflare.migration_target_account_id,
             "6be6e4b6340822dbeb18cb6c2f09c660"
         );
+        assert!(cloudflare.migration_target_account_id.is_empty());
         let target_plane = cloudflare.target_plane.as_ref().unwrap();
         assert_eq!(target_plane.mesh_profile_name, "sing-box Mesh nodes");
         assert_eq!(target_plane.mesh_profile_service_mode, "warp");
