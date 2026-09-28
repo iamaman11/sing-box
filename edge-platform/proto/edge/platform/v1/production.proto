@@ -100,6 +100,10 @@ message ProductionCredentialPlane {
   string vm_service_token_name = 10;
   string worker_compatibility_date = 11;
   string proof_token_duration = 12;
+
+  // Explicit account-level workers.dev namespace. Creating this namespace is a
+  // separate provider action from enabling any individual Worker route.
+  string workers_dev_subdomain = 13;
 }
 
 message ProductionDns {
