@@ -180,6 +180,452 @@ pub async fn run(command: CloudflareCredentialPlaneCommand) -> Result<(), String
     }
 }
 
+
+pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), String> {
+    let control_token = env::var("CLOUDFLARE_CONTROL_TOKEN")
+        .map_err(|_| "CLOUDFLARE_CONTROL_TOKEN is required".to_owned())?;
+    if control_token.trim().is_empty() {
+        return Err("CLOUDFLARE_CONTROL_TOKEN must not be blank".to_owned());
+    }
+
+    let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let desired = production.cloudflare.credential_plane.clone();
+    if production.cloudflare.active_account_id != desired.target_account_id
+        || production.cloudflare.migration_target_account_id.is_some()
+    {
+        return Err(
+            "steady-state credential delivery requires the credential plane to be the active canonical Cloudflare authority with no migration target"
+                .to_owned(),
+        );
+    }
+
+    match command {
+        CredentialDeliveryCommand::ContractPlan => {
+            let observed = observe(&control_token, &desired).await?;
+            let authorized = delivery_authorized_plan(&desired, &observed)?;
+            print_delivery_observation(&desired, &observed)?;
+            println!("plan_action={}", delivery_action_name(&authorized.plan));
+            println!("plan_authority={}", authorized.authority.authority_digest);
+            println!("plan_disposition={:?}", authorized.disposition);
+            println!("real_credentials_created=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::ContractConverge => {
+            delivery_converge(&control_token, &desired).await
+        }
+        CredentialDeliveryCommand::ContractVerify => {
+            delivery_verify(&control_token, &desired).await
+        }
+        CredentialDeliveryCommand::ContractProve => {
+            delivery_prove(&control_token, &desired).await
+        }
+    }
+}
+
+async fn delivery_converge(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let mut mutations = 0u32;
+    for step in 1..=DELIVERY_MAX_CONVERGENCE_STEPS {
+        let before = observe(control_token, desired).await?;
+        let authorized = delivery_authorized_plan(desired, &before)?;
+        println!("credential_delivery_step={step}");
+        println!("action={}", delivery_action_name(&authorized.plan));
+        println!("plan_authority={}", authorized.authority.authority_digest);
+
+        if matches!(authorized.plan, CredentialDeliveryAction::Noop) {
+            print_delivery_observation(desired, &before)?;
+            println!("credential_delivery_status=PASS");
+            println!("credential_delivery_contract=FIXED_A_B");
+            println!("credential_secret_slots_per_projection=2");
+            println!("provider_mutations={mutations}");
+            println!("real_credentials_created=0");
+            println!("production_runtime_mutations=0");
+            return Ok(());
+        }
+
+        let (after, next, performed) = apply_delivery_once(
+            control_token,
+            desired,
+            &authorized.authority.authority_digest,
+        )
+        .await?;
+        mutations = mutations.saturating_add(performed);
+        if next == authorized.plan {
+            return Err(format!(
+                "credential-delivery action made no observable progress; mutation was not replayed: {}",
+                delivery_action_name(&next)
+            ));
+        }
+        println!("next_action={}", delivery_action_name(&next));
+        print_delivery_observation(desired, &after)?;
+    }
+
+    Err(format!(
+        "credential-delivery convergence exceeded bounded {DELIVERY_MAX_CONVERGENCE_STEPS}-step limit"
+    ))
+}
+
+async fn apply_delivery_once(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    authorized_digest: &str,
+) -> Result<(CredentialPlaneObservation, CredentialDeliveryAction, u32), String> {
+    let before = observe(control_token, desired).await?;
+    let authorized = delivery_authorized_plan(desired, &before)?;
+    verify_exact_authority(authorized_digest, &authorized.authority)
+        .map_err(|err| err.to_string())?;
+
+    match &authorized.plan {
+        CredentialDeliveryAction::Noop => {}
+        CredentialDeliveryAction::UploadWorkerContract { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let observed = projection_observation(&before, &projection.projection)?;
+            if observed.worker_binding_count != Some(0)
+                || !observed.worker_secret_bindings.is_empty()
+            {
+                return Err(format!(
+                    "refusing Worker code transition with existing bindings for {}",
+                    projection.worker_name
+                ));
+            }
+            let material = delivery_worker_material(&projection.projection)?;
+            cloudflare::upload_worker_module(
+                control_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+                &material.source,
+                &desired.worker_compatibility_date,
+                &material.version_tag,
+            )
+            .await?;
+        }
+        CredentialDeliveryAction::SeedDummySlots { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let rotation_token = env::var("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")
+                .map_err(|_| "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN is required for A/B secret mutation".to_owned())?;
+            if rotation_token.trim().is_empty() {
+                return Err(
+                    "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN must not be blank for A/B secret mutation"
+                        .to_owned(),
+                );
+            }
+            let identity = cloudflare::verify_api_token(&rotation_token).await?;
+            if identity.status != "active" {
+                return Err(format!(
+                    "credential-rotation token {} is not active: {}",
+                    identity.id, identity.status
+                ));
+            }
+            if identity.id == before.control_token_identity.id {
+                return Err(
+                    "credential-rotation token must be physically distinct from CLOUDFLARE_CONTROL_TOKEN"
+                        .to_owned(),
+                );
+            }
+            println!(
+                "credential_rotation_token_identity={} credential_rotation_token_status={}",
+                identity.id, identity.status
+            );
+
+            let material = delivery_worker_material(&projection.projection)?;
+            let secret_refs = material
+                .slots
+                .iter()
+                .map(|slot| (slot.name, slot.secret_text.as_str()))
+                .collect::<Vec<_>>();
+            let written = cloudflare::bulk_update_worker_script_secrets(
+                &rotation_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+                &secret_refs,
+                &material.version_tag,
+            )
+            .await?;
+            require_exact_delivery_secret_bindings(&projection.worker_name, &written)?;
+        }
+    }
+
+    let after = observe(control_token, desired).await?;
+    let next = delivery_plan(desired, &after)?;
+    Ok((after, next, 1))
+}
+
+fn delivery_authorized_plan(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<AuthorizedPlan<CredentialDeliveryAction>, String> {
+    let action = delivery_plan(desired, observed)?;
+    let disposition = if matches!(action, CredentialDeliveryAction::Noop) {
+        PlanDisposition::Noop
+    } else {
+        PlanDisposition::Mutate
+    };
+    authorize_plan(
+        "cloudflare_credential_delivery_phase6_contract",
+        desired,
+        observed,
+        action,
+        disposition,
+    )
+    .map_err(|err| err.to_string())
+}
+
+fn delivery_plan(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<CredentialDeliveryAction, String> {
+    validate_delivery_base(desired, observed)?;
+
+    for projection in projections(desired) {
+        let current = projection_observation(observed, &projection.projection)?;
+        let legacy = worker_material(desired, &projection.projection)?;
+        let delivery = delivery_worker_material(&projection.projection)?;
+
+        if current.worker_secret_bindings.is_empty() {
+            if current.worker_binding_count != Some(0) {
+                return Err(format!(
+                    "Worker {} has non-secret or unobservable bindings before A/B initialization",
+                    projection.worker_name
+                ));
+            }
+            match current.worker_version_tag.as_deref() {
+                Some(tag) if tag == legacy.version_tag => {
+                    return Ok(CredentialDeliveryAction::UploadWorkerContract {
+                        projection: projection.projection,
+                    });
+                }
+                Some(tag) if tag == delivery.version_tag => {
+                    return Ok(CredentialDeliveryAction::SeedDummySlots {
+                        projection: projection.projection,
+                    });
+                }
+                Some(tag) => {
+                    return Err(format!(
+                        "Worker {} has unsupported code version before A/B initialization: {}",
+                        projection.worker_name, tag
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "Worker {} is missing its exact version tag",
+                        projection.worker_name
+                    ));
+                }
+            }
+        }
+
+        require_exact_delivery_secret_bindings(
+            &projection.worker_name,
+            &current.worker_secret_bindings,
+        )?;
+        if current.worker_binding_count != Some(2) {
+            return Err(format!(
+                "Worker {} must have exactly the two A/B secret bindings and no other bindings; observed={:?}",
+                projection.worker_name, current.worker_binding_count
+            ));
+        }
+        if current.worker_version_tag.as_deref() != Some(delivery.version_tag.as_str()) {
+            return Err(format!(
+                "Worker {} has A/B secrets but not the exact accepted delivery contract code",
+                projection.worker_name
+            ));
+        }
+    }
+
+    Ok(CredentialDeliveryAction::Noop)
+}
+
+fn validate_delivery_base(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<(), String> {
+    let organization = observed
+        .access_organization
+        .as_ref()
+        .ok_or_else(|| "credential delivery requires the accepted Access organization".to_owned())?;
+    if organization.name != desired.access_organization_name
+        || organization.auth_domain != desired.access_auth_domain
+        || organization.deny_unmatched_requests != Some(true)
+    {
+        return Err("credential delivery Access organization drifted".to_owned());
+    }
+    if observed.workers_dev_subdomain.as_deref() != Some(desired.workers_dev_subdomain.as_str()) {
+        return Err("credential delivery workers.dev namespace drifted".to_owned());
+    }
+
+    for projection in projections(desired) {
+        let current = projection_observation(observed, &projection.projection)?;
+        if !current.worker_script_present || !current.worker_identity_present {
+            return Err(format!(
+                "credential delivery Worker {} must already exist with immutable identity",
+                projection.worker_name
+            ));
+        }
+        if current.worker_id.as_deref().is_none_or(str::is_empty) {
+            return Err(format!(
+                "credential delivery Worker {} is missing provider identity",
+                projection.worker_name
+            ));
+        }
+        if current.custom_domain_count != 0 {
+            return Err(format!(
+                "credential delivery Worker {} must remain workers.dev-only",
+                projection.worker_name
+            ));
+        }
+        if current.workers_dev_enabled != Some(true) || current.previews_enabled != Some(false) {
+            return Err(format!(
+                "credential delivery Worker {} must be published only on workers.dev with previews disabled",
+                projection.worker_name
+            ));
+        }
+
+        let token_id = current
+            .service_token_id
+            .as_deref()
+            .ok_or_else(|| format!("{} service token is missing", projection.projection))?;
+        if current.service_token_enabled != Some(false) {
+            return Err(format!(
+                "{} proof service token must be disabled at rest before credential delivery mutation/proof",
+                projection.projection
+            ));
+        }
+        if current.service_token_duration.as_deref() != Some(desired.proof_token_duration.as_str()) {
+            return Err(format!(
+                "{} proof service token duration drifted",
+                projection.projection
+            ));
+        }
+        if current.access_application_type.as_deref() != Some("self_hosted")
+            || current.access_service_auth_401_redirect != Some(true)
+        {
+            return Err(format!(
+                "{} Access application drifted from self-hosted Service Auth",
+                projection.projection
+            ));
+        }
+        let expected_hostname = workers_dev_hostname(desired, &projection);
+        if current.access_destination_type.as_deref() != Some("public")
+            || current.access_destination_uri.as_deref() != Some(expected_hostname.as_str())
+            || current.access_destination_worker_id.is_some()
+            || current.access_destination_has_overrides != Some(false)
+        {
+            return Err(format!(
+                "{} Access destination drifted from exact workers.dev hostname",
+                projection.projection
+            ));
+        }
+        if current.access_policies.len() != 1 {
+            return Err(format!(
+                "{} Access application must have exactly one service-auth policy",
+                projection.projection
+            ));
+        }
+        let policy = &current.access_policies[0];
+        if policy.name != projection.access_policy_name
+            || policy.decision.as_deref() != Some("non_identity")
+            || policy.include_service_token_ids != vec![token_id.to_owned()]
+            || policy.has_extra_rules
+        {
+            return Err(format!(
+                "{} Access service-token isolation policy drifted",
+                projection.projection
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_exact_delivery_secret_bindings(
+    worker_name: &str,
+    bindings: &[cloudflare::CloudflareWorkerSecretBinding],
+) -> Result<(), String> {
+    let observed = bindings
+        .iter()
+        .map(|binding| (binding.name.as_str(), binding.binding_type.as_str()))
+        .collect::<Vec<_>>();
+    let expected = vec![
+        (DELIVERY_SLOT_A, "secret_text"),
+        (DELIVERY_SLOT_B, "secret_text"),
+    ];
+    if observed != expected {
+        return Err(format!(
+            "Worker {worker_name} secret bindings differ from exact fixed A/B contract: observed={observed:?}"
+        ));
+    }
+    Ok(())
+}
+
+async fn delivery_verify(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let observed = observe(control_token, desired).await?;
+    let action = delivery_plan(desired, &observed)?;
+    if action != CredentialDeliveryAction::Noop {
+        return Err(format!(
+            "credential-delivery verify requires exact terminal A/B state; observed next action {}",
+            delivery_action_name(&action)
+        ));
+    }
+    print_delivery_observation(desired, &observed)?;
+    println!("credential_delivery_status=PASS");
+    println!("credential_delivery_contract=FIXED_A_B");
+    println!("proof_tokens_enabled=false");
+    println!("provider_mutations=0");
+    println!("credential_secret_mutations=0");
+    println!("production_runtime_mutations=0");
+    println!("real_credentials_created=0");
+    Ok(())
+}
+
+fn delivery_action_name(action: &CredentialDeliveryAction) -> &'static str {
+    match action {
+        CredentialDeliveryAction::Noop => "NOOP",
+        CredentialDeliveryAction::UploadWorkerContract { .. } => "UPLOAD_WORKER_CONTRACT",
+        CredentialDeliveryAction::SeedDummySlots { .. } => "SEED_DUMMY_A_B_SLOTS",
+    }
+}
+
+fn print_delivery_observation(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<(), String> {
+    println!("credential_delivery_account={}", desired.target_account_id);
+    println!(
+        "credential_delivery_control_token_identity={}",
+        observed.control_token_identity.id
+    );
+    for projection in projections(desired) {
+        let current = projection_observation(observed, &projection.projection)?;
+        let names = current
+            .worker_secret_bindings
+            .iter()
+            .map(|binding| format!("{}:{}", binding.name, binding.binding_type))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "credential_delivery_projection={} worker={} version_tag={} binding_count={} secret_bindings={} proof_token_enabled={}",
+            projection.projection,
+            projection.worker_name,
+            current.worker_version_tag.as_deref().unwrap_or("ABSENT"),
+            current
+                .worker_binding_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned()),
+            if names.is_empty() { "ABSENT" } else { names.as_str() },
+            current
+                .service_token_enabled
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned())
+        );
+    }
+    Ok(())
+}
+
+
 async fn converge(
     api_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
@@ -253,14 +699,23 @@ pub(crate) async fn verify_credential_plane_invariant() -> Result<(), String> {
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let desired = &production.cloudflare.credential_plane;
     let observed = observe(&control_token, desired).await?;
-    let action = plan(desired, &observed)?;
-    if action != CredentialPlaneAction::Noop {
-        return Err(format!(
-            "accepted Phase 2 credential-plane invariant drifted; observed next action {}",
-            action_name(&action)
-        ));
+
+    // During the Phase 6 transition, normal production verification accepts
+    // either the exact terminal Phase 2 locked state or the exact terminal A/B
+    // delivery state. A partial mixture is rejected by both validators.
+    if let Ok(CredentialPlaneAction::Noop) = plan(desired, &observed) {
+        return Ok(());
     }
-    Ok(())
+    match delivery_plan(desired, &observed) {
+        Ok(CredentialDeliveryAction::Noop) => Ok(()),
+        Ok(action) => Err(format!(
+            "credential-plane invariant is mid-transition; observed next delivery action {}",
+            delivery_action_name(&action)
+        )),
+        Err(delivery_err) => Err(format!(
+            "credential-plane invariant matches neither exact Phase 2 locked state nor exact Phase 6 A/B state: {delivery_err}"
+        )),
+    }
 }
 
 async fn verify_locked(
