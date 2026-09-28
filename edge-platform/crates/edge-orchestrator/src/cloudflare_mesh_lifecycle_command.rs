@@ -742,7 +742,7 @@ pub(crate) async fn acceptance_runtime_apply(
         application_spec_path,
     )
     .await?;
-    let mut provider = provider_from_env(&desired)?;
+    let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
     let node_token = exact_mesh_node_token(&mut provider, &desired).await?;
     let authority = resolve_application_authority_from_spec(application_spec_path).await?;
     let state = converge_mesh_runtime_remote(&authority, node_token).await?;
@@ -767,7 +767,7 @@ pub(crate) async fn acceptance_runtime_verify(
         application_spec_path,
     )
     .await?;
-    let mut provider = provider_from_env(&desired)?;
+    let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
     let provider_observation =
         wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
     let authority = resolve_application_authority_from_spec(application_spec_path).await?;
