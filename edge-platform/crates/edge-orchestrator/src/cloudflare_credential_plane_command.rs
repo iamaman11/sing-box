@@ -2802,6 +2802,7 @@ mod tests {
             worker_identity_present: true,
             worker_id: Some(worker_id),
             worker_binding_count: Some(0),
+            worker_secret_bindings: Vec::new(),
             worker_version_tag: Some(
                 worker_material(desired, &projection.projection)
                     .unwrap()
@@ -2916,6 +2917,129 @@ mod tests {
         assert!(!windows.source.contains("0x08"));
         assert!(!vm.source.contains("0x08"));
     }
+
+
+    fn set_delivery_terminal(
+        observation: &mut CredentialPlaneObservation,
+        projection_name: &str,
+    ) {
+        let current = observation
+            .projections
+            .iter_mut()
+            .find(|projection| projection.projection == projection_name)
+            .unwrap();
+        current.worker_binding_count = Some(2);
+        current.worker_secret_bindings = vec![
+            cloudflare::CloudflareWorkerSecretBinding {
+                name: DELIVERY_SLOT_A.to_owned(),
+                binding_type: "secret_text".to_owned(),
+            },
+            cloudflare::CloudflareWorkerSecretBinding {
+                name: DELIVERY_SLOT_B.to_owned(),
+                binding_type: "secret_text".to_owned(),
+            },
+        ];
+        current.worker_version_tag =
+            Some(delivery_worker_material(projection_name).unwrap().version_tag);
+    }
+
+    #[test]
+    fn delivery_material_is_two_projection_specific_typed_dummy_slots() {
+        let windows = delivery_worker_material("windows").unwrap();
+        let vm = delivery_worker_material("vm").unwrap();
+        assert_eq!(windows.slots.len(), 2);
+        assert_eq!(vm.slots.len(), 2);
+        assert_ne!(windows.source, vm.source);
+        assert_ne!(windows.version_tag, vm.version_tag);
+        for (material, projection) in [
+            (&windows, CredentialProjectionKind::Windows),
+            (&vm, CredentialProjectionKind::Vm),
+        ] {
+            assert_eq!(material.slots[0].name, DELIVERY_SLOT_A);
+            assert_eq!(material.slots[1].name, DELIVERY_SLOT_B);
+            assert_eq!(material.slots[0].generation, DELIVERY_PROBE_GENERATION_A);
+            assert_eq!(material.slots[1].generation, DELIVERY_PROBE_GENERATION_B);
+            for slot in &material.slots {
+                let decoded = CredentialDeliveryBundle::decode(slot.payload.as_slice()).unwrap();
+                assert_eq!(decoded.encode_to_vec(), slot.payload);
+                assert_eq!(decoded.schema_version, 1);
+                assert_eq!(decoded.generation, slot.generation);
+                assert_eq!(decoded.projection, projection as i32);
+                assert!(decoded.dummy_non_secret);
+                assert_eq!(slot.secret_text, hex_encode(&slot.payload));
+                assert!(!material.source.contains(&slot.secret_text));
+            }
+        }
+        assert!(windows.source.contains(DELIVERY_SLOT_A));
+        assert!(windows.source.contains(DELIVERY_SLOT_B));
+        assert!(!windows.source.contains("password"));
+        assert!(!windows.source.contains("private_key"));
+    }
+
+    #[test]
+    fn delivery_plan_moves_one_worker_at_a_time_and_accepts_only_terminal_ab() {
+        let desired = desired();
+        let mut observed = exact_observation(&desired, "public", "public");
+        assert_eq!(
+            delivery_plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::UploadWorkerContract {
+                projection: "windows".to_owned(),
+            }
+        );
+
+        observed.projections[0].worker_version_tag =
+            Some(delivery_worker_material("windows").unwrap().version_tag);
+        assert_eq!(
+            delivery_plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::SeedDummySlots {
+                projection: "windows".to_owned(),
+            }
+        );
+
+        set_delivery_terminal(&mut observed, "windows");
+        assert_eq!(
+            delivery_plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::UploadWorkerContract {
+                projection: "vm".to_owned(),
+            }
+        );
+
+        let vm_index = observed
+            .projections
+            .iter()
+            .position(|projection| projection.projection == "vm")
+            .unwrap();
+        observed.projections[vm_index].worker_version_tag =
+            Some(delivery_worker_material("vm").unwrap().version_tag);
+        assert_eq!(
+            delivery_plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::SeedDummySlots {
+                projection: "vm".to_owned(),
+            }
+        );
+
+        set_delivery_terminal(&mut observed, "vm");
+        assert_eq!(
+            delivery_plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::Noop
+        );
+    }
+
+    #[test]
+    fn delivery_plan_fails_closed_on_extra_or_wrong_binding() {
+        let desired = desired();
+        let mut observed = exact_observation(&desired, "public", "public");
+        set_delivery_terminal(&mut observed, "windows");
+        observed.projections[0].worker_secret_bindings.push(
+            cloudflare::CloudflareWorkerSecretBinding {
+                name: "UNEXPECTED".to_owned(),
+                binding_type: "secret_text".to_owned(),
+            },
+        );
+        observed.projections[0].worker_binding_count = Some(3);
+        assert!(delivery_plan(&desired, &observed).is_err());
+    }
+
 
     #[test]
     fn proof_token_state_requires_exact_live_identity_and_future_expiry() {
