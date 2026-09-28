@@ -650,7 +650,7 @@ mod tests {
         let digest = "a".repeat(64);
         let cases = [
             vec!["edge-orchestrator", "production", "diagnose"],
-            vec!["edge-orchestrator", "cloudflare-credential-plane", "verify"],
+            vec!["edge-orchestrator", "credentials", "contract-verify"],
             vec![
                 "edge-orchestrator",
                 "application-cleanup",
