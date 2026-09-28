@@ -8,12 +8,9 @@ use edge_shared_types::{CredentialIsolationProbe, CredentialProjectionKind};
 use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
-use std::{env, time::Duration};
-use tokio::time::sleep;
+use std::env;
 
 const MAX_CONVERGENCE_STEPS: usize = 16;
-const MAX_ROUTE_READINESS_ATTEMPTS: usize = 12;
-const ROUTE_READINESS_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProjectionDesired {
@@ -66,6 +63,7 @@ enum CredentialPlaneAction {
     CreateAccessApplication { projection: String },
     CreateAccessPolicy { projection: String },
     ConfigureWorkersDev { projection: String },
+    DisableProofToken { projection: String },
     ProveIsolationAndLock,
 }
 
@@ -413,11 +411,15 @@ fn plan(
         }
     }
 
-    let mut any_enabled = false;
     for projection in projections(desired) {
         let observed = projection_observation(observed, &projection.projection)?;
         match observed.service_token_enabled {
-            Some(enabled) => any_enabled |= enabled,
+            Some(true) => {
+                return Ok(CredentialPlaneAction::DisableProofToken {
+                    projection: projection.projection,
+                });
+            }
+            Some(false) => {}
             None => {
                 return Err(format!(
                     "service token enabled state is missing for {}",
@@ -425,9 +427,6 @@ fn plan(
                 ));
             }
         }
-    }
-    if any_enabled {
-        return Ok(CredentialPlaneAction::ProveIsolationAndLock);
     }
 
     Ok(CredentialPlaneAction::Noop)
@@ -506,6 +505,7 @@ async fn apply_action(
                 &desired.target_account_id,
                 &projection.service_token_name,
                 &desired.proof_token_duration,
+                false,
             )
             .await?;
             drop(credential);
@@ -558,6 +558,24 @@ async fn apply_action(
             .await?;
             Ok((None, 1))
         }
+        CredentialPlaneAction::DisableProofToken { projection } => {
+            let projection = projection_desired(desired, projection)?;
+            let current = projection_observation(observed, &projection.projection)?;
+            let token_id = current
+                .service_token_id
+                .as_deref()
+                .ok_or_else(|| "service token ID is required before disable".to_owned())?;
+            cloudflare::set_access_service_token_enabled(
+                api_token,
+                &desired.target_account_id,
+                token_id,
+                &projection.service_token_name,
+                &desired.proof_token_duration,
+                false,
+            )
+            .await?;
+            Ok((None, 1))
+        }
         CredentialPlaneAction::ProveIsolationAndLock => {
             let (report, mutations) = prove_isolation(api_token, desired, observed).await?;
             Ok((Some(report), mutations))
@@ -596,9 +614,6 @@ async fn prove_isolation(
         "https://{}.{}.workers.dev/v1/credentials?generation=1",
         vm.worker_name, workers_subdomain
     );
-
-    wait_for_access_barrier("windows", &windows_url).await?;
-    wait_for_access_barrier("vm", &vm_url).await?;
 
     let mut mutations = 0u32;
     let mut windows_enabled_by_proof = false;
@@ -748,42 +763,6 @@ async fn prove_isolation(
     }
 
     proof_result.map(|report| (report, mutations))
-}
-
-async fn wait_for_access_barrier(projection: &str, url: &str) -> Result<(), String> {
-    for attempt in 1..=MAX_ROUTE_READINESS_ATTEMPTS {
-        match cloudflare::probe_worker(url, None).await {
-            Ok(probe) => {
-                if probe.status == 401 {
-                    println!(
-                        "route_readiness={} outcome=PASS status=401 attempt={attempt}",
-                        projection
-                    );
-                    return Ok(());
-                }
-                return Err(format!(
-                    "{projection} workers.dev route reached HTTP before proof but Access barrier was not exact 401: status={} body_len={}",
-                    probe.status,
-                    probe.body.len()
-                ));
-            }
-            Err(err) if attempt < MAX_ROUTE_READINESS_ATTEMPTS => {
-                println!(
-                    "route_readiness={} outcome=WAIT attempt={attempt} transport_error={err}",
-                    projection
-                );
-                sleep(ROUTE_READINESS_RETRY_DELAY).await;
-            }
-            Err(err) => {
-                return Err(format!(
-                    "{projection} workers.dev route did not become reachable behind Access within bounded {MAX_ROUTE_READINESS_ATTEMPTS} attempts: {err}"
-                ));
-            }
-        }
-    }
-    Err(format!(
-        "{projection} workers.dev route readiness exhausted unexpectedly"
-    ))
 }
 
 fn require_allowed(
@@ -1112,6 +1091,7 @@ fn action_name(action: &CredentialPlaneAction) -> &'static str {
         CredentialPlaneAction::CreateAccessApplication { .. } => "CREATE_ACCESS_APPLICATION",
         CredentialPlaneAction::CreateAccessPolicy { .. } => "CREATE_ACCESS_POLICY",
         CredentialPlaneAction::ConfigureWorkersDev { .. } => "CONFIGURE_WORKERS_DEV",
+        CredentialPlaneAction::DisableProofToken { .. } => "DISABLE_PROOF_TOKEN",
         CredentialPlaneAction::ProveIsolationAndLock => "PROVE_ISOLATION_AND_LOCK",
     }
 }
@@ -1251,9 +1231,13 @@ mod tests {
     }
 
     #[test]
-    fn readiness_policy_is_bounded_and_requires_access_denial() {
-        assert_eq!(MAX_ROUTE_READINESS_ATTEMPTS, 12);
-        assert_eq!(ROUTE_READINESS_RETRY_DELAY, Duration::from_secs(5));
+    fn access_denial_contract_ignores_provider_body() {
+        let probe = cloudflare::CloudflareWorkerProbe {
+            status: 401,
+            content_type: Some("text/html".to_owned()),
+            body: vec![0; 8192],
+        };
+        assert!(require_denied("anonymous_to_windows", &probe).is_ok());
     }
 
     #[test]
@@ -1265,6 +1249,12 @@ mod tests {
         assert_eq!(
             action_name(&CredentialPlaneAction::CreateWorkersDevSubdomain),
             "CREATE_WORKERS_DEV_SUBDOMAIN"
+        );
+        assert_eq!(
+            action_name(&CredentialPlaneAction::DisableProofToken {
+                projection: "windows".to_owned(),
+            }),
+            "DISABLE_PROOF_TOKEN"
         );
         assert_eq!(action_name(&CredentialPlaneAction::Noop), "NOOP");
     }

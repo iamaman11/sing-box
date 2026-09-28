@@ -509,6 +509,7 @@ pub async fn create_access_service_token(
     account_id: &str,
     name: &str,
     duration: &str,
+    enabled: bool,
 ) -> Result<CloudflareAccessServiceCredential, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Access service token name", name)?;
@@ -521,7 +522,7 @@ pub async fn create_access_service_token(
         .json(&serde_json::json!({
             "name": name,
             "duration": duration,
-            "enabled": true
+            "enabled": enabled
         }))
         .send()
         .await
@@ -667,12 +668,19 @@ pub async fn probe_worker(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned);
+    if status != 200 {
+        return Ok(CloudflareWorkerProbe {
+            status,
+            content_type,
+            body: Vec::new(),
+        });
+    }
     let bytes = response
         .bytes()
         .await
         .map_err(|err| format!("failed to read Cloudflare Worker probe body: {err}"))?;
     if bytes.len() > 4096 {
-        return Err("Cloudflare Worker probe body exceeded 4096-byte bound".to_owned());
+        return Err("Cloudflare Worker 200 probe body exceeded 4096-byte bound".to_owned());
     }
     Ok(CloudflareWorkerProbe {
         status,
