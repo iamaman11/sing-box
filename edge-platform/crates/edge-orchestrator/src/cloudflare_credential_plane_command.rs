@@ -56,6 +56,7 @@ struct CredentialPlaneObservation {
 enum CredentialPlaneAction {
     Noop,
     CreateAccessOrganization,
+    CreateWorkersDevSubdomain,
     CreateWorkerIdentityLocked { projection: String },
     UploadWorkerModuleLocked { projection: String },
     CreateServiceToken { projection: String },
@@ -282,6 +283,17 @@ fn plan(
         }
     }
 
+    match observed.workers_dev_subdomain.as_deref() {
+        None => return Ok(CredentialPlaneAction::CreateWorkersDevSubdomain),
+        Some(subdomain) if subdomain != desired.workers_dev_subdomain => {
+            return Err(format!(
+                "existing workers.dev account subdomain differs from Phase 2 desired boundary: observed={subdomain} desired={}",
+                desired.workers_dev_subdomain
+            ));
+        }
+        Some(_) => {}
+    }
+
     for projection in projections(desired) {
         let observed = projection_observation(observed, &projection.projection)?;
         let material = worker_material(desired, &projection.projection)?;
@@ -434,6 +446,21 @@ async fn apply_action(
                 &desired.access_auth_domain,
             )
             .await?;
+            Ok((None, 1))
+        }
+        CredentialPlaneAction::CreateWorkersDevSubdomain => {
+            let created = cloudflare::create_workers_subdomain(
+                api_token,
+                &desired.target_account_id,
+                &desired.workers_dev_subdomain,
+            )
+            .await?;
+            if created.subdomain != desired.workers_dev_subdomain {
+                return Err(format!(
+                    "Cloudflare created unexpected workers.dev account subdomain: observed={} desired={}",
+                    created.subdomain, desired.workers_dev_subdomain
+                ));
+            }
             Ok((None, 1))
         }
         CredentialPlaneAction::CreateWorkerIdentityLocked { projection } => {
@@ -795,25 +822,19 @@ async fn observe(
         (Vec::new(), Vec::new())
     };
 
+    // The account-level workers.dev namespace is a distinct provider resource.
+    // Its existence does not publish any Worker; per-Worker routing remains
+    // explicitly locked until whole-Worker Access isolation is complete.
+    let workers_dev_subdomain =
+        match cloudflare::get_workers_subdomain(api_token, &desired.target_account_id).await {
+            Ok(value) => Some(value.subdomain),
+            Err(err) if cloudflare::is_workers_subdomain_not_configured_error(&err) => None,
+            Err(err) => return Err(err),
+        };
+
     // This owner is deliberately name-scoped. Other Workers, Access applications,
     // service tokens and domains may coexist in the dedicated account as later
     // Cloudflare phases converge; they are neither adopted nor rejected here.
-    let owned_worker_script_present = projections(desired).iter().any(|projection| {
-        scripts
-            .iter()
-            .any(|script| script.id == projection.worker_name)
-    });
-
-    let workers_dev_subdomain = if owned_worker_script_present {
-        Some(
-            cloudflare::get_workers_subdomain(api_token, &desired.target_account_id)
-                .await?
-                .subdomain,
-        )
-    } else {
-        None
-    };
-
     let mut projections_observed = Vec::new();
     for projection in projections(desired) {
         let matching_scripts = scripts
@@ -1042,6 +1063,7 @@ fn action_name(action: &CredentialPlaneAction) -> &'static str {
     match action {
         CredentialPlaneAction::Noop => "NOOP",
         CredentialPlaneAction::CreateAccessOrganization => "CREATE_ACCESS_ORGANIZATION",
+        CredentialPlaneAction::CreateWorkersDevSubdomain => "CREATE_WORKERS_DEV_SUBDOMAIN",
         CredentialPlaneAction::CreateWorkerIdentityLocked { .. } => "CREATE_WORKER_IDENTITY_LOCKED",
         CredentialPlaneAction::UploadWorkerModuleLocked { .. } => "UPLOAD_WORKER_MODULE_LOCKED",
         CredentialPlaneAction::CreateServiceToken { .. } => "CREATE_SERVICE_TOKEN",
@@ -1069,6 +1091,10 @@ fn print_observation(
             .as_ref()
             .map(|value| value.name.as_str())
             .unwrap_or("NOT_CONFIGURED")
+    );
+    println!(
+        "workers_dev_subdomain={}",
+        observed.workers_dev_subdomain.as_deref().unwrap_or("NOT_CONFIGURED")
     );
     for projection in &observed.projections {
         println!(
@@ -1153,6 +1179,7 @@ mod tests {
             vm_service_token_name: "sing-box-credentials-vm-phase2-proof".to_owned(),
             worker_compatibility_date: "2026-09-28".to_owned(),
             proof_token_duration: "1h".to_owned(),
+            workers_dev_subdomain: "sing-box-6be6e4b6340822dbeb18cb6c2f09c660".to_owned(),
         }
     }
 
@@ -1183,6 +1210,10 @@ mod tests {
         assert_eq!(
             action_name(&CredentialPlaneAction::ProveIsolationAndLock),
             "PROVE_ISOLATION_AND_LOCK"
+        );
+        assert_eq!(
+            action_name(&CredentialPlaneAction::CreateWorkersDevSubdomain),
+            "CREATE_WORKERS_DEV_SUBDOMAIN"
         );
         assert_eq!(action_name(&CredentialPlaneAction::Noop), "NOOP");
     }
