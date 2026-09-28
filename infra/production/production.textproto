@@ -55,6 +55,7 @@ cloudflare {
     vm_service_token_name: "sing-box-credentials-vm-phase2-proof"
     worker_compatibility_date: "2026-09-28"
     proof_token_duration: "1h"
+    workers_dev_subdomain: "sing-box-6be6e4b6340822dbeb18cb6c2f09c660"
   }
 }
 
