@@ -222,9 +222,17 @@ async fn run_runtime_apply_with_desired(
     application_spec: &Path,
 ) -> Result<(), String> {
     let mut provider = provider_from_env(&desired)?;
-    let node_token = exact_mesh_node_token(&mut provider, &desired).await?;
+    let credential = exact_mesh_node_token(&mut provider, &desired).await?;
     let authority = resolve_application_authority_from_spec(application_spec).await?;
-    let state = converge_mesh_runtime_remote(&authority, node_token).await?;
+    let state = converge_mesh_runtime_remote(
+        &authority,
+        credential.registration_id.clone(),
+        credential.node_token,
+    )
+    .await?;
+    if state.registration_id.as_deref() != Some(credential.registration_id.as_str()) {
+        return Err("Mesh runtime did not retain the exact provider registration identity".to_owned());
+    }
     if !state.runtime_ready {
         let provider_summary = observe_mesh(&mut provider, &desired)
             .await
@@ -743,16 +751,37 @@ pub(crate) async fn acceptance_runtime_apply(
     )
     .await?;
     let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
-    let node_token = exact_mesh_node_token(&mut provider, &desired).await?;
+    let credential = exact_mesh_node_token(&mut provider, &desired).await?;
     let authority = resolve_application_authority_from_spec(application_spec_path).await?;
-    let state = converge_mesh_runtime_remote(&authority, node_token).await?;
-    if !state.runtime_ready || !state.exact_image_ready {
+    let state = converge_mesh_runtime_remote(
+        &authority,
+        credential.registration_id.clone(),
+        credential.node_token,
+    )
+    .await?;
+    if !state.runtime_ready
+        || !state.exact_image_ready
+        || state.registration_id.as_deref() != Some(credential.registration_id.as_str())
+    {
         return Err(format!(
-            "Mesh runtime convergence completed without READY: {}",
+            "Mesh runtime convergence completed without exact READY identity: runtime_ready={} exact_image_ready={} registration_match={} warnings={}",
+            state.runtime_ready,
+            state.exact_image_ready,
+            state.registration_id.as_deref() == Some(credential.registration_id.as_str()),
             state.warnings.join("; ")
         ));
     }
-    wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    println!("mesh_runtime_local_status=READY");
+    println!("mesh_runtime_registration_identity=EXACT");
+    wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default())
+        .await
+        .map_err(|err| {
+            format!(
+                "{err}; local_runtime_ready={} exact_image_ready={} registration_identity=EXACT",
+                state.runtime_ready, state.exact_image_ready
+            )
+        })?;
+    println!("mesh_provider_status=HEALTHY");
     Ok(())
 }
 
@@ -770,16 +799,22 @@ pub(crate) async fn acceptance_runtime_verify(
     let mut provider = production_provider_from_env(mesh_base_spec_path, &desired)?;
     let provider_observation =
         wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await?;
+    let [provider_node] = provider_observation.nodes.as_slice() else {
+        return Err("Mesh provider verification did not observe exactly one node".to_owned());
+    };
     let authority = resolve_application_authority_from_spec(application_spec_path).await?;
     let state = verify_mesh_runtime_remote(&authority).await?;
-    if !state.runtime_ready || !state.exact_image_ready {
+    if !state.runtime_ready
+        || !state.exact_image_ready
+        || state.registration_id.as_deref() != Some(provider_node.provider_id.as_str())
+    {
         return Err(format!(
-            "Mesh runtime verification did not observe READY: {}",
+            "Mesh runtime verification did not observe exact READY identity: runtime_ready={} exact_image_ready={} registration_match={} warnings={}",
+            state.runtime_ready,
+            state.exact_image_ready,
+            state.registration_id.as_deref() == Some(provider_node.provider_id.as_str()),
             state.warnings.join("; ")
         ));
-    }
-    if provider_observation.nodes.len() != 1 {
-        return Err("Mesh provider verification did not observe exactly one node".to_owned());
     }
     Ok(())
 }
