@@ -9,7 +9,7 @@ use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
 use std::env;
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONVERGENCE_STEPS: usize = 16;
 
@@ -225,16 +225,31 @@ async fn prove_locked(
             action_name(&action)
         ));
     }
-    match cloudflare::list_access_requests(api_token, &desired.target_account_id, None).await {
-        Ok(_) => println!("access_audit_log_preflight=PASS"),
-        Err(err) if err.contains("403") => {
+    let preflight_now = OffsetDateTime::now_utc();
+    let preflight_start = (preflight_now - TimeDuration::seconds(1))
+        .format(&Rfc3339)
+        .map_err(|err| format!("failed to format GraphQL preflight start timestamp: {err}"))?;
+    let preflight_end = preflight_now
+        .format(&Rfc3339)
+        .map_err(|err| format!("failed to format GraphQL preflight end timestamp: {err}"))?;
+    match cloudflare::list_access_login_events(
+        api_token,
+        &desired.target_account_id,
+        "0000000000000000",
+        &preflight_start,
+        &preflight_end,
+    )
+    .await
+    {
+        Ok(_) => println!("access_graphql_preflight=PASS"),
+        Err(err) if cloudflare::is_graphql_authorization_error(&err) => {
             return Err(format!(
-                "ACCESS_AUDIT_LOG_PERMISSION_REQUIRED permission=Access: Audit Logs Read; no proof mutation performed; provider_error={err}"
+                "ACCOUNT_ANALYTICS_READ_REQUIRED permission=Account Analytics Read; no proof mutation performed; provider_error={err}"
             ));
         }
         Err(err) => {
             return Err(format!(
-                "ACCESS_AUDIT_LOG_PREFLIGHT_FAILED no proof mutation performed; provider_error={err}"
+                "ACCESS_GRAPHQL_PREFLIGHT_FAILED no proof mutation performed; provider_error={err}"
             ));
         }
     }
@@ -616,10 +631,12 @@ async fn prove_isolation(
         .service_token_id
         .as_deref()
         .ok_or_else(|| "VM proof token ID is missing".to_owned())?;
-    let windows_app_id = windows_observed
-        .access_application_id
-        .as_deref()
-        .ok_or_else(|| "Windows Access application ID is missing".to_owned())?;
+    let windows_policy_id = windows_observed
+        .access_policies
+        .first()
+        .filter(|_| windows_observed.access_policies.len() == 1)
+        .map(|policy| policy.id.as_str())
+        .ok_or_else(|| "Windows Access proof requires exactly one policy".to_owned())?;
     let workers_subdomain = observed
         .workers_dev_subdomain
         .as_deref()
@@ -757,15 +774,20 @@ async fn prove_isolation(
 
         let windows_material = worker_material(desired, "windows")?;
         let vm_material = worker_material(desired, "vm")?;
-        let ww_since = OffsetDateTime::now_utc()
+        let ww_start = (OffsetDateTime::now_utc() - TimeDuration::seconds(2))
             .format(&Rfc3339)
             .map_err(|err| format!("failed to format Access proof start timestamp: {err}"))?;
         let ww = cloudflare::probe_worker(&windows_url, Some(&windows_credential)).await?;
+        let ww_end = (OffsetDateTime::now_utc() + TimeDuration::seconds(2))
+            .format(&Rfc3339)
+            .map_err(|err| format!("failed to format Access proof end timestamp: {err}"))?;
         let ww_classification = classify_access_request(
             api_token,
             &desired.target_account_id,
-            windows_app_id,
-            &ww_since,
+            windows_policy_id,
+            windows_token_id,
+            &ww_start,
+            &ww_end,
             &ww,
         )
         .await?;
@@ -881,60 +903,72 @@ async fn prove_isolation(
 async fn classify_access_request(
     api_token: &str,
     account_id: &str,
-    expected_app_id: &str,
-    since: &str,
+    expected_policy_id: &str,
+    expected_service_token_id: &str,
+    datetime_start: &str,
+    datetime_end: &str,
     probe: &cloudflare::CloudflareWorkerProbe,
 ) -> Result<&'static str, String> {
     let raw_cf_ray = probe.cf_ray.as_deref().ok_or_else(|| {
-        "REQUEST_NOT_SEEN_BY_ACCESS: Worker response did not include CF-Ray".to_owned()
+        "ACCESS_LOGIN_EVENT_NOT_OBSERVED: Worker response did not include CF-Ray".to_owned()
     })?;
     let ray_id = normalize_cf_ray(raw_cf_ray)?;
-    let requests = cloudflare::list_access_requests(api_token, account_id, Some(since)).await?;
-    let matching = requests
-        .iter()
-        .filter(|request| request.ray_id.as_deref() == Some(ray_id))
-        .collect::<Vec<_>>();
-    if matching.is_empty() {
+    let events = cloudflare::list_access_login_events(
+        api_token,
+        account_id,
+        ray_id,
+        datetime_start,
+        datetime_end,
+    )
+    .await?;
+    if events.is_empty() {
         println!(
-            "access_request_evidence ray_id={} records=0 window_records={} http_status={} since={}",
-            ray_id,
-            requests.len(),
-            probe.status,
-            since
+            "access_login_evidence ray_id={} records=0 http_status={} datetime_start={} datetime_end={}",
+            ray_id, probe.status, datetime_start, datetime_end
         );
-        return Ok("REQUEST_NOT_SEEN_BY_ACCESS");
+        return Ok("ACCESS_LOGIN_EVENT_NOT_OBSERVED");
     }
-    if matching.len() != 1 {
+    if events.len() != 1 {
         return Err(format!(
-            "Access authentication log correlation for ray_id={ray_id} is ambiguous: {} matching records in {} window records",
-            matching.len(),
-            requests.len()
+            "GraphQL Access login correlation for ray_id={ray_id} is ambiguous: {} matching records",
+            events.len()
         ));
     }
-    let request = matching[0];
+    let event = &events[0];
     println!(
-        "access_request_evidence ray_id={} http_status={} allowed={} app_uid={} app_domain={} action={} connection={} created_at={}",
+        "access_login_evidence ray_id={} http_status={} successful={} approving_policy_id={} identity_provider={} service_token_id={} datetime={}",
         ray_id,
         probe.status,
-        request
-            .allowed
+        event
+            .is_successful_login
             .map(|value| value.to_string())
             .unwrap_or_else(|| "ABSENT".to_owned()),
-        request.app_uid.as_deref().unwrap_or("ABSENT"),
-        request.app_domain.as_deref().unwrap_or("ABSENT"),
-        request.action.as_deref().unwrap_or("ABSENT"),
-        request.connection.as_deref().unwrap_or("ABSENT"),
-        request.created_at.as_deref().unwrap_or("ABSENT")
+        event.approving_policy_id.as_deref().unwrap_or("ABSENT"),
+        event.identity_provider.as_deref().unwrap_or("ABSENT"),
+        event.service_token_id.as_deref().unwrap_or("ABSENT"),
+        event.datetime.as_deref().unwrap_or("ABSENT")
     );
-    if request.app_uid.as_deref() != Some(expected_app_id) {
-        return Ok("WRONG_APPLICATION");
+    if event.cf_ray_id.as_deref() != Some(ray_id) {
+        return Err(format!(
+            "GraphQL Access login event Ray ID mismatch: expected={ray_id} observed={}",
+            event.cf_ray_id.as_deref().unwrap_or("ABSENT")
+        ));
     }
-    match request.allowed {
+    if event.identity_provider.as_deref() != Some("nonidentity") {
+        return Ok("WRONG_AUTHENTICATION_MODE");
+    }
+    if event.service_token_id.as_deref() != Some(expected_service_token_id) {
+        return Ok("TOKEN_INVALID");
+    }
+    match event.is_successful_login {
         Some(false) => Ok("POLICY_DENIED"),
+        Some(true) if event.approving_policy_id.as_deref() != Some(expected_policy_id) => {
+            Ok("WRONG_POLICY")
+        }
         Some(true) if probe.status != 200 => Ok("ACCESS_ALLOWED_BUT_WORKER_FAILED"),
         Some(true) => Ok("PASS"),
         None => Err(format!(
-            "Access authentication log for ray_id={ray_id} is missing allowed state"
+            "GraphQL Access login event for ray_id={ray_id} is missing isSuccessfulLogin"
         )),
     }
 }
