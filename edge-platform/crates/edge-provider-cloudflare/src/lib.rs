@@ -476,7 +476,7 @@ pub async fn bulk_update_worker_script_secrets(
         .send()
         .await
         .map_err(|err| format!("failed to update Cloudflare Worker secrets: {err}"))?;
-    ensure_success(response).await?;
+    ensure_secret_mutation_success(response).await?;
 
     list_worker_script_secrets(api_token, account_id, script_name).await
 }
@@ -2619,6 +2619,23 @@ async fn fetch_records(
     Ok(payload.result)
 }
 
+async fn ensure_secret_mutation_success(response: reqwest::Response) -> Result<(), String> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Cloudflare Worker secret mutation failed with HTTP status {status}"
+        ));
+    }
+    let payload: ApiEnvelope<Value> = response
+        .json()
+        .await
+        .map_err(|_| "invalid Cloudflare Worker secret mutation JSON response".to_owned())?;
+    if !payload.success {
+        return Err("Cloudflare Worker secret mutation returned success=false".to_owned());
+    }
+    Ok(())
+}
+
 async fn ensure_success(response: reqwest::Response) -> Result<(), String> {
     let _: ApiEnvelope<serde_json::Value> = parse_success_json(response).await?;
     Ok(())
@@ -2818,6 +2835,19 @@ mod tests {
         assert_eq!(credential.enabled, Some(true));
         assert_eq!(credential.duration.as_deref(), Some("1h"));
         assert_eq!(credential.name.as_deref(), Some("proof-token"));
+    }
+
+    #[test]
+    fn worker_secret_binding_debug_never_contains_secret_text() {
+        let binding = worker_secret_binding_from_value(serde_json::json!({
+            "name": "EDGE_CREDENTIAL_BUNDLE_A",
+            "type": "secret_text",
+            "text": "super-secret-value"
+        }))
+        .unwrap();
+        let debug = format!("{binding:?}");
+        assert!(!debug.contains("super-secret-value"));
+        assert!(debug.contains("EDGE_CREDENTIAL_BUNDLE_A"));
     }
 
     #[test]
