@@ -381,10 +381,8 @@ impl ProductionComposition {
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let expected_target_mesh_cidrs = BTreeSet::from([
-            "100.64.0.0/12".to_owned(),
-            "100.96.0.0/12".to_owned(),
-        ]);
+        let expected_target_mesh_cidrs =
+            BTreeSet::from(["100.64.0.0/12".to_owned(), "100.96.0.0/12".to_owned()]);
         if target_mesh_cidrs != expected_target_mesh_cidrs
             || target_plane.mesh_profile_include_cidrs.len() != expected_target_mesh_cidrs.len()
         {
