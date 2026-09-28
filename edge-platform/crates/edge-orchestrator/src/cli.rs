@@ -30,10 +30,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: CloudflareDnsCommand,
     },
-    CloudflareCredentialPlane {
-        #[command(subcommand)]
-        command: CloudflareCredentialPlaneCommand,
-    },
     CloudflareTargetPlane {
         #[command(subcommand)]
         command: CloudflareTargetPlaneCommand,
@@ -72,7 +68,6 @@ impl Command {
             Self::ApplicationAcceptance(_) => "application-acceptance",
             Self::ApplicationCleanup(_) => "application-cleanup",
             Self::CloudflareDns { .. } => "cloudflare-dns",
-            Self::CloudflareCredentialPlane { .. } => "cloudflare-credential-plane",
             Self::CloudflareTargetPlane { .. } => "cloudflare-target-plane",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Credentials { .. } => "credentials",
@@ -246,15 +241,6 @@ impl CloudflareDnsCommand {
             Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Subcommand)]
-pub(crate) enum CloudflareCredentialPlaneCommand {
-    Inventory,
-    Plan,
-    Converge,
-    Verify,
-    Prove,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
