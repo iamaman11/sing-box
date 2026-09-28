@@ -231,7 +231,9 @@ async fn run_runtime_apply_with_desired(
     )
     .await?;
     if state.registration_id.as_deref() != Some(credential.registration_id.as_str()) {
-        return Err("Mesh runtime did not retain the exact provider registration identity".to_owned());
+        return Err(
+            "Mesh runtime did not retain the exact provider registration identity".to_owned(),
+        );
     }
     if !state.runtime_ready {
         let provider_summary = observe_mesh(&mut provider, &desired)
