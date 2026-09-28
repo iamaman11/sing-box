@@ -11,9 +11,7 @@ use edge_controller_core::cloudflare_mesh_lifecycle::{
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
-use edge_controller_core::production::{
-    ProductionComposition, ProductionTargetPlaneOwnership,
-};
+use edge_controller_core::production::{ProductionComposition, ProductionTargetPlaneOwnership};
 use edge_provider_cloudflare as cloudflare;
 use edge_provider_cloudflare::{
     CloudflareDeviceProfileWrite, CloudflareServiceModeWrite, CloudflareSplitTunnelEntry,
@@ -292,9 +290,11 @@ async fn observe(
 ) -> Result<TargetPlaneObservation, String> {
     verify_target_plane_invariant().await?;
 
-    let settings =
-        cloudflare::get_zero_trust_device_settings(&inputs.control_token, &desired.target_account_id)
-            .await?;
+    let settings = cloudflare::get_zero_trust_device_settings(
+        &inputs.control_token,
+        &desired.target_account_id,
+    )
+    .await?;
     let zero_trust_device_settings_ready = settings.gateway_proxy_enabled == Some(true)
         && settings.gateway_udp_proxy_enabled == Some(true)
         && settings.use_zt_virtual_ip == Some(true);
@@ -406,11 +406,9 @@ fn plan(
     desired: &TargetPlaneDesired,
     observed: &TargetPlaneObservation,
 ) -> Result<TargetPlaneAction, String> {
-    let mesh_plan = edge_controller_core::cloudflare_mesh_lifecycle::plan_apply(
-        &desired.mesh,
-        &observed.mesh,
-    )
-    .map_err(|err| err.to_string())?;
+    let mesh_plan =
+        edge_controller_core::cloudflare_mesh_lifecycle::plan_apply(&desired.mesh, &observed.mesh)
+            .map_err(|err| err.to_string())?;
     match mesh_plan.action {
         MeshApplyAction::Noop => {}
         MeshApplyAction::CreateNode => return Ok(TargetPlaneAction::CreateMeshNode),
@@ -454,8 +452,7 @@ fn plan(
     if profile.description.as_deref() != Some(desired.mesh_profile.description.as_str())
         || profile.enabled != Some(true)
         || profile.service_mode.as_deref() != Some(desired.mesh_profile.service_mode.as_str())
-        || profile.tunnel_protocol.as_deref()
-            != Some(desired.mesh_profile.tunnel_protocol.as_str())
+        || profile.tunnel_protocol.as_deref() != Some(desired.mesh_profile.tunnel_protocol.as_str())
         || profile.auto_connect != Some(desired.mesh_profile.auto_connect)
         || profile.switch_locked != Some(desired.mesh_profile.switch_locked)
         || profile.precedence != Some(precedence)
@@ -530,15 +527,13 @@ async fn apply_once(
         TargetPlaneAction::CreateMeshNode | TargetPlaneAction::CreateMeshRoute { .. } => {
             apply_mesh_action(inputs, desired, &authorized.plan).await
         }
-        TargetPlaneAction::CreateMeshProfile { precedence } => {
-            cloudflare::create_device_profile(
-                &inputs.control_token,
-                &desired.target_account_id,
-                &profile_write(desired, *precedence, true),
-            )
-            .await
-            .map(|_| ())
-        }
+        TargetPlaneAction::CreateMeshProfile { precedence } => cloudflare::create_device_profile(
+            &inputs.control_token,
+            &desired.target_account_id,
+            &profile_write(desired, *precedence, true),
+        )
+        .await
+        .map(|_| ()),
         TargetPlaneAction::UpdateMeshProfile {
             profile_id,
             precedence,
@@ -560,13 +555,15 @@ async fn apply_once(
             .await
             .map(|_| ())
         }
-        TargetPlaneAction::CreateProductionDnsRecord => cloudflare::create_a_record(
-            &inputs.dns_token,
-            &desired.dns_zone_name,
-            &desired.dns_record_name,
-            &desired.dns_target_ipv4,
-        )
-        .await,
+        TargetPlaneAction::CreateProductionDnsRecord => {
+            cloudflare::create_a_record(
+                &inputs.dns_token,
+                &desired.dns_zone_name,
+                &desired.dns_record_name,
+                &desired.dns_target_ipv4,
+            )
+            .await
+        }
         TargetPlaneAction::UpdateProductionDnsRecord { record_id } => {
             cloudflare::update_a_record_by_id(
                 &inputs.dns_token,
