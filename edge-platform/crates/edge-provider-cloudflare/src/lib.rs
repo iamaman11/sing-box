@@ -482,6 +482,28 @@ pub async fn get_workers_subdomain(
     workers_subdomain_from_value(payload.result)
 }
 
+pub async fn create_workers_subdomain(
+    api_token: &str,
+    account_id: &str,
+    subdomain: &str,
+) -> Result<CloudflareWorkersSubdomain, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare workers.dev subdomain", subdomain)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/subdomain"
+        ))
+        .json(&serde_json::json!({
+            "subdomain": subdomain
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("failed to create Cloudflare workers.dev subdomain: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    workers_subdomain_from_value(payload.result)
+}
+
 pub async fn create_access_service_token(
     api_token: &str,
     account_id: &str,
@@ -2026,6 +2048,10 @@ pub fn is_access_not_enabled_error(error: &str) -> bool {
     error.contains("access.api.error.not_enabled: Access is not enabled")
 }
 
+pub fn is_workers_subdomain_not_configured_error(error: &str) -> bool {
+    error.contains("\"code\": 10007") && error.contains("workers.dev subdomain")
+}
+
 fn api_token_identity_from_record(
     record: ApiTokenVerifyRecord,
 ) -> Result<CloudflareApiTokenIdentity, String> {
@@ -2291,6 +2317,18 @@ mod tests {
         assert!(envelope.success);
         assert!(envelope.result.is_null());
         assert!(envelope.errors.is_empty());
+    }
+
+    #[test]
+    fn recognizes_missing_workers_dev_account_namespace() {
+        let error = r#"Cloudflare API returned 404 Not Found: {
+  "success": false,
+  "errors": [{"code": 10007, "message": "You do not have a workers.dev subdomain."}]
+}"#;
+        assert!(is_workers_subdomain_not_configured_error(error));
+        assert!(!is_workers_subdomain_not_configured_error(
+            "Cloudflare API returned 404 Not Found: {\"errors\":[{\"code\":10007,\"message\":\"different\"}]}"
+        ));
     }
 
     #[test]
