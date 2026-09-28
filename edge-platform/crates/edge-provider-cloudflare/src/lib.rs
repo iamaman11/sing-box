@@ -137,6 +137,7 @@ pub struct CloudflareGatewayRuleWrite {
 pub struct CloudflareAccessDestination {
     pub destination_type: String,
     pub worker_id: Option<String>,
+    pub uri: Option<String>,
     pub has_overrides: bool,
 }
 
@@ -147,6 +148,7 @@ pub struct CloudflareAccessApplication {
     pub app_type: String,
     pub service_auth_401_redirect: Option<bool>,
     pub destinations: Vec<CloudflareAccessDestination>,
+    pub policy_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -156,6 +158,9 @@ pub struct CloudflareAccessPolicy {
     pub decision: Option<String>,
     pub include_service_token_ids: Vec<String>,
     pub has_extra_rules: bool,
+    pub precedence: Option<u64>,
+    pub reusable: Option<bool>,
+    pub app_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1540,6 +1545,8 @@ pub async fn list_access_applications(
             applications.push(access_application_from_value(value)?);
         }
         if page_count < 50 {
+            applications
+                .sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
             return Ok(applications);
         }
     }
@@ -1568,6 +1575,36 @@ pub async fn list_access_application_policies(
         .into_iter()
         .map(access_policy_from_value)
         .collect()
+}
+
+pub async fn list_access_reusable_policies(
+    api_token: &str,
+    account_id: &str,
+) -> Result<Vec<CloudflareAccessPolicy>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let client = authorized_client(api_token)?;
+    let mut policies = Vec::new();
+    for page in 1..=MAX_API_PAGES {
+        let response = client
+            .get(format!("{API_ROOT}/accounts/{account_id}/access/policies"))
+            .query(&[("page", page.to_string()), ("per_page", "50".to_owned())])
+            .send()
+            .await
+            .map_err(|err| format!("failed to list Cloudflare Access reusable policies: {err}"))?;
+        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+        let values = value_array(payload.result, "Cloudflare Access reusable policies")?;
+        let page_count = values.len();
+        for value in values {
+            policies.push(access_policy_from_value(value)?);
+        }
+        if page_count < 50 {
+            policies.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+            return Ok(policies);
+        }
+    }
+    Err(format!(
+        "Cloudflare Access reusable policy pagination exceeded {MAX_API_PAGES} pages"
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1797,6 +1834,10 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
                         .get("worker_id")
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned),
+                    uri: destination
+                        .get("uri")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
                     has_overrides: match destination.get("overrides") {
                         None | Some(Value::Null) => false,
                         Some(Value::Array(values)) => !values.is_empty(),
@@ -1809,6 +1850,26 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
             return Err("Cloudflare Access application destinations must be an array".to_owned());
         }
     };
+    let mut policy_ids = match object.get("policies") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(id) if !id.trim().is_empty() => Some(id.clone()),
+                Value::Object(policy) => policy
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                    .map(ToOwned::to_owned),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        Some(_) => {
+            return Err("Cloudflare Access application policies must be an array".to_owned());
+        }
+    };
+    policy_ids.sort();
+    policy_ids.dedup();
     Ok(CloudflareAccessApplication {
         id: required_value_string(object, "id", "Cloudflare Access application")?,
         name: required_value_string(object, "name", "Cloudflare Access application")?,
@@ -1817,6 +1878,7 @@ fn access_application_from_value(value: Value) -> Result<CloudflareAccessApplica
             .get("service_auth_401_redirect")
             .and_then(Value::as_bool),
         destinations,
+        policy_ids,
     })
 }
 
@@ -1872,6 +1934,9 @@ fn access_policy_from_value(value: Value) -> Result<CloudflareAccessPolicy, Stri
             .map(ToOwned::to_owned),
         include_service_token_ids,
         has_extra_rules: include_other_rule_count != 0 || require_count != 0 || exclude_count != 0,
+        precedence: object.get("precedence").and_then(Value::as_u64),
+        reusable: object.get("reusable").and_then(Value::as_bool),
+        app_count: object.get("app_count").and_then(Value::as_u64),
     })
 }
 
