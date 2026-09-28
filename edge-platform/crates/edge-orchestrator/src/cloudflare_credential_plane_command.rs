@@ -12,6 +12,8 @@ use std::env;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONVERGENCE_STEPS: usize = 16;
+const ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS: usize = 6;
+const ACCESS_ANALYTICS_EVIDENCE_INTERVAL_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProjectionDesired {
@@ -85,6 +87,27 @@ struct ProofCase {
 #[derive(Debug, Clone)]
 struct ProofReport {
     cases: Vec<ProofCase>,
+}
+
+#[derive(Debug, Clone)]
+struct AccessFailureEvidence {
+    ray_id: Option<String>,
+    datetime_start: String,
+    datetime_end: String,
+    http_status: u16,
+    acceptance_error: String,
+}
+
+#[derive(Debug, Clone)]
+enum ProofAttemptError {
+    Ordinary(String),
+    FirstCase(AccessFailureEvidence),
+}
+
+impl From<String> for ProofAttemptError {
+    fn from(value: String) -> Self {
+        Self::Ordinary(value)
+    }
 }
 
 pub async fn run(command: CloudflareCredentialPlaneCommand) -> Result<(), String> {
@@ -655,7 +678,7 @@ async fn prove_isolation(
     let mut windows_enabled_by_proof = false;
     let mut vm_enabled_by_proof = false;
 
-    let proof_result: Result<ProofReport, String> = async {
+    let proof_result: Result<ProofReport, ProofAttemptError> = async {
         if windows_observed.service_token_enabled != Some(true) {
             cloudflare::set_access_service_token_enabled(
                 api_token,
@@ -774,37 +797,40 @@ async fn prove_isolation(
 
         let windows_material = worker_material(desired, "windows")?;
         let vm_material = worker_material(desired, "vm")?;
-        let ww_start = (OffsetDateTime::now_utc() - TimeDuration::seconds(2))
+        let ww_start = (OffsetDateTime::now_utc() - TimeDuration::seconds(30))
             .format(&Rfc3339)
             .map_err(|err| format!("failed to format Access proof start timestamp: {err}"))?;
         let ww = cloudflare::probe_worker(&windows_url, Some(&windows_credential)).await?;
-        let ww_end = (OffsetDateTime::now_utc() + TimeDuration::seconds(2))
+        let ww_end = (OffsetDateTime::now_utc() + TimeDuration::seconds(30))
             .format(&Rfc3339)
             .map_err(|err| format!("failed to format Access proof end timestamp: {err}"))?;
-        let ww_classification = classify_access_request(
-            api_token,
-            &desired.target_account_id,
-            windows_policy_id,
-            windows_token_id,
-            &ww_start,
-            &ww_end,
-            &ww,
-        )
-        .await?;
-        println!(
-            "access_request_classification case=windows_to_windows class={ww_classification}"
-        );
-        if ww_classification != "PASS" {
-            return Err(format!(
-                "windows_to_windows Access evaluation classified as {ww_classification}; no remaining matrix probes executed"
-            ));
-        }
-        require_allowed(
+
+        if let Err(acceptance_error) = require_allowed(
             "windows_to_windows",
             &ww,
             &windows_material.payload,
             CredentialProjectionKind::Windows,
-        )?;
+        ) {
+            let ray_id = match ww.cf_ray.as_deref() {
+                Some(raw) => Some(normalize_cf_ray(raw)?.to_owned()),
+                None => None,
+            };
+            println!(
+                "access_failure_capture case=windows_to_windows http_status={} ray_id={} datetime_start={} datetime_end={}",
+                ww.status,
+                ray_id.as_deref().unwrap_or("ABSENT"),
+                ww_start,
+                ww_end
+            );
+            return Err(ProofAttemptError::FirstCase(AccessFailureEvidence {
+                ray_id,
+                datetime_start: ww_start,
+                datetime_end: ww_end,
+                http_status: ww.status,
+                acceptance_error,
+            }));
+        }
+        println!("access_request_classification case=windows_to_windows class=PASS");
 
         let wv = cloudflare::probe_worker(&vm_url, Some(&windows_credential)).await?;
         let vv = cloudflare::probe_worker(&vm_url, Some(&vm_credential)).await?;
@@ -897,37 +923,93 @@ async fn prove_isolation(
         ));
     }
 
-    proof_result.map(|report| (report, mutations))
+    match proof_result {
+        Ok(report) => Ok((report, mutations)),
+        Err(ProofAttemptError::Ordinary(err)) => Err(err),
+        Err(ProofAttemptError::FirstCase(failure)) => {
+            let classification = diagnose_access_failure_after_cleanup(
+                api_token,
+                &desired.target_account_id,
+                windows_policy_id,
+                windows_token_id,
+                &failure,
+            )
+            .await
+            .map_err(|err| {
+                format!(
+                    "{}; proof-token cleanup completed; post-cleanup Access diagnostics failed: {err}",
+                    failure.acceptance_error
+                )
+            })?;
+            Err(format!(
+                "{}; proof-token cleanup completed; access_diagnostic_classification={classification}; no remaining matrix probes executed",
+                failure.acceptance_error
+            ))
+        }
+    }
 }
 
-async fn classify_access_request(
+async fn diagnose_access_failure_after_cleanup(
     api_token: &str,
     account_id: &str,
     expected_policy_id: &str,
     expected_service_token_id: &str,
-    datetime_start: &str,
-    datetime_end: &str,
-    probe: &cloudflare::CloudflareWorkerProbe,
+    failure: &AccessFailureEvidence,
 ) -> Result<&'static str, String> {
-    let raw_cf_ray = probe.cf_ray.as_deref().ok_or_else(|| {
-        "ACCESS_LOGIN_EVENT_NOT_OBSERVED: Worker response did not include CF-Ray".to_owned()
-    })?;
-    let ray_id = normalize_cf_ray(raw_cf_ray)?;
-    let events = cloudflare::list_access_login_events(
-        api_token,
-        account_id,
-        ray_id,
-        datetime_start,
-        datetime_end,
-    )
-    .await?;
-    if events.is_empty() {
+    let Some(ray_id) = failure.ray_id.as_deref() else {
         println!(
-            "access_login_evidence ray_id={} records=0 http_status={} datetime_start={} datetime_end={}",
-            ray_id, probe.status, datetime_start, datetime_end
+            "access_login_evidence_wait ray_id=ABSENT http_status={} result=CF_RAY_MISSING",
+            failure.http_status
         );
-        return Ok("ACCESS_LOGIN_EVENT_NOT_OBSERVED");
+        return Ok("ACCESS_DIAGNOSTIC_CF_RAY_MISSING");
+    };
+
+    for attempt in 1..=ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS {
+        let events = cloudflare::list_access_login_events(
+            api_token,
+            account_id,
+            ray_id,
+            &failure.datetime_start,
+            &failure.datetime_end,
+        )
+        .await?;
+        println!(
+            "access_login_evidence_wait attempt={} max_attempts={} ray_id={} records={} http_status={} datetime_start={} datetime_end={}",
+            attempt,
+            ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS,
+            ray_id,
+            events.len(),
+            failure.http_status,
+            failure.datetime_start,
+            failure.datetime_end
+        );
+        if !events.is_empty() {
+            return classify_access_login_events(
+                ray_id,
+                expected_policy_id,
+                expected_service_token_id,
+                failure.http_status,
+                &events,
+            );
+        }
+        if attempt < ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                ACCESS_ANALYTICS_EVIDENCE_INTERVAL_SECONDS,
+            ))
+            .await;
+        }
     }
+
+    Ok("ACCESS_LOGIN_EVENT_NOT_OBSERVED_AFTER_BOUNDED_WAIT")
+}
+
+fn classify_access_login_events(
+    ray_id: &str,
+    expected_policy_id: &str,
+    expected_service_token_id: &str,
+    http_status: u16,
+    events: &[cloudflare::CloudflareAccessLoginEvent],
+) -> Result<&'static str, String> {
     if events.len() != 1 {
         return Err(format!(
             "GraphQL Access login correlation for ray_id={ray_id} is ambiguous: {} matching records",
@@ -938,7 +1020,7 @@ async fn classify_access_request(
     println!(
         "access_login_evidence ray_id={} http_status={} successful={} approving_policy_id={} identity_provider={} service_token_id={} datetime={}",
         ray_id,
-        probe.status,
+        http_status,
         event
             .is_successful_login
             .map(|value| value.to_string())
@@ -965,7 +1047,7 @@ async fn classify_access_request(
         Some(true) if event.approving_policy_id.as_deref() != Some(expected_policy_id) => {
             Ok("WRONG_POLICY")
         }
-        Some(true) if probe.status != 200 => Ok("ACCESS_ALLOWED_BUT_WORKER_FAILED"),
+        Some(true) if http_status != 200 => Ok("ACCESS_ALLOWED_BUT_WORKER_FAILED"),
         Some(true) => Ok("PASS"),
         None => Err(format!(
             "GraphQL Access login event for ray_id={ray_id} is missing isSuccessfulLogin"
@@ -1780,6 +1862,57 @@ mod tests {
         );
         assert!(normalize_cf_ray("not-a-ray").is_err());
         assert!(normalize_cf_ray("187d944c61940c7").is_err());
+    }
+
+    #[test]
+    fn access_login_diagnostics_classify_exact_token_policy_and_status() {
+        let base = cloudflare::CloudflareAccessLoginEvent {
+            datetime: Some("2026-09-28T18:00:00Z".to_owned()),
+            is_successful_login: Some(true),
+            approving_policy_id: Some("policy-id".to_owned()),
+            cf_ray_id: Some("187d944c61940c77".to_owned()),
+            identity_provider: Some("nonidentity".to_owned()),
+            service_token_id: Some("token-id".to_owned()),
+        };
+        assert_eq!(
+            classify_access_login_events(
+                "187d944c61940c77",
+                "policy-id",
+                "token-id",
+                401,
+                std::slice::from_ref(&base),
+            )
+            .unwrap(),
+            "ACCESS_ALLOWED_BUT_WORKER_FAILED"
+        );
+
+        let mut denied = base.clone();
+        denied.is_successful_login = Some(false);
+        assert_eq!(
+            classify_access_login_events(
+                "187d944c61940c77",
+                "policy-id",
+                "token-id",
+                401,
+                &[denied],
+            )
+            .unwrap(),
+            "POLICY_DENIED"
+        );
+
+        let mut wrong_token = base;
+        wrong_token.service_token_id = Some("other-token".to_owned());
+        assert_eq!(
+            classify_access_login_events(
+                "187d944c61940c77",
+                "policy-id",
+                "token-id",
+                401,
+                &[wrong_token],
+            )
+            .unwrap(),
+            "TOKEN_INVALID"
+        );
     }
 
     #[test]
