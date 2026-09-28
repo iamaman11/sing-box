@@ -1460,11 +1460,15 @@ pub(crate) async fn observe_ipv4_network_remote(
 
 pub(crate) async fn converge_mesh_runtime_remote(
     authority: &ApplicationAuthority,
+    registration_id: String,
     node_token: String,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
     match client
-        .converge_mesh_runtime(Request::new(MeshRuntimeConvergeRequest { node_token }))
+        .converge_mesh_runtime(Request::new(MeshRuntimeConvergeRequest {
+            node_token,
+            registration_id,
+        }))
         .await
     {
         Ok(response) => Ok(response.into_inner()),
