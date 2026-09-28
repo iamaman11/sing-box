@@ -1376,10 +1376,7 @@ fn validate_mesh_registration_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn mesh_registration_state_dir(
-    stack_dir: &Path,
-    registration_id: &str,
-) -> Result<PathBuf, String> {
+fn mesh_registration_state_dir(stack_dir: &Path, registration_id: &str) -> Result<PathBuf, String> {
     validate_mesh_registration_id(registration_id)?;
     Ok(mesh_runtime_state_dir(stack_dir)?.join(registration_id))
 }
@@ -1742,9 +1739,7 @@ async fn converge_mesh_runtime(
     prepare_mesh_runtime_state(stack_dir)?;
     let registration_state = mesh_registration_state_dir(stack_dir, registration_id)?;
     fs::create_dir_all(&registration_state).map_err(|err| {
-        format!(
-            "failed to create identity-scoped Mesh registration state: {err}"
-        )
+        format!("failed to create identity-scoped Mesh registration state: {err}")
     })?;
     set_private_directory_permissions(&registration_state)?;
     persist_mesh_node_token(stack_dir, node_token)?;
@@ -4223,9 +4218,7 @@ mod tests {
         assert!(mesh_registration_state_dir(&stack, "../escape").is_err());
 
         let compose = include_str!("../../../../win/vultr-waw/stack/docker-compose.yml");
-        assert!(compose.contains(
-            "${MESH_STATE_DIR:-../mesh-state}:/var/lib/cloudflare-warp"
-        ));
+        assert!(compose.contains("${MESH_STATE_DIR:-../mesh-state}:/var/lib/cloudflare-warp"));
 
         fs::remove_dir_all(root).ok();
     }
