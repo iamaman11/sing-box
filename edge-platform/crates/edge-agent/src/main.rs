@@ -4202,6 +4202,52 @@ mod tests {
     }
 
     #[test]
+    fn mesh_registration_state_is_scoped_by_exact_provider_identity() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        let historical = "93b6f3a7-2dd5-4a72-8258-34c32ce5be69";
+        let target = "11111111-2222-4333-8444-555555555555";
+
+        assert_eq!(
+            mesh_registration_state_dir(&stack, historical).unwrap(),
+            root.join("mesh-state").join(historical)
+        );
+        assert_eq!(
+            mesh_registration_state_dir(&stack, target).unwrap(),
+            root.join("mesh-state").join(target)
+        );
+        assert_ne!(
+            mesh_registration_state_dir(&stack, historical).unwrap(),
+            mesh_registration_state_dir(&stack, target).unwrap()
+        );
+        assert!(mesh_registration_state_dir(&stack, "../escape").is_err());
+
+        let compose = include_str!("../../../../win/vultr-waw/stack/docker-compose.yml");
+        assert!(compose.contains(
+            "${MESH_STATE_DIR:-../mesh-state}:/var/lib/cloudflare-warp"
+        ));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn active_mesh_registration_identity_is_exact_and_non_secret() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        let registration_id = "11111111-2222-4333-8444-555555555555";
+
+        persist_mesh_registration_id(&stack, registration_id).unwrap();
+        assert_eq!(
+            read_mesh_registration_id(&stack).unwrap().as_deref(),
+            Some(registration_id)
+        );
+        assert!(root.join("mesh-state/active-registration-v1").is_file());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn typed_image_environment_requires_exact_digests() {
         let root = unique_test_dir();
         fs::create_dir_all(&root).unwrap();
