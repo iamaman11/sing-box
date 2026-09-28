@@ -823,11 +823,7 @@ pub async fn list_access_requests(
     ));
     let request = if let Some(since) = since {
         require_non_empty("Cloudflare Access log since timestamp", since)?;
-        request.query(&[
-            ("limit", "25"),
-            ("direction", "desc"),
-            ("since", since),
-        ])
+        request.query(&[("limit", "25"), ("direction", "desc"), ("since", since)])
     } else {
         request
     };
