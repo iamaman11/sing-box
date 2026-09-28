@@ -8,6 +8,7 @@ VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 ROOT_OPS = WORKFLOWS / "vultr-root-ops.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
+CREDENTIALS = WORKFLOWS / "credential-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
 MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
@@ -39,6 +40,7 @@ def main() -> None:
     root_ops = ROOT_OPS.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
+    credentials = CREDENTIALS.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
     mesh = MESH.read_text(encoding="utf-8")
@@ -72,6 +74,7 @@ def main() -> None:
     require("workflow_call:" in root_ops, "Vultr root ops must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
+    require("workflow_call:" in credentials, "credential lifecycle must be reusable")
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")
@@ -80,6 +83,7 @@ def main() -> None:
     require("issue_comment:" not in root_ops, "Vultr root ops must not listen to comments")
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
+    require("issue_comment:" not in credentials, "credential backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
     require("issue_comment:" not in mesh, "Mesh backend must not listen to comments")
@@ -92,6 +96,11 @@ def main() -> None:
         "startsWith(github.event.comment.body, '/production ')" in router
         and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 2,
         "router must expose production only through the existing owner-gated application lifecycle backend",
+    )
+    require(
+        "uses: ./.github/workflows/credential-lifecycle.yml" in router
+        and "startsWith(github.event.comment.body, '/credentials ')" in router,
+        "router must expose credential delivery only through the dedicated owner-gated /credentials backend",
     )
     require(
         "uses: ./.github/workflows/vultr-lifecycle.yml" in router,
@@ -182,31 +191,36 @@ def main() -> None:
         )
 
     require(
-        '"credential-inventory"' in application
-        and '"credential-plan"' in application
-        and '"credential-converge"' in application
-        and '"credential-verify"' in application
-        and '"credential-prove"' in application
-        and 'command_family = "production_credentials"' in application,
-        "credential-plane operations must remain under the canonical /production command family",
+        '"credential-inventory"' not in application
+        and '"credential-plan"' not in application
+        and '"credential-converge"' not in application
+        and '"credential-verify"' not in application
+        and '"credential-prove"' not in application
+        and 'command_family = "production_credentials"' not in application
+        and "  production_credentials:\n" not in application,
+        "transitional Phase 2 credential commands must be retired after production authority cutover",
     )
-    production_credentials = application.split(
-        "  production_credentials:\n", 1
-    )[1].split("\n  production:", 1)[0]
     require(
-        '"${EDGE_CREDENTIAL_PLANE_ORCHESTRATOR}" cloudflare-credential-plane "${REQUESTED_OPERATION}"'
-        in production_credentials
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}"
-        in production_credentials
-        and "jq " not in production_credentials
-        and "VULTR_API_KEY" not in production_credentials
-        and "VULTR_SSH_PRIVATE_KEY" not in production_credentials
-        and "CLOUDFLARE_API_TOKEN" not in production_credentials
-        and "CLOUDFLARE_DNS_TOKEN" not in production_credentials
-        and "api.ipify.org" not in production_credentials
-        and "lease-acquire" not in production_credentials
-        and "lease-release" not in production_credentials,
-        "production credential transport must be target-account-only and contain no lifecycle semantics",
+        '"contract-plan"' in credentials
+        and '"contract-converge"' in credentials
+        and '"contract-verify"' in credentials
+        and '"contract-prove"' in credentials
+        and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials "${REQUESTED_OPERATION}"' in credentials
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in credentials
+        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}" in credentials
+        and "if: needs.authorize.outputs.operation == 'contract-converge'" in credentials
+        and "if: needs.authorize.outputs.operation != 'contract-converge'" in credentials
+        and "group: credential-lifecycle-production" in credentials
+        and "VULTR_API_KEY" not in credentials
+        and "VULTR_SSH_PRIVATE_KEY" not in credentials
+        and "CLOUDFLARE_API_TOKEN" not in credentials
+        and "CLOUDFLARE_DNS_TOKEN" not in credentials
+        and "api.ipify.org" not in credentials
+        and "lease-acquire" not in credentials
+        and "lease-release" not in credentials
+        and "actions/upload-artifact" not in credentials
+        and "actions/cache" not in credentials,
+        "credential delivery workflow must be dedicated, GitHub-hosted, least-authority and artifact-free",
     )
 
     require(
@@ -239,8 +253,8 @@ def main() -> None:
         "target-plane transport must expose only target-account, shared-DNS and Vultr provider authority",
     )
     require(
-        application.count("group: vultr-control-plane-production") == 7,
-        "application backend must serialize target-plane, execute, production, credentials, read-only observation, cleanup and acceptance jobs",
+        application.count("group: vultr-control-plane-production") == 6,
+        "application backend must serialize target-plane, execute, production, read-only observation, cleanup and acceptance jobs",
     )
     production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
     require(
