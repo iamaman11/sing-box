@@ -707,7 +707,10 @@ mod tests {
             "6be6e4b6340822dbeb18cb6c2f09c660"
         );
         assert_eq!(
-            composition.cloudflare.credential_plane.workers_dev_subdomain,
+            composition
+                .cloudflare
+                .credential_plane
+                .workers_dev_subdomain,
             "sing-box-6be6e4b6340822dbeb18cb6c2f09c660"
         );
         assert_eq!(
