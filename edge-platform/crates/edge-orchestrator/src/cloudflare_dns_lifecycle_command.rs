@@ -149,7 +149,7 @@ pub(crate) async fn production_converge(
 ) -> Result<(), String> {
     let desired = load_desired(spec_path)?;
     let derived = derive_target_from_application(application_spec_path).await?;
-    let mut provider = provider_from_env()?;
+    let mut provider = production_provider_from_env(spec_path)?;
     let (observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
     if matches!(plan.action, ApplyAction::Noop) {
         return Ok(());
@@ -204,7 +204,7 @@ pub(crate) async fn acceptance_verify_noop(
 ) -> Result<(), String> {
     let desired = load_desired(spec_path)?;
     let derived = derive_target_from_application(application_spec_path).await?;
-    let mut provider = provider_from_env()?;
+    let mut provider = production_provider_from_env(spec_path)?;
     let (_observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
     if !matches!(plan.action, ApplyAction::Noop) {
         return Err(format!(
@@ -291,6 +291,15 @@ async fn derive_target_from_application(
 fn provider_from_env() -> Result<CloudflareDnsApiProvider, String> {
     let api_token = env::var("CLOUDFLARE_API_TOKEN")
         .map_err(|_| "CLOUDFLARE_API_TOKEN is required".to_owned())?;
+    CloudflareDnsApiProvider::new(api_token)
+}
+
+fn production_provider_from_env(spec_path: &Path) -> Result<CloudflareDnsApiProvider, String> {
+    if spec_path != Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH) {
+        return provider_from_env();
+    }
+    let api_token = env::var("CLOUDFLARE_DNS_TOKEN")
+        .map_err(|_| "CLOUDFLARE_DNS_TOKEN is required for canonical production DNS".to_owned())?;
     CloudflareDnsApiProvider::new(api_token)
 }
 

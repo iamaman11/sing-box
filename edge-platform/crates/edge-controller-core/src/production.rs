@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 4;
+pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 5;
 pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str = "infra/production/production.textproto";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -255,14 +255,14 @@ impl ProductionComposition {
             Some(cloudflare.migration_target_account_id.clone())
         };
         let credential_plane = cloudflare.credential_plane.as_ref().ok_or_else(|| {
-            validation("cloudflare.credential_plane is required in production schema v4")
+            validation("cloudflare.credential_plane is required in production schema v5")
         })?;
         let target_plane = cloudflare.target_plane.as_ref().ok_or_else(|| {
-            validation("cloudflare.target_plane is required in production schema v4")
+            validation("cloudflare.target_plane is required in production schema v5")
         })?;
-        let target_account_id = migration_target_account_id.clone().ok_or_else(|| {
-            validation("credential plane requires cloudflare.migration_target_account_id")
-        })?;
+        let application_cloudflare_account_id = migration_target_account_id
+            .clone()
+            .unwrap_or_else(|| cloudflare.active_account_id.clone());
         validate_identifier(
             "cloudflare.credential_plane.access_organization_name",
             &credential_plane.access_organization_name,
@@ -402,7 +402,7 @@ impl ProductionComposition {
             active_account_id: cloudflare.active_account_id.clone(),
             migration_target_account_id,
             credential_plane: ProductionCredentialPlaneOwnership {
-                target_account_id: target_account_id.clone(),
+                target_account_id: application_cloudflare_account_id.clone(),
                 access_organization_name: credential_plane.access_organization_name.clone(),
                 access_auth_domain: credential_plane.access_auth_domain.clone(),
                 windows_worker_name: credential_plane.windows_worker_name.clone(),
@@ -420,7 +420,7 @@ impl ProductionComposition {
                 workers_dev_subdomain: credential_plane.workers_dev_subdomain.clone(),
             },
             target_plane: ProductionTargetPlaneOwnership {
-                target_account_id,
+                target_account_id: application_cloudflare_account_id,
                 mesh_profile_name: target_plane.mesh_profile_name.clone(),
                 mesh_profile_description: target_plane.mesh_profile_description.clone(),
                 mesh_profile_precedence_start: target_plane.mesh_profile_precedence_start,
@@ -754,15 +754,9 @@ mod tests {
         assert_eq!(composition.public_hostname, "miu.alegria.by");
         assert_eq!(
             composition.cloudflare.active_account_id,
-            "4426df1449e417511bc7697d60b7f62f"
+            "6be6e4b6340822dbeb18cb6c2f09c660"
         );
-        assert_eq!(
-            composition
-                .cloudflare
-                .migration_target_account_id
-                .as_deref(),
-            Some("6be6e4b6340822dbeb18cb6c2f09c660")
-        );
+        assert_eq!(composition.cloudflare.migration_target_account_id, None);
         assert_eq!(
             composition.shared_dns_account_id,
             "4426df1449e417511bc7697d60b7f62f"
@@ -809,7 +803,7 @@ mod tests {
     #[test]
     fn production_authority_rejects_legacy_mesh_account_owner() {
         let mut desired = canonical();
-        desired.mesh.as_mut().unwrap().account_id = "4426df1449e417511bc7697d60b7f62f".to_owned();
+        desired.mesh.as_mut().unwrap().account_id = "6be6e4b6340822dbeb18cb6c2f09c660".to_owned();
         assert!(
             ProductionComposition::from_proto(&desired)
                 .unwrap_err()

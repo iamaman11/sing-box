@@ -9,6 +9,7 @@ use crate::cloudflare_mesh_lifecycle_command::{
     acceptance_runtime_apply as mesh_runtime_apply,
     acceptance_runtime_verify as mesh_runtime_verify,
 };
+use crate::cloudflare_target_plane_command::verify_active_invariant as verify_active_cloudflare_plane;
 use crate::vultr_lifecycle_command::{
     acceptance_converge_substrate as substrate_converge, acceptance_lease_acquire as lease_acquire,
     acceptance_lease_release as lease_release, acceptance_verify_substrate as substrate_verify,
@@ -168,6 +169,7 @@ async fn verify_with_lease(
     .await?;
     dns_verify_noop(spec, spec).await?;
     mesh_runtime_verify(spec, spec, spec).await?;
+    verify_active_cloudflare_plane().await?;
     Ok(())
 }
 
@@ -182,6 +184,18 @@ fn print_identity(
     println!("environment={}", composition.environment);
     println!("machine_id={}", composition.machine_id);
     println!("public_hostname={}", composition.public_hostname);
+    println!(
+        "cloudflare_active_account_id={}",
+        composition.cloudflare.active_account_id
+    );
+    println!(
+        "cloudflare_shared_dns_account_id={}",
+        composition.shared_dns_account_id
+    );
+    println!(
+        "cloudflare_migration_target_present={}",
+        composition.cloudflare.migration_target_account_id.is_some()
+    );
     println!("one_production_vm=true");
     println!("production_acme=true");
     println!("mesh_routes_derived_from_vpc_observation=true");

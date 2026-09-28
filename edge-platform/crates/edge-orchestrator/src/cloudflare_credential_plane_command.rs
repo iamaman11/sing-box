@@ -124,7 +124,7 @@ pub async fn run(command: CloudflareCredentialPlaneCommand) -> Result<(), String
     let desired = production.cloudflare.credential_plane.clone();
     if production.cloudflare.active_account_id == desired.target_account_id {
         return Err(
-            "Phase 2 refuses to operate when credential target equals active production account"
+            "transitional Phase 2 credential commands are disabled after the credential plane becomes active production authority"
                 .to_owned(),
         );
     }
@@ -215,21 +215,13 @@ async fn apply_once(
     Ok((after, next, proof, mutations))
 }
 
-pub(crate) async fn verify_target_plane_invariant() -> Result<(), String> {
+pub(crate) async fn verify_credential_plane_invariant() -> Result<(), String> {
     let control_token = env::var("CLOUDFLARE_CONTROL_TOKEN")
         .map_err(|_| "CLOUDFLARE_CONTROL_TOKEN is required".to_owned())?;
     if control_token.trim().is_empty() {
         return Err("CLOUDFLARE_CONTROL_TOKEN must not be blank".to_owned());
     }
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    if production.cloudflare.active_account_id
-        == production.cloudflare.credential_plane.target_account_id
-    {
-        return Err(
-            "target-plane invariant refuses to operate after the production account flip"
-                .to_owned(),
-        );
-    }
     let desired = &production.cloudflare.credential_plane;
     let observed = observe(&control_token, desired).await?;
     let action = plan(desired, &observed)?;

@@ -1,4 +1,4 @@
-use crate::cloudflare_credential_plane_command::verify_target_plane_invariant;
+use crate::cloudflare_credential_plane_command::verify_credential_plane_invariant;
 use crate::cloudflare_mesh_lifecycle_service::{
     CloudflareMeshApiProvider, MeshExecutionPolicy, apply_mesh_once, authorize_mesh_apply,
     observe_mesh, plan_mesh_apply,
@@ -102,7 +102,7 @@ enum TargetPlaneAction {
 }
 
 pub(crate) async fn inventory() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_migration()?;
     let desired = desired(&inputs).await?;
     let observed = observe(&inputs, &desired).await?;
     let action = plan(&desired, &observed)?;
@@ -110,7 +110,7 @@ pub(crate) async fn inventory() -> Result<(), String> {
 }
 
 pub(crate) async fn plan_command() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_migration()?;
     let desired = desired(&inputs).await?;
     let observed = observe(&inputs, &desired).await?;
     let authorized = authorized_plan(&desired, &observed)?;
@@ -122,7 +122,7 @@ pub(crate) async fn plan_command() -> Result<(), String> {
 }
 
 pub(crate) async fn converge() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_migration()?;
     let desired = desired(&inputs).await?;
     let mut mutations = 0u32;
 
@@ -162,7 +162,34 @@ pub(crate) async fn converge() -> Result<(), String> {
 }
 
 pub(crate) async fn verify() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    verify_with_inputs(Inputs::load_verify()?).await
+}
+
+pub(crate) async fn verify_active_invariant() -> Result<(), String> {
+    let inputs = Inputs::load_verify()?;
+    if inputs
+        .production
+        .cloudflare
+        .migration_target_account_id
+        .is_some()
+    {
+        return Err(
+            "active Cloudflare invariant requires migration_target_account_id to be empty"
+                .to_owned(),
+        );
+    }
+    if inputs.production.cloudflare.target_plane.target_account_id
+        != inputs.production.cloudflare.active_account_id
+    {
+        return Err(
+            "active Cloudflare invariant requires project plane ownership to equal active_account_id"
+                .to_owned(),
+        );
+    }
+    verify_with_inputs(inputs).await
+}
+
+async fn verify_with_inputs(inputs: Inputs) -> Result<(), String> {
     let desired = desired(&inputs).await?;
     let observed = observe(&inputs, &desired).await?;
     let action = plan(&desired, &observed)?;
@@ -183,21 +210,27 @@ struct Inputs {
 }
 
 impl Inputs {
-    fn load() -> Result<Self, String> {
-        let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-        let target = production
+    fn load_migration() -> Result<Self, String> {
+        let inputs = Self::load_verify()?;
+        let target = inputs
+            .production
             .cloudflare
             .migration_target_account_id
             .as_deref()
             .ok_or_else(|| {
-                "target-plane requires cloudflare.migration_target_account_id".to_owned()
+                "target-plane mutation owner requires cloudflare.migration_target_account_id"
+                    .to_owned()
             })?;
-        if target == production.cloudflare.active_account_id {
+        if target == inputs.production.cloudflare.active_account_id {
             return Err(
-                "target-plane owner refuses to operate after the production account flip"
-                    .to_owned(),
+                "target-plane mutation owner refuses an active-account migration target".to_owned(),
             );
         }
+        Ok(inputs)
+    }
+
+    fn load_verify() -> Result<Self, String> {
+        let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
         let control_token = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
         let dns_token = required_env("CLOUDFLARE_DNS_TOKEN")?;
         let vultr_api_key = required_env("VULTR_API_KEY")?;
@@ -288,7 +321,7 @@ async fn observe(
     inputs: &Inputs,
     desired: &TargetPlaneDesired,
 ) -> Result<TargetPlaneObservation, String> {
-    verify_target_plane_invariant().await?;
+    verify_credential_plane_invariant().await?;
 
     let settings = cloudflare::get_zero_trust_device_settings(
         &inputs.control_token,
