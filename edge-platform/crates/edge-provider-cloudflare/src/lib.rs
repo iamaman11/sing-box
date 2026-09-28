@@ -814,16 +814,20 @@ pub async fn get_access_service_token(
 pub async fn list_access_requests(
     api_token: &str,
     account_id: &str,
-    ray_id: Option<&str>,
+    since: Option<&str>,
 ) -> Result<Vec<CloudflareAccessRequest>, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     let client = authorized_client(api_token)?;
     let request = client.get(format!(
         "{API_ROOT}/accounts/{account_id}/access/logs/access_requests"
     ));
-    let request = if let Some(ray_id) = ray_id {
-        require_non_empty("Cloudflare Access Ray ID", ray_id)?;
-        request.query(&[("ray_id", ray_id), ("ray_idOp", "eq")])
+    let request = if let Some(since) = since {
+        require_non_empty("Cloudflare Access log since timestamp", since)?;
+        request.query(&[
+            ("limit", "25"),
+            ("direction", "desc"),
+            ("since", since),
+        ])
     } else {
         request
     };
