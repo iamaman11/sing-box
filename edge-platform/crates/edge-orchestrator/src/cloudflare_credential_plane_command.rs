@@ -225,6 +225,19 @@ async fn prove_locked(
             action_name(&action)
         ));
     }
+    match cloudflare::list_access_requests(api_token, &desired.target_account_id, None).await {
+        Ok(_) => println!("access_audit_log_preflight=PASS"),
+        Err(err) if err.contains("403") => {
+            return Err(format!(
+                "ACCESS_AUDIT_LOG_PERMISSION_REQUIRED permission=Access: Audit Logs Read; no proof mutation performed; provider_error={err}"
+            ));
+        }
+        Err(err) => {
+            return Err(format!(
+                "ACCESS_AUDIT_LOG_PREFLIGHT_FAILED no proof mutation performed; provider_error={err}"
+            ));
+        }
+    }
     let forced = CredentialPlaneAction::ProveIsolationAndLock;
     let authorized = authorize_plan(
         "cloudflare_credential_plane_phase2_proof",
@@ -603,6 +616,10 @@ async fn prove_isolation(
         .service_token_id
         .as_deref()
         .ok_or_else(|| "VM proof token ID is missing".to_owned())?;
+    let windows_app_id = windows_observed
+        .access_application_id
+        .as_deref()
+        .ok_or_else(|| "Windows Access application ID is missing".to_owned())?;
     let workers_subdomain = observed
         .workers_dev_subdomain
         .as_deref()
@@ -741,18 +758,34 @@ async fn prove_isolation(
         let windows_material = worker_material(desired, "windows")?;
         let vm_material = worker_material(desired, "vm")?;
         let ww = cloudflare::probe_worker(&windows_url, Some(&windows_credential)).await?;
-        let wv = cloudflare::probe_worker(&vm_url, Some(&windows_credential)).await?;
-        let vv = cloudflare::probe_worker(&vm_url, Some(&vm_credential)).await?;
-        let vw = cloudflare::probe_worker(&windows_url, Some(&vm_credential)).await?;
-        let aw = cloudflare::probe_worker(&windows_url, None).await?;
-        let av = cloudflare::probe_worker(&vm_url, None).await?;
-
+        let ww_classification = classify_access_request(
+            api_token,
+            &desired.target_account_id,
+            windows_app_id,
+            &ww,
+        )
+        .await?;
+        println!(
+            "access_request_classification case=windows_to_windows class={ww_classification}"
+        );
+        if ww_classification != "PASS" {
+            return Err(format!(
+                "windows_to_windows Access evaluation classified as {ww_classification}; no remaining matrix probes executed"
+            ));
+        }
         require_allowed(
             "windows_to_windows",
             &ww,
             &windows_material.payload,
             CredentialProjectionKind::Windows,
         )?;
+
+        let wv = cloudflare::probe_worker(&vm_url, Some(&windows_credential)).await?;
+        let vv = cloudflare::probe_worker(&vm_url, Some(&vm_credential)).await?;
+        let vw = cloudflare::probe_worker(&windows_url, Some(&vm_credential)).await?;
+        let aw = cloudflare::probe_worker(&windows_url, None).await?;
+        let av = cloudflare::probe_worker(&vm_url, None).await?;
+
         require_denied("windows_to_vm", &wv)?;
         require_allowed(
             "vm_to_vm",
@@ -839,6 +872,79 @@ async fn prove_isolation(
     }
 
     proof_result.map(|report| (report, mutations))
+}
+
+async fn classify_access_request(
+    api_token: &str,
+    account_id: &str,
+    expected_app_id: &str,
+    probe: &cloudflare::CloudflareWorkerProbe,
+) -> Result<&'static str, String> {
+    let raw_cf_ray = probe
+        .cf_ray
+        .as_deref()
+        .ok_or_else(|| "REQUEST_NOT_SEEN_BY_ACCESS: Worker response did not include CF-Ray".to_owned())?;
+    let ray_id = normalize_cf_ray(raw_cf_ray)?;
+    let requests = cloudflare::list_access_requests(api_token, account_id, Some(ray_id)).await?;
+    if requests.is_empty() {
+        println!(
+            "access_request_evidence ray_id={} records=0 http_status={}",
+            ray_id, probe.status
+        );
+        return Ok("REQUEST_NOT_SEEN_BY_ACCESS");
+    }
+    if requests.len() != 1 {
+        return Err(format!(
+            "Access authentication log correlation for ray_id={ray_id} is ambiguous: {} records",
+            requests.len()
+        ));
+    }
+    let request = &requests[0];
+    if request.ray_id.as_deref() != Some(ray_id) {
+        return Err(format!(
+            "Access authentication log returned mismatched ray_id: expected={ray_id} observed={}",
+            request.ray_id.as_deref().unwrap_or("ABSENT")
+        ));
+    }
+    println!(
+        "access_request_evidence ray_id={} http_status={} allowed={} app_uid={} app_domain={} action={} connection={} created_at={}",
+        ray_id,
+        probe.status,
+        request
+            .allowed
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        request.app_uid.as_deref().unwrap_or("ABSENT"),
+        request.app_domain.as_deref().unwrap_or("ABSENT"),
+        request.action.as_deref().unwrap_or("ABSENT"),
+        request.connection.as_deref().unwrap_or("ABSENT"),
+        request.created_at.as_deref().unwrap_or("ABSENT")
+    );
+    if request.app_uid.as_deref() != Some(expected_app_id) {
+        return Ok("WRONG_APPLICATION");
+    }
+    match request.allowed {
+        Some(false) => Ok("POLICY_DENIED"),
+        Some(true) if probe.status != 200 => Ok("ACCESS_ALLOWED_BUT_WORKER_FAILED"),
+        Some(true) => Ok("PASS"),
+        None => Err(format!(
+            "Access authentication log for ray_id={ray_id} is missing allowed state"
+        )),
+    }
+}
+
+fn normalize_cf_ray(raw: &str) -> Result<&str, String> {
+    let ray_id = raw
+        .split('-')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("invalid CF-Ray header: {raw}"))?;
+    if ray_id.len() != 16 || !ray_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "invalid CF-Ray identifier in header: raw={raw} normalized={ray_id}"
+        ));
+    }
+    Ok(ray_id)
 }
 
 fn validate_proof_token_state(
@@ -1616,9 +1722,24 @@ mod tests {
         let probe = cloudflare::CloudflareWorkerProbe {
             status: 401,
             content_type: Some("text/html".to_owned()),
+            cf_ray: Some("187d944c61940c77-WAW".to_owned()),
             body: vec![0; 8192],
         };
         assert!(require_denied("anonymous_to_windows", &probe).is_ok());
+    }
+
+    #[test]
+    fn cf_ray_normalization_is_exact_and_bounded() {
+        assert_eq!(
+            normalize_cf_ray("187d944c61940c77-WAW").unwrap(),
+            "187d944c61940c77"
+        );
+        assert_eq!(
+            normalize_cf_ray("187d944c61940c77").unwrap(),
+            "187d944c61940c77"
+        );
+        assert!(normalize_cf_ray("not-a-ray").is_err());
+        assert!(normalize_cf_ray("187d944c61940c7").is_err());
     }
 
     #[test]
