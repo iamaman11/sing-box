@@ -122,6 +122,12 @@ pub async fn run(command: CloudflareCredentialPlaneCommand) -> Result<(), String
 
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let desired = production.cloudflare.credential_plane.clone();
+    if production.cloudflare.active_account_id == desired.target_account_id {
+        return Err(
+            "transitional Phase 2 credential commands are disabled after the credential plane becomes active production authority"
+                .to_owned(),
+        );
+    }
 
     match command {
         CloudflareCredentialPlaneCommand::Inventory => {
