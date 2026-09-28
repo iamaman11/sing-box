@@ -757,11 +757,15 @@ async fn prove_isolation(
 
         let windows_material = worker_material(desired, "windows")?;
         let vm_material = worker_material(desired, "vm")?;
+        let ww_since = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .map_err(|err| format!("failed to format Access proof start timestamp: {err}"))?;
         let ww = cloudflare::probe_worker(&windows_url, Some(&windows_credential)).await?;
         let ww_classification = classify_access_request(
             api_token,
             &desired.target_account_id,
             windows_app_id,
+            &ww_since,
             &ww,
         )
         .await?;
@@ -878,33 +882,36 @@ async fn classify_access_request(
     api_token: &str,
     account_id: &str,
     expected_app_id: &str,
+    since: &str,
     probe: &cloudflare::CloudflareWorkerProbe,
 ) -> Result<&'static str, String> {
     let raw_cf_ray = probe.cf_ray.as_deref().ok_or_else(|| {
         "REQUEST_NOT_SEEN_BY_ACCESS: Worker response did not include CF-Ray".to_owned()
     })?;
     let ray_id = normalize_cf_ray(raw_cf_ray)?;
-    let requests = cloudflare::list_access_requests(api_token, account_id, Some(ray_id)).await?;
-    if requests.is_empty() {
+    let requests = cloudflare::list_access_requests(api_token, account_id, Some(since)).await?;
+    let matching = requests
+        .iter()
+        .filter(|request| request.ray_id.as_deref() == Some(ray_id))
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
         println!(
-            "access_request_evidence ray_id={} records=0 http_status={}",
-            ray_id, probe.status
+            "access_request_evidence ray_id={} records=0 window_records={} http_status={} since={}",
+            ray_id,
+            requests.len(),
+            probe.status,
+            since
         );
         return Ok("REQUEST_NOT_SEEN_BY_ACCESS");
     }
-    if requests.len() != 1 {
+    if matching.len() != 1 {
         return Err(format!(
-            "Access authentication log correlation for ray_id={ray_id} is ambiguous: {} records",
+            "Access authentication log correlation for ray_id={ray_id} is ambiguous: {} matching records in {} window records",
+            matching.len(),
             requests.len()
         ));
     }
-    let request = &requests[0];
-    if request.ray_id.as_deref() != Some(ray_id) {
-        return Err(format!(
-            "Access authentication log returned mismatched ray_id: expected={ray_id} observed={}",
-            request.ray_id.as_deref().unwrap_or("ABSENT")
-        ));
-    }
+    let request = matching[0];
     println!(
         "access_request_evidence ray_id={} http_status={} allowed={} app_uid={} app_domain={} action={} connection={} created_at={}",
         ray_id,
