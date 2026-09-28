@@ -454,12 +454,12 @@ fn plan(
                     ));
                 }
 
-                let destination_is_exact_hostname =
-                    observed.access_destination_type.as_deref() == Some("public")
-                        && observed.access_destination_uri.as_deref()
-                            == Some(expected_hostname.as_str())
-                        && observed.access_destination_worker_id.is_none()
-                        && observed.access_destination_has_overrides == Some(false);
+                let destination_is_exact_hostname = observed.access_destination_type.as_deref()
+                    == Some("public")
+                    && observed.access_destination_uri.as_deref()
+                        == Some(expected_hostname.as_str())
+                    && observed.access_destination_worker_id.is_none()
+                    && observed.access_destination_has_overrides == Some(false);
                 if destination_is_exact_hostname {
                     continue;
                 }
@@ -1903,7 +1903,10 @@ mod tests {
     fn exact_hostname_access_destination_is_terminal_noop() {
         let desired = desired();
         let observed = exact_observation(&desired, "public", "public");
-        assert_eq!(plan(&desired, &observed).unwrap(), CredentialPlaneAction::Noop);
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialPlaneAction::Noop
+        );
     }
 
     #[test]
