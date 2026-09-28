@@ -114,9 +114,6 @@ async fn run(
         Command::CloudflareDns { command } => {
             cloudflare_dns_lifecycle_command::run(command.into_legacy_args()).await
         }
-        Command::CloudflareCredentialPlane { command } => {
-            cloudflare_credential_plane_command::run(command).await
-        }
         Command::CloudflareTargetPlane { command } => match command {
             cli::CloudflareTargetPlaneCommand::Inventory => {
                 cloudflare_target_plane_command::inventory().await
