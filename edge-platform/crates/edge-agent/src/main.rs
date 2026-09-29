@@ -1004,6 +1004,10 @@ fn stage_vm_credential_candidate(
     stack_dir: &Path,
     bundle: edge_shared_types::CredentialDeliveryBundle,
 ) -> Result<LocalCredentialState, String> {
+    edge_shared_types::local_credential_bundle_ref(&bundle)?;
+    if bundle.projection != CredentialProjectionKind::Vm as i32 {
+        return Err("VM credential owner rejects non-VM projection".to_owned());
+    }
     let store = CredentialStore::new(
         vm_credential_store_root(stack_dir)?,
         CredentialProjectionKind::Vm,
