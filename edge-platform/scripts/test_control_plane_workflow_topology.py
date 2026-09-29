@@ -237,17 +237,24 @@ def main() -> None:
         and "access_failure_capture projection={}" in credential_command
         and "diagnose_access_failure_after_cleanup(" in credential_command
         and "no HTTP probe replay performed" in credential_command
+        and "async fn prove_ab_session(" in credential_command
+        and "async fn prove_projection(" not in credential_command
         and "credential.client_secret" not in credential_command,
-        "credential proof must use secret-safe provider-native failure evidence without HTTP replay",
+        "credential proof must use one shared two-projection session with secret-safe provider-native failure evidence and no HTTP replay",
+    )
+    diagnostics_index = credential_command.index(
+        "let classification = diagnose_access_failure_after_cleanup"
     )
     require(
         credential_command.index(
-            "let cleanup = cloudflare::set_access_service_token_enabled"
+            "let disable_windows = cloudflare::set_access_service_token_enabled"
         )
-        < credential_command.index(
-            "let classification = diagnose_access_failure_after_cleanup"
-        ),
-        "credential proof must disable its proof token before post-failure Access diagnostics",
+        < diagnostics_index
+        and credential_command.index(
+            "let disable_vm = cloudflare::set_access_service_token_enabled"
+        )
+        < diagnostics_index,
+        "credential proof must disable both proof tokens before post-failure Access diagnostics",
     )
 
     require(

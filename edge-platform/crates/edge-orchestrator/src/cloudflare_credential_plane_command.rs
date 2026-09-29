@@ -93,6 +93,7 @@ struct DeliveryWorkerMaterial {
 
 #[derive(Debug, Clone)]
 struct AccessFailureEvidence {
+    projection: String,
     ray_id: Option<String>,
     datetime_start: String,
     datetime_end: String,
@@ -467,11 +468,7 @@ async fn prove(
 
     preflight_access_analytics(control_token, desired).await?;
 
-    let mut mutations = 0u32;
-    for projection in projections(desired) {
-        mutations = mutations
-            .saturating_add(prove_projection(control_token, desired, &before, &projection).await?);
-    }
+    let mutations = prove_ab_session(control_token, desired, &before).await?;
 
     let after = observe(control_token, desired).await?;
     if plan(desired, &after)? != CredentialDeliveryAction::Noop {
@@ -483,6 +480,7 @@ async fn prove(
     println!("credential_delivery_contract=FIXED_A_B");
     println!("exact_generation_selection=PASS");
     println!("access_isolation_structural=PASS");
+    println!("proof_session=SHARED_TWO_PROJECTION");
     println!("proof_tokens_enabled=false");
     println!("proof_provider_mutations={mutations}");
     println!("credential_secret_mutations=0");
@@ -491,28 +489,36 @@ async fn prove(
     Ok(())
 }
 
-async fn prove_projection(
+async fn prove_ab_session(
     control_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
     observed: &CredentialPlaneObservation,
-    projection: &ProjectionDesired,
 ) -> Result<u32, String> {
-    let current = projection_observation(observed, &projection.projection)?;
-    let token_id = current
+    let windows = projection_desired(desired, "windows")?;
+    let vm = projection_desired(desired, "vm")?;
+    let windows_observed = projection_observation(observed, "windows")?;
+    let vm_observed = projection_observation(observed, "vm")?;
+
+    let windows_token_id = windows_observed
         .service_token_id
         .as_deref()
-        .ok_or_else(|| format!("{} proof token ID is missing", projection.projection))?;
-    let expected_policy_id = current
+        .ok_or_else(|| "Windows proof token ID is missing".to_owned())?;
+    let vm_token_id = vm_observed
+        .service_token_id
+        .as_deref()
+        .ok_or_else(|| "VM proof token ID is missing".to_owned())?;
+    let windows_policy_id = windows_observed
         .access_policies
         .first()
-        .filter(|_| current.access_policies.len() == 1)
+        .filter(|_| windows_observed.access_policies.len() == 1)
         .map(|policy| policy.id.as_str())
-        .ok_or_else(|| {
-            format!(
-                "{} proof requires exactly one Access policy",
-                projection.projection
-            )
-        })?;
+        .ok_or_else(|| "Windows proof requires exactly one Access policy".to_owned())?;
+    let vm_policy_id = vm_observed
+        .access_policies
+        .first()
+        .filter(|_| vm_observed.access_policies.len() == 1)
+        .map(|policy| policy.id.as_str())
+        .ok_or_else(|| "VM proof requires exactly one Access policy".to_owned())?;
     let workers_subdomain = observed
         .workers_dev_subdomain
         .as_deref()
@@ -520,148 +526,181 @@ async fn prove_projection(
 
     let mut mutations = 0u32;
     let proof_result: Result<(), ProofAttemptError> = async {
-        cloudflare::set_access_service_token_enabled(
-            control_token,
-            &desired.target_account_id,
-            token_id,
-            &projection.service_token_name,
-            &desired.proof_token_duration,
-            true,
-        )
-        .await?;
-        mutations += 1;
-
-        let enabled = cloudflare::get_access_service_token(
-            control_token,
-            &desired.target_account_id,
-            token_id,
-        )
-        .await?;
-        let client_id = validate_enabled_proof_token(
-            projection,
-            token_id,
-            &desired.proof_token_duration,
-            None,
-            &enabled,
-        )?;
-        print_proof_token_state("enabled", projection, &enabled);
-
-        let credential = cloudflare::rotate_access_service_token(
-            control_token,
-            &desired.target_account_id,
-            token_id,
-        )
-        .await?;
-        mutations += 1;
-        if credential.id != token_id
-            || credential.client_id != client_id
-            || credential.enabled != Some(true)
-            || credential.duration.as_deref() != Some(desired.proof_token_duration.as_str())
-            || credential.name.as_deref() != Some(projection.service_token_name.as_str())
-        {
-            return Err(format!(
-                "{} proof-token rotation changed identity or state",
-                projection.projection
+        for (projection, token_id) in [(&windows, windows_token_id), (&vm, vm_token_id)] {
+            cloudflare::set_access_service_token_enabled(
+                control_token,
+                &desired.target_account_id,
+                token_id,
+                &projection.service_token_name,
+                &desired.proof_token_duration,
+                true,
             )
-            .into());
+            .await?;
+            mutations += 1;
+
+            let enabled = cloudflare::get_access_service_token(
+                control_token,
+                &desired.target_account_id,
+                token_id,
+            )
+            .await?;
+            validate_enabled_proof_token(
+                projection,
+                token_id,
+                &desired.proof_token_duration,
+                None,
+                &enabled,
+            )?;
+            print_proof_token_state("enabled", projection, &enabled);
         }
 
-        let rotated = cloudflare::get_access_service_token(
+        let windows_enabled = cloudflare::get_access_service_token(
             control_token,
             &desired.target_account_id,
-            token_id,
+            windows_token_id,
+        )
+        .await?;
+        let windows_client_id = validate_enabled_proof_token(
+            &windows,
+            windows_token_id,
+            &desired.proof_token_duration,
+            None,
+            &windows_enabled,
+        )?;
+
+        let windows_credential = cloudflare::rotate_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            windows_token_id,
+        )
+        .await?;
+        mutations += 1;
+        validate_rotated_proof_credential(
+            &windows,
+            windows_token_id,
+            &windows_client_id,
+            &desired.proof_token_duration,
+            &windows_credential,
+        )?;
+        let windows_rotated = cloudflare::get_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            windows_token_id,
         )
         .await?;
         validate_enabled_proof_token(
-            projection,
-            token_id,
+            &windows,
+            windows_token_id,
             &desired.proof_token_duration,
-            Some(&client_id),
-            &rotated,
+            Some(&windows_client_id),
+            &windows_rotated,
         )?;
-        print_proof_token_state("rotated", projection, &rotated);
+        print_proof_token_state("rotated", &windows, &windows_rotated);
 
-        let material = delivery_worker_material(&projection.projection)?;
-        for slot in &material.slots {
-            let url = probe_url(projection, workers_subdomain, slot.generation);
-            let probe_start = (OffsetDateTime::now_utc() - TimeDuration::seconds(30))
-                .format(&Rfc3339)
-                .map_err(|err| format!("failed to format Access proof start timestamp: {err}"))?;
-            let response = cloudflare::probe_worker(&url, Some(&credential)).await?;
-            let probe_end = (OffsetDateTime::now_utc() + TimeDuration::seconds(30))
-                .format(&Rfc3339)
-                .map_err(|err| format!("failed to format Access proof end timestamp: {err}"))?;
-            if let Err(acceptance_error) = require_allowed(
-                &format!("{}_{}", projection.projection, slot.name),
-                &response,
-                &slot.payload,
-                slot.generation,
-                projection_kind(&projection.projection)?,
-            ) {
-                let ray_id = response
-                    .cf_ray
-                    .as_deref()
-                    .map(normalize_cf_ray)
-                    .transpose()?
-                    .map(ToOwned::to_owned);
-                println!(
-                    "access_failure_capture projection={} slot={} http_status={} ray_id={} datetime_start={} datetime_end={}",
+        let vm_enabled = cloudflare::get_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        let vm_client_id = validate_enabled_proof_token(
+            &vm,
+            vm_token_id,
+            &desired.proof_token_duration,
+            None,
+            &vm_enabled,
+        )?;
+
+        let vm_credential = cloudflare::rotate_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        mutations += 1;
+        validate_rotated_proof_credential(
+            &vm,
+            vm_token_id,
+            &vm_client_id,
+            &desired.proof_token_duration,
+            &vm_credential,
+        )?;
+        let vm_rotated = cloudflare::get_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            vm_token_id,
+        )
+        .await?;
+        validate_enabled_proof_token(
+            &vm,
+            vm_token_id,
+            &desired.proof_token_duration,
+            Some(&vm_client_id),
+            &vm_rotated,
+        )?;
+        print_proof_token_state("rotated", &vm, &vm_rotated);
+
+        for (projection, credential) in [(&windows, &windows_credential), (&vm, &vm_credential)] {
+            let material = delivery_worker_material(&projection.projection)?;
+            for slot in &material.slots {
+                prove_expected_slot(projection, workers_subdomain, slot, credential).await?;
+            }
+
+            let invalid_url = probe_url(projection, workers_subdomain, INVALID_PROBE_GENERATION);
+            let invalid = cloudflare::probe_worker(&invalid_url, Some(credential)).await?;
+            if invalid.status != 404 || !invalid.body.is_empty() {
+                return Err(format!(
+                    "{} invalid generation must return exact empty 404; status={} body_len={}",
                     projection.projection,
-                    slot.name,
-                    response.status,
-                    ray_id.as_deref().unwrap_or("ABSENT"),
-                    probe_start,
-                    probe_end
-                );
-                return Err(ProofAttemptError::Functional(AccessFailureEvidence {
-                    ray_id,
-                    datetime_start: probe_start,
-                    datetime_end: probe_end,
-                    http_status: response.status,
-                    acceptance_error,
-                }));
+                    invalid.status,
+                    invalid.body.len()
+                )
+                .into());
             }
             println!(
-                "credential_delivery_proof projection={} slot={} generation={} outcome=PASS status={}",
-                projection.projection, slot.name, slot.generation, response.status
+                "credential_delivery_proof projection={} generation={} outcome=NOT_FOUND status={}",
+                projection.projection, INVALID_PROBE_GENERATION, invalid.status
             );
         }
 
-        let invalid_url = probe_url(projection, workers_subdomain, INVALID_PROBE_GENERATION);
-        let invalid = cloudflare::probe_worker(&invalid_url, Some(&credential)).await?;
-        if invalid.status != 404 || !invalid.body.is_empty() {
-            return Err(format!(
-                "{} invalid generation must return exact empty 404; status={} body_len={}",
-                projection.projection,
-                invalid.status,
-                invalid.body.len()
-            )
-            .into());
-        }
-        println!(
-            "credential_delivery_proof projection={} generation={} outcome=NOT_FOUND status={}",
-            projection.projection, INVALID_PROBE_GENERATION, invalid.status
-        );
         Ok(())
     }
     .await;
 
-    let cleanup = cloudflare::set_access_service_token_enabled(
+    let disable_windows = cloudflare::set_access_service_token_enabled(
         control_token,
         &desired.target_account_id,
-        token_id,
-        &projection.service_token_name,
+        windows_token_id,
+        &windows.service_token_name,
         &desired.proof_token_duration,
         false,
     )
     .await;
-    if cleanup.is_ok() {
+    if disable_windows.is_ok() {
         mutations += 1;
     }
-    if let Err(err) = cleanup {
+    let disable_vm = cloudflare::set_access_service_token_enabled(
+        control_token,
+        &desired.target_account_id,
+        vm_token_id,
+        &vm.service_token_name,
+        &desired.proof_token_duration,
+        false,
+    )
+    .await;
+    if disable_vm.is_ok() {
+        mutations += 1;
+    }
+
+    if let Err(err) = disable_windows {
         return Err(format!(
-            "{} proof cleanup failed to disable the proof token: {err}",
-            projection.projection
+            "credential proof cleanup failed to disable Windows proof token: {err}; VM cleanup={:?}",
+            disable_vm.err()
+        ));
+    }
+    if let Err(err) = disable_vm {
+        return Err(format!(
+            "credential proof cleanup failed to disable VM proof token: {err}"
         ));
     }
 
@@ -669,11 +708,21 @@ async fn prove_projection(
         Ok(()) => Ok(mutations),
         Err(ProofAttemptError::Ordinary(err)) => Err(err),
         Err(ProofAttemptError::Functional(failure)) => {
+            let (expected_policy_id, expected_service_token_id) = match failure.projection.as_str()
+            {
+                "windows" => (windows_policy_id, windows_token_id),
+                "vm" => (vm_policy_id, vm_token_id),
+                other => {
+                    return Err(format!(
+                        "unsupported projection in Access failure evidence: {other}"
+                    ));
+                }
+            };
             let classification = diagnose_access_failure_after_cleanup(
                 control_token,
                 &desired.target_account_id,
                 expected_policy_id,
-                token_id,
+                expected_service_token_id,
                 &failure,
             )
             .await
@@ -689,6 +738,79 @@ async fn prove_projection(
             ))
         }
     }
+}
+
+fn validate_rotated_proof_credential(
+    projection: &ProjectionDesired,
+    expected_token_id: &str,
+    expected_client_id: &str,
+    expected_duration: &str,
+    credential: &cloudflare::CloudflareAccessServiceCredential,
+) -> Result<(), String> {
+    if credential.id != expected_token_id
+        || credential.client_id != expected_client_id
+        || credential.enabled != Some(true)
+        || credential.duration.as_deref() != Some(expected_duration)
+        || credential.name.as_deref() != Some(projection.service_token_name.as_str())
+    {
+        return Err(format!(
+            "{} proof-token rotation changed identity or state",
+            projection.projection
+        ));
+    }
+    Ok(())
+}
+
+async fn prove_expected_slot(
+    projection: &ProjectionDesired,
+    workers_subdomain: &str,
+    slot: &DeliverySlot,
+    credential: &cloudflare::CloudflareAccessServiceCredential,
+) -> Result<(), ProofAttemptError> {
+    let url = probe_url(projection, workers_subdomain, slot.generation);
+    let probe_start = (OffsetDateTime::now_utc() - TimeDuration::seconds(30))
+        .format(&Rfc3339)
+        .map_err(|err| format!("failed to format Access proof start timestamp: {err}"))?;
+    let response = cloudflare::probe_worker(&url, Some(credential)).await?;
+    let probe_end = (OffsetDateTime::now_utc() + TimeDuration::seconds(30))
+        .format(&Rfc3339)
+        .map_err(|err| format!("failed to format Access proof end timestamp: {err}"))?;
+    if let Err(acceptance_error) = require_allowed(
+        &format!("{}_{}", projection.projection, slot.name),
+        &response,
+        &slot.payload,
+        slot.generation,
+        projection_kind(&projection.projection)?,
+    ) {
+        let ray_id = response
+            .cf_ray
+            .as_deref()
+            .map(normalize_cf_ray)
+            .transpose()?
+            .map(ToOwned::to_owned);
+        println!(
+            "access_failure_capture projection={} slot={} http_status={} ray_id={} datetime_start={} datetime_end={}",
+            projection.projection,
+            slot.name,
+            response.status,
+            ray_id.as_deref().unwrap_or("ABSENT"),
+            probe_start,
+            probe_end
+        );
+        return Err(ProofAttemptError::Functional(AccessFailureEvidence {
+            projection: projection.projection.clone(),
+            ray_id,
+            datetime_start: probe_start,
+            datetime_end: probe_end,
+            http_status: response.status,
+            acceptance_error,
+        }));
+    }
+    println!(
+        "credential_delivery_proof projection={} slot={} generation={} outcome=PASS status={}",
+        projection.projection, slot.name, slot.generation, response.status
+    );
+    Ok(())
 }
 
 async fn preflight_access_analytics(
