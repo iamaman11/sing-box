@@ -69,7 +69,27 @@ rebuild. Windows/Linux production never treats a mutable latest artifact as auth
 It owns typed provider/application sequencing, plan/apply/verify/rollback semantics and production
 composition. It may use the Vultr and Cloudflare provider adapters.
 
+Its internal `/credentials` domain is the sole application-credential lifecycle owner. This is a
+bounded module inside the orchestrator, not a second daemon/control plane/crate. It creates one
+semantic credential generation and derives least-privilege VM/Windows projections from that same
+generation.
+
 The installed Windows controller must not regain provider authority.
+
+### Role boundary invariant
+
+Every mutable production path follows the same role split:
+
+```text
+owner -> typed protobuf contract -> narrow adapter/transport -> local runtime
+```
+
+- the owner decides lifecycle and mutation;
+- protobuf carries closed typed intent/state;
+- provider adapters only observe/execute provider APIs;
+- Workers, GitHub runners and SSH are transport, not desired-state or credential-generation owners;
+- provider IDs, generated env/JSON and SQLite rows are observed/derived state, never competing
+  desired-state authority.
 
 ### edge-agent
 
@@ -216,8 +236,38 @@ Separate lifecycles include:
 - Mesh node token;
 - provider API/control credentials.
 
-VM production startup must not silently create a new production identity merely because its local
-secret file is missing. Missing desired generation is fail-closed.
+The accepted v2 application projection boundary is derived from actual consumers:
+
+```text
+single /credentials semantic generation
+        |
+        +-- tunnel generation
+        |     +-- Windows: UUID + Hysteria2 password + Reality public key + short ID
+        |     '-- VM:      same UUID/password/short ID + Reality private key
+        |
+        '-- Line 2 proxy-auth generation
+              '-- VM only
+```
+
+Direct and WARP tunnel credentials are represented explicitly inside the tunnel generation. Reality
+keypairs are generated once: the private half is projected only to the VM and the public half only
+to Windows. Cloudflare Access identities, Mesh node tokens and provider/control credentials are not
+application projection fields.
+
+The fixed A/B `CredentialDeliveryBundle.generation` is a delivery-snapshot revision. Nested
+credential generations express independently rotating lifecycles, so rotating tunnel credentials
+does not implicitly regenerate Line 2 proxy authentication.
+
+Non-secret endpoint/domain/port policy remains Git-owned desired state and is not duplicated into
+credential payloads.
+
+VM and Windows runtime owners may fetch, validate, stage, activate and roll back typed credential
+state. They do not generate a replacement production identity when the requested generation is
+missing. Missing desired generation is fail-closed while an already validated active generation
+continues to serve traffic.
+
+Do not add a generic secret map, arbitrary payload bytes, first-party JSON secret contract, second
+secret database, new credential daemon or dedicated credential crate.
 
 ## 5. Runtime autonomy and recovery
 
