@@ -263,6 +263,9 @@ dummy bundles leave it unspecified so their accepted wire bytes remain unchanged
 credential state records the active delivery generation and slot.
 
 Initial contract installation may atomically install Worker code plus both fixed secret slots.
+Windows and VM projections of one credential snapshot use the same outer delivery generation and the
+same fixed slot; independent per-projection A/B cursors are forbidden.
+
 Steady-state rotation is narrower: replace exactly the inactive fixed slot and leave the active slot
 untouched. The system must not require plaintext readback of the active Worker secret, re-upload both
 slots merely to rotate one candidate, or introduce a second plaintext secret database. Candidate
