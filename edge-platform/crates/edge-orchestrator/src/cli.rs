@@ -249,6 +249,7 @@ pub(crate) enum CredentialDeliveryCommand {
     ContractConverge,
     ContractVerify,
     ContractProve,
+    Rotate,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
