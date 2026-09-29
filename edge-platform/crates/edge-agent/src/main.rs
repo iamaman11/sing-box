@@ -30,12 +30,14 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, Empty, FileCategory,
-    FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, CredentialStateObservation,
+    Empty, FileCategory, FilePresence, Ipv4NetworkObservation, LocalCredentialState,
+    MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
     ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
-    RuntimeProbeEvidence, RuntimeProbeStatus, VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    RuntimeProbeEvidence, RuntimeProbeStatus, StageCredentialCandidateRequest, VerifyRuntimeRequest,
+    canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -343,6 +345,29 @@ impl AgentService for AgentServerImpl {
             Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}"))
         })?;
         Ok(Response::new(state))
+    }
+
+    async fn stage_credential_candidate(
+        &self,
+        request: Request<StageCredentialCandidateRequest>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let bundle = request
+            .into_inner()
+            .bundle
+            .ok_or_else(|| Status::invalid_argument("credential candidate bundle is required"))?;
+        let state = stage_vm_credential_candidate(&self.stack_dir, bundle)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn get_credential_state(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let state = observe_vm_credential_state(&self.stack_dir).map_err(Status::internal)?;
+        Ok(Response::new(CredentialStateObservation { state }))
     }
 }
 
@@ -973,6 +998,27 @@ fn validate_existing_vm_credential_store(stack_dir: &Path) -> Result<(), String>
         CredentialProjectionKind::Vm,
     )?;
     Ok(())
+}
+
+fn stage_vm_credential_candidate(
+    stack_dir: &Path,
+    bundle: edge_shared_types::CredentialDeliveryBundle,
+) -> Result<LocalCredentialState, String> {
+    let store = CredentialStore::new(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?;
+    store.stage_candidate(&bundle)
+}
+
+fn observe_vm_credential_state(stack_dir: &Path) -> Result<Option<LocalCredentialState>, String> {
+    let Some(store) = CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )? else {
+        return Ok(None);
+    };
+    store.read_state()
 }
 
 fn ensure_vm_runtime_secret_store(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {
