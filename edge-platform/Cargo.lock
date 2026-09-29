@@ -348,15 +348,17 @@ dependencies = [
 name = "edge-console"
 version = "0.1.0"
 dependencies = [
- "tracing",
- "thiserror",
+ "base64",
+ "clap",
  "edge-local-runtime",
  "edge-observability",
- "clap",
  "edge-shared-types",
+ "prost",
  "rusqlite",
+ "thiserror",
  "tokio",
  "tonic",
+ "tracing",
  "windows-service",
 ]
 
