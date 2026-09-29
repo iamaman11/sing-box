@@ -5,7 +5,7 @@ pub use credential_sealing::{
 };
 
 mod credential_store;
-pub use credential_store::CredentialStore;
+pub use credential_store::{CredentialStore, write_private_atomic_file};
 
 mod runtime;
 pub use runtime::{

@@ -22,6 +22,7 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 
 mod cli;
+mod credential_cutover;
 mod deploy_orchestrator;
 mod error;
 
@@ -52,8 +53,9 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
-    BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, CredentialIngressPublicKey,
-    CredentialProjectionKind, CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse,
+    BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, CredentialCandidateAcceptance,
+    CredentialIngressPublicKey, CredentialProjectionKind, CredentialStateObservation, DeployPhase,
+    DeployRequest, DeployResponse,
     DestroyRequest,
     DestroyResponse, DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest,
     DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest,
@@ -1804,6 +1806,55 @@ impl ControllerService for ControllerServerImpl {
         Ok(Response::new(CredentialStateObservation {
             state: Some(state),
         }))
+    }
+
+    async fn probe_credential_candidate(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialCandidateAcceptance>, Status> {
+        require_installed_windows_credential_owner(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        let result = credential_cutover::probe_candidate(&self.repo_root)
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(result))
+    }
+
+    async fn promote_credential_candidate(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        require_installed_windows_credential_owner(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        let state = credential_cutover::promote_candidate(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn rollback_credential(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        require_installed_windows_credential_owner(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        let state =
+            credential_cutover::rollback(&self.repo_root).map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn expire_credential_previous(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        require_installed_windows_credential_owner(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        let state = credential_cutover::expire_previous(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation { state }))
     }
 }
 

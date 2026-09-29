@@ -34,6 +34,10 @@ pub(crate) enum Command {
     PrivilegedDispatch(InstallRootArgs),
     CredentialIngressKey(EndpointArgs),
     CredentialState(EndpointArgs),
+    CredentialProbe(EndpointArgs),
+    CredentialPromote(EndpointArgs),
+    CredentialRollback(EndpointArgs),
+    CredentialExpirePrevious(EndpointArgs),
     StageSealedCredential(StageSealedCredentialArgs),
     Secrets(EndpointArgs),
     GetSecret(NameEndpointArgs),
@@ -72,6 +76,10 @@ impl Command {
             Self::PrivilegedDispatch(_) => "privileged-dispatch",
             Self::CredentialIngressKey(_) => "credential-ingress-key",
             Self::CredentialState(_) => "credential-state",
+            Self::CredentialProbe(_) => "credential-probe",
+            Self::CredentialPromote(_) => "credential-promote",
+            Self::CredentialRollback(_) => "credential-rollback",
+            Self::CredentialExpirePrevious(_) => "credential-expire-previous",
             Self::StageSealedCredential(_) => "stage-sealed-credential",
             Self::Secrets(_) => "secrets",
             Self::GetSecret(_) => "get-secret",
@@ -189,6 +197,12 @@ mod tests {
             Cli::try_parse_from(["edge-console", "credential-ingress-key"]).is_ok()
         );
         assert!(Cli::try_parse_from(["edge-console", "credential-state"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "credential-probe"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "credential-promote"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "credential-rollback"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-console", "credential-expire-previous"]).is_ok()
+        );
         assert!(
             Cli::try_parse_from(["edge-console", "stage-sealed-credential", "AA"]).is_ok()
         );

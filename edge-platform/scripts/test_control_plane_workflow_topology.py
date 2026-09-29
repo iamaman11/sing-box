@@ -216,15 +216,19 @@ def main() -> None:
         "stage_vm_credential_candidate" in vm_agent_runtime
         and "store.stage_candidate(&bundle)" in vm_agent_runtime
         and "local_credential_bundle_ref(&bundle)" in vm_agent_runtime
-        and "promote_candidate(" not in vm_agent_runtime
-        and "rollback_previous(" not in vm_agent_runtime
+        and "enable_vm_candidate_acceptance" in vm_agent_runtime
+        and "promote_vm_credential_runtime" in vm_agent_runtime
+        and "rollback_vm_credential_runtime" in vm_agent_runtime
+        and "expire_vm_credential_previous" in vm_agent_runtime
         and "stage_windows_credential_candidate" in windows_controller_runtime
         and "require_installed_windows_credential_owner" in windows_controller_runtime
         and "store.stage_candidate(&bundle)" in windows_controller_runtime
         and "local_credential_bundle_ref(&bundle)" in windows_controller_runtime
-        and "promote_candidate(" not in windows_controller_runtime
-        and "rollback_previous(" not in windows_controller_runtime,
-        "runtime-owner candidate ingress must stage only and must not expose activation or rollback",
+        and "credential_cutover::probe_candidate" in windows_controller_runtime
+        and "credential_cutover::promote_candidate" in windows_controller_runtime
+        and "credential_cutover::rollback" in windows_controller_runtime
+        and "credential_cutover::expire_previous" in windows_controller_runtime,
+        "runtime owners must expose only the typed Phase 6 stage/probe/promote/rollback/expiry state machine",
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
@@ -235,6 +239,10 @@ def main() -> None:
         "StageSealedCredentialCandidateRequest" in windows_console
         and "stage-sealed-credential" in windows_console_cli
         and "credential-ingress-key" in windows_console_cli
+        and "credential-probe" in windows_console_cli
+        and "credential-promote" in windows_console_cli
+        and "credential-rollback" in windows_console_cli
+        and "credential-expire-previous" in windows_console_cli
         and "CredentialIngressKey" in windows_controller_runtime
         and "CredentialIngressKey" in vm_agent_runtime,
         "real credential transport must be sealed end-to-end to the local runtime owners",

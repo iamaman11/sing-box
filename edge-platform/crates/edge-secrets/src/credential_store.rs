@@ -339,7 +339,7 @@ impl CredentialStore {
             verify_local_credential_bundle_reference(self.projection, reference, &decoded)?;
             return Ok(());
         }
-        write_atomic_private(&path, &bytes)?;
+        write_private_atomic_file(&path, &bytes)?;
         let observed = fs::read(&path).map_err(|err| {
             format!(
                 "failed to re-read persisted credential bundle {}: {err}",
@@ -357,7 +357,7 @@ impl CredentialStore {
         validate_local_credential_state(state)?;
         self.verify_state_references(state)?;
         let bytes = encode_local_credential_state(state)?;
-        write_atomic_private(&self.state_path(), &bytes)?;
+        write_private_atomic_file(&self.state_path(), &bytes)?;
         let observed = fs::read(self.state_path())
             .map_err(|err| format!("failed to re-read persisted local credential state: {err}"))?;
         if observed != bytes {
@@ -486,7 +486,7 @@ fn require_projection(projection: CredentialProjectionKind) -> Result<(), String
     }
 }
 
-fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "credential store path has no parent".to_owned())?;

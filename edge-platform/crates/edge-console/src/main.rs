@@ -23,7 +23,8 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
     DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DoctorRequest, DoctorResponse,
-    CredentialIngressPublicKey, CredentialStateObservation, Empty, GetOperationRequest,
+    CredentialCandidateAcceptance, CredentialIngressPublicKey, CredentialStateObservation, Empty,
+    GetOperationRequest,
     GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
     ListSecretRefsRequest, LocalCredentialBundleRef, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SealedCredentialCandidate, SecretRefEntry, SelectorState,
@@ -229,6 +230,33 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::CredentialState(args) => {
             let value = fetch_credential_state(args.resolve()).await?;
+            print_credential_state(&value);
+            Ok(())
+        }
+        Command::CredentialProbe(args) => {
+            let value = probe_credential_candidate(args.resolve()).await?;
+            print_credential_candidate_acceptance(&value);
+            if value.direct_pass && value.warp_pass {
+                Ok(())
+            } else {
+                Err(ConsoleError::Command(
+                    "credential candidate proxy-only acceptance failed".to_owned(),
+                )
+                .into())
+            }
+        }
+        Command::CredentialPromote(args) => {
+            let value = promote_credential_candidate(args.resolve()).await?;
+            print_credential_state(&value);
+            Ok(())
+        }
+        Command::CredentialRollback(args) => {
+            let value = rollback_credential(args.resolve()).await?;
+            print_credential_state(&value);
+            Ok(())
+        }
+        Command::CredentialExpirePrevious(args) => {
+            let value = expire_credential_previous(args.resolve()).await?;
             print_credential_state(&value);
             Ok(())
         }
@@ -1325,6 +1353,46 @@ async fn fetch_credential_ingress_key(
         .into_inner())
 }
 
+async fn probe_credential_candidate(
+    endpoint: String,
+) -> Result<CredentialCandidateAcceptance, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    Ok(client
+        .probe_credential_candidate(Request::new(Empty {}))
+        .await?
+        .into_inner())
+}
+
+async fn promote_credential_candidate(
+    endpoint: String,
+) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    Ok(client
+        .promote_credential_candidate(Request::new(Empty {}))
+        .await?
+        .into_inner())
+}
+
+async fn rollback_credential(
+    endpoint: String,
+) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    Ok(client
+        .rollback_credential(Request::new(Empty {}))
+        .await?
+        .into_inner())
+}
+
+async fn expire_credential_previous(
+    endpoint: String,
+) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    Ok(client
+        .expire_credential_previous(Request::new(Empty {}))
+        .await?
+        .into_inner())
+}
+
 async fn fetch_credential_state(
     endpoint: String,
 ) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
@@ -1358,6 +1426,22 @@ fn print_credential_ingress_key(value: &CredentialIngressPublicKey) {
         URL_SAFE_NO_PAD.encode(value.encode_to_vec())
     );
     println!("secret_material_returned=false");
+}
+
+fn print_credential_candidate_acceptance(value: &CredentialCandidateAcceptance) {
+    println!("status=PASS");
+    println!("direct_pass={}", value.direct_pass);
+    println!("warp_pass={}", value.warp_pass);
+    println!("direct_colo={}", value.direct_colo);
+    println!("warp_colo={}", value.warp_colo);
+    if let Some(candidate) = value.candidate.as_ref() {
+        println!("candidate_generation={}", candidate.generation);
+        println!("candidate_sha256={}", candidate.sha256);
+    } else {
+        println!("candidate=ABSENT");
+    }
+    println!("secret_material_returned=false");
+    println!("runtime_activation_performed=false");
 }
 
 fn print_credential_state(value: &CredentialStateObservation) {
