@@ -24,6 +24,7 @@ WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/li
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
+CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
@@ -59,6 +60,7 @@ def main() -> None:
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
+    credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
@@ -142,6 +144,37 @@ def main() -> None:
             )
         ),
         "fresh snapshot builder must remain pure/in-memory and provider/runtime side-effect free",
+    )
+    require(
+        "struct CredentialStore" in credential_store
+        and "stage_candidate" in credential_store
+        and "promote_candidate" in credential_store
+        and "rollback_previous" in credential_store
+        and "decode_local_credential_state" in credential_store
+        and "verify_local_credential_bundle_reference" in credential_store
+        and "atomic_replace" in credential_store,
+        "local credential store must remain typed, digest-bound and crash-safe",
+    )
+    require(
+        all(
+            token not in credential_store
+            for token in (
+                "serde_json",
+                "rusqlite",
+                "ApplicationRuntimeSecrets",
+                "OsRng",
+                "edge_provider_",
+                "reqwest",
+                "CLOUDFLARE_",
+                "VULTR_",
+            )
+        ),
+        "local credential store must not own generation, provider access, JSON or SQLite state",
+    )
+    require(
+        'state/secrets/application-v2' in WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
+        and 'runtime-secrets/application-v2' in AGENT.read_text(encoding="utf-8"),
+        "Windows and VM v2 credentials must stay inside the existing private secret roots",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
