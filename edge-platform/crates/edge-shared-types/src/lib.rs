@@ -85,7 +85,9 @@ pub fn validate_credential_delivery_bundle(
 
     if bundle.dummy_non_secret {
         if bundle.payload.is_some() {
-            return Err("dummy credential-delivery bundle must not carry a real payload".to_owned());
+            return Err(
+                "dummy credential-delivery bundle must not carry a real payload".to_owned(),
+            );
         }
         return Ok(());
     }
@@ -102,12 +104,12 @@ pub fn validate_credential_delivery_bundle(
         (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Vm(value)) => {
             validate_vm_credential_projection(value)
         }
-        (CredentialProjectionKind::Windows, credential_delivery_bundle::Payload::Vm(_)) => Err(
-            "Windows credential-delivery bundle cannot carry a VM projection".to_owned(),
-        ),
-        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Windows(_)) => Err(
-            "VM credential-delivery bundle cannot carry a Windows projection".to_owned(),
-        ),
+        (CredentialProjectionKind::Windows, credential_delivery_bundle::Payload::Vm(_)) => {
+            Err("Windows credential-delivery bundle cannot carry a VM projection".to_owned())
+        }
+        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Windows(_)) => {
+            Err("VM credential-delivery bundle cannot carry a Windows projection".to_owned())
+        }
         (CredentialProjectionKind::Unspecified, _) => unreachable!("validated above"),
     }
 }
