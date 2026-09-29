@@ -1146,6 +1146,144 @@ pub fn canonical_apply_bundle_digest(request: &ApplyBundleRequest) -> Result<Str
 }
 
 #[cfg(test)]
+mod credential_delivery_tests {
+    use super::*;
+
+    fn uuid(value: u8) -> String {
+        format!("00000000-0000-4000-8000-{value:012x}")
+    }
+
+    fn hex(ch: char, len: usize) -> String {
+        std::iter::repeat_n(ch, len).collect()
+    }
+
+    fn key(ch: char) -> String {
+        std::iter::repeat_n(ch, 43).collect()
+    }
+
+    fn client_endpoint(seed: u8) -> TunnelClientCredential {
+        TunnelClientCredential {
+            vless_uuid: uuid(seed),
+            hysteria2_password: hex(if seed % 2 == 0 { 'a' } else { 'b' }, 64),
+            reality_public_key: key(if seed % 2 == 0 { 'A' } else { 'B' }),
+            reality_short_id: hex(if seed % 2 == 0 { 'c' } else { 'd' }, 16),
+        }
+    }
+
+    fn server_endpoint(seed: u8) -> TunnelServerCredential {
+        TunnelServerCredential {
+            vless_uuid: uuid(seed),
+            hysteria2_password: hex(if seed % 2 == 0 { 'a' } else { 'b' }, 64),
+            reality_private_key: key(if seed % 2 == 0 { 'C' } else { 'D' }),
+            reality_short_id: hex(if seed % 2 == 0 { 'c' } else { 'd' }, 16),
+        }
+    }
+
+    #[test]
+    fn dummy_ab_bundle_remains_payload_free_and_canonical() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 9_000_001,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: true,
+            payload: None,
+        };
+        let bytes = encode_credential_delivery_bundle(&bundle).unwrap();
+        assert_eq!(decode_credential_delivery_bundle(&bytes).unwrap(), bundle);
+    }
+
+    #[test]
+    fn windows_projection_is_client_only_and_canonical() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 10,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                WindowsCredentialProjection {
+                    tunnel: Some(TunnelClientCredentialGeneration {
+                        generation: 5,
+                        direct: Some(client_endpoint(1)),
+                        warp: Some(client_endpoint(2)),
+                    }),
+                },
+            )),
+        };
+        let bytes = encode_credential_delivery_bundle(&bundle).unwrap();
+        assert_eq!(decode_credential_delivery_bundle(&bytes).unwrap(), bundle);
+    }
+
+    #[test]
+    fn vm_projection_keeps_proxy_auth_lifecycle_independent() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 11,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: false,
+            payload: Some(credential_delivery_bundle::Payload::Vm(
+                VmCredentialProjection {
+                    tunnel: Some(TunnelServerCredentialGeneration {
+                        generation: 6,
+                        direct: Some(server_endpoint(1)),
+                        warp: Some(server_endpoint(2)),
+                    }),
+                    line2_proxy: Some(ProxyCredentialGeneration {
+                        generation: 2,
+                        password: hex('e', 64),
+                    }),
+                },
+            )),
+        };
+        validate_credential_delivery_bundle(&bundle).unwrap();
+    }
+
+    #[test]
+    fn projection_identity_must_match_typed_payload() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 12,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            payload: Some(credential_delivery_bundle::Payload::Vm(
+                VmCredentialProjection {
+                    tunnel: Some(TunnelServerCredentialGeneration {
+                        generation: 7,
+                        direct: Some(server_endpoint(1)),
+                        warp: Some(server_endpoint(2)),
+                    }),
+                    line2_proxy: Some(ProxyCredentialGeneration {
+                        generation: 3,
+                        password: hex('f', 64),
+                    }),
+                },
+            )),
+        };
+        let error = validate_credential_delivery_bundle(&bundle).unwrap_err();
+        assert!(error.contains("Windows credential-delivery bundle cannot carry a VM projection"));
+    }
+
+    #[test]
+    fn dummy_bundle_rejects_real_payload() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 13,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: true,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                WindowsCredentialProjection {
+                    tunnel: Some(TunnelClientCredentialGeneration {
+                        generation: 8,
+                        direct: Some(client_endpoint(1)),
+                        warp: Some(client_endpoint(2)),
+                    }),
+                },
+            )),
+        };
+        assert!(validate_credential_delivery_bundle(&bundle).is_err());
+    }
+}
+
+#[cfg(test)]
 mod release_set_tests {
     use super::*;
 
