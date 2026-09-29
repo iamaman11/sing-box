@@ -741,12 +741,10 @@ fn validate_enabled_proof_token(
             projection.projection
         ));
     }
-    let client_id = token.client_id.as_deref().ok_or_else(|| {
-        format!(
-            "{} proof token client_id is missing",
-            projection.projection
-        )
-    })?;
+    let client_id = token
+        .client_id
+        .as_deref()
+        .ok_or_else(|| format!("{} proof token client_id is missing", projection.projection))?;
     if let Some(expected) = expected_client_id
         && client_id != expected
     {
@@ -768,10 +766,7 @@ fn validate_enabled_proof_token(
         )
     })?;
     if expires <= OffsetDateTime::now_utc() {
-        return Err(format!(
-            "{} proof token is expired",
-            projection.projection
-        ));
+        return Err(format!("{} proof token is expired", projection.projection));
     }
     Ok(client_id.to_owned())
 }
