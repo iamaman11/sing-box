@@ -1,3 +1,6 @@
+mod credential_store;
+pub use credential_store::CredentialStore;
+
 mod runtime;
 pub use runtime::{APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets};
 
