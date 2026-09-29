@@ -1,3 +1,5 @@
+pub mod credential_snapshot;
+
 use edge_controller_core::application_lifecycle::AgentArtifactManifest;
 use edge_controller_core::orchestration::{
     DerivedDnsTarget, DerivedMeshRoute, MachineObservation, ReleaseContext,
