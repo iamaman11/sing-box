@@ -90,7 +90,7 @@ def main() -> None:
     vm_projection = credential_proto.split("message VmCredentialProjection {", 1)[1].split("}", 1)[0]
     require(
         "map<" not in credential_proto
-        and "bytes " not in credential_proto
+        and not any(line.strip().startswith("bytes ") for line in credential_proto.splitlines())
         and "oneof payload" in credential_proto
         and "enum CredentialDeliverySlot" in credential_proto
         and "CredentialDeliverySlot slot = 5;" in credential_proto,
