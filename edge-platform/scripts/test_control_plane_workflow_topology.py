@@ -18,6 +18,7 @@ WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
 WINDOWS_RUNNER_BOOTSTRAP = Path("edge-platform/scripts/bootstrap-windows-runner.ps1")
 WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
+WINDOWS_CONSOLE_CLI = Path("edge-platform/crates/edge-console/src/cli.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
@@ -58,6 +59,7 @@ def main() -> None:
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
+    windows_console_cli = WINDOWS_CONSOLE_CLI.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
     windows_controller_runtime = windows_controller.split("#[cfg(test)]", 1)[0]
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
@@ -220,8 +222,8 @@ def main() -> None:
     )
     require(
         "StageSealedCredentialCandidateRequest" in windows_console
-        and "stage-sealed-credential" in windows_console
-        and "credential-ingress-key" in windows_console
+        and "stage-sealed-credential" in windows_console_cli
+        and "credential-ingress-key" in windows_console_cli
         and "CredentialIngressKey" in windows_controller_runtime
         and "CredentialIngressKey" in vm_agent_runtime,
         "real credential transport must be sealed end-to-end to the local runtime owners",
