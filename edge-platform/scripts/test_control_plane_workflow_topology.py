@@ -214,8 +214,20 @@ def main() -> None:
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
-        and "stage-credential" not in windows_console,
-        "Windows runner/console transport must not gain a credential staging escape hatch in this slice",
+        and "stage_credential_candidate" not in windows_console,
+        "Windows runner/console transport must never expose plaintext credential staging",
+    )
+    require(
+        "StageSealedCredentialCandidateRequest" in windows_console
+        and "stage-sealed-credential" in windows_console
+        and "credential-ingress-key" in windows_console
+        and "CredentialIngressKey" in windows_controller_runtime
+        and "CredentialIngressKey" in vm_agent_runtime,
+        "real credential transport must be sealed end-to-end to the local runtime owners",
+    )
+    require(
+        "update_worker_secret_text" in EDGE_PROVIDER_CLOUDFLARE.read_text(encoding="utf-8"),
+        "steady-state credential publication must update exactly one inactive Worker secret binding",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
