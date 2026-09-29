@@ -87,7 +87,9 @@ pub fn validate_credential_delivery_bundle(
 
     if bundle.dummy_non_secret {
         if slot != CredentialDeliverySlot::Unspecified {
-            return Err("dummy credential-delivery bundle must not claim a real A/B slot".to_owned());
+            return Err(
+                "dummy credential-delivery bundle must not claim a real A/B slot".to_owned(),
+            );
         }
         if bundle.payload.is_some() {
             return Err(
@@ -1257,6 +1259,7 @@ mod credential_delivery_tests {
             generation: 12,
             projection: CredentialProjectionKind::Windows as i32,
             dummy_non_secret: false,
+            slot: CredentialDeliverySlot::A as i32,
             payload: Some(credential_delivery_bundle::Payload::Vm(
                 VmCredentialProjection {
                     tunnel: Some(TunnelServerCredentialGeneration {
