@@ -116,6 +116,75 @@ pub fn generate_fresh_credential_snapshot(
     Ok(FreshCredentialSnapshot { windows, vm })
 }
 
+pub fn windows_bundle_from_vm_bundle(
+    vm_bundle: &CredentialDeliveryBundle,
+) -> Result<CredentialDeliveryBundle, String> {
+    validate_credential_delivery_bundle(vm_bundle)?;
+    if vm_bundle.projection != CredentialProjectionKind::Vm as i32 || vm_bundle.dummy_non_secret {
+        return Err("Windows recovery projection requires one real VM credential bundle".to_owned());
+    }
+    let vm = match vm_bundle.payload.as_ref() {
+        Some(credential_delivery_bundle::Payload::Vm(value)) => value,
+        _ => return Err("VM credential bundle payload is missing".to_owned()),
+    };
+    let tunnel_auth = vm
+        .tunnel_auth
+        .as_ref()
+        .ok_or_else(|| "VM credential bundle tunnel authentication is missing".to_owned())?
+        .clone();
+    let private = vm
+        .reality_identity
+        .as_ref()
+        .ok_or_else(|| "VM credential bundle Reality identity is missing".to_owned())?;
+
+    let windows = CredentialDeliveryBundle {
+        schema_version: vm_bundle.schema_version,
+        generation: vm_bundle.generation,
+        projection: CredentialProjectionKind::Windows as i32,
+        dummy_non_secret: false,
+        slot: vm_bundle.slot,
+        payload: Some(credential_delivery_bundle::Payload::Windows(
+            WindowsCredentialProjection {
+                tunnel_auth: Some(tunnel_auth),
+                reality_identity: Some(RealityPublicIdentityGeneration {
+                    generation: private.generation,
+                    direct: Some(RealityPublicIdentity {
+                        public_key: public_key_from_private(
+                            &private
+                                .direct
+                                .as_ref()
+                                .ok_or_else(|| "VM direct Reality private identity is missing".to_owned())?
+                                .private_key,
+                        )?,
+                    }),
+                    warp: Some(RealityPublicIdentity {
+                        public_key: public_key_from_private(
+                            &private
+                                .warp
+                                .as_ref()
+                                .ok_or_else(|| "VM WARP Reality private identity is missing".to_owned())?
+                                .private_key,
+                        )?,
+                    }),
+                }),
+            },
+        )),
+    };
+    validate_credential_delivery_bundle(&windows)?;
+    Ok(windows)
+}
+
+fn public_key_from_private(private_key: &str) -> Result<String, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(private_key)
+        .map_err(|_| "Reality private key is not valid base64url".to_owned())?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "Reality private key must decode to 32 bytes".to_owned())?;
+    let secret = StaticSecret::from(bytes);
+    Ok(URL_SAFE_NO_PAD.encode(PublicKey::from(&secret).to_bytes()))
+}
+
 fn generate_tunnel_authentication() -> TunnelAuthentication {
     TunnelAuthentication {
         vless_uuid: generate_uuid_v4(),
@@ -266,6 +335,13 @@ mod tests {
                 bundle.clone()
             );
         }
+    }
+
+    #[test]
+    fn windows_projection_can_be_recovered_exactly_from_vm_projection() {
+        let snapshot = generate_fresh_credential_snapshot(request()).unwrap();
+        let recovered = windows_bundle_from_vm_bundle(&snapshot.vm).unwrap();
+        assert_eq!(recovered, snapshot.windows);
     }
 
     #[test]
