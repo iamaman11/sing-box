@@ -210,7 +210,8 @@ def main() -> None:
         and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}" in credentials
         and "if: needs.authorize.outputs.operation == 'contract-converge'" in credentials
         and "if: needs.authorize.outputs.operation != 'contract-converge'" in credentials
-        and "group: credential-lifecycle-production" in credentials
+        and "group: vultr-control-plane-production" in credentials
+        and "credential-lifecycle-production" not in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials

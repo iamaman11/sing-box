@@ -428,59 +428,6 @@ pub async fn list_worker_script_secrets(
     Ok(bindings)
 }
 
-pub async fn bulk_update_worker_script_secrets(
-    api_token: &str,
-    account_id: &str,
-    script_name: &str,
-    secrets: &[(&str, &str)],
-    version_tag: &str,
-) -> Result<Vec<CloudflareWorkerSecretBinding>, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker script name", script_name)?;
-    require_non_empty("Cloudflare Worker version tag", version_tag)?;
-    if secrets.is_empty() {
-        return Err("Cloudflare Worker secret update requires at least one secret".to_owned());
-    }
-
-    let mut secret_map = serde_json::Map::new();
-    for (name, text) in secrets {
-        require_non_empty("Cloudflare Worker secret name", name)?;
-        require_non_empty("Cloudflare Worker secret value", text)?;
-        if secret_map
-            .insert(
-                (*name).to_owned(),
-                serde_json::json!({
-                    "name": name,
-                    "text": text,
-                    "type": "secret_text"
-                }),
-            )
-            .is_some()
-        {
-            return Err(format!("duplicate Cloudflare Worker secret name: {name}"));
-        }
-    }
-
-    let client = authorized_client(api_token)?;
-    let response = client
-        .patch(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk"
-        ))
-        .json(&serde_json::json!({
-            "secrets": secret_map,
-            "version_tags": {
-                "workers/tag": version_tag,
-                "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
-            }
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to update Cloudflare Worker secrets: {err}"))?;
-    ensure_secret_mutation_success(response).await?;
-
-    list_worker_script_secrets(api_token, account_id, script_name).await
-}
-
 pub async fn upload_worker_module(
     api_token: &str,
     account_id: &str,
@@ -527,6 +474,73 @@ pub async fn upload_worker_module(
         .await
         .map_err(|err| format!("failed to upload Cloudflare Worker module: {err}"))?;
     ensure_success(response).await
+}
+
+pub async fn upload_worker_module_with_secret_text_bindings(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    source: &str,
+    compatibility_date: &str,
+    version_tag: &str,
+    secrets: &[(&str, &str)],
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    require_non_empty("Cloudflare Worker source", source)?;
+    require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
+    require_non_empty("Cloudflare Worker version tag", version_tag)?;
+    if secrets.is_empty() {
+        return Err(
+            "Cloudflare Worker atomic secret upload requires at least one secret".to_owned(),
+        );
+    }
+
+    let mut names = std::collections::BTreeSet::new();
+    let mut bindings = Vec::with_capacity(secrets.len());
+    for (name, text) in secrets {
+        require_non_empty("Cloudflare Worker secret name", name)?;
+        require_non_empty("Cloudflare Worker secret value", text)?;
+        if !names.insert(*name) {
+            return Err(format!("duplicate Cloudflare Worker secret name: {name}"));
+        }
+        bindings.push(serde_json::json!({
+            "type": "secret_text",
+            "name": name,
+            "text": text
+        }));
+    }
+
+    let metadata = serde_json::json!({
+        "main_module": "worker.js",
+        "compatibility_date": compatibility_date,
+        "bindings": bindings,
+        "annotations": {
+            "workers/tag": version_tag,
+            "workers/message": "sing-box Phase 6 atomic fixed A/B credential delivery contract"
+        }
+    })
+    .to_string();
+    let boundary = "edge-sing-box-credential-delivery-v1";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{metadata}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"worker.js\"; filename=\"worker.js\"\r\nContent-Type: application/javascript+module\r\n\r\n{source}\r\n--{boundary}--\r\n"
+    );
+    let client = authorized_client(api_token)?;
+    let response = client
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}"
+        ))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| {
+            format!("failed to atomically upload Cloudflare Worker credential contract: {err}")
+        })?;
+    ensure_secret_mutation_success(response).await
 }
 
 pub async fn get_worker_script_subdomain(
