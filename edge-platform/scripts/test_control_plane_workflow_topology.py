@@ -58,9 +58,11 @@ def main() -> None:
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
+    windows_controller_runtime = windows_controller.split("#[cfg(test)]", 1)[0]
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
+    vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
@@ -197,15 +199,17 @@ def main() -> None:
             "both runtime owners must expose the same bounded candidate staging/observation contract",
         )
     require(
-        "stage_vm_credential_candidate" in vm_agent
-        and "store.stage_candidate(&bundle)" in vm_agent
-        and "promote_candidate(" not in vm_agent
-        and "rollback_previous(" not in vm_agent
-        and "stage_windows_credential_candidate" in windows_controller
-        and "require_installed_windows_credential_owner" in windows_controller
-        and "store.stage_candidate(&bundle)" in windows_controller
-        and "promote_candidate(" not in windows_controller
-        and "rollback_previous(" not in windows_controller,
+        "stage_vm_credential_candidate" in vm_agent_runtime
+        and "store.stage_candidate(&bundle)" in vm_agent_runtime
+        and "local_credential_bundle_ref(&bundle)" in vm_agent_runtime
+        and "promote_candidate(" not in vm_agent_runtime
+        and "rollback_previous(" not in vm_agent_runtime
+        and "stage_windows_credential_candidate" in windows_controller_runtime
+        and "require_installed_windows_credential_owner" in windows_controller_runtime
+        and "store.stage_candidate(&bundle)" in windows_controller_runtime
+        and "local_credential_bundle_ref(&bundle)" in windows_controller_runtime
+        and "promote_candidate(" not in windows_controller_runtime
+        and "rollback_previous(" not in windows_controller_runtime,
         "runtime-owner candidate ingress must stage only and must not expose activation or rollback",
     )
     require(
