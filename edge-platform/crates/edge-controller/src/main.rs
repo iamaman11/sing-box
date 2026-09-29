@@ -52,18 +52,17 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
-    CredentialProjectionKind,
-    BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, DeployPhase,
-    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DiagnosticEvidence,
-    DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse, Empty, GetOperationRequest,
-    GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
-    ListOperationEventsResponse, ListSecretRefsRequest, ListSecretRefsResponse,
-    LocalRuntimeResponse, Operation, OperationEvent, OperationEventKind, OperationKind,
-    OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError, ProviderObservation,
-    RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry, SelectorState,
-    SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest,
-    StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest, decode_windows_runtime_state,
-    timestamp_from_unix_seconds,
+    BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, CredentialProjectionKind,
+    DeployPhase, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
+    DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse, Empty,
+    GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
+    ListOperationEventsRequest, ListOperationEventsResponse, ListSecretRefsRequest,
+    ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent, OperationEventKind,
+    OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError,
+    ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry,
+    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
+    decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
