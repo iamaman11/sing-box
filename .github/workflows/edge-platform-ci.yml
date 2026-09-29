@@ -12,6 +12,8 @@ on:
       - "infra/LOCAL_AGENT_EXECUTION_CONTRACT.md"
       - "win/**"
       - ".github/workflows/edge-platform-ci.yml"
+      - ".github/workflows/edge-control-plane.yml"
+      - ".github/workflows/credential-lifecycle.yml"
       - ".github/workflows/vultr-lifecycle.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
 
@@ -72,13 +74,15 @@ jobs:
           python3 edge-platform/scripts/test_resolve_durable_release.py
           if grep -n --fixed-strings 'actions/download-artifact' \
             .github/workflows/vm-application-lifecycle.yml \
-            .github/workflows/vultr-lifecycle.yml; then
+            .github/workflows/vultr-lifecycle.yml \
+            .github/workflows/credential-lifecycle.yml; then
             echo "lifecycle workflows must not depend on expiring Actions artifacts" >&2
             exit 1
           fi
           if grep -n --fixed-strings 'manifest.json' \
             .github/workflows/vm-application-lifecycle.yml \
-            .github/workflows/vultr-lifecycle.yml; then
+            .github/workflows/vultr-lifecycle.yml \
+            .github/workflows/credential-lifecycle.yml; then
             echo "lifecycle workflows must consume canonical ReleaseSet authority, not transitional manifests" >&2
             exit 1
           fi

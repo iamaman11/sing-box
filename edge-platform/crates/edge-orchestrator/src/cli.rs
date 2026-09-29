@@ -30,10 +30,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: CloudflareDnsCommand,
     },
-    CloudflareCredentialPlane {
-        #[command(subcommand)]
-        command: CloudflareCredentialPlaneCommand,
-    },
     CloudflareTargetPlane {
         #[command(subcommand)]
         command: CloudflareTargetPlaneCommand,
@@ -41,6 +37,10 @@ pub(crate) enum Command {
     CloudflareZeroTrust {
         #[command(subcommand)]
         command: CloudflareZeroTrustCommand,
+    },
+    Credentials {
+        #[command(subcommand)]
+        command: CredentialDeliveryCommand,
     },
     #[command(name = "line3-mesh")]
     Line3Mesh {
@@ -68,9 +68,9 @@ impl Command {
             Self::ApplicationAcceptance(_) => "application-acceptance",
             Self::ApplicationCleanup(_) => "application-cleanup",
             Self::CloudflareDns { .. } => "cloudflare-dns",
-            Self::CloudflareCredentialPlane { .. } => "cloudflare-credential-plane",
             Self::CloudflareTargetPlane { .. } => "cloudflare-target-plane",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
+            Self::Credentials { .. } => "credentials",
             Self::Line3Mesh { .. } => "line3-mesh",
             Self::Production { .. } => "production",
             Self::VultrLifecycle { .. } => "vultr-lifecycle",
@@ -244,12 +244,11 @@ impl CloudflareDnsCommand {
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
-pub(crate) enum CloudflareCredentialPlaneCommand {
-    Inventory,
-    Plan,
-    Converge,
-    Verify,
-    Prove,
+pub(crate) enum CredentialDeliveryCommand {
+    ContractPlan,
+    ContractConverge,
+    ContractVerify,
+    ContractProve,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
@@ -651,7 +650,7 @@ mod tests {
         let digest = "a".repeat(64);
         let cases = [
             vec!["edge-orchestrator", "production", "diagnose"],
-            vec!["edge-orchestrator", "cloudflare-credential-plane", "verify"],
+            vec!["edge-orchestrator", "credentials", "contract-verify"],
             vec![
                 "edge-orchestrator",
                 "application-cleanup",

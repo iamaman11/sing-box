@@ -190,6 +190,12 @@ pub struct CloudflareWorkerScriptSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareWorkerSecretBinding {
+    pub name: String,
+    pub binding_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareWorkerSubdomain {
     pub enabled: bool,
     pub previews_enabled: bool,
@@ -398,6 +404,83 @@ pub async fn get_worker_script_settings(
     worker_script_settings_from_value(payload.result)
 }
 
+pub async fn list_worker_script_secrets(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+) -> Result<Vec<CloudflareWorkerSecretBinding>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/secrets"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to list Cloudflare Worker secrets: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    let mut bindings = value_array_or_null_empty(payload.result, "Cloudflare Worker secrets")?
+        .into_iter()
+        .map(worker_secret_binding_from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    bindings.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(bindings)
+}
+
+pub async fn bulk_update_worker_script_secrets(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    secrets: &[(&str, &str)],
+    version_tag: &str,
+) -> Result<Vec<CloudflareWorkerSecretBinding>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    require_non_empty("Cloudflare Worker version tag", version_tag)?;
+    if secrets.is_empty() {
+        return Err("Cloudflare Worker secret update requires at least one secret".to_owned());
+    }
+
+    let mut secret_map = serde_json::Map::new();
+    for (name, text) in secrets {
+        require_non_empty("Cloudflare Worker secret name", name)?;
+        require_non_empty("Cloudflare Worker secret value", text)?;
+        if secret_map
+            .insert(
+                (*name).to_owned(),
+                serde_json::json!({
+                    "name": name,
+                    "text": text,
+                    "type": "secret_text"
+                }),
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate Cloudflare Worker secret name: {name}"));
+        }
+    }
+
+    let client = authorized_client(api_token)?;
+    let response = client
+        .patch(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk"
+        ))
+        .json(&serde_json::json!({
+            "secrets": secret_map,
+            "version_tags": {
+                "workers/tag": version_tag,
+                "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
+            }
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("failed to update Cloudflare Worker secrets: {err}"))?;
+    ensure_secret_mutation_success(response).await?;
+
+    list_worker_script_secrets(api_token, account_id, script_name).await
+}
+
 pub async fn upload_worker_module(
     api_token: &str,
     account_id: &str,
@@ -412,13 +495,18 @@ pub async fn upload_worker_module(
     require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
     require_non_empty("Cloudflare Worker version tag", version_tag)?;
     let client = authorized_client(api_token)?;
+    let version_message = if version_tag.starts_with("sing-box-phase6-ab-") {
+        "sing-box Phase 6 fixed A/B credential delivery contract"
+    } else {
+        "sing-box Phase 2 dummy credential projection"
+    };
     let metadata = serde_json::json!({
         "main_module": "worker.js",
         "compatibility_date": compatibility_date,
         "bindings": [],
         "annotations": {
             "workers/tag": version_tag,
-            "workers/message": "sing-box Phase 2 dummy credential projection"
+            "workers/message": version_message
         }
     })
     .to_string();
@@ -2167,6 +2255,16 @@ fn worker_script_settings_from_value(
     })
 }
 
+fn worker_secret_binding_from_value(value: Value) -> Result<CloudflareWorkerSecretBinding, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Worker secret binding must be an object".to_owned())?;
+    Ok(CloudflareWorkerSecretBinding {
+        name: required_value_string(object, "name", "Cloudflare Worker secret binding")?,
+        binding_type: required_value_string(object, "type", "Cloudflare Worker secret binding")?,
+    })
+}
+
 fn worker_subdomain_from_value(value: Value) -> Result<CloudflareWorkerSubdomain, String> {
     let object = value
         .as_object()
@@ -2519,6 +2617,23 @@ async fn fetch_records(
     Ok(payload.result)
 }
 
+async fn ensure_secret_mutation_success(response: reqwest::Response) -> Result<(), String> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Cloudflare Worker secret mutation failed with HTTP status {status}"
+        ));
+    }
+    let payload: ApiEnvelope<Value> = response
+        .json()
+        .await
+        .map_err(|_| "invalid Cloudflare Worker secret mutation JSON response".to_owned())?;
+    if !payload.success {
+        return Err("Cloudflare Worker secret mutation returned success=false".to_owned());
+    }
+    Ok(())
+}
+
 async fn ensure_success(response: reqwest::Response) -> Result<(), String> {
     let _: ApiEnvelope<serde_json::Value> = parse_success_json(response).await?;
     Ok(())
@@ -2718,6 +2833,31 @@ mod tests {
         assert_eq!(credential.enabled, Some(true));
         assert_eq!(credential.duration.as_deref(), Some("1h"));
         assert_eq!(credential.name.as_deref(), Some("proof-token"));
+    }
+
+    #[test]
+    fn worker_secret_binding_debug_never_contains_secret_text() {
+        let binding = worker_secret_binding_from_value(serde_json::json!({
+            "name": "EDGE_CREDENTIAL_BUNDLE_A",
+            "type": "secret_text",
+            "text": "super-secret-value"
+        }))
+        .unwrap();
+        let debug = format!("{binding:?}");
+        assert!(!debug.contains("super-secret-value"));
+        assert!(debug.contains("EDGE_CREDENTIAL_BUNDLE_A"));
+    }
+
+    #[test]
+    fn parses_worker_secret_metadata_without_secret_value() {
+        let binding = worker_secret_binding_from_value(serde_json::json!({
+            "name": "EDGE_CREDENTIAL_BUNDLE_A",
+            "type": "secret_text",
+            "text": "must-not-be-retained"
+        }))
+        .unwrap();
+        assert_eq!(binding.name, "EDGE_CREDENTIAL_BUNDLE_A");
+        assert_eq!(binding.binding_type, "secret_text");
     }
 
     #[test]
