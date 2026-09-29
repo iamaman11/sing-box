@@ -27,6 +27,8 @@ CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
+AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
+CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
 PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
@@ -64,6 +66,8 @@ def main() -> None:
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
     credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
+    agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
+    controller_proto = CONTROLLER_PROTO.read_text(encoding="utf-8")
     phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
@@ -177,6 +181,37 @@ def main() -> None:
         'state/secrets/application-v2' in windows_controller_core
         and 'runtime-secrets/application-v2' in vm_agent,
         "Windows and VM v2 credentials must stay inside the existing private secret roots",
+    )
+    require(
+        "message StageCredentialCandidateRequest" in credential_proto
+        and "CredentialDeliveryBundle bundle = 1;" in credential_proto
+        and "message CredentialStateObservation" in credential_proto
+        and "LocalCredentialState state = 1;" in credential_proto,
+        "candidate staging transport must remain typed and return only non-secret local state refs",
+    )
+    for owner_proto in (agent_proto, controller_proto):
+        require(
+            'import "edge/platform/v1/credential_plane.proto";' in owner_proto
+            and "rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);" in owner_proto
+            and "rpc GetCredentialState(Empty) returns (CredentialStateObservation);" in owner_proto,
+            "both runtime owners must expose the same bounded candidate staging/observation contract",
+        )
+    require(
+        "stage_vm_credential_candidate" in vm_agent
+        and "store.stage_candidate(&bundle)" in vm_agent
+        and "promote_candidate(" not in vm_agent
+        and "rollback_previous(" not in vm_agent
+        and "stage_windows_credential_candidate" in windows_controller
+        and "require_installed_windows_credential_owner" in windows_controller
+        and "store.stage_candidate(&bundle)" in windows_controller
+        and "promote_candidate(" not in windows_controller
+        and "rollback_previous(" not in windows_controller,
+        "runtime-owner candidate ingress must stage only and must not expose activation or rollback",
+    )
+    require(
+        "StageCredentialCandidateRequest" not in windows_console
+        and "stage-credential" not in windows_console,
+        "Windows runner/console transport must not gain a credential staging escape hatch in this slice",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
