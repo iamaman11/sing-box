@@ -32,12 +32,11 @@ use edge_shared_types::{
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
     BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, CredentialStateObservation,
     Empty, FileCategory, FilePresence, Ipv4NetworkObservation, LocalCredentialState,
-    MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
-    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
-    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
-    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
-    RuntimeProbeEvidence, RuntimeProbeStatus, StageCredentialCandidateRequest, VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    MeshContainerDiagnostics, MeshRuntimeConvergeRequest, MeshRuntimeDiagnostics,
+    MeshRuntimeFailureSnapshot, MeshRuntimeState, ReadBundleIdentityRequest,
+    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
+    StageCredentialCandidateRequest, VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -1019,7 +1018,8 @@ fn observe_vm_credential_state(stack_dir: &Path) -> Result<Option<LocalCredentia
     let Some(store) = CredentialStore::open_existing(
         vm_credential_store_root(stack_dir)?,
         CredentialProjectionKind::Vm,
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
     store.read_state()
@@ -3364,10 +3364,7 @@ mod tests {
         )
         .unwrap();
         store
-            .stage_candidate(&vm_test_credential_bundle(
-                100,
-                CredentialDeliverySlot::A,
-            ))
+            .stage_candidate(&vm_test_credential_bundle(100, CredentialDeliverySlot::A))
             .unwrap();
         let active = store.promote_candidate().unwrap().active.unwrap();
 
@@ -3376,10 +3373,7 @@ mod tests {
         };
         let staged = server
             .stage_credential_candidate(Request::new(StageCredentialCandidateRequest {
-                bundle: Some(vm_test_credential_bundle(
-                    101,
-                    CredentialDeliverySlot::B,
-                )),
+                bundle: Some(vm_test_credential_bundle(101, CredentialDeliverySlot::B)),
             }))
             .await
             .unwrap()
