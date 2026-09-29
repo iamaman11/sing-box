@@ -294,6 +294,43 @@ continues to serve traffic.
 Do not add a generic secret map, arbitrary payload bytes, first-party JSON secret contract, second
 secret database, new credential daemon or dedicated credential crate.
 
+### Local credential state
+
+Local runtime persistence uses one crash-safe pattern on both owners:
+
+```text
+private credential root/
+  state.pb                 # typed non-secret refs only
+  bundles/
+    <sha256>.pb            # immutable canonical CredentialDeliveryBundle bytes
+```
+
+`state.pb` contains only projection plus bounded `active`, `candidate` and `previous`
+references (delivery generation, A/B slot and canonical bundle digest). Secret payload bytes never
+enter SQLite, JSON, logs or a second metadata database.
+
+Transition invariants:
+- staging writes/verifies the immutable candidate blob first, then atomically updates `state.pb`;
+  active bytes are never rewritten by staging;
+- promotion is one atomic pointer-state replacement: candidate becomes active and the former active
+  becomes previous;
+- rollback swaps active/previous by the same typed pointer transition;
+- candidate and previous never coexist because fixed A/B has only one inactive slot;
+- previous must be explicitly dropped after the bounded grace period before another candidate can be
+  staged;
+- restart/recovery decodes canonical `state.pb` and verifies every referenced bundle's projection,
+  generation, slot, digest and canonical protobuf bytes before runtime use.
+
+Physical roots:
+- Windows: `C:\sing-box\state\secrets\application-v2`, inside the existing controller-owned ACL
+  boundary (SYSTEM/Administrators/EdgePlatformController; NetworkService runner excluded);
+- VM: `<stack-parent>/runtime-secrets/application-v2`, inside the existing root-owned private
+  runtime-secret boundary; Unix directories/files remain mode `0700/0600`.
+
+The existing `edge-secrets` crate may provide this narrow cross-platform persistence primitive, but
+it owns no credential lifecycle, generation, provider mutation or runtime activation. Those
+decisions remain with the runtime owner and the GitHub-only `/credentials` lifecycle owner.
+
 ## 5. Runtime autonomy and recovery
 
 Cloudflare availability is not on the proxy data path.
