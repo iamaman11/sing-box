@@ -755,8 +755,7 @@ mod tests {
     fn restart_reopens_and_verifies_exact_bundle_bytes() {
         let root = unique_root("restart");
         {
-            let store =
-                CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+            let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
             store
                 .stage_candidate(&windows_bundle(100, CredentialDeliverySlot::A))
                 .unwrap();
