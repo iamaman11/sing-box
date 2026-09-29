@@ -30,31 +30,25 @@ Git / protected main
         |                              |
         v                              v
 immutable ReleaseSet             edge-orchestrator
-exact binaries/images            GitHub-only production owner
+exact binaries/images            GitHub-hosted provider owner
                                        |
                          +-------------+-------------+
                          |                           |
                        Vultr                     Cloudflare
-                         |                 dedicated account: sing-box
-                         |                 Mesh / Zero Trust / Access
-                         |                 credential-delivery Workers
-                         |
-                    strict SSH
-                    local forward
-                         |
-                         v
-                     edge-agent
-                  loopback-only VM owner
-                         |
-                         v
-                     sing-box
+                    provider lifecycle      account: sing-box
+                                           Mesh / Zero Trust / Access
+                                           credential-delivery Workers
 
-Windows:
-exact ReleaseSet
-  -> SCM EdgePlatformController
-  -> typed active/candidate local state
-  -> generated sing-box JSON
-  -> sing-box
+Runtime hosts:
+
+GitHub
+  |-- Windows self-hosted runner (transport only)
+  |      -> SCM EdgePlatformController
+  |      -> typed local state / sing-box
+  |
+  '-- production-VM self-hosted runner (transport only)
+         -> local root-owned typed runtime owner
+         -> typed local state / systemd / sing-box
 
 Shared external boundary:
 Cloudflare zone alegria.by
@@ -65,10 +59,11 @@ Cloudflare zone alegria.by
 
 - **Git** owns desired state and execution policy.
 - **ReleaseSet** owns exact immutable release identity.
-- **edge-orchestrator** owns provider/production composition.
+- **edge-orchestrator** owns GitHub-hosted provider/production composition, including Vultr/Cloudflare lifecycle and credential generation/publication.
 - **Vultr/Cloudflare APIs** are observed provider state, never desired-state databases.
-- **edge-agent** owns bounded VM observation/apply only; no provider authority.
-- **EdgePlatformController** owns Windows-local runtime/config/lifecycle only; no provider authority.
+- **production-VM self-hosted runner** is outbound transport only; it dispatches typed local operations and is never desired-state or credential-plaintext authority.
+- **Linux local runtime owner** owns only VM-local systemd/sing-box/config/credential-state lifecycle. Existing `edge-agent` code may be reduced/reused for this local-only role; remote TCP/gRPC agent transport is not target architecture.
+- **Windows self-hosted runner** is outbound transport only; SCM **EdgePlatformController** owns Windows-local runtime/config/credential lifecycle.
 - **edge-diagnostic** is independent, read-only diagnostics; it is not a repair owner.
 - **GitHub Actions** authorize, materialize exact inputs, invoke typed owners and publish bounded evidence. YAML/shell/Python do not own domain semantics.
 
@@ -78,7 +73,7 @@ All application-exclusive account-scoped Cloudflare resources converge into the 
 
 `alegria.by` deliberately remains a shared external DNS zone. DNS automation is zone-scoped and may mutate only the explicit sing-box record set.
 
-Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations delivered through isolated Windows/VM credential projections. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
+Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations through isolated Windows/VM credential Workers. Each Worker is only a fixed A/B delivery mailbox: no active pointer, history database or runtime authority. The trusted local owner on each host fetches its exact projection directly over HTTPS/Cloudflare Access using host-local fetch identity; self-hosted runners carry only non-secret generation/slot intent and never receive credential plaintext. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
 
 ## Release and recovery
 
@@ -111,7 +106,7 @@ Existing first-party JSON is frozen migration debt and may only shrink.
 
 ## Development rule
 
-Prefer deletion over parallel architecture.
+Prefer deletion over parallel architecture. The steady-state host transport is symmetric: one repository self-hosted runner per persistent runtime host, plus one trusted local runtime owner. Routine hosted-runner SSH/tunnels, custom agent mTLS and duplicate remote-control layers are migration debt, not target architecture.
 
 When a typed owner replaces old behavior, remove obsolete:
 - workflow/YAML/shell parsing;
