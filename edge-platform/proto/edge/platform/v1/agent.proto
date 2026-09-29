@@ -4,6 +4,7 @@ package edge.platform.v1;
 
 import "edge/platform/v1/bundle.proto";
 import "edge/platform/v1/common.proto";
+import "edge/platform/v1/credential_plane.proto";
 import "edge/platform/v1/runtime.proto";
 
 service AgentService {
@@ -21,4 +22,6 @@ service AgentService {
   rpc ConvergeMeshRuntime(MeshRuntimeConvergeRequest) returns (MeshRuntimeState);
   rpc VerifyMeshRuntime(Empty) returns (MeshRuntimeState);
   rpc CleanupMeshRuntime(Empty) returns (MeshRuntimeState);
+  rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);
+  rpc GetCredentialState(Empty) returns (CredentialStateObservation);
 }
