@@ -35,7 +35,8 @@ use edge_clash::{
 };
 use edge_controller_core::{
     collect_controller_status, controller_state_db_path, is_installed_windows_root,
-    local_singbox_config_path, validate_deploy_transition, windows_runtime_state_path,
+    local_singbox_config_path, validate_deploy_transition, windows_credential_store_path,
+    windows_runtime_state_path,
 };
 use edge_local_runtime::{
     LocalRuntimePaths, inspect_local_runtime, restart_local_runtime as restart_runtime_process,
@@ -45,12 +46,13 @@ use edge_local_runtime::{
 use edge_observability::init as init_observability;
 use edge_provider_cloudflare::mock_upsert_a_record;
 use edge_provider_vultr::mock_instance;
-use edge_secrets::{default_env_ref, resolve_secret_path};
+use edge_secrets::{CredentialStore, default_env_ref, resolve_secret_path};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
+    CredentialProjectionKind,
     BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, DeployPhase,
     DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DiagnosticEvidence,
     DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse, Empty, GetOperationRequest,
@@ -362,6 +364,11 @@ async fn controller_server(
             let runtime_state = fs::read(&runtime_state_path)?;
             decode_windows_runtime_state(&runtime_state)?;
         }
+        CredentialStore::open_existing(
+            windows_credential_store_path(&repo_root),
+            CredentialProjectionKind::Windows,
+        )
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
     }
     let db_path = controller_state_db_path(&repo_root);
     if let Some(parent) = db_path.parent() {
