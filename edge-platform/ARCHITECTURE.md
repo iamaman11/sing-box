@@ -343,6 +343,19 @@ The existing `edge-secrets` crate may provide this narrow cross-platform persist
 it owns no credential lifecycle, generation, provider mutation or runtime activation. Those
 decisions remain with the runtime owner and the GitHub-only `/credentials` lifecycle owner.
 
+Real candidate delivery across GitHub transport is end-to-end sealed to the local runtime owner:
+- each owner keeps one X25519 ingress private key inside the same private credential root;
+- only the public ingress key and its digest may leave the local owner;
+- `/credentials` generates the paired snapshot in hosted process memory, publishes the exact
+  projection to the inactive Worker slot, then seals that projection to its local owner;
+- GitHub runners/jobs may carry only the typed authenticated ciphertext envelope plus non-secret
+  state refs/public keys; they never receive plaintext/decrypted application credentials;
+- the local owner authenticates/decrypts the envelope, revalidates the canonical typed bundle and
+  stages it through the existing non-activating store;
+- this sealing is transport protection only, not another credential authority, vault, desired-state
+  store or long-lived secret database.
+
+
 ## 5. Runtime autonomy and recovery
 
 Cloudflare availability is not on the proxy data path.
