@@ -1353,6 +1353,10 @@ fn print_credential_ingress_key(value: &CredentialIngressPublicKey) {
     println!("projection={}", value.projection);
     println!("public_key={}", value.public_key);
     println!("public_key_sha256={}", value.sha256);
+    println!(
+        "credential_ingress_proto={}",
+        URL_SAFE_NO_PAD.encode(value.encode_to_vec())
+    );
     println!("secret_material_returned=false");
 }
 
@@ -1364,6 +1368,10 @@ fn print_credential_state(value: &CredentialStateObservation) {
         return;
     };
     println!("credential_state=PRESENT");
+    println!(
+        "credential_state_proto={}",
+        URL_SAFE_NO_PAD.encode(state.encode_to_vec())
+    );
     println!("projection={}", state.projection);
     print_credential_ref("active", state.active.as_ref());
     print_credential_ref("candidate", state.candidate.as_ref());
