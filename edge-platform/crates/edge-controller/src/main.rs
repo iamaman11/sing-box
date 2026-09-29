@@ -4484,6 +4484,19 @@ mod tests {
     }
 
     #[test]
+    fn invalid_windows_candidate_has_no_store_side_effect() {
+        let root = installed_windows_test_root();
+        let store_root = windows_credential_store_path(&root);
+
+        let mut invalid = windows_test_credential_bundle(101, CredentialDeliverySlot::B);
+        invalid.dummy_non_secret = true;
+        assert!(stage_windows_credential_candidate(&root, invalid).is_err());
+        assert!(!store_root.exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn generated_bootstrap_mode_names_are_stable() {
         assert_eq!(BootstrapMode::BootstrapBase.as_str_name(), "BOOTSTRAP_BASE");
         assert_eq!(
