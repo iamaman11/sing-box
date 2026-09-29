@@ -1673,10 +1673,7 @@ mod tests {
                 assert_eq!(decoded.generation, slot.generation);
                 assert_eq!(decoded.projection, projection as i32);
                 assert!(decoded.dummy_non_secret);
-                assert_eq!(
-                    decoded.slot,
-                    CredentialDeliverySlot::Unspecified as i32
-                );
+                assert_eq!(decoded.slot, CredentialDeliverySlot::Unspecified as i32);
                 assert!(decoded.payload.is_none());
                 assert_eq!(slot.secret_text, hex_encode(&slot.payload));
                 assert!(!material.source.contains(&slot.secret_text));
