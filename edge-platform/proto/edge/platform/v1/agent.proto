@@ -26,4 +26,8 @@ service AgentService {
   rpc GetCredentialState(Empty) returns (CredentialStateObservation);
   rpc GetCredentialIngressPublicKey(Empty) returns (CredentialIngressPublicKey);
   rpc StageSealedCredentialCandidate(StageSealedCredentialCandidateRequest) returns (CredentialStateObservation);
+  rpc EnableCredentialCandidateAcceptance(Empty) returns (CredentialStateObservation);
+  rpc PromoteCredentialCandidate(Empty) returns (CredentialStateObservation);
+  rpc RollbackCredential(Empty) returns (CredentialStateObservation);
+  rpc ExpireCredentialPrevious(Empty) returns (CredentialStateObservation);
 }

@@ -413,6 +413,11 @@ pub fn validate_local_credential_state(state: &LocalCredentialState) -> Result<(
                 .to_owned(),
         );
     }
+    if state.candidate_acceptance_enabled && candidate.is_none() {
+        return Err(
+            "candidate acceptance cannot be enabled without a staged candidate".to_owned(),
+        );
+    }
 
     for (label, reference) in [
         ("active", active),
@@ -1664,9 +1669,28 @@ mod local_credential_state_tests {
             active: None,
             candidate: Some(local_credential_bundle_ref(&candidate).unwrap()),
             previous: None,
+            candidate_acceptance_enabled: false,
         };
         let bytes = encode_local_credential_state(&state).unwrap();
         assert_eq!(decode_local_credential_state(&bytes).unwrap(), state);
+    }
+
+    #[test]
+    fn candidate_acceptance_requires_a_candidate() {
+        let state = LocalCredentialState {
+            schema_version: 1,
+            projection: CredentialProjectionKind::Windows as i32,
+            active: Some(local_credential_bundle_ref(&bundle(
+                CredentialProjectionKind::Windows,
+                100,
+                CredentialDeliverySlot::A,
+            ))
+            .unwrap()),
+            candidate: None,
+            previous: None,
+            candidate_acceptance_enabled: true,
+        };
+        assert!(validate_local_credential_state(&state).is_err());
     }
 
     #[test]
@@ -1679,6 +1703,7 @@ mod local_credential_state_tests {
             active: Some(local_credential_bundle_ref(&active).unwrap()),
             candidate: Some(local_credential_bundle_ref(&candidate).unwrap()),
             previous: None,
+            candidate_acceptance_enabled: false,
         };
         assert!(validate_local_credential_state(&state).is_err());
     }
@@ -1702,6 +1727,7 @@ mod local_credential_state_tests {
             active: Some(local_credential_bundle_ref(&active).unwrap()),
             candidate: Some(reference.clone()),
             previous: Some(reference),
+            candidate_acceptance_enabled: false,
         };
         assert!(validate_local_credential_state(&state).is_err());
     }

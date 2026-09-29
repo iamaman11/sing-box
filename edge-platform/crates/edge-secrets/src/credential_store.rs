@@ -98,6 +98,7 @@ impl CredentialStore {
             active: None,
             candidate: None,
             previous: None,
+            candidate_acceptance_enabled: false,
         });
         if let Some(previous) = next.previous.as_ref() {
             return Err(format!(
@@ -127,6 +128,7 @@ impl CredentialStore {
         }
 
         next.candidate = Some(candidate.clone());
+        next.candidate_acceptance_enabled = false;
         validate_local_credential_state(&next)?;
         self.persist_bundle(bundle, &candidate)?;
         self.write_state(&next)?;
@@ -149,10 +151,53 @@ impl CredentialStore {
             active: Some(candidate),
             candidate: None,
             previous: current.active,
+            candidate_acceptance_enabled: false,
         };
         validate_local_credential_state(&next)?;
         self.write_state(&next)?;
         self.gc_unreferenced_bundles(&next)?;
+        Ok(next)
+    }
+
+    pub fn set_candidate_acceptance_enabled(
+        &self,
+        enabled: bool,
+    ) -> Result<LocalCredentialState, String> {
+        let mut current = self
+            .read_state()?
+            .ok_or_else(|| "local credential state is absent".to_owned())?;
+        if current.candidate.is_none() {
+            return Err("local credential candidate is absent".to_owned());
+        }
+        current.candidate_acceptance_enabled = enabled;
+        validate_local_credential_state(&current)?;
+        self.write_state(&current)?;
+        Ok(current)
+    }
+
+    pub fn demote_initial_active_to_candidate(&self) -> Result<LocalCredentialState, String> {
+        let current = self
+            .read_state()?
+            .ok_or_else(|| "local credential state is absent".to_owned())?;
+        if current.candidate.is_some() || current.previous.is_some() {
+            return Err(
+                "initial credential demotion requires exactly one active bundle".to_owned(),
+            );
+        }
+        let active = current
+            .active
+            .clone()
+            .ok_or_else(|| "local credential active bundle is absent".to_owned())?;
+        let next = LocalCredentialState {
+            schema_version: 1,
+            projection: self.projection as i32,
+            active: None,
+            candidate: Some(active),
+            previous: None,
+            candidate_acceptance_enabled: false,
+        };
+        validate_local_credential_state(&next)?;
+        self.write_state(&next)?;
         Ok(next)
     }
 
@@ -178,6 +223,7 @@ impl CredentialStore {
             active: Some(previous),
             candidate: None,
             previous: Some(active),
+            candidate_acceptance_enabled: false,
         };
         validate_local_credential_state(&next)?;
         self.write_state(&next)?;
@@ -729,6 +775,28 @@ mod tests {
             .stage_candidate(&windows_bundle(102, CredentialDeliverySlot::A))
             .unwrap();
         assert_eq!(state.candidate.unwrap().generation, 102);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn candidate_acceptance_flag_is_bounded_and_initial_active_can_demote() {
+        let root = unique_root("acceptance-demote");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        store
+            .stage_candidate(&vm_bundle(100, CredentialDeliverySlot::A))
+            .unwrap();
+        assert!(
+            store
+                .set_candidate_acceptance_enabled(true)
+                .unwrap()
+                .candidate_acceptance_enabled
+        );
+        let promoted = store.promote_candidate().unwrap();
+        assert!(!promoted.candidate_acceptance_enabled);
+        let demoted = store.demote_initial_active_to_candidate().unwrap();
+        assert!(demoted.active.is_none());
+        assert_eq!(demoted.candidate.as_ref().unwrap().generation, 100);
+        assert!(!demoted.candidate_acceptance_enabled);
         fs::remove_dir_all(root).unwrap();
     }
 

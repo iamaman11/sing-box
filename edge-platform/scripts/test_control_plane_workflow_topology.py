@@ -202,6 +202,17 @@ def main() -> None:
             "both runtime owners must expose the same bounded candidate staging/observation contract",
         )
     require(
+        "rpc EnableCredentialCandidateAcceptance(Empty) returns (CredentialStateObservation);" in agent_proto
+        and "rpc PromoteCredentialCandidate(Empty) returns (CredentialStateObservation);" in agent_proto
+        and "rpc RollbackCredential(Empty) returns (CredentialStateObservation);" in agent_proto
+        and "rpc ExpireCredentialPrevious(Empty) returns (CredentialStateObservation);" in agent_proto
+        and "rpc ProbeCredentialCandidate(Empty) returns (CredentialCandidateAcceptance);" in controller_proto
+        and "rpc PromoteCredentialCandidate(Empty) returns (CredentialStateObservation);" in controller_proto
+        and "rpc RollbackCredential(Empty) returns (CredentialStateObservation);" in controller_proto
+        and "rpc ExpireCredentialPrevious(Empty) returns (CredentialStateObservation);" in controller_proto,
+        "Phase 6 terminal transition must remain typed across both runtime owners",
+    )
+    require(
         "stage_vm_credential_candidate" in vm_agent_runtime
         and "store.stage_candidate(&bundle)" in vm_agent_runtime
         and "local_credential_bundle_ref(&bundle)" in vm_agent_runtime
@@ -370,16 +381,33 @@ def main() -> None:
         and "if: needs.authorize.outputs.operation != 'contract-converge'" in credentials
         and "group: vultr-control-plane-production" in credentials
         and "credential-lifecycle-production" not in credentials
-        and "VULTR_API_KEY" not in credentials
-        and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
         and "CLOUDFLARE_DNS_TOKEN" not in credentials
-        and "api.ipify.org" not in credentials
-        and "lease-acquire" not in credentials
-        and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential delivery workflow must be dedicated, GitHub-hosted, least-authority and artifact-free",
+        "credential delivery workflow must remain dedicated and artifact-free",
+    )
+    credential_execute = credentials.split("\n  execute:\n", 1)[1]
+    credential_rotate = credentials.split("\n  rotate_execute:\n", 1)[1].split(
+        "\n  rotate_windows_stage:\n", 1
+    )[0]
+    require(
+        "VULTR_API_KEY" not in credential_execute
+        and "VULTR_SSH_PRIVATE_KEY" not in credential_execute
+        and "api.ipify.org" not in credential_execute
+        and "lease-acquire" not in credential_execute
+        and "lease-release" not in credential_execute,
+        "ordinary credential contract operations must remain Cloudflare-only",
+    )
+    require(
+        "VULTR_API_KEY" in credential_rotate
+        and "VULTR_SSH_PRIVATE_KEY" in credential_rotate
+        and "api.ipify.org" in credential_rotate
+        and "lease-acquire" in credential_rotate
+        and "lease-release" in credential_rotate
+        and "EDGE_WINDOWS_CREDENTIAL_INGRESS_PROTO" in credential_rotate
+        and "EDGE_WINDOWS_CREDENTIAL_STATE_PROTO" in credential_rotate,
+        "real credential rotate may use only bounded existing VM authority and sealed Windows handoff",
     )
     require(
         "if next == CredentialDeliveryAction::Noop {" in credential_command

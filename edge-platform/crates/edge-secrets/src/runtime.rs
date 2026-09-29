@@ -152,6 +152,17 @@ fn required(values: &BTreeMap<String, String>, key: &str) -> Result<String, Stri
         .ok_or_else(|| format!("secret store is missing {key}"))
 }
 
+pub fn derive_reality_public_key(private_key: &str) -> Result<String, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(private_key)
+        .map_err(|_| "Reality private key is not valid base64url".to_owned())?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "Reality private key must decode to exactly 32 bytes".to_owned())?;
+    let secret = StaticSecret::from(bytes);
+    Ok(URL_SAFE_NO_PAD.encode(PublicKey::from(&secret).to_bytes()))
+}
+
 fn generate_reality_pair() -> (String, String) {
     let secret = StaticSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&secret);

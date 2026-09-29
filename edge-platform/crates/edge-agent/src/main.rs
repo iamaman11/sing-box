@@ -25,14 +25,17 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
-use edge_secrets::{ApplicationRuntimeSecrets, CredentialIngressKey, CredentialStore};
+use edge_secrets::{
+    ApplicationRuntimeSecrets, CredentialIngressKey, CredentialStore, derive_reality_public_key,
+};
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, CredentialIngressPublicKey, CredentialProjectionKind,
-    CredentialStateObservation, Empty, FileCategory, FilePresence, Ipv4NetworkObservation,
-    LocalCredentialState,
+    BundleFile, ContainerRuntimeObservation, CredentialDeliveryBundle, CredentialIngressPublicKey,
+    CredentialProjectionKind, CredentialStateObservation, Empty, FileCategory, FilePresence,
+    Ipv4NetworkObservation, LocalCredentialState, VmCredentialProjection,
+    credential_delivery_bundle,
     MeshContainerDiagnostics, MeshRuntimeConvergeRequest, MeshRuntimeDiagnostics,
     MeshRuntimeFailureSnapshot, MeshRuntimeState, ReadBundleIdentityRequest,
     ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
@@ -404,6 +407,51 @@ impl AgentService for AgentServerImpl {
         Ok(Response::new(CredentialStateObservation {
             state: Some(state),
         }))
+    }
+
+    async fn enable_credential_candidate_acceptance(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let state = enable_vm_candidate_acceptance(&self.stack_dir)
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn promote_credential_candidate(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let state = promote_vm_credential_runtime(&self.stack_dir)
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn rollback_credential(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let state = rollback_vm_credential_runtime(&self.stack_dir)
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn expire_credential_previous(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let state = expire_vm_credential_previous(&self.stack_dir)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation { state }))
     }
 }
 
@@ -941,7 +989,6 @@ fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), Stri
     if !policy_path.is_file() {
         return Ok(());
     }
-
     let policy = fs::read_to_string(&policy_path).map_err(|err| {
         format!(
             "failed to read runtime policy {}: {err}",
@@ -950,12 +997,17 @@ fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), Stri
     })?;
     validate_runtime_policy_env(&policy)?;
 
-    let secrets = ensure_vm_runtime_secret_store(stack_dir)?;
+    let credential_env = vm_runtime_credential_environment(stack_dir)?;
     let mut runtime = policy;
     if !runtime.ends_with('\n') {
         runtime.push('\n');
     }
-    runtime.push_str(&secrets.render_env());
+    for (key, value) in credential_env {
+        runtime.push_str(&key);
+        runtime.push('=');
+        runtime.push_str(&value);
+        runtime.push('\n');
+    }
 
     let runtime_path = stack_dir.join(RUNTIME_ENV_FILE);
     fs::write(&runtime_path, runtime.as_bytes()).map_err(|err| {
@@ -964,8 +1016,145 @@ fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), Stri
             runtime_path.display()
         )
     })?;
-    set_bundle_file_permissions(&runtime_path, false, true)?;
-    Ok(())
+    set_bundle_file_permissions(&runtime_path, false, true)
+}
+
+fn vm_runtime_credential_environment(
+    stack_dir: &Path,
+) -> Result<BTreeMap<String, String>, String> {
+    let state = observe_vm_credential_state(stack_dir)?;
+    let mut values = if let Some(active) = state.as_ref().and_then(|value| value.active.as_ref()) {
+        let store = CredentialStore::open_existing(
+            vm_credential_store_root(stack_dir)?,
+            CredentialProjectionKind::Vm,
+        )?
+        .ok_or_else(|| "VM credential store disappeared while active state was present".to_owned())?;
+        vm_bundle_runtime_environment(&store.read_bundle(active)?)?
+    } else if state.is_some() {
+        legacy_runtime_environment(&read_existing_vm_runtime_secret_store(stack_dir)?)
+    } else {
+        legacy_runtime_environment(&ensure_vm_runtime_secret_store(stack_dir)?)
+    };
+
+    if state
+        .as_ref()
+        .is_some_and(|value| value.candidate_acceptance_enabled)
+    {
+        let candidate = state
+            .as_ref()
+            .and_then(|value| value.candidate.as_ref())
+            .ok_or_else(|| "VM candidate acceptance enabled without candidate".to_owned())?;
+        let store = CredentialStore::open_existing(
+            vm_credential_store_root(stack_dir)?,
+            CredentialProjectionKind::Vm,
+        )?
+        .ok_or_else(|| "VM credential store disappeared while candidate state was present".to_owned())?;
+        let bundle = store.read_bundle(candidate)?;
+        let projection = vm_projection(&bundle)?;
+        let tunnel = projection
+            .tunnel_auth
+            .as_ref()
+            .ok_or_else(|| "VM candidate tunnel authentication is missing".to_owned())?;
+        values.insert(
+            "HY2_CANDIDATE_PASSWORD".to_owned(),
+            tunnel
+                .direct
+                .as_ref()
+                .ok_or_else(|| "VM candidate direct tunnel authentication is missing".to_owned())?
+                .hysteria2_password
+                .clone(),
+        );
+        values.insert(
+            "HY2_WARP_CANDIDATE_PASSWORD".to_owned(),
+            tunnel
+                .warp
+                .as_ref()
+                .ok_or_else(|| "VM candidate WARP tunnel authentication is missing".to_owned())?
+                .hysteria2_password
+                .clone(),
+        );
+    }
+    Ok(values)
+}
+
+fn legacy_runtime_environment(secrets: &ApplicationRuntimeSecrets) -> BTreeMap<String, String> {
+    secrets
+        .render_env()
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+fn vm_bundle_runtime_environment(
+    bundle: &CredentialDeliveryBundle,
+) -> Result<BTreeMap<String, String>, String> {
+    let projection = vm_projection(bundle)?;
+    let tunnel = projection
+        .tunnel_auth
+        .as_ref()
+        .ok_or_else(|| "VM tunnel authentication is missing".to_owned())?;
+    let reality = projection
+        .reality_identity
+        .as_ref()
+        .ok_or_else(|| "VM Reality identity is missing".to_owned())?;
+    let line2 = projection
+        .line2_proxy
+        .as_ref()
+        .ok_or_else(|| "VM Line 2 proxy credential is missing".to_owned())?;
+    let direct = tunnel
+        .direct
+        .as_ref()
+        .ok_or_else(|| "VM direct tunnel authentication is missing".to_owned())?;
+    let warp = tunnel
+        .warp
+        .as_ref()
+        .ok_or_else(|| "VM WARP tunnel authentication is missing".to_owned())?;
+    let direct_reality = reality
+        .direct
+        .as_ref()
+        .ok_or_else(|| "VM direct Reality identity is missing".to_owned())?;
+    let warp_reality = reality
+        .warp
+        .as_ref()
+        .ok_or_else(|| "VM WARP Reality identity is missing".to_owned())?;
+    Ok(BTreeMap::from([
+        ("PROXY_PASSWORD".to_owned(), line2.password.clone()),
+        ("VLESS_UUID".to_owned(), direct.vless_uuid.clone()),
+        ("HY2_PASSWORD".to_owned(), direct.hysteria2_password.clone()),
+        ("REALITY_PRIVATE_KEY".to_owned(), direct_reality.private_key.clone()),
+        (
+            "REALITY_PUBLIC_KEY".to_owned(),
+            derive_reality_public_key(&direct_reality.private_key)?,
+        ),
+        ("REALITY_SHORT_ID".to_owned(), direct.reality_short_id.clone()),
+        ("VLESS_WARP_UUID".to_owned(), warp.vless_uuid.clone()),
+        ("HY2_WARP_PASSWORD".to_owned(), warp.hysteria2_password.clone()),
+        (
+            "REALITY_WARP_PRIVATE_KEY".to_owned(),
+            warp_reality.private_key.clone(),
+        ),
+        (
+            "REALITY_WARP_PUBLIC_KEY".to_owned(),
+            derive_reality_public_key(&warp_reality.private_key)?,
+        ),
+        (
+            "REALITY_WARP_SHORT_ID".to_owned(),
+            warp.reality_short_id.clone(),
+        ),
+    ]))
+}
+
+fn vm_projection(bundle: &CredentialDeliveryBundle) -> Result<&VmCredentialProjection, String> {
+    match bundle.payload.as_ref() {
+        Some(credential_delivery_bundle::Payload::Vm(value))
+            if bundle.projection == CredentialProjectionKind::Vm as i32
+                && !bundle.dummy_non_secret =>
+        {
+            Ok(value)
+        }
+        _ => Err("credential bundle is not a real VM projection".to_owned()),
+    }
 }
 
 fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
@@ -1051,6 +1240,123 @@ fn stage_vm_credential_candidate(
     store.stage_candidate(&bundle)
 }
 
+async fn enable_vm_candidate_acceptance(
+    stack_dir: &Path,
+) -> Result<LocalCredentialState, String> {
+    let store = CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?
+    .ok_or_else(|| "VM credential store is absent".to_owned())?;
+    let before = store
+        .read_state()?
+        .ok_or_else(|| "VM credential state is absent".to_owned())?;
+    if before.candidate.is_none() {
+        return Err("VM credential candidate is absent".to_owned());
+    }
+    let enabled = store.set_candidate_acceptance_enabled(true)?;
+    if let Err(err) = materialize_vm_owned_runtime_environment(stack_dir) {
+        let _ = store.set_candidate_acceptance_enabled(false);
+        return Err(err);
+    }
+    if let Err(err) = execute_typed_bootstrap(stack_dir, BootstrapMode::BootstrapTunnel).await {
+        let _ = store.set_candidate_acceptance_enabled(false);
+        let _ = materialize_vm_owned_runtime_environment(stack_dir);
+        let _ = execute_typed_bootstrap(stack_dir, BootstrapMode::BootstrapTunnel).await;
+        return Err(format!("VM candidate dual-accept runtime failed: {err}"));
+    }
+    Ok(enabled)
+}
+
+async fn promote_vm_credential_runtime(
+    stack_dir: &Path,
+) -> Result<LocalCredentialState, String> {
+    let store = CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?
+    .ok_or_else(|| "VM credential store is absent".to_owned())?;
+    let promoted = store.promote_candidate()?;
+    if let Err(err) = materialize_vm_owned_runtime_environment(stack_dir) {
+        let _ = if promoted.previous.is_some() {
+            store.rollback_previous()
+        } else {
+            store.demote_initial_active_to_candidate()
+        };
+        let _ = materialize_vm_owned_runtime_environment(stack_dir);
+        return Err(format!("VM credential promotion materialization failed: {err}"));
+    }
+    if let Err(err) = execute_typed_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await {
+        let _ = if promoted.previous.is_some() {
+            store.rollback_previous()
+        } else {
+            store.demote_initial_active_to_candidate()
+        };
+        let _ = materialize_vm_owned_runtime_environment(stack_dir);
+        let _ = execute_typed_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+        return Err(format!(
+            "VM credential promotion runtime restart failed; automatic rollback attempted: {err}"
+        ));
+    }
+    Ok(promoted)
+}
+
+async fn rollback_vm_credential_runtime(
+    stack_dir: &Path,
+) -> Result<LocalCredentialState, String> {
+    let store = CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?
+    .ok_or_else(|| "VM credential store is absent".to_owned())?;
+    let before = store
+        .read_state()?
+        .ok_or_else(|| "VM credential state is absent".to_owned())?;
+    let rolled = if before.previous.is_some() {
+        store.rollback_previous()?
+    } else {
+        store.demote_initial_active_to_candidate()?
+    };
+    materialize_vm_owned_runtime_environment(stack_dir)?;
+    execute_typed_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await?;
+    Ok(rolled)
+}
+
+fn expire_vm_credential_previous(
+    stack_dir: &Path,
+) -> Result<Option<LocalCredentialState>, String> {
+    let Some(store) = CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?
+    else {
+        return Ok(None);
+    };
+    let state = store.drop_previous()?;
+    if state.as_ref().is_some_and(|value| {
+        value.active.is_some()
+            && value.candidate.is_none()
+            && value.previous.is_none()
+            && !value.candidate_acceptance_enabled
+    }) {
+        let parent = stack_dir
+            .parent()
+            .ok_or_else(|| "application stack path has no parent".to_owned())?;
+        let legacy = parent.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE);
+        match fs::remove_file(&legacy) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "failed to expire legacy VM runtime secret store {}: {err}",
+                    legacy.display()
+                ));
+            }
+        }
+    }
+    Ok(state)
+}
+
 fn observe_vm_credential_state(stack_dir: &Path) -> Result<Option<LocalCredentialState>, String> {
     let Some(store) = CredentialStore::open_existing(
         vm_credential_store_root(stack_dir)?,
@@ -1060,6 +1366,23 @@ fn observe_vm_credential_state(stack_dir: &Path) -> Result<Option<LocalCredentia
         return Ok(None);
     };
     store.read_state()
+}
+
+fn read_existing_vm_runtime_secret_store(
+    stack_dir: &Path,
+) -> Result<ApplicationRuntimeSecrets, String> {
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    let path = parent.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE);
+    let raw = fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "bounded v2 transition requires existing legacy VM runtime secret store {}: {err}",
+            path.display()
+        )
+    })?;
+    ApplicationRuntimeSecrets::parse_env(&raw)
+        .map_err(|err| format!("legacy VM runtime secret store {} is invalid: {err}", path.display()))
 }
 
 fn ensure_vm_runtime_secret_store(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {
@@ -1263,6 +1586,8 @@ fn read_typed_runtime_environment(stack_dir: &Path) -> Result<BTreeMap<String, S
         "REALITY_WARP_PRIVATE_KEY",
         "REALITY_WARP_PUBLIC_KEY",
         "REALITY_WARP_SHORT_ID",
+        "HY2_CANDIDATE_PASSWORD",
+        "HY2_WARP_CANDIDATE_PASSWORD",
     ]);
     if let Some(key) = values.keys().find(|key| !allowed.contains(key.as_str())) {
         return Err(format!(
@@ -1978,7 +2303,55 @@ fn render_line1_runtime(
             "ACME_EMAIL",
             "ACME_PROVIDER",
         ],
-    )
+    )?;
+    match (
+        runtime.get("HY2_CANDIDATE_PASSWORD"),
+        runtime.get("HY2_WARP_CANDIDATE_PASSWORD"),
+    ) {
+        (None, None) => Ok(()),
+        (Some(direct), Some(warp)) => inject_candidate_hy2_users(stack_dir, direct, warp),
+        _ => Err("VM candidate Hysteria2 credentials are incomplete".to_owned()),
+    }
+}
+
+fn inject_candidate_hy2_users(
+    stack_dir: &Path,
+    direct_password: &str,
+    warp_password: &str,
+) -> Result<(), String> {
+    let path = stack_dir.join("rendered/line1-gateway.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read rendered Line 1 candidate config: {err}"))?;
+    let mut config: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("rendered Line 1 candidate config is invalid JSON: {err}"))?;
+    let inbounds = config
+        .get_mut("inbounds")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| "rendered Line 1 config has no inbounds array".to_owned())?;
+    for (tag, password) in [
+        ("hy2-direct-main", direct_password),
+        ("hy2-warp", warp_password),
+    ] {
+        let inbound = inbounds
+            .iter_mut()
+            .find(|value| value.get("tag").and_then(serde_json::Value::as_str) == Some(tag))
+            .ok_or_else(|| format!("rendered Line 1 config is missing {tag}"))?;
+        let users = inbound
+            .get_mut("users")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| format!("rendered Line 1 inbound {tag} has no users array"))?;
+        if users.iter().any(|value| {
+            value.get("password").and_then(serde_json::Value::as_str) == Some(password)
+        }) {
+            return Err(format!("candidate Hysteria2 password duplicates active password for {tag}"));
+        }
+        users.push(serde_json::json!({ "password": password }));
+    }
+    let encoded = serde_json::to_vec_pretty(&config)
+        .map_err(|err| format!("failed to encode candidate Line 1 config: {err}"))?;
+    fs::write(&path, encoded)
+        .map_err(|err| format!("failed to write candidate Line 1 config: {err}"))?;
+    set_bundle_file_permissions(&path, false, true)
 }
 
 fn render_line2_runtime(
