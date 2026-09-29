@@ -414,6 +414,7 @@ dependencies = [
  "edge-observability",
  "edge-provider-cloudflare",
  "edge-provider-vultr",
+ "edge-secrets",
  "edge-shared-types",
  "prost",
  "rand_core 0.6.4",
