@@ -1340,6 +1340,7 @@ fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, 
                 generation,
                 projection: projection_kind as i32,
                 dummy_non_secret: true,
+                payload: None,
             }
             .encode_to_vec();
             DeliverySlot {
@@ -1670,6 +1671,7 @@ mod tests {
                 assert_eq!(decoded.generation, slot.generation);
                 assert_eq!(decoded.projection, projection as i32);
                 assert!(decoded.dummy_non_secret);
+                assert!(decoded.payload.is_none());
                 assert_eq!(slot.secret_text, hex_encode(&slot.payload));
                 assert!(!material.source.contains(&slot.secret_text));
             }
