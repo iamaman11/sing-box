@@ -4399,12 +4399,83 @@ fn platform_error_to_status(err: PlatformError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use edge_shared_types::{
+        CredentialDeliveryBundle, CredentialDeliverySlot, RealityPublicIdentity,
+        RealityPublicIdentityGeneration, TunnelAuthentication, TunnelAuthenticationGeneration,
+        WindowsCredentialProjection, credential_delivery_bundle,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn resolves_repo_root_from_workspace() {
         let repo_root = resolve_repo_root(None).unwrap();
         assert!(repo_root.exists());
+    }
+
+    #[tokio::test]
+    async fn installed_controller_stages_candidate_without_changing_active_state() {
+        let root = installed_windows_test_root();
+        let store = CredentialStore::new(
+            windows_credential_store_path(&root),
+            CredentialProjectionKind::Windows,
+        )
+        .unwrap();
+        store
+            .stage_candidate(&windows_test_credential_bundle(
+                100,
+                CredentialDeliverySlot::A,
+            ))
+            .unwrap();
+        let active = store.promote_candidate().unwrap().active.unwrap();
+
+        let db_path = root.join("state/test-controller-state.sqlite");
+        let server = ControllerServerImpl {
+            repo_root: root.clone(),
+            state: Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap())),
+            agent_endpoint: DEFAULT_AGENT_ENDPOINT.to_owned(),
+        };
+        let staged = server
+            .stage_credential_candidate(Request::new(StageCredentialCandidateRequest {
+                bundle: Some(windows_test_credential_bundle(
+                    101,
+                    CredentialDeliverySlot::B,
+                )),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .state
+            .unwrap();
+
+        assert_eq!(staged.active.as_ref().unwrap(), &active);
+        assert_eq!(staged.candidate.as_ref().unwrap().generation, 101);
+        assert_eq!(
+            staged.candidate.as_ref().unwrap().slot,
+            CredentialDeliverySlot::B as i32
+        );
+
+        let observed = server
+            .get_credential_state(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .state
+            .unwrap();
+        assert_eq!(observed, staged);
+
+        drop(server);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repo_controller_cannot_stage_windows_credentials() {
+        let root = temp_repo_root();
+        let error = stage_windows_credential_candidate(
+            &root,
+            windows_test_credential_bundle(101, CredentialDeliverySlot::B),
+        )
+        .unwrap_err();
+        assert!(error.contains("installed EdgePlatformController authority layout"));
     }
 
     #[test]
@@ -5200,6 +5271,53 @@ mod tests {
         );
         assert!(validate_secret_name("bootstrap.vultr.ssh_key_id").is_err());
         let _ = std::fs::remove_file(db_path);
+    }
+
+    fn installed_windows_test_root() -> PathBuf {
+        let root = temp_repo_root();
+        std::fs::create_dir_all(root.join("releases")).unwrap();
+        std::fs::write(root.join("current.pb"), b"test-activation").unwrap();
+        root
+    }
+
+    fn windows_test_credential_bundle(
+        generation: u64,
+        slot: CredentialDeliverySlot,
+    ) -> CredentialDeliveryBundle {
+        let tunnel_auth = TunnelAuthenticationGeneration {
+            generation: 7,
+            direct: Some(TunnelAuthentication {
+                vless_uuid: "00000000-0000-4000-8000-000000000001".to_owned(),
+                hysteria2_password: "a".repeat(64),
+                reality_short_id: "b".repeat(16),
+            }),
+            warp: Some(TunnelAuthentication {
+                vless_uuid: "00000000-0000-4000-8000-000000000002".to_owned(),
+                hysteria2_password: "c".repeat(64),
+                reality_short_id: "d".repeat(16),
+            }),
+        };
+        CredentialDeliveryBundle {
+            schema_version: 1,
+            generation,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            slot: slot as i32,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                WindowsCredentialProjection {
+                    tunnel_auth: Some(tunnel_auth),
+                    reality_identity: Some(RealityPublicIdentityGeneration {
+                        generation: 3,
+                        direct: Some(RealityPublicIdentity {
+                            public_key: "A".repeat(43),
+                        }),
+                        warp: Some(RealityPublicIdentity {
+                            public_key: "B".repeat(43),
+                        }),
+                    }),
+                },
+            )),
+        }
     }
 
     fn temp_repo_root() -> PathBuf {
