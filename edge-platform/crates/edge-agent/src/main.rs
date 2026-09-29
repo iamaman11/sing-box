@@ -3402,6 +3402,21 @@ mod tests {
     }
 
     #[test]
+    fn invalid_vm_candidate_has_no_store_side_effect() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        let store_root = vm_credential_store_root(&stack).unwrap();
+
+        let mut invalid = vm_test_credential_bundle(101, CredentialDeliverySlot::B);
+        invalid.dummy_non_secret = true;
+        assert!(stage_vm_credential_candidate(&stack, invalid).is_err());
+        assert!(!store_root.exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn applies_bundle_files_to_stack_and_host_roots() {
         let root = unique_test_dir();
         let stack = root.join("stack");
