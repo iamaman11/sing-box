@@ -46,14 +46,15 @@ use edge_local_runtime::{
 use edge_observability::init as init_observability;
 use edge_provider_cloudflare::mock_upsert_a_record;
 use edge_provider_vultr::mock_instance;
-use edge_secrets::{CredentialStore, default_env_ref, resolve_secret_path};
+use edge_secrets::{CredentialIngressKey, CredentialStore, default_env_ref, resolve_secret_path};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::controller_service_server::{ControllerService, ControllerServiceServer};
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
-    BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, CredentialProjectionKind,
-    CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse, DestroyRequest,
+    BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, CredentialIngressPublicKey,
+    CredentialProjectionKind, CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse,
+    DestroyRequest,
     DestroyResponse, DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest,
     DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest,
     GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse,
@@ -61,8 +62,9 @@ use edge_shared_types::{
     OperationEventKind, OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus,
     PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
     SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
-    StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, VerifyRuntimeRequest, decode_windows_runtime_state,
+    StageCredentialCandidateRequest, StageSealedCredentialCandidateRequest,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
+    decode_windows_runtime_state,
     timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
@@ -1763,6 +1765,45 @@ impl ControllerService for ControllerServerImpl {
         let state = observe_windows_credential_state(&self.repo_root)
             .map_err(Status::failed_precondition)?;
         Ok(Response::new(CredentialStateObservation { state }))
+    }
+
+    async fn get_credential_ingress_public_key(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialIngressPublicKey>, Status> {
+        require_installed_windows_credential_owner(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        let ingress = CredentialIngressKey::load_or_create(
+            windows_credential_store_path(&self.repo_root),
+            CredentialProjectionKind::Windows,
+        )
+        .map_err(Status::internal)?;
+        Ok(Response::new(ingress.public_key()))
+    }
+
+    async fn stage_sealed_credential_candidate(
+        &self,
+        request: Request<StageSealedCredentialCandidateRequest>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        require_installed_windows_credential_owner(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        let sealed = request
+            .into_inner()
+            .candidate
+            .ok_or_else(|| Status::invalid_argument("sealed credential candidate is required"))?;
+        let ingress = CredentialIngressKey::load_or_create(
+            windows_credential_store_path(&self.repo_root),
+            CredentialProjectionKind::Windows,
+        )
+        .map_err(Status::internal)?;
+        let bundle = ingress
+            .open_candidate(&sealed)
+            .map_err(Status::failed_precondition)?;
+        let state = stage_windows_credential_candidate(&self.repo_root, bundle)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
     }
 }
 
