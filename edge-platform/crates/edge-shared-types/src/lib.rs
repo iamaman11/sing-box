@@ -47,6 +47,217 @@ pub fn canonical_production_desired_state() -> Result<ProductionDesiredState, St
     decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
 }
 
+pub fn encode_credential_delivery_bundle(
+    bundle: &CredentialDeliveryBundle,
+) -> Result<Vec<u8>, String> {
+    validate_credential_delivery_bundle(bundle)?;
+    Ok(bundle.encode_to_vec())
+}
+
+pub fn decode_credential_delivery_bundle(bytes: &[u8]) -> Result<CredentialDeliveryBundle, String> {
+    let bundle = CredentialDeliveryBundle::decode(bytes)
+        .map_err(|err| format!("credential-delivery protobuf decode failed: {err}"))?;
+    validate_credential_delivery_bundle(&bundle)?;
+    if bundle.encode_to_vec() != bytes {
+        return Err("credential-delivery bundle is not canonical protobuf encoding".to_owned());
+    }
+    Ok(bundle)
+}
+
+pub fn validate_credential_delivery_bundle(
+    bundle: &CredentialDeliveryBundle,
+) -> Result<(), String> {
+    if bundle.schema_version != 1 {
+        return Err(format!(
+            "unsupported credential-delivery schema_version {}",
+            bundle.schema_version
+        ));
+    }
+    if bundle.generation == 0 {
+        return Err("credential-delivery generation must be greater than zero".to_owned());
+    }
+
+    let projection = CredentialProjectionKind::try_from(bundle.projection)
+        .map_err(|_| "credential-delivery projection is unknown".to_owned())?;
+    if projection == CredentialProjectionKind::Unspecified {
+        return Err("credential-delivery projection is required".to_owned());
+    }
+
+    if bundle.dummy_non_secret {
+        if bundle.payload.is_some() {
+            return Err("dummy credential-delivery bundle must not carry a real payload".to_owned());
+        }
+        return Ok(());
+    }
+
+    let payload = bundle
+        .payload
+        .as_ref()
+        .ok_or_else(|| "real credential-delivery bundle requires a typed payload".to_owned())?;
+    match (projection, payload) {
+        (
+            CredentialProjectionKind::Windows,
+            credential_delivery_bundle::Payload::Windows(value),
+        ) => validate_windows_credential_projection(value),
+        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Vm(value)) => {
+            validate_vm_credential_projection(value)
+        }
+        (CredentialProjectionKind::Windows, credential_delivery_bundle::Payload::Vm(_)) => Err(
+            "Windows credential-delivery bundle cannot carry a VM projection".to_owned(),
+        ),
+        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Windows(_)) => Err(
+            "VM credential-delivery bundle cannot carry a Windows projection".to_owned(),
+        ),
+        (CredentialProjectionKind::Unspecified, _) => unreachable!("validated above"),
+    }
+}
+
+fn validate_windows_credential_projection(
+    value: &WindowsCredentialProjection,
+) -> Result<(), String> {
+    let tunnel = value
+        .tunnel
+        .as_ref()
+        .ok_or_else(|| "Windows credential projection requires tunnel credentials".to_owned())?;
+    validate_tunnel_client_generation("WindowsCredentialProjection.tunnel", tunnel)
+}
+
+fn validate_vm_credential_projection(value: &VmCredentialProjection) -> Result<(), String> {
+    let tunnel = value
+        .tunnel
+        .as_ref()
+        .ok_or_else(|| "VM credential projection requires tunnel credentials".to_owned())?;
+    validate_tunnel_server_generation("VmCredentialProjection.tunnel", tunnel)?;
+
+    let line2 = value
+        .line2_proxy
+        .as_ref()
+        .ok_or_else(|| "VM credential projection requires Line 2 proxy credentials".to_owned())?;
+    if line2.generation == 0 {
+        return Err(
+            "VmCredentialProjection.line2_proxy.generation must be greater than zero".to_owned(),
+        );
+    }
+    validate_lower_hex(
+        "VmCredentialProjection.line2_proxy.password",
+        &line2.password,
+        64,
+    )
+}
+
+fn validate_tunnel_client_generation(
+    label: &str,
+    value: &TunnelClientCredentialGeneration,
+) -> Result<(), String> {
+    if value.generation == 0 {
+        return Err(format!("{label}.generation must be greater than zero"));
+    }
+    validate_tunnel_client_credential(
+        &format!("{label}.direct"),
+        value
+            .direct
+            .as_ref()
+            .ok_or_else(|| format!("{label}.direct is required"))?,
+    )?;
+    validate_tunnel_client_credential(
+        &format!("{label}.warp"),
+        value
+            .warp
+            .as_ref()
+            .ok_or_else(|| format!("{label}.warp is required"))?,
+    )
+}
+
+fn validate_tunnel_server_generation(
+    label: &str,
+    value: &TunnelServerCredentialGeneration,
+) -> Result<(), String> {
+    if value.generation == 0 {
+        return Err(format!("{label}.generation must be greater than zero"));
+    }
+    validate_tunnel_server_credential(
+        &format!("{label}.direct"),
+        value
+            .direct
+            .as_ref()
+            .ok_or_else(|| format!("{label}.direct is required"))?,
+    )?;
+    validate_tunnel_server_credential(
+        &format!("{label}.warp"),
+        value
+            .warp
+            .as_ref()
+            .ok_or_else(|| format!("{label}.warp is required"))?,
+    )
+}
+
+fn validate_tunnel_client_credential(
+    label: &str,
+    value: &TunnelClientCredential,
+) -> Result<(), String> {
+    validate_lower_uuid(&format!("{label}.vless_uuid"), &value.vless_uuid)?;
+    validate_lower_hex(
+        &format!("{label}.hysteria2_password"),
+        &value.hysteria2_password,
+        64,
+    )?;
+    validate_reality_key(
+        &format!("{label}.reality_public_key"),
+        &value.reality_public_key,
+    )?;
+    validate_lower_hex(
+        &format!("{label}.reality_short_id"),
+        &value.reality_short_id,
+        16,
+    )
+}
+
+fn validate_tunnel_server_credential(
+    label: &str,
+    value: &TunnelServerCredential,
+) -> Result<(), String> {
+    validate_lower_uuid(&format!("{label}.vless_uuid"), &value.vless_uuid)?;
+    validate_lower_hex(
+        &format!("{label}.hysteria2_password"),
+        &value.hysteria2_password,
+        64,
+    )?;
+    validate_reality_key(
+        &format!("{label}.reality_private_key"),
+        &value.reality_private_key,
+    )?;
+    validate_lower_hex(
+        &format!("{label}.reality_short_id"),
+        &value.reality_short_id,
+        16,
+    )
+}
+
+fn validate_lower_uuid(label: &str, value: &str) -> Result<(), String> {
+    if value.len() != 36
+        || !value.chars().enumerate().all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase(),
+        })
+    {
+        return Err(format!("{label} must be a lowercase UUID"));
+    }
+    Ok(())
+}
+
+fn validate_reality_key(label: &str, value: &str) -> Result<(), String> {
+    if value.len() != 43
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(format!(
+            "{label} must be a 43-character unpadded base64url X25519 key"
+        ));
+    }
+    Ok(())
+}
+
 pub fn timestamp_from_unix_seconds(seconds: i64) -> prost_types::Timestamp {
     prost_types::Timestamp { seconds, nanos: 0 }
 }
