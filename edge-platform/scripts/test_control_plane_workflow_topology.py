@@ -86,8 +86,10 @@ def main() -> None:
     require(
         "map<" not in credential_proto
         and "bytes " not in credential_proto
-        and "oneof payload" in credential_proto,
-        "credential v2 must remain an explicit typed protobuf contract without maps or arbitrary byte bags",
+        and "oneof payload" in credential_proto
+        and "enum CredentialDeliverySlot" in credential_proto
+        and "CredentialDeliverySlot slot = 5;" in credential_proto,
+        "credential v2 must remain an explicit typed protobuf contract with fixed A/B slot identity and without maps or arbitrary byte bags",
     )
     require(
         "reality_public_key" in tunnel_client
