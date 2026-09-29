@@ -258,6 +258,18 @@ The fixed A/B `CredentialDeliveryBundle.generation` is a delivery-snapshot revis
 credential generations express independently rotating lifecycles, so rotating tunnel credentials
 does not implicitly regenerate Line 2 proxy authentication.
 
+Real credential bundles additionally carry explicit fixed-slot identity (`A` or `B`). Phase 6A
+dummy bundles leave it unspecified so their accepted wire bytes remain unchanged. Local active
+credential state records the active delivery generation and slot.
+
+Initial contract installation may atomically install Worker code plus both fixed secret slots.
+Steady-state rotation is narrower: replace exactly the inactive fixed slot and leave the active slot
+untouched. The system must not require plaintext readback of the active Worker secret, re-upload both
+slots merely to rotate one candidate, or introduce a second plaintext secret database. Candidate
+publication is not activation; runtime owners promote only after both projections and functional
+verification pass. An uncertain slot mutation is resolved by read-only exact-generation
+re-observation before any replay.
+
 Non-secret endpoint/domain/port policy remains Git-owned desired state and is not duplicated into
 credential payloads.
 
