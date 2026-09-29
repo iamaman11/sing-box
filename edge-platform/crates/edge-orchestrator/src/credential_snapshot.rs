@@ -171,9 +171,7 @@ fn generate_uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edge_shared_types::{
-        decode_credential_delivery_bundle, encode_credential_delivery_bundle,
-    };
+    use edge_shared_types::{decode_credential_delivery_bundle, encode_credential_delivery_bundle};
 
     fn request() -> FreshCredentialSnapshotRequest {
         FreshCredentialSnapshotRequest {
@@ -185,9 +183,7 @@ mod tests {
         }
     }
 
-    fn windows_projection(
-        snapshot: &FreshCredentialSnapshot,
-    ) -> &WindowsCredentialProjection {
+    fn windows_projection(snapshot: &FreshCredentialSnapshot) -> &WindowsCredentialProjection {
         match snapshot.windows.payload.as_ref().unwrap() {
             credential_delivery_bundle::Payload::Windows(value) => value,
             credential_delivery_bundle::Payload::Vm(_) => panic!("unexpected VM payload"),
@@ -265,7 +261,10 @@ mod tests {
 
         for bundle in [&snapshot.windows, &snapshot.vm] {
             let bytes = encode_credential_delivery_bundle(bundle).unwrap();
-            assert_eq!(decode_credential_delivery_bundle(&bytes).unwrap(), bundle.clone());
+            assert_eq!(
+                decode_credential_delivery_bundle(&bytes).unwrap(),
+                bundle.clone()
+            );
         }
     }
 
