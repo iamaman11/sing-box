@@ -24,4 +24,6 @@ service AgentService {
   rpc CleanupMeshRuntime(Empty) returns (MeshRuntimeState);
   rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);
   rpc GetCredentialState(Empty) returns (CredentialStateObservation);
+  rpc GetCredentialIngressPublicKey(Empty) returns (CredentialIngressPublicKey);
+  rpc StageSealedCredentialCandidate(StageSealedCredentialCandidateRequest) returns (CredentialStateObservation);
 }
