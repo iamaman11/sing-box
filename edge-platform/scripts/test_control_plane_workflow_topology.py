@@ -26,6 +26,7 @@ PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
+CLOUDFLARE_PROVIDER = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
@@ -226,7 +227,7 @@ def main() -> None:
         "real credential transport must be sealed end-to-end to the local runtime owners",
     )
     require(
-        "update_worker_secret_text" in EDGE_PROVIDER_CLOUDFLARE.read_text(encoding="utf-8"),
+        "update_worker_secret_text" in CLOUDFLARE_PROVIDER.read_text(encoding="utf-8"),
         "steady-state credential publication must update exactly one inactive Worker secret binding",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
