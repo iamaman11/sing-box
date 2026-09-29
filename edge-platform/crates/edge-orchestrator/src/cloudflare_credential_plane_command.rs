@@ -8,11 +8,17 @@ use crate::credential_snapshot::{
     FreshCredentialSnapshotRequest, generate_fresh_credential_snapshot,
     windows_bundle_from_vm_bundle,
 };
+use crate::vultr_lifecycle_command::{
+    acceptance_lease_acquire as lease_acquire, acceptance_lease_release as lease_release,
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
-use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
+use edge_controller_core::production::{
+    CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
+    ProductionCredentialPlaneOwnership,
+};
 use edge_provider_cloudflare as cloudflare;
 use edge_secrets::{seal_credential_candidate, validate_ingress_public_key};
 use edge_shared_types::{
@@ -26,6 +32,7 @@ use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
 use std::env;
+use std::path::Path;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONVERGENCE_STEPS: usize = 2;
@@ -200,15 +207,6 @@ async fn rotate_initial_v2(
     let windows_state = windows_state_from_env()?;
     validate_initial_local_state("Windows", windows_state.as_ref())?;
 
-    let authority = resolve_application_authority(&production.application).await?;
-    let vm_ingress = read_vm_credential_ingress_public_key(&authority).await?;
-    validate_ingress_public_key(&vm_ingress)?;
-    if vm_ingress.projection != CredentialProjectionKind::Vm as i32 {
-        return Err("VM credential ingress key has the wrong projection".to_owned());
-    }
-    let vm_state_before = read_vm_credential_state(&authority).await?.state;
-    validate_initial_local_state("VM", vm_state_before.as_ref())?;
-
     let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
     let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
     if rotation_identity.status != "active" {
@@ -226,9 +224,92 @@ async fn rotate_initial_v2(
 
     let workers_subdomain = before
         .workers_dev_subdomain
-        .as_deref()
+        .clone()
         .ok_or_else(|| "workers.dev account subdomain is missing".to_owned())?;
-    let session = open_rotation_probe_session(control_token, desired, &before).await?;
+    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
+    lease_acquire(spec, &production.machine_id).await?;
+
+    let operation = rotate_initial_v2_with_lease(
+        control_token,
+        production,
+        desired,
+        &before,
+        &rotation_token,
+        &workers_subdomain,
+        &windows_ingress,
+        windows_state.as_ref(),
+    )
+    .await;
+    let lease_cleanup = lease_release(spec, &production.machine_id).await;
+
+    let result = match (operation, lease_cleanup) {
+        (Ok(result), Ok(())) => result,
+        (Err(err), Ok(())) => return Err(err),
+        (Ok(_), Err(cleanup_err)) => {
+            return Err(format!(
+                "initial v2 candidate preparation passed but transient SSH lease cleanup failed: {cleanup_err}"
+            ));
+        }
+        (Err(err), Err(cleanup_err)) => {
+            return Err(format!(
+                "{err}; transient SSH lease cleanup also failed: {cleanup_err}"
+            ));
+        }
+    };
+
+    let windows_sealed_bytes = result.windows_sealed.encode_to_vec();
+    println!("credential_cutover_status=CANDIDATE_READY");
+    println!("delivery_generation={INITIAL_V2_DELIVERY_GENERATION}");
+    println!("delivery_slot=A");
+    println!("tunnel_auth_generation={INITIAL_V2_TUNNEL_AUTH_GENERATION}");
+    println!("reality_identity_generation={INITIAL_V2_REALITY_IDENTITY_GENERATION}");
+    println!("line2_proxy_generation={INITIAL_V2_LINE2_PROXY_GENERATION}");
+    println!("vm_candidate_sha256={}", result.vm_ref.sha256);
+    println!("windows_candidate_sha256={}", result.windows_ref.sha256);
+    println!(
+        "windows_sealed_candidate={}",
+        URL_SAFE_NO_PAD.encode(windows_sealed_bytes)
+    );
+    println!("vm_candidate_staged=true");
+    println!(
+        "vm_local_candidate_generation={}",
+        result
+            .vm_state
+            .candidate
+            .as_ref()
+            .map(|value| value.generation)
+            .unwrap_or(0)
+    );
+    println!(
+        "provider_secret_mutations={}",
+        result.provider_secret_mutations
+    );
+    println!("plaintext_credential_output=false");
+    println!("runtime_activation_performed=false");
+    println!("transient_support_access=ABSENT");
+    Ok(())
+}
+
+async fn rotate_initial_v2_with_lease(
+    control_token: &str,
+    production: &ProductionComposition,
+    desired: &ProductionCredentialPlaneOwnership,
+    before: &CredentialPlaneObservation,
+    rotation_token: &str,
+    workers_subdomain: &str,
+    windows_ingress: &CredentialIngressPublicKey,
+    windows_state: Option<&LocalCredentialState>,
+) -> Result<InitialV2CutoverResult, String> {
+    let authority = resolve_application_authority(&production.application).await?;
+    let vm_ingress = read_vm_credential_ingress_public_key(&authority).await?;
+    validate_ingress_public_key(&vm_ingress)?;
+    if vm_ingress.projection != CredentialProjectionKind::Vm as i32 {
+        return Err("VM credential ingress key has the wrong projection".to_owned());
+    }
+    let vm_state_before = read_vm_credential_state(&authority).await?.state;
+    validate_initial_local_state("VM", vm_state_before.as_ref())?;
+
+    let session = open_rotation_probe_session(control_token, desired, before).await?;
 
     let operation = async {
         let vm_projection = projection_desired(desired, "vm")?;
@@ -267,7 +348,7 @@ async fn rotate_initial_v2(
                 })?;
                 let expected = snapshot.vm;
                 if publish_worker_bundle_once(
-                    &rotation_token,
+                    rotation_token,
                     desired,
                     &vm_projection,
                     workers_subdomain,
@@ -302,7 +383,7 @@ async fn rotate_initial_v2(
             }
             None => {
                 if publish_worker_bundle_once(
-                    &rotation_token,
+                    rotation_token,
                     desired,
                     &windows_projection,
                     workers_subdomain,
@@ -319,7 +400,7 @@ async fn rotate_initial_v2(
         let vm_ref = local_credential_bundle_ref(&vm_bundle)?;
         let windows_ref = local_credential_bundle_ref(&windows_bundle)?;
         require_existing_candidate_matches("VM", vm_state_before.as_ref(), &vm_ref)?;
-        require_existing_candidate_matches("Windows", windows_state.as_ref(), &windows_ref)?;
+        require_existing_candidate_matches("Windows", windows_state, &windows_ref)?;
 
         let vm_sealed = seal_credential_candidate(&vm_ingress, &vm_bundle)?;
         let vm_staged = stage_vm_sealed_credential_candidate(&authority, vm_sealed)
@@ -333,10 +414,12 @@ async fn rotate_initial_v2(
             .state
             .ok_or_else(|| "VM credential state disappeared after staging".to_owned())?;
         if vm_reobserved != vm_staged {
-            return Err("VM credential state changed between staging and read-only re-observation".to_owned());
+            return Err(
+                "VM credential state changed between staging and read-only re-observation".to_owned(),
+            );
         }
 
-        let windows_sealed = seal_credential_candidate(&windows_ingress, &windows_bundle)?;
+        let windows_sealed = seal_credential_candidate(windows_ingress, &windows_bundle)?;
         Ok::<_, String>(InitialV2CutoverResult {
             windows_sealed,
             windows_ref,
@@ -348,51 +431,16 @@ async fn rotate_initial_v2(
     .await;
 
     let cleanup = close_rotation_probe_session(control_token, desired, &session).await;
-    let result = match (operation, cleanup) {
-        (Ok(result), Ok(())) => result,
-        (Err(err), Ok(())) => return Err(err),
-        (Ok(_), Err(cleanup_err)) => {
-            return Err(format!(
-                "initial v2 candidate preparation passed but Access proof-token cleanup failed: {cleanup_err}"
-            ));
-        }
-        (Err(err), Err(cleanup_err)) => {
-            return Err(format!(
-                "{err}; Access proof-token cleanup also failed: {cleanup_err}"
-            ));
-        }
-    };
-
-    let windows_sealed_bytes = result.windows_sealed.encode_to_vec();
-    println!("credential_cutover_status=CANDIDATE_READY");
-    println!("delivery_generation={INITIAL_V2_DELIVERY_GENERATION}");
-    println!("delivery_slot=A");
-    println!("tunnel_auth_generation={INITIAL_V2_TUNNEL_AUTH_GENERATION}");
-    println!("reality_identity_generation={INITIAL_V2_REALITY_IDENTITY_GENERATION}");
-    println!("line2_proxy_generation={INITIAL_V2_LINE2_PROXY_GENERATION}");
-    println!("vm_candidate_sha256={}", result.vm_ref.sha256);
-    println!("windows_candidate_sha256={}", result.windows_ref.sha256);
-    println!(
-        "windows_sealed_candidate={}",
-        URL_SAFE_NO_PAD.encode(windows_sealed_bytes)
-    );
-    println!("vm_candidate_staged=true");
-    println!(
-        "vm_local_candidate_generation={}",
-        result
-            .vm_state
-            .candidate
-            .as_ref()
-            .map(|value| value.generation)
-            .unwrap_or(0)
-    );
-    println!(
-        "provider_secret_mutations={}",
-        result.provider_secret_mutations
-    );
-    println!("plaintext_credential_output=false");
-    println!("runtime_activation_performed=false");
-    Ok(())
+    match (operation, cleanup) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(cleanup_err)) => Err(format!(
+            "initial v2 provider/staging operation passed but Access proof-token cleanup failed: {cleanup_err}"
+        )),
+        (Err(err), Err(cleanup_err)) => Err(format!(
+            "{err}; Access proof-token cleanup also failed: {cleanup_err}"
+        )),
+    }
 }
 
 fn windows_ingress_from_env() -> Result<CredentialIngressPublicKey, String> {
