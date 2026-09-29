@@ -1,3 +1,9 @@
+mod credential_sealing;
+pub use credential_sealing::{
+    CredentialIngressKey, seal_credential_candidate, validate_ingress_public_key,
+    validate_sealed_metadata,
+};
+
 mod credential_store;
 pub use credential_store::CredentialStore;
 
