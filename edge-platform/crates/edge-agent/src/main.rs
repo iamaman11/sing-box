@@ -29,10 +29,9 @@ use edge_secrets::{ApplicationRuntimeSecrets, CredentialStore};
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
-    CredentialProjectionKind,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, Empty, FileCategory, FilePresence,
-    Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, Empty, FileCategory,
+    FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
     ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
