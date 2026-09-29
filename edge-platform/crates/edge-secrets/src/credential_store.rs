@@ -1,8 +1,8 @@
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialProjectionKind, LocalCredentialBundleRef,
     LocalCredentialState, credential_delivery_bundle_sha256, decode_credential_delivery_bundle,
-    decode_local_credential_state, encode_credential_delivery_bundle, encode_local_credential_state,
-    local_credential_bundle_ref, validate_local_credential_state,
+    decode_local_credential_state, encode_credential_delivery_bundle,
+    encode_local_credential_state, local_credential_bundle_ref, validate_local_credential_state,
     verify_local_credential_bundle_reference,
 };
 use std::collections::BTreeSet;
@@ -312,13 +312,12 @@ impl CredentialStore {
         self.verify_state_references(state)?;
         let bytes = encode_local_credential_state(state)?;
         write_atomic_private(&self.state_path(), &bytes)?;
-        let observed = fs::read(self.state_path()).map_err(|err| {
-            format!(
-                "failed to re-read persisted local credential state: {err}"
-            )
-        })?;
+        let observed = fs::read(self.state_path())
+            .map_err(|err| format!("failed to re-read persisted local credential state: {err}"))?;
         if observed != bytes {
-            return Err("persisted local credential state failed exact byte verification".to_owned());
+            return Err(
+                "persisted local credential state failed exact byte verification".to_owned(),
+            );
         }
         Ok(())
     }
@@ -355,7 +354,8 @@ impl CredentialStore {
                 dir.display()
             )
         })? {
-            let entry = entry.map_err(|err| format!("failed to enumerate credential bundle: {err}"))?;
+            let entry =
+                entry.map_err(|err| format!("failed to enumerate credential bundle: {err}"))?;
             let path = entry.path();
             if !path.is_file() {
                 continue;
@@ -425,8 +425,7 @@ impl CredentialStore {
     }
 
     fn bundle_path(&self, reference: &LocalCredentialBundleRef) -> PathBuf {
-        self.bundles_dir()
-            .join(format!("{}.pb", reference.sha256))
+        self.bundles_dir().join(format!("{}.pb", reference.sha256))
     }
 }
 
@@ -669,8 +668,7 @@ mod tests {
     #[test]
     fn candidate_stage_does_not_change_active_bundle() {
         let root = unique_root("stage");
-        let store =
-            CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
         let active = windows_bundle(100, CredentialDeliverySlot::A);
         store.stage_candidate(&active).unwrap();
         store.promote_candidate().unwrap();
@@ -711,8 +709,7 @@ mod tests {
     #[test]
     fn previous_must_expire_before_next_candidate() {
         let root = unique_root("bounded");
-        let store =
-            CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
         store
             .stage_candidate(&windows_bundle(100, CredentialDeliverySlot::A))
             .unwrap();
@@ -766,12 +763,9 @@ mod tests {
             store.promote_candidate().unwrap();
         }
 
-        let reopened = CredentialStore::open_existing(
-            &root,
-            CredentialProjectionKind::Windows,
-        )
-        .unwrap()
-        .unwrap();
+        let reopened = CredentialStore::open_existing(&root, CredentialProjectionKind::Windows)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             reopened
                 .read_state()
@@ -806,15 +800,17 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = unique_root("permissions");
-        let store =
-            CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
         store
             .stage_candidate(&windows_bundle(100, CredentialDeliverySlot::A))
             .unwrap();
         let state = store.read_state().unwrap().unwrap();
         let candidate = state.candidate.unwrap();
 
-        assert_eq!(fs::metadata(&root).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         assert_eq!(
             fs::metadata(root.join(BUNDLES_DIR))
                 .unwrap()
