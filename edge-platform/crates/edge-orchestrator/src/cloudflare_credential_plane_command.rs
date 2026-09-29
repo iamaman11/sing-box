@@ -12,7 +12,7 @@ use ring::digest::{SHA256, digest};
 use serde::Serialize;
 use std::env;
 
-const MAX_CONVERGENCE_STEPS: usize = 4;
+const MAX_CONVERGENCE_STEPS: usize = 2;
 const SLOT_A: &str = "EDGE_CREDENTIAL_BUNDLE_A";
 const SLOT_B: &str = "EDGE_CREDENTIAL_BUNDLE_B";
 const PROBE_GENERATION_A: u64 = 9_000_001;
@@ -64,8 +64,13 @@ struct CredentialPlaneObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 enum CredentialDeliveryAction {
     Noop,
-    UploadWorkerContract { projection: String },
-    SeedDummySlots { projection: String },
+    InstallDummyAbContract { projection: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionDeliveryState {
+    LegacyLocked,
+    FixedAb,
 }
 
 #[derive(Debug, Clone)]
@@ -120,19 +125,11 @@ pub(crate) async fn verify_credential_plane_invariant() -> Result<(), String> {
     let desired = &production.cloudflare.credential_plane;
     let observed = observe(&control_token, desired).await?;
 
-    if legacy_phase2_locked(desired, &observed).is_ok() {
-        return Ok(());
+    validate_access_boundary(desired, &observed)?;
+    for projection in projections(desired) {
+        projection_delivery_state(desired, &projection, &observed)?;
     }
-    match plan(desired, &observed) {
-        Ok(CredentialDeliveryAction::Noop) => Ok(()),
-        Ok(action) => Err(format!(
-            "credential-plane invariant is mid-transition; next credential-delivery action={}",
-            action_name(&action)
-        )),
-        Err(err) => Err(format!(
-            "credential-plane invariant matches neither exact legacy locked state nor exact A/B delivery state: {err}"
-        )),
-    }
+    Ok(())
 }
 
 async fn converge(
@@ -186,29 +183,7 @@ async fn apply_once(
 
     let performed = match &authorized.plan {
         CredentialDeliveryAction::Noop => 0,
-        CredentialDeliveryAction::UploadWorkerContract { projection } => {
-            let projection = projection_desired(desired, projection)?;
-            let current = projection_observation(&before, &projection.projection)?;
-            if current.worker_binding_count != Some(0) || !current.worker_secret_bindings.is_empty()
-            {
-                return Err(format!(
-                    "refusing Worker code transition with existing bindings for {}",
-                    projection.worker_name
-                ));
-            }
-            let material = delivery_worker_material(&projection.projection)?;
-            cloudflare::upload_worker_module(
-                control_token,
-                &desired.target_account_id,
-                &projection.worker_name,
-                &material.source,
-                &desired.worker_compatibility_date,
-                &material.version_tag,
-            )
-            .await?;
-            1
-        }
-        CredentialDeliveryAction::SeedDummySlots { projection } => {
+        CredentialDeliveryAction::InstallDummyAbContract { projection } => {
             let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
             let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
             if rotation_identity.status != "active" {
@@ -225,6 +200,14 @@ async fn apply_once(
             }
 
             let projection = projection_desired(desired, projection)?;
+            if projection_delivery_state(desired, &projection, &before)?
+                != ProjectionDeliveryState::LegacyLocked
+            {
+                return Err(format!(
+                    "atomic A/B install requires exact legacy locked state for {}",
+                    projection.projection
+                ));
+            }
             let material = delivery_worker_material(&projection.projection)?;
             let secrets = material
                 .slots
@@ -235,15 +218,16 @@ async fn apply_once(
                 "credential_rotation_token_identity={} credential_rotation_token_status={}",
                 rotation_identity.id, rotation_identity.status
             );
-            let written = cloudflare::bulk_update_worker_script_secrets(
+            cloudflare::upload_worker_module_with_secret_text_bindings(
                 &rotation_token,
                 &desired.target_account_id,
                 &projection.worker_name,
-                &secrets,
+                &material.source,
+                &desired.worker_compatibility_date,
                 &material.version_tag,
+                &secrets,
             )
             .await?;
-            require_exact_secret_bindings(&projection.worker_name, &written)?;
             1
         }
     };
@@ -278,85 +262,46 @@ fn plan(
     observed: &CredentialPlaneObservation,
 ) -> Result<CredentialDeliveryAction, String> {
     validate_access_boundary(desired, observed)?;
-
     for projection in projections(desired) {
-        let current = projection_observation(observed, &projection.projection)?;
-        let legacy_tag = legacy_worker_version_tag(&projection.projection)?;
-        let material = delivery_worker_material(&projection.projection)?;
-
-        if current.worker_secret_bindings.is_empty() {
-            if current.worker_binding_count != Some(0) {
-                return Err(format!(
-                    "Worker {} has non-secret or unobservable bindings before A/B initialization",
-                    projection.worker_name
-                ));
+        match projection_delivery_state(desired, &projection, observed)? {
+            ProjectionDeliveryState::LegacyLocked => {
+                return Ok(CredentialDeliveryAction::InstallDummyAbContract {
+                    projection: projection.projection,
+                });
             }
-            match current.worker_version_tag.as_deref() {
-                Some(tag) if tag == legacy_tag => {
-                    return Ok(CredentialDeliveryAction::UploadWorkerContract {
-                        projection: projection.projection,
-                    });
-                }
-                Some(tag) if tag == material.version_tag => {
-                    return Ok(CredentialDeliveryAction::SeedDummySlots {
-                        projection: projection.projection,
-                    });
-                }
-                Some(tag) => {
-                    return Err(format!(
-                        "Worker {} has unsupported code version before A/B initialization: {tag}",
-                        projection.worker_name
-                    ));
-                }
-                None => {
-                    return Err(format!(
-                        "Worker {} is missing its exact version tag",
-                        projection.worker_name
-                    ));
-                }
-            }
-        }
-
-        require_exact_secret_bindings(&projection.worker_name, &current.worker_secret_bindings)?;
-        if current.worker_binding_count != Some(2) {
-            return Err(format!(
-                "Worker {} must contain exactly the two A/B secret bindings and no other bindings; observed={:?}",
-                projection.worker_name, current.worker_binding_count
-            ));
-        }
-        if current.worker_version_tag.as_deref() != Some(material.version_tag.as_str()) {
-            return Err(format!(
-                "Worker {} has A/B secrets but not the exact accepted delivery contract code",
-                projection.worker_name
-            ));
+            ProjectionDeliveryState::FixedAb => {}
         }
     }
-
     Ok(CredentialDeliveryAction::Noop)
 }
 
-fn legacy_phase2_locked(
-    desired: &ProductionCredentialPlaneOwnership,
+fn projection_delivery_state(
+    _desired: &ProductionCredentialPlaneOwnership,
+    projection: &ProjectionDesired,
     observed: &CredentialPlaneObservation,
-) -> Result<(), String> {
-    validate_access_boundary(desired, observed)?;
-    for projection in projections(desired) {
-        let current = projection_observation(observed, &projection.projection)?;
-        if current.worker_binding_count != Some(0) || !current.worker_secret_bindings.is_empty() {
-            return Err(format!(
-                "legacy Worker {} no longer has zero bindings",
-                projection.worker_name
-            ));
-        }
-        let expected_tag = legacy_worker_version_tag(&projection.projection)?;
-        if current.worker_version_tag.as_deref() != Some(expected_tag.as_str()) {
-            return Err(format!(
-                "legacy Worker {} version tag drifted",
-                projection.worker_name
-            ));
-        }
+) -> Result<ProjectionDeliveryState, String> {
+    let current = projection_observation(observed, &projection.projection)?;
+    let legacy_tag = legacy_worker_version_tag(&projection.projection)?;
+    let material = delivery_worker_material(&projection.projection)?;
+
+    if current.worker_binding_count == Some(0)
+        && current.worker_secret_bindings.is_empty()
+        && current.worker_version_tag.as_deref() == Some(legacy_tag.as_str())
+    {
+        return Ok(ProjectionDeliveryState::LegacyLocked);
     }
-    Ok(())
+
+    if current.worker_binding_count == Some(2)
+        && current.worker_version_tag.as_deref() == Some(material.version_tag.as_str())
+    {
+        require_exact_secret_bindings(&projection.worker_name, &current.worker_secret_bindings)?;
+        return Ok(ProjectionDeliveryState::FixedAb);
+    }
+
+    Err(format!(
+        "Worker {} is neither exact legacy locked state nor exact fixed A/B state",
+        projection.worker_name
+    ))
 }
 
 fn validate_access_boundary(
@@ -1067,8 +1012,7 @@ fn print_terminal(
 fn action_name(action: &CredentialDeliveryAction) -> &'static str {
     match action {
         CredentialDeliveryAction::Noop => "NOOP",
-        CredentialDeliveryAction::UploadWorkerContract { .. } => "UPLOAD_WORKER_CONTRACT",
-        CredentialDeliveryAction::SeedDummySlots { .. } => "SEED_DUMMY_A_B_SLOTS",
+        CredentialDeliveryAction::InstallDummyAbContract { .. } => "INSTALL_DUMMY_A_B_CONTRACT",
     }
 }
 
@@ -1199,28 +1143,60 @@ mod tests {
     }
 
     #[test]
-    fn legacy_locked_state_remains_accepted_during_bounded_transition() {
+    fn bounded_transition_accepts_exact_legacy_and_exact_mixed_state() {
         let desired = desired();
-        let observed = observation(&desired);
-        assert!(legacy_phase2_locked(&desired, &observed).is_ok());
+        let mut observed = observation(&desired);
+        assert_eq!(
+            projection_delivery_state(
+                &desired,
+                &projection_desired(&desired, "windows").unwrap(),
+                &observed,
+            )
+            .unwrap(),
+            ProjectionDeliveryState::LegacyLocked
+        );
         assert_eq!(
             plan(&desired, &observed).unwrap(),
-            CredentialDeliveryAction::UploadWorkerContract {
+            CredentialDeliveryAction::InstallDummyAbContract {
                 projection: "windows".to_owned(),
+            }
+        );
+
+        make_terminal(&mut observed, "windows");
+        assert_eq!(
+            projection_delivery_state(
+                &desired,
+                &projection_desired(&desired, "windows").unwrap(),
+                &observed,
+            )
+            .unwrap(),
+            ProjectionDeliveryState::FixedAb
+        );
+        assert_eq!(
+            projection_delivery_state(
+                &desired,
+                &projection_desired(&desired, "vm").unwrap(),
+                &observed,
+            )
+            .unwrap(),
+            ProjectionDeliveryState::LegacyLocked
+        );
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::InstallDummyAbContract {
+                projection: "vm".to_owned(),
             }
         );
     }
 
     #[test]
-    fn delivery_plan_is_one_mutation_at_a_time() {
+    fn delivery_plan_is_one_atomic_mutation_per_projection() {
         let desired = desired();
         let mut observed = observation(&desired);
 
-        observed.projections[0].worker_version_tag =
-            Some(delivery_worker_material("windows").unwrap().version_tag);
         assert_eq!(
             plan(&desired, &observed).unwrap(),
-            CredentialDeliveryAction::SeedDummySlots {
+            CredentialDeliveryAction::InstallDummyAbContract {
                 projection: "windows".to_owned(),
             }
         );
@@ -1228,16 +1204,7 @@ mod tests {
         make_terminal(&mut observed, "windows");
         assert_eq!(
             plan(&desired, &observed).unwrap(),
-            CredentialDeliveryAction::UploadWorkerContract {
-                projection: "vm".to_owned(),
-            }
-        );
-
-        observed.projections[1].worker_version_tag =
-            Some(delivery_worker_material("vm").unwrap().version_tag);
-        assert_eq!(
-            plan(&desired, &observed).unwrap(),
-            CredentialDeliveryAction::SeedDummySlots {
+            CredentialDeliveryAction::InstallDummyAbContract {
                 projection: "vm".to_owned(),
             }
         );
