@@ -68,4 +68,6 @@ service ControllerService {
   rpc ListOperationEvents(ListOperationEventsRequest) returns (ListOperationEventsResponse);
   rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);
   rpc GetCredentialState(Empty) returns (CredentialStateObservation);
+  rpc GetCredentialIngressPublicKey(Empty) returns (CredentialIngressPublicKey);
+  rpc StageSealedCredentialCandidate(StageSealedCredentialCandidateRequest) returns (CredentialStateObservation);
 }
