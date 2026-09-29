@@ -47,6 +47,256 @@ pub fn canonical_production_desired_state() -> Result<ProductionDesiredState, St
     decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
 }
 
+pub fn encode_credential_delivery_bundle(
+    bundle: &CredentialDeliveryBundle,
+) -> Result<Vec<u8>, String> {
+    validate_credential_delivery_bundle(bundle)?;
+    Ok(bundle.encode_to_vec())
+}
+
+pub fn decode_credential_delivery_bundle(bytes: &[u8]) -> Result<CredentialDeliveryBundle, String> {
+    let bundle = CredentialDeliveryBundle::decode(bytes)
+        .map_err(|err| format!("credential-delivery protobuf decode failed: {err}"))?;
+    validate_credential_delivery_bundle(&bundle)?;
+    if bundle.encode_to_vec() != bytes {
+        return Err("credential-delivery bundle is not canonical protobuf encoding".to_owned());
+    }
+    Ok(bundle)
+}
+
+pub fn validate_credential_delivery_bundle(
+    bundle: &CredentialDeliveryBundle,
+) -> Result<(), String> {
+    if bundle.schema_version != 1 {
+        return Err(format!(
+            "unsupported credential-delivery schema_version {}",
+            bundle.schema_version
+        ));
+    }
+    if bundle.generation == 0 {
+        return Err("credential-delivery generation must be greater than zero".to_owned());
+    }
+
+    let projection = CredentialProjectionKind::try_from(bundle.projection)
+        .map_err(|_| "credential-delivery projection is unknown".to_owned())?;
+    if projection == CredentialProjectionKind::Unspecified {
+        return Err("credential-delivery projection is required".to_owned());
+    }
+    let slot = CredentialDeliverySlot::try_from(bundle.slot)
+        .map_err(|_| "credential-delivery slot is unknown".to_owned())?;
+
+    if bundle.dummy_non_secret {
+        if slot != CredentialDeliverySlot::Unspecified {
+            return Err(
+                "dummy credential-delivery bundle must not claim a real A/B slot".to_owned(),
+            );
+        }
+        if bundle.payload.is_some() {
+            return Err(
+                "dummy credential-delivery bundle must not carry a real payload".to_owned(),
+            );
+        }
+        return Ok(());
+    }
+    if slot == CredentialDeliverySlot::Unspecified {
+        return Err("real credential-delivery bundle requires fixed slot A or B".to_owned());
+    }
+
+    let payload = bundle
+        .payload
+        .as_ref()
+        .ok_or_else(|| "real credential-delivery bundle requires a typed payload".to_owned())?;
+    match (projection, payload) {
+        (
+            CredentialProjectionKind::Windows,
+            credential_delivery_bundle::Payload::Windows(value),
+        ) => validate_windows_credential_projection(value),
+        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Vm(value)) => {
+            validate_vm_credential_projection(value)
+        }
+        (CredentialProjectionKind::Windows, credential_delivery_bundle::Payload::Vm(_)) => {
+            Err("Windows credential-delivery bundle cannot carry a VM projection".to_owned())
+        }
+        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Windows(_)) => {
+            Err("VM credential-delivery bundle cannot carry a Windows projection".to_owned())
+        }
+        (CredentialProjectionKind::Unspecified, _) => unreachable!("validated above"),
+    }
+}
+
+fn validate_windows_credential_projection(
+    value: &WindowsCredentialProjection,
+) -> Result<(), String> {
+    let tunnel_auth = value
+        .tunnel_auth
+        .as_ref()
+        .ok_or_else(|| "Windows credential projection requires tunnel authentication".to_owned())?;
+    validate_tunnel_auth_generation("WindowsCredentialProjection.tunnel_auth", tunnel_auth)?;
+
+    let reality_identity = value
+        .reality_identity
+        .as_ref()
+        .ok_or_else(|| "Windows credential projection requires Reality identity".to_owned())?;
+    validate_reality_public_generation(
+        "WindowsCredentialProjection.reality_identity",
+        reality_identity,
+    )
+}
+
+fn validate_vm_credential_projection(value: &VmCredentialProjection) -> Result<(), String> {
+    let tunnel_auth = value
+        .tunnel_auth
+        .as_ref()
+        .ok_or_else(|| "VM credential projection requires tunnel authentication".to_owned())?;
+    validate_tunnel_auth_generation("VmCredentialProjection.tunnel_auth", tunnel_auth)?;
+
+    let reality_identity = value
+        .reality_identity
+        .as_ref()
+        .ok_or_else(|| "VM credential projection requires Reality identity".to_owned())?;
+    validate_reality_private_generation(
+        "VmCredentialProjection.reality_identity",
+        reality_identity,
+    )?;
+
+    let line2 = value
+        .line2_proxy
+        .as_ref()
+        .ok_or_else(|| "VM credential projection requires Line 2 proxy credentials".to_owned())?;
+    if line2.generation == 0 {
+        return Err(
+            "VmCredentialProjection.line2_proxy.generation must be greater than zero".to_owned(),
+        );
+    }
+    validate_lower_hex(
+        "VmCredentialProjection.line2_proxy.password",
+        &line2.password,
+        64,
+    )
+}
+
+fn validate_tunnel_auth_generation(
+    label: &str,
+    value: &TunnelAuthenticationGeneration,
+) -> Result<(), String> {
+    if value.generation == 0 {
+        return Err(format!("{label}.generation must be greater than zero"));
+    }
+    validate_tunnel_authentication(
+        &format!("{label}.direct"),
+        value
+            .direct
+            .as_ref()
+            .ok_or_else(|| format!("{label}.direct is required"))?,
+    )?;
+    validate_tunnel_authentication(
+        &format!("{label}.warp"),
+        value
+            .warp
+            .as_ref()
+            .ok_or_else(|| format!("{label}.warp is required"))?,
+    )
+}
+
+fn validate_tunnel_authentication(label: &str, value: &TunnelAuthentication) -> Result<(), String> {
+    validate_lower_uuid(&format!("{label}.vless_uuid"), &value.vless_uuid)?;
+    validate_lower_hex(
+        &format!("{label}.hysteria2_password"),
+        &value.hysteria2_password,
+        64,
+    )?;
+    validate_lower_hex(
+        &format!("{label}.reality_short_id"),
+        &value.reality_short_id,
+        16,
+    )
+}
+
+fn validate_reality_public_generation(
+    label: &str,
+    value: &RealityPublicIdentityGeneration,
+) -> Result<(), String> {
+    if value.generation == 0 {
+        return Err(format!("{label}.generation must be greater than zero"));
+    }
+    validate_reality_public_identity(
+        &format!("{label}.direct"),
+        value
+            .direct
+            .as_ref()
+            .ok_or_else(|| format!("{label}.direct is required"))?,
+    )?;
+    validate_reality_public_identity(
+        &format!("{label}.warp"),
+        value
+            .warp
+            .as_ref()
+            .ok_or_else(|| format!("{label}.warp is required"))?,
+    )
+}
+
+fn validate_reality_private_generation(
+    label: &str,
+    value: &RealityPrivateIdentityGeneration,
+) -> Result<(), String> {
+    if value.generation == 0 {
+        return Err(format!("{label}.generation must be greater than zero"));
+    }
+    validate_reality_private_identity(
+        &format!("{label}.direct"),
+        value
+            .direct
+            .as_ref()
+            .ok_or_else(|| format!("{label}.direct is required"))?,
+    )?;
+    validate_reality_private_identity(
+        &format!("{label}.warp"),
+        value
+            .warp
+            .as_ref()
+            .ok_or_else(|| format!("{label}.warp is required"))?,
+    )
+}
+
+fn validate_reality_public_identity(
+    label: &str,
+    value: &RealityPublicIdentity,
+) -> Result<(), String> {
+    validate_reality_key(&format!("{label}.public_key"), &value.public_key)
+}
+
+fn validate_reality_private_identity(
+    label: &str,
+    value: &RealityPrivateIdentity,
+) -> Result<(), String> {
+    validate_reality_key(&format!("{label}.private_key"), &value.private_key)
+}
+
+fn validate_lower_uuid(label: &str, value: &str) -> Result<(), String> {
+    if value.len() != 36
+        || !value.chars().enumerate().all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase(),
+        })
+    {
+        return Err(format!("{label} must be a lowercase UUID"));
+    }
+    Ok(())
+}
+
+fn validate_reality_key(label: &str, value: &str) -> Result<(), String> {
+    if value.len() != 43
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(format!(
+            "{label} must be a 43-character unpadded base64url X25519 key"
+        ));
+    }
+    Ok(())
+}
+
 pub fn timestamp_from_unix_seconds(seconds: i64) -> prost_types::Timestamp {
     prost_types::Timestamp { seconds, nanos: 0 }
 }
@@ -932,6 +1182,183 @@ pub fn canonical_apply_bundle_digest(request: &ApplyBundleRequest) -> Result<Str
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+#[cfg(test)]
+mod credential_delivery_tests {
+    use super::*;
+
+    fn uuid(value: u8) -> String {
+        format!("00000000-0000-4000-8000-{value:012x}")
+    }
+
+    fn hex(ch: char, len: usize) -> String {
+        std::iter::repeat_n(ch, len).collect()
+    }
+
+    fn key(ch: char) -> String {
+        std::iter::repeat_n(ch, 43).collect()
+    }
+
+    fn tunnel_auth(seed: u8) -> TunnelAuthentication {
+        TunnelAuthentication {
+            vless_uuid: uuid(seed),
+            hysteria2_password: hex(if seed % 2 == 0 { 'a' } else { 'b' }, 64),
+            reality_short_id: hex(if seed % 2 == 0 { 'c' } else { 'd' }, 16),
+        }
+    }
+
+    fn public_identity(seed: u8) -> RealityPublicIdentity {
+        RealityPublicIdentity {
+            public_key: key(if seed % 2 == 0 { 'A' } else { 'B' }),
+        }
+    }
+
+    fn private_identity(seed: u8) -> RealityPrivateIdentity {
+        RealityPrivateIdentity {
+            private_key: key(if seed % 2 == 0 { 'C' } else { 'D' }),
+        }
+    }
+
+    fn windows_projection() -> WindowsCredentialProjection {
+        WindowsCredentialProjection {
+            tunnel_auth: Some(TunnelAuthenticationGeneration {
+                generation: 5,
+                direct: Some(tunnel_auth(1)),
+                warp: Some(tunnel_auth(2)),
+            }),
+            reality_identity: Some(RealityPublicIdentityGeneration {
+                generation: 3,
+                direct: Some(public_identity(1)),
+                warp: Some(public_identity(2)),
+            }),
+        }
+    }
+
+    fn vm_projection() -> VmCredentialProjection {
+        VmCredentialProjection {
+            tunnel_auth: Some(TunnelAuthenticationGeneration {
+                generation: 6,
+                direct: Some(tunnel_auth(1)),
+                warp: Some(tunnel_auth(2)),
+            }),
+            reality_identity: Some(RealityPrivateIdentityGeneration {
+                generation: 4,
+                direct: Some(private_identity(1)),
+                warp: Some(private_identity(2)),
+            }),
+            line2_proxy: Some(ProxyCredentialGeneration {
+                generation: 2,
+                password: hex('e', 64),
+            }),
+        }
+    }
+
+    #[test]
+    fn dummy_ab_bundle_remains_payload_free_and_canonical() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 9_000_001,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: None,
+        };
+        let bytes = encode_credential_delivery_bundle(&bundle).unwrap();
+        assert_eq!(decode_credential_delivery_bundle(&bytes).unwrap(), bundle);
+    }
+
+    #[test]
+    fn windows_projection_is_client_only_and_canonical() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 10,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            slot: CredentialDeliverySlot::A as i32,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                windows_projection(),
+            )),
+        };
+        let bytes = encode_credential_delivery_bundle(&bundle).unwrap();
+        assert_eq!(decode_credential_delivery_bundle(&bytes).unwrap(), bundle);
+    }
+
+    #[test]
+    fn vm_projection_keeps_three_lifecycles_independent() {
+        let projection = vm_projection();
+        assert_ne!(
+            projection.tunnel_auth.as_ref().unwrap().generation,
+            projection.reality_identity.as_ref().unwrap().generation
+        );
+        assert_ne!(
+            projection.reality_identity.as_ref().unwrap().generation,
+            projection.line2_proxy.as_ref().unwrap().generation
+        );
+
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 11,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: false,
+            slot: CredentialDeliverySlot::B as i32,
+            payload: Some(credential_delivery_bundle::Payload::Vm(projection)),
+        };
+        validate_credential_delivery_bundle(&bundle).unwrap();
+    }
+
+    #[test]
+    fn projection_identity_must_match_typed_payload() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 12,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            slot: CredentialDeliverySlot::A as i32,
+            payload: Some(credential_delivery_bundle::Payload::Vm(vm_projection())),
+        };
+        let error = validate_credential_delivery_bundle(&bundle).unwrap_err();
+        assert!(error.contains("Windows credential-delivery bundle cannot carry a VM projection"));
+    }
+
+    #[test]
+    fn real_bundle_requires_explicit_fixed_slot() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 14,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                windows_projection(),
+            )),
+        };
+        let error = validate_credential_delivery_bundle(&bundle).unwrap_err();
+        assert!(error.contains("requires fixed slot A or B"));
+    }
+
+    #[test]
+    fn windows_projection_requires_reality_identity() {
+        let mut projection = windows_projection();
+        projection.reality_identity = None;
+        let error = validate_windows_credential_projection(&projection).unwrap_err();
+        assert!(error.contains("requires Reality identity"));
+    }
+
+    #[test]
+    fn dummy_bundle_rejects_real_payload() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 13,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                windows_projection(),
+            )),
+        };
+        assert!(validate_credential_delivery_bundle(&bundle).is_err());
+    }
 }
 
 #[cfg(test)]

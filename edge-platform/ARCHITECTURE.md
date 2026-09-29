@@ -69,7 +69,27 @@ rebuild. Windows/Linux production never treats a mutable latest artifact as auth
 It owns typed provider/application sequencing, plan/apply/verify/rollback semantics and production
 composition. It may use the Vultr and Cloudflare provider adapters.
 
+Its internal `/credentials` domain is the sole application-credential lifecycle owner. This is a
+bounded module inside the orchestrator, not a second daemon/control plane/crate. It creates one
+semantic credential generation and derives least-privilege VM/Windows projections from that same
+generation.
+
 The installed Windows controller must not regain provider authority.
+
+### Role boundary invariant
+
+Every mutable production path follows the same role split:
+
+```text
+owner -> typed protobuf contract -> narrow adapter/transport -> local runtime
+```
+
+- the owner decides lifecycle and mutation;
+- protobuf carries closed typed intent/state;
+- provider adapters only observe/execute provider APIs;
+- Workers, GitHub runners and SSH are transport, not desired-state or credential-generation owners;
+- provider IDs, generated env/JSON and SQLite rows are observed/derived state, never competing
+  desired-state authority.
 
 ### edge-agent
 
@@ -216,8 +236,63 @@ Separate lifecycles include:
 - Mesh node token;
 - provider API/control credentials.
 
-VM production startup must not silently create a new production identity merely because its local
-secret file is missing. Missing desired generation is fail-closed.
+The accepted v2 application projection boundary is derived from actual consumers:
+
+```text
+single /credentials snapshot builder
+        |
+        +-- tunnel-auth generation
+        |     '-- direct + WARP UUID / Hysteria2 password / Reality short ID
+        |          projected identically to Windows and VM
+        |
+        +-- Reality-identity generation
+        |     +-- Windows: direct + WARP public keys only
+        |     '-- VM:      matching private keys only
+        |
+        '-- Line 2 proxy-auth generation
+              '-- VM only
+```
+
+These are three independent application credential lifecycles. The initial fresh-v2 snapshot may
+create fresh values for all three, but later tunnel-auth rotation must not imply Reality server
+identity rotation, Reality identity rotation must not imply Line 2 proxy-auth rotation, and vice
+versa.
+
+Each selected credential class is generated once by the GitHub-only `/credentials` owner and then
+projected least-privilege. Reality keypairs are generated once per Reality-identity generation: the
+private half is projected only to the VM and the corresponding public half only to Windows.
+Cloudflare Access identities, Mesh node tokens and provider/control credentials are not application
+projection fields.
+
+The fixed A/B `CredentialDeliveryBundle.generation` is a delivery-snapshot revision. Nested
+tunnel-auth, Reality-identity and Line 2 proxy-auth generations express their independently rotating
+lifecycles.
+
+Real credential bundles additionally carry explicit fixed-slot identity (`A` or `B`). Phase 6A
+dummy bundles leave it unspecified so their accepted wire bytes remain unchanged. Local active
+credential state records the active delivery generation and slot.
+
+Initial contract installation may atomically install Worker code plus both fixed secret slots.
+Windows and VM projections of one credential snapshot use the same outer delivery generation and the
+same fixed slot; independent per-projection A/B cursors are forbidden.
+
+Steady-state rotation is narrower: replace exactly the inactive fixed slot and leave the active slot
+untouched. The system must not require plaintext readback of the active Worker secret, re-upload both
+slots merely to rotate one candidate, or introduce a second plaintext secret database. Candidate
+publication is not activation; runtime owners promote only after both projections and functional
+verification pass. An uncertain slot mutation is resolved by read-only exact-generation
+re-observation before any replay.
+
+Non-secret endpoint/domain/port policy remains Git-owned desired state and is not duplicated into
+credential payloads.
+
+VM and Windows runtime owners may fetch, validate, stage, activate and roll back typed credential
+state. They do not generate a replacement production identity when the requested generation is
+missing. Missing desired generation is fail-closed while an already validated active generation
+continues to serve traffic.
+
+Do not add a generic secret map, arbitrary payload bytes, first-party JSON secret contract, second
+secret database, new credential daemon or dedicated credential crate.
 
 ## 5. Runtime autonomy and recovery
 

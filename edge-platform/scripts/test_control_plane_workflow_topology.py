@@ -23,6 +23,7 @@ WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
+CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
@@ -56,6 +57,7 @@ def main() -> None:
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
+    credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
@@ -77,6 +79,45 @@ def main() -> None:
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
+    tunnel_auth = credential_proto.split("message TunnelAuthentication {", 1)[1].split("}", 1)[0]
+    reality_public = credential_proto.split("message RealityPublicIdentity {", 1)[1].split("}", 1)[0]
+    reality_private = credential_proto.split("message RealityPrivateIdentity {", 1)[1].split("}", 1)[0]
+    windows_projection = credential_proto.split("message WindowsCredentialProjection {", 1)[1].split("}", 1)[0]
+    vm_projection = credential_proto.split("message VmCredentialProjection {", 1)[1].split("}", 1)[0]
+    require(
+        "map<" not in credential_proto
+        and "bytes " not in credential_proto
+        and "oneof payload" in credential_proto
+        and "enum CredentialDeliverySlot" in credential_proto
+        and "CredentialDeliverySlot slot = 5;" in credential_proto,
+        "credential v2 must remain an explicit typed protobuf contract with fixed A/B slot identity and without maps or arbitrary byte bags",
+    )
+    require(
+        "vless_uuid" in tunnel_auth
+        and "hysteria2_password" in tunnel_auth
+        and "reality_short_id" in tunnel_auth
+        and "public_key" not in tunnel_auth
+        and "private_key" not in tunnel_auth,
+        "tunnel authentication must remain independent from Reality server identity",
+    )
+    require(
+        "public_key" in reality_public
+        and "private_key" not in reality_public
+        and "private_key" in reality_private
+        and "public_key" not in reality_private,
+        "credential schema must keep Reality public material Windows-side and private material VM-side",
+    )
+    require(
+        "TunnelAuthenticationGeneration tunnel_auth" in windows_projection
+        and "RealityPublicIdentityGeneration reality_identity" in windows_projection
+        and "line2_proxy" not in windows_projection
+        and "RealityPrivateIdentityGeneration" not in windows_projection
+        and "TunnelAuthenticationGeneration tunnel_auth" in vm_projection
+        and "RealityPrivateIdentityGeneration reality_identity" in vm_projection
+        and "ProxyCredentialGeneration line2_proxy" in vm_projection
+        and "RealityPublicIdentityGeneration" not in vm_projection,
+        "credential schema must keep independent tunnel-auth/Reality/proxy lifecycles and least-privilege projections",
+    )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")

@@ -5,7 +5,8 @@ use edge_controller_core::lifecycle::{
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
-    CredentialDeliveryBundle, CredentialIsolationProbe, CredentialProjectionKind,
+    CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
+    CredentialProjectionKind,
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -1340,6 +1341,8 @@ fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, 
                 generation,
                 projection: projection_kind as i32,
                 dummy_non_secret: true,
+                slot: CredentialDeliverySlot::Unspecified as i32,
+                payload: None,
             }
             .encode_to_vec();
             DeliverySlot {
@@ -1670,6 +1673,8 @@ mod tests {
                 assert_eq!(decoded.generation, slot.generation);
                 assert_eq!(decoded.projection, projection as i32);
                 assert!(decoded.dummy_non_secret);
+                assert_eq!(decoded.slot, CredentialDeliverySlot::Unspecified as i32);
+                assert!(decoded.payload.is_none());
                 assert_eq!(slot.secret_text, hex_encode(&slot.payload));
                 assert!(!material.source.contains(&slot.secret_text));
             }
