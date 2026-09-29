@@ -526,10 +526,7 @@ async fn prove_ab_session(
 
     let mut mutations = 0u32;
     let proof_result: Result<(), ProofAttemptError> = async {
-        for (projection, token_id) in [
-            (&windows, windows_token_id),
-            (&vm, vm_token_id),
-        ] {
+        for (projection, token_id) in [(&windows, windows_token_id), (&vm, vm_token_id)] {
             cloudflare::set_access_service_token_enabled(
                 control_token,
                 &desired.target_account_id,
@@ -643,23 +640,13 @@ async fn prove_ab_session(
         )?;
         print_proof_token_state("rotated", &vm, &vm_rotated);
 
-        for (projection, credential) in [
-            (&windows, &windows_credential),
-            (&vm, &vm_credential),
-        ] {
+        for (projection, credential) in [(&windows, &windows_credential), (&vm, &vm_credential)] {
             let material = delivery_worker_material(&projection.projection)?;
             for slot in &material.slots {
-                prove_expected_slot(
-                    projection,
-                    workers_subdomain,
-                    slot,
-                    credential,
-                )
-                .await?;
+                prove_expected_slot(projection, workers_subdomain, slot, credential).await?;
             }
 
-            let invalid_url =
-                probe_url(projection, workers_subdomain, INVALID_PROBE_GENERATION);
+            let invalid_url = probe_url(projection, workers_subdomain, INVALID_PROBE_GENERATION);
             let invalid = cloudflare::probe_worker(&invalid_url, Some(credential)).await?;
             if invalid.status != 404 || !invalid.body.is_empty() {
                 return Err(format!(
@@ -721,16 +708,16 @@ async fn prove_ab_session(
         Ok(()) => Ok(mutations),
         Err(ProofAttemptError::Ordinary(err)) => Err(err),
         Err(ProofAttemptError::Functional(failure)) => {
-            let (expected_policy_id, expected_service_token_id) =
-                match failure.projection.as_str() {
-                    "windows" => (windows_policy_id, windows_token_id),
-                    "vm" => (vm_policy_id, vm_token_id),
-                    other => {
-                        return Err(format!(
-                            "unsupported projection in Access failure evidence: {other}"
-                        ));
-                    }
-                };
+            let (expected_policy_id, expected_service_token_id) = match failure.projection.as_str()
+            {
+                "windows" => (windows_policy_id, windows_token_id),
+                "vm" => (vm_policy_id, vm_token_id),
+                other => {
+                    return Err(format!(
+                        "unsupported projection in Access failure evidence: {other}"
+                    ));
+                }
+            };
             let classification = diagnose_access_failure_after_cleanup(
                 control_token,
                 &desired.target_account_id,
