@@ -396,7 +396,9 @@ pub fn verify_local_credential_bundle_reference(
         return Err("local credential state cannot reference a dummy delivery bundle".to_owned());
     }
     if bundle.projection != projection as i32 {
-        return Err("local credential bundle projection does not match state projection".to_owned());
+        return Err(
+            "local credential bundle projection does not match state projection".to_owned(),
+        );
     }
     if bundle.generation != reference.generation {
         return Err("local credential bundle generation does not match state reference".to_owned());
@@ -1517,7 +1519,11 @@ mod credential_delivery_tests {
 mod local_credential_state_tests {
     use super::*;
 
-    fn bundle(projection: CredentialProjectionKind, generation: u64, slot: CredentialDeliverySlot) -> CredentialDeliveryBundle {
+    fn bundle(
+        projection: CredentialProjectionKind,
+        generation: u64,
+        slot: CredentialDeliverySlot,
+    ) -> CredentialDeliveryBundle {
         let tunnel_auth = TunnelAuthenticationGeneration {
             generation: 7,
             direct: Some(TunnelAuthentication {
@@ -1532,8 +1538,8 @@ mod local_credential_state_tests {
             }),
         };
         let payload = match projection {
-            CredentialProjectionKind::Windows => credential_delivery_bundle::Payload::Windows(
-                WindowsCredentialProjection {
+            CredentialProjectionKind::Windows => {
+                credential_delivery_bundle::Payload::Windows(WindowsCredentialProjection {
                     tunnel_auth: Some(tunnel_auth),
                     reality_identity: Some(RealityPublicIdentityGeneration {
                         generation: 3,
@@ -1544,10 +1550,10 @@ mod local_credential_state_tests {
                             public_key: "B".repeat(43),
                         }),
                     }),
-                },
-            ),
-            CredentialProjectionKind::Vm => credential_delivery_bundle::Payload::Vm(
-                VmCredentialProjection {
+                })
+            }
+            CredentialProjectionKind::Vm => {
+                credential_delivery_bundle::Payload::Vm(VmCredentialProjection {
                     tunnel_auth: Some(tunnel_auth),
                     reality_identity: Some(RealityPrivateIdentityGeneration {
                         generation: 3,
@@ -1562,8 +1568,8 @@ mod local_credential_state_tests {
                         generation: 2,
                         password: "e".repeat(64),
                     }),
-                },
-            ),
+                })
+            }
             CredentialProjectionKind::Unspecified => panic!("test projection must be concrete"),
         };
         CredentialDeliveryBundle {
@@ -1596,16 +1602,8 @@ mod local_credential_state_tests {
 
     #[test]
     fn active_and_candidate_must_use_opposite_slots() {
-        let active = bundle(
-            CredentialProjectionKind::Vm,
-            100,
-            CredentialDeliverySlot::A,
-        );
-        let candidate = bundle(
-            CredentialProjectionKind::Vm,
-            101,
-            CredentialDeliverySlot::A,
-        );
+        let active = bundle(CredentialProjectionKind::Vm, 100, CredentialDeliverySlot::A);
+        let candidate = bundle(CredentialProjectionKind::Vm, 101, CredentialDeliverySlot::A);
         let state = LocalCredentialState {
             schema_version: 1,
             projection: CredentialProjectionKind::Vm as i32,
@@ -1641,18 +1639,10 @@ mod local_credential_state_tests {
 
     #[test]
     fn reference_verification_binds_projection_generation_slot_and_digest() {
-        let bundle = bundle(
-            CredentialProjectionKind::Vm,
-            101,
-            CredentialDeliverySlot::B,
-        );
+        let bundle = bundle(CredentialProjectionKind::Vm, 101, CredentialDeliverySlot::B);
         let reference = local_credential_bundle_ref(&bundle).unwrap();
-        verify_local_credential_bundle_reference(
-            CredentialProjectionKind::Vm,
-            &reference,
-            &bundle,
-        )
-        .unwrap();
+        verify_local_credential_bundle_reference(CredentialProjectionKind::Vm, &reference, &bundle)
+            .unwrap();
 
         let mut wrong = reference.clone();
         wrong.generation += 1;
