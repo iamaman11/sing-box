@@ -239,24 +239,34 @@ Separate lifecycles include:
 The accepted v2 application projection boundary is derived from actual consumers:
 
 ```text
-single /credentials semantic generation
+single /credentials snapshot builder
         |
-        +-- tunnel generation
-        |     +-- Windows: UUID + Hysteria2 password + Reality public key + short ID
-        |     '-- VM:      same UUID/password/short ID + Reality private key
+        +-- tunnel-auth generation
+        |     '-- direct + WARP UUID / Hysteria2 password / Reality short ID
+        |          projected identically to Windows and VM
+        |
+        +-- Reality-identity generation
+        |     +-- Windows: direct + WARP public keys only
+        |     '-- VM:      matching private keys only
         |
         '-- Line 2 proxy-auth generation
               '-- VM only
 ```
 
-Direct and WARP tunnel credentials are represented explicitly inside the tunnel generation. Reality
-keypairs are generated once: the private half is projected only to the VM and the public half only
-to Windows. Cloudflare Access identities, Mesh node tokens and provider/control credentials are not
-application projection fields.
+These are three independent application credential lifecycles. The initial fresh-v2 snapshot may
+create fresh values for all three, but later tunnel-auth rotation must not imply Reality server
+identity rotation, Reality identity rotation must not imply Line 2 proxy-auth rotation, and vice
+versa.
+
+Each selected credential class is generated once by the GitHub-only `/credentials` owner and then
+projected least-privilege. Reality keypairs are generated once per Reality-identity generation: the
+private half is projected only to the VM and the corresponding public half only to Windows.
+Cloudflare Access identities, Mesh node tokens and provider/control credentials are not application
+projection fields.
 
 The fixed A/B `CredentialDeliveryBundle.generation` is a delivery-snapshot revision. Nested
-credential generations express independently rotating lifecycles, so rotating tunnel credentials
-does not implicitly regenerate Line 2 proxy authentication.
+tunnel-auth, Reality-identity and Line 2 proxy-auth generations express their independently rotating
+lifecycles.
 
 Real credential bundles additionally carry explicit fixed-slot identity (`A` or `B`). Phase 6A
 dummy bundles leave it unspecified so their accepted wire bytes remain unchanged. Local active
