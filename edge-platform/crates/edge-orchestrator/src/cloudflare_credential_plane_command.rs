@@ -1577,4 +1577,59 @@ mod tests {
         observed.projections[0].worker_binding_count = Some(3);
         assert!(plan(&desired, &observed).is_err());
     }
+
+    #[test]
+    fn access_diagnostic_classifies_exact_service_auth_event() {
+        let event = cloudflare::CloudflareAccessLoginEvent {
+            datetime: Some("2026-09-29T13:30:40Z".to_owned()),
+            is_successful_login: Some(false),
+            approving_policy_id: Some("policy-id".to_owned()),
+            cf_ray_id: Some("0123456789abcdef".to_owned()),
+            identity_provider: Some("nonidentity".to_owned()),
+            service_token_id: Some("token-id".to_owned()),
+        };
+        assert_eq!(
+            classify_access_login_events(
+                "0123456789abcdef",
+                "policy-id",
+                "token-id",
+                401,
+                &[event],
+            )
+            .unwrap(),
+            "POLICY_DENIED"
+        );
+    }
+
+    #[test]
+    fn access_diagnostic_distinguishes_access_allow_from_worker_failure() {
+        let event = cloudflare::CloudflareAccessLoginEvent {
+            datetime: Some("2026-09-29T13:30:40Z".to_owned()),
+            is_successful_login: Some(true),
+            approving_policy_id: Some("policy-id".to_owned()),
+            cf_ray_id: Some("0123456789abcdef".to_owned()),
+            identity_provider: Some("nonidentity".to_owned()),
+            service_token_id: Some("token-id".to_owned()),
+        };
+        assert_eq!(
+            classify_access_login_events(
+                "0123456789abcdef",
+                "policy-id",
+                "token-id",
+                401,
+                &[event],
+            )
+            .unwrap(),
+            "ACCESS_ALLOWED_BUT_WORKER_FAILED"
+        );
+    }
+
+    #[test]
+    fn cf_ray_normalization_keeps_only_exact_ray_id() {
+        assert_eq!(
+            normalize_cf_ray("0123456789abcdef-WAW").unwrap(),
+            "0123456789abcdef"
+        );
+        assert!(normalize_cf_ray("not-a-ray").is_err());
+    }
 }
