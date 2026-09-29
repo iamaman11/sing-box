@@ -11,6 +11,7 @@ use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
 use std::env;
+use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONVERGENCE_STEPS: usize = 2;
 const SLOT_A: &str = "EDGE_CREDENTIAL_BUNDLE_A";
@@ -18,6 +19,8 @@ const SLOT_B: &str = "EDGE_CREDENTIAL_BUNDLE_B";
 const PROBE_GENERATION_A: u64 = 9_000_001;
 const PROBE_GENERATION_B: u64 = 9_000_002;
 const INVALID_PROBE_GENERATION: u64 = 9_000_003;
+const ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS: usize = 6;
+const ACCESS_ANALYTICS_EVIDENCE_INTERVAL_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProjectionDesired {
@@ -86,6 +89,27 @@ struct DeliveryWorkerMaterial {
     source: String,
     version_tag: String,
     slots: Vec<DeliverySlot>,
+}
+
+#[derive(Debug, Clone)]
+struct AccessFailureEvidence {
+    ray_id: Option<String>,
+    datetime_start: String,
+    datetime_end: String,
+    http_status: u16,
+    acceptance_error: String,
+}
+
+#[derive(Debug, Clone)]
+enum ProofAttemptError {
+    Ordinary(String),
+    Functional(AccessFailureEvidence),
+}
+
+impl From<String> for ProofAttemptError {
+    fn from(value: String) -> Self {
+        Self::Ordinary(value)
+    }
 }
 
 pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), String> {
@@ -441,6 +465,8 @@ async fn prove(
         return Err("credential-delivery proof requires exact terminal A/B state".to_owned());
     }
 
+    preflight_access_analytics(control_token, desired).await?;
+
     let mut mutations = 0u32;
     for projection in projections(desired) {
         mutations = mutations
@@ -476,13 +502,24 @@ async fn prove_projection(
         .service_token_id
         .as_deref()
         .ok_or_else(|| format!("{} proof token ID is missing", projection.projection))?;
+    let expected_policy_id = current
+        .access_policies
+        .first()
+        .filter(|_| current.access_policies.len() == 1)
+        .map(|policy| policy.id.as_str())
+        .ok_or_else(|| {
+            format!(
+                "{} proof requires exactly one Access policy",
+                projection.projection
+            )
+        })?;
     let workers_subdomain = observed
         .workers_dev_subdomain
         .as_deref()
         .ok_or_else(|| "workers.dev account subdomain is missing".to_owned())?;
 
     let mut mutations = 0u32;
-    let proof_result: Result<(), String> = async {
+    let proof_result: Result<(), ProofAttemptError> = async {
         cloudflare::set_access_service_token_enabled(
             control_token,
             &desired.target_account_id,
@@ -504,8 +541,11 @@ async fn prove_projection(
             projection,
             token_id,
             &desired.proof_token_duration,
+            None,
             &enabled,
         )?;
+        print_proof_token_state("enabled", projection, &enabled);
+
         let credential = cloudflare::rotate_access_service_token(
             control_token,
             &desired.target_account_id,
@@ -517,24 +557,70 @@ async fn prove_projection(
             || credential.client_id != client_id
             || credential.enabled != Some(true)
             || credential.duration.as_deref() != Some(desired.proof_token_duration.as_str())
+            || credential.name.as_deref() != Some(projection.service_token_name.as_str())
         {
             return Err(format!(
                 "{} proof-token rotation changed identity or state",
                 projection.projection
-            ));
+            )
+            .into());
         }
+
+        let rotated = cloudflare::get_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            token_id,
+        )
+        .await?;
+        validate_enabled_proof_token(
+            projection,
+            token_id,
+            &desired.proof_token_duration,
+            Some(&client_id),
+            &rotated,
+        )?;
+        print_proof_token_state("rotated", projection, &rotated);
 
         let material = delivery_worker_material(&projection.projection)?;
         for slot in &material.slots {
             let url = probe_url(projection, workers_subdomain, slot.generation);
+            let probe_start = (OffsetDateTime::now_utc() - TimeDuration::seconds(30))
+                .format(&Rfc3339)
+                .map_err(|err| format!("failed to format Access proof start timestamp: {err}"))?;
             let response = cloudflare::probe_worker(&url, Some(&credential)).await?;
-            require_allowed(
+            let probe_end = (OffsetDateTime::now_utc() + TimeDuration::seconds(30))
+                .format(&Rfc3339)
+                .map_err(|err| format!("failed to format Access proof end timestamp: {err}"))?;
+            if let Err(acceptance_error) = require_allowed(
                 &format!("{}_{}", projection.projection, slot.name),
                 &response,
                 &slot.payload,
                 slot.generation,
                 projection_kind(&projection.projection)?,
-            )?;
+            ) {
+                let ray_id = response
+                    .cf_ray
+                    .as_deref()
+                    .map(normalize_cf_ray)
+                    .transpose()?
+                    .map(ToOwned::to_owned);
+                println!(
+                    "access_failure_capture projection={} slot={} http_status={} ray_id={} datetime_start={} datetime_end={}",
+                    projection.projection,
+                    slot.name,
+                    response.status,
+                    ray_id.as_deref().unwrap_or("ABSENT"),
+                    probe_start,
+                    probe_end
+                );
+                return Err(ProofAttemptError::Functional(AccessFailureEvidence {
+                    ray_id,
+                    datetime_start: probe_start,
+                    datetime_end: probe_end,
+                    http_status: response.status,
+                    acceptance_error,
+                }));
+            }
             println!(
                 "credential_delivery_proof projection={} slot={} generation={} outcome=PASS status={}",
                 projection.projection, slot.name, slot.generation, response.status
@@ -549,7 +635,8 @@ async fn prove_projection(
                 projection.projection,
                 invalid.status,
                 invalid.body.len()
-            ));
+            )
+            .into());
         }
         println!(
             "credential_delivery_proof projection={} generation={} outcome=NOT_FOUND status={}",
@@ -577,14 +664,71 @@ async fn prove_projection(
             projection.projection
         ));
     }
-    proof_result?;
-    Ok(mutations)
+
+    match proof_result {
+        Ok(()) => Ok(mutations),
+        Err(ProofAttemptError::Ordinary(err)) => Err(err),
+        Err(ProofAttemptError::Functional(failure)) => {
+            let classification = diagnose_access_failure_after_cleanup(
+                control_token,
+                &desired.target_account_id,
+                expected_policy_id,
+                token_id,
+                &failure,
+            )
+            .await
+            .map_err(|err| {
+                format!(
+                    "{}; proof-token cleanup completed; post-cleanup Access diagnostics failed: {err}",
+                    failure.acceptance_error
+                )
+            })?;
+            Err(format!(
+                "{}; proof-token cleanup completed; access_diagnostic_classification={classification}; no HTTP probe replay performed",
+                failure.acceptance_error
+            ))
+        }
+    }
+}
+
+async fn preflight_access_analytics(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let now = OffsetDateTime::now_utc();
+    let start = (now - TimeDuration::seconds(1))
+        .format(&Rfc3339)
+        .map_err(|err| format!("failed to format GraphQL preflight start timestamp: {err}"))?;
+    let end = now
+        .format(&Rfc3339)
+        .map_err(|err| format!("failed to format GraphQL preflight end timestamp: {err}"))?;
+    match cloudflare::list_access_login_events(
+        control_token,
+        &desired.target_account_id,
+        "0000000000000000",
+        &start,
+        &end,
+    )
+    .await
+    {
+        Ok(_) => {
+            println!("access_graphql_preflight=PASS");
+            Ok(())
+        }
+        Err(err) if cloudflare::is_graphql_authorization_error(&err) => Err(format!(
+            "ACCOUNT_ANALYTICS_READ_REQUIRED permission=Account Analytics Read; no proof mutation performed; provider_error={err}"
+        )),
+        Err(err) => Err(format!(
+            "ACCESS_GRAPHQL_PREFLIGHT_FAILED no proof mutation performed; provider_error={err}"
+        )),
+    }
 }
 
 fn validate_enabled_proof_token(
     projection: &ProjectionDesired,
     expected_token_id: &str,
     expected_duration: &str,
+    expected_client_id: Option<&str>,
     token: &cloudflare::CloudflareAccessServiceToken,
 ) -> Result<String, String> {
     if token.id != expected_token_id
@@ -597,10 +741,174 @@ fn validate_enabled_proof_token(
             projection.projection
         ));
     }
-    token
+    let client_id = token
         .client_id
-        .clone()
-        .ok_or_else(|| format!("{} proof token client_id is missing", projection.projection))
+        .as_deref()
+        .ok_or_else(|| format!("{} proof token client_id is missing", projection.projection))?;
+    if let Some(expected) = expected_client_id
+        && client_id != expected
+    {
+        return Err(format!(
+            "{} proof token client_id changed after rotation",
+            projection.projection
+        ));
+    }
+    let expires_at = token.expires_at.as_deref().ok_or_else(|| {
+        format!(
+            "{} proof token expires_at is missing",
+            projection.projection
+        )
+    })?;
+    let expires = OffsetDateTime::parse(expires_at, &Rfc3339).map_err(|err| {
+        format!(
+            "{} proof token expires_at is not RFC3339: {err}",
+            projection.projection
+        )
+    })?;
+    if expires <= OffsetDateTime::now_utc() {
+        return Err(format!("{} proof token is expired", projection.projection));
+    }
+    Ok(client_id.to_owned())
+}
+
+fn print_proof_token_state(
+    stage: &str,
+    projection: &ProjectionDesired,
+    token: &cloudflare::CloudflareAccessServiceToken,
+) {
+    println!(
+        "proof_token_state projection={} stage={} token_id={} client_id={} enabled={} duration={} expires_at={}",
+        projection.projection,
+        stage,
+        token.id,
+        token.client_id.as_deref().unwrap_or("ABSENT"),
+        token
+            .enabled
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        token.duration.as_deref().unwrap_or("ABSENT"),
+        token.expires_at.as_deref().unwrap_or("ABSENT")
+    );
+}
+
+async fn diagnose_access_failure_after_cleanup(
+    control_token: &str,
+    account_id: &str,
+    expected_policy_id: &str,
+    expected_service_token_id: &str,
+    failure: &AccessFailureEvidence,
+) -> Result<&'static str, String> {
+    let Some(ray_id) = failure.ray_id.as_deref() else {
+        println!(
+            "access_login_evidence_wait ray_id=ABSENT http_status={} result=CF_RAY_MISSING",
+            failure.http_status
+        );
+        return Ok("ACCESS_DIAGNOSTIC_CF_RAY_MISSING");
+    };
+
+    for attempt in 1..=ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS {
+        let events = cloudflare::list_access_login_events(
+            control_token,
+            account_id,
+            ray_id,
+            &failure.datetime_start,
+            &failure.datetime_end,
+        )
+        .await?;
+        println!(
+            "access_login_evidence_wait attempt={} max_attempts={} ray_id={} records={} http_status={} datetime_start={} datetime_end={}",
+            attempt,
+            ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS,
+            ray_id,
+            events.len(),
+            failure.http_status,
+            failure.datetime_start,
+            failure.datetime_end
+        );
+        if !events.is_empty() {
+            return classify_access_login_events(
+                ray_id,
+                expected_policy_id,
+                expected_service_token_id,
+                failure.http_status,
+                &events,
+            );
+        }
+        if attempt < ACCESS_ANALYTICS_EVIDENCE_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                ACCESS_ANALYTICS_EVIDENCE_INTERVAL_SECONDS,
+            ))
+            .await;
+        }
+    }
+
+    Ok("ACCESS_LOGIN_EVENT_NOT_OBSERVED_AFTER_BOUNDED_WAIT")
+}
+
+fn classify_access_login_events(
+    ray_id: &str,
+    expected_policy_id: &str,
+    expected_service_token_id: &str,
+    http_status: u16,
+    events: &[cloudflare::CloudflareAccessLoginEvent],
+) -> Result<&'static str, String> {
+    if events.len() != 1 {
+        return Err(format!(
+            "GraphQL Access login correlation for ray_id={ray_id} is ambiguous: {} matching records",
+            events.len()
+        ));
+    }
+    let event = &events[0];
+    println!(
+        "access_login_evidence ray_id={} http_status={} successful={} approving_policy_id={} identity_provider={} service_token_id={} datetime={}",
+        ray_id,
+        http_status,
+        event
+            .is_successful_login
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        event.approving_policy_id.as_deref().unwrap_or("ABSENT"),
+        event.identity_provider.as_deref().unwrap_or("ABSENT"),
+        event.service_token_id.as_deref().unwrap_or("ABSENT"),
+        event.datetime.as_deref().unwrap_or("ABSENT")
+    );
+    if event.cf_ray_id.as_deref() != Some(ray_id) {
+        return Err(format!(
+            "GraphQL Access login event Ray ID mismatch: expected={ray_id} observed={}",
+            event.cf_ray_id.as_deref().unwrap_or("ABSENT")
+        ));
+    }
+    if event.identity_provider.as_deref() != Some("nonidentity") {
+        return Ok("WRONG_AUTHENTICATION_MODE");
+    }
+    if event.service_token_id.as_deref() != Some(expected_service_token_id) {
+        return Ok("TOKEN_INVALID");
+    }
+    match event.is_successful_login {
+        Some(false) => Ok("POLICY_DENIED"),
+        Some(true) if event.approving_policy_id.as_deref() != Some(expected_policy_id) => {
+            Ok("WRONG_POLICY")
+        }
+        Some(true) if http_status != 200 => Ok("ACCESS_ALLOWED_BUT_WORKER_FAILED"),
+        Some(true) => Ok("PASS"),
+        None => Err(format!(
+            "GraphQL Access login event for ray_id={ray_id} is missing isSuccessfulLogin"
+        )),
+    }
+}
+
+fn normalize_cf_ray(raw: &str) -> Result<&str, String> {
+    let ray_id = raw
+        .split('-')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("invalid CF-Ray header: {raw}"))?;
+    if ray_id.len() != 16 || !ray_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "invalid CF-Ray identifier in header: raw={raw} normalized={ray_id}"
+        ));
+    }
+    Ok(ray_id)
 }
 
 fn require_allowed(
@@ -1263,5 +1571,60 @@ mod tests {
         );
         observed.projections[0].worker_binding_count = Some(3);
         assert!(plan(&desired, &observed).is_err());
+    }
+
+    #[test]
+    fn access_diagnostic_classifies_exact_service_auth_event() {
+        let event = cloudflare::CloudflareAccessLoginEvent {
+            datetime: Some("2026-09-29T13:30:40Z".to_owned()),
+            is_successful_login: Some(false),
+            approving_policy_id: Some("policy-id".to_owned()),
+            cf_ray_id: Some("0123456789abcdef".to_owned()),
+            identity_provider: Some("nonidentity".to_owned()),
+            service_token_id: Some("token-id".to_owned()),
+        };
+        assert_eq!(
+            classify_access_login_events(
+                "0123456789abcdef",
+                "policy-id",
+                "token-id",
+                401,
+                &[event],
+            )
+            .unwrap(),
+            "POLICY_DENIED"
+        );
+    }
+
+    #[test]
+    fn access_diagnostic_distinguishes_access_allow_from_worker_failure() {
+        let event = cloudflare::CloudflareAccessLoginEvent {
+            datetime: Some("2026-09-29T13:30:40Z".to_owned()),
+            is_successful_login: Some(true),
+            approving_policy_id: Some("policy-id".to_owned()),
+            cf_ray_id: Some("0123456789abcdef".to_owned()),
+            identity_provider: Some("nonidentity".to_owned()),
+            service_token_id: Some("token-id".to_owned()),
+        };
+        assert_eq!(
+            classify_access_login_events(
+                "0123456789abcdef",
+                "policy-id",
+                "token-id",
+                401,
+                &[event],
+            )
+            .unwrap(),
+            "ACCESS_ALLOWED_BUT_WORKER_FAILED"
+        );
+    }
+
+    #[test]
+    fn cf_ray_normalization_keeps_only_exact_ray_id() {
+        assert_eq!(
+            normalize_cf_ray("0123456789abcdef-WAW").unwrap(),
+            "0123456789abcdef"
+        );
+        assert!(normalize_cf_ray("not-a-ray").is_err());
     }
 }

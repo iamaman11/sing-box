@@ -231,6 +231,24 @@ def main() -> None:
         and "print_terminal(desired, &after, mutations)?;" in credential_command,
         "credential convergence must accept terminal NOOP observed after the final bounded mutation",
     )
+    require(
+        "preflight_access_analytics(control_token, desired).await?;" in credential_command
+        and "proof_token_state projection={} stage={}" in credential_command
+        and "access_failure_capture projection={}" in credential_command
+        and "diagnose_access_failure_after_cleanup(" in credential_command
+        and "no HTTP probe replay performed" in credential_command
+        and "credential.client_secret" not in credential_command,
+        "credential proof must use secret-safe provider-native failure evidence without HTTP replay",
+    )
+    require(
+        credential_command.index(
+            "let cleanup = cloudflare::set_access_service_token_enabled"
+        )
+        < credential_command.index(
+            "let classification = diagnose_access_failure_after_cleanup"
+        ),
+        "credential proof must disable its proof token before post-failure Access diagnostics",
+    )
 
     require(
         '"target-plane-inventory"' in application
