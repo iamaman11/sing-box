@@ -25,10 +25,11 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
-use edge_secrets::ApplicationRuntimeSecrets;
+use edge_secrets::{ApplicationRuntimeSecrets, CredentialStore};
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
+    CredentialProjectionKind,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
     BundleFile, ContainerRuntimeObservation, Empty, FileCategory, FilePresence,
     Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
@@ -135,6 +136,8 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
 }
 
 async fn serve(addr: SocketAddr, stack_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    validate_existing_vm_credential_store(&stack_dir)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
     let mut builder = Server::builder();
     if let Some(tls) = optional_agent_server_tls_from_env()
         .map_err(|err| format!("failed to load edge-agent TLS configuration: {err}"))?
@@ -955,6 +958,21 @@ fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
                 .to_owned(),
         );
     }
+    Ok(())
+}
+
+fn vm_credential_store_root(stack_dir: &Path) -> Result<PathBuf, String> {
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    Ok(parent.join(RUNTIME_SECRET_DIR).join("application-v2"))
+}
+
+fn validate_existing_vm_credential_store(stack_dir: &Path) -> Result<(), String> {
+    CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?;
     Ok(())
 }
 
@@ -3626,6 +3644,17 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn vm_v2_credential_store_stays_inside_runtime_secret_boundary() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        assert_eq!(
+            vm_credential_store_root(&stack).unwrap(),
+            root.join("runtime-secrets/application-v2")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
