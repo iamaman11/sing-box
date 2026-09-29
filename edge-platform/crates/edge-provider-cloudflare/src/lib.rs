@@ -491,7 +491,9 @@ pub async fn upload_worker_module_with_secret_text_bindings(
     require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
     require_non_empty("Cloudflare Worker version tag", version_tag)?;
     if secrets.is_empty() {
-        return Err("Cloudflare Worker atomic secret upload requires at least one secret".to_owned());
+        return Err(
+            "Cloudflare Worker atomic secret upload requires at least one secret".to_owned(),
+        );
     }
 
     let mut names = std::collections::BTreeSet::new();
@@ -535,7 +537,9 @@ pub async fn upload_worker_module_with_secret_text_bindings(
         .body(body)
         .send()
         .await
-        .map_err(|err| format!("failed to atomically upload Cloudflare Worker credential contract: {err}"))?;
+        .map_err(|err| {
+            format!("failed to atomically upload Cloudflare Worker credential contract: {err}")
+        })?;
     ensure_secret_mutation_success(response).await
 }
 
