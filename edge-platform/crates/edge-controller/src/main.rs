@@ -1781,6 +1781,10 @@ fn stage_windows_credential_candidate(
     bundle: edge_shared_types::CredentialDeliveryBundle,
 ) -> Result<edge_shared_types::LocalCredentialState, String> {
     require_installed_windows_credential_owner(repo_root)?;
+    edge_shared_types::local_credential_bundle_ref(&bundle)?;
+    if bundle.projection != CredentialProjectionKind::Windows as i32 {
+        return Err("Windows credential owner rejects non-Windows projection".to_owned());
+    }
     let store = CredentialStore::new(
         windows_credential_store_path(repo_root),
         CredentialProjectionKind::Windows,
