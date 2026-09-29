@@ -23,6 +23,7 @@ WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
+CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
@@ -57,6 +58,7 @@ def main() -> None:
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
+    credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
@@ -117,6 +119,29 @@ def main() -> None:
         and "ProxyCredentialGeneration line2_proxy" in vm_projection
         and "RealityPublicIdentityGeneration" not in vm_projection,
         "credential schema must keep independent tunnel-auth/Reality/proxy lifecycles and least-privilege projections",
+    )
+    require(
+        "generate_fresh_credential_snapshot" in credential_snapshot
+        and "FreshCredentialSnapshotRequest" in credential_snapshot
+        and "validate_credential_delivery_bundle" in credential_snapshot
+        and "ApplicationRuntimeSecrets" not in credential_snapshot,
+        "fresh snapshot builder must own typed generation assembly without reusing the legacy monolithic secret model",
+    )
+    require(
+        all(
+            token not in credential_snapshot
+            for token in (
+                "edge_provider_",
+                "reqwest",
+                "tokio",
+                "std::fs",
+                "std::env",
+                "upload_worker",
+                "CLOUDFLARE_",
+                "VULTR_",
+            )
+        ),
+        "fresh snapshot builder must remain pure/in-memory and provider/runtime side-effect free",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
