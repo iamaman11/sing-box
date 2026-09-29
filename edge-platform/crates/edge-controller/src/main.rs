@@ -53,7 +53,7 @@ use edge_shared_types::controller_service_server::{ControllerService, Controller
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
     BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, CredentialProjectionKind,
-    DeployPhase, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
+    CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
     DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse, Empty,
     GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
     ListOperationEventsRequest, ListOperationEventsResponse, ListSecretRefsRequest,
@@ -61,7 +61,8 @@ use edge_shared_types::{
     OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError,
     ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry,
     SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
-    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, VerifyRuntimeRequest,
+    StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
+    TraceObservation, VerifyRuntimeRequest,
     decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
@@ -1739,6 +1740,65 @@ impl ControllerService for ControllerServerImpl {
             events: events.into_iter().map(stored_event_to_proto).collect(),
         }))
     }
+
+    async fn stage_credential_candidate(
+        &self,
+        request: Request<StageCredentialCandidateRequest>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let bundle = request
+            .into_inner()
+            .bundle
+            .ok_or_else(|| Status::invalid_argument("credential candidate bundle is required"))?;
+        let state = stage_windows_credential_candidate(&self.repo_root, bundle)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn get_credential_state(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let state = observe_windows_credential_state(&self.repo_root)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation { state }))
+    }
+}
+
+fn require_installed_windows_credential_owner(repo_root: &Path) -> Result<(), String> {
+    if !is_installed_windows_root(repo_root) {
+        return Err(
+            "Windows credential staging requires the installed EdgePlatformController authority layout"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn stage_windows_credential_candidate(
+    repo_root: &Path,
+    bundle: edge_shared_types::CredentialDeliveryBundle,
+) -> Result<edge_shared_types::LocalCredentialState, String> {
+    require_installed_windows_credential_owner(repo_root)?;
+    let store = CredentialStore::new(
+        windows_credential_store_path(repo_root),
+        CredentialProjectionKind::Windows,
+    )?;
+    store.stage_candidate(&bundle)
+}
+
+fn observe_windows_credential_state(
+    repo_root: &Path,
+) -> Result<Option<edge_shared_types::LocalCredentialState>, String> {
+    require_installed_windows_credential_owner(repo_root)?;
+    let Some(store) = CredentialStore::open_existing(
+        windows_credential_store_path(repo_root),
+        CredentialProjectionKind::Windows,
+    )? else {
+        return Ok(None);
+    };
+    store.read_state()
 }
 
 fn default_local_config_path(repo_root: &Path) -> PathBuf {
