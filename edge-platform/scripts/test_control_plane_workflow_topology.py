@@ -206,6 +206,7 @@ def main() -> None:
         and '"contract-verify"' in credentials
         and '"contract-prove"' in credentials
         and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials "${REQUESTED_OPERATION}"' in credentials
+        and "EDGE_RELEASE_CONTEXT_PATH" in credentials
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in credentials
         and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}" in credentials
         and "if: needs.authorize.outputs.operation == 'contract-converge'" in credentials
