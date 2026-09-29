@@ -21,6 +21,7 @@ WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
+VM_AGENT = Path("edge-platform/crates/edge-agent/src/main.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
@@ -57,6 +58,7 @@ def main() -> None:
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
+    vm_agent = VM_AGENT.read_text(encoding="utf-8")
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
@@ -172,8 +174,8 @@ def main() -> None:
         "local credential store must not own generation, provider access, JSON or SQLite state",
     )
     require(
-        'state/secrets/application-v2' in WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
-        and 'runtime-secrets/application-v2' in AGENT.read_text(encoding="utf-8"),
+        'state/secrets/application-v2' in windows_controller_core
+        and 'runtime-secrets/application-v2' in vm_agent,
         "Windows and VM v2 credentials must stay inside the existing private secret roots",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
