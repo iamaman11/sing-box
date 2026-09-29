@@ -131,10 +131,7 @@ fn validate_windows_credential_projection(
         .tunnel_auth
         .as_ref()
         .ok_or_else(|| "Windows credential projection requires tunnel authentication".to_owned())?;
-    validate_tunnel_auth_generation(
-        "WindowsCredentialProjection.tunnel_auth",
-        tunnel_auth,
-    )?;
+    validate_tunnel_auth_generation("WindowsCredentialProjection.tunnel_auth", tunnel_auth)?;
 
     let reality_identity = value
         .reality_identity
@@ -201,10 +198,7 @@ fn validate_tunnel_auth_generation(
     )
 }
 
-fn validate_tunnel_authentication(
-    label: &str,
-    value: &TunnelAuthentication,
-) -> Result<(), String> {
+fn validate_tunnel_authentication(label: &str, value: &TunnelAuthentication) -> Result<(), String> {
     validate_lower_uuid(&format!("{label}.vless_uuid"), &value.vless_uuid)?;
     validate_lower_hex(
         &format!("{label}.hysteria2_password"),
