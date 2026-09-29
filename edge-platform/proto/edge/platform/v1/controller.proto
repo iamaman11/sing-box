@@ -3,6 +3,7 @@ syntax = "proto3";
 package edge.platform.v1;
 
 import "edge/platform/v1/common.proto";
+import "edge/platform/v1/credential_plane.proto";
 import "edge/platform/v1/diagnostics.proto";
 import "edge/platform/v1/operation.proto";
 import "edge/platform/v1/runtime.proto";
@@ -65,4 +66,6 @@ service ControllerService {
   rpc Destroy(DestroyRequest) returns (DestroyResponse);
   rpc GetOperation(GetOperationRequest) returns (OperationStatus);
   rpc ListOperationEvents(ListOperationEventsRequest) returns (ListOperationEventsResponse);
+  rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);
+  rpc GetCredentialState(Empty) returns (CredentialStateObservation);
 }
