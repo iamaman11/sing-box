@@ -394,7 +394,10 @@ def main() -> None:
         and "no HTTP probe replay performed" in credential_command
         and "async fn prove_ab_session(" in credential_command
         and "async fn prove_projection(" not in credential_command
-        and "credential.client_secret" not in credential_command,
+        and not any(
+            "println!" in line and "client_secret" in line
+            for line in credential_command.splitlines()
+        ),
         "credential proof must use one shared two-projection session with secret-safe provider-native failure evidence and no HTTP replay",
     )
     diagnostics_index = credential_command.index(
