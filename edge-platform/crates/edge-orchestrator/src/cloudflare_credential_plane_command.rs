@@ -151,7 +151,7 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             println!("plan_authority={}", authorized.authority.authority_digest);
             println!("plan_disposition={:?}", authorized.disposition);
             println!("real_credentials_created=0");
-            Ok(())
+            Ok(true)
         }
         CredentialDeliveryCommand::ContractConverge => converge(&control_token, &desired).await,
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
@@ -233,6 +233,7 @@ async fn rotate_initial_v2(
     let operation = async {
         let vm_projection = projection_desired(desired, "vm")?;
         let windows_projection = projection_desired(desired, "windows")?;
+        let mut provider_secret_mutations = 0u32;
 
         let vm_bundle = match read_real_worker_generation(
             &vm_projection,
@@ -247,6 +248,16 @@ async fn rotate_initial_v2(
                 existing
             }
             None => {
+                if vm_state_before
+                    .as_ref()
+                    .and_then(|state| state.candidate.as_ref())
+                    .is_some()
+                {
+                    return Err(
+                        "VM has a staged initial-v2 candidate but provider generation is absent; refusing regeneration"
+                            .to_owned(),
+                    );
+                }
                 let snapshot = generate_fresh_credential_snapshot(FreshCredentialSnapshotRequest {
                     delivery_generation: INITIAL_V2_DELIVERY_GENERATION,
                     slot: CredentialDeliverySlot::A,
@@ -255,7 +266,7 @@ async fn rotate_initial_v2(
                     line2_proxy_generation: INITIAL_V2_LINE2_PROXY_GENERATION,
                 })?;
                 let expected = snapshot.vm;
-                publish_worker_bundle_once(
+                if publish_worker_bundle_once(
                     &rotation_token,
                     desired,
                     &vm_projection,
@@ -263,7 +274,10 @@ async fn rotate_initial_v2(
                     &session.vm,
                     &expected,
                 )
-                .await?;
+                .await?
+                {
+                    provider_secret_mutations += 1;
+                }
                 expected
             }
         };
@@ -287,7 +301,7 @@ async fn rotate_initial_v2(
                 );
             }
             None => {
-                publish_worker_bundle_once(
+                if publish_worker_bundle_once(
                     &rotation_token,
                     desired,
                     &windows_projection,
@@ -295,7 +309,10 @@ async fn rotate_initial_v2(
                     &session.windows,
                     &windows_bundle,
                 )
-                .await?;
+                .await?
+                {
+                    provider_secret_mutations += 1;
+                }
             }
         }
 
@@ -324,13 +341,7 @@ async fn rotate_initial_v2(
             windows_sealed,
             windows_ref,
             vm_ref,
-            provider_secret_mutations: count_initial_provider_secret_mutations(
-                &vm_projection,
-                &windows_projection,
-                workers_subdomain,
-                &session,
-            )
-            .await?,
+            provider_secret_mutations,
             vm_state: vm_staged,
         })
     }
@@ -546,7 +557,7 @@ async fn publish_worker_bundle_once(
     workers_subdomain: &str,
     credential: &cloudflare::CloudflareAccessServiceCredential,
     bundle: &CredentialDeliveryBundle,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let slot = CredentialDeliverySlot::try_from(bundle.slot)
         .map_err(|_| "credential bundle slot is unknown".to_owned())?;
     let secret_name = match slot {
@@ -580,7 +591,7 @@ async fn publish_worker_bundle_once(
     .await;
 
     match (mutation, observed) {
-        (Ok(()), Ok(Some(value))) if value == *bundle => Ok(()),
+        (Ok(()), Ok(Some(value))) if value == *bundle => Ok(true),
         (Err(_), Ok(Some(value))) if value == *bundle => {
             println!(
                 "credential_secret_mutation_outcome projection={} generation={} outcome=RESOLVED_BY_READ_ONLY_OBSERVATION",
@@ -692,24 +703,26 @@ async fn open_rotation_probe_session(
     }
     .await;
 
-    if let Err(err) = result {
-        let cleanup = disable_rotation_probe_tokens(
-            control_token,
-            desired,
-            &windows_projection,
-            &windows_token_id,
-            &vm_projection,
-            &vm_token_id,
-        )
-        .await;
-        return match cleanup {
-            Ok(()) => Err(err),
-            Err(cleanup_err) => Err(format!(
-                "{err}; Access proof-token cleanup also failed: {cleanup_err}"
-            )),
-        };
+    match result {
+        Ok(session) => Ok(session),
+        Err(err) => {
+            let cleanup = disable_rotation_probe_tokens(
+                control_token,
+                desired,
+                &windows_projection,
+                &windows_token_id,
+                &vm_projection,
+                &vm_token_id,
+            )
+            .await;
+            match cleanup {
+                Ok(()) => Err(err),
+                Err(cleanup_err) => Err(format!(
+                    "{err}; Access proof-token cleanup also failed: {cleanup_err}"
+                )),
+            }
+        }
     }
-    result
 }
 
 fn validate_rotated_probe_credential(
@@ -783,35 +796,6 @@ async fn disable_rotation_probe_tokens(
             "failed to disable Windows proof token: {left}; failed to disable VM proof token: {right}"
         )),
     }
-}
-
-async fn count_initial_provider_secret_mutations(
-    vm_projection: &ProjectionDesired,
-    windows_projection: &ProjectionDesired,
-    workers_subdomain: &str,
-    session: &RotationProbeSession,
-) -> Result<u32, String> {
-    let vm = read_real_worker_generation(
-        vm_projection,
-        workers_subdomain,
-        INITIAL_V2_DELIVERY_GENERATION,
-        &session.vm,
-    )
-    .await?;
-    let windows = read_real_worker_generation(
-        windows_projection,
-        workers_subdomain,
-        INITIAL_V2_DELIVERY_GENERATION,
-        &session.windows,
-    )
-    .await?;
-    if vm.is_none() || windows.is_none() {
-        return Err("initial v2 provider generation disappeared before completion".to_owned());
-    }
-    // Exact count cannot be reconstructed after an interrupted/resumed run
-    // without introducing a second mutation journal. Report only the bounded
-    // upper limit for this invocation path.
-    Ok(2)
 }
 
 pub(crate) async fn verify_credential_plane_invariant() -> Result<(), String> {
