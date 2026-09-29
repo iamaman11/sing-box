@@ -191,6 +191,7 @@ const EXPECTED_LOCAL_CONFIG_PATH: &str = "win/windows/edge-dns-clean-vultr-dual.
 const DEFAULT_STATE_DB_PATH: &str = "edge-platform/.runtime/controller-state.sqlite";
 const INSTALLED_STATE_DB_PATH: &str = "state/controller-state.sqlite";
 const INSTALLED_RUNTIME_STATE_PATH: &str = "state/secrets/runtime-state.pb";
+const INSTALLED_CREDENTIAL_STORE_PATH: &str = "state/secrets/application-v2";
 const INSTALLED_LOCAL_CONFIG_PATH: &str = "runtime/sing-box.json";
 
 pub fn is_installed_windows_root(root: &Path) -> bool {
@@ -215,6 +216,10 @@ pub fn local_singbox_config_path(root: &Path) -> PathBuf {
 
 pub fn windows_runtime_state_path(root: &Path) -> PathBuf {
     root.join(INSTALLED_RUNTIME_STATE_PATH)
+}
+
+pub fn windows_credential_store_path(root: &Path) -> PathBuf {
+    root.join(INSTALLED_CREDENTIAL_STORE_PATH)
 }
 
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
@@ -792,6 +797,15 @@ mod tests {
                 .blockers
                 .iter()
                 .any(|line| line.contains("required repository inputs are missing"))
+        );
+    }
+
+    #[test]
+    fn installed_windows_credential_store_stays_inside_private_secret_state() {
+        let root = PathBuf::from(r"C:\sing-box");
+        assert_eq!(
+            windows_credential_store_path(&root),
+            root.join("state/secrets/application-v2")
         );
     }
 

@@ -470,7 +470,9 @@ name = "edge-secrets"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "edge-shared-types",
  "rand_core 0.6.4",
+ "windows-sys 0.61.2",
  "x25519-dalek",
 ]
 
