@@ -53,17 +53,17 @@ use edge_shared_types::controller_service_server::{ControllerService, Controller
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ApplyBundleRequest, BootstrapMode, BootstrapRuntimeRequest,
     BootstrapRuntimeResponse, BundleFile, CheckStatus, ControllerStatus, CredentialProjectionKind,
-    CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
-    DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest, DoctorResponse, Empty,
-    GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
-    ListOperationEventsRequest, ListOperationEventsResponse, ListSecretRefsRequest,
-    ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent, OperationEventKind,
-    OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus, PlatformError,
-    ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry,
-    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse, DestroyRequest,
+    DestroyResponse, DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest,
+    DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest,
+    GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse,
+    ListSecretRefsRequest, ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent,
+    OperationEventKind, OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus,
+    PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
+    SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, VerifyRuntimeRequest,
-    decode_windows_runtime_state, timestamp_from_unix_seconds,
+    TraceObservation, VerifyRuntimeRequest, decode_windows_runtime_state,
+    timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -1799,7 +1799,8 @@ fn observe_windows_credential_state(
     let Some(store) = CredentialStore::open_existing(
         windows_credential_store_path(repo_root),
         CredentialProjectionKind::Windows,
-    )? else {
+    )?
+    else {
         return Ok(None);
     };
     store.read_state()
