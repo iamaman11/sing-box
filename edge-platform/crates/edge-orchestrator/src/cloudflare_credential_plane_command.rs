@@ -151,7 +151,7 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             println!("plan_authority={}", authorized.authority.authority_digest);
             println!("plan_disposition={:?}", authorized.disposition);
             println!("real_credentials_created=0");
-            Ok(true)
+            Ok(())
         }
         CredentialDeliveryCommand::ContractConverge => converge(&control_token, &desired).await,
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
@@ -597,7 +597,7 @@ async fn publish_worker_bundle_once(
                 "credential_secret_mutation_outcome projection={} generation={} outcome=RESOLVED_BY_READ_ONLY_OBSERVATION",
                 projection.projection, bundle.generation
             );
-            Ok(())
+            Ok(true)
         }
         (Ok(()), Ok(Some(_))) => Err(format!(
             "{} Worker secret update completed but exact generation re-observation conflicted",
