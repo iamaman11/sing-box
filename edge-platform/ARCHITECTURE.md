@@ -327,6 +327,18 @@ Physical roots:
 - VM: `<stack-parent>/runtime-secrets/application-v2`, inside the existing root-owned private
   runtime-secret boundary; Unix directories/files remain mode `0700/0600`.
 
+Candidate ingress is deliberately narrower than the persistence API:
+- both local owners expose only typed `StageCredentialCandidate` and read-only
+  `GetCredentialState`;
+- the request contains one `CredentialDeliveryBundle`; arbitrary byte payloads and generic secret
+  maps are forbidden;
+- the response contains only `LocalCredentialState` refs and never returns credential payload
+  material;
+- staging cannot promote, rollback, restart sing-box or alter the active runtime;
+- Windows accepts staging only from the installed `EdgePlatformController` authority layout;
+  repo/dev controller mode is not a credential owner;
+- no runner/console operator command is added by this boundary.
+
 The existing `edge-secrets` crate may provide this narrow cross-platform persistence primitive, but
 it owns no credential lifecycle, generation, provider mutation or runtime activation. Those
 decisions remain with the runtime owner and the GitHub-only `/credentials` lifecycle owner.

@@ -30,12 +30,13 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, Empty, FileCategory,
-    FilePresence, Ipv4NetworkObservation, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
-    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
-    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
-    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
-    RuntimeProbeEvidence, RuntimeProbeStatus, VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, CredentialStateObservation,
+    Empty, FileCategory, FilePresence, Ipv4NetworkObservation, LocalCredentialState,
+    MeshContainerDiagnostics, MeshRuntimeConvergeRequest, MeshRuntimeDiagnostics,
+    MeshRuntimeFailureSnapshot, MeshRuntimeState, ReadBundleIdentityRequest,
+    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
+    StageCredentialCandidateRequest, VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -343,6 +344,29 @@ impl AgentService for AgentServerImpl {
             Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}"))
         })?;
         Ok(Response::new(state))
+    }
+
+    async fn stage_credential_candidate(
+        &self,
+        request: Request<StageCredentialCandidateRequest>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let bundle = request
+            .into_inner()
+            .bundle
+            .ok_or_else(|| Status::invalid_argument("credential candidate bundle is required"))?;
+        let state = stage_vm_credential_candidate(&self.stack_dir, bundle)
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(CredentialStateObservation {
+            state: Some(state),
+        }))
+    }
+
+    async fn get_credential_state(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<CredentialStateObservation>, Status> {
+        let state = observe_vm_credential_state(&self.stack_dir).map_err(Status::internal)?;
+        Ok(Response::new(CredentialStateObservation { state }))
     }
 }
 
@@ -973,6 +997,32 @@ fn validate_existing_vm_credential_store(stack_dir: &Path) -> Result<(), String>
         CredentialProjectionKind::Vm,
     )?;
     Ok(())
+}
+
+fn stage_vm_credential_candidate(
+    stack_dir: &Path,
+    bundle: edge_shared_types::CredentialDeliveryBundle,
+) -> Result<LocalCredentialState, String> {
+    edge_shared_types::local_credential_bundle_ref(&bundle)?;
+    if bundle.projection != CredentialProjectionKind::Vm as i32 {
+        return Err("VM credential owner rejects non-VM projection".to_owned());
+    }
+    let store = CredentialStore::new(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?;
+    store.stage_candidate(&bundle)
+}
+
+fn observe_vm_credential_state(stack_dir: &Path) -> Result<Option<LocalCredentialState>, String> {
+    let Some(store) = CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?
+    else {
+        return Ok(None);
+    };
+    store.read_state()
 }
 
 fn ensure_vm_runtime_secret_store(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {
@@ -3284,6 +3334,11 @@ struct BundleSummary {
 mod tests {
     use super::*;
     use edge_shared_types::agent_service_server::AgentService;
+    use edge_shared_types::{
+        CredentialDeliveryBundle, CredentialDeliverySlot, ProxyCredentialGeneration,
+        RealityPrivateIdentity, RealityPrivateIdentityGeneration, TunnelAuthentication,
+        TunnelAuthenticationGeneration, VmCredentialProjection, credential_delivery_bundle,
+    };
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3295,6 +3350,70 @@ mod tests {
         };
         let response = server.get_health(Request::new(Empty {})).await.unwrap();
         assert!(response.get_ref().observed_stack_path.is_some());
+    }
+
+    #[tokio::test]
+    async fn stages_vm_credential_candidate_without_changing_active_and_survives_reopen() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        )
+        .unwrap();
+        store
+            .stage_candidate(&vm_test_credential_bundle(100, CredentialDeliverySlot::A))
+            .unwrap();
+        let active = store.promote_candidate().unwrap().active.unwrap();
+
+        let server = AgentServerImpl {
+            stack_dir: stack.clone(),
+        };
+        let staged = server
+            .stage_credential_candidate(Request::new(StageCredentialCandidateRequest {
+                bundle: Some(vm_test_credential_bundle(101, CredentialDeliverySlot::B)),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .state
+            .unwrap();
+
+        assert_eq!(staged.active.as_ref().unwrap(), &active);
+        assert_eq!(staged.candidate.as_ref().unwrap().generation, 101);
+        assert_eq!(
+            staged.candidate.as_ref().unwrap().slot,
+            CredentialDeliverySlot::B as i32
+        );
+
+        let reopened = AgentServerImpl { stack_dir: stack };
+        let observed = reopened
+            .get_credential_state(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .state
+            .unwrap();
+        assert_eq!(observed, staged);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_vm_candidate_has_no_store_side_effect() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        let store_root = vm_credential_store_root(&stack).unwrap();
+
+        let mut invalid = vm_test_credential_bundle(101, CredentialDeliverySlot::B);
+        invalid.dummy_non_secret = true;
+        assert!(stage_vm_credential_candidate(&stack, invalid).is_err());
+        assert!(!store_root.exists());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4487,6 +4606,50 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn vm_test_credential_bundle(
+        generation: u64,
+        slot: CredentialDeliverySlot,
+    ) -> CredentialDeliveryBundle {
+        let tunnel_auth = TunnelAuthenticationGeneration {
+            generation: 7,
+            direct: Some(TunnelAuthentication {
+                vless_uuid: "00000000-0000-4000-8000-000000000001".to_owned(),
+                hysteria2_password: "a".repeat(64),
+                reality_short_id: "b".repeat(16),
+            }),
+            warp: Some(TunnelAuthentication {
+                vless_uuid: "00000000-0000-4000-8000-000000000002".to_owned(),
+                hysteria2_password: "c".repeat(64),
+                reality_short_id: "d".repeat(16),
+            }),
+        };
+        CredentialDeliveryBundle {
+            schema_version: 1,
+            generation,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: false,
+            slot: slot as i32,
+            payload: Some(credential_delivery_bundle::Payload::Vm(
+                VmCredentialProjection {
+                    tunnel_auth: Some(tunnel_auth),
+                    reality_identity: Some(RealityPrivateIdentityGeneration {
+                        generation: 3,
+                        direct: Some(RealityPrivateIdentity {
+                            private_key: "C".repeat(43),
+                        }),
+                        warp: Some(RealityPrivateIdentity {
+                            private_key: "D".repeat(43),
+                        }),
+                    }),
+                    line2_proxy: Some(ProxyCredentialGeneration {
+                        generation: 2,
+                        password: "e".repeat(64),
+                    }),
+                },
+            )),
+        }
     }
 
     fn unique_test_dir() -> PathBuf {
