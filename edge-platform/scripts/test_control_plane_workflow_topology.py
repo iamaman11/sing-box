@@ -79,8 +79,9 @@ def main() -> None:
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
-    tunnel_client = credential_proto.split("message TunnelClientCredential {", 1)[1].split("}", 1)[0]
-    tunnel_server = credential_proto.split("message TunnelServerCredential {", 1)[1].split("}", 1)[0]
+    tunnel_auth = credential_proto.split("message TunnelAuthentication {", 1)[1].split("}", 1)[0]
+    reality_public = credential_proto.split("message RealityPublicIdentity {", 1)[1].split("}", 1)[0]
+    reality_private = credential_proto.split("message RealityPrivateIdentity {", 1)[1].split("}", 1)[0]
     windows_projection = credential_proto.split("message WindowsCredentialProjection {", 1)[1].split("}", 1)[0]
     vm_projection = credential_proto.split("message VmCredentialProjection {", 1)[1].split("}", 1)[0]
     require(
@@ -92,18 +93,30 @@ def main() -> None:
         "credential v2 must remain an explicit typed protobuf contract with fixed A/B slot identity and without maps or arbitrary byte bags",
     )
     require(
-        "reality_public_key" in tunnel_client
-        and "reality_private_key" not in tunnel_client
-        and "reality_private_key" in tunnel_server
-        and "reality_public_key" not in tunnel_server,
-        "credential schema must keep Reality public material Windows/client-side and private material VM/server-side",
+        "vless_uuid" in tunnel_auth
+        and "hysteria2_password" in tunnel_auth
+        and "reality_short_id" in tunnel_auth
+        and "public_key" not in tunnel_auth
+        and "private_key" not in tunnel_auth,
+        "tunnel authentication must remain independent from Reality server identity",
     )
     require(
-        "TunnelClientCredentialGeneration tunnel" in windows_projection
+        "public_key" in reality_public
+        and "private_key" not in reality_public
+        and "private_key" in reality_private
+        and "public_key" not in reality_private,
+        "credential schema must keep Reality public material Windows-side and private material VM-side",
+    )
+    require(
+        "TunnelAuthenticationGeneration tunnel_auth" in windows_projection
+        and "RealityPublicIdentityGeneration reality_identity" in windows_projection
         and "line2_proxy" not in windows_projection
-        and "TunnelServerCredentialGeneration tunnel" in vm_projection
-        and "ProxyCredentialGeneration line2_proxy" in vm_projection,
-        "credential schema must keep Windows client-only and VM server/proxy projections least-privilege",
+        and "RealityPrivateIdentityGeneration" not in windows_projection
+        and "TunnelAuthenticationGeneration tunnel_auth" in vm_projection
+        and "RealityPrivateIdentityGeneration reality_identity" in vm_projection
+        and "ProxyCredentialGeneration line2_proxy" in vm_projection
+        and "RealityPublicIdentityGeneration" not in vm_projection,
+        "credential schema must keep independent tunnel-auth/Reality/proxy lifecycles and least-privilege projections",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
