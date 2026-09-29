@@ -163,6 +163,10 @@ async fn converge(
             ));
         }
         println!("next_action={}", action_name(&next));
+        if next == CredentialDeliveryAction::Noop {
+            print_terminal(desired, &after, mutations)?;
+            return Ok(());
+        }
         print_observation(desired, &after)?;
     }
 
