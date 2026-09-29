@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64 = "0.22.1"
 clap = { version = "=4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 edge-controller-core = { path = "../edge-controller-core" }
 edge-observability = { path = "../edge-observability" }
@@ -14,12 +15,14 @@ edge-provider-vultr = { path = "../edge-provider-vultr" }
 edge-shared-types = { path = "../edge-shared-types" }
 ring = "0.17.14"
 prost = "0.14.3"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "net", "time"] }
 time = { version = "=0.3.47", features = ["parsing", "formatting"] }
 tonic = { version = "0.14.5", features = ["tls-ring"] }
 tracing = "=0.1.44"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 
 [lib]
 path = "src/lib.rs"
