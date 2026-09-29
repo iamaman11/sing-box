@@ -265,7 +265,7 @@ mod tests {
 
         for bundle in [&snapshot.windows, &snapshot.vm] {
             let bytes = encode_credential_delivery_bundle(bundle).unwrap();
-            assert_eq!(decode_credential_delivery_bundle(&bytes).unwrap(), *bundle);
+            assert_eq!(decode_credential_delivery_bundle(&bytes).unwrap(), bundle.clone());
         }
     }
 
