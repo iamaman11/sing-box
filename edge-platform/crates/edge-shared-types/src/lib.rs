@@ -82,14 +82,22 @@ pub fn validate_credential_delivery_bundle(
     if projection == CredentialProjectionKind::Unspecified {
         return Err("credential-delivery projection is required".to_owned());
     }
+    let slot = CredentialDeliverySlot::try_from(bundle.slot)
+        .map_err(|_| "credential-delivery slot is unknown".to_owned())?;
 
     if bundle.dummy_non_secret {
+        if slot != CredentialDeliverySlot::Unspecified {
+            return Err("dummy credential-delivery bundle must not claim a real A/B slot".to_owned());
+        }
         if bundle.payload.is_some() {
             return Err(
                 "dummy credential-delivery bundle must not carry a real payload".to_owned(),
             );
         }
         return Ok(());
+    }
+    if slot == CredentialDeliverySlot::Unspecified {
+        return Err("real credential-delivery bundle requires fixed slot A or B".to_owned());
     }
 
     let payload = bundle
@@ -1188,6 +1196,7 @@ mod credential_delivery_tests {
             generation: 9_000_001,
             projection: CredentialProjectionKind::Windows as i32,
             dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
             payload: None,
         };
         let bytes = encode_credential_delivery_bundle(&bundle).unwrap();
@@ -1201,6 +1210,7 @@ mod credential_delivery_tests {
             generation: 10,
             projection: CredentialProjectionKind::Windows as i32,
             dummy_non_secret: false,
+            slot: CredentialDeliverySlot::A as i32,
             payload: Some(credential_delivery_bundle::Payload::Windows(
                 WindowsCredentialProjection {
                     tunnel: Some(TunnelClientCredentialGeneration {
@@ -1222,6 +1232,7 @@ mod credential_delivery_tests {
             generation: 11,
             projection: CredentialProjectionKind::Vm as i32,
             dummy_non_secret: false,
+            slot: CredentialDeliverySlot::B as i32,
             payload: Some(credential_delivery_bundle::Payload::Vm(
                 VmCredentialProjection {
                     tunnel: Some(TunnelServerCredentialGeneration {
@@ -1265,12 +1276,35 @@ mod credential_delivery_tests {
     }
 
     #[test]
+    fn real_bundle_requires_explicit_fixed_slot() {
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 14,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                WindowsCredentialProjection {
+                    tunnel: Some(TunnelClientCredentialGeneration {
+                        generation: 9,
+                        direct: Some(client_endpoint(1)),
+                        warp: Some(client_endpoint(2)),
+                    }),
+                },
+            )),
+        };
+        let error = validate_credential_delivery_bundle(&bundle).unwrap_err();
+        assert!(error.contains("requires fixed slot A or B"));
+    }
+
+    #[test]
     fn dummy_bundle_rejects_real_payload() {
         let bundle = CredentialDeliveryBundle {
             schema_version: 1,
             generation: 13,
             projection: CredentialProjectionKind::Windows as i32,
             dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
             payload: Some(credential_delivery_bundle::Payload::Windows(
                 WindowsCredentialProjection {
                     tunnel: Some(TunnelClientCredentialGeneration {
