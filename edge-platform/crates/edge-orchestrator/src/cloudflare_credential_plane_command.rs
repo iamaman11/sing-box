@@ -1,12 +1,26 @@
+use crate::application_lifecycle_command::resolve_application_authority;
+use crate::application_lifecycle_service::{
+    read_vm_credential_ingress_public_key, read_vm_credential_state,
+    stage_vm_sealed_credential_candidate,
+};
 use crate::cli::CredentialDeliveryCommand;
+use crate::credential_snapshot::{
+    FreshCredentialSnapshotRequest, generate_fresh_credential_snapshot,
+    windows_bundle_from_vm_bundle,
+};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_provider_cloudflare as cloudflare;
+use edge_secrets::{seal_credential_candidate, validate_ingress_public_key};
 use edge_shared_types::{
-    CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
-    CredentialProjectionKind,
+    CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIngressPublicKey,
+    CredentialIsolationProbe, CredentialProjectionKind, LocalCredentialState,
+    SealedCredentialCandidate, credential_delivery_bundle_sha256,
+    decode_credential_delivery_bundle, decode_local_credential_state,
+    encode_credential_delivery_bundle, local_credential_bundle_ref,
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -142,6 +156,7 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::ContractConverge => converge(&control_token, &desired).await,
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
         CredentialDeliveryCommand::ContractProve => prove(&control_token, &desired).await,
+        CredentialDeliveryCommand::Rotate => rotate_initial_v2(&control_token, &production, &desired).await,
     }
 }
 
