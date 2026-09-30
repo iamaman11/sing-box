@@ -3224,6 +3224,50 @@ mod tests {
     }
 
     #[test]
+    fn renders_wrangler_latest_worker_version_secret_patch_shape() {
+        let body = latest_worker_version_secret_patch(
+            "sing-box-phase6-ab-windows-deadbeef",
+            &[("EDGE_CREDENTIAL_BUNDLE_A", "fresh-v2-secret")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "env": {
+                    "EDGE_CREDENTIAL_BUNDLE_A": {
+                        "type": "secret_text",
+                        "text": "fresh-v2-secret"
+                    }
+                },
+                "annotations": {
+                    "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract",
+                    "workers/tag": "sing-box-phase6-ab-windows-deadbeef"
+                }
+            })
+        );
+        assert!(body.get("secrets").is_none());
+        assert!(body.get("version_tags").is_none());
+    }
+
+    #[test]
+    fn latest_worker_version_secret_patch_requires_real_unique_secrets() {
+        assert!(latest_worker_version_secret_patch(
+            "sing-box-phase6-ab-windows-deadbeef",
+            &[]
+        )
+        .is_err());
+        assert!(latest_worker_version_secret_patch(
+            "sing-box-phase6-ab-windows-deadbeef",
+            &[
+                ("EDGE_CREDENTIAL_BUNDLE_A", "one"),
+                ("EDGE_CREDENTIAL_BUNDLE_A", "two"),
+            ],
+        )
+        .is_err());
+    }
+
+    #[test]
     fn worker_secret_binding_debug_never_contains_secret_text() {
         let binding = worker_secret_binding_from_value(serde_json::json!({
             "name": "EDGE_CREDENTIAL_BUNDLE_A",
