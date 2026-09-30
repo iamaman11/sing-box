@@ -731,6 +731,18 @@ pub fn validate_windows_privileged_request(
                 return Err("STAGE_CREDENTIAL generation must be greater than zero".to_owned());
             }
         }
+        WindowsPrivilegedOperation::PrepareCredentialAccessBootstrap
+        | WindowsPrivilegedOperation::InstallCredentialAccessBootstrap => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_generation.is_some()
+            {
+                return Err(
+                    "credential Access bootstrap request must carry no release or application credential authority"
+                        .to_owned(),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -2156,6 +2168,33 @@ mod tests {
         let mut invalid = request;
         invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
         assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_access_bootstrap_carries_no_release_or_application_credential_authority()
+    {
+        for operation in [
+            WindowsPrivilegedOperation::PrepareCredentialAccessBootstrap,
+            WindowsPrivilegedOperation::InstallCredentialAccessBootstrap,
+        ] {
+            let request = WindowsPrivilegedRequest {
+                schema_version: 1,
+                request_id: format!("request-access-bootstrap-{}", operation as i32),
+                operation: operation as i32,
+                accepted_revision: None,
+                release_set_sha256: None,
+                credential_generation: None,
+            };
+            assert!(encode_windows_privileged_request(&request).is_ok());
+
+            let mut invalid = request.clone();
+            invalid.credential_generation = Some(101);
+            assert!(encode_windows_privileged_request(&invalid).is_err());
+
+            let mut invalid = request;
+            invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+            assert!(encode_windows_privileged_request(&invalid).is_err());
+        }
     }
 
     #[test]

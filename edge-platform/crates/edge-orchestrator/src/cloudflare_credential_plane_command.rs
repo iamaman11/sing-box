@@ -11,7 +11,10 @@ use edge_shared_types::{
 use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Serialize;
-use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
+use std::{env, fs};
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 const MAX_CONVERGENCE_STEPS: usize = 2;
@@ -50,8 +53,10 @@ struct ProjectionObservation {
     proof_service_token_enabled: Option<bool>,
     proof_service_token_duration: Option<String>,
     host_service_token_id: Option<String>,
+    host_service_token_client_id: Option<String>,
     host_service_token_enabled: Option<bool>,
     host_service_token_duration: Option<String>,
+    access_application_id: Option<String>,
     access_application_type: Option<String>,
     access_service_auth_401_redirect: Option<bool>,
     access_destination_type: Option<String>,
@@ -146,6 +151,9 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::ContractConverge => converge(&control_token, &desired).await,
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
         CredentialDeliveryCommand::ContractProve => prove(&control_token, &desired).await,
+        CredentialDeliveryCommand::HostBootstrapConverge => {
+            host_bootstrap_converge(&control_token, &desired).await
+        }
     }
 }
 
@@ -159,6 +167,348 @@ pub(crate) async fn verify_credential_plane_invariant() -> Result<(), String> {
     for projection in projections(desired) {
         projection_delivery_state(desired, &projection, &observed)?;
     }
+    Ok(())
+}
+
+fn write_private_bootstrap_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("bootstrap secret output must not be empty".to_owned());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create bootstrap output directory: {err}"))?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .map_err(|err| format!("failed to create bootstrap secret output: {err}"))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|err| format!("failed to persist bootstrap secret output: {err}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("failed to protect bootstrap secret output: {err}"))?;
+    }
+    Ok(())
+}
+
+fn validate_host_bootstrap_preconditions(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<(), String> {
+    if observed.control_token_identity.status != "active" {
+        return Err("CLOUDFLARE_CONTROL_TOKEN is not active".to_owned());
+    }
+    let organization = observed
+        .access_organization
+        .as_ref()
+        .ok_or_else(|| "accepted Access organization is missing".to_owned())?;
+    if organization.name != desired.access_organization_name
+        || organization.auth_domain != desired.access_auth_domain
+        || organization.deny_unmatched_requests != Some(true)
+    {
+        return Err("credential Access organization drifted".to_owned());
+    }
+    if observed.workers_dev_subdomain.as_deref() != Some(desired.workers_dev_subdomain.as_str()) {
+        return Err("credential workers.dev namespace drifted".to_owned());
+    }
+
+    for projection in projections(desired) {
+        let current = projection_observation(observed, &projection.projection)?;
+        if projection_delivery_state(desired, &projection, observed)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} credential Worker must already be exact FIXED_A_B before host bootstrap",
+                projection.projection
+            ));
+        }
+        if !current.worker_script_present
+            || !current.worker_identity_present
+            || current.custom_domain_count != 0
+            || current.workers_dev_enabled != Some(true)
+            || current.previews_enabled != Some(false)
+        {
+            return Err(format!(
+                "{} credential Worker drifted from workers.dev-only authority",
+                projection.projection
+            ));
+        }
+
+        let proof_id = current
+            .proof_service_token_id
+            .as_deref()
+            .ok_or_else(|| format!("{} proof service token is missing", projection.projection))?;
+        if current.proof_service_token_enabled != Some(false)
+            || current.proof_service_token_duration.as_deref()
+                != Some(desired.proof_token_duration.as_str())
+        {
+            return Err(format!(
+                "{} proof service token drifted",
+                projection.projection
+            ));
+        }
+
+        if current.host_service_token_id.is_some()
+            && (current.host_service_token_enabled != Some(true)
+                || current.host_service_token_duration.as_deref()
+                    != Some(desired.host_service_token_duration.as_str()))
+        {
+            return Err(format!(
+                "{} existing host service token drifted",
+                projection.projection
+            ));
+        }
+
+        let expected_hostname = workers_dev_hostname(desired, &projection);
+        if current
+            .access_application_id
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+            || current.access_application_type.as_deref() != Some("self_hosted")
+            || current.access_service_auth_401_redirect != Some(true)
+            || current.access_destination_type.as_deref() != Some("public")
+            || current.access_destination_uri.as_deref() != Some(expected_hostname.as_str())
+            || current.access_destination_worker_id.is_some()
+            || current.access_destination_has_overrides != Some(false)
+        {
+            return Err(format!(
+                "{} Access application drifted from exact workers.dev Service Auth",
+                projection.projection
+            ));
+        }
+        if current.access_policies.len() != 1 {
+            return Err(format!(
+                "{} Access application must have exactly one service-auth policy",
+                projection.projection
+            ));
+        }
+        let policy = &current.access_policies[0];
+        if policy.name != projection.access_policy_name
+            || policy.decision.as_deref() != Some("non_identity")
+            || policy.has_extra_rules
+        {
+            return Err(format!(
+                "{} Access service-auth policy drifted",
+                projection.projection
+            ));
+        }
+        if !bootstrap_policy_tokens_are_recoverable(
+            proof_id,
+            current.host_service_token_id.as_deref(),
+            &policy.include_service_token_ids,
+        ) {
+            return Err(format!(
+                "{} Access service-auth policy contains unexpected token identities",
+                projection.projection
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn bootstrap_policy_tokens_are_recoverable(
+    proof_id: &str,
+    host_id: Option<&str>,
+    actual_ids: &[String],
+) -> bool {
+    let mut actual = actual_ids.to_vec();
+    actual.sort();
+
+    let mut proof_only = vec![proof_id.to_owned()];
+    proof_only.sort();
+    if actual == proof_only {
+        return true;
+    }
+
+    let Some(host_id) = host_id else {
+        return false;
+    };
+    let mut terminal = vec![proof_id.to_owned(), host_id.to_owned()];
+    terminal.sort();
+    actual == terminal
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn existing_host_credential_from_escrow(
+    desired: &ProductionCredentialPlaneOwnership,
+    projection: &ProjectionDesired,
+    current: &ProjectionObservation,
+) -> Result<cloudflare::CloudflareAccessServiceCredential, String> {
+    let token_id = current
+        .host_service_token_id
+        .as_deref()
+        .ok_or_else(|| format!("{} host service token is missing", projection.projection))?;
+    let observed_client_id = current
+        .host_service_token_client_id
+        .as_deref()
+        .ok_or_else(|| {
+            format!(
+                "{} host service token client ID is unavailable",
+                projection.projection
+            )
+        })?;
+
+    let (client_id_env, client_secret_env) = match projection.projection.as_str() {
+        "windows" => (
+            "EDGE_WINDOWS_HOST_CLIENT_ID",
+            "EDGE_WINDOWS_HOST_CLIENT_SECRET",
+        ),
+        "vm" => ("EDGE_VM_HOST_CLIENT_ID", "EDGE_VM_HOST_CLIENT_SECRET"),
+        _ => return Err("unsupported host bootstrap projection".to_owned()),
+    };
+
+    let client_id = optional_env(client_id_env).ok_or_else(|| {
+        format!(
+            "{} host token already exists but bootstrap escrow is unavailable; fail closed instead of rotating implicitly",
+            projection.projection
+        )
+    })?;
+    let client_secret = optional_env(client_secret_env).ok_or_else(|| {
+        format!(
+            "{} host token already exists but bootstrap escrow secret is unavailable; fail closed instead of rotating implicitly",
+            projection.projection
+        )
+    })?;
+    if client_id != observed_client_id {
+        return Err(format!(
+            "{} host bootstrap escrow client ID does not match observed Cloudflare token identity",
+            projection.projection
+        ));
+    }
+
+    Ok(cloudflare::CloudflareAccessServiceCredential {
+        id: token_id.to_owned(),
+        client_id,
+        client_secret,
+        enabled: current.host_service_token_enabled,
+        duration: current.host_service_token_duration.clone(),
+        name: Some(projection.host_service_token_name.clone()),
+    })
+}
+
+fn validate_host_credential(
+    desired: &ProductionCredentialPlaneOwnership,
+    projection: &ProjectionDesired,
+    credential: &cloudflare::CloudflareAccessServiceCredential,
+) -> Result<(), String> {
+    if credential.id.is_empty()
+        || credential.client_id.is_empty()
+        || credential.client_secret.is_empty()
+        || credential.name.as_deref() != Some(projection.host_service_token_name.as_str())
+        || credential.enabled != Some(true)
+        || credential.duration.as_deref() != Some(desired.host_service_token_duration.as_str())
+    {
+        return Err(format!(
+            "{} host service-token credential response is not exact",
+            projection.projection
+        ));
+    }
+    Ok(())
+}
+
+async fn host_bootstrap_converge(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let before = observe(control_token, desired).await?;
+    validate_host_bootstrap_preconditions(desired, &before)?;
+
+    let windows_output = required_env("EDGE_WINDOWS_HOST_IDENTITY_OUTPUT")?;
+    let vm_id_output = required_env("EDGE_VM_HOST_CLIENT_ID_OUTPUT")?;
+    let vm_secret_output = required_env("EDGE_VM_HOST_CLIENT_SECRET_OUTPUT")?;
+    let mut mutations = 0u32;
+
+    for projection in projections(desired) {
+        let current = projection_observation(&before, &projection.projection)?;
+        let credential = if current.host_service_token_id.is_some() {
+            existing_host_credential_from_escrow(desired, &projection, current)?
+        } else {
+            let credential = cloudflare::create_access_service_token(
+                control_token,
+                &desired.target_account_id,
+                &projection.host_service_token_name,
+                &desired.host_service_token_duration,
+                true,
+            )
+            .await?;
+            mutations += 1;
+            credential
+        };
+        validate_host_credential(desired, &projection, &credential)?;
+
+        match projection.projection.as_str() {
+            "windows" => {
+                let raw = format!(
+                    "CF_ACCESS_CLIENT_ID={}\nCF_ACCESS_CLIENT_SECRET={}\n",
+                    credential.client_id, credential.client_secret
+                );
+                write_private_bootstrap_file(Path::new(&windows_output), raw.as_bytes())?;
+            }
+            "vm" => {
+                write_private_bootstrap_file(
+                    Path::new(&vm_id_output),
+                    credential.client_id.as_bytes(),
+                )?;
+                write_private_bootstrap_file(
+                    Path::new(&vm_secret_output),
+                    credential.client_secret.as_bytes(),
+                )?;
+            }
+            _ => return Err("unsupported host bootstrap projection".to_owned()),
+        }
+
+        let proof_id = current
+            .proof_service_token_id
+            .as_deref()
+            .ok_or_else(|| format!("{} proof token disappeared", projection.projection))?;
+        let app_id = current
+            .access_application_id
+            .as_deref()
+            .ok_or_else(|| format!("{} Access application disappeared", projection.projection))?;
+        let policy = current
+            .access_policies
+            .first()
+            .ok_or_else(|| format!("{} Access policy disappeared", projection.projection))?;
+        let expected_ids = vec![proof_id.to_owned(), credential.id.clone()];
+        let mut actual_ids = policy.include_service_token_ids.clone();
+        let mut sorted_expected = expected_ids.clone();
+        actual_ids.sort();
+        sorted_expected.sort();
+        if actual_ids != sorted_expected {
+            cloudflare::update_access_service_policy_tokens(
+                control_token,
+                &desired.target_account_id,
+                app_id,
+                &policy.id,
+                &projection.access_policy_name,
+                &expected_ids,
+            )
+            .await?;
+            mutations += 1;
+        }
+    }
+
+    let after = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &after)?;
+    println!("credential_host_bootstrap_status=PASS");
+    println!("host_identity_delivery=RUNNER_BLIND");
+    println!("windows_bootstrap_envelope=CMS_RFC5652");
+    println!("vm_bootstrap_sink=GITHUB_ENVIRONMENT_SECRET");
+    println!("provider_mutations={mutations}");
+    println!("real_credentials_created=0");
+    println!("production_runtime_mutations=0");
     Ok(())
 }
 
@@ -1278,8 +1628,10 @@ async fn observe(
             proof_service_token_enabled: proof_token.and_then(|value| value.enabled),
             proof_service_token_duration: proof_token.and_then(|value| value.duration.clone()),
             host_service_token_id: host_token.map(|value| value.id.clone()),
+            host_service_token_client_id: host_token.and_then(|value| value.client_id.clone()),
             host_service_token_enabled: host_token.and_then(|value| value.enabled),
             host_service_token_duration: host_token.and_then(|value| value.duration.clone()),
+            access_application_id: app.map(|value| value.id.clone()),
             access_application_type: app.map(|value| value.app_type.clone()),
             access_service_auth_401_redirect: app.and_then(|value| value.service_auth_401_redirect),
             access_destination_type: destination.map(|value| value.destination_type.clone()),
@@ -1581,8 +1933,10 @@ mod tests {
             proof_service_token_enabled: Some(false),
             proof_service_token_duration: Some(desired.proof_token_duration.clone()),
             host_service_token_id: Some(host_token_id.clone()),
+            host_service_token_client_id: Some(format!("{projection_name}-host-client-id")),
             host_service_token_enabled: Some(true),
             host_service_token_duration: Some(desired.host_service_token_duration.clone()),
+            access_application_id: Some(format!("{projection_name}-app-id")),
             access_application_type: Some("self_hosted".to_owned()),
             access_service_auth_401_redirect: Some(true),
             access_destination_type: Some("public".to_owned()),
@@ -1643,6 +1997,32 @@ mod tests {
                 .unwrap()
                 .version_tag,
         );
+    }
+
+    #[test]
+    fn host_bootstrap_policy_allows_only_recoverable_partial_or_terminal_sets() {
+        let proof = "proof-token-id";
+        let host = "host-token-id";
+        assert!(bootstrap_policy_tokens_are_recoverable(
+            proof,
+            Some(host),
+            &[proof.to_owned()],
+        ));
+        assert!(bootstrap_policy_tokens_are_recoverable(
+            proof,
+            Some(host),
+            &[host.to_owned(), proof.to_owned()],
+        ));
+        assert!(!bootstrap_policy_tokens_are_recoverable(
+            proof,
+            Some(host),
+            &[proof.to_owned(), "foreign-token-id".to_owned()],
+        ));
+        assert!(!bootstrap_policy_tokens_are_recoverable(
+            proof,
+            None,
+            &[proof.to_owned(), host.to_owned()],
+        ));
     }
 
     #[test]

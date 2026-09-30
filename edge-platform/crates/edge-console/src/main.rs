@@ -1,4 +1,5 @@
 mod cli;
+mod credential_access_bootstrap;
 mod error;
 
 use clap::Parser;
@@ -215,6 +216,40 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     accepted_revision: None,
                     release_set_sha256: None,
                     credential_generation: Some(args.generation),
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedPrepareCredentialAccess(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::PrepareCredentialAccessBootstrap as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedInstallCredentialAccess(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::InstallCredentialAccessBootstrap as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -794,6 +829,12 @@ async fn process_privileged_request(
         }
         Ok(WindowsPrivilegedOperation::StageCredential) => {
             stage_windows_credential_candidate_from_worker(install_root, request).await
+        }
+        Ok(WindowsPrivilegedOperation::PrepareCredentialAccessBootstrap) => {
+            credential_access_bootstrap::prepare(install_root)
+        }
+        Ok(WindowsPrivilegedOperation::InstallCredentialAccessBootstrap) => {
+            credential_access_bootstrap::install(install_root)
         }
         Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
             Err("unsupported privileged Windows operation".to_owned())

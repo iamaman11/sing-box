@@ -30,6 +30,8 @@ pub(crate) enum Command {
     PrivilegedPing(InstallRootArgs),
     PrivilegedActivate(PrivilegedActivateArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
+    PrivilegedPrepareCredentialAccess(InstallRootArgs),
+    PrivilegedInstallCredentialAccess(InstallRootArgs),
     #[cfg(windows)]
     PrivilegedConvergeControllerService(InstallRootArgs),
     PrivilegedDispatch(InstallRootArgs),
@@ -64,6 +66,8 @@ impl Command {
             Self::PrivilegedPing(_) => "privileged-ping",
             Self::PrivilegedActivate(_) => "privileged-activate",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
+            Self::PrivilegedPrepareCredentialAccess(_) => "privileged-prepare-credential-access",
+            Self::PrivilegedInstallCredentialAccess(_) => "privileged-install-credential-access",
             #[cfg(windows)]
             Self::PrivilegedConvergeControllerService(_) => {
                 "privileged-converge-controller-service"
@@ -180,6 +184,12 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["edge-console", "privileged-ping"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-prepare-credential-access"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-install-credential-access"]).is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "edge-console",

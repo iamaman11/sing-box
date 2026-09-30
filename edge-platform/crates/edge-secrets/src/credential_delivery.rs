@@ -1,3 +1,4 @@
+use crate::credential_store::write_atomic_private;
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialProjectionKind, canonical_production_desired_state,
     decode_credential_delivery_bundle, local_credential_bundle_ref,
@@ -61,6 +62,15 @@ impl AccessServiceIdentity {
                 .ok_or_else(|| "credential Access identity is missing client secret".to_owned())?,
         })
     }
+}
+
+pub fn write_access_service_identity(path: &Path, raw: &str) -> Result<(), String> {
+    AccessServiceIdentity::parse_env(raw)?;
+    let bytes = raw.as_bytes();
+    if bytes.is_empty() || bytes.len() as u64 > MAX_ACCESS_IDENTITY_BYTES {
+        return Err("credential Access identity file size is invalid".to_owned());
+    }
+    write_atomic_private(path, bytes)
 }
 
 pub fn read_access_service_identity(path: &Path) -> Result<AccessServiceIdentity, String> {
