@@ -2381,9 +2381,8 @@ mod tests {
             }
         );
 
-        observed.projections[0].worker_version_tag = Some(
-            delivery_worker_material("windows").unwrap().version_tag,
-        );
+        observed.projections[0].worker_version_tag =
+            Some(delivery_worker_material("windows").unwrap().version_tag);
         observed.projections[1].worker_version_tag = None;
         assert_eq!(
             plan(&desired, &observed).unwrap(),
