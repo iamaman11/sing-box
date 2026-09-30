@@ -80,7 +80,9 @@ impl Command {
             Self::PrivilegedPromoteCredential(_) => "privileged-promote-credential",
             Self::PrivilegedApplyActiveCredential(_) => "privileged-apply-active-credential",
             Self::PrivilegedApplyLegacyCredential(_) => "privileged-apply-legacy-credential",
-            Self::PrivilegedDiscardCredentialCandidate(_) => "privileged-discard-credential-candidate",
+            Self::PrivilegedDiscardCredentialCandidate(_) => {
+                "privileged-discard-credential-candidate"
+            }
             Self::PrivilegedRetireLegacyCredential(_) => "privileged-retire-legacy-credential",
             #[cfg(windows)]
             Self::PrivilegedConvergeControllerService(_) => {
@@ -215,7 +217,8 @@ mod tests {
             Cli::try_parse_from(["edge-console", "privileged-apply-legacy-credential"]).is_ok()
         );
         assert!(
-            Cli::try_parse_from(["edge-console", "privileged-discard-credential-candidate"]).is_ok()
+            Cli::try_parse_from(["edge-console", "privileged-discard-credential-candidate"])
+                .is_ok()
         );
         assert!(
             Cli::try_parse_from(["edge-console", "privileged-retire-legacy-credential"]).is_ok()
