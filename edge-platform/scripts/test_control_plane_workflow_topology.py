@@ -88,8 +88,9 @@ def main() -> None:
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
         and "CredentialState" in vm_agent_cli
-        and '"exec"' not in vm_agent_cli,
-        "Linux runtime owner must expose only the closed local operation grammar",
+        and 'Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err()' in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err()' in vm_agent_cli,
+        "Linux runtime owner must expose only the closed local operation grammar and explicitly reject exec",
     )
     require(
         listeners == [ROUTER.name],
