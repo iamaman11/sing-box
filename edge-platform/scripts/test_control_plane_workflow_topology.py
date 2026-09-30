@@ -760,6 +760,9 @@ def main() -> None:
         and "api.ipify.org" in production_enroll
         and "EDGE_RUNNER_REGISTRATION_TOKEN" in production_enroll
         and "install-vultr-production-runner.sh" in production_enroll
+        and "EDGE_DOCKER_ENGINE_VERSION" in production_enroll
+        and "EDGE_CONTAINERD_VERSION" in production_enroll
+        and "EDGE_COMPOSE_VERSION" in production_enroll
         and "steady_state_transport=GITHUB_SELF_HOSTED_RUNNER" in production_enroll
         and "CLOUDFLARE_CONTROL_TOKEN" not in production_enroll
         and "CLOUDFLARE_DNS_TOKEN" not in production_enroll,
