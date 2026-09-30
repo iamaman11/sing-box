@@ -1119,11 +1119,9 @@ fn detect_process(expected_config_path: &Path) -> Option<ProcessObservation> {
         }
 
         let config_path = extract_config_path(&parts);
-        if let Some(candidate) = config_path.as_deref() {
-            if same_path_string(candidate, expected_config_path) {
-                return Some(ProcessObservation { config_path });
-            }
-        } else {
+        if let Some(candidate) = config_path.as_deref()
+            && same_path_string(candidate, expected_config_path)
+        {
             return Some(ProcessObservation { config_path });
         }
     }
