@@ -1698,7 +1698,10 @@ mod tests {
         let mut observed = observation(&desired);
         make_terminal(&mut observed, "windows");
         make_terminal(&mut observed, "vm");
-        assert_eq!(plan(&desired, &observed).unwrap(), CredentialDeliveryAction::Noop);
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::Noop
+        );
 
         observed.projections[0].host_service_token_enabled = Some(false);
         assert!(plan(&desired, &observed).is_err());
