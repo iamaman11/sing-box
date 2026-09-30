@@ -704,9 +704,7 @@ pub async fn patch_latest_worker_version_secrets(
         .send()
         .await
         .map_err(|err| {
-            format!(
-                "failed to patch Cloudflare latest Worker version secrets/annotations: {err}"
-            )
+            format!("failed to patch Cloudflare latest Worker version secrets/annotations: {err}")
         })?;
     ensure_secret_mutation_success(response).await
 }
@@ -3252,19 +3250,19 @@ mod tests {
 
     #[test]
     fn latest_worker_version_secret_patch_requires_real_unique_secrets() {
-        assert!(latest_worker_version_secret_patch(
-            "sing-box-phase6-ab-windows-deadbeef",
-            &[]
-        )
-        .is_err());
-        assert!(latest_worker_version_secret_patch(
-            "sing-box-phase6-ab-windows-deadbeef",
-            &[
-                ("EDGE_CREDENTIAL_BUNDLE_A", "one"),
-                ("EDGE_CREDENTIAL_BUNDLE_A", "two"),
-            ],
-        )
-        .is_err());
+        assert!(
+            latest_worker_version_secret_patch("sing-box-phase6-ab-windows-deadbeef", &[]).is_err()
+        );
+        assert!(
+            latest_worker_version_secret_patch(
+                "sing-box-phase6-ab-windows-deadbeef",
+                &[
+                    ("EDGE_CREDENTIAL_BUNDLE_A", "one"),
+                    ("EDGE_CREDENTIAL_BUNDLE_A", "two"),
+                ],
+            )
+            .is_err()
+        );
     }
 
     #[test]
