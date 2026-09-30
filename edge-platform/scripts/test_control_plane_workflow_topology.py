@@ -24,6 +24,7 @@ VM_AGENT = Path("edge-platform/crates/edge-agent/src/main.rs")
 VM_AGENT_CLI = Path("edge-platform/crates/edge-agent/src/cli.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
+CREDENTIAL_PROVIDER = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
@@ -65,6 +66,7 @@ def main() -> None:
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
+    credential_provider = CREDENTIAL_PROVIDER.read_text(encoding="utf-8")
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
     credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
@@ -462,7 +464,11 @@ def main() -> None:
         and "PrivilegedRollbackCredential" not in windows_console_cli
         and "credential-transition" in production_vm_runner_installer
         and "generate_fresh_credential_snapshot" in fresh_v2_publish
-        and fresh_v2_publish.count("cloudflare::put_worker_secret_text(") == 2
+        and fresh_v2_publish.count("cloudflare::patch_worker_secrets_with_version_tag(") == 2
+        and "put_worker_secret_text(" not in fresh_v2
+        and "/secrets-bulk" in credential_provider
+        and '"version_tags"' in credential_provider
+        and '"application/merge-patch+json"' in credential_provider
         and "CredentialDeliverySlot::A" in fresh_v2_publish
         and "async fn restore_dummy_slot" in fresh_v2
         and "active_slot_mutated=false" in fresh_v2_publish

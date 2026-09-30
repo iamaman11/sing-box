@@ -81,11 +81,13 @@ struct CredentialPlaneObservation {
 enum CredentialDeliveryAction {
     Noop,
     InstallDummyAbContract { projection: String },
+    RestoreFixedAbVersionTag { projection: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectionDeliveryState {
     LegacyLocked,
+    FixedAbVersionTagMissing,
     FixedAb,
 }
 
@@ -209,15 +211,17 @@ async fn fresh_v2_publish(
     })?;
     let windows = projection_desired(desired, "windows")?;
     let vm = projection_desired(desired, "vm")?;
+    let windows_material = delivery_worker_material(&windows.projection)?;
+    let vm_material = delivery_worker_material(&vm.projection)?;
     let windows_secret = hex_encode(&snapshot.windows.encode_to_vec());
     let vm_secret = hex_encode(&snapshot.vm.encode_to_vec());
 
-    if let Err(err) = cloudflare::put_worker_secret_text(
+    if let Err(err) = cloudflare::patch_worker_secrets_with_version_tag(
         &rotation_token,
         &desired.target_account_id,
         &windows.worker_name,
-        SLOT_A,
-        &windows_secret,
+        &windows_material.version_tag,
+        &[(SLOT_A, windows_secret.as_str())],
     )
     .await
     {
@@ -227,12 +231,12 @@ async fn fresh_v2_publish(
         ));
     }
 
-    if let Err(err) = cloudflare::put_worker_secret_text(
+    if let Err(err) = cloudflare::patch_worker_secrets_with_version_tag(
         &rotation_token,
         &desired.target_account_id,
         &vm.worker_name,
-        SLOT_A,
-        &vm_secret,
+        &vm_material.version_tag,
+        &[(SLOT_A, vm_secret.as_str())],
     )
     .await
     {
@@ -277,12 +281,12 @@ async fn restore_dummy_slot(
             .iter()
             .find(|slot| slot.name == SLOT_A)
             .ok_or_else(|| "fixed A/B material is missing slot A".to_owned())?;
-        cloudflare::put_worker_secret_text(
+        cloudflare::patch_worker_secrets_with_version_tag(
             rotation_token,
             &desired.target_account_id,
             &projection.worker_name,
-            SLOT_A,
-            &dummy.secret_text,
+            &material.version_tag,
+            &[(SLOT_A, dummy.secret_text.as_str())],
         )
         .await
         .map_err(|err| {
@@ -752,6 +756,46 @@ async fn apply_once(
             .await?;
             1
         }
+        CredentialDeliveryAction::RestoreFixedAbVersionTag { projection } => {
+            let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+            let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+            if rotation_identity.status != "active" {
+                return Err(format!(
+                    "credential-rotation token {} is not active: {}",
+                    rotation_identity.id, rotation_identity.status
+                ));
+            }
+            if rotation_identity.id == before.control_token_identity.id {
+                return Err(
+                    "credential-rotation token must be physically distinct from CLOUDFLARE_CONTROL_TOKEN"
+                        .to_owned(),
+                );
+            }
+
+            let projection = projection_desired(desired, projection)?;
+            if projection_delivery_state(desired, &projection, &before)?
+                != ProjectionDeliveryState::FixedAbVersionTagMissing
+            {
+                return Err(format!(
+                    "version-tag repair requires exact A/B bindings with only the version tag missing for {}",
+                    projection.projection
+                ));
+            }
+            let material = delivery_worker_material(&projection.projection)?;
+            println!(
+                "credential_rotation_token_identity={} credential_rotation_token_status={}",
+                rotation_identity.id, rotation_identity.status
+            );
+            cloudflare::patch_worker_secrets_with_version_tag(
+                &rotation_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+                &material.version_tag,
+                &[],
+            )
+            .await?;
+            1
+        }
     };
 
     let after = observe(control_token, desired).await?;
@@ -791,6 +835,11 @@ fn plan(
                     projection: projection.projection,
                 });
             }
+            ProjectionDeliveryState::FixedAbVersionTagMissing => {
+                return Ok(CredentialDeliveryAction::RestoreFixedAbVersionTag {
+                    projection: projection.projection,
+                });
+            }
             ProjectionDeliveryState::FixedAb => {}
         }
     }
@@ -813,11 +862,14 @@ fn projection_delivery_state(
         return Ok(ProjectionDeliveryState::LegacyLocked);
     }
 
-    if current.worker_binding_count == Some(2)
-        && current.worker_version_tag.as_deref() == Some(material.version_tag.as_str())
-    {
+    if current.worker_binding_count == Some(2) {
         require_exact_secret_bindings(&projection.worker_name, &current.worker_secret_bindings)?;
-        return Ok(ProjectionDeliveryState::FixedAb);
+        if current.worker_version_tag.as_deref() == Some(material.version_tag.as_str()) {
+            return Ok(ProjectionDeliveryState::FixedAb);
+        }
+        if current.worker_version_tag.is_none() {
+            return Ok(ProjectionDeliveryState::FixedAbVersionTagMissing);
+        }
     }
 
     let bindings = current
@@ -2015,6 +2067,9 @@ fn action_name(action: &CredentialDeliveryAction) -> &'static str {
     match action {
         CredentialDeliveryAction::Noop => "NOOP",
         CredentialDeliveryAction::InstallDummyAbContract { .. } => "INSTALL_DUMMY_A_B_CONTRACT",
+        CredentialDeliveryAction::RestoreFixedAbVersionTag { .. } => {
+            "RESTORE_FIXED_A_B_VERSION_TAG"
+        }
     }
 }
 
@@ -2309,6 +2364,42 @@ mod tests {
         assert!(windows.source.contains(SLOT_B));
         assert!(!windows.source.contains("private_key"));
         assert!(!windows.source.contains("password"));
+    }
+
+    #[test]
+    fn delivery_plan_repairs_only_missing_fixed_ab_version_tags() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "windows");
+        make_terminal(&mut observed, "vm");
+
+        observed.projections[0].worker_version_tag = None;
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::RestoreFixedAbVersionTag {
+                projection: "windows".to_owned(),
+            }
+        );
+
+        observed.projections[0].worker_version_tag =
+            Some(delivery_worker_material("windows").unwrap().version_tag);
+        observed.projections[1].worker_version_tag = None;
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::RestoreFixedAbVersionTag {
+                projection: "vm".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn delivery_plan_rejects_wrong_nonempty_fixed_ab_version_tag() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "windows");
+        make_terminal(&mut observed, "vm");
+        observed.projections[0].worker_version_tag = Some("unexpected-version".to_owned());
+        assert!(plan(&desired, &observed).is_err());
     }
 
     #[test]
