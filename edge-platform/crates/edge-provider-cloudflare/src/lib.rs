@@ -2415,7 +2415,15 @@ fn worker_version_head_from_values(
     versions: Value,
     deployments: Value,
 ) -> Result<CloudflareWorkerVersionHead, String> {
-    let latest_version_id = value_array(versions, "Cloudflare Worker versions")?
+    let versions = versions
+        .as_object()
+        .ok_or_else(|| "Cloudflare Worker versions result must be an object".to_owned())?
+        .get("items")
+        .cloned()
+        .map(|value| value_array(value, "Cloudflare Worker versions"))
+        .transpose()?
+        .unwrap_or_default();
+    let latest_version_id = versions
         .first()
         .map(|value| {
             value
@@ -3056,10 +3064,12 @@ mod tests {
     #[test]
     fn parses_latest_worker_version_and_active_deployment_without_secret_values() {
         let head = worker_version_head_from_values(
-            serde_json::json!([
-                {"id": "version-new", "number": 3},
-                {"id": "version-old", "number": 2}
-            ]),
+            serde_json::json!({
+                "items": [
+                    {"id": "version-new", "number": 3},
+                    {"id": "version-old", "number": 2}
+                ]
+            }),
             serde_json::json!({
                 "deployments": [{
                     "id": "deployment-current",
@@ -3080,7 +3090,7 @@ mod tests {
     #[test]
     fn worker_version_head_accepts_absent_deployment() {
         let head = worker_version_head_from_values(
-            serde_json::json!([{"id": "version-new", "number": 1}]),
+            serde_json::json!({"items": [{"id": "version-new", "number": 1}]}),
             serde_json::json!({"deployments": []}),
         )
         .unwrap();
