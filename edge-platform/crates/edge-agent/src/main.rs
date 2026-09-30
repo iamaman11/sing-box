@@ -1319,6 +1319,9 @@ async fn transition_vm_credential(
         CredentialTransitionAction::Unspecified => {
             Err("credential transition action is required".to_owned())
         }
+        CredentialTransitionAction::PrepareLegacy => {
+            Err("prepare-legacy is Windows-owner only".to_owned())
+        }
         CredentialTransitionAction::ValidateCandidate => {
             if state.active.is_some() || state.previous.is_some() {
                 return Err(
