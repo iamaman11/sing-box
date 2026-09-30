@@ -5,15 +5,19 @@ use std::process::Command;
 
 use edge_shared_types::{
     LocalSingboxState, SelectorState, UbuntuProxyState, WindowsRuntimeState, WindowsTunnelBinding,
+    canonical_production_desired_state,
 };
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 const MANAGED_SELECTOR_TAG: &str = "proxy-selector";
 const WSL_SELECTOR_TAG: &str = "wsl-selector";
 const WSL_INBOUND_TAG: &str = "wsl-mixed-in";
 const DESKTOP_TRACE_INBOUND_TAG: &str = "mixed-in";
-const DEFAULT_WSL_PROXY_PORT: u32 = 17890;
+pub const STAGE2_DESKTOP_PROXY_PORT: u32 = 17891;
+pub const STAGE2_WSL_PROXY_PORT: u32 = 17892;
+pub const STAGE2_CLASH_API_PORT: u32 = 19091;
+const DEFAULT_WSL_PROXY_PORT: u32 = STAGE2_WSL_PROXY_PORT;
 const WSL_INBOUND_BIND_HOST: &str = "0.0.0.0";
 const WARP_SERVICE_PROCESS: &str = "warp-svc.exe";
 const WARP_CONTROL_ENDPOINTS: &[&str] = &[
@@ -294,6 +298,164 @@ pub fn sync_local_config(
     let legacy: SyncState = serde_json::from_str(&raw_state)
         .map_err(|err| format!("legacy state file is invalid JSON: {err}"))?;
     sync_local_config_from_bindings(config_path, &legacy, runtime_root)
+}
+
+pub fn render_proxy_only_windows_config(
+    state: &WindowsRuntimeState,
+    runtime_root: &Path,
+) -> Result<Vec<u8>, String> {
+    edge_shared_types::encode_windows_runtime_state(state)?;
+    let desired = canonical_production_desired_state()?;
+    let reality_server_name = desired
+        .application
+        .as_ref()
+        .and_then(|application| application.line1.as_ref())
+        .map(|line1| line1.reality_server_name.clone())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "canonical production Reality server name is missing".to_owned())?;
+    let direct = state
+        .direct
+        .as_ref()
+        .ok_or_else(|| "Windows runtime state direct tunnel is missing".to_owned())?;
+    let warp = state
+        .warp
+        .as_ref()
+        .ok_or_else(|| "Windows runtime state WARP tunnel is missing".to_owned())?;
+    let runtime_root = runtime_root.display().to_string();
+
+    let selector_entries = json!([
+        "auto-direct-tunnel",
+        "auto-warp-tunnel",
+        "hysteria2-direct",
+        "vless-reality-direct",
+        "hysteria2-warp",
+        "vless-reality-warp"
+    ]);
+    let config = json!({
+        "log": { "level": "info", "timestamp": true },
+        "inbounds": [
+            {
+                "type": "mixed",
+                "tag": DESKTOP_TRACE_INBOUND_TAG,
+                "listen": "127.0.0.1",
+                "listen_port": STAGE2_DESKTOP_PROXY_PORT
+            },
+            {
+                "type": "mixed",
+                "tag": WSL_INBOUND_TAG,
+                "listen": WSL_INBOUND_BIND_HOST,
+                "listen_port": STAGE2_WSL_PROXY_PORT
+            }
+        ],
+        "outbounds": [
+            {
+                "type": "selector",
+                "tag": MANAGED_SELECTOR_TAG,
+                "outbounds": selector_entries.clone(),
+                "default": "auto-direct-tunnel"
+            },
+            {
+                "type": "selector",
+                "tag": WSL_SELECTOR_TAG,
+                "outbounds": selector_entries,
+                "default": "auto-direct-tunnel"
+            },
+            {
+                "type": "urltest",
+                "tag": "auto-direct-tunnel",
+                "outbounds": ["hysteria2-direct", "vless-reality-direct"],
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": "10m"
+            },
+            {
+                "type": "urltest",
+                "tag": "auto-warp-tunnel",
+                "outbounds": ["hysteria2-warp", "vless-reality-warp"],
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": "10m"
+            },
+            {
+                "type": "hysteria2",
+                "tag": "hysteria2-direct",
+                "server": direct.domain,
+                "server_port": direct.hy2_port,
+                "password": direct.hy2_password,
+                "tls": { "enabled": true, "server_name": direct.domain }
+            },
+            {
+                "type": "vless",
+                "tag": "vless-reality-direct",
+                "server": direct.domain,
+                "server_port": direct.vless_port,
+                "uuid": direct.vless_uuid,
+                "tls": {
+                    "enabled": true,
+                    "server_name": reality_server_name,
+                    "utls": { "enabled": true, "fingerprint": "chrome" },
+                    "reality": {
+                        "enabled": true,
+                        "public_key": direct.reality_public_key,
+                        "short_id": direct.reality_short_id
+                    }
+                }
+            },
+            {
+                "type": "hysteria2",
+                "tag": "hysteria2-warp",
+                "server": warp.domain,
+                "server_port": warp.hy2_port,
+                "password": warp.hy2_password,
+                "tls": { "enabled": true, "server_name": warp.domain }
+            },
+            {
+                "type": "vless",
+                "tag": "vless-reality-warp",
+                "server": warp.domain,
+                "server_port": warp.vless_port,
+                "uuid": warp.vless_uuid,
+                "tls": {
+                    "enabled": true,
+                    "server_name": reality_server_name,
+                    "utls": { "enabled": true, "fingerprint": "chrome" },
+                    "reality": {
+                        "enabled": true,
+                        "public_key": warp.reality_public_key,
+                        "short_id": warp.reality_short_id
+                    }
+                }
+            },
+            { "type": "direct", "tag": "direct" }
+        ],
+        "route": {
+            "rules": [
+                { "inbound": [DESKTOP_TRACE_INBOUND_TAG], "outbound": MANAGED_SELECTOR_TAG },
+                { "inbound": [WSL_INBOUND_TAG], "outbound": WSL_SELECTOR_TAG }
+            ],
+            "final": MANAGED_SELECTOR_TAG,
+            "auto_detect_interface": true
+        },
+        "experimental": {
+            "clash_api": {
+                "external_controller": format!("127.0.0.1:{STAGE2_CLASH_API_PORT}"),
+                "external_ui": format!("{runtime_root}/metacubexd-ui")
+            }
+        }
+    });
+
+    if config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .is_some_and(|inbounds| {
+            inbounds.iter().any(|inbound| {
+                inbound.get("type").and_then(Value::as_str) == Some("tun")
+            })
+        })
+    {
+        return Err("proxy-only Windows renderer unexpectedly produced a TUN inbound".to_owned());
+    }
+
+    serde_json::to_vec_pretty(&config)
+        .map_err(|err| format!("failed to render proxy-only Windows config: {err}"))
 }
 
 pub fn sync_local_config_from_runtime_state(
