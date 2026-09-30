@@ -137,7 +137,7 @@ fn validate_rendered_state(
     })?;
 
     let staged = config_path.with_extension("credential-stage.json");
-    let rendered = render_proxy_only_windows_config(state, &install_root.join("runtime"))?;
+    let rendered = render_proxy_only_windows_config(state)?;
     write_atomic_private(&staged, &rendered)?;
 
     let result = (|| {
