@@ -700,7 +700,9 @@ pub fn validate_windows_privileged_request(
                 || request.release_set_sha256.is_some()
                 || request.credential_generation.is_some()
             {
-                return Err("PING request must not carry release or credential authority".to_owned());
+                return Err(
+                    "PING request must not carry release or credential authority".to_owned(),
+                );
             }
         }
         WindowsPrivilegedOperation::ActivateRelease => {
@@ -2152,8 +2154,7 @@ mod tests {
         assert!(encode_windows_privileged_request(&invalid).is_err());
 
         let mut invalid = request;
-        invalid.accepted_revision =
-            Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
