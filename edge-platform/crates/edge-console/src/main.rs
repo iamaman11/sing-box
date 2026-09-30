@@ -7,6 +7,9 @@ use clap::Parser;
 use edge_controller_core::windows_credential_store_path;
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
+use edge_singbox::{
+    STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT,
+};
 use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
 use error::ConsoleError;
 use rusqlite::Connection;
@@ -15,7 +18,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
@@ -173,6 +176,16 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("dns_mutated=false");
             println!("routes_mutated=false");
             println!("cleanup=PASS");
+            Ok(())
+        }
+        Command::Stage2Preflight => {
+            verify_stage2_proxy_ports_available().map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("stage2_proxy_ports=AVAILABLE");
+            println!("stage2_desktop_proxy_port={STAGE2_DESKTOP_PROXY_PORT}");
+            println!("stage2_wsl_proxy_port={STAGE2_WSL_PROXY_PORT}");
+            println!("stage2_clash_api_port={STAGE2_CLASH_API_PORT}");
+            println!("tun_enabled=false");
             Ok(())
         }
         Command::ProvisionRuntimeState(args) => {
@@ -1135,6 +1148,22 @@ async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String
     direct?;
     warp?;
     restore
+}
+
+fn verify_stage2_proxy_ports_available() -> Result<(), String> {
+    let endpoints = [
+        ("desktop proxy", format!("127.0.0.1:{STAGE2_DESKTOP_PROXY_PORT}")),
+        ("WSL proxy", format!("0.0.0.0:{STAGE2_WSL_PROXY_PORT}")),
+        ("Clash API", format!("127.0.0.1:{STAGE2_CLASH_API_PORT}")),
+    ];
+    let mut listeners = Vec::with_capacity(endpoints.len());
+    for (name, endpoint) in endpoints {
+        let listener = TcpListener::bind(&endpoint)
+            .map_err(|err| format!("Stage 2 {name} endpoint {endpoint} is unavailable: {err}"))?;
+        listeners.push(listener);
+    }
+    drop(listeners);
+    Ok(())
 }
 
 async fn stop_managed_windows_runtime_after_failure(endpoint: &str) -> Result<(), String> {
