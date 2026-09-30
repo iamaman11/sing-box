@@ -4,7 +4,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "edge-agent", version, about = "Bounded edge host runtime owner")]
+#[command(
+    name = "edge-agent",
+    version,
+    about = "Bounded edge host runtime owner"
+)]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,

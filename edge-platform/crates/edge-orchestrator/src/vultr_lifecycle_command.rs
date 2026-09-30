@@ -772,8 +772,14 @@ async fn run_runner_bootstrap(
 
     let desired = load_desired_state(Path::new(&args[0]))?;
     let machine_id = &args[1];
-    if !desired.machines.iter().any(|machine| machine.id == *machine_id) {
-        return Err(format!("machine {machine_id} is not present in desired state"));
+    if !desired
+        .machines
+        .iter()
+        .any(|machine| machine.id == *machine_id)
+    {
+        return Err(format!(
+            "machine {machine_id} is not present in desired state"
+        ));
     }
     let installer_path = Path::new(&args[2]);
     if !installer_path.is_file() {
@@ -840,7 +846,9 @@ async fn run_runner_bootstrap(
         "sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'",
     )?;
     if installed_sha != expected_artifact.sha256 {
-        return Err("installed local runtime owner digest does not match exact ReleaseSet".to_owned());
+        return Err(
+            "installed local runtime owner digest does not match exact ReleaseSet".to_owned(),
+        );
     }
     let generic_root_denied = strict_ssh_capture(
         target_ip,

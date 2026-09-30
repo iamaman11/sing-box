@@ -235,7 +235,10 @@ fn print_agent_state_evidence(operation: &str, state: &AgentState) {
         println!("container_{index}_name={}", container.name);
         println!("container_{index}_present={}", container.present);
         println!("container_{index}_running={}", container.running);
-        println!("container_{index}_exact_image_ready={}", container.exact_image_ready);
+        println!(
+            "container_{index}_exact_image_ready={}",
+            container.exact_image_ready
+        );
         println!(
             "container_{index}_restart_count={}",
             container.restart_count.unwrap_or_default()
