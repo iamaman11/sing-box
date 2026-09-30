@@ -434,6 +434,22 @@ def main() -> None:
         and "actions/download-artifact" not in credentials,
         "host identity bootstrap must remain create-once, retry-safe, runner-blind, ciphertext-only on Windows and artifact-free",
     )
+    windows_cutover_preflight = credentials.split(
+        "  cutover_windows_preflight:\n", 1
+    )[1].split("\n  cutover_publish:\n", 1)[0]
+    require(
+        "credential-transition prepare-legacy" in windows_cutover_preflight
+        and "credential_state_present=false" in windows_cutover_preflight
+        and "Current tunnel IP" in windows_cutover_preflight
+        and "Current tunnel WARP" in windows_cutover_preflight
+        and " doctor $env:EDGE_CONTROLLER_ENDPOINT" not in windows_cutover_preflight,
+        "Stage 2 Windows preflight must prepare typed legacy takeover inside SYSTEM, preserve empty v2 state, and prove desktop egress without broad server/Ubuntu doctor coupling",
+    )
+    require(
+        "prepare-legacy is Windows-owner only" in vm_agent_runtime,
+        "VM owner must explicitly reject the Windows-only legacy takeover action",
+    )
+
     fresh_v2_start = credential_command.index("async fn fresh_v2_publish(")
     fresh_v2_end = credential_command.index(
         "pub(crate) async fn verify_credential_plane_invariant", fresh_v2_start
