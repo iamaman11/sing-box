@@ -25,13 +25,13 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
     CredentialStateObservation, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
-    DoctorRequest, DoctorResponse,
-    Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
-    ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
-    RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
-    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
-    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
+    DoctorRequest, DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest,
+    GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest, ListSecretRefsRequest,
+    LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest, SecretRefEntry,
+    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
+    WindowsActivationState, WindowsPrivilegedOperation, WindowsPrivilegedRequest,
+    WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
     decode_windows_activation_state, decode_windows_privileged_request,
     decode_windows_privileged_result, decode_windows_runtime_state,
     encode_windows_privileged_request, encode_windows_privileged_result,
@@ -246,48 +246,34 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             finish_privileged_result(&result)?;
             Ok(())
         }
-        Command::PrivilegedInstallCredentialAccess(args) => {
-            run_privileged_no_payload(
-                Path::new(&args.install_root),
-                WindowsPrivilegedOperation::InstallCredentialAccessBootstrap,
-            )
-        }
-        Command::PrivilegedApplyCredentialCandidate(args) => {
-            run_privileged_no_payload(
-                Path::new(&args.install_root),
-                WindowsPrivilegedOperation::ApplyCredentialCandidate,
-            )
-        }
-        Command::PrivilegedPromoteCredential(args) => {
-            run_privileged_no_payload(
-                Path::new(&args.install_root),
-                WindowsPrivilegedOperation::PromoteCredential,
-            )
-        }
-        Command::PrivilegedApplyActiveCredential(args) => {
-            run_privileged_no_payload(
-                Path::new(&args.install_root),
-                WindowsPrivilegedOperation::ApplyActiveCredential,
-            )
-        }
-        Command::PrivilegedApplyLegacyCredential(args) => {
-            run_privileged_no_payload(
-                Path::new(&args.install_root),
-                WindowsPrivilegedOperation::ApplyLegacyCredential,
-            )
-        }
-        Command::PrivilegedDiscardCredentialCandidate(args) => {
-            run_privileged_no_payload(
-                Path::new(&args.install_root),
-                WindowsPrivilegedOperation::DiscardCredentialCandidate,
-            )
-        }
-        Command::PrivilegedRetireLegacyCredential(args) => {
-            run_privileged_no_payload(
-                Path::new(&args.install_root),
-                WindowsPrivilegedOperation::RetireLegacyCredential,
-            )
-        }
+        Command::PrivilegedInstallCredentialAccess(args) => run_privileged_no_payload(
+            Path::new(&args.install_root),
+            WindowsPrivilegedOperation::InstallCredentialAccessBootstrap,
+        ),
+        Command::PrivilegedApplyCredentialCandidate(args) => run_privileged_no_payload(
+            Path::new(&args.install_root),
+            WindowsPrivilegedOperation::ApplyCredentialCandidate,
+        ),
+        Command::PrivilegedPromoteCredential(args) => run_privileged_no_payload(
+            Path::new(&args.install_root),
+            WindowsPrivilegedOperation::PromoteCredential,
+        ),
+        Command::PrivilegedApplyActiveCredential(args) => run_privileged_no_payload(
+            Path::new(&args.install_root),
+            WindowsPrivilegedOperation::ApplyActiveCredential,
+        ),
+        Command::PrivilegedApplyLegacyCredential(args) => run_privileged_no_payload(
+            Path::new(&args.install_root),
+            WindowsPrivilegedOperation::ApplyLegacyCredential,
+        ),
+        Command::PrivilegedDiscardCredentialCandidate(args) => run_privileged_no_payload(
+            Path::new(&args.install_root),
+            WindowsPrivilegedOperation::DiscardCredentialCandidate,
+        ),
+        Command::PrivilegedRetireLegacyCredential(args) => run_privileged_no_payload(
+            Path::new(&args.install_root),
+            WindowsPrivilegedOperation::RetireLegacyCredential,
+        ),
         #[cfg(windows)]
         Command::PrivilegedConvergeControllerService(args) => {
             let install_root = PathBuf::from(args.install_root);
@@ -1497,15 +1483,27 @@ fn print_credential_state(observation: &CredentialStateObservation) {
     println!("credential_state=PRESENT");
     println!(
         "credential_active_generation={}",
-        state.active.as_ref().map(|value| value.generation).unwrap_or(0)
+        state
+            .active
+            .as_ref()
+            .map(|value| value.generation)
+            .unwrap_or(0)
     );
     println!(
         "credential_candidate_generation={}",
-        state.candidate.as_ref().map(|value| value.generation).unwrap_or(0)
+        state
+            .candidate
+            .as_ref()
+            .map(|value| value.generation)
+            .unwrap_or(0)
     );
     println!(
         "credential_previous_generation={}",
-        state.previous.as_ref().map(|value| value.generation).unwrap_or(0)
+        state
+            .previous
+            .as_ref()
+            .map(|value| value.generation)
+            .unwrap_or(0)
     );
 }
 
