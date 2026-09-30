@@ -3209,9 +3209,7 @@ mod tests {
         );
         assert!(body.contains("Content-Disposition: form-data; name=\"settings\""));
         assert!(body.contains("Content-Type: application/json"));
-        assert!(body.contains(
-            "\"workers/tag\":\"sing-box-phase6-ab-windows-deadbeef\""
-        ));
+        assert!(body.contains("\"workers/tag\":\"sing-box-phase6-ab-windows-deadbeef\""));
         assert!(body.contains(
             "\"workers/message\":\"sing-box Phase 6 fixed A/B credential delivery contract\""
         ));
