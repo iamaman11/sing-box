@@ -390,12 +390,19 @@ jobs:
             runner-bootstrap)
               acquire_host_access "${spec}" "${machine}" "runner-bootstrap"
               trap 'release_host_access "${spec}" "${machine}" "runner-bootstrap-emergency" >/dev/null 2>&1 || true' EXIT
-              run_lifecycle runner-bootstrap "${spec}" "${machine}"                 "edge-platform/scripts/install-vultr-root-runner.sh"                 | tee "${RUNNER_TEMP}/result.json"
+              run_lifecycle runner-bootstrap "${spec}" "${machine}" \
+                "edge-platform/scripts/install-vultr-production-runner.sh" \
+                "${RUNNER_TEMP}/edge-platform-release/edge-agent-linux-amd64" \
+                | tee "${RUNNER_TEMP}/result.json"
               jq -e '
                 .status == "PASS"
                 and .machine_id == env.MACHINE_ID
                 and .runner_user == "github-runner"
-                and .root_authority == true
+                and .generic_root_authority == false
+                and .bounded_runtime_dispatch == true
+                and .docker_socket_authority == false
+                and .acceptance_rpc_service_enabled == false
+                and .tcp_50061_listener == false
                 and .listener == "PASS"
                 and .registration_token_persisted == false
               ' "${RUNNER_TEMP}/result.json" >/dev/null
@@ -598,7 +605,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          expected_name="sing-box-${MACHINE_ID}"
+          expected_name="sing-box-production-${MACHINE_ID}"
           for attempt in {1..20}; do
             response="$(curl --fail --silent --show-error --location \
               --header 'Accept: application/vnd.github+json' \
@@ -612,16 +619,17 @@ jobs:
               | ($labels | index("self-hosted")) != null
                 and ($labels | index("Linux")) != null
                 and ($labels | index("X64")) != null
-                and ($labels | index("vultr-root")) != null
-                and ($labels | index("test-vm")) != null
+                and ($labels | index("sing-box-production-vm")) != null
+                and ($labels | index("vultr-root")) == null
+                and ($labels | index("test-vm")) == null
                 and ($labels | index($machine)) != null
             ' <<<"${response}" >/dev/null; then
-              echo "self-hosted root runner is online: ${expected_name}"
+              echo "self-hosted production VM runner is online: ${expected_name}"
               exit 0
             fi
             sleep 3
           done
-          echo "self-hosted root runner did not become online: ${expected_name}" >&2
+          echo "self-hosted production VM runner did not become online: ${expected_name}" >&2
           exit 1
 
       - name: Remove SSH authority material

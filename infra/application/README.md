@@ -2,50 +2,35 @@
 
 ## Authority
 
-Canonical production desired state is:
-
-`infra/production/production.textproto`
-
-backed by `ProductionDesiredState` protobuf.
-
-Production does not use a graph of JSON sub-specs as authority.
-
-Current production ownership:
+Git owns desired application policy. The exact durable ReleaseSet owns immutable executable/image identity. The production VM self-hosted runner is transport only; the root-owned local runtime owner performs VM-local lifecycle operations.
 
 ```text
-Git production.textproto
+protected main + exact ReleaseSet
         |
         v
-edge-orchestrator
-        |
-        +-- Vultr provider lifecycle
-        +-- shared alegria.by DNS lifecycle
-        +-- Cloudflare Mesh / production composition
+production VM self-hosted runner
         |
         v
-strict SSH local forward
+root-owned typed local owner
+   +-- fixed Docker Compose mutation
+   +-- Bollard Docker observation
+   '-- rtnetlink / bounded host probes
         |
         v
-edge-agent (loopback)
-        |
-        v
-Docker Compose application runtime
+Docker Engine / application runtime
 ```
 
-Issue #169 defines the accepted migration of application-exclusive Cloudflare account-scoped
-resources into the dedicated `sing-box` account and the new credential-delivery model.
+Provider lifecycle remains GitHub-hosted. No provider credential moves onto the VM.
 
 ## Application/runtime ownership
 
-The VM `edge-agent`:
-- receives an exact accepted application artifact/bundle;
-- owns bounded local apply/rollback/observation;
-- observes Docker/runtime/network state;
-- does not own provider desired state;
-- does not select the production ReleaseSet;
-- does not expose arbitrary shell/filesystem/Docker mutation APIs.
+The Linux local owner owns only VM-local application lifecycle, configuration, runtime observation and local credential state.
 
-The orchestrator owns provider/application composition and exact lifecycle sequencing.
+- Docker Compose remains the declarative four-container composition/mutation adapter.
+- Bollard remains the typed Docker Engine observation/diagnostic adapter.
+- The runner invokes only a closed allowlist of local operations.
+- No arbitrary shell/filesystem/Docker/systemd API is exposed.
+- The retired TCP/gRPC edge-agent transport is not steady-state authority.
 
 ## Runtime secrets
 
@@ -68,13 +53,9 @@ do not rotate as one monolithic bundle unless their actual lifecycle requires it
 
 ## VM control transport
 
-Canonical production uses strict SSH host-certificate trust and a bounded local forward to
-loopback `edge-agent`.
+Steady-state control is outbound GitHub runner transport plus the local typed owner. Routine operation does not acquire a temporary /32 SSH lease and does not local-forward to port 50061.
 
-GitHub-hosted runner egress support access is a temporary provider-lifecycle lease and is cleaned
-up/re-observed after use.
-
-The target is not a new remote shell or second control daemon.
+Strict SSH may be used only for bootstrap, migration or explicit break-glass recovery and must be closed again after enrollment/recovery.
 
 ## Application operations
 

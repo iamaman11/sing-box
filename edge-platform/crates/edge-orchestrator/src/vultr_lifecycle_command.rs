@@ -60,7 +60,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-apply" => run_substrate_apply(&args[1..]).await,
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
-        "runner-bootstrap" => run_runner_bootstrap(&args[1..]).await,
+        "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
         "lease-acquire" => run_lease_acquire(&args[1..]).await,
@@ -759,36 +759,65 @@ async fn run_transport_proof(
     }))
 }
 
-async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
-    if args.len() != 3 {
+async fn run_runner_bootstrap(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 4 {
         return Err(
-            "usage: edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path>"
+            "usage: edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path> <local-owner-artifact-path>"
                 .to_owned(),
         );
     }
 
     let desired = load_desired_state(Path::new(&args[0]))?;
-    let machine_id = &args[1];
+    bootstrap_production_runner(
+        &desired,
+        &args[1],
+        Path::new(&args[2]),
+        Path::new(&args[3]),
+        context,
+    )
+    .await
+}
+
+pub(crate) async fn bootstrap_production_runner(
+    desired: &DesiredState,
+    machine_id: &str,
+    installer_path: &Path,
+    local_owner_artifact: &Path,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
     if !desired
         .machines
         .iter()
-        .any(|machine| machine.id == *machine_id)
+        .any(|machine| machine.id == machine_id)
     {
         return Err(format!(
             "machine {machine_id} is not present in desired state"
         ));
     }
-    let installer_path = Path::new(&args[2]);
     if !installer_path.is_file() {
         return Err(format!(
-            "root runner installer was not found: {}",
+            "production runner installer was not found: {}",
             installer_path.display()
         ));
     }
+    let expected_artifact = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_artifact, local_owner_artifact)?;
 
     let registration_token = env::var("EDGE_RUNNER_REGISTRATION_TOKEN")
         .map_err(|_| "EDGE_RUNNER_REGISTRATION_TOKEN is required".to_owned())?;
     validate_runner_registration_token(&registration_token)?;
+    let credential_access_client_id = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
+        .map_err(|_| "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID is required".to_owned())?;
+    let credential_access_client_secret = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
+        .map_err(|_| "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET is required".to_owned())?;
+    validate_bootstrap_secret("credential Access client id", &credential_access_client_id)?;
+    validate_bootstrap_secret(
+        "credential Access client secret",
+        &credential_access_client_secret,
+    )?;
 
     let observed = exact_existing_machine_observation(&desired, machine_id).await?;
     let target_ip = observed
@@ -799,7 +828,9 @@ async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
     let canonical_public_key = read_canonical_ssh_public_key()?;
     verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
 
-    const REMOTE_INSTALLER: &str = "/tmp/singbox-root-runner-bootstrap";
+    const REMOTE_INSTALLER: &str = "/tmp/singbox-production-runner-bootstrap";
+    const REMOTE_OWNER_STAGED: &str = "/tmp/singbox-production-runtime-owner";
+    const LOCAL_OWNER: &str = "/usr/local/libexec/sing-box/edge-agent";
     strict_scp_upload(
         target_ip,
         machine_id,
@@ -808,11 +839,21 @@ async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
         installer_path,
         REMOTE_INSTALLER,
     )?;
+    strict_scp_upload(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        local_owner_artifact,
+        REMOTE_OWNER_STAGED,
+    )?;
 
     let remote_command = format!(
-        "sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?; rm -f {REMOTE_INSTALLER}; exit $rc"
+        "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box &&          sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER} &&          sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?;          rm -f {REMOTE_INSTALLER} {REMOTE_OWNER_STAGED}; exit $rc"
     );
-    let token_stdin = format!("{registration_token}\n");
+    let token_stdin = format!(
+        "{registration_token}\n{credential_access_client_id}\n{credential_access_client_secret}\n"
+    );
     strict_ssh_run_stdin(
         target_ip,
         machine_id,
@@ -822,17 +863,69 @@ async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
         token_stdin.as_bytes(),
     )?;
 
-    let root_uid = strict_ssh_capture(
+    let installed_sha = strict_ssh_capture(
         target_ip,
         machine_id,
         &operator_private_key_path,
         &canonical_public_key,
-        "sudo -u github-runner sudo -n id -u",
+        "sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'",
     )?;
-    if root_uid != "0" {
-        return Err(format!(
-            "self-hosted runner root authority verification failed: expected uid 0, got {root_uid}"
-        ));
+    if installed_sha != expected_artifact.sha256 {
+        return Err(
+            "installed local runtime owner digest does not match exact ReleaseSet".to_owned(),
+        );
+    }
+    let generic_root_denied = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "if sudo -u github-runner sudo -n id -u >/dev/null 2>&1; then exit 1; else echo PASS; fi",
+    )?;
+    if generic_root_denied != "PASS" {
+        return Err("production runner generic-root denial was not proven".to_owned());
+    }
+    let docker_socket_denied = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "if sudo -u github-runner test -r /var/run/docker.sock 2>/dev/null; then exit 1; else echo PASS; fi",
+    )?;
+    if docker_socket_denied != "PASS" {
+        return Err("production runner Docker-socket denial was not proven".to_owned());
+    }
+    let bounded_dispatch = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "sudo -u github-runner sudo -n /usr/local/libexec/sing-box/edge-agent local status >/dev/null && echo PASS",
+    )?;
+    if bounded_dispatch != "PASS" {
+        return Err("production runner bounded local-runtime dispatch failed".to_owned());
+    }
+    let acceptance_rpc_disabled = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "if systemctl is-enabled edge-agent.service >/dev/null 2>&1; then exit 1; else echo PASS; fi",
+    )?;
+    if acceptance_rpc_disabled != "PASS" {
+        return Err("production enrollment left the acceptance RPC service enabled".to_owned());
+    }
+    let rpc_listener_absent = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "if ss -ltnH 'sport = :50061' 2>/dev/null | grep -q .; then exit 1; else echo PASS; fi",
+    )?;
+    if rpc_listener_absent != "PASS" {
+        return Err(
+            "production enrollment left an edge-agent RPC listener on port 50061".to_owned(),
+        );
     }
     let listener = strict_ssh_capture(
         target_ip,
@@ -842,18 +935,37 @@ async fn run_runner_bootstrap(args: &[String]) -> Result<(), String> {
         "pgrep -u github-runner -f Runner.Listener >/dev/null && echo PASS",
     )?;
     if listener != "PASS" {
-        return Err("self-hosted runner listener is not active".to_owned());
+        return Err("self-hosted production runner listener is not active".to_owned());
     }
 
     print_json_value(serde_json::json!({
         "status": "PASS",
         "machine_id": machine_id,
-        "runner_name": format!("sing-box-{machine_id}"),
+        "runner_name": format!("sing-box-production-{machine_id}"),
         "runner_user": "github-runner",
-        "root_authority": true,
+        "generic_root_authority": false,
+        "bounded_runtime_dispatch": true,
+        "docker_socket_authority": false,
+        "acceptance_rpc_service_enabled": false,
+        "tcp_50061_listener": false,
+        "local_owner_sha256": installed_sha,
         "listener": "PASS",
         "registration_token_persisted": false,
+        "credential_access_identity_installed": true,
+        "runner_credential_access": false,
     }))
+}
+
+fn validate_bootstrap_secret(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 4096
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err(format!("{label} is malformed"));
+    }
+    Ok(())
 }
 
 fn validate_runner_registration_token(value: &str) -> Result<(), String> {
@@ -3213,7 +3325,7 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>",
-        "  edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path>",
+        "  edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path> <local-owner-artifact-path>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle lease-acquire <spec-path> <machine-id>",

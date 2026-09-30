@@ -137,6 +137,7 @@ enum WindowsPrivilegedOperation {
   WINDOWS_PRIVILEGED_OPERATION_UNSPECIFIED = 0;
   WINDOWS_PRIVILEGED_OPERATION_PING = 1;
   WINDOWS_PRIVILEGED_OPERATION_ACTIVATE_RELEASE = 2;
+  WINDOWS_PRIVILEGED_OPERATION_STAGE_CREDENTIAL = 3;
 }
 
 message WindowsPrivilegedRequest {
@@ -145,6 +146,7 @@ message WindowsPrivilegedRequest {
   WindowsPrivilegedOperation operation = 3;
   optional string accepted_revision = 4;
   optional string release_set_sha256 = 5;
+  optional uint64 credential_generation = 6;
 }
 
 message WindowsPrivilegedResult {

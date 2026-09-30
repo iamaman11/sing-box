@@ -99,6 +99,50 @@ function Install-InitialApplicationAuthority {
     }
 }
 
+function Install-CredentialAccessIdentity {
+    $secretDir = Join-Path $ApplicationRoot "state\secrets"
+    $identityPath = Join-Path $secretDir "credential-access-v1.env"
+    if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
+        return
+    }
+
+    $clientId = (Read-Host "Cloudflare Access host client ID").Trim()
+    if (-not $clientId -or $clientId -match "\s") {
+        throw "Cloudflare Access host client ID is empty or malformed"
+    }
+    $secureSecret = Read-Host "Cloudflare Access host client secret" -AsSecureString
+    if ($secureSecret.Length -eq 0) {
+        throw "Cloudflare Access host client secret is required"
+    }
+
+    $bstr = [IntPtr]::Zero
+    $plainSecret = $null
+    try {
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
+        $plainSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        if (-not $plainSecret -or $plainSecret -match "\s") {
+            throw "Cloudflare Access host client secret is malformed"
+        }
+        if (-not (Test-Path -LiteralPath $secretDir -PathType Container)) {
+            throw "Controller-owned Windows secret directory is not converged"
+        }
+
+        $stage = "$identityPath.new"
+        [IO.File]::WriteAllText(
+            $stage,
+            "CF_ACCESS_CLIENT_ID=$clientId`nCF_ACCESS_CLIENT_SECRET=$plainSecret`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+        Move-Item -LiteralPath $stage -Destination $identityPath -Force
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        $plainSecret = $null
+        $secureSecret.Dispose()
+    }
+}
+
 function Converge-ControllerService {
     $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
     if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
@@ -229,6 +273,7 @@ Assert-IsolatedRoots
 Assert-MainProtected
 Install-InitialApplicationAuthority
 Converge-ControllerService
+Install-CredentialAccessIdentity
 Register-PrivilegedDispatcher
 
 $service = Get-RunnerService
@@ -264,3 +309,5 @@ Write-Output "controller_start_owner=windows_scm"
 Write-Output "secret_authority=controller_service"
 Write-Output "local_build_toolchain_installed=false"
 Write-Output "provider_credentials_installed=false"
+Write-Output "credential_access_identity_installed=true"
+Write-Output "runner_credential_access=false"

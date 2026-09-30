@@ -696,8 +696,13 @@ pub fn validate_windows_privileged_request(
             return Err("WindowsPrivilegedRequest.operation is required".to_owned());
         }
         WindowsPrivilegedOperation::Ping => {
-            if request.accepted_revision.is_some() || request.release_set_sha256.is_some() {
-                return Err("PING request must not carry release authority".to_owned());
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_generation.is_some()
+            {
+                return Err(
+                    "PING request must not carry release or credential authority".to_owned(),
+                );
             }
         }
         WindowsPrivilegedOperation::ActivateRelease => {
@@ -709,8 +714,22 @@ pub fn validate_windows_privileged_request(
                 .release_set_sha256
                 .as_deref()
                 .ok_or_else(|| "ACTIVATE_RELEASE requires release_set_sha256".to_owned())?;
+            if request.credential_generation.is_some() {
+                return Err("ACTIVATE_RELEASE must not carry credential authority".to_owned());
+            }
             validate_lower_hex("WindowsPrivilegedRequest.accepted_revision", revision, 40)?;
             validate_lower_hex("WindowsPrivilegedRequest.release_set_sha256", release, 64)?;
+        }
+        WindowsPrivilegedOperation::StageCredential => {
+            if request.accepted_revision.is_some() || request.release_set_sha256.is_some() {
+                return Err("STAGE_CREDENTIAL must not carry release authority".to_owned());
+            }
+            let generation = request
+                .credential_generation
+                .ok_or_else(|| "STAGE_CREDENTIAL requires credential_generation".to_owned())?;
+            if generation == 0 {
+                return Err("STAGE_CREDENTIAL generation must be greater than zero".to_owned());
+            }
         }
     }
     Ok(())
@@ -2091,6 +2110,7 @@ mod tests {
             release_set_sha256: Some(
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             ),
+            credential_generation: None,
         };
         let bytes = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), request);
@@ -2108,8 +2128,30 @@ mod tests {
             operation: WindowsPrivilegedOperation::Ping as i32,
             accepted_revision: None,
             release_set_sha256: None,
+            credential_generation: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request;
+        invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_credential_stage_is_generation_only() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-credential-stage".to_owned(),
+            operation: WindowsPrivilegedOperation::StageCredential as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: Some(101),
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request.clone();
+        invalid.credential_generation = Some(0);
+        assert!(encode_windows_privileged_request(&invalid).is_err());
 
         let mut invalid = request;
         invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());

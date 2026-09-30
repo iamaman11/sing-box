@@ -8,29 +8,28 @@ For execution order read GitHub Issue #26 first. For stable ownership/invariants
 ## Runtime owners
 
 ```text
-edge-orchestrator
-  GitHub-only production/provider composition owner
-  -> Vultr
-  -> Cloudflare
-  -> strict SSH local-forward -> edge-agent
+edge-orchestrator (GitHub-hosted)
+  -> Vultr / Cloudflare provider lifecycle only
 
-edge-agent
-  loopback-only bounded VM executor/observer
-  -> Docker Compose / Docker Engine / host observations
+production VM:
+GitHub self-hosted runner (low privilege, transport only)
+  -> exact allowlisted sudo commands
+  -> root-owned local edge-agent runtime owner
+  -> fixed Docker Compose mutations
+  -> Bollard + rtnetlink observations
+  -> Docker Engine / four-container runtime
 
-EdgePlatformController (edge-controller.exe)
-  Windows SCM service
-  -> Windows-local credential/config/runtime owner
-  -> sing-box.exe
-
-edge-console.exe
-  local Windows operator/client surface
+Windows:
+GitHub self-hosted runner (NetworkService transport only)
+  -> SYSTEM EdgePlatformPrivilegedDispatch
+  -> SCM EdgePlatformController
+  -> native sing-box runtime
 
 edge-diagnostic.exe
-  independent read-only Windows diagnostics
+  -> independent read-only Windows diagnostics
 ```
 
-The installed Windows controller is not a Vultr/Cloudflare orchestrator.
+The Linux local owner reuses the existing mature Docker/Compose/Bollard/runtime logic. The target removes its routine TCP/gRPC/SSH transport role, not the Docker runtime itself.
 
 ## Canonical production authority
 
@@ -76,27 +75,29 @@ The console is not a fallback startup owner. Do not restore child-process contro
 
 ## Credential transition
 
-Current accepted direction is tracked in Issue #169.
+Fresh application credentials use the accepted paired Windows/VM projections and fixed Worker A/B slots. Delivery to each local owner must be runner-blind. Direct Worker fetch is used only if the host identity bootstrap/rotation lifecycle is proven; otherwise the boundary uses the smallest audited standard recipient-encrypted handoff.
 
-Do not import legacy Windows credentials into the new application.
-
-Target:
-- fresh credential generations;
-- isolated VM/Windows Cloudflare credential projections;
-- fixed A/B encrypted Worker slots for bounded rollback;
-- typed active/candidate local credential state;
-- generated sing-box JSON / runtime env as consumer artifacts only.
-
-The existing `provision-runtime-state` command is transitional capability, not the final normal
-production credential lifecycle while #169 is open.
+Runners carry only non-secret generation/slot/operation intent and never receive plaintext credential payloads.
 
 ## VM transport
 
-Canonical production reaches `edge-agent` through strict OpenSSH local forwarding to a loopback
-listener. No public agent management port is required.
+Steady-state VM operations use the repository self-hosted production runner as outbound transport only:
 
-The accepted simplification target is to remove historical custom Agent mTLS/`edge-trust` after
-all live consumers are proven gone.
+```text
+GitHub
+ -> self-hosted low-privilege runner
+ -> exact allowlisted local operation
+ -> root-owned edge-agent local owner
+ -> Compose mutation / Bollard observation
+```
+
+Routine application/runtime operations do not require GitHub-hosted-runner SSH, temporary /32 ingress, SSH local-forwarding or a TCP/gRPC agent listener. Strict SSH remains bootstrap/migration/break-glass only until the last recovery dependency is retired.
+
+The runner has no provider credentials, no generic root, no Docker socket access and no application credential plaintext authority.
+
+The old standalone `/mesh` workflow is not a steady-state control surface. Mesh provider lifecycle is part of the hosted production target plane; VM Mesh runtime operations stay inside the local owner.
+
+For a fresh or re-enrolled production VM, `/production enroll-runtime` is the bounded bootstrap path: temporary strict SSH -> host substrate/VPC -> exact local owner -> permanent self-hosted runner -> SSH lease removed. Normal `/production converge|verify|diagnose` does not use SSH.
 
 ## Build/release model
 

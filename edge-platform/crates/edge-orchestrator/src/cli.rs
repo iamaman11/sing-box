@@ -172,9 +172,16 @@ impl ApplicationLifecycleCommand {
 pub(crate) enum ProductionCommand {
     Validate,
     Diagnose,
+    EnrollRuntime(ProductionEnrollRuntimeArgs),
     Converge(ProductionRuntimeArgs),
     Verify(ProductionRuntimeArgs),
     Rollback,
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct ProductionEnrollRuntimeArgs {
+    pub edge_agent_artifact_path: PathBuf,
+    pub runner_installer_path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -256,7 +263,9 @@ pub(crate) enum CloudflareTargetPlaneCommand {
     Inventory,
     Plan,
     Converge,
+    ActiveConverge,
     Verify,
+    VerifyActive,
 }
 
 #[derive(Debug, Subcommand)]

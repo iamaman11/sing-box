@@ -122,7 +122,16 @@ pub(crate) async fn plan_command() -> Result<(), String> {
 }
 
 pub(crate) async fn converge() -> Result<(), String> {
-    let inputs = Inputs::load_migration()?;
+    converge_with_inputs(Inputs::load_migration()?).await
+}
+
+pub(crate) async fn converge_active() -> Result<(), String> {
+    let inputs = Inputs::load_verify()?;
+    validate_active_target(&inputs)?;
+    converge_with_inputs(inputs).await
+}
+
+async fn converge_with_inputs(inputs: Inputs) -> Result<(), String> {
     let desired = desired(&inputs).await?;
     let mut mutations = 0u32;
 
@@ -167,6 +176,11 @@ pub(crate) async fn verify() -> Result<(), String> {
 
 pub(crate) async fn verify_active_invariant() -> Result<(), String> {
     let inputs = Inputs::load_verify()?;
+    validate_active_target(&inputs)?;
+    verify_with_inputs(inputs).await
+}
+
+fn validate_active_target(inputs: &Inputs) -> Result<(), String> {
     if inputs
         .production
         .cloudflare
@@ -186,7 +200,7 @@ pub(crate) async fn verify_active_invariant() -> Result<(), String> {
                 .to_owned(),
         );
     }
-    verify_with_inputs(inputs).await
+    Ok(())
 }
 
 async fn verify_with_inputs(inputs: Inputs) -> Result<(), String> {

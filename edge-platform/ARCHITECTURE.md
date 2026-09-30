@@ -16,27 +16,25 @@ historical architecture record and must not be used to restore its old global-co
           |                               |
           v                               v
    immutable ReleaseSet             edge-orchestrator
-   exact release identity           GitHub-only owner
+   exact release identity           GitHub-hosted owner
                                           |
                                +----------+-----------+
                                |                      |
                              Vultr                Cloudflare
-                               |             account: sing-box
-                               |             Mesh / ZT / Access
-                               |             credential Workers
-                               |
-                          strict SSH
-                          local forward
-                               |
-                               v
-                           edge-agent
-                       loopback VM owner
-                               |
-                               v
-                           sing-box
+                        provider lifecycle   account: sing-box
+                                             Mesh / ZT / Access
+                                             credential Workers
 
-Windows:
-ReleaseSet -> SCM EdgePlatformController -> typed local state -> sing-box
+Physical runtime hosts:
+
+GitHub
+  |-- Windows self-hosted runner (transport only)
+  |      -> SCM EdgePlatformController
+  |      -> Windows typed local state / sing-box
+  |
+  '-- production-VM self-hosted runner (transport only)
+         -> local root-owned typed runtime owner
+         -> Linux typed local state / Docker Compose / Docker Engine
 
 Independent:
 edge-diagnostic.exe = read-only Windows observer
@@ -64,42 +62,68 @@ rebuild. Windows/Linux production never treats a mutable latest artifact as auth
 
 ### edge-orchestrator
 
-`edge-orchestrator` is the GitHub-only production/provider composition owner.
+`edge-orchestrator` is the GitHub-hosted provider/production composition owner.
 
-It owns typed provider/application sequencing, plan/apply/verify/rollback semantics and production
-composition. It may use the Vultr and Cloudflare provider adapters.
+It owns typed provider sequencing, plan/apply/verify/rollback semantics and the internal
+`/credentials` lifecycle owner. Provider credentials remain only in the GitHub Environment and do
+not move onto Windows or the production VM.
 
-Its internal `/credentials` domain is the sole application-credential lifecycle owner. This is a
-bounded module inside the orchestrator, not a second daemon/control plane/crate. It creates one
-semantic credential generation and derives least-privilege VM/Windows projections from that same
-generation.
-
-The installed Windows controller must not regain provider authority.
+Its credential domain creates one semantic generation and derives least-privilege Windows/VM
+projections. It publishes only the inactive fixed Worker A/B slot and resolves uncertain mutation by
+read-only exact-generation re-observation before replay.
 
 ### Role boundary invariant
 
-Every mutable production path follows the same role split:
+Every mutable production path follows:
 
 ```text
-owner -> typed protobuf contract -> narrow adapter/transport -> local runtime
+Git desired state
+   -> typed owner decision
+   -> narrow provider or host transport
+   -> trusted local runtime owner
+   -> observed verification
 ```
 
-- the owner decides lifecycle and mutation;
+- owner decides lifecycle and mutation;
 - protobuf carries closed typed intent/state;
 - provider adapters only observe/execute provider APIs;
-- Workers, GitHub runners and SSH are transport, not desired-state or credential-generation owners;
+- GitHub runners are transport, never desired-state or credential-generation owners;
 - provider IDs, generated env/JSON and SQLite rows are observed/derived state, never competing
   desired-state authority.
 
-### edge-agent
+### Production-VM self-hosted runner
 
-`edge-agent` is a bounded Linux executor/observer for one VM.
+The production VM has one permanent repository-scoped self-hosted GitHub runner with outbound-only
+GitHub connectivity.
 
-Canonical production binds it to loopback and reaches it through the strict SSH local-forward
-transport. It does not own provider desired state, ReleaseSet selection or arbitrary shell access.
+The runner is low privilege and transport only. It may resolve exact accepted artifacts and invoke
+allowlisted typed local operations. It must not:
+- own provider credentials or provider lifecycle;
+- read/return application credential plaintext;
+- expose arbitrary root shell, generic sudo, filesystem, Docker or systemd mutation;
+- become runtime desired-state authority.
 
-The accepted target is to remove custom Agent mTLS/`edge-trust` after all accepted consumers of
-that historical path are gone.
+Routine production runtime and credential operations execute locally through this runner. The
+previous GitHub-hosted-job -> temporary /32 firewall lease -> SSH -> local-forward -> TCP/gRPC
+`edge-agent` path is migration/bootstrap debt, not steady-state architecture.
+
+### Linux local runtime owner
+
+Linux has exactly one root-owned typed local runtime boundary.
+
+Existing `edge-agent` implementation may be reduced/reused for this local role if doing so removes
+code. Its network daemon/TCP-gRPC role and custom mTLS/`edge-trust` are not canonical.
+
+The local owner may:
+- observe local runtime/network state through typed host probes and Bollard;
+- apply/rollback fixed Docker Compose application/runtime operations;
+- own local active/candidate/previous credential state;
+- acquire only the exact VM credential projection through the runner-blind delivery mechanism selected by #26;
+- emit bounded secret-safe evidence.
+
+Direct Worker fetch is preferred only if host Access identity bootstrap/rotation is proven simple and bounded. Otherwise use the smallest audited standard recipient-encrypted handoff.
+
+It may not own Vultr/Cloudflare provider lifecycle or return credential plaintext to the runner.
 
 ### Windows EdgePlatformController
 
@@ -107,16 +131,17 @@ The only Windows application/runtime owner is the SCM service
 `EdgePlatformController`, running as `NT SERVICE\EdgePlatformController`.
 
 It owns only Windows-local concerns:
-- active/candidate credential state;
+- active/candidate/previous credential state;
+- runner-blind exact-generation credential acquisition through the mechanism selected by #26;
 - generated local sing-box configuration;
 - local sing-box check/apply/lifecycle;
 - selectors and local status;
 - bounded local rollback/recovery.
 
-The GitHub Windows runner runs as NetworkService and is transport only. It must never become
-plaintext/decrypted application-secret authority.
+The repository self-hosted Windows runner runs as NetworkService and is outbound transport only. It
+must never become plaintext/decrypted application-secret authority.
 
-`EdgePlatformPrivilegedDispatch` is the bounded SYSTEM bridge for explicitly allowlisted
+`EdgePlatformPrivilegedDispatch` remains the bounded SYSTEM bridge for explicitly allowlisted
 privileged operations. It is not an arbitrary remote shell.
 
 ### edge-diagnostic
@@ -327,21 +352,17 @@ Physical roots:
 - VM: `<stack-parent>/runtime-secrets/application-v2`, inside the existing root-owned private
   runtime-secret boundary; Unix directories/files remain mode `0700/0600`.
 
-Candidate ingress is deliberately narrower than the persistence API:
-- both local owners expose only typed `StageCredentialCandidate` and read-only
-  `GetCredentialState`;
-- the request contains one `CredentialDeliveryBundle`; arbitrary byte payloads and generic secret
-  maps are forbidden;
-- the response contains only `LocalCredentialState` refs and never returns credential payload
-  material;
-- staging cannot promote, rollback, restart sing-box or alter the active runtime;
-- Windows accepts staging only from the installed `EdgePlatformController` authority layout;
-  repo/dev controller mode is not a credential owner;
-- no runner/console operator command is added by this boundary.
+Candidate acquisition and staging are deliberately narrower than the persistence API:
+- self-hosted runners carry only non-secret operation intent such as projection, generation and slot;
+- runners do not fetch, receive, log, cache or artifact credential plaintext;
+- the local owner validates projection/generation/slot/canonical bytes and stages through the accepted active/candidate/previous store;
+- staging cannot activate or silently generate replacement credentials;
+- Windows and VM never share fetch identity or projection-private material;
+- direct local-owner Worker fetch is preferred only after host identity bootstrap/rotation is proven;
+- otherwise the delivery edge uses the smallest audited standard recipient-encrypted handoff;
+- project-specific custom X25519/HKDF/AEAD transport is not canonical.
 
-The existing `edge-secrets` crate may provide this narrow cross-platform persistence primitive, but
-it owns no credential lifecycle, generation, provider mutation or runtime activation. Those
-decisions remain with the runtime owner and the GitHub-only `/credentials` lifecycle owner.
+The two Workers remain bounded A/B delivery mailboxes, not secret-history or runtime-state authorities.
 
 ## 5. Runtime autonomy and recovery
 
@@ -381,20 +402,39 @@ Mutations follow:
 
 Uncertain mutation outcomes are resolved by read-only re-observation, never blind replay.
 
-### VM control transport
+### Runtime-host transport
 
-Strict OpenSSH local forwarding remains the accepted production transport to loopback
-`edge-agent`.
+Both persistent runtime hosts use repository self-hosted GitHub runners with outbound-only
+connectivity.
 
-Do not add a generic SSH transport framework, second remote-control daemon or another PKI merely to
-replace an already bounded proven path.
+Windows:
+`GitHub -> self-hosted NetworkService runner -> SCM EdgePlatformController`.
 
-### Windows transport
+Linux:
+`GitHub -> self-hosted low-privilege runner -> local root-owned typed runtime owner`.
 
-The repository self-hosted runner is outbound GitHub transport only.
+Routine production runtime/credential operations do not use hosted-runner SSH, temporary /32 ingress,
+SSH tunnels or TCP/gRPC agent transport. The only retained remote-agent consumer in Macro Stage 1 is
+the disposable acceptance/bootstrap path, where a fresh temporary VM has no self-hosted runner yet.
+It is not steady-state production transport.
 
-It has no provider secrets and no plaintext application credential authority. Privileged Windows
-mutation crosses only explicit typed boundaries.
+The standalone `/mesh` operator namespace is retired. Production Mesh provider state is owned by
+the hosted `/production target-plane-*` path; Mesh container/runtime state is owned by the VM local
+runtime owner through Compose/Bollard. There is no second normal Mesh transport.
+
+The remaining tonic/`edge-trust` server surface is named `acceptance-serve` and has no default
+invocation. Production enrollment disables `edge-agent.service` and proves port 50061 absent; the
+server code remains only because disposable acceptance still needs a bootstrap-time RPC observer.
+
+Persistent-host bootstrap is explicit: `/production enroll-runtime` may temporarily acquire the
+canonical /32 SSH lease to create/verify the VM substrate, converge VPC attachment, install the exact
+ReleaseSet local owner and register the low-privilege runner. The command compensates the lease before
+PASS. It is enrollment/reinstallation, not steady-state application transport.
+
+Neither runner has provider credentials or plaintext application credential authority. Privileged
+host mutations cross only explicit typed local boundaries. Macro Stage 1 keeps production rollback
+fail-closed; the new local plan/digest rollback contract is completed together with the terminal v2
+cutover in Macro Stage 2 rather than falling back to SSH.
 
 ## 7. Diagnostics contract
 
@@ -403,7 +443,7 @@ Final diagnostics must provide secret-safe read-only evidence for:
 - Git desired revision and accepted ReleaseSet;
 - exact release binary/image identities;
 - Vultr machine/VPC/firewall/support-access state;
-- VM edge-agent/container/image/runtime readiness;
+- VM self-hosted-runner identity plus local typed Docker Compose/Bollard/runtime readiness;
 - direct/WARP functional probes;
 - Cloudflare account/Mesh/Zero Trust/Access state;
 - credential Worker identity and generation metadata without values;

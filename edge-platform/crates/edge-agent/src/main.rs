@@ -25,7 +25,10 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
-use edge_secrets::{ApplicationRuntimeSecrets, CredentialStore};
+use edge_secrets::{
+    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore,
+    fetch_canonical_credential_bundle,
+};
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
@@ -45,7 +48,7 @@ use serde::{Deserialize, Serialize};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
-const DEFAULT_AGENT_ADDR: &str = "127.0.0.1:50061";
+const DEFAULT_ACCEPTANCE_AGENT_ADDR: &str = "127.0.0.1:50061";
 const DEFAULT_STACK_DIR: &str = "/opt/vultr-edge-stack/stack";
 const APPLICATION_RELEASE_MARKER: &str = ".application-release.pb";
 const PREVIOUS_STACK_DIR: &str = "stack.previous";
@@ -123,19 +126,177 @@ async fn main() -> ExitCode {
 async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     use cli::Command;
 
-    match parsed
-        .command
-        .unwrap_or_else(|| Command::Serve(cli::ServeArgs::default()))
-    {
-        Command::Serve(args) => {
+    match parsed.command {
+        Command::AcceptanceServe(args) => {
             let (addr, stack_dir) = args.resolve().map_err(AgentError::Command)?;
-            serve(addr, stack_dir).await?;
+            serve_acceptance_rpc(addr, stack_dir).await?;
+            Ok(())
+        }
+        Command::Local { command } => run_local(command).await,
+    }
+}
+
+async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
+    let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
+    match command {
+        cli::LocalCommand::Status => {
+            let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
+            print_agent_state_evidence("STATUS", &state);
+            Ok(())
+        }
+        cli::LocalCommand::Verify => {
+            let state = inspect_runtime(&stack_dir, AgentMode::Readiness).await;
+            print_agent_state_evidence("VERIFY", &state);
+            if state.ready {
+                Ok(())
+            } else {
+                Err(AgentError::Command(
+                    "local runtime verification did not reach READY".to_owned(),
+                ))
+            }
+        }
+        cli::LocalCommand::Diagnose => {
+            let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
+            print_agent_state_evidence("DIAGNOSE", &state);
+            let network = network_observation::observe_ipv4_network()
+                .await
+                .map_err(AgentError::Command)?;
+            println!("network_link_count={}", network.links.len());
+            println!("network_address_count={}", network.addresses.len());
+            println!("network_route_count={}", network.routes.len());
+            let mesh = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
+            print_mesh_state_evidence(&mesh);
+            Ok(())
+        }
+        cli::LocalCommand::BootstrapBase => {
+            run_local_bootstrap(&stack_dir, BootstrapMode::BootstrapBase).await
+        }
+        cli::LocalCommand::BootstrapTunnel => {
+            run_local_bootstrap(&stack_dir, BootstrapMode::BootstrapTunnel).await
+        }
+        cli::LocalCommand::BootstrapFull => {
+            run_local_bootstrap(&stack_dir, BootstrapMode::BootstrapFull).await
+        }
+        cli::LocalCommand::MeshVerify => {
+            let state = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
+            print_mesh_state_evidence(&state);
+            if state.runtime_ready {
+                Ok(())
+            } else {
+                Err(AgentError::Command(
+                    "local Mesh runtime verification did not reach READY".to_owned(),
+                ))
+            }
+        }
+        cli::LocalCommand::MeshCleanup => {
+            let state = cleanup_mesh_runtime(&stack_dir)
+                .await
+                .map_err(AgentError::Command)?;
+            print_mesh_state_evidence(&state);
+            Ok(())
+        }
+        cli::LocalCommand::CredentialState => {
+            let state = observe_vm_credential_state(&stack_dir).map_err(AgentError::Command)?;
+            print_credential_state_evidence(state.as_ref());
+            Ok(())
+        }
+        cli::LocalCommand::CredentialStage { generation } => {
+            let state = fetch_and_stage_vm_credential_candidate(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_STAGE");
+            println!("credential_projection=VM");
+            println!("credential_generation={generation}");
+            println!("runner_secret_access=false");
+            print_credential_state_evidence(Some(&state));
             Ok(())
         }
     }
 }
 
-async fn serve(addr: SocketAddr, stack_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_local_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> Result<(), AgentError> {
+    let response = run_bootstrap(stack_dir, mode).await;
+    println!("operation=BOOTSTRAP");
+    println!("bootstrap_mode={}", response.mode);
+    println!("bootstrap_success={}", response.success);
+    if let Some(state) = response.post_state.as_ref() {
+        print_agent_state_evidence("BOOTSTRAP", state);
+    }
+    if response.success {
+        Ok(())
+    } else {
+        Err(AgentError::Command(
+            "local typed bootstrap failed; inspect bounded diagnostic evidence".to_owned(),
+        ))
+    }
+}
+
+fn print_agent_state_evidence(operation: &str, state: &AgentState) {
+    println!("operation={operation}");
+    println!("healthy={}", state.healthy);
+    println!("ready={}", state.ready);
+    println!("docker_reachable={}", state.docker_reachable);
+    println!("compose_file_present={}", state.compose_file_present);
+    println!("running_container_count={}", state.running_containers.len());
+    println!("missing_container_count={}", state.missing_containers.len());
+    println!("degraded_reason_count={}", state.degraded_reasons.len());
+    println!("tcp_listener_count={}", state.listening_tcp_ports.len());
+    println!("udp_listener_count={}", state.listening_udp_ports.len());
+    for (index, container) in state.containers.iter().enumerate() {
+        println!("container_{index}_name={}", container.name);
+        println!("container_{index}_present={}", container.present);
+        println!("container_{index}_running={}", container.running);
+        println!(
+            "container_{index}_exact_image_ready={}",
+            container.exact_image_ready
+        );
+        println!(
+            "container_{index}_restart_count={}",
+            container.restart_count.unwrap_or_default()
+        );
+        println!(
+            "container_{index}_oom_killed={}",
+            container.oom_killed.unwrap_or(false)
+        );
+    }
+}
+
+fn print_mesh_state_evidence(state: &MeshRuntimeState) {
+    println!("mesh_token_store_present={}", state.token_store_present);
+    println!("mesh_container_running={}", state.container_running);
+    println!("mesh_exact_image_ready={}", state.exact_image_ready);
+    println!("mesh_runtime_ready={}", state.runtime_ready);
+    println!("mesh_warning_count={}", state.warnings.len());
+    if let Some(registration_id) = state.registration_id.as_deref() {
+        println!("mesh_registration_id={registration_id}");
+    }
+}
+
+fn print_credential_state_evidence(state: Option<&LocalCredentialState>) {
+    println!("credential_state_present={}", state.is_some());
+    let Some(state) = state else {
+        return;
+    };
+    println!("credential_schema_version={}", state.schema_version);
+    println!("credential_projection={}", state.projection);
+    for (name, value) in [
+        ("active", state.active.as_ref()),
+        ("candidate", state.candidate.as_ref()),
+        ("previous", state.previous.as_ref()),
+    ] {
+        println!("credential_{name}_present={}", value.is_some());
+        if let Some(value) = value {
+            println!("credential_{name}_generation={}", value.generation);
+            println!("credential_{name}_slot={}", value.slot);
+            println!("credential_{name}_sha256={}", value.sha256);
+        }
+    }
+}
+
+async fn serve_acceptance_rpc(
+    addr: SocketAddr,
+    stack_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     validate_existing_vm_credential_store(&stack_dir)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
     let mut builder = Server::builder();
@@ -997,6 +1158,28 @@ fn validate_existing_vm_credential_store(stack_dir: &Path) -> Result<(), String>
         CredentialProjectionKind::Vm,
     )?;
     Ok(())
+}
+
+fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, String> {
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    Ok(parent
+        .join(RUNTIME_SECRET_DIR)
+        .join(ACCESS_IDENTITY_FILE_NAME))
+}
+
+async fn fetch_and_stage_vm_credential_candidate(
+    stack_dir: &Path,
+    generation: u64,
+) -> Result<LocalCredentialState, String> {
+    let bundle = fetch_canonical_credential_bundle(
+        CredentialProjectionKind::Vm,
+        generation,
+        &vm_credential_access_identity_path(stack_dir)?,
+    )
+    .await?;
+    stage_vm_credential_candidate(stack_dir, bundle)
 }
 
 fn stage_vm_credential_candidate(

@@ -124,8 +124,14 @@ async fn run(
             cli::CloudflareTargetPlaneCommand::Converge => {
                 cloudflare_target_plane_command::converge().await
             }
+            cli::CloudflareTargetPlaneCommand::ActiveConverge => {
+                cloudflare_target_plane_command::converge_active().await
+            }
             cli::CloudflareTargetPlaneCommand::Verify => {
                 cloudflare_target_plane_command::verify().await
+            }
+            cli::CloudflareTargetPlaneCommand::VerifyActive => {
+                cloudflare_target_plane_command::verify_active_invariant().await
             }
         },
         Command::CloudflareZeroTrust { command } => {
@@ -140,6 +146,14 @@ async fn run(
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Diagnose => cloudflare_phase0_inventory::run().await,
+            cli::ProductionCommand::EnrollRuntime(args) => {
+                production_command::enroll_runtime(
+                    release_context,
+                    &args.edge_agent_artifact_path,
+                    &args.runner_installer_path,
+                )
+                .await
+            }
             cli::ProductionCommand::Converge(args) => {
                 production_command::converge(release_context, &args.edge_agent_artifact_path).await
             }

@@ -5,13 +5,11 @@ WORKFLOWS = Path(".github/workflows")
 ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
-ROOT_OPS = WORKFLOWS / "vultr-root-ops.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 CREDENTIALS = WORKFLOWS / "credential-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
-MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
 EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
@@ -22,6 +20,7 @@ WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
 VM_AGENT = Path("edge-platform/crates/edge-agent/src/main.rs")
+VM_AGENT_CLI = Path("edge-platform/crates/edge-agent/src/cli.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
@@ -32,7 +31,7 @@ CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
 PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
-ROOT_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-root-runner.sh")
+PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-production-runner.sh")
 
 
 def require(condition: bool, message: str) -> None:
@@ -44,13 +43,11 @@ def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
-    root_ops = ROOT_OPS.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
-    mesh = MESH.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
@@ -62,6 +59,7 @@ def main() -> None:
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
+    vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
@@ -73,12 +71,28 @@ def main() -> None:
     phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
-    root_runner_installer = ROOT_RUNNER_INSTALLER.read_text(encoding="utf-8")
+    production_vm_runner_installer = PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
         for path in WORKFLOWS.glob("*.yml")
         if "issue_comment:" in path.read_text(encoding="utf-8")
+    )
+    require(
+        "AcceptanceServe" in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent", "acceptance-serve"]).is_ok()' in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent"]).is_err()' in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent", "serve"]).is_err()' in vm_agent_cli
+        and "LocalCommand" in vm_agent_cli
+        and "BootstrapBase" in vm_agent_cli
+        and "BootstrapTunnel" in vm_agent_cli
+        and "BootstrapFull" in vm_agent_cli
+        and "MeshVerify" in vm_agent_cli
+        and "MeshCleanup" in vm_agent_cli
+        and "CredentialState" in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err()' in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err()' in vm_agent_cli,
+        "Linux runtime owner must expose only the closed local operation grammar and explicitly reject exec",
     )
     require(
         listeners == [ROUTER.name],
@@ -87,7 +101,6 @@ def main() -> None:
 
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
-    require("workflow_call:" in root_ops, "Vultr root ops must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
@@ -219,16 +232,13 @@ def main() -> None:
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
-    require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
-    require("issue_comment:" not in root_ops, "Vultr root ops must not listen to comments")
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in credentials, "credential backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
-    require("issue_comment:" not in mesh, "Mesh backend must not listen to comments")
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
@@ -255,9 +265,11 @@ def main() -> None:
         "router must expose the physical Windows cycle only as the exact owner-only /windows smoke command",
     )
     require(
-        "uses: ./.github/workflows/vultr-root-ops.yml" in router
-        and "startsWith(github.event.comment.body, '/root ')" in router,
-        "router must expose root ops only through the sole owner-gated Issue #1 listener",
+        "vultr-root-ops.yml" not in router
+        and "startsWith(github.event.comment.body, '/root ')" not in router
+        and not (WORKFLOWS / "vultr-root-ops.yml").exists()
+        and not Path("edge-platform/scripts/install-vultr-root-runner.sh").exists(),
+        "retired generic root-runner routing/workflow/installer must be absent",
     )
     require(
         "uses: ./.github/workflows/zero-trust-lifecycle.yml" in router,
@@ -277,8 +289,10 @@ def main() -> None:
         "router must call the DNS backend",
     )
     require(
-        "uses: ./.github/workflows/cloudflare-mesh-lifecycle.yml" in router,
-        "router must call the Mesh backend",
+        "startsWith(github.event.comment.body, '/mesh ')" not in router
+        and "cloudflare-mesh-lifecycle.yml" not in router
+        and not (WORKFLOWS / "cloudflare-mesh-lifecycle.yml").exists(),
+        "parallel /mesh operator transport must be retired; provider Mesh belongs to /production target-plane and VM runtime Mesh belongs to the local owner",
     )
     require(
         "vultr-control-plane-production" not in router,
@@ -300,7 +314,6 @@ def main() -> None:
         ("zero-trust", zero_trust),
         ("vpc", vpc),
         ("dns", dns),
-        ("mesh", mesh),
     ]:
         require(
             "edge-orchestrator-linux-amd64" in backend
@@ -407,7 +420,7 @@ def main() -> None:
     )
     production_target_plane = application.split(
         "  production_target_plane:\n", 1
-    )[1].split("\n  execute:", 1)[0]
+    )[1].split("\n  production_enroll:", 1)[0]
     require(
         '"${EDGE_TARGET_PLANE_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
         in production_target_plane
@@ -428,9 +441,9 @@ def main() -> None:
     )
     require(
         application.count("group: vultr-control-plane-production") == 6,
-        "application backend must serialize target-plane, execute, production, read-only observation, cleanup and acceptance jobs",
+        "application backend must serialize enrollment, provider, observation, cleanup and disposable acceptance jobs",
     )
-    production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
+    production_observe = application.split("  production_observe:\n", 1)[1].split("\n  production_runtime:", 1)[0]
     require(
         '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
         and "cloudflare-phase0-inventory.txt" in production_observe
@@ -466,20 +479,6 @@ def main() -> None:
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
         "Vultr backend must serialize its execute mutation job",
-    )
-    require(
-        "runs-on:" in root_ops
-        and "- self-hosted" in root_ops
-        and "- vultr-root" in root_ops
-        and "- test-vm" in root_ops
-        and '${{ needs.authorize.outputs.machine_id }}' in root_ops,
-        "root ops must target only the machine-labelled self-hosted Vultr root runner",
-    )
-    require(
-        "permissions: {}" in root_ops
-        and 'sudo -n bash "${command_file}"' in root_ops
-        and "base64.urlsafe_b64decode" in root_ops,
-        "root ops must carry no GitHub token permission and execute only the explicitly owner-routed command as root",
     )
     require(
         "runs-on:" in windows_physical
@@ -577,8 +576,9 @@ def main() -> None:
         and "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN" in vultr
         and "/actions/runners/registration-token" in vultr
         and 'run_lifecycle runner-bootstrap "${spec}" "${machine}"' in vultr
-        and "install-vultr-root-runner.sh" in vultr,
-        "Vultr lifecycle must bootstrap the repository root runner through the typed host owner using a short-lived registration token",
+        and "install-vultr-production-runner.sh" in vultr
+        and "edge-agent-linux-amd64" in vultr,
+        "Vultr lifecycle must bootstrap the bounded production VM runner with the exact ReleaseSet local owner using a short-lived registration token",
     )
 
 
@@ -602,10 +602,6 @@ def main() -> None:
     require(
         dns.count("group: vultr-control-plane-production") == 1,
         "DNS backend must serialize its execute mutation job",
-    )
-    require(
-        mesh.count("group: vultr-control-plane-production") == 2,
-        "Mesh backend must serialize both provider observation and execute jobs",
     )
     require(
         "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
@@ -694,19 +690,22 @@ def main() -> None:
         "provider instance actions, including recovery reboot, must not depend on guest SSH",
     )
     require(
-        "root runner bootstrap failed: stage=%s exit=%s" in root_runner_installer
-        and "tail -c 4096" in root_runner_installer
-        and "[REDACTED]" in root_runner_installer
-        and "run_logged install-runner-dependencies ./bin/installdependencies.sh" in root_runner_installer
-        and root_runner_installer.index("run_logged install-runner-dependencies ./bin/installdependencies.sh")
-        < root_runner_installer.index("run_logged configure-runner")
-        and "run_logged configure-runner" in root_runner_installer
-        and "pgrep -u" not in root_runner_installer
+        "NOPASSWD:ALL" not in production_vm_runner_installer
+        and "usermod -aG docker" not in production_vm_runner_installer
+        and "sing-box-production-vm" in production_vm_runner_installer
+        and "SING_BOX_RUNTIME_READ" in production_vm_runner_installer
+        and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local status" in production_vm_runner_installer
+        and "runner must not have direct Docker socket authority" in production_vm_runner_installer
+        and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
+        and "acceptance_rpc_service_enabled" in vultr
+        and "tcp_50061_listener" in vultr
         and "Verify self-hosted runner online" in vultr
         and '.status == "online"' in vultr
-        and 'index("vultr-root")' in vultr
+        and 'index("sing-box-production-vm")' in vultr
+        and 'index("vultr-root")) == null' in vultr
         and 'index($machine)' in vultr,
-        "root-runner bootstrap must install pinned dependencies, avoid process-name readiness races, and defer online identity to the GitHub runner API",
+        "production VM runner bootstrap must be bounded, Docker-socket blind, and verified through the GitHub runner API",
     )
     require(
         'verb == "access-release" and len(tokens) == 4' in vultr
@@ -730,70 +729,89 @@ def main() -> None:
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
-    production_job = application.split("\n  production:\n", 1)[1].split("\n  production_observe:\n", 1)[0]
+    production_enroll = application.split("\n  production_enroll:\n", 1)[1].split(
+        "\n  production_provider:", 1
+    )[0]
+    production_provider = application.split("\n  production_provider:\n", 1)[1].split(
+        "\n  production_observe:", 1
+    )[0]
+    production_runtime = application.split("\n  production_runtime:\n", 1)[1].split(
+        "\n  cleanup:", 1
+    )[0]
     require(
-        'tokens == ["/production", "converge"]' in application
-        and 'tokens == ["/production", "diagnose"]' in application
-        and 'tokens == ["/production", "verify"]' in application
-        and 'tokens == ["/production", "rollback"]' in application
+        'tokens[0] == "/production"' in application
+        and '"enroll-runtime", "converge", "verify", "diagnose"' in application
+        and 'tokens == ["/production", "rollback"]' not in application
         and 'spec_path = "infra/production/production.textproto"' in application,
-        "production command grammar must be fixed to converge/diagnose/verify/rollback and the sole canonical textproto",
+        "steady-state production grammar must expose converge/verify/diagnose only; rollback remains fail-closed until Macro Stage 2",
     )
     require(
-        "needs.authorize.outputs.command_family == 'production'" in production_job
-        and production_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and '"${bin}" production "${REQUESTED_OPERATION}" "${EDGE_APPLICATION_ARTIFACT}"' in production_job
-        and '"${bin}" production rollback' in production_job,
-        "production backend must resolve one exact durable ReleaseSet and invoke only the typed production coordinator",
+        "\n  execute:\n" not in application
+        and "\n  production:\n" not in application
+        and '"plan", "apply", "verify", "upgrade"' not in application,
+        "retired hosted SSH application/production jobs and manual application mutation grammar must be absent",
     )
     require(
-        "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_job
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_job
-        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_job
-        and "CLOUDFLARE_API_TOKEN" not in production_job
-        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in production_job,
-        "production backend must receive dedicated account control, shared-DNS and strict-SSH authority without historical Cloudflare mutation authority",
+        "runs-on: ubuntu-24.04" in production_enroll
+        and "production enroll-runtime" in production_enroll
+        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in production_enroll
+        and "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}" in production_enroll
+        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_enroll
+        and "api.ipify.org" in production_enroll
+        and "EDGE_RUNNER_REGISTRATION_TOKEN" in production_enroll
+        and "install-vultr-production-runner.sh" in production_enroll
+        and "EDGE_DOCKER_ENGINE_VERSION" in production_enroll
+        and "EDGE_CONTAINERD_VERSION" in production_enroll
+        and "EDGE_COMPOSE_VERSION" in production_enroll
+        and "steady_state_transport=GITHUB_SELF_HOSTED_RUNNER" in production_enroll
+        and "CLOUDFLARE_CONTROL_TOKEN" not in production_enroll
+        and "CLOUDFLARE_DNS_TOKEN" not in production_enroll,
+        "production enrollment must be the sole bounded SSH bootstrap into the permanent self-hosted runtime transport",
     )
-    for forbidden in [
-        "INSTANCE_ID",
-        "VPC_ID",
-        "PROVIDER_ID",
-        "TARGET_IPV4",
-        "MESH_CIDR",
-        "current.json",
-        "manifest.json",
-    ]:
-        require(
-            forbidden not in production_job,
-            f"production workflow must not transport raw provider/runtime authority: {forbidden}",
-        )
     require(
-        "std::process::Command" not in production_command
-        and "Command::new" not in production_command
-        and "sh -c" not in production_command
-        and "production_converge_machine" in production_command
-        and "production_converge_desired" in production_command
-        and "production_verify_desired" in production_command
-        and "production_rollback_desired" in production_command,
-        "typed production coordinator must compose existing owners in-process without shell replay",
+        "runs-on: ubuntu-24.04" in production_provider
+        and production_provider.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and 'provider_operation="active-converge"' in production_provider
+        and 'provider_operation="verify-active"' in production_provider
+        and '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${provider_operation}"' in production_provider
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_provider
+        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_provider
+        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_provider
+        and "VULTR_SSH_PRIVATE_KEY" not in production_provider
+        and "api.ipify.org" not in production_provider
+        and "lease-acquire" not in production_provider,
+        "production provider plane must remain GitHub-hosted and guest-transport blind",
+    )
+    require(
+        "- self-hosted" in production_runtime
+        and "- Linux" in production_runtime
+        and "- X64" in production_runtime
+        and "- sing-box-production-vm" in production_runtime
+        and "- production-1" in production_runtime
+        and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
+        and 'sudo -n "${owner}" local "${local_operation}"' in production_runtime
+        and 'local_operation="bootstrap-full"' in production_runtime
+        and 'local_operation="verify"' in production_runtime
+        and 'local_operation="diagnose"' in production_runtime
+        and "VULTR_API_KEY" not in production_runtime
+        and "CLOUDFLARE_CONTROL_TOKEN" not in production_runtime
+        and "CLOUDFLARE_DNS_TOKEN" not in production_runtime
+        and "VULTR_SSH_PRIVATE_KEY" not in production_runtime
+        and "api.ipify.org" not in production_runtime
+        and "lease-acquire" not in production_runtime
+        and "/var/run/docker.sock" in production_runtime
+        and "sudo -n id -u" in production_runtime,
+        "production runtime plane must use only self-hosted runner -> bounded local owner with no provider/generic-root authority",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
-    execute_job = application.split("\n  execute:\n", 1)[1].split(
-        "\n  production:\n", 1
-    )[0]
     require(
         "  cleanup:\n    needs: authorize" in application
         and "  acceptance:\n    needs: authorize" in application
-        and "  execute:\n    needs: authorize" in application,
-        "application commands must dispatch directly from authorization to exactly one command job",
-    )
-    require(
-        execute_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and "needs.verify" not in execute_job,
-        "normal application execute must perform exactly one durable ReleaseSet resolution",
+        and "  production_runtime:\n    needs:" in application,
+        "steady-state production and disposable application commands must dispatch through explicit owners",
     )
     require(
         acceptance_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
@@ -803,6 +821,12 @@ def main() -> None:
     require(
         acceptance_job.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance') == 1,
         "normal acceptance must invoke exactly one typed lifecycle coordinator",
+    )
+    require(
+        "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in acceptance_job
+        and "api.ipify.org" in acceptance_job
+        and "application-acceptance" in acceptance_job,
+        "acceptance retains its disposable SSH bootstrap; persistent production SSH is isolated to explicit production enrollment",
     )
     require(
         cleanup_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
@@ -868,8 +892,8 @@ def main() -> None:
         "typed acceptance coordinator must compose owners in-process, never via shell/process replay",
     )
     require(
-        application.count('"${orchestrator}" application-lifecycle materialize') == 2,
-        "both application materialization paths must delegate exact release inputs to the typed Rust owner",
+        application.count('"${orchestrator}" application-lifecycle materialize') == 1,
+        "only disposable acceptance may materialize release inputs through the legacy remote application coordinator",
     )
     require(
         "EDGE_DOCKER_ENGINE_VERSION" in vpc
@@ -961,117 +985,13 @@ def main() -> None:
         "typed acceptance destroy authority must come from validated ReleaseSet accepted revision",
     )
     require(
-        "edge-platform/scripts/resolve_durable_release.sh" in mesh,
-        "Mesh backend must consume the exact durable accepted ReleaseSet",
-    )
-    require(
-        "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in mesh
-        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in mesh
-        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in mesh,
-        "Mesh backend must receive only the provider and strict-SSH authorities required by verified VPC composition",
-    )
-    require(
-        "line3-mesh vpc-plan" in mesh
-        and "line3-mesh vpc-apply" in mesh
-        and "plan_authority.authority_digest" in mesh,
-        "Mesh provider mutations must reuse typed VPC-derived planning and exact PlanAuthority",
-    )
-    require(
-        "vultr-lifecycle lease-acquire" in mesh
-        and "vultr-lifecycle lease-release" in mesh
-        and "ACCESS_CLEANUP_ARMED=1" in mesh,
-        "Mesh VPC proof must use the typed transient SSH lease with armed cleanup",
-    )
-    require(
-        "acquire-access-plan" not in mesh and "release-access-plan" not in mesh,
-        "Mesh workflow must not own transient-access PlanAuthority plumbing",
-    )
-    require(
-        'tokens[0] == "/mesh"' in mesh
-        and 'tokens[1] in {"provider-cleanup-plan", "provider-cleanup-verify"}' in mesh
-        and 'len(tokens) == 3' in mesh
-        and 'tokens[1] in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
-        "Mesh backend must expose only the bounded provider/runtime grammar plus one provider-only CP16 observation",
-    )
-    require(
-        "line3-mesh vpc-runtime-apply" in mesh
-        and "line3-mesh vpc-runtime-verify" in mesh
-        and mesh.count("line3-mesh runtime-observe") == 3
-        and mesh.count("line3-mesh runtime-cleanup") == 1
-        and mesh.count("line3-mesh cleanup-plan") == 3
-        and mesh.count("line3-mesh cleanup-apply") == 1
-        and "MESH_NODE_TOKEN" not in mesh,
-        "Mesh backend must expose bounded runtime operations plus one-at-a-time typed provider cleanup without raw token authority",
-    )
-    require(
-        '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' in mesh,
-        "Mesh runtime operations must fail closed unless provider state is already NOOP",
-    )
-    require(
-        "MESH_CIDR" not in mesh
-        and "PRIVATE_IPV4" not in mesh
-        and "PROVIDER_ID" not in mesh,
-        "Mesh workflow must not transport raw provider IDs, CIDR, or private-IP authority",
-    )
-    require(
-        '"${bin}" line3-mesh vpc-plan' in mesh
-        and '"${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"' in mesh,
-        "Mesh plan must derive effective route only through the typed VPC-composed command",
-    )
-    require(
-        mesh.count("line3-mesh vpc-apply") == 1,
-        "one Mesh workflow invocation must contain at most one provider apply call",
-    )
-    require(
-        mesh.count("line3-mesh vpc-runtime-apply") == 1
-        and mesh.count("line3-mesh vpc-runtime-verify") == 1,
-        "one Mesh workflow invocation must contain at most one typed runtime converge and one typed runtime verify call",
-    )
-    require(
-        "mesh-runtime-observe-provider-plan.json" in mesh
-        and "mesh-runtime-observe.json" in mesh
-        and '(.status == "READY" and .runtime.runtime_ready == true)' in mesh
-        and '(.status == "ABSENT" and .runtime.runtime_ready == false and .runtime.token_store_present == false and .runtime.container_running == false)' in mesh
-        and '(.status == "DEGRADED" and .runtime.runtime_ready == false and (.runtime.token_store_present == true or .runtime.container_running == true))' in mesh,
-        "Mesh runtime observation must stay read-only, provider-NOOP-gated, and classify READY/ABSENT/DEGRADED deterministically",
-    )
-    require(
-        "mesh-runtime-cleanup-provider-before.json" in mesh
-        and "mesh-runtime-cleanup-provider-after.json" in mesh
-        and '.status == "ABSENT" and .runtime.token_store_present == false and .runtime.container_running == false and .runtime.runtime_ready == false' in mesh
-        and "provider_before:.[0],runtime:.[1],provider_after:.[2]" in mesh,
-        "Mesh runtime cleanup must prove provider NOOP before and after one typed cleanup and require exact runtime absence",
-    )
-    require(
-        "mesh-provider-cleanup-runtime.json" in mesh
-        and "mesh-provider-cleanup-plan.json" in mesh
-        and "mesh-provider-cleanup-apply.json" in mesh
-        and 'destructive_digest="$(jq -er' in mesh
-        and 'authority="$(plan_authority' in mesh
-        and '(.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' in mesh
-        and '.[1].performed.kind == .[0].plan.action.kind' in mesh,
-        "Mesh provider cleanup must require runtime ABSENT, fresh destructive digest + PlanAuthority, and exactly one matching delete per invocation",
-    )
-
-    provider_observe = mesh.split("  provider_observe:\n", 1)[1].split("\n  execute:", 1)[0]
-    require(
-        "line3-mesh cleanup-plan" in provider_observe
-        and ".mutations_performed == 0" in provider_observe
-        and '"provider-cleanup-verify"' in provider_observe
-        and '(.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' in provider_observe
-        and '.plan.action.kind == "NOOP"' in provider_observe,
-        "Mesh provider plan must be read-only for MUTATE/NOOP, while explicit verify requires exact zero-state",
-    )
-    require(
-        "EDGE_RELEASE_CONTEXT_PATH" in provider_observe
-        and "VULTR_API_KEY" not in provider_observe
-        and "VULTR_SSH_PRIVATE_KEY" not in provider_observe
-        and "EDGE_SSH_PRIVATE_KEY_PATH" not in provider_observe
-        and "vultr-lifecycle lease-acquire" not in provider_observe
-        and "vultr-lifecycle lease-release" not in provider_observe
-        and "api.ipify.org" not in provider_observe
-        and "cleanup-apply" not in provider_observe,
-        "CP16 Mesh provider observation must not materialize SSH/Vultr authority, discover egress, acquire access, or expose mutation",
+        'provider_operation="active-converge"' in production_provider
+        and 'provider_operation="verify-active"' in production_provider
+        and "MeshVerify" in vm_agent_cli
+        and "MeshCleanup" in vm_agent_cli
+        and 'local_operation="bootstrap-full"' in production_runtime
+        and "VULTR_SSH_PRIVATE_KEY" not in production_runtime,
+        "Mesh ownership must be split between hosted production target-plane provider authority and the self-hosted VM local runtime owner",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
