@@ -123,9 +123,9 @@ function Install-CredentialAccessIdentity {
         if (-not $plainSecret -or $plainSecret -match "\s") {
             throw "Cloudflare Access host client secret is malformed"
         }
-        New-Item -ItemType Directory -Force -Path $secretDir | Out-Null
-        & icacls.exe $secretDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows credential secret directory" }
+        if (-not (Test-Path -LiteralPath $secretDir -PathType Container)) {
+            throw "Controller-owned Windows secret directory is not converged"
+        }
 
         $stage = "$identityPath.new"
         [IO.File]::WriteAllText(
@@ -133,8 +133,6 @@ function Install-CredentialAccessIdentity {
             "CF_ACCESS_CLIENT_ID=$clientId`nCF_ACCESS_CLIENT_SECRET=$plainSecret`n",
             [Text.UTF8Encoding]::new($false)
         )
-        & icacls.exe $stage /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows credential Access identity" }
         Move-Item -LiteralPath $stage -Destination $identityPath -Force
     } finally {
         if ($bstr -ne [IntPtr]::Zero) {
@@ -274,8 +272,8 @@ Assert-Administrator
 Assert-IsolatedRoots
 Assert-MainProtected
 Install-InitialApplicationAuthority
-Install-CredentialAccessIdentity
 Converge-ControllerService
+Install-CredentialAccessIdentity
 Register-PrivilegedDispatcher
 
 $service = Get-RunnerService
