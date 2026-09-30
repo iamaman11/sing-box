@@ -574,7 +574,10 @@ pub async fn patch_worker_secrets_with_version_tag(
 
     let mut body = serde_json::Map::new();
     if !secret_patch.is_empty() {
-        body.insert("secrets".to_owned(), serde_json::Value::Object(secret_patch));
+        body.insert(
+            "secrets".to_owned(),
+            serde_json::Value::Object(secret_patch),
+        );
     }
     body.insert(
         "version_tags".to_owned(),
@@ -597,9 +600,7 @@ pub async fn patch_worker_secrets_with_version_tag(
         .send()
         .await
         .map_err(|err| {
-            format!(
-                "failed to patch Cloudflare Worker secrets/version tag atomically: {err}"
-            )
+            format!("failed to patch Cloudflare Worker secrets/version tag atomically: {err}")
         })?;
     ensure_secret_mutation_success(response).await
 }
