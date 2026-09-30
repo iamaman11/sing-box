@@ -784,6 +784,7 @@ pub fn parse_credential_transition_action(
         "apply-legacy" => Ok(CredentialTransitionAction::ApplyLegacy),
         "apply-active" => Ok(CredentialTransitionAction::ApplyActive),
         "retire-legacy" => Ok(CredentialTransitionAction::RetireLegacy),
+        "prepare-legacy" => Ok(CredentialTransitionAction::PrepareLegacy),
         _ => Err(format!("unsupported credential transition action: {value}")),
     }
 }
@@ -2229,6 +2230,7 @@ mod tests {
             ("apply-legacy", CredentialTransitionAction::ApplyLegacy),
             ("apply-active", CredentialTransitionAction::ApplyActive),
             ("retire-legacy", CredentialTransitionAction::RetireLegacy),
+            ("prepare-legacy", CredentialTransitionAction::PrepareLegacy),
         ] {
             assert_eq!(parse_credential_transition_action(name).unwrap(), action);
             let request = WindowsPrivilegedRequest {
