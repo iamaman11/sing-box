@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the accepted stable ownership/invariant model and target steady state for the current project. Some #169 Cloudflare convergence and deletion-first cleanup steps are not implemented yet; provider reality must always be re-observed before claiming migration complete.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence through the single production-account authority flip is closed; provider reality must still be freshly observed before any mutation. Issue #26 owns the remaining bounded host-identity bootstrap, terminal fresh-v2 cutover and deletion-first cleanup.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 owns the bounded Cloudflare/credential convergence vertical. Issue #58 is a closed
@@ -121,7 +121,7 @@ The local owner may:
 - acquire only the exact VM credential projection through the runner-blind delivery mechanism selected by #26;
 - emit bounded secret-safe evidence.
 
-Direct Worker fetch is preferred only if host Access identity bootstrap/rotation is proven simple and bounded. Otherwise use the smallest audited standard recipient-encrypted handoff.
+Canonical credential delivery is direct local-owner HTTPS fetch from the projection-specific `workers.dev` Worker using a permanent projection-specific Cloudflare Access host identity. The runner supplies only non-secret generation/slot intent. Windows and VM host identities are physically distinct from each other and from bounded proof identities.
 
 It may not own Vultr/Cloudflare provider lifecycle or return credential plaintext to the runner.
 
@@ -203,16 +203,12 @@ Owns all application-exclusive account-scoped resources:
 The dedicated account ID is non-secret desired state and should be declared once in the typed
 production composition rather than duplicated across subsystems.
 
-During the bounded migration, the typed production composition separates **active ownership** from
-**migration intent**:
-- `cloudflare.active_account_id` is the sole active account owner for application-exclusive
-  account-scoped resources and remains on the historical account until the Phase 5 cutover;
-- `cloudflare.migration_target_account_id` names the dedicated `sing-box` target but is never
-  an active owner;
-- the shared DNS account coordinate is stored separately with the DNS boundary, so the Phase 5
-  application-account flip cannot accidentally move or adopt the shared `alegria.by` zone.
+The Phase 5 authority flip is closed:
+- `cloudflare.active_account_id` is the sole active owner for application-exclusive account-scoped resources and points at the dedicated `sing-box` account;
+- no migration-target field is a competing active authority;
+- the shared DNS account coordinate remains separate with the DNS boundary, so `alegria.by` is not adopted into the application account.
 
-The deprecated Mesh-local account field is not an authority in canonical production schema v2.
+Credential Workers are intentionally `workers.dev`-only with previews disabled and zero custom domains. Access applications bind to the exact workers.dev hostnames. The deprecated Mesh-local account field is not an authority in canonical production schema.
 
 ### Shared zone `alegria.by`
 
@@ -358,9 +354,9 @@ Candidate acquisition and staging are deliberately narrower than the persistence
 - the local owner validates projection/generation/slot/canonical bytes and stages through the accepted active/candidate/previous store;
 - staging cannot activate or silently generate replacement credentials;
 - Windows and VM never share fetch identity or projection-private material;
-- direct local-owner Worker fetch is preferred only after host identity bootstrap/rotation is proven;
-- otherwise the delivery edge uses the smallest audited standard recipient-encrypted handoff;
-- project-specific custom X25519/HKDF/AEAD transport is not canonical.
+- direct local-owner Worker fetch through the projection-specific permanent Access host identity is canonical;
+- Windows and VM host identities are physically distinct and are not reused as bounded proof identities;
+- project-specific custom X25519/HKDF/AEAD transport is not canonical and must not return.
 
 The two Workers remain bounded A/B delivery mailboxes, not secret-history or runtime-state authorities.
 
