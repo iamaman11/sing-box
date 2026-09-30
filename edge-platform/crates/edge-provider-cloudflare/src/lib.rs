@@ -603,6 +603,46 @@ pub async fn upload_worker_module_with_secret_text_bindings(
     ensure_secret_mutation_success(response).await
 }
 
+fn worker_version_annotation_patch_multipart(
+    version_tag: &str,
+) -> Result<(String, String), String> {
+    require_non_empty("Cloudflare Worker version tag", version_tag)?;
+    let settings = serde_json::json!({
+        "annotations": {
+            "workers/tag": version_tag,
+            "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
+        }
+    })
+    .to_string();
+    let boundary = "edge-sing-box-worker-version-annotation-v1";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"settings\"\r\nContent-Type: application/json\r\n\r\n{settings}\r\n--{boundary}--\r\n"
+    );
+    Ok((format!("multipart/form-data; boundary={boundary}"), body))
+}
+
+pub async fn patch_worker_version_annotations(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    version_tag: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let (content_type, body) = worker_version_annotation_patch_multipart(version_tag)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .patch(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/settings"
+        ))
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| format!("failed to patch Cloudflare Worker version annotations: {err}"))?;
+    ensure_success(response).await
+}
+
 pub async fn patch_worker_secrets_with_version_tag(
     api_token: &str,
     account_id: &str,
@@ -3155,6 +3195,28 @@ mod tests {
         }))
         .unwrap();
         assert!(absent.is_none());
+    }
+
+    #[test]
+    fn renders_official_worker_version_annotation_settings_multipart_shape() {
+        let (content_type, body) =
+            worker_version_annotation_patch_multipart("sing-box-phase6-ab-windows-deadbeef")
+                .unwrap();
+
+        assert_eq!(
+            content_type,
+            "multipart/form-data; boundary=edge-sing-box-worker-version-annotation-v1"
+        );
+        assert!(body.contains("Content-Disposition: form-data; name=\"settings\""));
+        assert!(body.contains("Content-Type: application/json"));
+        assert!(body.contains(
+            "\"workers/tag\":\"sing-box-phase6-ab-windows-deadbeef\""
+        ));
+        assert!(body.contains(
+            "\"workers/message\":\"sing-box Phase 6 fixed A/B credential delivery contract\""
+        ));
+        assert!(!body.contains("EDGE_CREDENTIAL_BUNDLE_A"));
+        assert!(!body.contains("EDGE_CREDENTIAL_BUNDLE_B"));
     }
 
     #[test]
