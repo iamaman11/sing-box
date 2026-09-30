@@ -322,7 +322,7 @@ fn stop_exact_legacy_runtime() -> Result<(), String> {
     let legacy = observe_exact_legacy_runtime()?;
     let executable = legacy.executable_path.to_string_lossy().to_string();
     let script = format!(
-        "$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process -Filter \\"ProcessId={} AND Name='sing-box.exe'\\"; if(-not $p){{throw 'legacy sing-box process disappeared before takeover'}}; if([string]$p.ExecutablePath -cne '{}'){{throw 'legacy sing-box executable changed before takeover'}}; Stop-Process -Id {} -Force; Wait-Process -Id {} -Timeout 10 -ErrorAction SilentlyContinue; if(Get-Process -Id {} -ErrorAction SilentlyContinue){{throw 'legacy sing-box process did not stop'}}",
+        r#"$ErrorActionPreference='Stop'; $p=Get-CimInstance Win32_Process | Where-Object {{ $_.ProcessId -eq {} -and $_.Name -ieq 'sing-box.exe' }}; if(-not $p){{throw 'legacy sing-box process disappeared before takeover'}}; if([string]$p.ExecutablePath -cne '{}'){{throw 'legacy sing-box executable changed before takeover'}}; Stop-Process -Id {} -Force; Wait-Process -Id {} -Timeout 10 -ErrorAction SilentlyContinue; if(Get-Process -Id {} -ErrorAction SilentlyContinue){{throw 'legacy sing-box process did not stop'}}"#,
         legacy.pid,
         executable.replace('\'', "''"),
         legacy.pid,
