@@ -744,7 +744,9 @@ def main() -> None:
     require(
         "runs-on: ubuntu-24.04" in production_provider
         and production_provider.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"' in production_provider
+        and 'provider_operation="active-converge"' in production_provider
+        and 'provider_operation="verify-active"' in production_provider
+        and '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${provider_operation}"' in production_provider
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_provider
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_provider
         and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_provider
@@ -956,8 +958,8 @@ def main() -> None:
         "typed acceptance destroy authority must come from validated ReleaseSet accepted revision",
     )
     require(
-        '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
-        in production_provider
+        'provider_operation="active-converge"' in production_provider
+        and 'provider_operation="verify-active"' in production_provider
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
         and 'local_operation="bootstrap-full"' in production_runtime

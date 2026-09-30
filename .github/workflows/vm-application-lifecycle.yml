@@ -229,14 +229,19 @@ jobs:
         run: |
           set -euo pipefail
           case "${REQUESTED_OPERATION}" in
-            converge|verify) ;;
+            converge)
+              provider_operation="active-converge"
+              ;;
+            verify)
+              provider_operation="verify-active"
+              ;;
             *)
               echo "provider plane received unsupported production operation" >&2
               exit 1
               ;;
           esac
           result="${RUNNER_TEMP}/production-provider-result.txt"
-          "${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}" | tee "${result}"
+          "${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${provider_operation}" | tee "${result}"
           {
             echo '### Production provider plane'
             echo

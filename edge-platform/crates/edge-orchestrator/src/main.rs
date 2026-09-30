@@ -124,8 +124,14 @@ async fn run(
             cli::CloudflareTargetPlaneCommand::Converge => {
                 cloudflare_target_plane_command::converge().await
             }
+            cli::CloudflareTargetPlaneCommand::ActiveConverge => {
+                cloudflare_target_plane_command::converge_active().await
+            }
             cli::CloudflareTargetPlaneCommand::Verify => {
                 cloudflare_target_plane_command::verify().await
+            }
+            cli::CloudflareTargetPlaneCommand::VerifyActive => {
+                cloudflare_target_plane_command::verify_active_invariant().await
             }
         },
         Command::CloudflareZeroTrust { command } => {

@@ -256,7 +256,9 @@ pub(crate) enum CloudflareTargetPlaneCommand {
     Inventory,
     Plan,
     Converge,
+    ActiveConverge,
     Verify,
+    VerifyActive,
 }
 
 #[derive(Debug, Subcommand)]
