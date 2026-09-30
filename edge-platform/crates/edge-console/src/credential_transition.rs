@@ -162,6 +162,14 @@ fn validate_rendered_state(
     result
 }
 
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("failed to snapshot {}: {err}", path.display())),
+    }
+}
+
 fn restore_optional(path: &Path, previous: Option<&[u8]>) -> Result<(), String> {
     match previous {
         Some(bytes) => write_atomic_private(path, bytes),
@@ -180,8 +188,8 @@ fn apply_runtime_state(
 ) -> Result<(), String> {
     let state_path = windows_runtime_state_path(install_root);
     let config_path = local_singbox_config_path(install_root);
-    let previous_state = fs::read(&state_path).ok();
-    let previous_config = fs::read(&config_path).ok();
+    let previous_state = read_optional(&state_path)?;
+    let previous_config = read_optional(&config_path)?;
     let next_state = encode_windows_runtime_state(state)?;
     let next_config = validate_rendered_state(install_root, activation, state)?;
 
