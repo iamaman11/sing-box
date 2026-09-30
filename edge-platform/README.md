@@ -77,7 +77,9 @@ The console is not a fallback startup owner. Do not restore child-process contro
 
 Fresh application credentials use the accepted paired Windows/VM projections and fixed Worker A/B slots. Delivery to each local owner is runner-blind direct HTTPS fetch from its projection-specific `workers.dev` Worker through its permanent Cloudflare Access host identity. Windows and VM host identities are physically distinct from each other and from bounded proof identities.
 
-Runners carry only non-secret generation/slot/operation intent and never receive plaintext credential payloads. Custom Worker domains, a second secret database and a project-specific encrypted handoff protocol are not part of the accepted path.
+Windows host-identity enrollment has one bootstrap-only CMS/RFC5652 recipient-encrypted hop: the runner exposes only a temporary public certificate and later carries only ciphertext; SYSTEM decrypts into controller-owned state and destroys the non-exportable bootstrap key. Windows plaintext escrow exists only temporarily in the protected GitHub Environment and is deleted after installation. Existing host tokens are never silently rotated on retry; exact escrow is reused or the operation fails closed. It is not a steady-state application credential transport.
+
+Runners carry only non-secret generation/slot/operation intent and never receive plaintext credential payloads. Custom Worker domains, a second secret database and a project-specific application-credential handoff protocol are not part of the accepted path.
 
 ## VM transport
 

@@ -124,6 +124,8 @@ The local owner may:
 
 Canonical credential delivery is direct local-owner HTTPS fetch from the projection-specific `workers.dev` Worker using a permanent projection-specific Cloudflare Access host identity. The runner supplies only non-secret generation/slot intent. Windows and VM host identities are physically distinct from each other and from bounded proof identities.
 
+The Windows permanent host identity has one bounded bootstrap-only exception: SYSTEM creates a non-exportable temporary document-encryption key, only its public certificate crosses to the provider job, and only CMS/RFC5652 ciphertext returns through the NetworkService exchange. Decryption, validated identity installation and private-key destruction occur inside the SYSTEM/controller-owned boundary. Windows plaintext may be retained only as temporary GitHub Environment bootstrap escrow until that installation succeeds, then it is deleted. Retries never rotate an existing host token implicitly: exact matching escrow is reused or the bootstrap fails closed and requires an explicit recovery action. This mechanism is not used for application credential delivery or normal rotation.
+
 It may not own Vultr/Cloudflare provider lifecycle or return credential plaintext to the runner.
 
 ### Windows EdgePlatformController

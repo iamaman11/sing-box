@@ -384,16 +384,37 @@ def main() -> None:
         and "print_terminal(desired, &after, mutations)?;" in credential_command,
         "credential convergence must accept terminal NOOP observed after the final bounded mutation",
     )
+    proof_start = credential_command.index("async fn prove_ab_session(")
+    proof_end = credential_command.index(
+        "fn validate_rotated_proof_credential", proof_start
+    )
+    proof_session = credential_command[proof_start:proof_end]
     require(
         "preflight_access_analytics(control_token, desired).await?;" in credential_command
         and "proof_token_state projection={} stage={}" in credential_command
         and "access_failure_capture projection={}" in credential_command
         and "diagnose_access_failure_after_cleanup(" in credential_command
         and "no HTTP probe replay performed" in credential_command
-        and "async fn prove_ab_session(" in credential_command
         and "async fn prove_projection(" not in credential_command
-        and "credential.client_secret" not in credential_command,
+        and "credential.client_secret" not in proof_session,
         "credential proof must use one shared two-projection session with secret-safe provider-native failure evidence and no HTTP replay",
+    )
+    host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
+    host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
+    host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]
+    require(
+        '"host-bootstrap-converge"' in credentials
+        and credentials.count("sing-box-windows-lab") == 2
+        and "CMS/RFC5652 ciphertext only" in credentials
+        and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID" in credentials
+        and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET" in credentials
+        and "CLOUDFLARE_VM_ACCESS_CLIENT_ID" in credentials
+        and "CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in credentials
+        and "WINDOWS_BOOTSTRAP_ESCROW=DELETED" in credentials
+        and "rotate_access_service_token(" not in host_bootstrap
+        and "actions/upload-artifact" not in credentials
+        and "actions/download-artifact" not in credentials,
+        "host identity bootstrap must remain create-once, retry-safe, runner-blind, ciphertext-only on Windows and artifact-free",
     )
     diagnostics_index = credential_command.index(
         "let classification = diagnose_access_failure_after_cleanup"

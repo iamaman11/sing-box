@@ -810,6 +810,47 @@ pub async fn create_access_service_policy(
     ensure_success(response).await
 }
 
+pub async fn update_access_service_policy_tokens(
+    api_token: &str,
+    account_id: &str,
+    application_id: &str,
+    policy_id: &str,
+    policy_name: &str,
+    service_token_ids: &[String],
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access application ID", application_id)?;
+    require_non_empty("Cloudflare Access policy ID", policy_id)?;
+    require_non_empty("Cloudflare Access policy name", policy_name)?;
+    if service_token_ids.is_empty() {
+        return Err("Cloudflare Access service-auth policy requires at least one token".to_owned());
+    }
+    let include = service_token_ids
+        .iter()
+        .map(|token_id| {
+            serde_json::json!({
+                "service_token": {
+                    "token_id": token_id
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let client = authorized_client(api_token)?;
+    let response = client
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{application_id}/policies/{policy_id}"
+        ))
+        .json(&serde_json::json!({
+            "name": policy_name,
+            "decision": "non_identity",
+            "include": include
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("failed to update Cloudflare Access service-auth policy: {err}"))?;
+    ensure_success(response).await
+}
+
 pub async fn probe_worker(
     url: &str,
     credential: Option<&CloudflareAccessServiceCredential>,
