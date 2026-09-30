@@ -3,8 +3,8 @@ use edge_controller_core::{
 };
 use edge_secrets::{CredentialStore, write_atomic_private};
 use edge_shared_types::{
-    CredentialDeliveryBundle, CredentialProjectionKind, LocalCredentialState, WindowsActivationState,
-    WindowsRuntimeState, WindowsTunnelBinding, credential_delivery_bundle,
+    CredentialDeliveryBundle, CredentialProjectionKind, LocalCredentialState,
+    WindowsActivationState, WindowsRuntimeState, WindowsTunnelBinding, credential_delivery_bundle,
     decode_windows_runtime_state, encode_windows_runtime_state, verify_windows_activation_files,
 };
 use edge_singbox::sync_local_config_from_runtime_state;
@@ -41,7 +41,10 @@ pub(crate) fn apply_candidate(
     apply_runtime_state_transaction(install_root, activation, &next)?;
     Ok((
         "CREDENTIAL_CANDIDATE_APPLIED".to_owned(),
-        format!("candidate generation {} applied without promotion", bundle.generation),
+        format!(
+            "candidate generation {} applied without promotion",
+            bundle.generation
+        ),
     ))
 }
 
@@ -125,9 +128,7 @@ pub(crate) fn discard_candidate(install_root: &Path) -> Result<(String, String),
         .read_state()?
         .ok_or_else(|| "Windows v2 credential state is absent".to_owned())?;
     if state.active.is_some() {
-        return Err(
-            "initial fresh-v2 candidate discard refuses state after promotion".to_owned(),
-        );
+        return Err("initial fresh-v2 candidate discard refuses state after promotion".to_owned());
     }
     store.discard_candidate()?;
     Ok((
@@ -273,8 +274,12 @@ fn runtime_state_from_bundle(
 
 fn read_runtime_state(install_root: &Path) -> Result<WindowsRuntimeState, String> {
     let path = windows_runtime_state_path(install_root);
-    let bytes = fs::read(&path)
-        .map_err(|err| format!("failed to read Windows runtime state {}: {err}", path.display()))?;
+    let bytes = fs::read(&path).map_err(|err| {
+        format!(
+            "failed to read Windows runtime state {}: {err}",
+            path.display()
+        )
+    })?;
     decode_windows_runtime_state(&bytes)
 }
 
@@ -295,9 +300,7 @@ fn ensure_legacy_backup(install_root: &Path) -> Result<(), String> {
     }
     let current_path = windows_runtime_state_path(install_root);
     let bytes = fs::read(&current_path).map_err(|err| {
-        format!(
-            "failed to read current Windows runtime state for legacy backup: {err}"
-        )
+        format!("failed to read current Windows runtime state for legacy backup: {err}")
     })?;
     decode_windows_runtime_state(&bytes)?;
     let mut file = OpenOptions::new()
@@ -318,10 +321,12 @@ fn apply_runtime_state_transaction(
     verify_windows_activation_files(activation)?;
     let state_path = windows_runtime_state_path(install_root);
     let config_path = local_singbox_config_path(install_root);
-    let old_state = fs::read(&state_path)
-        .map_err(|err| format!("failed to snapshot Windows runtime state before transition: {err}"))?;
-    let old_config = fs::read(&config_path)
-        .map_err(|err| format!("failed to snapshot Windows sing-box config before transition: {err}"))?;
+    let old_state = fs::read(&state_path).map_err(|err| {
+        format!("failed to snapshot Windows runtime state before transition: {err}")
+    })?;
+    let old_config = fs::read(&config_path).map_err(|err| {
+        format!("failed to snapshot Windows sing-box config before transition: {err}")
+    })?;
     let next_state = encode_windows_runtime_state(state)?;
 
     let apply_result = (|| -> Result<(), String> {
