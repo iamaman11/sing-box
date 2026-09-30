@@ -542,73 +542,6 @@ pub async fn upload_worker_module(
     ensure_success(response).await
 }
 
-pub async fn upload_worker_module_with_secret_text_bindings(
-    api_token: &str,
-    account_id: &str,
-    script_name: &str,
-    source: &str,
-    compatibility_date: &str,
-    version_tag: &str,
-    secrets: &[(&str, &str)],
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker script name", script_name)?;
-    require_non_empty("Cloudflare Worker source", source)?;
-    require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
-    require_non_empty("Cloudflare Worker version tag", version_tag)?;
-    if secrets.is_empty() {
-        return Err(
-            "Cloudflare Worker atomic secret upload requires at least one secret".to_owned(),
-        );
-    }
-
-    let mut names = std::collections::BTreeSet::new();
-    let mut bindings = Vec::with_capacity(secrets.len());
-    for (name, text) in secrets {
-        require_non_empty("Cloudflare Worker secret name", name)?;
-        require_non_empty("Cloudflare Worker secret value", text)?;
-        if !names.insert(*name) {
-            return Err(format!("duplicate Cloudflare Worker secret name: {name}"));
-        }
-        bindings.push(serde_json::json!({
-            "type": "secret_text",
-            "name": name,
-            "text": text
-        }));
-    }
-
-    let metadata = serde_json::json!({
-        "main_module": "worker.js",
-        "compatibility_date": compatibility_date,
-        "bindings": bindings,
-        "annotations": {
-            "workers/tag": version_tag,
-            "workers/message": "sing-box Phase 6 atomic fixed A/B credential delivery contract"
-        }
-    })
-    .to_string();
-    let boundary = "edge-sing-box-credential-delivery-v1";
-    let body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{metadata}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"worker.js\"; filename=\"worker.js\"\r\nContent-Type: application/javascript+module\r\n\r\n{source}\r\n--{boundary}--\r\n"
-    );
-    let client = authorized_client(api_token)?;
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}"
-        ))
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| {
-            format!("failed to atomically upload Cloudflare Worker credential contract: {err}")
-        })?;
-    ensure_secret_mutation_success(response).await
-}
-
 pub async fn publish_worker_version_with_secret_text_bindings(
     api_token: &str,
     account_id: &str,
@@ -2933,23 +2866,6 @@ async fn fetch_records(
         .map_err(|err| format!("failed to query Cloudflare DNS records: {err}"))?;
     let payload: ApiEnvelope<Vec<DnsRecord>> = parse_success_json(response).await?;
     Ok(payload.result)
-}
-
-async fn ensure_secret_mutation_success(response: reqwest::Response) -> Result<(), String> {
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!(
-            "Cloudflare Worker secret mutation failed with HTTP status {status}"
-        ));
-    }
-    let payload: ApiEnvelope<Value> = response
-        .json()
-        .await
-        .map_err(|_| "invalid Cloudflare Worker secret mutation JSON response".to_owned())?;
-    if !payload.success {
-        return Err("Cloudflare Worker secret mutation returned success=false".to_owned());
-    }
-    Ok(())
 }
 
 async fn ensure_success(response: reqwest::Response) -> Result<(), String> {
