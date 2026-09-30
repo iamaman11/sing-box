@@ -420,7 +420,7 @@ def main() -> None:
     )
     production_target_plane = application.split(
         "  production_target_plane:\n", 1
-    )[1].split("\n  production_provider:", 1)[0]
+    )[1].split("\n  production_enroll:", 1)[0]
     require(
         '"${EDGE_TARGET_PLANE_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
         in production_target_plane
