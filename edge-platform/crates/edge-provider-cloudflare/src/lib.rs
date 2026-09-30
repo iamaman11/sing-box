@@ -197,6 +197,12 @@ pub struct CloudflareWorkerVersionHead {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareWorkerVersionPublication {
+    pub version_id: String,
+    pub deployment_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareWorkerSecretBinding {
     pub name: String,
     pub binding_type: String,
@@ -603,66 +609,118 @@ pub async fn upload_worker_module_with_secret_text_bindings(
     ensure_secret_mutation_success(response).await
 }
 
-pub async fn patch_worker_secrets_with_version_tag(
+pub async fn publish_worker_version_with_secret_text_bindings(
     api_token: &str,
     account_id: &str,
     script_name: &str,
+    source: &str,
+    compatibility_date: &str,
     version_tag: &str,
     secrets: &[(&str, &str)],
-) -> Result<(), String> {
+) -> Result<CloudflareWorkerVersionPublication, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Worker script name", script_name)?;
+    require_non_empty("Cloudflare Worker source", source)?;
+    require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
     require_non_empty("Cloudflare Worker version tag", version_tag)?;
 
-    let mut secret_patch = serde_json::Map::new();
     let mut names = std::collections::BTreeSet::new();
+    let mut bindings = Vec::with_capacity(secrets.len());
     for (name, text) in secrets {
         require_non_empty("Cloudflare Worker secret name", name)?;
         require_non_empty("Cloudflare Worker secret value", text)?;
         if !names.insert(*name) {
             return Err(format!("duplicate Cloudflare Worker secret name: {name}"));
         }
-        secret_patch.insert(
-            (*name).to_owned(),
-            serde_json::json!({
-                "name": name,
-                "text": text,
-                "type": "secret_text"
-            }),
-        );
+        bindings.push(serde_json::json!({
+            "type": "secret_text",
+            "name": name,
+            "text": text
+        }));
     }
 
-    let mut body = serde_json::Map::new();
-    if !secret_patch.is_empty() {
-        body.insert(
-            "secrets".to_owned(),
-            serde_json::Value::Object(secret_patch),
-        );
-    }
-    body.insert(
-        "version_tags".to_owned(),
-        serde_json::json!({
-            "workers/tag": version_tag,
-            "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
-        }),
+    let metadata = worker_version_upload_metadata(compatibility_date, version_tag, bindings);
+    let boundary = "edge-sing-box-credential-version-v1";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"worker.js\"; filename=\"worker.js\"\r\nContent-Type: application/javascript+module\r\n\r\n{source}\r\n--{boundary}--\r\n",
+        metadata
     );
 
     let client = authorized_client(api_token)?;
-    let response = client
-        .patch(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk"
+    let version_response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/versions"
         ))
+        .query(&[("bindings_inherit", "strict")])
         .header(
             reqwest::header::CONTENT_TYPE,
-            "application/merge-patch+json",
+            format!("multipart/form-data; boundary={boundary}"),
         )
-        .body(serde_json::Value::Object(body).to_string())
+        .body(body)
         .send()
         .await
-        .map_err(|err| {
-            format!("failed to patch Cloudflare Worker secrets/version tag atomically: {err}")
+        .map_err(|err| format!("failed to create Cloudflare Worker credential version: {err}"))?;
+    let version_payload: ApiEnvelope<Value> = parse_success_json(version_response).await?;
+    let version_id = version_payload
+        .result
+        .as_object()
+        .ok_or_else(|| "Cloudflare Worker version result must be an object".to_owned())
+        .and_then(|object| {
+            required_value_string(object, "id", "Cloudflare Worker version result")
         })?;
-    ensure_secret_mutation_success(response).await
+
+    let deployment_body = worker_single_version_deployment_body(&version_id);
+    let deployment_response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/deployments"
+        ))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(deployment_body.to_string())
+        .send()
+        .await
+        .map_err(|err| format!("failed to deploy Cloudflare Worker credential version: {err}"))?;
+    let deployment_payload: ApiEnvelope<Value> = parse_success_json(deployment_response).await?;
+    let deployment_id = deployment_payload
+        .result
+        .as_object()
+        .ok_or_else(|| "Cloudflare Worker deployment result must be an object".to_owned())
+        .and_then(|object| {
+            required_value_string(object, "id", "Cloudflare Worker deployment result")
+        })?;
+
+    Ok(CloudflareWorkerVersionPublication {
+        version_id,
+        deployment_id,
+    })
+}
+
+fn worker_version_upload_metadata(
+    compatibility_date: &str,
+    version_tag: &str,
+    bindings: Vec<Value>,
+) -> Value {
+    serde_json::json!({
+        "main_module": "worker.js",
+        "compatibility_date": compatibility_date,
+        "bindings": bindings,
+        "annotations": {
+            "workers/tag": version_tag,
+            "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
+        }
+    })
+}
+
+fn worker_single_version_deployment_body(version_id: &str) -> Value {
+    serde_json::json!({
+        "strategy": "percentage",
+        "versions": [{
+            "version_id": version_id,
+            "percentage": 100
+        }],
+        "annotations": {
+            "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
+        }
+    })
 }
 
 pub async fn get_worker_script_subdomain(
@@ -3132,6 +3190,45 @@ mod tests {
         assert_eq!(head.latest_version_id.as_deref(), Some("version-new"));
         assert!(head.active_deployment_id.is_none());
         assert!(head.active_version_ids.is_empty());
+    }
+
+    #[test]
+    fn serializes_credential_version_upload_and_single_version_deployment() {
+        let metadata = worker_version_upload_metadata(
+            "2026-09-28",
+            "sing-box-phase6-ab-windows-deadbeefdeadbeef",
+            vec![serde_json::json!({
+                "type": "secret_text",
+                "name": "EDGE_CREDENTIAL_BUNDLE_A",
+                "text": "secret-value"
+            })],
+        );
+        assert_eq!(metadata["main_module"], "worker.js");
+        assert_eq!(metadata["compatibility_date"], "2026-09-28");
+        assert_eq!(
+            metadata["annotations"]["workers/tag"],
+            "sing-box-phase6-ab-windows-deadbeefdeadbeef"
+        );
+        assert_eq!(metadata["bindings"][0]["name"], "EDGE_CREDENTIAL_BUNDLE_A");
+
+        let deployment = worker_single_version_deployment_body("version-id");
+        assert_eq!(deployment["strategy"], "percentage");
+        assert_eq!(deployment["versions"][0]["version_id"], "version-id");
+        assert_eq!(deployment["versions"][0]["percentage"], 100);
+    }
+
+    #[test]
+    fn empty_secret_delta_keeps_version_metadata_valid_for_tag_repair() {
+        let metadata = worker_version_upload_metadata(
+            "2026-09-28",
+            "sing-box-phase6-ab-vm-deadbeefdeadbeef",
+            Vec::new(),
+        );
+        assert_eq!(metadata["bindings"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            metadata["annotations"]["workers/tag"],
+            "sing-box-phase6-ab-vm-deadbeefdeadbeef"
+        );
     }
 
     #[test]
