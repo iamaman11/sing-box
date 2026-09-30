@@ -75,9 +75,9 @@ The console is not a fallback startup owner. Do not restore child-process contro
 
 ## Credential transition
 
-Fresh application credentials use the accepted paired Windows/VM projections and fixed Worker A/B slots. Delivery to each local owner must be runner-blind. Direct Worker fetch is used only if the host identity bootstrap/rotation lifecycle is proven; otherwise the boundary uses the smallest audited standard recipient-encrypted handoff.
+Fresh application credentials use the accepted paired Windows/VM projections and fixed Worker A/B slots. Delivery to each local owner is runner-blind direct HTTPS fetch from its projection-specific `workers.dev` Worker through its permanent Cloudflare Access host identity. Windows and VM host identities are physically distinct from each other and from bounded proof identities.
 
-Runners carry only non-secret generation/slot/operation intent and never receive plaintext credential payloads.
+Runners carry only non-secret generation/slot/operation intent and never receive plaintext credential payloads. Custom Worker domains, a second secret database and a project-specific encrypted handoff protocol are not part of the accepted path.
 
 ## VM transport
 

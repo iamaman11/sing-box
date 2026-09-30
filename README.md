@@ -10,7 +10,7 @@ Read authority in this order:
 
 1. **GitHub Issue #26** — sole living execution cursor and ordering authority.
 2. **`edge-platform/ARCHITECTURE.md`** — current stable ownership/invariant model.
-3. **GitHub Issue #169** — bounded Cloudflare account/credential convergence vertical.
+3. **GitHub Issue #169** — historical Cloudflare account/credential convergence evidence only; it no longer owns the current cursor.
 4. **GitHub Issue #154** — Windows Slice 2 implementation/evidence record. It does not schedule current work.
 5. **GitHub Issue #60** — bounded Windows diagnostics specification.
 6. **GitHub Issue #1** — Vultr lifecycle architecture reference.
@@ -20,7 +20,7 @@ Historical plans are never execution authority. If any document conflicts with #
 
 ## Accepted architecture and convergence target
 
-The ownership model below is accepted. Cloudflare account convergence and deletion-first cleanup are still in progress under #169; do not interpret the target placement of Mesh/Zero Trust/credential Workers as already migrated provider state.
+The ownership model below is accepted. Cloudflare account convergence through the single production-account authority flip is closed. Current execution is the final convergence sequence in Issue #26: complete the bounded runtime-host Access identity bootstrap, then perform one terminal fresh-v2 credential cutover, then delete superseded historical/control surfaces. Stable architecture must not reopen the closed provider migration.
 
 ```text
 Git / protected main
@@ -69,11 +69,11 @@ Cloudflare zone alegria.by
 
 ## Cloudflare target
 
-All application-exclusive account-scoped Cloudflare resources converge into the dedicated account `sing-box`.
+All application-exclusive account-scoped Cloudflare resources are owned by the dedicated account `sing-box`.
 
-`alegria.by` deliberately remains a shared external DNS zone. DNS automation is zone-scoped and may mutate only the explicit sing-box record set.
+`alegria.by` deliberately remains a shared external DNS zone. DNS automation is zone-scoped and may mutate only the explicit sing-box record set. Credential-delivery Workers remain intentionally `workers.dev`-only with previews disabled; custom domains are not part of the accepted credential plane.
 
-Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations through isolated Windows/VM credential Workers. Each Worker is only a fixed A/B delivery mailbox: no active pointer, history database or runtime authority. Delivery must remain runner-blind: direct local-owner HTTPS/Cloudflare Access fetch is preferred only after its host-identity bootstrap/rotation lifecycle is proven; otherwise use the smallest audited standard recipient-encrypted handoff. Self-hosted runners carry only non-secret intent and never receive credential plaintext. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
+Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations through isolated Windows/VM credential Workers. Each Worker is only a fixed A/B delivery mailbox: no active pointer, history database or runtime authority. Canonical delivery is runner-blind direct HTTPS fetch by the trusted local owner using a projection-specific permanent Cloudflare Access host identity. Windows and VM host identities are physically distinct from each other and from proof identities. Self-hosted runners carry only non-secret intent and never receive credential plaintext. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
 
 ## Release and recovery
 
@@ -122,7 +122,7 @@ Do not split large files merely for aesthetics before dead behavior is removed.
 Always start a new engineering session by reading live:
 - protected `main`;
 - #26 current cursor;
-- #169 when the cursor is in Cloudflare/credential convergence;
+- #169 only when historical Cloudflare convergence evidence is specifically needed;
 - open PRs and exact CI;
 - the durable ReleaseSet only when release authority is required.
 
