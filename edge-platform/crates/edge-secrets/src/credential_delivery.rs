@@ -37,7 +37,8 @@ impl AccessServiceIdentity {
             let (key, value) = line
                 .split_once('=')
                 .ok_or_else(|| "credential Access identity contains a malformed line".to_owned())?;
-            if value.is_empty() || value.trim() != value || value.chars().any(|ch| ch.is_control()) {
+            if value.is_empty() || value.trim() != value || value.chars().any(|ch| ch.is_control())
+            {
                 return Err(format!("{key} must be a non-empty canonical value"));
             }
             match key {
@@ -48,12 +49,16 @@ impl AccessServiceIdentity {
                 "CF_ACCESS_CLIENT_ID" | "CF_ACCESS_CLIENT_SECRET" => {
                     return Err(format!("credential Access identity repeats {key}"));
                 }
-                _ => return Err("credential Access identity contains an unsupported key".to_owned()),
+                _ => {
+                    return Err("credential Access identity contains an unsupported key".to_owned());
+                }
             }
         }
         Ok(Self {
-            client_id: client_id.ok_or_else(|| "credential Access identity is missing client id".to_owned())?,
-            client_secret: client_secret.ok_or_else(|| "credential Access identity is missing client secret".to_owned())?,
+            client_id: client_id
+                .ok_or_else(|| "credential Access identity is missing client id".to_owned())?,
+            client_secret: client_secret
+                .ok_or_else(|| "credential Access identity is missing client secret".to_owned())?,
         })
     }
 }
@@ -68,7 +73,10 @@ pub fn read_access_service_identity(path: &Path) -> Result<AccessServiceIdentity
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         if metadata.uid() != 0 || metadata.permissions().mode() & 0o077 != 0 {
-            return Err("credential Access identity must be root-owned and inaccessible to group/other".to_owned());
+            return Err(
+                "credential Access identity must be root-owned and inaccessible to group/other"
+                    .to_owned(),
+            );
         }
     }
     let raw = fs::read_to_string(path)
@@ -84,9 +92,13 @@ pub fn canonical_credential_worker_url(
         return Err("credential generation must be greater than zero".to_owned());
     }
     let desired = canonical_production_desired_state()?;
-    let cloudflare = desired.cloudflare.as_ref()
+    let cloudflare = desired
+        .cloudflare
+        .as_ref()
         .ok_or_else(|| "canonical production Cloudflare authority is missing".to_owned())?;
-    let plane = cloudflare.credential_plane.as_ref()
+    let plane = cloudflare
+        .credential_plane
+        .as_ref()
         .ok_or_else(|| "canonical production credential plane is missing".to_owned())?;
     let worker = match projection {
         CredentialProjectionKind::Windows => &plane.windows_worker_name,
@@ -127,7 +139,10 @@ pub async fn fetch_canonical_credential_bundle(
         .default_headers(headers)
         .build()
         .map_err(|err| format!("failed to construct credential Worker client: {err}"))?;
-    let response = client.get(url).send().await
+    let response = client
+        .get(url)
+        .send()
+        .await
         .map_err(|err| format!("credential Worker request failed: {err}"))?;
     if response.status() != StatusCode::OK {
         return Err(format!(
@@ -135,15 +150,23 @@ pub async fn fetch_canonical_credential_bundle(
             response.status().as_u16()
         ));
     }
-    if response.content_length().is_some_and(|n| n > MAX_CREDENTIAL_BUNDLE_BYTES) {
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_CREDENTIAL_BUNDLE_BYTES)
+    {
         return Err("credential Worker response exceeds the bounded payload size".to_owned());
     }
-    let content_type = response.headers().get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok()).unwrap_or("");
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if !content_type.starts_with("application/x-protobuf") {
         return Err("credential Worker returned an unexpected content type".to_owned());
     }
-    let body = response.bytes().await
+    let body = response
+        .bytes()
+        .await
         .map_err(|err| format!("failed to read credential Worker response: {err}"))?;
     if body.is_empty() || body.len() as u64 > MAX_CREDENTIAL_BUNDLE_BYTES {
         return Err("credential Worker response size is invalid".to_owned());
@@ -167,7 +190,8 @@ mod tests {
     fn identity_parser_is_closed_and_secret_safe_in_debug() {
         let identity = AccessServiceIdentity::parse_env(
             "CF_ACCESS_CLIENT_ID=client-id\nCF_ACCESS_CLIENT_SECRET=client-secret\n",
-        ).unwrap();
+        )
+        .unwrap();
         let debug = format!("{identity:?}");
         assert!(!debug.contains("client-id"));
         assert!(!debug.contains("client-secret"));
@@ -176,7 +200,8 @@ mod tests {
 
     #[test]
     fn canonical_worker_url_is_projection_specific_and_generation_bound() {
-        let windows = canonical_credential_worker_url(CredentialProjectionKind::Windows, 101).unwrap();
+        let windows =
+            canonical_credential_worker_url(CredentialProjectionKind::Windows, 101).unwrap();
         let vm = canonical_credential_worker_url(CredentialProjectionKind::Vm, 101).unwrap();
         assert_ne!(windows, vm);
         assert!(windows.ends_with("/v1/credentials?generation=101"));

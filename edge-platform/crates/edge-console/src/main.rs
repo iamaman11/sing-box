@@ -750,7 +750,9 @@ fn submit_privileged_request(
     .into())
 }
 
-async fn dispatch_privileged_request(install_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn dispatch_privileged_request(
+    install_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let request_path = privileged_request_path(install_root);
     let bytes = match fs::read(&request_path) {
         Ok(bytes) => bytes,

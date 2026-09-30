@@ -1161,8 +1161,12 @@ fn validate_existing_vm_credential_store(stack_dir: &Path) -> Result<(), String>
 }
 
 fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, String> {
-    let parent = stack_dir.parent().ok_or_else(|| "application stack path has no parent".to_owned())?;
-    Ok(parent.join(RUNTIME_SECRET_DIR).join(ACCESS_IDENTITY_FILE_NAME))
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    Ok(parent
+        .join(RUNTIME_SECRET_DIR)
+        .join(ACCESS_IDENTITY_FILE_NAME))
 }
 
 async fn fetch_and_stage_vm_credential_candidate(

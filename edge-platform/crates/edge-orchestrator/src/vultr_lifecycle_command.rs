@@ -959,7 +959,9 @@ pub(crate) async fn bootstrap_production_runner(
 fn validate_bootstrap_secret(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 4096
-        || value.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
     {
         return Err(format!("{label} is malformed"));
     }
