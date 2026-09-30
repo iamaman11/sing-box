@@ -878,13 +878,6 @@ fn detect_process(expected_config_path: &Path) -> Option<ProcessObservation> {
             });
         }
 
-        if name == "sing-box" || name == "sing-box.exe" {
-            return Some(ProcessObservation {
-                pid: pid.as_u32(),
-                command_line,
-                config_path,
-            });
-        }
     }
 
     None
