@@ -54,26 +54,22 @@ impl ApplicationRuntimeSecrets {
             .tunnel_auth
             .as_ref()
             .ok_or_else(|| "VM credential bundle is missing tunnel authentication".to_owned())?;
-        let direct = tunnel
-            .direct
-            .as_ref()
-            .ok_or_else(|| "VM credential bundle is missing direct tunnel authentication".to_owned())?;
-        let warp = tunnel
-            .warp
-            .as_ref()
-            .ok_or_else(|| "VM credential bundle is missing WARP tunnel authentication".to_owned())?;
+        let direct = tunnel.direct.as_ref().ok_or_else(|| {
+            "VM credential bundle is missing direct tunnel authentication".to_owned()
+        })?;
+        let warp = tunnel.warp.as_ref().ok_or_else(|| {
+            "VM credential bundle is missing WARP tunnel authentication".to_owned()
+        })?;
         let reality = projection
             .reality_identity
             .as_ref()
             .ok_or_else(|| "VM credential bundle is missing Reality identity".to_owned())?;
-        let reality_direct = reality
-            .direct
-            .as_ref()
-            .ok_or_else(|| "VM credential bundle is missing direct Reality private identity".to_owned())?;
-        let reality_warp = reality
-            .warp
-            .as_ref()
-            .ok_or_else(|| "VM credential bundle is missing WARP Reality private identity".to_owned())?;
+        let reality_direct = reality.direct.as_ref().ok_or_else(|| {
+            "VM credential bundle is missing direct Reality private identity".to_owned()
+        })?;
+        let reality_warp = reality.warp.as_ref().ok_or_else(|| {
+            "VM credential bundle is missing WARP Reality private identity".to_owned()
+        })?;
         let line2 = projection
             .line2_proxy
             .as_ref()
@@ -330,47 +326,52 @@ mod tests {
             projection: CredentialProjectionKind::Vm as i32,
             dummy_non_secret: false,
             slot: CredentialDeliverySlot::A as i32,
-            payload: Some(credential_delivery_bundle::Payload::Vm(VmCredentialProjection {
-                tunnel_auth: Some(TunnelAuthenticationGeneration {
-                    generation: 3,
-                    direct: Some(TunnelAuthentication {
-                        vless_uuid: "11111111-1111-4111-8111-111111111111".to_owned(),
-                        hysteria2_password:
-                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            payload: Some(credential_delivery_bundle::Payload::Vm(
+                VmCredentialProjection {
+                    tunnel_auth: Some(TunnelAuthenticationGeneration {
+                        generation: 3,
+                        direct: Some(TunnelAuthentication {
+                            vless_uuid: "11111111-1111-4111-8111-111111111111".to_owned(),
+                            hysteria2_password:
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                    .to_owned(),
+                            reality_short_id: "1111111111111111".to_owned(),
+                        }),
+                        warp: Some(TunnelAuthentication {
+                            vless_uuid: "22222222-2222-4222-8222-222222222222".to_owned(),
+                            hysteria2_password:
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                                    .to_owned(),
+                            reality_short_id: "2222222222222222".to_owned(),
+                        }),
+                    }),
+                    reality_identity: Some(RealityPrivateIdentityGeneration {
+                        generation: 4,
+                        direct: Some(RealityPrivateIdentity {
+                            private_key: direct_private,
+                        }),
+                        warp: Some(RealityPrivateIdentity {
+                            private_key: warp_private,
+                        }),
+                    }),
+                    line2_proxy: Some(ProxyCredentialGeneration {
+                        generation: 5,
+                        password:
+                            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                                 .to_owned(),
-                        reality_short_id: "1111111111111111".to_owned(),
                     }),
-                    warp: Some(TunnelAuthentication {
-                        vless_uuid: "22222222-2222-4222-8222-222222222222".to_owned(),
-                        hysteria2_password:
-                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                                .to_owned(),
-                        reality_short_id: "2222222222222222".to_owned(),
-                    }),
-                }),
-                reality_identity: Some(RealityPrivateIdentityGeneration {
-                    generation: 4,
-                    direct: Some(RealityPrivateIdentity {
-                        private_key: direct_private,
-                    }),
-                    warp: Some(RealityPrivateIdentity {
-                        private_key: warp_private,
-                    }),
-                }),
-                line2_proxy: Some(ProxyCredentialGeneration {
-                    generation: 5,
-                    password:
-                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                            .to_owned(),
-                }),
-            })),
+                },
+            )),
         };
 
         let runtime = ApplicationRuntimeSecrets::from_vm_credential_bundle(&bundle).unwrap();
         assert_eq!(runtime.reality_public_key, direct_public);
         assert_eq!(runtime.reality_warp_public_key, warp_public);
         assert_eq!(runtime.vless_uuid, "11111111-1111-4111-8111-111111111111");
-        assert_eq!(runtime.vless_warp_uuid, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(
+            runtime.vless_warp_uuid,
+            "22222222-2222-4222-8222-222222222222"
+        );
         assert_eq!(
             runtime.proxy_password,
             "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
