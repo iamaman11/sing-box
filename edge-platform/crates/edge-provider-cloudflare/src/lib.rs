@@ -2421,9 +2421,7 @@ fn worker_version_head_from_values(
             value
                 .as_object()
                 .ok_or_else(|| "Cloudflare Worker version must be an object".to_owned())
-                .and_then(|object| {
-                    required_value_string(object, "id", "Cloudflare Worker version")
-                })
+                .and_then(|object| required_value_string(object, "id", "Cloudflare Worker version"))
         })
         .transpose()?;
 
@@ -2460,11 +2458,7 @@ fn worker_version_head_from_values(
                 let object = value.as_object().ok_or_else(|| {
                     "Cloudflare Worker deployment version must be an object".to_owned()
                 })?;
-                required_value_string(
-                    object,
-                    "version_id",
-                    "Cloudflare Worker deployment version",
-                )
+                required_value_string(object, "version_id", "Cloudflare Worker deployment version")
             })
             .collect::<Result<Vec<_>, String>>()?,
         None => Vec::new(),
