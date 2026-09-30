@@ -5,7 +5,6 @@ WORKFLOWS = Path(".github/workflows")
 ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
-ROOT_OPS = WORKFLOWS / "vultr-root-ops.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 CREDENTIALS = WORKFLOWS / "credential-lifecycle.yml"
@@ -18,23 +17,22 @@ WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
 WINDOWS_RUNNER_BOOTSTRAP = Path("edge-platform/scripts/bootstrap-windows-runner.ps1")
 WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
-WINDOWS_CONSOLE_CLI = Path("edge-platform/crates/edge-console/src/cli.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
 VM_AGENT = Path("edge-platform/crates/edge-agent/src/main.rs")
+VM_AGENT_CLI = Path("edge-platform/crates/edge-agent/src/cli.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
-CLOUDFLARE_PROVIDER = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
 PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
-ROOT_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-root-runner.sh")
+PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-production-runner.sh")
 
 
 def require(condition: bool, message: str) -> None:
@@ -46,7 +44,6 @@ def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
-    root_ops = ROOT_OPS.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     credentials = CREDENTIALS.read_text(encoding="utf-8")
@@ -59,12 +56,12 @@ def main() -> None:
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
-    windows_console_cli = WINDOWS_CONSOLE_CLI.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
     windows_controller_runtime = windows_controller.split("#[cfg(test)]", 1)[0]
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
+    vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
@@ -76,12 +73,23 @@ def main() -> None:
     phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
-    root_runner_installer = ROOT_RUNNER_INSTALLER.read_text(encoding="utf-8")
+    production_vm_runner_installer = PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
         for path in WORKFLOWS.glob("*.yml")
         if "issue_comment:" in path.read_text(encoding="utf-8")
+    )
+    require(
+        "LocalCommand" in vm_agent_cli
+        and "BootstrapBase" in vm_agent_cli
+        and "BootstrapTunnel" in vm_agent_cli
+        and "BootstrapFull" in vm_agent_cli
+        and "MeshVerify" in vm_agent_cli
+        and "MeshCleanup" in vm_agent_cli
+        and "CredentialState" in vm_agent_cli
+        and '"exec"' not in vm_agent_cli,
+        "Linux runtime owner must expose only the closed local operation grammar",
     )
     require(
         listeners == [ROUTER.name],
@@ -90,7 +98,6 @@ def main() -> None:
 
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
-    require("workflow_call:" in root_ops, "Vultr root ops must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
@@ -202,61 +209,29 @@ def main() -> None:
             "both runtime owners must expose the same bounded candidate staging/observation contract",
         )
     require(
-        "rpc EnableCredentialCandidateAcceptance(Empty) returns (CredentialStateObservation);" in agent_proto
-        and "rpc PromoteCredentialCandidate(Empty) returns (CredentialStateObservation);" in agent_proto
-        and "rpc RollbackCredential(Empty) returns (CredentialStateObservation);" in agent_proto
-        and "rpc ExpireCredentialPrevious(Empty) returns (CredentialStateObservation);" in agent_proto
-        and "rpc ProbeCredentialCandidate(Empty) returns (CredentialCandidateAcceptance);" in controller_proto
-        and "rpc PromoteCredentialCandidate(Empty) returns (CredentialStateObservation);" in controller_proto
-        and "rpc RollbackCredential(Empty) returns (CredentialStateObservation);" in controller_proto
-        and "rpc ExpireCredentialPrevious(Empty) returns (CredentialStateObservation);" in controller_proto,
-        "Phase 6 terminal transition must remain typed across both runtime owners",
-    )
-    require(
         "stage_vm_credential_candidate" in vm_agent_runtime
         and "store.stage_candidate(&bundle)" in vm_agent_runtime
         and "local_credential_bundle_ref(&bundle)" in vm_agent_runtime
-        and "enable_vm_candidate_acceptance" in vm_agent_runtime
-        and "promote_vm_credential_runtime" in vm_agent_runtime
-        and "rollback_vm_credential_runtime" in vm_agent_runtime
-        and "expire_vm_credential_previous" in vm_agent_runtime
+        and "promote_candidate(" not in vm_agent_runtime
+        and "rollback_previous(" not in vm_agent_runtime
         and "stage_windows_credential_candidate" in windows_controller_runtime
         and "require_installed_windows_credential_owner" in windows_controller_runtime
         and "store.stage_candidate(&bundle)" in windows_controller_runtime
         and "local_credential_bundle_ref(&bundle)" in windows_controller_runtime
-        and "credential_cutover::probe_candidate" in windows_controller_runtime
-        and "credential_cutover::promote_candidate" in windows_controller_runtime
-        and "credential_cutover::rollback" in windows_controller_runtime
-        and "credential_cutover::expire_previous" in windows_controller_runtime,
-        "runtime owners must expose only the typed Phase 6 stage/probe/promote/rollback/expiry state machine",
+        and "promote_candidate(" not in windows_controller_runtime
+        and "rollback_previous(" not in windows_controller_runtime,
+        "runtime-owner candidate ingress must stage only and must not expose activation or rollback",
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
-        and "stage_credential_candidate" not in windows_console,
-        "Windows runner/console transport must never expose plaintext credential staging",
-    )
-    require(
-        "StageSealedCredentialCandidateRequest" in windows_console
-        and "stage-sealed-credential" in windows_console_cli
-        and "credential-ingress-key" in windows_console_cli
-        and "credential-probe" in windows_console_cli
-        and "credential-promote" in windows_console_cli
-        and "credential-rollback" in windows_console_cli
-        and "credential-expire-previous" in windows_console_cli
-        and "CredentialIngressKey" in windows_controller_runtime
-        and "CredentialIngressKey" in vm_agent_runtime,
-        "real credential transport must be sealed end-to-end to the local runtime owners",
-    )
-    require(
-        "update_worker_secret_text" in CLOUDFLARE_PROVIDER.read_text(encoding="utf-8"),
-        "steady-state credential publication must update exactly one inactive Worker secret binding",
+        and "stage-credential" not in windows_console,
+        "Windows runner/console transport must not gain a credential staging escape hatch in this slice",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
-    require("issue_comment:" not in root_ops, "Vultr root ops must not listen to comments")
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in credentials, "credential backend must not listen to comments")
@@ -289,9 +264,11 @@ def main() -> None:
         "router must expose the physical Windows cycle only as the exact owner-only /windows smoke command",
     )
     require(
-        "uses: ./.github/workflows/vultr-root-ops.yml" in router
-        and "startsWith(github.event.comment.body, '/root ')" in router,
-        "router must expose root ops only through the sole owner-gated Issue #1 listener",
+        "vultr-root-ops.yml" not in router
+        and "startsWith(github.event.comment.body, '/root ')" not in router
+        and not (WORKFLOWS / "vultr-root-ops.yml").exists()
+        and not Path("edge-platform/scripts/install-vultr-root-runner.sh").exists(),
+        "retired generic root-runner routing/workflow/installer must be absent",
     )
     require(
         "uses: ./.github/workflows/zero-trust-lifecycle.yml" in router,
@@ -389,33 +366,16 @@ def main() -> None:
         and "if: needs.authorize.outputs.operation != 'contract-converge'" in credentials
         and "group: vultr-control-plane-production" in credentials
         and "credential-lifecycle-production" not in credentials
+        and "VULTR_API_KEY" not in credentials
+        and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
         and "CLOUDFLARE_DNS_TOKEN" not in credentials
+        and "api.ipify.org" not in credentials
+        and "lease-acquire" not in credentials
+        and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential delivery workflow must remain dedicated and artifact-free",
-    )
-    credential_execute = credentials.split("\n  execute:\n", 1)[1]
-    credential_rotate = credentials.split("\n  rotate_execute:\n", 1)[1].split(
-        "\n  rotate_windows_stage:\n", 1
-    )[0]
-    require(
-        "VULTR_API_KEY" not in credential_execute
-        and "VULTR_SSH_PRIVATE_KEY" not in credential_execute
-        and "api.ipify.org" not in credential_execute
-        and "lease-acquire" not in credential_execute
-        and "lease-release" not in credential_execute,
-        "ordinary credential contract operations must remain Cloudflare-only",
-    )
-    require(
-        "VULTR_API_KEY" in credential_rotate
-        and "VULTR_SSH_PRIVATE_KEY" in credential_rotate
-        and "api.ipify.org" in credential_rotate
-        and "lease-acquire" in credential_rotate
-        and "lease-release" in credential_rotate
-        and "EDGE_WINDOWS_CREDENTIAL_INGRESS_PROTO" in credential_rotate
-        and "EDGE_WINDOWS_CREDENTIAL_STATE_PROTO" in credential_rotate,
-        "real credential rotate may use only bounded existing VM authority and sealed Windows handoff",
+        "credential delivery workflow must be dedicated, GitHub-hosted, least-authority and artifact-free",
     )
     require(
         "if next == CredentialDeliveryAction::Noop {" in credential_command
@@ -430,10 +390,7 @@ def main() -> None:
         and "no HTTP probe replay performed" in credential_command
         and "async fn prove_ab_session(" in credential_command
         and "async fn prove_projection(" not in credential_command
-        and not any(
-            "println!" in line and "client_secret" in line
-            for line in credential_command.splitlines()
-        ),
+        and "credential.client_secret" not in credential_command,
         "credential proof must use one shared two-projection session with secret-safe provider-native failure evidence and no HTTP replay",
     )
     diagnostics_index = credential_command.index(
@@ -520,20 +477,6 @@ def main() -> None:
     require(
         vultr.count("group: vultr-control-plane-production") == 1,
         "Vultr backend must serialize its execute mutation job",
-    )
-    require(
-        "runs-on:" in root_ops
-        and "- self-hosted" in root_ops
-        and "- vultr-root" in root_ops
-        and "- test-vm" in root_ops
-        and '${{ needs.authorize.outputs.machine_id }}' in root_ops,
-        "root ops must target only the machine-labelled self-hosted Vultr root runner",
-    )
-    require(
-        "permissions: {}" in root_ops
-        and 'sudo -n bash "${command_file}"' in root_ops
-        and "base64.urlsafe_b64decode" in root_ops,
-        "root ops must carry no GitHub token permission and execute only the explicitly owner-routed command as root",
     )
     require(
         "runs-on:" in windows_physical
@@ -631,8 +574,9 @@ def main() -> None:
         and "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN" in vultr
         and "/actions/runners/registration-token" in vultr
         and 'run_lifecycle runner-bootstrap "${spec}" "${machine}"' in vultr
-        and "install-vultr-root-runner.sh" in vultr,
-        "Vultr lifecycle must bootstrap the repository root runner through the typed host owner using a short-lived registration token",
+        and "install-vultr-production-runner.sh" in vultr
+        and "edge-agent-linux-amd64" in vultr,
+        "Vultr lifecycle must bootstrap the bounded production VM runner with the exact ReleaseSet local owner using a short-lived registration token",
     )
 
 
@@ -748,19 +692,19 @@ def main() -> None:
         "provider instance actions, including recovery reboot, must not depend on guest SSH",
     )
     require(
-        "root runner bootstrap failed: stage=%s exit=%s" in root_runner_installer
-        and "tail -c 4096" in root_runner_installer
-        and "[REDACTED]" in root_runner_installer
-        and "run_logged install-runner-dependencies ./bin/installdependencies.sh" in root_runner_installer
-        and root_runner_installer.index("run_logged install-runner-dependencies ./bin/installdependencies.sh")
-        < root_runner_installer.index("run_logged configure-runner")
-        and "run_logged configure-runner" in root_runner_installer
-        and "pgrep -u" not in root_runner_installer
+        "NOPASSWD:ALL" not in production_vm_runner_installer
+        and "usermod -aG docker" not in production_vm_runner_installer
+        and "sing-box-production-vm" in production_vm_runner_installer
+        and "SING_BOX_RUNTIME_READ" in production_vm_runner_installer
+        and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
+        and "edge-agent local status" in production_vm_runner_installer
+        and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "Verify self-hosted runner online" in vultr
         and '.status == "online"' in vultr
-        and 'index("vultr-root")' in vultr
+        and 'index("sing-box-production-vm")' in vultr
+        and 'index("vultr-root") == null' in vultr
         and 'index($machine)' in vultr,
-        "root-runner bootstrap must install pinned dependencies, avoid process-name readiness races, and defer online identity to the GitHub runner API",
+        "production VM runner bootstrap must be bounded, Docker-socket blind, and verified through the GitHub runner API",
     )
     require(
         'verb == "access-release" and len(tokens) == 4' in vultr

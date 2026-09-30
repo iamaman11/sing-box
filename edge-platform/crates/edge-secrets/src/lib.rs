@@ -1,16 +1,8 @@
-mod credential_sealing;
-pub use credential_sealing::{
-    CredentialIngressKey, seal_credential_candidate, validate_ingress_public_key,
-    validate_sealed_metadata,
-};
-
 mod credential_store;
-pub use credential_store::{CredentialStore, write_private_atomic_file};
+pub use credential_store::CredentialStore;
 
 mod runtime;
-pub use runtime::{
-    APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets, derive_reality_public_key,
-};
+pub use runtime::{APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets};
 
 use std::env;
 use std::fs;

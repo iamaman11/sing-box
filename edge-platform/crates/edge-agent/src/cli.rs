@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "edge-agent", version, about = "Bounded edge host agent")]
+#[command(name = "edge-agent", version, about = "Bounded edge host runtime owner")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -19,12 +19,46 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     Serve(ServeArgs),
+    Local {
+        #[command(subcommand)]
+        command: LocalCommand,
+    },
 }
 
 impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Serve(_) => "serve",
+            Self::Local { command } => command.name(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub(crate) enum LocalCommand {
+    Status,
+    Verify,
+    Diagnose,
+    BootstrapBase,
+    BootstrapTunnel,
+    BootstrapFull,
+    MeshVerify,
+    MeshCleanup,
+    CredentialState,
+}
+
+impl LocalCommand {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Status => "local-status",
+            Self::Verify => "local-verify",
+            Self::Diagnose => "local-diagnose",
+            Self::BootstrapBase => "local-bootstrap-base",
+            Self::BootstrapTunnel => "local-bootstrap-tunnel",
+            Self::BootstrapFull => "local-bootstrap-full",
+            Self::MeshVerify => "local-mesh-verify",
+            Self::MeshCleanup => "local-mesh-cleanup",
+            Self::CredentialState => "local-credential-state",
         }
     }
 }
@@ -60,6 +94,12 @@ mod tests {
     #[test]
     fn agent_cli_is_closed() {
         assert!(Cli::try_parse_from(["edge-agent", "serve"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "status"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err());
     }
 }

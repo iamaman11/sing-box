@@ -86,17 +86,16 @@ do not improvise another SSH/DPAPI/Vault/GitHub-secret transport.
 
 ## 6. VM operations
 
-Normal VM/application lifecycle is GitHub/orchestrator owned.
+Normal VM operation is:
 
-Canonical transport:
-- provider support-access lease where required;
-- strict OpenSSH host-certificate trust;
-- local forward to loopback `edge-agent`;
-- typed apply/verify/rollback;
-- guaranteed support-access cleanup/re-observation.
+```text
+GitHub -> production VM self-hosted runner -> root-owned local runtime owner
+       -> fixed Docker Compose mutation / Bollard observation
+```
 
-Do not use TOFU, `StrictHostKeyChecking=no`, direct Windows SSH deployment or production builds on
-the VM.
+The runner is low privilege. It must not have generic root, Docker socket access, provider credentials or application credential plaintext authority.
+
+Use hosted-runner SSH only for bootstrap/migration/break-glass. Do not reopen routine /32 support access or TCP/gRPC local forwarding for ordinary status, verify, bootstrap, diagnostics, rollback or cleanup once the local runner path owns that operation.
 
 ## 7. Diagnosis before repair
 

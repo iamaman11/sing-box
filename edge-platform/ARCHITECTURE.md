@@ -34,7 +34,7 @@ GitHub
   |
   '-- production-VM self-hosted runner (transport only)
          -> local root-owned typed runtime owner
-         -> Linux typed local state / systemd / sing-box
+         -> Linux typed local state / Docker Compose / Docker Engine
 
 Independent:
 edge-diagnostic.exe = read-only Windows observer
@@ -115,12 +115,13 @@ Existing `edge-agent` implementation may be reduced/reused for this local role i
 code. Its network daemon/TCP-gRPC role and custom mTLS/`edge-trust` are not canonical.
 
 The local owner may:
-- observe local runtime/network state;
-- apply/rollback exact accepted sing-box/systemd state;
+- observe local runtime/network state through typed host probes and Bollard;
+- apply/rollback fixed Docker Compose application/runtime operations;
 - own local active/candidate/previous credential state;
-- fetch the exact VM credential projection directly from the VM credential Worker using a
-  host-local Cloudflare Access fetch identity;
+- acquire only the exact VM credential projection through the runner-blind delivery mechanism selected by #26;
 - emit bounded secret-safe evidence.
+
+Direct Worker fetch is preferred only if host Access identity bootstrap/rotation is proven simple and bounded. Otherwise use the smallest audited standard recipient-encrypted handoff.
 
 It may not own Vultr/Cloudflare provider lifecycle or return credential plaintext to the runner.
 
@@ -131,8 +132,7 @@ The only Windows application/runtime owner is the SCM service
 
 It owns only Windows-local concerns:
 - active/candidate/previous credential state;
-- direct exact-generation credential fetch from the Windows credential Worker using host-local
-  Cloudflare Access identity;
+- runner-blind exact-generation credential acquisition through the mechanism selected by #26;
 - generated local sing-box configuration;
 - local sing-box check/apply/lifecycle;
 - selectors and local status;
@@ -355,29 +355,14 @@ Physical roots:
 Candidate acquisition and staging are deliberately narrower than the persistence API:
 - self-hosted runners carry only non-secret operation intent such as projection, generation and slot;
 - runners do not fetch, receive, log, cache or artifact credential plaintext;
-- the trusted local owner on each host fetches only its own exact projection directly from the
-  matching credential Worker over HTTPS/Cloudflare Access;
-- each host keeps a separate Access fetch identity in its existing private local secret root; this
-  identity is transport authority only and is not part of the application credential projection;
-- the Worker returns a bundle only when exactly one fixed A/B slot matches the requested generation;
-- the local owner validates projection/generation/slot/canonical bytes, then stages through the
-  accepted active/candidate/previous store;
+- the local owner validates projection/generation/slot/canonical bytes and stages through the accepted active/candidate/previous store;
 - staging cannot activate or silently generate replacement credentials;
-- Windows and VM never share Access fetch identity or projection-private material.
+- Windows and VM never share fetch identity or projection-private material;
+- direct local-owner Worker fetch is preferred only after host identity bootstrap/rotation is proven;
+- otherwise the delivery edge uses the smallest audited standard recipient-encrypted handoff;
+- project-specific custom X25519/HKDF/AEAD transport is not canonical.
 
-The two Workers are bounded cloud delivery mailboxes, not secret history/state authorities:
-```text
-/credentials owner
-  -> generate one paired snapshot in hosted process memory
-  -> update exactly one inactive A/B secret binding per projection
-
-Windows local owner -> Windows Worker -> Windows projection -> local candidate
-VM local owner      -> VM Worker      -> VM projection      -> local candidate
-```
-
-There is no cloud active pointer, KV/D1/R2/Durable Object, second plaintext secret database or
-custom credential transport protocol. The draft X25519/HKDF/AEAD sealing path is superseded by
-direct local-owner fetch and should be deleted during the Phase 6 rewrite.
+The two Workers remain bounded A/B delivery mailboxes, not secret-history or runtime-state authorities.
 
 ## 5. Runtime autonomy and recovery
 
@@ -442,7 +427,7 @@ Final diagnostics must provide secret-safe read-only evidence for:
 - Git desired revision and accepted ReleaseSet;
 - exact release binary/image identities;
 - Vultr machine/VPC/firewall/support-access state;
-- VM self-hosted-runner identity plus local typed runtime/systemd/sing-box readiness;
+- VM self-hosted-runner identity plus local typed Docker Compose/Bollard/runtime readiness;
 - direct/WARP functional probes;
 - Cloudflare account/Mesh/Zero Trust/Access state;
 - credential Worker identity and generation metadata without values;

@@ -5,35 +5,22 @@ Stable ownership/invariants are in `edge-platform/ARCHITECTURE.md`.
 
 ## Control plane
 
-Canonical production server control path:
-
 ```text
-Git / protected main
-        |
-        v
-edge-orchestrator
-GitHub-only production owner
-        |
-        +-- Vultr API
-        +-- Cloudflare API
-        |
-        v
-temporary strict SSH support-access path
-        |
-        v
-OpenSSH local forward
-        |
-        v
-127.0.0.1:50061
-edge-agent
-        |
-        v
-Docker Compose / host runtime
+GitHub-hosted edge-orchestrator
+  -> Vultr / Cloudflare provider lifecycle
+
+GitHub self-hosted production-VM runner
+  -> exact allowlisted local command only
+  -> root-owned local edge-agent runtime owner
+      +-- fixed Docker Compose mutation
+      +-- Bollard Docker observation/diagnostics
+      '-- bounded host/network probes
+  -> Docker Engine / four-container dataplane
 ```
 
-`edge-agent` is supervised by systemd and is not a public management service.
+The self-hosted runner is outbound transport only. It has no provider credentials, generic root, Docker socket or plaintext application-secret authority.
 
-The historical `edge-console -> edge-controller -> edge-agent` remote-provider model is retired.
+Strict SSH is bootstrap/migration/break-glass transport only. The historical hosted-runner -> /32 lease -> SSH -> local-forward -> TCP/gRPC agent path is not steady-state architecture.
 
 ## Host model
 
@@ -70,35 +57,22 @@ production image build occurs on the VM.
 
 ## edge-agent responsibilities
 
-Allowed responsibilities:
-- exact bundle/apply/rollback;
-- Docker/container/image observation;
-- host/network observation;
-- runtime rendering/validation;
-- bounded Mesh/runtime convergence;
-- secret-safe diagnostics;
-- exact readiness/functional verification.
+The retained Linux runtime logic is a **local typed owner**, not a remote management daemon.
 
-Forbidden responsibilities:
-- Vultr/Cloudflare desired-state ownership;
-- production ReleaseSet selection;
-- arbitrary shell RPC;
-- arbitrary filesystem RPC;
-- arbitrary Docker API passthrough;
-- second desired-state database.
+It owns:
+- fixed Docker Compose lifecycle operations;
+- Bollard container/image/health/restart/OOM/network/port/mount observations;
+- bounded host/network observations;
+- local application and credential state transitions;
+- secret-safe evidence.
+
+It does not expose generic shell, arbitrary Docker API passthrough, provider mutation or runner-readable credential plaintext.
 
 ## Transport
 
-Strict OpenSSH host-certificate verification remains the bootstrap/control transport.
-Canonical application lifecycle forwards to loopback `edge-agent`.
+Steady-state transport is the production VM repository self-hosted runner invoking a closed local owner surface. The runner cannot invoke arbitrary sudo commands and is not in the Docker group.
 
-Do not add:
-- public agent management port;
-- TOFU success path;
-- generic remote shell API;
-- another resident control daemon merely to avoid SSH local forwarding.
-
-Historical Agent custom TLS/`edge-trust` is targeted for deletion after live-consumer proof.
+SSH remains only for initial enrollment, migration and explicit break-glass recovery. Port 50061/TCP-gRPC is migration debt while legacy consumers remain and must not be re-established as the normal production path.
 
 ## Secret/runtime model
 

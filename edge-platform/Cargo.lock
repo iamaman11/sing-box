@@ -348,17 +348,15 @@ dependencies = [
 name = "edge-console"
 version = "0.1.0"
 dependencies = [
- "base64",
- "clap",
+ "tracing",
+ "thiserror",
  "edge-local-runtime",
  "edge-observability",
+ "clap",
  "edge-shared-types",
- "prost",
  "rusqlite",
- "thiserror",
  "tokio",
  "tonic",
- "tracing",
  "windows-service",
 ]
 
@@ -414,7 +412,6 @@ dependencies = [
  "edge-observability",
  "edge-provider-cloudflare",
  "edge-provider-vultr",
- "edge-secrets",
  "edge-shared-types",
  "prost",
  "rand_core 0.6.4",
@@ -475,7 +472,6 @@ dependencies = [
  "base64",
  "edge-shared-types",
  "rand_core 0.6.4",
- "ring",
  "windows-sys 0.61.2",
  "x25519-dalek",
 ]

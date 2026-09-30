@@ -16,11 +16,9 @@ use edge_controller_core::lifecycle::{
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
     ApplicationBundleReleaseState, ApplicationControlStateRecord, ApplyBundleRequest,
-    BootstrapMode, BootstrapRuntimeRequest, BundleFile, CredentialIngressPublicKey,
-    CredentialStateObservation, Empty, Ipv4NetworkObservation, MeshRuntimeConvergeRequest,
-    MeshRuntimeState, PublishedApplicationReleaseState, RollbackBundleRequest, RuntimeProbeStatus,
-    SealedCredentialCandidate, StageSealedCredentialCandidateRequest, VerifyRuntimeRequest,
-    canonical_apply_bundle_digest,
+    BootstrapMode, BootstrapRuntimeRequest, BundleFile, Ipv4NetworkObservation,
+    MeshRuntimeConvergeRequest, MeshRuntimeState, PublishedApplicationReleaseState,
+    RollbackBundleRequest, RuntimeProbeStatus, VerifyRuntimeRequest, canonical_apply_bundle_digest,
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -1657,42 +1655,6 @@ fn runtime_probe_status_label(value: i32) -> &'static str {
         RuntimeProbeStatus::ParseError => "PARSE_ERROR",
         RuntimeProbeStatus::OutputLimit => "OUTPUT_LIMIT",
     }
-}
-
-pub(crate) async fn read_vm_credential_ingress_public_key(
-    authority: &ApplicationAuthority,
-) -> Result<CredentialIngressPublicKey, String> {
-    let (mut agent, _tunnel) = connect_agent(authority).await?;
-    agent
-        .get_credential_ingress_public_key(Request::new(Empty {}))
-        .await
-        .map(|response| response.into_inner())
-        .map_err(|err| format!("VM credential ingress-key observation failed: {err}"))
-}
-
-pub(crate) async fn read_vm_credential_state(
-    authority: &ApplicationAuthority,
-) -> Result<CredentialStateObservation, String> {
-    let (mut agent, _tunnel) = connect_agent(authority).await?;
-    agent
-        .get_credential_state(Request::new(Empty {}))
-        .await
-        .map(|response| response.into_inner())
-        .map_err(|err| format!("VM credential state observation failed: {err}"))
-}
-
-pub(crate) async fn stage_vm_sealed_credential_candidate(
-    authority: &ApplicationAuthority,
-    candidate: SealedCredentialCandidate,
-) -> Result<CredentialStateObservation, String> {
-    let (mut agent, _tunnel) = connect_agent(authority).await?;
-    agent
-        .stage_sealed_credential_candidate(Request::new(StageSealedCredentialCandidateRequest {
-            candidate: Some(candidate),
-        }))
-        .await
-        .map(|response| response.into_inner())
-        .map_err(|err| format!("VM sealed credential staging failed: {err}"))
 }
 
 async fn connect_agent(

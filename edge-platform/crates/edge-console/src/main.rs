@@ -1,12 +1,10 @@
 mod cli;
 mod error;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::Parser;
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
 use error::ConsoleError;
-use prost::Message;
 use rusqlite::Connection;
 use std::env;
 #[cfg(windows)]
@@ -23,13 +21,10 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
     DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DoctorRequest, DoctorResponse,
-    CredentialCandidateAcceptance, CredentialIngressPublicKey, CredentialStateObservation, Empty,
-    GetOperationRequest,
-    GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest,
-    ListSecretRefsRequest, LocalCredentialBundleRef, LocalRuntimeResponse, OperationStatus,
-    RestartLocalRuntimeRequest, SealedCredentialCandidate, SecretRefEntry, SelectorState,
-    SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse, StageSealedCredentialCandidateRequest,
-    StartLocalRuntimeRequest, StopLocalRuntimeRequest,
+    Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
+    ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
+    RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
+    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
     WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
     decode_windows_activation_state, decode_windows_privileged_request,
@@ -221,64 +216,6 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         Command::PrivilegedDispatch(args) => {
             let install_root = PathBuf::from(args.install_root);
             dispatch_privileged_request(&install_root)?;
-            Ok(())
-        }
-        Command::CredentialIngressKey(args) => {
-            let value = fetch_credential_ingress_key(args.resolve()).await?;
-            print_credential_ingress_key(&value);
-            Ok(())
-        }
-        Command::CredentialState(args) => {
-            let value = fetch_credential_state(args.resolve()).await?;
-            print_credential_state(&value);
-            Ok(())
-        }
-        Command::CredentialProbe(args) => {
-            let value = probe_credential_candidate(args.resolve()).await?;
-            print_credential_candidate_acceptance(&value);
-            if value.direct_pass && value.warp_pass {
-                Ok(())
-            } else {
-                Err(ConsoleError::Command(
-                    "credential candidate proxy-only acceptance failed".to_owned(),
-                )
-                .into())
-            }
-        }
-        Command::CredentialPromote(args) => {
-            let value = promote_credential_candidate(args.resolve()).await?;
-            print_credential_state(&value);
-            Ok(())
-        }
-        Command::CredentialRollback(args) => {
-            let value = rollback_credential(args.resolve()).await?;
-            print_credential_state(&value);
-            Ok(())
-        }
-        Command::CredentialExpirePrevious(args) => {
-            let value = expire_credential_previous(args.resolve()).await?;
-            print_credential_state(&value);
-            Ok(())
-        }
-        Command::StageSealedCredential(args) => {
-            let bytes = URL_SAFE_NO_PAD
-                .decode(&args.sealed_candidate)
-                .map_err(|_| ConsoleError::Command(
-                    "sealed credential candidate must be unpadded base64url".to_owned()
-                ))?;
-            let candidate = SealedCredentialCandidate::decode(bytes.as_slice())
-                .map_err(|err| ConsoleError::Command(format!(
-                    "sealed credential candidate protobuf decode failed: {err}"
-                )))?;
-            if candidate.encode_to_vec() != bytes {
-                return Err(ConsoleError::Command(
-                    "sealed credential candidate must use canonical protobuf encoding".to_owned()
-                )
-                .into());
-            }
-            let value =
-                stage_sealed_credential(cli::controller_endpoint(args.endpoint), candidate).await?;
-            print_credential_state(&value);
             Ok(())
         }
         Command::Secrets(args) => {
@@ -1341,150 +1278,6 @@ async fn connect_controller(
             .into())
         }
     }
-}
-
-async fn fetch_credential_ingress_key(
-    endpoint: String,
-) -> Result<CredentialIngressPublicKey, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    Ok(client
-        .get_credential_ingress_public_key(Request::new(Empty {}))
-        .await?
-        .into_inner())
-}
-
-async fn probe_credential_candidate(
-    endpoint: String,
-) -> Result<CredentialCandidateAcceptance, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    Ok(client
-        .probe_credential_candidate(Request::new(Empty {}))
-        .await?
-        .into_inner())
-}
-
-async fn promote_credential_candidate(
-    endpoint: String,
-) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    Ok(client
-        .promote_credential_candidate(Request::new(Empty {}))
-        .await?
-        .into_inner())
-}
-
-async fn rollback_credential(
-    endpoint: String,
-) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    Ok(client
-        .rollback_credential(Request::new(Empty {}))
-        .await?
-        .into_inner())
-}
-
-async fn expire_credential_previous(
-    endpoint: String,
-) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    Ok(client
-        .expire_credential_previous(Request::new(Empty {}))
-        .await?
-        .into_inner())
-}
-
-async fn fetch_credential_state(
-    endpoint: String,
-) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    Ok(client
-        .get_credential_state(Request::new(Empty {}))
-        .await?
-        .into_inner())
-}
-
-async fn stage_sealed_credential(
-    endpoint: String,
-    candidate: SealedCredentialCandidate,
-) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    Ok(client
-        .stage_sealed_credential_candidate(Request::new(StageSealedCredentialCandidateRequest {
-            candidate: Some(candidate),
-        }))
-        .await?
-        .into_inner())
-}
-
-fn print_credential_ingress_key(value: &CredentialIngressPublicKey) {
-    println!("status=PASS");
-    println!("projection={}", value.projection);
-    println!("public_key={}", value.public_key);
-    println!("public_key_sha256={}", value.sha256);
-    println!(
-        "credential_ingress_proto={}",
-        URL_SAFE_NO_PAD.encode(value.encode_to_vec())
-    );
-    println!("secret_material_returned=false");
-}
-
-fn print_credential_candidate_acceptance(value: &CredentialCandidateAcceptance) {
-    println!("status=PASS");
-    println!("direct_pass={}", value.direct_pass);
-    println!("warp_pass={}", value.warp_pass);
-    println!("direct_colo={}", value.direct_colo);
-    println!("warp_colo={}", value.warp_colo);
-    if let Some(candidate) = value.candidate.as_ref() {
-        println!("candidate_generation={}", candidate.generation);
-        println!("candidate_sha256={}", candidate.sha256);
-    } else {
-        println!("candidate=ABSENT");
-    }
-    println!("secret_material_returned=false");
-    println!("runtime_activation_performed=false");
-}
-
-fn print_credential_state(value: &CredentialStateObservation) {
-    println!("status=PASS");
-    println!("secret_material_returned=false");
-    let Some(state) = value.state.as_ref() else {
-        println!("credential_state=ABSENT");
-        return;
-    };
-    println!("credential_state=PRESENT");
-    println!(
-        "credential_state_proto={}",
-        URL_SAFE_NO_PAD.encode(state.encode_to_vec())
-    );
-    println!("projection={}", state.projection);
-    print_credential_ref("active", state.active.as_ref());
-    print_credential_ref("candidate", state.candidate.as_ref());
-    print_credential_ref("previous", state.previous.as_ref());
-}
-
-fn print_credential_ref(label: &str, value: Option<&LocalCredentialBundleRef>) {
-    let Some(value) = value else {
-        println!("{label}=ABSENT");
-        return;
-    };
-    println!("{label}_generation={}", value.generation);
-    println!("{label}_slot={}", value.slot);
-    println!("{label}_sha256={}", value.sha256);
-    println!(
-        "{label}_tunnel_auth_generation={}",
-        value.tunnel_auth_generation
-    );
-    println!(
-        "{label}_reality_identity_generation={}",
-        value.reality_identity_generation
-    );
-    println!(
-        "{label}_line2_proxy_generation={}",
-        value
-            .line2_proxy_generation
-            .map(|generation| generation.to_string())
-            .unwrap_or_else(|| "ABSENT".to_owned())
-    );
 }
 
 async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {

@@ -48,7 +48,7 @@ GitHub
   |
   '-- production-VM self-hosted runner (transport only)
          -> local root-owned typed runtime owner
-         -> typed local state / systemd / sing-box
+         -> typed local state / Docker Compose / Docker Engine
 
 Shared external boundary:
 Cloudflare zone alegria.by
@@ -62,7 +62,7 @@ Cloudflare zone alegria.by
 - **edge-orchestrator** owns GitHub-hosted provider/production composition, including Vultr/Cloudflare lifecycle and credential generation/publication.
 - **Vultr/Cloudflare APIs** are observed provider state, never desired-state databases.
 - **production-VM self-hosted runner** is outbound transport only; it dispatches typed local operations and is never desired-state or credential-plaintext authority.
-- **Linux local runtime owner** owns only VM-local systemd/sing-box/config/credential-state lifecycle. Existing `edge-agent` code may be reduced/reused for this local-only role; remote TCP/gRPC agent transport is not target architecture.
+- **Linux local runtime owner** owns VM-local application/config/credential lifecycle. Docker Compose is its fixed multi-container mutation adapter and Bollard is its typed Docker observation/diagnostic adapter. Existing `edge-agent` runtime logic may be reduced/reused locally; remote TCP/gRPC agent transport is not target architecture.
 - **Windows self-hosted runner** is outbound transport only; SCM **EdgePlatformController** owns Windows-local runtime/config/credential lifecycle.
 - **edge-diagnostic** is independent, read-only diagnostics; it is not a repair owner.
 - **GitHub Actions** authorize, materialize exact inputs, invoke typed owners and publish bounded evidence. YAML/shell/Python do not own domain semantics.
@@ -73,7 +73,7 @@ All application-exclusive account-scoped Cloudflare resources converge into the 
 
 `alegria.by` deliberately remains a shared external DNS zone. DNS automation is zone-scoped and may mutate only the explicit sing-box record set.
 
-Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations through isolated Windows/VM credential Workers. Each Worker is only a fixed A/B delivery mailbox: no active pointer, history database or runtime authority. The trusted local owner on each host fetches its exact projection directly over HTTPS/Cloudflare Access using host-local fetch identity; self-hosted runners carry only non-secret generation/slot intent and never receive credential plaintext. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
+Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations through isolated Windows/VM credential Workers. Each Worker is only a fixed A/B delivery mailbox: no active pointer, history database or runtime authority. Delivery must remain runner-blind: direct local-owner HTTPS/Cloudflare Access fetch is preferred only after its host-identity bootstrap/rotation lifecycle is proven; otherwise use the smallest audited standard recipient-encrypted handoff. Self-hosted runners carry only non-secret intent and never receive credential plaintext. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
 
 ## Release and recovery
 

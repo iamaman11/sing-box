@@ -32,13 +32,6 @@ pub(crate) enum Command {
     #[cfg(windows)]
     PrivilegedConvergeControllerService(InstallRootArgs),
     PrivilegedDispatch(InstallRootArgs),
-    CredentialIngressKey(EndpointArgs),
-    CredentialState(EndpointArgs),
-    CredentialProbe(EndpointArgs),
-    CredentialPromote(EndpointArgs),
-    CredentialRollback(EndpointArgs),
-    CredentialExpirePrevious(EndpointArgs),
-    StageSealedCredential(StageSealedCredentialArgs),
     Secrets(EndpointArgs),
     GetSecret(NameEndpointArgs),
     SetSecret(SetSecretArgs),
@@ -74,13 +67,6 @@ impl Command {
                 "privileged-converge-controller-service"
             }
             Self::PrivilegedDispatch(_) => "privileged-dispatch",
-            Self::CredentialIngressKey(_) => "credential-ingress-key",
-            Self::CredentialState(_) => "credential-state",
-            Self::CredentialProbe(_) => "credential-probe",
-            Self::CredentialPromote(_) => "credential-promote",
-            Self::CredentialRollback(_) => "credential-rollback",
-            Self::CredentialExpirePrevious(_) => "credential-expire-previous",
-            Self::StageSealedCredential(_) => "stage-sealed-credential",
             Self::Secrets(_) => "secrets",
             Self::GetSecret(_) => "get-secret",
             Self::SetSecret(_) => "set-secret",
@@ -124,14 +110,6 @@ pub(crate) struct PrivilegedActivateArgs {
     pub release_set_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct StageSealedCredentialArgs {
-    // Canonical SealedCredentialCandidate protobuf bytes encoded as unpadded
-    // base64url. This is authenticated ciphertext, never plaintext credentials.
-    pub sealed_candidate: String,
-    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -193,19 +171,6 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["edge-console", "privileged-ping"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["edge-console", "credential-ingress-key"]).is_ok()
-        );
-        assert!(Cli::try_parse_from(["edge-console", "credential-state"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "credential-probe"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "credential-promote"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "credential-rollback"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["edge-console", "credential-expire-previous"]).is_ok()
-        );
-        assert!(
-            Cli::try_parse_from(["edge-console", "stage-sealed-credential", "AA"]).is_ok()
-        );
         assert!(
             Cli::try_parse_from([
                 "edge-console",

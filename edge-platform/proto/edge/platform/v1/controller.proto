@@ -68,10 +68,4 @@ service ControllerService {
   rpc ListOperationEvents(ListOperationEventsRequest) returns (ListOperationEventsResponse);
   rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);
   rpc GetCredentialState(Empty) returns (CredentialStateObservation);
-  rpc GetCredentialIngressPublicKey(Empty) returns (CredentialIngressPublicKey);
-  rpc StageSealedCredentialCandidate(StageSealedCredentialCandidateRequest) returns (CredentialStateObservation);
-  rpc ProbeCredentialCandidate(Empty) returns (CredentialCandidateAcceptance);
-  rpc PromoteCredentialCandidate(Empty) returns (CredentialStateObservation);
-  rpc RollbackCredential(Empty) returns (CredentialStateObservation);
-  rpc ExpireCredentialPrevious(Empty) returns (CredentialStateObservation);
 }

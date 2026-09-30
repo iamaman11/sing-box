@@ -543,33 +543,6 @@ pub async fn upload_worker_module_with_secret_text_bindings(
     ensure_secret_mutation_success(response).await
 }
 
-pub async fn update_worker_secret_text(
-    api_token: &str,
-    account_id: &str,
-    script_name: &str,
-    secret_name: &str,
-    secret_text: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker script name", script_name)?;
-    require_non_empty("Cloudflare Worker secret name", secret_name)?;
-    require_non_empty("Cloudflare Worker secret value", secret_text)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/secrets"
-        ))
-        .json(&serde_json::json!({
-            "name": secret_name,
-            "text": secret_text,
-            "type": "secret_text"
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to update Cloudflare Worker secret binding: {err}"))?;
-    ensure_secret_mutation_success(response).await
-}
-
 pub async fn get_worker_script_subdomain(
     api_token: &str,
     account_id: &str,

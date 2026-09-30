@@ -315,59 +315,11 @@ pub fn local_credential_bundle_ref(
     if bundle.dummy_non_secret {
         return Err("local credential state cannot reference a dummy delivery bundle".to_owned());
     }
-    let (tunnel_auth_generation, reality_identity_generation, line2_proxy_generation) =
-        credential_lifecycle_generations(bundle)?;
     Ok(LocalCredentialBundleRef {
         generation: bundle.generation,
         slot: bundle.slot,
         sha256: credential_delivery_bundle_sha256(bundle)?,
-        tunnel_auth_generation,
-        reality_identity_generation,
-        line2_proxy_generation,
     })
-}
-
-fn credential_lifecycle_generations(
-    bundle: &CredentialDeliveryBundle,
-) -> Result<(u64, u64, Option<u64>), String> {
-    let payload = bundle
-        .payload
-        .as_ref()
-        .ok_or_else(|| "real credential bundle payload is required".to_owned())?;
-    match payload {
-        credential_delivery_bundle::Payload::Windows(value) => Ok((
-            value
-                .tunnel_auth
-                .as_ref()
-                .ok_or_else(|| "Windows tunnel-auth generation is missing".to_owned())?
-                .generation,
-            value
-                .reality_identity
-                .as_ref()
-                .ok_or_else(|| "Windows Reality generation is missing".to_owned())?
-                .generation,
-            None,
-        )),
-        credential_delivery_bundle::Payload::Vm(value) => Ok((
-            value
-                .tunnel_auth
-                .as_ref()
-                .ok_or_else(|| "VM tunnel-auth generation is missing".to_owned())?
-                .generation,
-            value
-                .reality_identity
-                .as_ref()
-                .ok_or_else(|| "VM Reality generation is missing".to_owned())?
-                .generation,
-            Some(
-                value
-                    .line2_proxy
-                    .as_ref()
-                    .ok_or_else(|| "VM Line 2 generation is missing".to_owned())?
-                    .generation,
-            ),
-        )),
-    }
 }
 
 pub fn encode_local_credential_state(state: &LocalCredentialState) -> Result<Vec<u8>, String> {
@@ -411,11 +363,6 @@ pub fn validate_local_credential_state(state: &LocalCredentialState) -> Result<(
         return Err(
             "local credential candidate and previous cannot coexist with fixed A/B transport"
                 .to_owned(),
-        );
-    }
-    if state.candidate_acceptance_enabled && candidate.is_none() {
-        return Err(
-            "candidate acceptance cannot be enabled without a staged candidate".to_owned(),
         );
     }
 
@@ -462,16 +409,6 @@ pub fn verify_local_credential_bundle_reference(
     if credential_delivery_bundle_sha256(bundle)? != reference.sha256 {
         return Err("local credential bundle digest does not match state reference".to_owned());
     }
-    let (tunnel_auth_generation, reality_identity_generation, line2_proxy_generation) =
-        credential_lifecycle_generations(bundle)?;
-    if reference.tunnel_auth_generation != tunnel_auth_generation
-        || reference.reality_identity_generation != reality_identity_generation
-        || reference.line2_proxy_generation != line2_proxy_generation
-    {
-        return Err(
-            "local credential lifecycle generations do not match the referenced bundle".to_owned(),
-        );
-    }
     Ok(())
 }
 
@@ -486,17 +423,6 @@ fn validate_local_credential_bundle_ref(
         .map_err(|_| format!("{label}.slot is unknown"))?;
     if !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B) {
         return Err(format!("{label}.slot must be A or B"));
-    }
-    if reference.tunnel_auth_generation == 0 {
-        return Err(format!("{label}.tunnel_auth_generation must be greater than zero"));
-    }
-    if reference.reality_identity_generation == 0 {
-        return Err(format!(
-            "{label}.reality_identity_generation must be greater than zero"
-        ));
-    }
-    if reference.line2_proxy_generation == Some(0) {
-        return Err(format!("{label}.line2_proxy_generation must be greater than zero"));
     }
     validate_lower_hex(&format!("{label}.sha256"), &reference.sha256, 64)
 }
@@ -1669,28 +1595,9 @@ mod local_credential_state_tests {
             active: None,
             candidate: Some(local_credential_bundle_ref(&candidate).unwrap()),
             previous: None,
-            candidate_acceptance_enabled: false,
         };
         let bytes = encode_local_credential_state(&state).unwrap();
         assert_eq!(decode_local_credential_state(&bytes).unwrap(), state);
-    }
-
-    #[test]
-    fn candidate_acceptance_requires_a_candidate() {
-        let state = LocalCredentialState {
-            schema_version: 1,
-            projection: CredentialProjectionKind::Windows as i32,
-            active: Some(local_credential_bundle_ref(&bundle(
-                CredentialProjectionKind::Windows,
-                100,
-                CredentialDeliverySlot::A,
-            ))
-            .unwrap()),
-            candidate: None,
-            previous: None,
-            candidate_acceptance_enabled: true,
-        };
-        assert!(validate_local_credential_state(&state).is_err());
     }
 
     #[test]
@@ -1703,7 +1610,6 @@ mod local_credential_state_tests {
             active: Some(local_credential_bundle_ref(&active).unwrap()),
             candidate: Some(local_credential_bundle_ref(&candidate).unwrap()),
             previous: None,
-            candidate_acceptance_enabled: false,
         };
         assert!(validate_local_credential_state(&state).is_err());
     }
@@ -1727,7 +1633,6 @@ mod local_credential_state_tests {
             active: Some(local_credential_bundle_ref(&active).unwrap()),
             candidate: Some(reference.clone()),
             previous: Some(reference),
-            candidate_acceptance_enabled: false,
         };
         assert!(validate_local_credential_state(&state).is_err());
     }
@@ -1736,9 +1641,6 @@ mod local_credential_state_tests {
     fn reference_verification_binds_projection_generation_slot_and_digest() {
         let bundle = bundle(CredentialProjectionKind::Vm, 101, CredentialDeliverySlot::B);
         let reference = local_credential_bundle_ref(&bundle).unwrap();
-        assert_eq!(reference.tunnel_auth_generation, 7);
-        assert_eq!(reference.reality_identity_generation, 3);
-        assert_eq!(reference.line2_proxy_generation, Some(2));
         verify_local_credential_bundle_reference(CredentialProjectionKind::Vm, &reference, &bundle)
             .unwrap();
 
