@@ -220,7 +220,7 @@ async fn fresh_v2_publish(
     let windows_secret = hex_encode(&snapshot.windows.encode_to_vec());
     let vm_secret = hex_encode(&snapshot.vm.encode_to_vec());
 
-    if let Err(err) = cloudflare::patch_worker_secrets_with_version_tag(
+    if let Err(err) = cloudflare::patch_latest_worker_version_secrets(
         &rotation_token,
         &desired.target_account_id,
         &windows.worker_name,
@@ -235,7 +235,7 @@ async fn fresh_v2_publish(
         ));
     }
 
-    if let Err(err) = cloudflare::patch_worker_secrets_with_version_tag(
+    if let Err(err) = cloudflare::patch_latest_worker_version_secrets(
         &rotation_token,
         &desired.target_account_id,
         &vm.worker_name,
@@ -285,7 +285,7 @@ async fn restore_dummy_slot(
             .iter()
             .find(|slot| slot.name == SLOT_A)
             .ok_or_else(|| "fixed A/B material is missing slot A".to_owned())?;
-        cloudflare::patch_worker_secrets_with_version_tag(
+        cloudflare::patch_latest_worker_version_secrets(
             rotation_token,
             &desired.target_account_id,
             &projection.worker_name,
