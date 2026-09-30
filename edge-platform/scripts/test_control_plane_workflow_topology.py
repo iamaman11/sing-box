@@ -440,6 +440,18 @@ def main() -> None:
     )
     fresh_v2 = credential_command[fresh_v2_start:fresh_v2_end]
     fresh_v2_publish = fresh_v2[: fresh_v2.index("async fn restore_dummy_slot")]
+    restart_verify_start = windows_console.index(
+        "async fn restart_and_verify_windows_tunnels("
+    )
+    restart_verify_end = windows_console.index(
+        "fn verify_stage2_isolated_prerequisites(", restart_verify_start
+    )
+    restart_verify = windows_console[restart_verify_start:restart_verify_end]
+    require(
+        "stop_managed_windows_runtime_after_failure" in restart_verify,
+        "Windows restart proof must stop only the exact managed runtime before returning a functional failure",
+    )
+
     require(
         '"fresh-v2-cutover"' in credentials
         and not (WORKFLOWS / "credential-fresh-v2-cutover.yml").exists()
