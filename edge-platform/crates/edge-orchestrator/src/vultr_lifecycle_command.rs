@@ -943,7 +943,6 @@ pub(crate) async fn bootstrap_production_runner(
     }))
 }
 
-
 fn validate_runner_registration_token(value: &str) -> Result<(), String> {
     if value.len() < 16
         || value.len() > 512
