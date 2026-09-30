@@ -440,6 +440,18 @@ def main() -> None:
     )
     fresh_v2 = credential_command[fresh_v2_start:fresh_v2_end]
     fresh_v2_publish = fresh_v2[: fresh_v2.index("async fn restore_dummy_slot")]
+    restart_verify_start = windows_console.index(
+        "async fn restart_and_verify_windows_tunnels("
+    )
+    restart_verify_end = windows_console.index(
+        "fn verify_stage2_isolated_prerequisites(", restart_verify_start
+    )
+    restart_verify = windows_console[restart_verify_start:restart_verify_end]
+    require(
+        "stop_managed_windows_runtime_after_failure" in restart_verify,
+        "Windows restart proof must stop only the exact managed runtime before returning a functional failure",
+    )
+
     require(
         '"fresh-v2-cutover"' in credentials
         and not (WORKFLOWS / "credential-fresh-v2-cutover.yml").exists()
@@ -453,8 +465,20 @@ def main() -> None:
         and fresh_v2_publish.count("cloudflare::put_worker_secret_text(") == 2
         and "CredentialDeliverySlot::A" in fresh_v2_publish
         and "async fn restore_dummy_slot" in fresh_v2
-        and "active_slot_mutated=false" in fresh_v2_publish,
-        "Macro Stage 2 must remain one credential workflow with one host transition entrypoint and bounded inactive-slot publication",
+        and "active_slot_mutated=false" in fresh_v2_publish
+        and "cutover_windows_rollback:" not in credentials
+        and "cutover_windows_restore:" not in credentials
+        and "cutover_windows_retire:" not in credentials
+        and "credential-transition apply-legacy --install-root" not in credentials
+        and "credential-transition retire-legacy --install-root" not in credentials
+        and "stage2-preflight" in credentials
+        and "restart-verify-runtime" in credentials
+        and "Get-NetTCPConnection -State Listen" not in credentials
+        and "$reservedPorts = @(17891, 17892, 19091)" not in credentials
+        and "STAGE2_WINDOWS_ISOLATED_PREREQUISITES=PASS" in credentials
+        and "STAGE2_EXTERNAL_SING_BOX=UNTOUCHED" in credentials
+        and "STAGE2_TUN_ACTIVATION=DEFERRED" in credentials,
+        "Macro Stage 2 must keep Windows side-by-side, proxy-only and outside legacy runtime ownership while preserving one bounded credential workflow",
     )
 
     diagnostics_index = credential_command.index(
@@ -1240,7 +1264,9 @@ def main() -> None:
         "candidate CI must derive durable Windows identity and reuse only the exact accepted artifact",
     )
     require(
-        edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 2
+        edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 3
+        and "Validate Stage 2 proxy-only config with exact sing-box" in edge_platform_ci
+        and "EDGE_TEST_SING_BOX" in edge_platform_ci
         and "write-windows-manifest" in edge_platform_ci
         and "write-linux-manifest" in edge_platform_ci
         and "windows-build-manifest.pb" in edge_platform_ci

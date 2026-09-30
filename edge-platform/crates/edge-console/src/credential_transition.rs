@@ -1,18 +1,17 @@
 use edge_controller_core::{
     local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
 };
-use edge_secrets::{CredentialStore, windows_runtime_state_from_bundle, write_atomic_private};
+use edge_secrets::{
+    CredentialStore, windows_runtime_state_from_canonical_production_bundle, write_atomic_private,
+};
 use edge_shared_types::{
     CredentialProjectionKind, CredentialTransitionAction, LocalCredentialState,
-    WindowsActivationState, decode_windows_runtime_state, encode_windows_runtime_state,
-    verify_windows_activation_files,
+    WindowsActivationState, encode_windows_runtime_state, verify_windows_activation_files,
 };
-use edge_singbox::sync_local_config_from_runtime_state;
+use edge_singbox::render_proxy_only_windows_config;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-
-const LEGACY_RUNTIME_STATE_FILE: &str = "runtime-state.legacy-v1.pb";
 
 pub(crate) fn transition(
     install_root: &Path,
@@ -36,13 +35,12 @@ pub(crate) fn transition(
                 .as_ref()
                 .ok_or_else(|| "Windows v2 candidate is absent".to_owned())?;
             let bundle = store.read_bundle(candidate)?;
-            let base = read_runtime_state(install_root)?;
-            let next = windows_runtime_state_from_bundle(&base, &bundle)?;
+            let next = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
             validate_rendered_state(install_root, activation, &next)?;
             Ok((
                 "CREDENTIAL_CANDIDATE_VALID".to_owned(),
                 format!(
-                    "candidate generation {} passed local validation",
+                    "candidate generation {} passed isolated proxy-only validation",
                     bundle.generation
                 ),
             ))
@@ -54,17 +52,12 @@ pub(crate) fn transition(
                 .as_ref()
                 .ok_or_else(|| "Windows v2 candidate is absent".to_owned())?;
             let bundle = store.read_bundle(candidate)?;
-            let base = read_runtime_state(install_root)?;
-            ensure_legacy_backup(install_root, &base)?;
-            apply_runtime_state(
-                install_root,
-                activation,
-                &windows_runtime_state_from_bundle(&base, &bundle)?,
-            )?;
+            let next = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+            apply_runtime_state(install_root, activation, &next)?;
             Ok((
                 "CREDENTIAL_CANDIDATE_APPLIED".to_owned(),
                 format!(
-                    "candidate generation {} applied without promotion",
+                    "candidate generation {} applied to isolated managed runtime without promotion",
                     bundle.generation
                 ),
             ))
@@ -80,14 +73,6 @@ pub(crate) fn transition(
                 format!("active generation {}", active.generation),
             ))
         }
-        CredentialTransitionAction::ApplyLegacy => {
-            let legacy = read_legacy_backup(install_root)?;
-            apply_runtime_state(install_root, activation, &legacy)?;
-            Ok((
-                "CREDENTIAL_LEGACY_APPLIED".to_owned(),
-                "legacy-v1 LKG applied without changing v2 credential pointers".to_owned(),
-            ))
-        }
         CredentialTransitionAction::ApplyActive => {
             if state.candidate.is_some() {
                 return Err("active v2 apply refuses a staged candidate".to_owned());
@@ -97,49 +82,21 @@ pub(crate) fn transition(
                 .as_ref()
                 .ok_or_else(|| "Windows v2 active credential is absent".to_owned())?;
             let bundle = store.read_bundle(active)?;
-            let base = read_runtime_state(install_root)?;
-            apply_runtime_state(
-                install_root,
-                activation,
-                &windows_runtime_state_from_bundle(&base, &bundle)?,
-            )?;
+            let next = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+            apply_runtime_state(install_root, activation, &next)?;
             Ok((
                 "CREDENTIAL_ACTIVE_APPLIED".to_owned(),
                 format!("active generation {} applied", bundle.generation),
             ))
         }
-        CredentialTransitionAction::RetireLegacy => {
-            if state.active.is_none() || state.candidate.is_some() {
-                return Err(
-                    "legacy retirement requires one active v2 credential and no candidate"
-                        .to_owned(),
-                );
-            }
-            let active = state.active.as_ref().unwrap();
-            let bundle = store.read_bundle(active)?;
-            let current = read_runtime_state(install_root)?;
-            let expected = windows_runtime_state_from_bundle(&current, &bundle)?;
-            if current != expected {
-                return Err(
-                    "legacy retirement refused because Windows runtime-state is not exact active v2"
-                        .to_owned(),
-                );
-            }
-            validate_rendered_state(install_root, activation, &current)?;
-            let backup = legacy_backup_path(install_root);
-            if backup.exists() {
-                fs::remove_file(&backup).map_err(|err| {
-                    format!(
-                        "failed to retire legacy Windows runtime-state backup {}: {err}",
-                        backup.display()
-                    )
-                })?;
-            }
-            Ok((
-                "CREDENTIAL_LEGACY_RETIRED".to_owned(),
-                "legacy-v1 Windows LKG deleted after exact active-v2 verification".to_owned(),
-            ))
-        }
+        CredentialTransitionAction::ApplyLegacy => Err(
+            "Windows legacy runtime apply is retired; the external sing-box is not managed state"
+                .to_owned(),
+        ),
+        CredentialTransitionAction::RetireLegacy => Err(
+            "Windows legacy runtime retirement is retired; the external sing-box is out of scope"
+                .to_owned(),
+        ),
     }
 }
 
@@ -163,63 +120,27 @@ fn open_store(install_root: &Path) -> Result<CredentialStore, String> {
     .ok_or_else(|| "Windows v2 credential store is absent".to_owned())
 }
 
-fn read_runtime_state(
-    install_root: &Path,
-) -> Result<edge_shared_types::WindowsRuntimeState, String> {
-    let path = windows_runtime_state_path(install_root);
-    let bytes = fs::read(&path).map_err(|err| {
-        format!(
-            "failed to read Windows runtime state {}: {err}",
-            path.display()
-        )
-    })?;
-    decode_windows_runtime_state(&bytes)
-}
-
-fn legacy_backup_path(install_root: &Path) -> PathBuf {
-    install_root
-        .join("state")
-        .join("secrets")
-        .join(LEGACY_RUNTIME_STATE_FILE)
-}
-
-fn ensure_legacy_backup(
-    install_root: &Path,
-    current: &edge_shared_types::WindowsRuntimeState,
-) -> Result<(), String> {
-    let path = legacy_backup_path(install_root);
-    if path.exists() {
-        let _ = read_legacy_backup(install_root)?;
-        return Ok(());
-    }
-    write_atomic_private(&path, &encode_windows_runtime_state(current)?)
-}
-
-fn read_legacy_backup(
-    install_root: &Path,
-) -> Result<edge_shared_types::WindowsRuntimeState, String> {
-    let path = legacy_backup_path(install_root);
-    let bytes = fs::read(&path).map_err(|err| {
-        format!(
-            "legacy Windows runtime-state backup is unavailable at {}: {err}",
-            path.display()
-        )
-    })?;
-    decode_windows_runtime_state(&bytes)
-}
-
 fn validate_rendered_state(
     install_root: &Path,
     activation: &WindowsActivationState,
     state: &edge_shared_types::WindowsRuntimeState,
 ) -> Result<Vec<u8>, String> {
     let config_path = local_singbox_config_path(install_root);
-    let current = fs::read(&config_path)
-        .map_err(|err| format!("failed to read Windows sing-box config: {err}"))?;
+    let parent = config_path
+        .parent()
+        .ok_or_else(|| "Windows managed config has no parent directory".to_owned())?;
+    fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "failed to create Windows managed runtime directory {}: {err}",
+            parent.display()
+        )
+    })?;
+
     let staged = config_path.with_extension("credential-stage.json");
-    write_atomic_private(&staged, &current)?;
+    let rendered = render_proxy_only_windows_config(state)?;
+    write_atomic_private(&staged, &rendered)?;
+
     let result = (|| {
-        sync_local_config_from_runtime_state(&staged, state, &install_root.join("runtime"))?;
         let status = Command::new(&activation.sing_box_path)
             .args(["check", "-c"])
             .arg(&staged)
@@ -230,7 +151,7 @@ fn validate_rendered_state(
             .map_err(|err| format!("failed to execute exact sing-box check: {err}"))?;
         if !status.success() {
             return Err(format!(
-                "exact sing-box check rejected candidate runtime config with exit_code={}",
+                "exact sing-box check rejected proxy-only candidate config with exit_code={}",
                 status.code().unwrap_or(-1)
             ));
         }
@@ -241,6 +162,28 @@ fn validate_rendered_state(
     result
 }
 
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("failed to snapshot {}: {err}", path.display())),
+    }
+}
+
+fn restore_optional(path: &Path, previous: Option<&[u8]>) -> Result<(), String> {
+    match previous {
+        Some(bytes) => write_atomic_private(path, bytes),
+        None => match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!(
+                "failed to remove {} during rollback: {err}",
+                path.display()
+            )),
+        },
+    }
+}
+
 fn apply_runtime_state(
     install_root: &Path,
     activation: &WindowsActivationState,
@@ -248,24 +191,22 @@ fn apply_runtime_state(
 ) -> Result<(), String> {
     let state_path = windows_runtime_state_path(install_root);
     let config_path = local_singbox_config_path(install_root);
-    let previous_state = fs::read(&state_path)
-        .map_err(|err| format!("failed to snapshot Windows runtime state: {err}"))?;
-    let previous_config = fs::read(&config_path)
-        .map_err(|err| format!("failed to snapshot Windows runtime config: {err}"))?;
+    let previous_state = read_optional(&state_path)?;
+    let previous_config = read_optional(&config_path)?;
     let next_state = encode_windows_runtime_state(state)?;
     let next_config = validate_rendered_state(install_root, activation, state)?;
 
     if let Err(err) = write_atomic_private(&state_path, &next_state)
         .and_then(|_| write_atomic_private(&config_path, &next_config))
     {
-        let restore = write_atomic_private(&state_path, &previous_state)
-            .and_then(|_| write_atomic_private(&config_path, &previous_config));
-        return match restore {
-            Ok(()) => Err(format!(
-                "Windows credential transition failed and was rolled back: {err}"
+        let state_restore = restore_optional(&state_path, previous_state.as_deref());
+        let config_restore = restore_optional(&config_path, previous_config.as_deref());
+        return match (state_restore, config_restore) {
+            (Ok(()), Ok(())) => Err(format!(
+                "Windows credential transition failed and managed files were rolled back: {err}"
             )),
-            Err(restore_err) => Err(format!(
-                "Windows credential transition failed: {err}; rollback also failed: {restore_err}"
+            (state_result, config_result) => Err(format!(
+                "Windows credential transition failed: {err}; rollback state={state_result:?}; config={config_result:?}"
             )),
         };
     }

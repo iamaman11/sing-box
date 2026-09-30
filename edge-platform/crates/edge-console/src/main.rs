@@ -4,10 +4,13 @@ mod credential_transition;
 mod error;
 
 use clap::Parser;
-use edge_controller_core::windows_credential_store_path;
+use edge_controller_core::{
+    local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
+};
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
 use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
+use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
@@ -15,7 +18,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
@@ -175,6 +178,17 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("cleanup=PASS");
             Ok(())
         }
+        Command::Stage2Preflight => {
+            let install_root = installed_root_from_console()?;
+            verify_stage2_isolated_prerequisites(&install_root).map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("stage2_proxy_ports=AVAILABLE");
+            println!("stage2_desktop_proxy_port={STAGE2_DESKTOP_PROXY_PORT}");
+            println!("stage2_wsl_proxy_port={STAGE2_WSL_PROXY_PORT}");
+            println!("stage2_clash_api_port={STAGE2_CLASH_API_PORT}");
+            println!("tun_enabled=false");
+            Ok(())
+        }
         Command::ProvisionRuntimeState(args) => {
             provision_windows_runtime_state(Path::new(&args.install_root))?;
             Ok(())
@@ -238,6 +252,17 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             run_windows_credential_transition(Path::new(&args.install_root), action)
                 .await
                 .map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        Command::RestartVerifyRuntime => {
+            let endpoint = cli::controller_endpoint(None);
+            restart_and_verify_windows_tunnels(&endpoint)
+                .await
+                .map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("runtime_restart_functional=PASS");
+            println!("runtime_restart_direct=PASS");
+            println!("runtime_restart_warp=PASS");
             Ok(())
         }
         Command::PrivilegedPrepareCredentialAccess(args) => {
@@ -1090,61 +1115,108 @@ async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String
         .await
         .map_err(|err| err.to_string())?;
     if !restart.success {
-        return Err(format!(
-            "Windows local runtime restart failed: {}",
-            restart.note
-        ));
+        let error = format!("Windows local runtime restart failed: {}", restart.note);
+        return match stop_managed_windows_runtime_after_failure(endpoint).await {
+            Ok(()) => Err(format!(
+                "{error}; exact managed runtime was stopped without touching external sing-box"
+            )),
+            Err(cleanup_err) => Err(format!(
+                "{error}; managed-runtime cleanup also failed: {cleanup_err}"
+            )),
+        };
     }
 
-    let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
-        .await
-        .map_err(|err| err.to_string())?;
-    let original = selector
-        .observed_main_route
-        .or(selector.desired_main_route)
-        .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
+    let verification = async {
+        let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
+            .await
+            .map_err(|err| err.to_string())?;
+        let original = selector
+            .observed_main_route
+            .or(selector.desired_main_route)
+            .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
 
-    let direct = verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await;
-    let warp = if direct.is_ok() {
-        verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await
-    } else {
-        Ok(())
-    };
-    let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
-        .await
-        .map_err(|err| err.to_string())
-        .and_then(|response| {
-            if response.success {
-                Ok(())
-            } else {
-                Err("failed to restore original Windows selector".to_owned())
-            }
-        });
+        let direct = verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await;
+        let warp = if direct.is_ok() {
+            verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await
+        } else {
+            Ok(())
+        };
+        let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|response| {
+                if response.success {
+                    Ok(())
+                } else {
+                    Err("failed to restore original Windows selector".to_owned())
+                }
+            });
 
-    direct?;
-    warp?;
-    restore
+        direct?;
+        warp?;
+        restore
+    }
+    .await;
+
+    match verification {
+        Ok(()) => Ok(()),
+        Err(error) => match stop_managed_windows_runtime_after_failure(endpoint).await {
+            Ok(()) => Err(format!(
+                "Windows managed runtime failed functional verification and was stopped without touching external sing-box: {error}"
+            )),
+            Err(cleanup_err) => Err(format!(
+                "Windows managed runtime failed functional verification: {error}; managed-runtime cleanup also failed: {cleanup_err}"
+            )),
+        },
+    }
 }
 
-async fn restore_windows_legacy_after_transition_failure(
-    install_root: &Path,
-    endpoint: &str,
-) -> Result<(), String> {
-    let result = submit_windows_credential_transition(
-        install_root,
-        CredentialTransitionAction::ApplyLegacy,
-    )?;
-    finish_privileged_result(&result).map_err(|err| err.to_string())?;
-    let restart = restart_local(endpoint.to_owned())
-        .await
-        .map_err(|err| err.to_string())?;
-    if !restart.success {
+fn verify_stage2_isolated_prerequisites(install_root: &Path) -> Result<(), String> {
+    let managed_state = windows_runtime_state_path(install_root);
+    if managed_state.exists() {
         return Err(format!(
-            "legacy Windows recovery restart failed: {}",
-            restart.note
+            "Stage 2 requires no pre-existing managed Windows runtime state at {}",
+            managed_state.display()
         ));
     }
+    let managed_config = local_singbox_config_path(install_root);
+    if managed_config.exists() {
+        return Err(format!(
+            "Stage 2 requires no pre-existing managed Windows runtime config at {}",
+            managed_config.display()
+        ));
+    }
+
+    let endpoints = [
+        (
+            "desktop proxy",
+            format!("127.0.0.1:{STAGE2_DESKTOP_PROXY_PORT}"),
+        ),
+        ("WSL proxy", format!("0.0.0.0:{STAGE2_WSL_PROXY_PORT}")),
+        ("Clash API", format!("127.0.0.1:{STAGE2_CLASH_API_PORT}")),
+    ];
+    let mut listeners = Vec::with_capacity(endpoints.len());
+    for (name, endpoint) in endpoints {
+        let listener = TcpListener::bind(&endpoint)
+            .map_err(|err| format!("Stage 2 {name} endpoint {endpoint} is unavailable: {err}"))?;
+        listeners.push(listener);
+    }
+    drop(listeners);
     Ok(())
+}
+
+async fn stop_managed_windows_runtime_after_failure(endpoint: &str) -> Result<(), String> {
+    let response = stop_local(endpoint.to_owned())
+        .await
+        .map_err(|err| err.to_string())?;
+    if response.success {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to stop managed Windows runtime after functional failure: {}",
+            response.note
+        ))
+    }
 }
 
 async fn run_windows_credential_transition(
@@ -1152,76 +1224,18 @@ async fn run_windows_credential_transition(
     action: CredentialTransitionAction,
 ) -> Result<(), String> {
     let endpoint = cli::controller_endpoint(None);
-    let legacy_fallback = if action == CredentialTransitionAction::ApplyLegacy {
-        let state = fetch_credential_state(endpoint.clone())
-            .await
-            .map_err(|err| err.to_string())?
-            .ok_or_else(|| "Windows v2 credential state is absent".to_owned())?;
-        if state.candidate.is_some() {
-            Some(CredentialTransitionAction::ApplyCandidate)
-        } else if state.active.is_some() {
-            Some(CredentialTransitionAction::ApplyActive)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     let result = submit_windows_credential_transition(install_root, action)?;
     print_privileged_result(&result);
     finish_privileged_result(&result).map_err(|err| err.to_string())?;
 
     if !matches!(
         action,
-        CredentialTransitionAction::ApplyCandidate
-            | CredentialTransitionAction::ApplyLegacy
-            | CredentialTransitionAction::ApplyActive
+        CredentialTransitionAction::ApplyCandidate | CredentialTransitionAction::ApplyActive
     ) {
         return Ok(());
     }
 
-    if let Err(err) = restart_and_verify_windows_tunnels(&endpoint).await {
-        if matches!(
-            action,
-            CredentialTransitionAction::ApplyCandidate | CredentialTransitionAction::ApplyActive
-        ) {
-            return match restore_windows_legacy_after_transition_failure(install_root, &endpoint)
-                .await
-            {
-                Ok(()) => Err(format!(
-                    "Windows credential transition failed functional verification and legacy LKG was restored: {err}"
-                )),
-                Err(recovery_err) => Err(format!(
-                    "Windows credential transition failed functional verification: {err}; legacy recovery also failed: {recovery_err}"
-                )),
-            };
-        }
-        if action == CredentialTransitionAction::ApplyLegacy {
-            let fallback = legacy_fallback.ok_or_else(|| {
-                format!("Windows legacy rollback proof failed with no v2 fallback available: {err}")
-            })?;
-            let recovery =
-                submit_windows_credential_transition(install_root, fallback).and_then(|result| {
-                    finish_privileged_result(&result)
-                        .map_err(|recovery_err| recovery_err.to_string())
-                });
-            if let Err(recovery_err) = recovery {
-                return Err(format!(
-                    "Windows legacy rollback proof failed: {err}; v2 recovery mutation also failed: {recovery_err}"
-                ));
-            }
-            return match restart_and_verify_windows_tunnels(&endpoint).await {
-                Ok(()) => Err(format!(
-                    "Windows legacy rollback proof failed and v2 LKG was restored: {err}"
-                )),
-                Err(recovery_err) => Err(format!(
-                    "Windows legacy rollback proof failed: {err}; v2 recovery verification also failed: {recovery_err}"
-                )),
-            };
-        }
-        return Err(err);
-    }
+    restart_and_verify_windows_tunnels(&endpoint).await?;
 
     println!("credential_transition_functional=PASS");
     println!("credential_transition_direct=PASS");

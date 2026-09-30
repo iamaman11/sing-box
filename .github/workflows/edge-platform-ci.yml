@@ -933,6 +933,18 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
 
+      - name: Validate Stage 2 proxy-only config with exact sing-box
+        if: needs.dependencies.outputs.windows_reuse != 'true'
+        working-directory: edge-platform
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $resolvedSingBox = Get-ChildItem (Join-Path $env:RUNNER_TEMP "sing-box-windows") -Recurse -File -Filter sing-box.exe | Select-Object -First 1
+          if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
+          $env:EDGE_TEST_SING_BOX = $resolvedSingBox.FullName
+          cargo test --locked -p edge-singbox stage2_ -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Stage 2 proxy-only config validation failed" }
+
       # WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN
       - name: Build exact Windows control binaries
         if: needs.dependencies.outputs.windows_reuse != 'true'
