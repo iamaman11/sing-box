@@ -32,6 +32,7 @@ pub(crate) enum Command {
     PrivilegedActivate(PrivilegedActivateArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     CredentialTransition(CredentialTransitionArgs),
+    RestartVerifyRuntime,
     PrivilegedPrepareCredentialAccess(InstallRootArgs),
     PrivilegedInstallCredentialAccess(InstallRootArgs),
     #[cfg(windows)]
@@ -70,6 +71,7 @@ impl Command {
             Self::PrivilegedActivate(_) => "privileged-activate",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::CredentialTransition(_) => "credential-transition",
+            Self::RestartVerifyRuntime => "restart-verify-runtime",
             Self::PrivilegedPrepareCredentialAccess(_) => "privileged-prepare-credential-access",
             Self::PrivilegedInstallCredentialAccess(_) => "privileged-install-credential-access",
             #[cfg(windows)]
@@ -209,6 +211,7 @@ mod tests {
             ])
             .is_ok()
         );
+        assert!(Cli::try_parse_from(["edge-console", "restart-verify-runtime"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "edge-console",
