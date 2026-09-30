@@ -464,10 +464,11 @@ def main() -> None:
         and "PrivilegedRollbackCredential" not in windows_console_cli
         and "credential-transition" in production_vm_runner_installer
         and "generate_fresh_credential_snapshot" in fresh_v2_publish
-        and fresh_v2_publish.count("cloudflare::patch_worker_secrets_with_version_tag(") == 2
+        and fresh_v2_publish.count("cloudflare::patch_latest_worker_version_secrets(") == 2
         and "put_worker_secret_text(" not in fresh_v2
-        and "/secrets-bulk" in credential_provider
-        and '"version_tags"' in credential_provider
+        and "workers/workers/{script_name}/versions/latest" in credential_provider
+        and '"env": env' in credential_provider
+        and '"workers/tag": version_tag' in credential_provider
         and '"application/merge-patch+json"' in credential_provider
         and "CredentialDeliverySlot::A" in fresh_v2_publish
         and "async fn restore_dummy_slot" in fresh_v2
