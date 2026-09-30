@@ -418,6 +418,10 @@ SSH tunnels or TCP/gRPC agent transport. The only retained remote-agent consumer
 the disposable acceptance/bootstrap path, where a fresh temporary VM has no self-hosted runner yet.
 It is not steady-state production transport.
 
+The standalone `/mesh` operator namespace is retired. Production Mesh provider state is owned by
+the hosted `/production target-plane-*` path; Mesh container/runtime state is owned by the VM local
+runtime owner through Compose/Bollard. There is no second normal Mesh transport.
+
 Neither runner has provider credentials or plaintext application credential authority. Privileged
 host mutations cross only explicit typed local boundaries. Macro Stage 1 keeps production rollback
 fail-closed; the new local plan/digest rollback contract is completed together with the terminal v2

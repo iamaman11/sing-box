@@ -10,7 +10,6 @@ ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 CREDENTIALS = WORKFLOWS / "credential-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
-MESH = WORKFLOWS / "cloudflare-mesh-lifecycle.yml"
 EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
 RUNTIME_INPUT = Path("edge-platform/scripts/runtime_input_digest.py")
 WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
@@ -49,7 +48,6 @@ def main() -> None:
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
-    mesh = MESH.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
@@ -230,7 +228,6 @@ def main() -> None:
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
-    require("workflow_call:" in mesh, "Mesh lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
@@ -238,7 +235,6 @@ def main() -> None:
     require("issue_comment:" not in credentials, "credential backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
-    require("issue_comment:" not in mesh, "Mesh backend must not listen to comments")
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
@@ -289,8 +285,10 @@ def main() -> None:
         "router must call the DNS backend",
     )
     require(
-        "uses: ./.github/workflows/cloudflare-mesh-lifecycle.yml" in router,
-        "router must call the Mesh backend",
+        "startsWith(github.event.comment.body, '/mesh ')" not in router
+        and "cloudflare-mesh-lifecycle.yml" not in router
+        and not (WORKFLOWS / "cloudflare-mesh-lifecycle.yml").exists(),
+        "parallel /mesh operator transport must be retired; provider Mesh belongs to /production target-plane and VM runtime Mesh belongs to the local owner",
     )
     require(
         "vultr-control-plane-production" not in router,
@@ -312,7 +310,6 @@ def main() -> None:
         ("zero-trust", zero_trust),
         ("vpc", vpc),
         ("dns", dns),
-        ("mesh", mesh),
     ]:
         require(
             "edge-orchestrator-linux-amd64" in backend
@@ -601,10 +598,6 @@ def main() -> None:
     require(
         dns.count("group: vultr-control-plane-production") == 1,
         "DNS backend must serialize its execute mutation job",
-    )
-    require(
-        mesh.count("group: vultr-control-plane-production") == 2,
-        "Mesh backend must serialize both provider observation and execute jobs",
     )
     require(
         "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
@@ -963,117 +956,13 @@ def main() -> None:
         "typed acceptance destroy authority must come from validated ReleaseSet accepted revision",
     )
     require(
-        "edge-platform/scripts/resolve_durable_release.sh" in mesh,
-        "Mesh backend must consume the exact durable accepted ReleaseSet",
-    )
-    require(
-        "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in mesh
-        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in mesh
-        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in mesh,
-        "Mesh backend must receive only the provider and strict-SSH authorities required by verified VPC composition",
-    )
-    require(
-        "line3-mesh vpc-plan" in mesh
-        and "line3-mesh vpc-apply" in mesh
-        and "plan_authority.authority_digest" in mesh,
-        "Mesh provider mutations must reuse typed VPC-derived planning and exact PlanAuthority",
-    )
-    require(
-        "vultr-lifecycle lease-acquire" in mesh
-        and "vultr-lifecycle lease-release" in mesh
-        and "ACCESS_CLEANUP_ARMED=1" in mesh,
-        "Mesh VPC proof must use the typed transient SSH lease with armed cleanup",
-    )
-    require(
-        "acquire-access-plan" not in mesh and "release-access-plan" not in mesh,
-        "Mesh workflow must not own transient-access PlanAuthority plumbing",
-    )
-    require(
-        'tokens[0] == "/mesh"' in mesh
-        and 'tokens[1] in {"provider-cleanup-plan", "provider-cleanup-verify"}' in mesh
-        and 'len(tokens) == 3' in mesh
-        and 'tokens[1] in {"plan", "apply", "cleanup-plan", "cleanup-apply", "runtime-apply", "runtime-verify", "runtime-observe", "runtime-cleanup"}' in mesh,
-        "Mesh backend must expose only the bounded provider/runtime grammar plus one provider-only CP16 observation",
-    )
-    require(
-        "line3-mesh vpc-runtime-apply" in mesh
-        and "line3-mesh vpc-runtime-verify" in mesh
-        and mesh.count("line3-mesh runtime-observe") == 3
-        and mesh.count("line3-mesh runtime-cleanup") == 1
-        and mesh.count("line3-mesh cleanup-plan") == 3
-        and mesh.count("line3-mesh cleanup-apply") == 1
-        and "MESH_NODE_TOKEN" not in mesh,
-        "Mesh backend must expose bounded runtime operations plus one-at-a-time typed provider cleanup without raw token authority",
-    )
-    require(
-        '.plan.action.kind == "NOOP" and .plan_disposition == "NOOP"' in mesh,
-        "Mesh runtime operations must fail closed unless provider state is already NOOP",
-    )
-    require(
-        "MESH_CIDR" not in mesh
-        and "PRIVATE_IPV4" not in mesh
-        and "PROVIDER_ID" not in mesh,
-        "Mesh workflow must not transport raw provider IDs, CIDR, or private-IP authority",
-    )
-    require(
-        '"${bin}" line3-mesh vpc-plan' in mesh
-        and '"${MESH_SPEC_PATH}" "${VPC_SPEC_PATH}" "${APPLICATION_SPEC_PATH}"' in mesh,
-        "Mesh plan must derive effective route only through the typed VPC-composed command",
-    )
-    require(
-        mesh.count("line3-mesh vpc-apply") == 1,
-        "one Mesh workflow invocation must contain at most one provider apply call",
-    )
-    require(
-        mesh.count("line3-mesh vpc-runtime-apply") == 1
-        and mesh.count("line3-mesh vpc-runtime-verify") == 1,
-        "one Mesh workflow invocation must contain at most one typed runtime converge and one typed runtime verify call",
-    )
-    require(
-        "mesh-runtime-observe-provider-plan.json" in mesh
-        and "mesh-runtime-observe.json" in mesh
-        and '(.status == "READY" and .runtime.runtime_ready == true)' in mesh
-        and '(.status == "ABSENT" and .runtime.runtime_ready == false and .runtime.token_store_present == false and .runtime.container_running == false)' in mesh
-        and '(.status == "DEGRADED" and .runtime.runtime_ready == false and (.runtime.token_store_present == true or .runtime.container_running == true))' in mesh,
-        "Mesh runtime observation must stay read-only, provider-NOOP-gated, and classify READY/ABSENT/DEGRADED deterministically",
-    )
-    require(
-        "mesh-runtime-cleanup-provider-before.json" in mesh
-        and "mesh-runtime-cleanup-provider-after.json" in mesh
-        and '.status == "ABSENT" and .runtime.token_store_present == false and .runtime.container_running == false and .runtime.runtime_ready == false' in mesh
-        and "provider_before:.[0],runtime:.[1],provider_after:.[2]" in mesh,
-        "Mesh runtime cleanup must prove provider NOOP before and after one typed cleanup and require exact runtime absence",
-    )
-    require(
-        "mesh-provider-cleanup-runtime.json" in mesh
-        and "mesh-provider-cleanup-plan.json" in mesh
-        and "mesh-provider-cleanup-apply.json" in mesh
-        and 'destructive_digest="$(jq -er' in mesh
-        and 'authority="$(plan_authority' in mesh
-        and '(.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' in mesh
-        and '.[1].performed.kind == .[0].plan.action.kind' in mesh,
-        "Mesh provider cleanup must require runtime ABSENT, fresh destructive digest + PlanAuthority, and exactly one matching delete per invocation",
-    )
-
-    provider_observe = mesh.split("  provider_observe:\n", 1)[1].split("\n  execute:", 1)[0]
-    require(
-        "line3-mesh cleanup-plan" in provider_observe
-        and ".mutations_performed == 0" in provider_observe
-        and '"provider-cleanup-verify"' in provider_observe
-        and '(.plan.action.kind == "DELETE_ROUTE" or .plan.action.kind == "DELETE_NODE")' in provider_observe
-        and '.plan.action.kind == "NOOP"' in provider_observe,
-        "Mesh provider plan must be read-only for MUTATE/NOOP, while explicit verify requires exact zero-state",
-    )
-    require(
-        "EDGE_RELEASE_CONTEXT_PATH" in provider_observe
-        and "VULTR_API_KEY" not in provider_observe
-        and "VULTR_SSH_PRIVATE_KEY" not in provider_observe
-        and "EDGE_SSH_PRIVATE_KEY_PATH" not in provider_observe
-        and "vultr-lifecycle lease-acquire" not in provider_observe
-        and "vultr-lifecycle lease-release" not in provider_observe
-        and "api.ipify.org" not in provider_observe
-        and "cleanup-apply" not in provider_observe,
-        "CP16 Mesh provider observation must not materialize SSH/Vultr authority, discover egress, acquire access, or expose mutation",
+        '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
+        in production_provider
+        and "MeshVerify" in vm_agent_cli
+        and "MeshCleanup" in vm_agent_cli
+        and 'local_operation="bootstrap-full"' in production_runtime
+        and "VULTR_SSH_PRIVATE_KEY" not in production_runtime,
+        "Mesh ownership must be split between hosted production target-plane provider authority and the self-hosted VM local runtime owner",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(

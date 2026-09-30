@@ -95,6 +95,8 @@ Routine application/runtime operations do not require GitHub-hosted-runner SSH, 
 
 The runner has no provider credentials, no generic root, no Docker socket access and no application credential plaintext authority.
 
+The old standalone `/mesh` workflow is not a steady-state control surface. Mesh provider lifecycle is part of the hosted production target plane; VM Mesh runtime operations stay inside the local owner.
+
 ## Build/release model
 
 ```text
