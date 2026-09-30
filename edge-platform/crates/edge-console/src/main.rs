@@ -240,6 +240,17 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 .map_err(ConsoleError::Command)?;
             Ok(())
         }
+        Command::RestartVerifyRuntime => {
+            let endpoint = cli::controller_endpoint(None);
+            restart_and_verify_windows_tunnels(&endpoint)
+                .await
+                .map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("runtime_restart_functional=PASS");
+            println!("runtime_restart_direct=PASS");
+            println!("runtime_restart_warp=PASS");
+            Ok(())
+        }
         Command::PrivilegedPrepareCredentialAccess(args) => {
             let install_root = PathBuf::from(args.install_root);
             let result = submit_privileged_request(
@@ -1126,25 +1137,18 @@ async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String
     restore
 }
 
-async fn restore_windows_legacy_after_transition_failure(
-    install_root: &Path,
-    endpoint: &str,
-) -> Result<(), String> {
-    let result = submit_windows_credential_transition(
-        install_root,
-        CredentialTransitionAction::ApplyLegacy,
-    )?;
-    finish_privileged_result(&result).map_err(|err| err.to_string())?;
-    let restart = restart_local(endpoint.to_owned())
+async fn stop_managed_windows_runtime_after_failure(endpoint: &str) -> Result<(), String> {
+    let response = stop_local(endpoint.to_owned())
         .await
         .map_err(|err| err.to_string())?;
-    if !restart.success {
-        return Err(format!(
-            "legacy Windows recovery restart failed: {}",
-            restart.note
-        ));
+    if response.success {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to stop managed Windows runtime after functional failure: {}",
+            response.note
+        ))
     }
-    Ok(())
 }
 
 async fn run_windows_credential_transition(
@@ -1152,75 +1156,26 @@ async fn run_windows_credential_transition(
     action: CredentialTransitionAction,
 ) -> Result<(), String> {
     let endpoint = cli::controller_endpoint(None);
-    let legacy_fallback = if action == CredentialTransitionAction::ApplyLegacy {
-        let state = fetch_credential_state(endpoint.clone())
-            .await
-            .map_err(|err| err.to_string())?
-            .ok_or_else(|| "Windows v2 credential state is absent".to_owned())?;
-        if state.candidate.is_some() {
-            Some(CredentialTransitionAction::ApplyCandidate)
-        } else if state.active.is_some() {
-            Some(CredentialTransitionAction::ApplyActive)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     let result = submit_windows_credential_transition(install_root, action)?;
     print_privileged_result(&result);
     finish_privileged_result(&result).map_err(|err| err.to_string())?;
 
     if !matches!(
         action,
-        CredentialTransitionAction::ApplyCandidate
-            | CredentialTransitionAction::ApplyLegacy
-            | CredentialTransitionAction::ApplyActive
+        CredentialTransitionAction::ApplyCandidate | CredentialTransitionAction::ApplyActive
     ) {
         return Ok(());
     }
 
     if let Err(err) = restart_and_verify_windows_tunnels(&endpoint).await {
-        if matches!(
-            action,
-            CredentialTransitionAction::ApplyCandidate | CredentialTransitionAction::ApplyActive
-        ) {
-            return match restore_windows_legacy_after_transition_failure(install_root, &endpoint)
-                .await
-            {
-                Ok(()) => Err(format!(
-                    "Windows credential transition failed functional verification and legacy LKG was restored: {err}"
-                )),
-                Err(recovery_err) => Err(format!(
-                    "Windows credential transition failed functional verification: {err}; legacy recovery also failed: {recovery_err}"
-                )),
-            };
-        }
-        if action == CredentialTransitionAction::ApplyLegacy {
-            let fallback = legacy_fallback.ok_or_else(|| {
-                format!("Windows legacy rollback proof failed with no v2 fallback available: {err}")
-            })?;
-            let recovery =
-                submit_windows_credential_transition(install_root, fallback).and_then(|result| {
-                    finish_privileged_result(&result)
-                        .map_err(|recovery_err| recovery_err.to_string())
-                });
-            if let Err(recovery_err) = recovery {
-                return Err(format!(
-                    "Windows legacy rollback proof failed: {err}; v2 recovery mutation also failed: {recovery_err}"
-                ));
-            }
-            return match restart_and_verify_windows_tunnels(&endpoint).await {
-                Ok(()) => Err(format!(
-                    "Windows legacy rollback proof failed and v2 LKG was restored: {err}"
-                )),
-                Err(recovery_err) => Err(format!(
-                    "Windows legacy rollback proof failed: {err}; v2 recovery verification also failed: {recovery_err}"
-                )),
-            };
-        }
-        return Err(err);
+        return match stop_managed_windows_runtime_after_failure(&endpoint).await {
+            Ok(()) => Err(format!(
+                "Windows managed runtime failed functional verification and was stopped without touching external sing-box: {err}"
+            )),
+            Err(cleanup_err) => Err(format!(
+                "Windows managed runtime failed functional verification: {err}; managed-runtime cleanup also failed: {cleanup_err}"
+            )),
+        };
     }
 
     println!("credential_transition_functional=PASS");
