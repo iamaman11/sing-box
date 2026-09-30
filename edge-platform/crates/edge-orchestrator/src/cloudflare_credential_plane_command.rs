@@ -143,8 +143,8 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
     match command {
         CredentialDeliveryCommand::ContractPlan => {
             let observed = observe(&control_token, &desired).await?;
-            let authorized = authorized_plan(&desired, &observed)?;
             print_observation(&desired, &observed)?;
+            let authorized = authorized_plan(&desired, &observed)?;
             println!("plan_action={}", action_name(&authorized.plan));
             println!("plan_authority={}", authorized.authority.authority_digest);
             println!("plan_disposition={:?}", authorized.disposition);
@@ -820,9 +820,25 @@ fn projection_delivery_state(
         return Ok(ProjectionDeliveryState::FixedAb);
     }
 
+    let bindings = current
+        .worker_secret_bindings
+        .iter()
+        .map(|binding| format!("{}:{}", binding.name, binding.binding_type))
+        .collect::<Vec<_>>()
+        .join(",");
     Err(format!(
-        "Worker {} is neither exact legacy locked state nor exact fixed A/B state",
-        projection.worker_name
+        "Worker {} is neither exact legacy locked state nor exact fixed A/B state: version_tag={}, binding_count={}, secret_bindings={}",
+        projection.worker_name,
+        current.worker_version_tag.as_deref().unwrap_or("ABSENT"),
+        current
+            .worker_binding_count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        if bindings.is_empty() {
+            "ABSENT"
+        } else {
+            bindings.as_str()
+        }
     ))
 }
 
