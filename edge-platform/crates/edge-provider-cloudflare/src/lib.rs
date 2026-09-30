@@ -467,6 +467,27 @@ pub async fn get_worker_script_version_head(
     worker_version_head_from_values(versions.result, deployments.result)
 }
 
+pub async fn get_worker_version_tag(
+    api_token: &str,
+    account_id: &str,
+    worker_id: &str,
+    version_id: &str,
+) -> Result<Option<String>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker ID", worker_id)?;
+    require_non_empty("Cloudflare Worker version ID", version_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/workers/{worker_id}/versions/{version_id}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to get Cloudflare Worker version metadata: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    worker_version_tag_from_value(payload.result)
+}
+
 pub async fn upload_worker_module(
     api_token: &str,
     account_id: &str,
@@ -2481,6 +2502,19 @@ fn worker_version_head_from_values(
     })
 }
 
+fn worker_version_tag_from_value(value: Value) -> Result<Option<String>, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "Cloudflare Worker version must be an object".to_owned())?;
+    Ok(object
+        .get("annotations")
+        .and_then(Value::as_object)
+        .and_then(|annotations| annotations.get("workers/tag"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned))
+}
+
 fn worker_secret_binding_from_value(value: Value) -> Result<CloudflareWorkerSecretBinding, String> {
     let object = value
         .as_object()
@@ -3098,6 +3132,29 @@ mod tests {
         assert_eq!(head.latest_version_id.as_deref(), Some("version-new"));
         assert!(head.active_deployment_id.is_none());
         assert!(head.active_version_ids.is_empty());
+    }
+
+    #[test]
+    fn parses_worker_version_tag_without_modules_or_secret_values() {
+        let tag = worker_version_tag_from_value(serde_json::json!({
+            "id": "version-id",
+            "annotations": {
+                "workers/tag": "sing-box-phase6-ab-windows-deadbeefdeadbeef",
+                "workers/message": "credential contract"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            tag.as_deref(),
+            Some("sing-box-phase6-ab-windows-deadbeefdeadbeef")
+        );
+
+        let absent = worker_version_tag_from_value(serde_json::json!({
+            "id": "version-id",
+            "annotations": {}
+        }))
+        .unwrap();
+        assert!(absent.is_none());
     }
 
     #[test]
