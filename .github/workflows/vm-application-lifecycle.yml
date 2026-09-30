@@ -18,8 +18,6 @@ jobs:
       command_family: ${{ steps.parse.outputs.command_family }}
       operation: ${{ steps.parse.outputs.operation }}
       spec_path: ${{ steps.parse.outputs.spec_path }}
-      rollback_digest: ${{ steps.parse.outputs.rollback_digest }}
-      recovery_authority_digest: ${{ steps.parse.outputs.recovery_authority_digest }}
 
     steps:
       - name: Parse and authorize typed request
@@ -31,10 +29,6 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           import os
-          import re
-
-          spec_re = re.compile(r"^infra/application/[A-Za-z0-9._/-]+\.json$")
-          digest_re = re.compile(r"^[0-9a-f]{64}$")
 
           def fail(message):
               raise SystemExit(message)
@@ -43,24 +37,12 @@ jobs:
           command_family = ""
           operation = ""
           spec_path = ""
-          rollback_digest = ""
-          recovery_authority_digest = ""
 
-          if tokens == ["/production", "converge"]:
+          if len(tokens) == 2 and tokens[0] == "/production" and tokens[1] in {
+              "converge", "verify", "diagnose"
+          }:
               command_family = "production"
-              operation = "converge"
-              spec_path = "infra/production/production.textproto"
-          elif tokens == ["/production", "diagnose"]:
-              command_family = "production"
-              operation = "diagnose"
-              spec_path = "infra/production/production.textproto"
-          elif tokens == ["/production", "verify"]:
-              command_family = "production"
-              operation = "verify"
-              spec_path = "infra/production/production.textproto"
-          elif tokens == ["/production", "rollback"]:
-              command_family = "production"
-              operation = "rollback"
+              operation = tokens[1]
               spec_path = "infra/production/production.textproto"
           elif (
               len(tokens) == 2
@@ -83,56 +65,17 @@ jobs:
               command_family = "application"
               operation = "cleanup"
               spec_path = "infra/application/disposable-acceptance.json"
-          elif len(tokens) == 3 and tokens[0] == "/application" and tokens[1] in {
-              "plan", "apply", "verify", "upgrade", "recover-plan", "rollback-plan"
-          }:
-              command_family = "application"
-              operation = tokens[1]
-              spec_path = tokens[2]
-          elif (
-              len(tokens) == 4
-              and tokens[0] == "/application"
-              and tokens[1] == "recover-apply"
-          ):
-              command_family = "application"
-              operation = "recover-apply"
-              spec_path = tokens[2]
-              recovery_authority_digest = tokens[3]
-          elif (
-              len(tokens) == 4
-              and tokens[0] == "/application"
-              and tokens[1] == "rollback-apply"
-          ):
-              command_family = "application"
-              operation = "rollback-apply"
-              spec_path = tokens[2]
-              rollback_digest = tokens[3]
           else:
-              fail("unsupported application/production command grammar")
-
-          if command_family == "application":
-              if not spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
-                  fail("invalid application spec path")
-          elif spec_path != "infra/production/production.textproto":
-              fail("production commands must use the canonical production textproto")
-          if operation == "rollback-apply":
-              if not digest_re.fullmatch(rollback_digest):
-                  fail("rollback-apply requires a lowercase 64-character digest")
-          elif rollback_digest:
-              fail("rollback digest is only valid for rollback-apply")
-
-          if operation == "recover-apply":
-              if not digest_re.fullmatch(recovery_authority_digest):
-                  fail("recover-apply requires the exact recovery-plan authority digest")
-          elif recovery_authority_digest:
-              fail("recovery authority digest is only valid for recover-apply")
+              fail(
+                  "unsupported command grammar; steady-state production uses "
+                  "/production converge|verify|diagnose, provider-only target-plane commands, "
+                  "or disposable /application acceptance|cleanup"
+              )
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"command_family={command_family}\n")
               handle.write(f"operation={operation}\n")
               handle.write(f"spec_path={spec_path}\n")
-              handle.write(f"rollback_digest={rollback_digest}\n")
-              handle.write(f"recovery_authority_digest={recovery_authority_digest}\n")
           PY
 
   production_target_plane:
@@ -222,207 +165,7 @@ jobs:
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  execute:
-    needs: authorize
-    concurrency:
-      group: vultr-control-plane-production
-      cancel-in-progress: false
-    if: >-
-      needs.authorize.outputs.command_family == 'application' &&
-      needs.authorize.outputs.operation != 'acceptance' &&
-      needs.authorize.outputs.operation != 'cleanup'
-    runs-on: ubuntu-24.04
-    environment:
-      name: production-vultr
-      deployment: false
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
-      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
-      ROLLBACK_DIGEST: ${{ needs.authorize.outputs.rollback_digest }}
-      RECOVERY_AUTHORITY_DIGEST: ${{ needs.authorize.outputs.recovery_authority_digest }}
-
-    steps:
-      - name: Checkout exact canonical revision
-        shell: bash
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "${REVISION}"
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${REVISION}"
-          test -f "${SPEC_PATH}"
-
-      - name: Resolve exact durable Edge Platform release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.sha }}
-          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
-        run: |
-          set -euo pipefail
-          bash edge-platform/scripts/resolve_durable_release.sh
-
-      - name: Materialize verified application artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          dir="${RUNNER_TEMP}/edge-platform-release"
-          source "${dir}/resolved.env"
-          orchestrator="${dir}/edge-orchestrator-linux-amd64"
-          agent="${dir}/edge-agent-linux-amd64"
-          agent_manifest="${RUNNER_TEMP}/edge-agent-artifact.json"
-          chmod 0755 "${orchestrator}" "${agent}"
-          export EDGE_RELEASE_CONTEXT_PATH="${dir}/resolved.env"
-          "${orchestrator}" application-lifecycle materialize \
-            "${SPEC_PATH}" "${agent_manifest}" "${agent}"
-          chmod 0600 "${agent_manifest}"
-          printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
-          printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
-          printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
-          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
-          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
-          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
-          printf 'EDGE_APPLICATION_ARTIFACT_MANIFEST=%s\n' "${agent_manifest}" >> "${GITHUB_ENV}"
-
-      - name: Materialize strict SSH authority
-        shell: bash
-        env:
-          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
-          umask 077
-          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
-          test -s "${key_path}"
-          chmod 600 "${key_path}"
-          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
-
-      - name: Discover controller egress IPv4
-        shell: bash
-        run: |
-          set -euo pipefail
-          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
-          python3 - "${ip}" <<'PY'
-          import ipaddress
-          import sys
-          value = ipaddress.ip_address(sys.argv[1].strip())
-          if value.version != 4 or not value.is_global:
-              raise SystemExit("controller egress is not a global IPv4 address")
-          print(value)
-          PY
-          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
-
-      - name: Execute typed application lifecycle operation
-        shell: bash
-        env:
-          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
-        run: |
-          set -euo pipefail
-          bin="${EDGE_APPLICATION_ORCHESTRATOR}"
-          result="${RUNNER_TEMP}/application-result.json"
-          access_acquire="${RUNNER_TEMP}/application-access-acquire.json"
-          access_release="${RUNNER_TEMP}/application-access-release.json"
-          vultr_spec="$(jq -er '.vultr_spec_path' "${SPEC_PATH}")"
-          machine="$(jq -er '.machine_id' "${SPEC_PATH}")"
-          test -f "${vultr_spec}"
-
-          ACCESS_CLEANUP_ARMED=0
-
-          cleanup_access() {
-            if [[ "${ACCESS_CLEANUP_ARMED}" != "1" ]]; then
-              return 0
-            fi
-            "${bin}" vultr-lifecycle lease-release "${vultr_spec}" "${machine}" \
-              | tee "${access_release}"
-          }
-
-          finish() {
-            local operation_rc=$?
-            trap - EXIT
-            set +e
-            cleanup_access
-            local cleanup_rc=$?
-            set -e
-            if [[ ${cleanup_rc} -ne 0 ]]; then
-              echo "ephemeral SSH ingress cleanup failed with rc=${cleanup_rc}" >&2
-              if [[ ${operation_rc} -eq 0 ]]; then
-                operation_rc=${cleanup_rc}
-              fi
-            fi
-            exit "${operation_rc}"
-          }
-
-          trap finish EXIT
-          ACCESS_CLEANUP_ARMED=1
-
-          "${bin}" vultr-lifecycle lease-acquire "${vultr_spec}" "${machine}" \
-            | tee "${access_acquire}"
-          jq -e '.status == "READY"' "${access_acquire}" >/dev/null
-
-          case "${REQUESTED_OPERATION}" in
-            plan|verify)
-              "${bin}" application-lifecycle "${REQUESTED_OPERATION}" \
-                "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}" \
-                | tee "${result}"
-              ;;
-            apply|upgrade)
-              authority_plan="${RUNNER_TEMP}/application-authority-plan.json"
-              "${bin}" application-lifecycle plan \
-                "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}" \
-                > "${authority_plan}"
-              authority_digest="$(jq -er '.plan_authority.authority_digest' "${authority_plan}")"
-              [[ "${authority_digest}" =~ ^[0-9a-f]{64}$ ]]
-              "${bin}" application-lifecycle "${REQUESTED_OPERATION}" \
-                "${SPEC_PATH}" "${EDGE_APPLICATION_ARTIFACT_MANIFEST}" "${EDGE_APPLICATION_ARTIFACT}" \
-                "${authority_digest}" | tee "${result}"
-              ;;
-            recover-plan)
-              "${bin}" application-lifecycle recover-plan "${SPEC_PATH}" | tee "${result}"
-              ;;
-            recover-apply)
-              [[ "${RECOVERY_AUTHORITY_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
-              "${bin}" application-lifecycle recover-apply \
-                "${SPEC_PATH}" "${RECOVERY_AUTHORITY_DIGEST}" | tee "${result}"
-              ;;
-            rollback-plan)
-              "${bin}" application-lifecycle rollback-plan "${SPEC_PATH}" | tee "${result}"
-              ;;
-            rollback-apply)
-              rollback_plan="${RUNNER_TEMP}/application-rollback-authority-plan.json"
-              "${bin}" application-lifecycle rollback-plan "${SPEC_PATH}" > "${rollback_plan}"
-              planned_rollback_digest="$(jq -er '.rollback.rollback_digest' "${rollback_plan}")"
-              authority_digest="$(jq -er '.plan_authority.authority_digest' "${rollback_plan}")"
-              test "${planned_rollback_digest}" = "${ROLLBACK_DIGEST}"
-              [[ "${authority_digest}" =~ ^[0-9a-f]{64}$ ]]
-              "${bin}" application-lifecycle rollback-apply \
-                "${SPEC_PATH}" "${ROLLBACK_DIGEST}" "${authority_digest}" | tee "${result}"
-              ;;
-            *)
-              echo "unsupported authorized application operation" >&2
-              exit 1
-              ;;
-          esac
-
-          {
-            echo '### VM application lifecycle result'
-            echo
-            echo 'Ephemeral SSH ingress was acquired through the Vultr support-resource authority.'
-            echo 'The EXIT trap releases the exact runner /32 and fails the job if absence is not verified.'
-            echo
-            echo '~~~json'
-            cat "${result}"
-            echo '~~~'
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-  production:
+  production_provider:
     needs: authorize
     concurrency:
       group: vultr-control-plane-production
@@ -434,7 +177,7 @@ jobs:
     environment:
       name: production-vultr
       deployment: false
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -472,85 +215,38 @@ jobs:
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
           orchestrator="${dir}/edge-orchestrator-linux-amd64"
-          agent="${dir}/edge-agent-linux-amd64"
           test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
-          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
-          chmod 0755 "${orchestrator}" "${agent}"
-          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
-          printf 'EDGE_APPLICATION_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_PROVIDER_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
-          printf 'EDGE_DOCKER_ENGINE_VERSION=%s\n' "${EDGE_DOCKER_ENGINE_VERSION}" >> "${GITHUB_ENV}"
-          printf 'EDGE_CONTAINERD_VERSION=%s\n' "${EDGE_CONTAINERD_VERSION}" >> "${GITHUB_ENV}"
-          printf 'EDGE_COMPOSE_VERSION=%s\n' "${EDGE_COMPOSE_VERSION}" >> "${GITHUB_ENV}"
 
-      - name: Materialize strict SSH authority
+      - name: Converge or verify provider plane
         shell: bash
         env:
-          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
-          umask 077
-          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
-          test -s "${key_path}"
-          chmod 600 "${key_path}"
-          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
-
-      - name: Discover controller egress IPv4
-        shell: bash
-        run: |
-          set -euo pipefail
-          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
-          python3 - "${ip}" <<'PY'
-          import ipaddress
-          import sys
-          value = ipaddress.ip_address(sys.argv[1].strip())
-          if value.version != 4 or not value.is_global:
-              raise SystemExit("controller egress is not a global IPv4 address")
-          print(value)
-          PY
-          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
-
-      - name: Execute typed production operation
-        shell: bash
-        env:
-          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
           CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           set -euo pipefail
-          bin="${EDGE_APPLICATION_ORCHESTRATOR}"
-          result="${RUNNER_TEMP}/production-result.txt"
           case "${REQUESTED_OPERATION}" in
-            converge|verify)
-              "${bin}" production "${REQUESTED_OPERATION}" "${EDGE_APPLICATION_ARTIFACT}" | tee "${result}"
-              ;;
-            rollback)
-              "${bin}" production rollback | tee "${result}"
-              ;;
+            converge|verify) ;;
             *)
-              echo "unsupported authorized production operation" >&2
+              echo "provider plane received unsupported production operation" >&2
               exit 1
               ;;
           esac
-          grep -qx 'status=PASS' "${result}"
+          result="${RUNNER_TEMP}/production-provider-result.txt"
+          "${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}" | tee "${result}"
           {
-            echo '### Production convergence result'
+            echo '### Production provider plane'
             echo
-            echo 'One canonical production.textproto and one exact durable ReleaseSet were used.'
-            echo 'No provider IDs, IPs, CIDRs or secondary spec paths are command inputs.'
+            echo 'Provider credentials existed only on this GitHub-hosted job.'
+            echo 'No SSH key, runtime credential plaintext, or production-VM runner authority was materialized.'
             echo
             echo '~~~text'
             cat "${result}"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Remove local sensitive material
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-${RUNNER_TEMP}/singbox-vultr-ops}"
 
   production_observe:
     needs: authorize
@@ -606,7 +302,7 @@ jobs:
           printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
 
-      - name: Execute read-only Cloudflare Phase 0 inventory
+      - name: Execute read-only production provider inventory
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -632,6 +328,134 @@ jobs:
           cat "${result}" >> "${GITHUB_STEP_SUMMARY}"
           echo '~~~' >> "${GITHUB_STEP_SUMMARY}"
           exit "${command_rc}"
+
+  production_runtime:
+    needs:
+      - authorize
+      - production_provider
+      - production_observe
+    if: >-
+      always() &&
+      needs.authorize.result == 'success' &&
+      needs.authorize.outputs.command_family == 'production' &&
+      (
+        (
+          needs.authorize.outputs.operation == 'diagnose' &&
+          needs.production_observe.result == 'success'
+        ) ||
+        (
+          needs.authorize.outputs.operation != 'diagnose' &&
+          needs.production_provider.result == 'success'
+        )
+      )
+    concurrency:
+      group: sing-box-production-runtime
+      cancel-in-progress: false
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - sing-box-production-vm
+      - production-1
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test "${SPEC_PATH}" = "infra/production/production.textproto"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve exact durable release identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          printf 'EDGE_EXPECTED_LOCAL_OWNER_SHA256=%s\n' "${EDGE_AGENT_SHA256}" >> "${GITHUB_ENV}"
+
+      - name: Verify bounded local runtime authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="/usr/local/libexec/sing-box/edge-agent"
+          test -x "${owner}"
+          observed="$(sha256sum "${owner}" | awk '{print $1}')"
+          test "${observed}" = "${EDGE_EXPECTED_LOCAL_OWNER_SHA256}"
+
+          if [[ "$(id -u)" = "0" ]]; then
+            echo "production self-hosted runner must not run as root" >&2
+            exit 1
+          fi
+          if sudo -n id -u >/dev/null 2>&1; then
+            echo "production self-hosted runner unexpectedly has generic root authority" >&2
+            exit 1
+          fi
+          if test -r /var/run/docker.sock; then
+            echo "production self-hosted runner unexpectedly has direct Docker socket authority" >&2
+            exit 1
+          fi
+          sudo -n "${owner}" local status >/dev/null
+
+      - name: Execute typed local runtime operation
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="/usr/local/libexec/sing-box/edge-agent"
+          case "${REQUESTED_OPERATION}" in
+            converge)
+              local_operation="bootstrap-full"
+              ;;
+            verify)
+              local_operation="verify"
+              ;;
+            diagnose)
+              local_operation="diagnose"
+              ;;
+            *)
+              echo "runtime plane received unsupported production operation" >&2
+              exit 1
+              ;;
+          esac
+
+          result="${RUNNER_TEMP}/production-runtime-result.txt"
+          sudo -n "${owner}" local "${local_operation}" | tee "${result}"
+
+          {
+            echo '### Production VM runtime plane'
+            echo
+            printf 'Operation: `%s` -> local owner `%s`\n' "${REQUESTED_OPERATION}" "${local_operation}"
+            echo
+            echo 'Transport: repository self-hosted runner.'
+            echo 'Privilege boundary: fixed sudo allowlist -> root-owned local edge-agent.'
+            echo 'Docker mutation/observation remains inside the local owner through Compose/Bollard.'
+            echo
+            echo '~~~text'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   cleanup:
     needs: authorize

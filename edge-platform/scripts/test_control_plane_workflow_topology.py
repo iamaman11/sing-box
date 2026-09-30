@@ -419,7 +419,7 @@ def main() -> None:
     )
     production_target_plane = application.split(
         "  production_target_plane:\n", 1
-    )[1].split("\n  execute:", 1)[0]
+    )[1].split("\n  production_provider:", 1)[0]
     require(
         '"${EDGE_TARGET_PLANE_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
         in production_target_plane
@@ -439,10 +439,10 @@ def main() -> None:
         "target-plane transport must expose only target-account, shared-DNS and Vultr provider authority",
     )
     require(
-        application.count("group: vultr-control-plane-production") == 6,
-        "application backend must serialize target-plane, execute, production, read-only observation, cleanup and acceptance jobs",
+        application.count("group: vultr-control-plane-production") == 5,
+        "application backend must serialize provider, observation, cleanup and disposable acceptance jobs",
     )
-    production_observe = application.split("  production_observe:\n", 1)[1].split("\n  cleanup:", 1)[0]
+    production_observe = application.split("  production_observe:\n", 1)[1].split("\n  production_runtime:", 1)[0]
     require(
         '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
         and "cloudflare-phase0-inventory.txt" in production_observe
@@ -729,70 +729,67 @@ def main() -> None:
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
-    production_job = application.split("\n  production:\n", 1)[1].split("\n  production_observe:\n", 1)[0]
+    production_provider = application.split("\n  production_provider:\n", 1)[1].split(
+        "\n  production_observe:", 1
+    )[0]
+    production_runtime = application.split("\n  production_runtime:\n", 1)[1].split(
+        "\n  cleanup:", 1
+    )[0]
     require(
-        'tokens == ["/production", "converge"]' in application
-        and 'tokens == ["/production", "diagnose"]' in application
-        and 'tokens == ["/production", "verify"]' in application
-        and 'tokens == ["/production", "rollback"]' in application
+        'tokens[0] == "/production"' in application
+        and '"converge", "verify", "diagnose"' in application
+        and 'tokens == ["/production", "rollback"]' not in application
         and 'spec_path = "infra/production/production.textproto"' in application,
-        "production command grammar must be fixed to converge/diagnose/verify/rollback and the sole canonical textproto",
+        "steady-state production grammar must expose converge/verify/diagnose only; rollback remains fail-closed until Macro Stage 2",
     )
     require(
-        "needs.authorize.outputs.command_family == 'production'" in production_job
-        and production_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and '"${bin}" production "${REQUESTED_OPERATION}" "${EDGE_APPLICATION_ARTIFACT}"' in production_job
-        and '"${bin}" production rollback' in production_job,
-        "production backend must resolve one exact durable ReleaseSet and invoke only the typed production coordinator",
+        "\n  execute:\n" not in application
+        and "\n  production:\n" not in application
+        and '"plan", "apply", "verify", "upgrade"' not in application,
+        "retired hosted SSH application/production jobs and manual application mutation grammar must be absent",
     )
     require(
-        "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_job
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_job
-        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_job
-        and "CLOUDFLARE_API_TOKEN" not in production_job
-        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in production_job,
-        "production backend must receive dedicated account control, shared-DNS and strict-SSH authority without historical Cloudflare mutation authority",
+        "runs-on: ubuntu-24.04" in production_provider
+        and production_provider.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"' in production_provider
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_provider
+        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_provider
+        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_provider
+        and "VULTR_SSH_PRIVATE_KEY" not in production_provider
+        and "api.ipify.org" not in production_provider
+        and "lease-acquire" not in production_provider,
+        "production provider plane must remain GitHub-hosted and guest-transport blind",
     )
-    for forbidden in [
-        "INSTANCE_ID",
-        "VPC_ID",
-        "PROVIDER_ID",
-        "TARGET_IPV4",
-        "MESH_CIDR",
-        "current.json",
-        "manifest.json",
-    ]:
-        require(
-            forbidden not in production_job,
-            f"production workflow must not transport raw provider/runtime authority: {forbidden}",
-        )
     require(
-        "std::process::Command" not in production_command
-        and "Command::new" not in production_command
-        and "sh -c" not in production_command
-        and "production_converge_machine" in production_command
-        and "production_converge_desired" in production_command
-        and "production_verify_desired" in production_command
-        and "production_rollback_desired" in production_command,
-        "typed production coordinator must compose existing owners in-process without shell replay",
+        "- self-hosted" in production_runtime
+        and "- Linux" in production_runtime
+        and "- X64" in production_runtime
+        and "- sing-box-production-vm" in production_runtime
+        and "- production-1" in production_runtime
+        and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
+        and 'sudo -n "${owner}" local "${local_operation}"' in production_runtime
+        and 'local_operation="bootstrap-full"' in production_runtime
+        and 'local_operation="verify"' in production_runtime
+        and 'local_operation="diagnose"' in production_runtime
+        and "VULTR_API_KEY" not in production_runtime
+        and "CLOUDFLARE_CONTROL_TOKEN" not in production_runtime
+        and "CLOUDFLARE_DNS_TOKEN" not in production_runtime
+        and "VULTR_SSH_PRIVATE_KEY" not in production_runtime
+        and "api.ipify.org" not in production_runtime
+        and "lease-acquire" not in production_runtime
+        and "/var/run/docker.sock" in production_runtime
+        and "sudo -n id -u" in production_runtime,
+        "production runtime plane must use only self-hosted runner -> bounded local owner with no provider/generic-root authority",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
     application_before_acceptance = application.split("\n  acceptance:\n", 1)[0]
-    execute_job = application.split("\n  execute:\n", 1)[1].split(
-        "\n  production:\n", 1
-    )[0]
     require(
         "  cleanup:\n    needs: authorize" in application
         and "  acceptance:\n    needs: authorize" in application
-        and "  execute:\n    needs: authorize" in application,
-        "application commands must dispatch directly from authorization to exactly one command job",
-    )
-    require(
-        execute_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and "needs.verify" not in execute_job,
-        "normal application execute must perform exactly one durable ReleaseSet resolution",
+        and "  production_runtime:\n    needs:" in application,
+        "steady-state production and disposable application commands must dispatch through explicit owners",
     )
     require(
         acceptance_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
@@ -802,6 +799,12 @@ def main() -> None:
     require(
         acceptance_job.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance') == 1,
         "normal acceptance must invoke exactly one typed lifecycle coordinator",
+    )
+    require(
+        "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in acceptance_job
+        and "api.ipify.org" in acceptance_job
+        and "application-acceptance" in acceptance_job,
+        "SSH/egress discovery may remain only inside disposable acceptance bootstrap",
     )
     require(
         cleanup_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1
@@ -867,8 +870,8 @@ def main() -> None:
         "typed acceptance coordinator must compose owners in-process, never via shell/process replay",
     )
     require(
-        application.count('"${orchestrator}" application-lifecycle materialize') == 2,
-        "both application materialization paths must delegate exact release inputs to the typed Rust owner",
+        application.count('"${orchestrator}" application-lifecycle materialize') == 1,
+        "only disposable acceptance may materialize release inputs through the legacy remote application coordinator",
     )
     require(
         "EDGE_DOCKER_ENGINE_VERSION" in vpc

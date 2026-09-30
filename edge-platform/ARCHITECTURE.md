@@ -413,12 +413,15 @@ Windows:
 Linux:
 `GitHub -> self-hosted low-privilege runner -> local root-owned typed runtime owner`.
 
-Routine runtime/credential operations do not use hosted-runner SSH, temporary /32 ingress, SSH
-tunnels or TCP/gRPC agent transport. SSH remains migration/bootstrap/break-glass only until its last
-accepted recovery need is resolved.
+Routine production runtime/credential operations do not use hosted-runner SSH, temporary /32 ingress,
+SSH tunnels or TCP/gRPC agent transport. The only retained remote-agent consumer in Macro Stage 1 is
+the disposable acceptance/bootstrap path, where a fresh temporary VM has no self-hosted runner yet.
+It is not steady-state production transport.
 
 Neither runner has provider credentials or plaintext application credential authority. Privileged
-host mutations cross only explicit typed local boundaries.
+host mutations cross only explicit typed local boundaries. Macro Stage 1 keeps production rollback
+fail-closed; the new local plan/digest rollback contract is completed together with the terminal v2
+cutover in Macro Stage 2 rather than falling back to SSH.
 
 ## 7. Diagnostics contract
 
