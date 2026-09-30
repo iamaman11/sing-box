@@ -300,9 +300,7 @@ pub fn sync_local_config(
     sync_local_config_from_bindings(config_path, &legacy, runtime_root)
 }
 
-pub fn render_proxy_only_windows_config(
-    state: &WindowsRuntimeState,
-) -> Result<Vec<u8>, String> {
+pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<Vec<u8>, String> {
     edge_shared_types::encode_windows_runtime_state(state)?;
     let desired = canonical_production_desired_state()?;
     let reality_server_name = desired
@@ -442,9 +440,9 @@ pub fn render_proxy_only_windows_config(
         .get("inbounds")
         .and_then(Value::as_array)
         .is_some_and(|inbounds| {
-            inbounds.iter().any(|inbound| {
-                inbound.get("type").and_then(Value::as_str) == Some("tun")
-            })
+            inbounds
+                .iter()
+                .any(|inbound| inbound.get("type").and_then(Value::as_str) == Some("tun"))
         })
     {
         return Err("proxy-only Windows renderer unexpectedly produced a TUN inbound".to_owned());
@@ -1765,7 +1763,6 @@ mod tests {
         assert_eq!(endpoint.warnings.len(), 1);
     }
 
-
     fn stage2_runtime_state() -> WindowsRuntimeState {
         WindowsRuntimeState {
             schema_version: 1,
@@ -1797,14 +1794,13 @@ mod tests {
     fn stage2_renderer_is_proxy_only_and_uses_dedicated_ports() {
         let rendered = render_proxy_only_windows_config(&stage2_runtime_state()).unwrap();
         let config: Value = serde_json::from_slice(&rendered).unwrap();
-        let inbounds = config
-            .get("inbounds")
-            .and_then(Value::as_array)
-            .unwrap();
+        let inbounds = config.get("inbounds").and_then(Value::as_array).unwrap();
 
-        assert!(inbounds.iter().all(|inbound| {
-            inbound.get("type").and_then(Value::as_str) != Some("tun")
-        }));
+        assert!(
+            inbounds
+                .iter()
+                .all(|inbound| { inbound.get("type").and_then(Value::as_str) != Some("tun") })
+        );
         assert_eq!(
             inbounds[0].get("listen_port").and_then(Value::as_u64),
             Some(STAGE2_DESKTOP_PROXY_PORT as u64)
@@ -1841,7 +1837,10 @@ mod tests {
             .status()
             .unwrap();
         let _ = fs::remove_dir_all(repo_root);
-        assert!(status.success(), "exact sing-box rejected Stage 2 proxy-only config");
+        assert!(
+            status.success(),
+            "exact sing-box rejected Stage 2 proxy-only config"
+        );
     }
 
     fn unique_test_dir() -> PathBuf {
