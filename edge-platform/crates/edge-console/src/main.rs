@@ -9,9 +9,7 @@ use edge_controller_core::{
 };
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
-use edge_singbox::{
-    STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT,
-};
+use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
 use error::ConsoleError;
 use rusqlite::Connection;
@@ -1170,7 +1168,10 @@ fn verify_stage2_isolated_prerequisites(install_root: &Path) -> Result<(), Strin
     }
 
     let endpoints = [
-        ("desktop proxy", format!("127.0.0.1:{STAGE2_DESKTOP_PROXY_PORT}")),
+        (
+            "desktop proxy",
+            format!("127.0.0.1:{STAGE2_DESKTOP_PROXY_PORT}"),
+        ),
         ("WSL proxy", format!("0.0.0.0:{STAGE2_WSL_PROXY_PORT}")),
         ("Clash API", format!("127.0.0.1:{STAGE2_CLASH_API_PORT}")),
     ];
