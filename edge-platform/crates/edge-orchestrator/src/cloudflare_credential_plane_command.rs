@@ -883,7 +883,10 @@ fn projection_delivery_state(
         ));
     }
     if current.worker_active_version_ids.len() != 1
-        || current.worker_active_version_ids.first().map(String::as_str)
+        || current
+            .worker_active_version_ids
+            .first()
+            .map(String::as_str)
             != Some(latest_version_id)
     {
         return Err(format!(
@@ -2540,7 +2543,10 @@ mod tests {
             .unwrap(),
             ProjectionDeliveryState::FixedAb
         );
-        assert_eq!(plan(&desired, &observed).unwrap(), CredentialDeliveryAction::Noop);
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::Noop
+        );
     }
 
     #[test]
@@ -2550,8 +2556,7 @@ mod tests {
         make_terminal(&mut observed, "windows");
         make_terminal(&mut observed, "vm");
 
-        observed.projections[0].worker_active_version_ids =
-            vec!["older-version-id".to_owned()];
+        observed.projections[0].worker_active_version_ids = vec!["older-version-id".to_owned()];
         assert!(plan(&desired, &observed).is_err());
     }
 
