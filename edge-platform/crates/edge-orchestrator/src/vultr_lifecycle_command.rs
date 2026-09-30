@@ -809,6 +809,15 @@ pub(crate) async fn bootstrap_production_runner(
     let registration_token = env::var("EDGE_RUNNER_REGISTRATION_TOKEN")
         .map_err(|_| "EDGE_RUNNER_REGISTRATION_TOKEN is required".to_owned())?;
     validate_runner_registration_token(&registration_token)?;
+    let credential_access_client_id = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
+        .map_err(|_| "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID is required".to_owned())?;
+    let credential_access_client_secret = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
+        .map_err(|_| "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET is required".to_owned())?;
+    validate_bootstrap_secret("credential Access client id", &credential_access_client_id)?;
+    validate_bootstrap_secret(
+        "credential Access client secret",
+        &credential_access_client_secret,
+    )?;
 
     let observed = exact_existing_machine_observation(&desired, machine_id).await?;
     let target_ip = observed
@@ -842,7 +851,9 @@ pub(crate) async fn bootstrap_production_runner(
     let remote_command = format!(
         "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box &&          sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER} &&          sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?;          rm -f {REMOTE_INSTALLER} {REMOTE_OWNER_STAGED}; exit $rc"
     );
-    let token_stdin = format!("{registration_token}\n");
+    let token_stdin = format!(
+        "{registration_token}\n{credential_access_client_id}\n{credential_access_client_secret}\n"
+    );
     strict_ssh_run_stdin(
         target_ip,
         machine_id,
@@ -940,7 +951,19 @@ pub(crate) async fn bootstrap_production_runner(
         "local_owner_sha256": installed_sha,
         "listener": "PASS",
         "registration_token_persisted": false,
+        "credential_access_identity_installed": true,
+        "runner_credential_access": false,
     }))
+}
+
+fn validate_bootstrap_secret(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 4096
+        || value.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err(format!("{label} is malformed"));
+    }
+    Ok(())
 }
 
 fn validate_runner_registration_token(value: &str) -> Result<(), String> {

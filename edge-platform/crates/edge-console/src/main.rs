@@ -2,8 +2,10 @@ mod cli;
 mod error;
 
 use clap::Parser;
+use edge_controller_core::windows_credential_store_path;
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
+use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
 use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
@@ -178,6 +180,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     operation: WindowsPrivilegedOperation::Ping as i32,
                     accepted_revision: None,
                     release_set_sha256: None,
+                    credential_generation: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -194,6 +197,24 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     operation: WindowsPrivilegedOperation::ActivateRelease as i32,
                     accepted_revision: Some(args.accepted_revision),
                     release_set_sha256: Some(args.release_set_sha256),
+                    credential_generation: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedStageCredential(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::StageCredential as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: Some(args.generation),
                 },
             )?;
             print_privileged_result(&result);
@@ -215,7 +236,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::PrivilegedDispatch(args) => {
             let install_root = PathBuf::from(args.install_root);
-            dispatch_privileged_request(&install_root)?;
+            dispatch_privileged_request(&install_root).await?;
             Ok(())
         }
         Command::Secrets(args) => {
@@ -729,7 +750,7 @@ fn submit_privileged_request(
     .into())
 }
 
-fn dispatch_privileged_request(install_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn dispatch_privileged_request(install_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let request_path = privileged_request_path(install_root);
     let bytes = match fs::read(&request_path) {
         Ok(bytes) => bytes,
@@ -741,7 +762,7 @@ fn dispatch_privileged_request(install_root: &Path) -> Result<(), Box<dyn std::e
         Err(err) => return Err(err.into()),
     };
     let request = decode_windows_privileged_request(&bytes)?;
-    let result = process_privileged_request(install_root, &request);
+    let result = process_privileged_request(install_root, &request).await;
     let result_bytes = encode_windows_privileged_result(&result)?;
     write_atomic(&privileged_result_path(install_root), &result_bytes)?;
     fs::remove_file(&request_path)?;
@@ -751,7 +772,7 @@ fn dispatch_privileged_request(install_root: &Path) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn process_privileged_request(
+async fn process_privileged_request(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
 ) -> WindowsPrivilegedResult {
@@ -768,6 +789,9 @@ fn process_privileged_request(
         }
         Ok(WindowsPrivilegedOperation::ActivateRelease) => {
             activate_privileged_release(install_root, request)
+        }
+        Ok(WindowsPrivilegedOperation::StageCredential) => {
+            stage_windows_credential_candidate_from_worker(install_root, request).await
         }
         Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
             Err("unsupported privileged Windows operation".to_owned())
@@ -794,6 +818,47 @@ fn process_privileged_request(
                 .map(|state| state.release_set_sha256),
         },
     }
+}
+
+async fn stage_windows_credential_candidate_from_worker(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+) -> Result<(String, String, Option<String>), String> {
+    let generation = request
+        .credential_generation
+        .ok_or_else(|| "credential_generation is required".to_owned())?;
+    if generation == 0 {
+        return Err("credential_generation must be greater than zero".to_owned());
+    }
+    let identity_path = install_root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
+    let bundle = fetch_canonical_credential_bundle(
+        edge_shared_types::CredentialProjectionKind::Windows,
+        generation,
+        &identity_path,
+    )
+    .await?;
+    let store = CredentialStore::new(
+        windows_credential_store_path(install_root),
+        edge_shared_types::CredentialProjectionKind::Windows,
+    )?;
+    let state = store.stage_candidate(&bundle)?;
+    let candidate = state
+        .candidate
+        .ok_or_else(|| "credential candidate was not persisted".to_owned())?;
+    let active = load_verified_activation(install_root)
+        .ok()
+        .map(|value| value.release_set_sha256);
+    Ok((
+        "CREDENTIAL_CANDIDATE_STAGED".to_owned(),
+        format!(
+            "credential candidate staged generation={} slot={}",
+            candidate.generation, candidate.slot
+        ),
+        active,
+    ))
 }
 
 fn activate_privileged_release(

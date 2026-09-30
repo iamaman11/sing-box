@@ -29,6 +29,7 @@ pub(crate) enum Command {
     ProvisionRuntimeState(InstallRootArgs),
     PrivilegedPing(InstallRootArgs),
     PrivilegedActivate(PrivilegedActivateArgs),
+    PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     #[cfg(windows)]
     PrivilegedConvergeControllerService(InstallRootArgs),
     PrivilegedDispatch(InstallRootArgs),
@@ -62,6 +63,7 @@ impl Command {
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
             Self::PrivilegedPing(_) => "privileged-ping",
             Self::PrivilegedActivate(_) => "privileged-activate",
+            Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             #[cfg(windows)]
             Self::PrivilegedConvergeControllerService(_) => {
                 "privileged-converge-controller-service"
@@ -109,6 +111,13 @@ pub(crate) struct PrivilegedActivateArgs {
     pub accepted_revision: String,
     pub release_set_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedCredentialStageArgs {
+    pub generation: u64,
+    #[arg(long, default_value = r"C:\\sing-box")]
     pub install_root: String,
 }
 

@@ -1,3 +1,9 @@
+mod credential_delivery;
+pub use credential_delivery::{
+    ACCESS_IDENTITY_FILE_NAME, AccessServiceIdentity, canonical_credential_worker_url,
+    fetch_canonical_credential_bundle, read_access_service_identity,
+};
+
 mod credential_store;
 pub use credential_store::CredentialStore;
 

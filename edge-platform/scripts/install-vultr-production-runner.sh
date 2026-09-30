@@ -11,6 +11,8 @@ RUNNER_HOME="/var/lib/github-runner"
 RUNNER_DIR="/opt/actions-runner"
 LOCAL_OWNER="/usr/local/libexec/sing-box/edge-agent"
 SUDOERS_FILE="/etc/sudoers.d/sing-box-runtime-owner"
+CREDENTIAL_IDENTITY_DIR="/opt/vultr-edge-stack/runtime-secrets"
+CREDENTIAL_IDENTITY_FILE="${CREDENTIAL_IDENTITY_DIR}/credential-access-v1.env"
 
 machine_id="${1:-}"
 if [[ ! "${machine_id}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
@@ -19,8 +21,18 @@ if [[ ! "${machine_id}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
 fi
 
 IFS= read -r registration_token || true
+IFS= read -r credential_access_client_id || true
+IFS= read -r credential_access_client_secret || true
 if [[ -z "${registration_token}" || "${registration_token}" == *[[:space:]]* ]]; then
   echo "runner registration token is empty or malformed" >&2
+  exit 3
+fi
+if [[ -z "${credential_access_client_id}" || "${credential_access_client_id}" == *[[:space:]]* ]]; then
+  echo "credential Access client id is empty or malformed" >&2
+  exit 3
+fi
+if [[ -z "${credential_access_client_secret}" || "${credential_access_client_secret}" == *[[:space:]]* ]]; then
+  echo "credential Access client secret is empty or malformed" >&2
   exit 3
 fi
 if [[ "$(id -u)" != "0" ]]; then
@@ -41,10 +53,19 @@ if ! id "${RUNNER_USER}" >/dev/null 2>&1; then
 fi
 install -d -o "${RUNNER_USER}" -g "${RUNNER_USER}" -m 0750 "${RUNNER_HOME}"
 install -d -o root -g root -m 0755 /etc/sudoers.d
+install -d -o root -g root -m 0700 "${CREDENTIAL_IDENTITY_DIR}"
+identity_stage="${CREDENTIAL_IDENTITY_FILE}.new"
+umask 077
+printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
+  "${credential_access_client_id}" "${credential_access_client_secret}" > "${identity_stage}"
+chown root:root "${identity_stage}"
+chmod 0600 "${identity_stage}"
+mv -f "${identity_stage}" "${CREDENTIAL_IDENTITY_FILE}"
+unset credential_access_client_id credential_access_client_secret
 
 cat > "${SUDOERS_FILE}" <<EOF
 Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
-Cmnd_Alias SING_BOX_RUNTIME_MUTATE = ${LOCAL_OWNER} local bootstrap-base, ${LOCAL_OWNER} local bootstrap-tunnel, ${LOCAL_OWNER} local bootstrap-full, ${LOCAL_OWNER} local mesh-cleanup
+Cmnd_Alias SING_BOX_RUNTIME_MUTATE = ${LOCAL_OWNER} local bootstrap-base, ${LOCAL_OWNER} local bootstrap-tunnel, ${LOCAL_OWNER} local bootstrap-full, ${LOCAL_OWNER} local mesh-cleanup, ${LOCAL_OWNER} local credential-stage *
 ${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_RUNTIME_MUTATE
 EOF
 chmod 0440 "${SUDOERS_FILE}"
@@ -108,3 +129,5 @@ echo "acceptance_rpc_service_enabled=false"
 echo "tcp_50061_listener=false"
 echo "local_owner=${LOCAL_OWNER}"
 echo "registration_token_persisted=false"
+echo "credential_access_identity_installed=true"
+echo "runner_credential_access=false"

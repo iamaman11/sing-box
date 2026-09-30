@@ -38,7 +38,7 @@ impl Command {
     }
 }
 
-#[derive(Debug, Clone, Copy, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub(crate) enum LocalCommand {
     Status,
     Verify,
@@ -49,10 +49,11 @@ pub(crate) enum LocalCommand {
     MeshVerify,
     MeshCleanup,
     CredentialState,
+    CredentialStage { generation: u64 },
 }
 
 impl LocalCommand {
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
             Self::Status => "local-status",
             Self::Verify => "local-verify",
@@ -63,6 +64,7 @@ impl LocalCommand {
             Self::MeshVerify => "local-mesh-verify",
             Self::MeshCleanup => "local-mesh-cleanup",
             Self::CredentialState => "local-credential-state",
+            Self::CredentialStage { .. } => "local-credential-stage",
         }
     }
 }
@@ -105,6 +107,7 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-stage", "101"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err());
     }

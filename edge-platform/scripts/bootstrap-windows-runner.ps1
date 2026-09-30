@@ -99,6 +99,52 @@ function Install-InitialApplicationAuthority {
     }
 }
 
+function Install-CredentialAccessIdentity {
+    $secretDir = Join-Path $ApplicationRoot "state\secrets"
+    $identityPath = Join-Path $secretDir "credential-access-v1.env"
+    if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
+        return
+    }
+
+    $clientId = (Read-Host "Cloudflare Access host client ID").Trim()
+    if (-not $clientId -or $clientId -match "\s") {
+        throw "Cloudflare Access host client ID is empty or malformed"
+    }
+    $secureSecret = Read-Host "Cloudflare Access host client secret" -AsSecureString
+    if ($secureSecret.Length -eq 0) {
+        throw "Cloudflare Access host client secret is required"
+    }
+
+    $bstr = [IntPtr]::Zero
+    $plainSecret = $null
+    try {
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
+        $plainSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        if (-not $plainSecret -or $plainSecret -match "\s") {
+            throw "Cloudflare Access host client secret is malformed"
+        }
+        New-Item -ItemType Directory -Force -Path $secretDir | Out-Null
+        & icacls.exe $secretDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows credential secret directory" }
+
+        $stage = "$identityPath.new"
+        [IO.File]::WriteAllText(
+            $stage,
+            "CF_ACCESS_CLIENT_ID=$clientId`nCF_ACCESS_CLIENT_SECRET=$plainSecret`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+        & icacls.exe $stage /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to protect Windows credential Access identity" }
+        Move-Item -LiteralPath $stage -Destination $identityPath -Force
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        $plainSecret = $null
+        $secureSecret.Dispose()
+    }
+}
+
 function Converge-ControllerService {
     $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
     if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
@@ -228,6 +274,7 @@ Assert-Administrator
 Assert-IsolatedRoots
 Assert-MainProtected
 Install-InitialApplicationAuthority
+Install-CredentialAccessIdentity
 Converge-ControllerService
 Register-PrivilegedDispatcher
 
@@ -264,3 +311,5 @@ Write-Output "controller_start_owner=windows_scm"
 Write-Output "secret_authority=controller_service"
 Write-Output "local_build_toolchain_installed=false"
 Write-Output "provider_credentials_installed=false"
+Write-Output "credential_access_identity_installed=true"
+Write-Output "runner_credential_access=false"

@@ -25,7 +25,10 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
-use edge_secrets::{ApplicationRuntimeSecrets, CredentialStore};
+use edge_secrets::{
+    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore,
+    fetch_canonical_credential_bundle,
+};
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
@@ -195,6 +198,17 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::CredentialState => {
             let state = observe_vm_credential_state(&stack_dir).map_err(AgentError::Command)?;
             print_credential_state_evidence(state.as_ref());
+            Ok(())
+        }
+        cli::LocalCommand::CredentialStage { generation } => {
+            let state = fetch_and_stage_vm_credential_candidate(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_STAGE");
+            println!("credential_projection=VM");
+            println!("credential_generation={generation}");
+            println!("runner_secret_access=false");
+            print_credential_state_evidence(Some(&state));
             Ok(())
         }
     }
@@ -1144,6 +1158,24 @@ fn validate_existing_vm_credential_store(stack_dir: &Path) -> Result<(), String>
         CredentialProjectionKind::Vm,
     )?;
     Ok(())
+}
+
+fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, String> {
+    let parent = stack_dir.parent().ok_or_else(|| "application stack path has no parent".to_owned())?;
+    Ok(parent.join(RUNTIME_SECRET_DIR).join(ACCESS_IDENTITY_FILE_NAME))
+}
+
+async fn fetch_and_stage_vm_credential_candidate(
+    stack_dir: &Path,
+    generation: u64,
+) -> Result<LocalCredentialState, String> {
+    let bundle = fetch_canonical_credential_bundle(
+        CredentialProjectionKind::Vm,
+        generation,
+        &vm_credential_access_identity_path(stack_dir)?,
+    )
+    .await?;
+    stage_vm_credential_candidate(stack_dir, bundle)
 }
 
 fn stage_vm_credential_candidate(

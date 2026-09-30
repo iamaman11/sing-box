@@ -271,6 +271,8 @@ jobs:
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           "${EDGE_ENROLL_ORCHESTRATOR}" production enroll-runtime \
