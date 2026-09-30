@@ -866,21 +866,25 @@ fn detect_process(expected_config_path: &Path) -> Option<ProcessObservation> {
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>();
         let command_line = arguments.join(" ");
-        let config_path = extract_config_path(&arguments);
-
-        if let Some(candidate) = config_path.as_deref()
-            && same_path_string(candidate, expected_config_path)
-        {
+        let config_path = exact_managed_config_argument(&arguments, expected_config_path);
+        if config_path.is_some() {
             return Some(ProcessObservation {
                 pid: pid.as_u32(),
                 command_line,
                 config_path,
             });
         }
-
     }
 
     None
+}
+
+fn exact_managed_config_argument(
+    arguments: &[String],
+    expected_config_path: &Path,
+) -> Option<String> {
+    let candidate = extract_config_path(arguments)?;
+    same_path_string(&candidate, expected_config_path).then_some(candidate)
 }
 
 fn extract_config_path(arguments: &[String]) -> Option<String> {
@@ -924,6 +928,31 @@ mod tests {
     fn same_path_matches_identical_values() {
         let path = PathBuf::from("/tmp/config.json");
         assert!(same_path_string("/tmp/config.json", &path));
+    }
+
+    #[test]
+    fn process_ownership_requires_exact_managed_config_argument() {
+        let expected = PathBuf::from("/managed/runtime/sing-box.json");
+        let managed = vec![
+            "sing-box".to_owned(),
+            "run".to_owned(),
+            "-c".to_owned(),
+            "/managed/runtime/sing-box.json".to_owned(),
+        ];
+        let external = vec![
+            "sing-box".to_owned(),
+            "run".to_owned(),
+            "-c".to_owned(),
+            "/external/working/config.json".to_owned(),
+        ];
+        let unnamed = vec!["sing-box".to_owned(), "run".to_owned()];
+
+        assert_eq!(
+            exact_managed_config_argument(&managed, &expected).as_deref(),
+            Some("/managed/runtime/sing-box.json")
+        );
+        assert!(exact_managed_config_argument(&external, &expected).is_none());
+        assert!(exact_managed_config_argument(&unnamed, &expected).is_none());
     }
 
     #[test]
