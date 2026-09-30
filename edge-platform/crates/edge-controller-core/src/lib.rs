@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use edge_shared_types::{
     AgentState, AppReadinessPhase, ControllerStatus, DeployPhase, DeploymentSummary,
     ErrorSubsystem, FileCategory, FilePresence, InventoryReport, PlatformError,
-    ProviderObservation, RuntimeObservation, WindowsRuntimeState, decode_windows_runtime_state,
+    ProviderObservation, RuntimeObservation, WindowsRuntimeState, WindowsTunnelBinding,
+    decode_windows_runtime_state, encode_windows_runtime_state,
 };
 use edge_singbox::{
     ExpectedTunnelBindings, LocalConfigObservation, TunnelBinding, inspect_local_config,
@@ -581,6 +582,51 @@ fn expected_tunnel_bindings_from_runtime_state(
     })
 }
 
+pub fn windows_runtime_state_from_legacy_current_edge(
+    raw: &str,
+) -> Result<WindowsRuntimeState, String> {
+    let parsed: CurrentEdgeState = serde_json::from_str(raw)
+        .map_err(|err| format!("legacy Windows current-edge state is invalid JSON: {err}"))?;
+    let direct = parsed
+        .tunnel
+        .and_then(tunnel_binding_from_state)
+        .ok_or_else(|| "legacy Windows current-edge state is missing direct tunnel binding".to_owned())?;
+    let warp = parsed
+        .tunnel_warp
+        .and_then(warp_tunnel_binding_from_state)
+        .ok_or_else(|| "legacy Windows current-edge state is missing WARP tunnel binding".to_owned())?;
+    let state = WindowsRuntimeState {
+        schema_version: 1,
+        deployment_label: parsed.label,
+        instance_id: parsed
+            .instance_id
+            .ok_or_else(|| "legacy Windows current-edge state is missing instance_id".to_owned())?,
+        server_ip: parsed
+            .ip
+            .ok_or_else(|| "legacy Windows current-edge state is missing ip".to_owned())?,
+        direct: Some(WindowsTunnelBinding {
+            domain: direct.domain,
+            hy2_port: direct.hy2_port,
+            hy2_password: direct.hy2_password,
+            vless_port: direct.vless_port,
+            vless_uuid: direct.vless_uuid,
+            reality_public_key: direct.reality_public_key,
+            reality_short_id: direct.reality_short_id,
+        }),
+        warp: Some(WindowsTunnelBinding {
+            domain: warp.domain,
+            hy2_port: warp.hy2_port,
+            hy2_password: warp.hy2_password,
+            vless_port: warp.vless_port,
+            vless_uuid: warp.vless_uuid,
+            reality_public_key: warp.reality_public_key,
+            reality_short_id: warp.reality_short_id,
+        }),
+    };
+    encode_windows_runtime_state(&state)?;
+    Ok(state)
+}
+
 fn parse_current_edge_state(raw: &str, source: &str) -> Result<CurrentEdgeState, PlatformError> {
     serde_json::from_str(raw).map_err(|err| {
         PlatformError::new(
@@ -688,6 +734,38 @@ mod tests {
     use proptest::prelude::*;
     use std::env;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn legacy_current_edge_projects_to_typed_windows_runtime_state() {
+        let raw = r#"{
+            "label":"legacy",
+            "instance_id":"instance-1",
+            "ip":"64.176.71.23",
+            "tunnel":{
+                "domain":"miu.alegria.by",
+                "hy2_port":8443,
+                "hy2_password":"direct-password",
+                "vless_port":443,
+                "vless_uuid":"direct-uuid",
+                "reality_public_key":"direct-public-key",
+                "reality_short_id":"direct-short-id"
+            },
+            "tunnel_warp":{
+                "domain":"miu.alegria.by",
+                "hy2_port":9444,
+                "hy2_password":"warp-password",
+                "vless_port":5443,
+                "vless_uuid":"warp-uuid",
+                "reality_public_key":"warp-public-key",
+                "reality_short_id":"warp-short-id"
+            }
+        }"#;
+        let state = windows_runtime_state_from_legacy_current_edge(raw).unwrap();
+        assert_eq!(state.instance_id, "instance-1");
+        assert_eq!(state.server_ip, "64.176.71.23");
+        assert_eq!(state.direct.as_ref().unwrap().domain, "miu.alegria.by");
+        assert_eq!(state.warp.as_ref().unwrap().vless_port, 5443);
+    }
 
     #[test]
     fn accepts_linear_deploy_path() {
