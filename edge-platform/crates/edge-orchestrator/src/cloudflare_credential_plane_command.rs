@@ -50,6 +50,7 @@ struct ProjectionObservation {
     worker_secret_bindings: Vec<cloudflare::CloudflareWorkerSecretBinding>,
     worker_version_tag: Option<String>,
     worker_latest_version_id: Option<String>,
+    worker_latest_version_tag: Option<String>,
     worker_active_deployment_id: Option<String>,
     worker_active_version_ids: Vec<String>,
     workers_dev_enabled: Option<bool>,
@@ -1773,6 +1774,25 @@ async fn observe(
             None
         };
 
+        let latest_version_tag = match (
+            worker_identity,
+            version_head
+                .as_ref()
+                .and_then(|value| value.latest_version_id.as_deref()),
+        ) {
+            (Some(worker), Some(version_id)) => Some(
+                cloudflare::get_worker_version_tag(
+                    api_token,
+                    &desired.target_account_id,
+                    &worker.id,
+                    version_id,
+                )
+                .await?,
+            ),
+            _ => None,
+        }
+        .flatten();
+
         let matching_proof_tokens = service_tokens
             .iter()
             .filter(|token| {
@@ -1843,6 +1863,7 @@ async fn observe(
             worker_latest_version_id: version_head
                 .as_ref()
                 .and_then(|value| value.latest_version_id.clone()),
+            worker_latest_version_tag: latest_version_tag,
             worker_active_deployment_id: version_head
                 .as_ref()
                 .and_then(|value| value.active_deployment_id.clone()),
@@ -2061,10 +2082,14 @@ fn print_observation(
                 .unwrap_or_else(|| "ABSENT".to_owned())
         );
         println!(
-            "credential_delivery_projection={} latest_version_id={} active_deployment_id={} active_version_ids={}",
+            "credential_delivery_projection={} latest_version_id={} latest_version_tag={} active_deployment_id={} active_version_ids={}",
             projection.projection,
             current
                 .worker_latest_version_id
+                .as_deref()
+                .unwrap_or("ABSENT"),
+            current
+                .worker_latest_version_tag
                 .as_deref()
                 .unwrap_or("ABSENT"),
             current
@@ -2178,6 +2203,7 @@ mod tests {
             worker_secret_bindings: Vec::new(),
             worker_version_tag: Some(legacy_worker_version_tag(projection_name).unwrap()),
             worker_latest_version_id: Some(format!("{projection_name}-version-id")),
+            worker_latest_version_tag: Some(legacy_worker_version_tag(projection_name).unwrap()),
             worker_active_deployment_id: Some(format!("{projection_name}-deployment-id")),
             worker_active_version_ids: vec![format!("{projection_name}-version-id")],
             workers_dev_enabled: Some(true),
