@@ -9,8 +9,8 @@ pub use credential_store::{CredentialStore, write_atomic_private};
 
 mod runtime;
 pub use runtime::{
-    APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets,
-    windows_runtime_state_from_bundle, windows_runtime_state_from_canonical_production_bundle,
+    APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets, windows_runtime_state_from_bundle,
+    windows_runtime_state_from_canonical_production_bundle,
 };
 
 use std::env;
