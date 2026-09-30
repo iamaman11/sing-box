@@ -29,7 +29,8 @@ struct ProjectionDesired {
     worker_name: String,
     access_application_name: String,
     access_policy_name: String,
-    service_token_name: String,
+    proof_service_token_name: String,
+    host_service_token_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -45,9 +46,12 @@ struct ProjectionObservation {
     workers_dev_enabled: Option<bool>,
     previews_enabled: Option<bool>,
     custom_domain_count: usize,
-    service_token_id: Option<String>,
-    service_token_enabled: Option<bool>,
-    service_token_duration: Option<String>,
+    proof_service_token_id: Option<String>,
+    proof_service_token_enabled: Option<bool>,
+    proof_service_token_duration: Option<String>,
+    host_service_token_id: Option<String>,
+    host_service_token_enabled: Option<bool>,
+    host_service_token_duration: Option<String>,
     access_application_type: Option<String>,
     access_service_auth_401_redirect: Option<bool>,
     access_destination_type: Option<String>,
@@ -382,20 +386,40 @@ fn validate_access_boundary(
             ));
         }
 
-        let token_id = current
-            .service_token_id
+        let proof_token_id = current
+            .proof_service_token_id
             .as_deref()
-            .ok_or_else(|| format!("{} service token is missing", projection.projection))?;
-        if current.service_token_enabled != Some(false) {
+            .ok_or_else(|| format!("{} proof service token is missing", projection.projection))?;
+        if current.proof_service_token_enabled != Some(false) {
             return Err(format!(
                 "{} proof service token must be disabled at rest",
                 projection.projection
             ));
         }
-        if current.service_token_duration.as_deref() != Some(desired.proof_token_duration.as_str())
+        if current.proof_service_token_duration.as_deref()
+            != Some(desired.proof_token_duration.as_str())
         {
             return Err(format!(
                 "{} proof service token duration drifted",
+                projection.projection
+            ));
+        }
+
+        let host_token_id = current
+            .host_service_token_id
+            .as_deref()
+            .ok_or_else(|| format!("{} host service token is missing", projection.projection))?;
+        if current.host_service_token_enabled != Some(true) {
+            return Err(format!(
+                "{} host service token must remain enabled",
+                projection.projection
+            ));
+        }
+        if current.host_service_token_duration.as_deref()
+            != Some(desired.host_service_token_duration.as_str())
+        {
+            return Err(format!(
+                "{} host service token duration drifted",
                 projection.projection
             ));
         }
@@ -427,9 +451,14 @@ fn validate_access_boundary(
             ));
         }
         let policy = &current.access_policies[0];
+        let mut observed_service_token_ids = policy.include_service_token_ids.clone();
+        observed_service_token_ids.sort();
+        let mut expected_service_token_ids =
+            vec![proof_token_id.to_owned(), host_token_id.to_owned()];
+        expected_service_token_ids.sort();
         if policy.name != projection.access_policy_name
             || policy.decision.as_deref() != Some("non_identity")
-            || policy.include_service_token_ids != vec![token_id.to_owned()]
+            || observed_service_token_ids != expected_service_token_ids
             || policy.has_extra_rules
         {
             return Err(format!(
@@ -483,6 +512,7 @@ async fn prove(
     println!("access_isolation_structural=PASS");
     println!("proof_session=SHARED_TWO_PROJECTION");
     println!("proof_tokens_enabled=false");
+    println!("host_tokens_enabled=true");
     println!("proof_provider_mutations={mutations}");
     println!("credential_secret_mutations=0");
     println!("real_credentials_created=0");
@@ -501,11 +531,11 @@ async fn prove_ab_session(
     let vm_observed = projection_observation(observed, "vm")?;
 
     let windows_token_id = windows_observed
-        .service_token_id
+        .proof_service_token_id
         .as_deref()
         .ok_or_else(|| "Windows proof token ID is missing".to_owned())?;
     let vm_token_id = vm_observed
-        .service_token_id
+        .proof_service_token_id
         .as_deref()
         .ok_or_else(|| "VM proof token ID is missing".to_owned())?;
     let windows_policy_id = windows_observed
@@ -532,7 +562,7 @@ async fn prove_ab_session(
                 control_token,
                 &desired.target_account_id,
                 token_id,
-                &projection.service_token_name,
+                &projection.proof_service_token_name,
                 &desired.proof_token_duration,
                 true,
             )
@@ -672,7 +702,7 @@ async fn prove_ab_session(
         control_token,
         &desired.target_account_id,
         windows_token_id,
-        &windows.service_token_name,
+        &windows.proof_service_token_name,
         &desired.proof_token_duration,
         false,
     )
@@ -684,7 +714,7 @@ async fn prove_ab_session(
         control_token,
         &desired.target_account_id,
         vm_token_id,
-        &vm.service_token_name,
+        &vm.proof_service_token_name,
         &desired.proof_token_duration,
         false,
     )
@@ -752,7 +782,7 @@ fn validate_rotated_proof_credential(
         || credential.client_id != expected_client_id
         || credential.enabled != Some(true)
         || credential.duration.as_deref() != Some(expected_duration)
-        || credential.name.as_deref() != Some(projection.service_token_name.as_str())
+        || credential.name.as_deref() != Some(projection.proof_service_token_name.as_str())
     {
         return Err(format!(
             "{} proof-token rotation changed identity or state",
@@ -855,7 +885,7 @@ fn validate_enabled_proof_token(
     token: &cloudflare::CloudflareAccessServiceToken,
 ) -> Result<String, String> {
     if token.id != expected_token_id
-        || token.name.as_deref() != Some(projection.service_token_name.as_str())
+        || token.name.as_deref() != Some(projection.proof_service_token_name.as_str())
         || token.enabled != Some(true)
         || token.duration.as_deref() != Some(expected_duration)
     {
@@ -1171,17 +1201,33 @@ async fn observe(
                 )
             };
 
-        let matching_tokens = service_tokens
+        let matching_proof_tokens = service_tokens
             .iter()
-            .filter(|token| token.name.as_deref() == Some(projection.service_token_name.as_str()))
+            .filter(|token| {
+                token.name.as_deref() == Some(projection.proof_service_token_name.as_str())
+            })
             .collect::<Vec<_>>();
-        if matching_tokens.len() > 1 {
+        if matching_proof_tokens.len() > 1 {
             return Err(format!(
-                "duplicate service-token identity observed for {}",
-                projection.service_token_name
+                "duplicate proof service-token identity observed for {}",
+                projection.proof_service_token_name
             ));
         }
-        let token = matching_tokens.first().copied();
+        let proof_token = matching_proof_tokens.first().copied();
+
+        let matching_host_tokens = service_tokens
+            .iter()
+            .filter(|token| {
+                token.name.as_deref() == Some(projection.host_service_token_name.as_str())
+            })
+            .collect::<Vec<_>>();
+        if matching_host_tokens.len() > 1 {
+            return Err(format!(
+                "duplicate host service-token identity observed for {}",
+                projection.host_service_token_name
+            ));
+        }
+        let host_token = matching_host_tokens.first().copied();
 
         let matching_apps = access_applications
             .iter()
@@ -1228,9 +1274,12 @@ async fn observe(
                 .iter()
                 .filter(|domain| domain.service == projection.worker_name)
                 .count(),
-            service_token_id: token.map(|value| value.id.clone()),
-            service_token_enabled: token.and_then(|value| value.enabled),
-            service_token_duration: token.and_then(|value| value.duration.clone()),
+            proof_service_token_id: proof_token.map(|value| value.id.clone()),
+            proof_service_token_enabled: proof_token.and_then(|value| value.enabled),
+            proof_service_token_duration: proof_token.and_then(|value| value.duration.clone()),
+            host_service_token_id: host_token.map(|value| value.id.clone()),
+            host_service_token_enabled: host_token.and_then(|value| value.enabled),
+            host_service_token_duration: host_token.and_then(|value| value.duration.clone()),
             access_application_type: app.map(|value| value.app_type.clone()),
             access_service_auth_401_redirect: app.and_then(|value| value.service_auth_401_redirect),
             access_destination_type: destination.map(|value| value.destination_type.clone()),
@@ -1256,14 +1305,16 @@ fn projections(desired: &ProductionCredentialPlaneOwnership) -> [ProjectionDesir
             worker_name: desired.windows_worker_name.clone(),
             access_application_name: desired.windows_access_application_name.clone(),
             access_policy_name: desired.windows_access_policy_name.clone(),
-            service_token_name: desired.windows_service_token_name.clone(),
+            proof_service_token_name: desired.windows_service_token_name.clone(),
+            host_service_token_name: desired.windows_host_service_token_name.clone(),
         },
         ProjectionDesired {
             projection: "vm".to_owned(),
             worker_name: desired.vm_worker_name.clone(),
             access_application_name: desired.vm_access_application_name.clone(),
             access_policy_name: desired.vm_access_policy_name.clone(),
-            service_token_name: desired.vm_service_token_name.clone(),
+            proof_service_token_name: desired.vm_service_token_name.clone(),
+            host_service_token_name: desired.vm_host_service_token_name.clone(),
         },
     ]
 }
@@ -1422,7 +1473,15 @@ fn print_observation(
                 bindings.as_str()
             },
             current
-                .service_token_enabled
+                .proof_service_token_enabled
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "ABSENT".to_owned())
+        );
+        println!(
+            "credential_delivery_projection={} host_token_enabled={}",
+            projection.projection,
+            current
+                .host_service_token_enabled
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "ABSENT".to_owned())
         );
@@ -1490,8 +1549,11 @@ mod tests {
             vm_access_policy_name: "sing-box-credentials-vm-service-auth".to_owned(),
             windows_service_token_name: "sing-box-credentials-windows-phase2-proof".to_owned(),
             vm_service_token_name: "sing-box-credentials-vm-phase2-proof".to_owned(),
+            windows_host_service_token_name: "sing-box-credentials-windows-host".to_owned(),
+            vm_host_service_token_name: "sing-box-credentials-vm-host".to_owned(),
             worker_compatibility_date: "2026-09-28".to_owned(),
             proof_token_duration: "1h".to_owned(),
+            host_service_token_duration: "forever".to_owned(),
             workers_dev_subdomain: "sing-box-6be6e4b6340822dbeb18cb6c2f09c660".to_owned(),
         }
     }
@@ -1501,7 +1563,8 @@ mod tests {
         projection_name: &str,
     ) -> ProjectionObservation {
         let projection = projection_desired(desired, projection_name).unwrap();
-        let token_id = format!("{projection_name}-token-id");
+        let proof_token_id = format!("{projection_name}-proof-token-id");
+        let host_token_id = format!("{projection_name}-host-token-id");
         ProjectionObservation {
             projection: projection.projection.clone(),
             worker_name: projection.worker_name.clone(),
@@ -1514,9 +1577,12 @@ mod tests {
             workers_dev_enabled: Some(true),
             previews_enabled: Some(false),
             custom_domain_count: 0,
-            service_token_id: Some(token_id.clone()),
-            service_token_enabled: Some(false),
-            service_token_duration: Some(desired.proof_token_duration.clone()),
+            proof_service_token_id: Some(proof_token_id.clone()),
+            proof_service_token_enabled: Some(false),
+            proof_service_token_duration: Some(desired.proof_token_duration.clone()),
+            host_service_token_id: Some(host_token_id.clone()),
+            host_service_token_enabled: Some(true),
+            host_service_token_duration: Some(desired.host_service_token_duration.clone()),
             access_application_type: Some("self_hosted".to_owned()),
             access_service_auth_401_redirect: Some(true),
             access_destination_type: Some("public".to_owned()),
@@ -1527,7 +1593,7 @@ mod tests {
                 id: format!("{projection_name}-policy-id"),
                 name: projection.access_policy_name,
                 decision: Some("non_identity".to_owned()),
-                include_service_token_ids: vec![token_id],
+                include_service_token_ids: vec![proof_token_id, host_token_id],
                 has_extra_rules: false,
                 precedence: Some(1),
                 reusable: Some(false),
@@ -1624,6 +1690,29 @@ mod tests {
                 projection: "vm".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn host_identity_must_be_enabled_forever_and_policy_bound() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "windows");
+        make_terminal(&mut observed, "vm");
+        assert_eq!(plan(&desired, &observed).unwrap(), CredentialDeliveryAction::Noop);
+
+        observed.projections[0].host_service_token_enabled = Some(false);
+        assert!(plan(&desired, &observed).is_err());
+        observed.projections[0].host_service_token_enabled = Some(true);
+
+        observed.projections[0].host_service_token_duration = Some("1h".to_owned());
+        assert!(plan(&desired, &observed).is_err());
+        observed.projections[0].host_service_token_duration =
+            Some(desired.host_service_token_duration.clone());
+
+        observed.projections[0].access_policies[0]
+            .include_service_token_ids
+            .pop();
+        assert!(plan(&desired, &observed).is_err());
     }
 
     #[test]

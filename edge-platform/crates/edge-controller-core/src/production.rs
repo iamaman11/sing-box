@@ -31,8 +31,11 @@ pub struct ProductionCredentialPlaneOwnership {
     pub vm_access_policy_name: String,
     pub windows_service_token_name: String,
     pub vm_service_token_name: String,
+    pub windows_host_service_token_name: String,
+    pub vm_host_service_token_name: String,
     pub worker_compatibility_date: String,
     pub proof_token_duration: String,
+    pub host_service_token_duration: String,
     pub workers_dev_subdomain: String,
 }
 
@@ -309,6 +312,14 @@ impl ProductionComposition {
                 "vm_service_token_name",
                 credential_plane.vm_service_token_name.as_str(),
             ),
+            (
+                "windows_host_service_token_name",
+                credential_plane.windows_host_service_token_name.as_str(),
+            ),
+            (
+                "vm_host_service_token_name",
+                credential_plane.vm_host_service_token_name.as_str(),
+            ),
         ] {
             validate_identifier(&format!("cloudflare.credential_plane.{label}"), value)?;
         }
@@ -317,10 +328,28 @@ impl ProductionComposition {
                 == credential_plane.vm_access_application_name
             || credential_plane.windows_access_policy_name == credential_plane.vm_access_policy_name
             || credential_plane.windows_service_token_name == credential_plane.vm_service_token_name
+            || credential_plane.windows_host_service_token_name
+                == credential_plane.vm_host_service_token_name
         {
             return Err(validation(
                 "credential-plane Windows and VM identities must be physically distinct",
             ));
+        }
+        let credential_token_names = [
+            credential_plane.windows_service_token_name.as_str(),
+            credential_plane.vm_service_token_name.as_str(),
+            credential_plane.windows_host_service_token_name.as_str(),
+            credential_plane.vm_host_service_token_name.as_str(),
+        ];
+        for (index, left) in credential_token_names.iter().enumerate() {
+            if credential_token_names[index + 1..]
+                .iter()
+                .any(|right| left == right)
+            {
+                return Err(validation(
+                    "credential-plane proof and host service-token identities must all be distinct",
+                ));
+            }
         }
         let compatibility_date = credential_plane.worker_compatibility_date.as_bytes();
         if compatibility_date.len() != 10
@@ -337,7 +366,12 @@ impl ProductionComposition {
         }
         if credential_plane.proof_token_duration != "1h" {
             return Err(validation(
-                "Phase 2 proof service tokens must have exact 1h duration",
+                "credential proof service tokens must have exact 1h duration",
+            ));
+        }
+        if credential_plane.host_service_token_duration != "forever" {
+            return Err(validation(
+                "credential host service tokens must have exact forever duration",
             ));
         }
         validate_dns_name(
@@ -415,8 +449,13 @@ impl ProductionComposition {
                 vm_access_policy_name: credential_plane.vm_access_policy_name.clone(),
                 windows_service_token_name: credential_plane.windows_service_token_name.clone(),
                 vm_service_token_name: credential_plane.vm_service_token_name.clone(),
+                windows_host_service_token_name: credential_plane
+                    .windows_host_service_token_name
+                    .clone(),
+                vm_host_service_token_name: credential_plane.vm_host_service_token_name.clone(),
                 worker_compatibility_date: credential_plane.worker_compatibility_date.clone(),
                 proof_token_duration: credential_plane.proof_token_duration.clone(),
+                host_service_token_duration: credential_plane.host_service_token_duration.clone(),
                 workers_dev_subdomain: credential_plane.workers_dev_subdomain.clone(),
             },
             target_plane: ProductionTargetPlaneOwnership {

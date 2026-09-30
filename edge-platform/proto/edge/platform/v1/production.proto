@@ -121,6 +121,12 @@ message ProductionCredentialPlane {
   // Explicit account-level workers.dev namespace. Creating this namespace is a
   // separate provider action from enabling any individual Worker route.
   string workers_dev_subdomain = 13;
+
+  // Permanent host identities are physically distinct from the short-lived
+  // proof tokens above. They authenticate only trusted local runtime owners.
+  string windows_host_service_token_name = 14;
+  string vm_host_service_token_name = 15;
+  string host_service_token_duration = 16;
 }
 
 message ProductionDns {
