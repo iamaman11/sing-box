@@ -3,8 +3,9 @@
 This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence through the single production-account authority flip is closed; provider reality must still be freshly observed before any mutation. Issue #26 owns the remaining bounded host-identity bootstrap, terminal fresh-v2 cutover and deletion-first cleanup.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
-Issue #169 owns the bounded Cloudflare/credential convergence vertical. Issue #58 is a closed
-historical architecture record and must not be used to restore its old global-controller model.
+Issue #169 is historical Cloudflare convergence evidence and no longer owns current execution.
+Issue #58 is a closed historical architecture record and must not be used to restore its old
+global-controller model.
 
 ## 1. One-owner architecture
 
