@@ -790,12 +790,11 @@ async fn apply_once(
                 "credential_rotation_token_identity={} credential_rotation_token_status={}",
                 rotation_identity.id, rotation_identity.status
             );
-            cloudflare::patch_worker_secrets_with_version_tag(
+            cloudflare::patch_worker_version_annotations(
                 &rotation_token,
                 &desired.target_account_id,
                 &projection.worker_name,
                 &material.version_tag,
-                &[],
             )
             .await?;
             1
@@ -868,10 +867,23 @@ fn projection_delivery_state(
 
     if current.worker_binding_count == Some(2) {
         require_exact_secret_bindings(&projection.worker_name, &current.worker_secret_bindings)?;
-        if current.worker_version_tag.as_deref() == Some(material.version_tag.as_str()) {
+        let latest_is_only_active = current.worker_active_deployment_id.is_some()
+            && current
+                .worker_latest_version_id
+                .as_ref()
+                .is_some_and(|latest| {
+                    current.worker_active_version_ids.len() == 1
+                        && current.worker_active_version_ids[0] == *latest
+                });
+        let settings_tag = current.worker_version_tag.as_deref();
+        let latest_tag = current.worker_latest_version_tag.as_deref();
+        if latest_is_only_active
+            && settings_tag == Some(material.version_tag.as_str())
+            && latest_tag == Some(material.version_tag.as_str())
+        {
             return Ok(ProjectionDeliveryState::FixedAb);
         }
-        if current.worker_version_tag.is_none() {
+        if latest_is_only_active && settings_tag.is_none() && latest_tag.is_none() {
             return Ok(ProjectionDeliveryState::FixedAbVersionTagMissing);
         }
     }
@@ -883,9 +895,26 @@ fn projection_delivery_state(
         .collect::<Vec<_>>()
         .join(",");
     Err(format!(
-        "Worker {} is neither exact legacy locked state nor exact fixed A/B state: version_tag={}, binding_count={}, secret_bindings={}",
+        "Worker {} is neither exact legacy locked state nor exact fixed A/B state: settings_version_tag={}, latest_version_id={}, latest_version_tag={}, active_deployment_id={}, active_version_ids={}, binding_count={}, secret_bindings={}",
         projection.worker_name,
         current.worker_version_tag.as_deref().unwrap_or("ABSENT"),
+        current
+            .worker_latest_version_id
+            .as_deref()
+            .unwrap_or("ABSENT"),
+        current
+            .worker_latest_version_tag
+            .as_deref()
+            .unwrap_or("ABSENT"),
+        current
+            .worker_active_deployment_id
+            .as_deref()
+            .unwrap_or("ABSENT"),
+        if current.worker_active_version_ids.is_empty() {
+            "ABSENT".to_owned()
+        } else {
+            current.worker_active_version_ids.join(",")
+        },
         current
             .worker_binding_count
             .map(|value| value.to_string())
@@ -2272,11 +2301,11 @@ mod tests {
                 binding_type: "secret_text".to_owned(),
             },
         ];
-        current.worker_version_tag = Some(
-            delivery_worker_material(projection_name)
-                .unwrap()
-                .version_tag,
-        );
+        let version_tag = delivery_worker_material(projection_name)
+            .unwrap()
+            .version_tag;
+        current.worker_version_tag = Some(version_tag.clone());
+        current.worker_latest_version_tag = Some(version_tag);
     }
 
     #[test]
@@ -2445,6 +2474,7 @@ mod tests {
         make_terminal(&mut observed, "vm");
 
         observed.projections[0].worker_version_tag = None;
+        observed.projections[0].worker_latest_version_tag = None;
         assert_eq!(
             plan(&desired, &observed).unwrap(),
             CredentialDeliveryAction::RestoreFixedAbVersionTag {
@@ -2452,9 +2482,11 @@ mod tests {
             }
         );
 
-        observed.projections[0].worker_version_tag =
-            Some(delivery_worker_material("windows").unwrap().version_tag);
+        let windows_tag = delivery_worker_material("windows").unwrap().version_tag;
+        observed.projections[0].worker_version_tag = Some(windows_tag.clone());
+        observed.projections[0].worker_latest_version_tag = Some(windows_tag);
         observed.projections[1].worker_version_tag = None;
+        observed.projections[1].worker_latest_version_tag = None;
         assert_eq!(
             plan(&desired, &observed).unwrap(),
             CredentialDeliveryAction::RestoreFixedAbVersionTag {
@@ -2470,6 +2502,34 @@ mod tests {
         make_terminal(&mut observed, "windows");
         make_terminal(&mut observed, "vm");
         observed.projections[0].worker_version_tag = Some("unexpected-version".to_owned());
+        assert!(plan(&desired, &observed).is_err());
+    }
+
+    #[test]
+    fn delivery_contract_requires_latest_version_to_be_the_only_active_version() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "windows");
+        make_terminal(&mut observed, "vm");
+
+        observed.projections[0].worker_active_version_ids =
+            vec!["older-active-version".to_owned()];
+        assert!(plan(&desired, &observed).is_err());
+    }
+
+    #[test]
+    fn delivery_contract_rejects_disagreement_between_settings_and_latest_version_tags() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "windows");
+        make_terminal(&mut observed, "vm");
+
+        observed.projections[0].worker_latest_version_tag = None;
+        assert!(plan(&desired, &observed).is_err());
+
+        let expected = delivery_worker_material("windows").unwrap().version_tag;
+        observed.projections[0].worker_latest_version_tag = Some(expected);
+        observed.projections[0].worker_version_tag = None;
         assert!(plan(&desired, &observed).is_err());
     }
 
