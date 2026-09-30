@@ -1,10 +1,12 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand_core::{OsRng, RngCore};
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::ToSocketAddrs;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use edge_shared_types::{
-    CredentialDeliveryBundle, CredentialProjectionKind, WindowsRuntimeState, WindowsTunnelBinding,
+    CredentialDeliveryBundle, CredentialProjectionKind, ProductionTransportProtocol,
+    WindowsRuntimeState, WindowsTunnelBinding, canonical_production_desired_state,
     credential_delivery_bundle, validate_credential_delivery_bundle,
 };
 
@@ -166,6 +168,94 @@ impl ApplicationRuntimeSecrets {
         validate_key("REALITY_WARP_PUBLIC_KEY", &self.reality_warp_public_key)?;
         validate_hex("REALITY_WARP_SHORT_ID", &self.reality_warp_short_id, 16)
     }
+}
+
+pub fn windows_runtime_state_from_canonical_production_bundle(
+    bundle: &CredentialDeliveryBundle,
+) -> Result<WindowsRuntimeState, String> {
+    let desired = canonical_production_desired_state()?;
+    let application = desired
+        .application
+        .as_ref()
+        .ok_or_else(|| "canonical production application policy is missing".to_owned())?;
+    let line1 = application
+        .line1
+        .as_ref()
+        .ok_or_else(|| "canonical production Line 1 policy is missing".to_owned())?;
+    let firewall = desired
+        .firewall
+        .as_ref()
+        .ok_or_else(|| "canonical production firewall policy is missing".to_owned())?;
+
+    let port = |protocol: ProductionTransportProtocol, purpose: &str| -> Result<u32, String> {
+        let rule = firewall
+            .rules
+            .iter()
+            .find(|rule| {
+                ProductionTransportProtocol::try_from(rule.protocol).ok() == Some(protocol)
+                    && rule.purpose == purpose
+            })
+            .ok_or_else(|| format!("canonical production firewall rule is missing: {purpose}"))?;
+        rule.port
+            .parse::<u32>()
+            .map_err(|err| format!("canonical production firewall port is invalid for {purpose}: {err}"))
+    };
+
+    let server_ip = (desired.public_hostname.as_str(), 443u16)
+        .to_socket_addrs()
+        .map_err(|err| {
+            format!(
+                "failed to resolve canonical production hostname {}: {err}",
+                desired.public_hostname
+            )
+        })?
+        .find(|address| address.is_ipv4())
+        .map(|address| address.ip().to_string())
+        .ok_or_else(|| {
+            format!(
+                "canonical production hostname {} has no IPv4 address",
+                desired.public_hostname
+            )
+        })?;
+
+    let topology = WindowsRuntimeState {
+        schema_version: 1,
+        deployment_label: Some(desired.environment),
+        instance_id: desired.machine_id,
+        server_ip,
+        direct: Some(WindowsTunnelBinding {
+            domain: line1.tunnel_domain.clone(),
+            hy2_port: port(
+                ProductionTransportProtocol::Udp,
+                "Line 1 Hysteria2 direct",
+            )?,
+            hy2_password: String::new(),
+            vless_port: port(
+                ProductionTransportProtocol::Tcp,
+                "Line 1 VLESS Reality direct",
+            )?,
+            vless_uuid: String::new(),
+            reality_public_key: String::new(),
+            reality_short_id: String::new(),
+        }),
+        warp: Some(WindowsTunnelBinding {
+            domain: line1.tunnel_domain.clone(),
+            hy2_port: port(
+                ProductionTransportProtocol::Udp,
+                "Line 1 Hysteria2 WARP",
+            )?,
+            hy2_password: String::new(),
+            vless_port: port(
+                ProductionTransportProtocol::Tcp,
+                "Line 1 VLESS Reality WARP",
+            )?,
+            vless_uuid: String::new(),
+            reality_public_key: String::new(),
+            reality_short_id: String::new(),
+        }),
+    };
+
+    windows_runtime_state_from_bundle(&topology, bundle)
 }
 
 pub fn windows_runtime_state_from_bundle(
