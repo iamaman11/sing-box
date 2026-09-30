@@ -459,11 +459,10 @@ def main() -> None:
         and "cutover_windows_retire:" not in credentials
         and "credential-transition apply-legacy --install-root" not in credentials
         and "credential-transition retire-legacy --install-root" not in credentials
+        and "stage2-preflight" in credentials
         and "restart-verify-runtime" in credentials
-        and "runtime-state.pb" in credentials
-        and "runtime\\sing-box.json" in credentials
-        and "Get-NetTCPConnection -State Listen" in credentials
-        and "$reservedPorts = @(17891, 17892, 19091)" in credentials
+        and "Get-NetTCPConnection -State Listen" not in credentials
+        and "$reservedPorts = @(17891, 17892, 19091)" not in credentials
         and "STAGE2_WINDOWS_ISOLATED_PREREQUISITES=PASS" in credentials
         and "STAGE2_EXTERNAL_SING_BOX=UNTOUCHED" in credentials
         and "STAGE2_TUN_ACTIVATION=DEFERRED" in credentials,
