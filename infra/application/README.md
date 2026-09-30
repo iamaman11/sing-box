@@ -72,8 +72,7 @@ than exposing independent production-facing DNS/Mesh/Zero Trust owners.
 
 Keep one previous accepted application release/artifact identity for bounded runtime rollback.
 
-Credential rollback is separate from release rollback. Issue #169 uses a fixed A/B credential
-buffer so a previous accepted credential generation remains available for a bounded grace/recovery
+Credential rollback is separate from release rollback. The initial fresh-v2 cutover keeps legacy-v1 outside the v2 store only as a bounded LKG until rollback/restore proof succeeds. After that terminal migration, the fixed A/B credential buffer keeps a previous accepted v2 generation available for bounded grace/recovery
 period without introducing a secret-history database.
 
 ## Legacy JSON

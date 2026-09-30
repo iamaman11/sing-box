@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence through the single production-account authority flip is closed; provider reality must still be freshly observed before any mutation. Issue #26 owns the remaining bounded host-identity bootstrap, terminal fresh-v2 cutover and deletion-first cleanup.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence and the runtime-host Access identity bootstrap are closed; provider reality must still be freshly observed before any mutation. Issue #26 currently owns the one terminal fresh-v2 cutover, then deletion-first cleanup.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 is historical Cloudflare convergence evidence and no longer owns current execution.
@@ -350,6 +350,8 @@ Physical roots:
   boundary (SYSTEM/Administrators/EdgePlatformController; NetworkService runner excluded);
 - VM: `<stack-parent>/runtime-secrets/application-v2`, inside the existing root-owned private
   runtime-secret boundary; Unix directories/files remain mode `0700/0600`.
+
+The initial legacy-v1 -> fresh-v2 production cutover is intentionally narrower than the later steady-state rotation API. Both local v2 stores must begin empty; one paired snapshot is published only to slot A; legacy runtime material remains outside the v2 store solely as an LKG for the bounded rollback proof. Candidate acceptance does not mutate the local active pointer. After both local owners promote and survive restart/recovery, the workflow proves one legacy rollback, restores exact active v2, then deletes the legacy LKG without an artificial sleep. Future rotations use the normal active/candidate/previous A/B semantics and do not re-run this migration workflow.
 
 Candidate acquisition and staging are deliberately narrower than the persistence API:
 - self-hosted runners carry only non-secret operation intent such as projection, generation and slot;

@@ -50,6 +50,12 @@ pub(crate) enum LocalCommand {
     MeshCleanup,
     CredentialState,
     CredentialStage { generation: u64 },
+    CredentialApplyCandidate,
+    CredentialPromote,
+    CredentialApplyActive,
+    CredentialApplyLegacy,
+    CredentialDiscardCandidate,
+    CredentialRetireLegacy,
 }
 
 impl LocalCommand {
@@ -65,6 +71,12 @@ impl LocalCommand {
             Self::MeshCleanup => "local-mesh-cleanup",
             Self::CredentialState => "local-credential-state",
             Self::CredentialStage { .. } => "local-credential-stage",
+            Self::CredentialApplyCandidate => "local-credential-apply-candidate",
+            Self::CredentialPromote => "local-credential-promote",
+            Self::CredentialApplyActive => "local-credential-apply-active",
+            Self::CredentialApplyLegacy => "local-credential-apply-legacy",
+            Self::CredentialDiscardCandidate => "local-credential-discard-candidate",
+            Self::CredentialRetireLegacy => "local-credential-retire-legacy",
         }
     }
 }
@@ -108,6 +120,12 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-stage", "101"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-apply-candidate"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-promote"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-apply-active"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-apply-legacy"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-discard-candidate"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-retire-legacy"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err());
     }

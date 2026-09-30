@@ -9,7 +9,7 @@ Before any mutation:
 
 1. read protected `main`;
 2. read #26 current cursor;
-3. read the bounded issue selected by #26 (currently #169 for Cloudflare/credential convergence);
+3. read a bounded evidence issue only when #26 points to it; #26 alone owns the current cursor;
 4. inspect open PR/CI state;
 5. resolve the durable ReleaseSet only when release authority is required.
 
@@ -81,8 +81,7 @@ Never paste or publish application/provider secrets into:
 
 Do not copy legacy VLESS/Hysteria/Reality/Line2 credentials into the new runtime.
 
-Issue #169 defines fresh credential generations and Cloudflare Access delivery. Until its gates pass,
-do not improvise another SSH/DPAPI/Vault/GitHub-secret transport.
+Macro Stage 1 Access delivery is PASS/CLOSED. During the one-time Macro Stage 2 cutover, do not improvise another SSH/DPAPI/Vault/GitHub-secret transport; use only the typed local-owner path selected by #26.
 
 ## 6. VM operations
 
@@ -136,19 +135,21 @@ Keep the previous accepted release long enough for bounded rollback.
 
 Credential rotation is not part of every release.
 
-The target flow from #169 is:
+The initial production migration selected by #26 is:
 
 ```text
-write candidate into inactive A/B slots
- -> verify isolated Workers/Access
- -> Git declares candidate generation
- -> server accepts active + candidate
+publish one paired fresh snapshot only to inactive slot A
+ -> VM + Windows stage without activation
+ -> VM accepts candidate runtime
  -> Windows proves candidate direct/WARP traffic
- -> promote candidate to active
- -> keep previous generation for bounded rollback/grace
+ -> promote both local owners
+ -> restart/recovery proof
+ -> bounded rollback to retained legacy LKG
+ -> restore exact active v2
+ -> delete legacy LKG
 ```
 
-This flow is not authorized for real values until #26 reaches that checkpoint.
+Legacy credentials are never imported into the v2 store. After this terminal migration, ordinary rotations use the active/candidate/previous A/B state and keep one previous v2 generation only for bounded rollback/grace.
 
 ## 10. Recovery
 

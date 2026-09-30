@@ -1,5 +1,6 @@
 mod cli;
 mod credential_access_bootstrap;
+mod credential_transition;
 mod error;
 
 use clap::Parser;
@@ -23,7 +24,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DoctorRequest, DoctorResponse,
+    CredentialStateObservation, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
+    DoctorRequest, DoctorResponse,
     Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
@@ -134,6 +136,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             print_status(&status);
             Ok(())
         }
+        Command::CredentialState(args) => {
+            let state = fetch_credential_state(args.resolve()).await?;
+            print_credential_state(&state);
+            Ok(())
+        }
         Command::Doctor(args) => {
             let doctor = fetch_doctor(args.resolve()).await?;
             print_doctor(&doctor);
@@ -240,21 +247,46 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             Ok(())
         }
         Command::PrivilegedInstallCredentialAccess(args) => {
-            let install_root = PathBuf::from(args.install_root);
-            let result = submit_privileged_request(
-                &install_root,
-                WindowsPrivilegedRequest {
-                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
-                    request_id: new_privileged_request_id()?,
-                    operation: WindowsPrivilegedOperation::InstallCredentialAccessBootstrap as i32,
-                    accepted_revision: None,
-                    release_set_sha256: None,
-                    credential_generation: None,
-                },
-            )?;
-            print_privileged_result(&result);
-            finish_privileged_result(&result)?;
-            Ok(())
+            run_privileged_no_payload(
+                Path::new(&args.install_root),
+                WindowsPrivilegedOperation::InstallCredentialAccessBootstrap,
+            )
+        }
+        Command::PrivilegedApplyCredentialCandidate(args) => {
+            run_privileged_no_payload(
+                Path::new(&args.install_root),
+                WindowsPrivilegedOperation::ApplyCredentialCandidate,
+            )
+        }
+        Command::PrivilegedPromoteCredential(args) => {
+            run_privileged_no_payload(
+                Path::new(&args.install_root),
+                WindowsPrivilegedOperation::PromoteCredential,
+            )
+        }
+        Command::PrivilegedApplyActiveCredential(args) => {
+            run_privileged_no_payload(
+                Path::new(&args.install_root),
+                WindowsPrivilegedOperation::ApplyActiveCredential,
+            )
+        }
+        Command::PrivilegedApplyLegacyCredential(args) => {
+            run_privileged_no_payload(
+                Path::new(&args.install_root),
+                WindowsPrivilegedOperation::ApplyLegacyCredential,
+            )
+        }
+        Command::PrivilegedDiscardCredentialCandidate(args) => {
+            run_privileged_no_payload(
+                Path::new(&args.install_root),
+                WindowsPrivilegedOperation::DiscardCredentialCandidate,
+            )
+        }
+        Command::PrivilegedRetireLegacyCredential(args) => {
+            run_privileged_no_payload(
+                Path::new(&args.install_root),
+                WindowsPrivilegedOperation::RetireLegacyCredential,
+            )
         }
         #[cfg(windows)]
         Command::PrivilegedConvergeControllerService(args) => {
@@ -752,6 +784,25 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+fn run_privileged_no_payload(
+    install_root: &Path,
+    operation: WindowsPrivilegedOperation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = submit_privileged_request(
+        install_root,
+        WindowsPrivilegedRequest {
+            schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+            request_id: new_privileged_request_id()?,
+            operation: operation as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+        },
+    )?;
+    print_privileged_result(&result);
+    finish_privileged_result(&result)
+}
+
 fn submit_privileged_request(
     install_root: &Path,
     request: WindowsPrivilegedRequest,
@@ -836,6 +887,29 @@ async fn process_privileged_request(
         Ok(WindowsPrivilegedOperation::InstallCredentialAccessBootstrap) => {
             credential_access_bootstrap::install(install_root)
         }
+        Ok(WindowsPrivilegedOperation::ApplyCredentialCandidate) => {
+            run_credential_transition(install_root, credential_transition::apply_candidate)
+        }
+        Ok(WindowsPrivilegedOperation::PromoteCredential) => {
+            run_credential_transition(install_root, credential_transition::promote)
+        }
+        Ok(WindowsPrivilegedOperation::ApplyActiveCredential) => {
+            run_credential_transition(install_root, credential_transition::apply_active)
+        }
+        Ok(WindowsPrivilegedOperation::ApplyLegacyCredential) => {
+            run_credential_transition(install_root, credential_transition::apply_legacy)
+        }
+        Ok(WindowsPrivilegedOperation::DiscardCredentialCandidate) => {
+            credential_transition::discard_candidate(install_root).map(|(code, detail)| {
+                let active = load_verified_activation(install_root)
+                    .ok()
+                    .map(|value| value.release_set_sha256);
+                (code, detail, active)
+            })
+        }
+        Ok(WindowsPrivilegedOperation::RetireLegacyCredential) => {
+            run_credential_transition(install_root, credential_transition::retire_legacy)
+        }
         Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
             Err("unsupported privileged Windows operation".to_owned())
         }
@@ -861,6 +935,19 @@ async fn process_privileged_request(
                 .map(|state| state.release_set_sha256),
         },
     }
+}
+
+fn run_credential_transition<F>(
+    install_root: &Path,
+    action: F,
+) -> Result<(String, String, Option<String>), String>
+where
+    F: FnOnce(&Path, &WindowsActivationState) -> Result<(String, String), String>,
+{
+    let activation = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    let release = activation.release_set_sha256.clone();
+    let (code, detail) = action(install_root, &activation)?;
+    Ok((code, detail, Some(release)))
 }
 
 async fn stage_windows_credential_candidate_from_worker(
@@ -1386,6 +1473,40 @@ async fn connect_controller(
             .into())
         }
     }
+}
+
+async fn fetch_credential_state(
+    endpoint: String,
+) -> Result<CredentialStateObservation, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    Ok(client
+        .get_credential_state(Request::new(Empty {}))
+        .await?
+        .into_inner())
+}
+
+fn print_credential_state(observation: &CredentialStateObservation) {
+    println!("credential_projection=WINDOWS");
+    let Some(state) = observation.state.as_ref() else {
+        println!("credential_state=ABSENT");
+        println!("credential_active_generation=0");
+        println!("credential_candidate_generation=0");
+        println!("credential_previous_generation=0");
+        return;
+    };
+    println!("credential_state=PRESENT");
+    println!(
+        "credential_active_generation={}",
+        state.active.as_ref().map(|value| value.generation).unwrap_or(0)
+    );
+    println!(
+        "credential_candidate_generation={}",
+        state.candidate.as_ref().map(|value| value.generation).unwrap_or(0)
+    );
+    println!(
+        "credential_previous_generation={}",
+        state.previous.as_ref().map(|value| value.generation).unwrap_or(0)
+    );
 }
 
 async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {

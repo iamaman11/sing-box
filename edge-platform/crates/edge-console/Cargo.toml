@@ -11,6 +11,7 @@ edge-observability = { path = "../edge-observability" }
 edge-local-runtime = { path = "../edge-local-runtime" }
 edge-controller-core = { path = "../edge-controller-core" }
 edge-secrets = { path = "../edge-secrets" }
+edge-singbox = { path = "../edge-singbox" }
 thiserror = "=2.0.18"
 tracing = "=0.1.44"
 edge-shared-types = { path = "../edge-shared-types" }

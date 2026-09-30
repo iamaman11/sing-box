@@ -78,7 +78,7 @@ SSH remains only for initial enrollment, migration and explicit break-glass reco
 
 Provider API tokens never belong on the VM application runtime.
 
-Target after Issue #169:
+Accepted credential-delivery target:
 - VM receives only the VM credential projection required by its runtime;
 - local active/candidate typed secret state is root/private;
 - missing desired generation fails closed;
@@ -108,7 +108,7 @@ observe provider
 
 Rollback restores the previous exact accepted application release and re-verifies runtime.
 
-Credential rollback is independent from application-release rollback.
+Credential rollback is independent from application-release rollback. The initial fresh-v2 cutover does not import legacy credentials into the v2 store: legacy remains only as a temporary runtime LKG for one rollback proof, then exact active v2 is restored and the legacy material is retired. Later rotations use the v2 active/candidate/previous store normally.
 
 ## Recovery
 

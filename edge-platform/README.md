@@ -75,6 +75,8 @@ The console is not a fallback startup owner. Do not restore child-process contro
 
 ## Credential transition
 
+Macro Stage 1 host identity bootstrap is PASS/CLOSED. The initial application-secret transition is one terminal fresh-v2 workflow: require empty local v2 state, generate one paired Windows/VM snapshot, publish only inactive slot A, stage without activation, accept VM + Windows direct/WARP candidate behavior, promote, prove restart/recovery, prove one legacy rollback, restore accepted v2 and retire the legacy LKG. No legacy credential is imported into the v2 store and no blind retry is permitted after local staging.
+
 Fresh application credentials use the accepted paired Windows/VM projections and fixed Worker A/B slots. Delivery to each local owner is runner-blind direct HTTPS fetch from its projection-specific `workers.dev` Worker through its permanent Cloudflare Access host identity. Windows and VM host identities are physically distinct from each other and from bounded proof identities.
 
 Windows host-identity enrollment has one bootstrap-only CMS/RFC5652 recipient-encrypted hop: the runner exposes only a temporary public certificate and later carries only ciphertext; SYSTEM decrypts into controller-owned state and destroys the non-exportable bootstrap key. Windows plaintext escrow exists only temporarily in the protected GitHub Environment and is deleted after installation. Existing host tokens are never silently rotated on retry; exact escrow is reused or the operation fails closed. It is not a steady-state application credential transport.

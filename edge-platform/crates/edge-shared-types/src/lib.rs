@@ -743,6 +743,22 @@ pub fn validate_windows_privileged_request(
                 );
             }
         }
+        WindowsPrivilegedOperation::ApplyCredentialCandidate
+        | WindowsPrivilegedOperation::PromoteCredential
+        | WindowsPrivilegedOperation::ApplyActiveCredential
+        | WindowsPrivilegedOperation::ApplyLegacyCredential
+        | WindowsPrivilegedOperation::DiscardCredentialCandidate
+        | WindowsPrivilegedOperation::RetireLegacyCredential => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_generation.is_some()
+            {
+                return Err(
+                    "credential transition request must carry no release or raw credential authority"
+                        .to_owned(),
+                );
+            }
+        }
     }
     Ok(())
 }

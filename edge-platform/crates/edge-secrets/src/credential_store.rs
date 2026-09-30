@@ -440,7 +440,7 @@ fn require_projection(projection: CredentialProjectionKind) -> Result<(), String
     }
 }
 
-pub(crate) fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "credential store path has no parent".to_owned())?;

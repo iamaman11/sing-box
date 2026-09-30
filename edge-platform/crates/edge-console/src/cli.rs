@@ -24,6 +24,7 @@ pub(crate) enum Command {
     EnsureController(EndpointArgs),
     Reconcile(EndpointArgs),
     Status(EndpointArgs),
+    CredentialState(EndpointArgs),
     Doctor(EndpointArgs),
     SmokeRuntime,
     ProvisionRuntimeState(InstallRootArgs),
@@ -32,6 +33,12 @@ pub(crate) enum Command {
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     PrivilegedPrepareCredentialAccess(InstallRootArgs),
     PrivilegedInstallCredentialAccess(InstallRootArgs),
+    PrivilegedApplyCredentialCandidate(InstallRootArgs),
+    PrivilegedPromoteCredential(InstallRootArgs),
+    PrivilegedApplyActiveCredential(InstallRootArgs),
+    PrivilegedApplyLegacyCredential(InstallRootArgs),
+    PrivilegedDiscardCredentialCandidate(InstallRootArgs),
+    PrivilegedRetireLegacyCredential(InstallRootArgs),
     #[cfg(windows)]
     PrivilegedConvergeControllerService(InstallRootArgs),
     PrivilegedDispatch(InstallRootArgs),
@@ -60,6 +67,7 @@ impl Command {
             Self::EnsureController(_) => "ensure-controller",
             Self::Reconcile(_) => "reconcile",
             Self::Status(_) => "status",
+            Self::CredentialState(_) => "credential-state",
             Self::Doctor(_) => "doctor",
             Self::SmokeRuntime => "smoke-runtime",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
@@ -68,6 +76,12 @@ impl Command {
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::PrivilegedPrepareCredentialAccess(_) => "privileged-prepare-credential-access",
             Self::PrivilegedInstallCredentialAccess(_) => "privileged-install-credential-access",
+            Self::PrivilegedApplyCredentialCandidate(_) => "privileged-apply-credential-candidate",
+            Self::PrivilegedPromoteCredential(_) => "privileged-promote-credential",
+            Self::PrivilegedApplyActiveCredential(_) => "privileged-apply-active-credential",
+            Self::PrivilegedApplyLegacyCredential(_) => "privileged-apply-legacy-credential",
+            Self::PrivilegedDiscardCredentialCandidate(_) => "privileged-discard-credential-candidate",
+            Self::PrivilegedRetireLegacyCredential(_) => "privileged-retire-legacy-credential",
             #[cfg(windows)]
             Self::PrivilegedConvergeControllerService(_) => {
                 "privileged-converge-controller-service"
@@ -189,6 +203,22 @@ mod tests {
         );
         assert!(
             Cli::try_parse_from(["edge-console", "privileged-install-credential-access"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-apply-credential-candidate"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["edge-console", "privileged-promote-credential"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-apply-active-credential"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-apply-legacy-credential"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-discard-credential-candidate"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-retire-legacy-credential"]).is_ok()
         );
         assert!(
             Cli::try_parse_from([

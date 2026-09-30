@@ -8,6 +8,7 @@ VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 CREDENTIALS = WORKFLOWS / "credential-lifecycle.yml"
+FRESH_V2_CUTOVER = WORKFLOWS / "credential-fresh-v2-cutover.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
 EDGE_PLATFORM_CI = WORKFLOWS / "edge-platform-ci.yml"
@@ -16,6 +17,7 @@ WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
 WINDOWS_RUNNER_BOOTSTRAP = Path("edge-platform/scripts/bootstrap-windows-runner.ps1")
 WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
+WINDOWS_CREDENTIAL_TRANSITION = Path("edge-platform/crates/edge-console/src/credential_transition.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
@@ -46,6 +48,7 @@ def main() -> None:
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
     zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     credentials = CREDENTIALS.read_text(encoding="utf-8")
+    fresh_v2_cutover = FRESH_V2_CUTOVER.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
     dns = DNS.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
@@ -54,6 +57,7 @@ def main() -> None:
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
+    windows_credential_transition = WINDOWS_CREDENTIAL_TRANSITION.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
     windows_controller_runtime = windows_controller.split("#[cfg(test)]", 1)[0]
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
@@ -90,6 +94,11 @@ def main() -> None:
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
         and "CredentialState" in vm_agent_cli
+        and "CredentialApplyCandidate" in vm_agent_cli
+        and "CredentialPromote" in vm_agent_cli
+        and "CredentialApplyActive" in vm_agent_cli
+        and "CredentialApplyLegacy" in vm_agent_cli
+        and "CredentialRetireLegacy" in vm_agent_cli
         and 'Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err()' in vm_agent_cli
         and 'Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err()' in vm_agent_cli,
         "Linux runtime owner must expose only the closed local operation grammar and explicitly reject exec",
@@ -104,6 +113,7 @@ def main() -> None:
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
+    require("workflow_call:" in fresh_v2_cutover, "fresh-v2 terminal cutover must be reusable only")
     tunnel_auth = credential_proto.split("message TunnelAuthentication {", 1)[1].split("}", 1)[0]
     reality_public = credential_proto.split("message RealityPublicIdentity {", 1)[1].split("}", 1)[0]
     reality_private = credential_proto.split("message RealityPrivateIdentity {", 1)[1].split("}", 1)[0]
@@ -215,20 +225,23 @@ def main() -> None:
         "stage_vm_credential_candidate" in vm_agent_runtime
         and "store.stage_candidate(&bundle)" in vm_agent_runtime
         and "local_credential_bundle_ref(&bundle)" in vm_agent_runtime
-        and "promote_candidate(" not in vm_agent_runtime
-        and "rollback_previous(" not in vm_agent_runtime
-        and "stage_windows_credential_candidate" in windows_controller_runtime
-        and "require_installed_windows_credential_owner" in windows_controller_runtime
-        and "store.stage_candidate(&bundle)" in windows_controller_runtime
-        and "local_credential_bundle_ref(&bundle)" in windows_controller_runtime
-        and "promote_candidate(" not in windows_controller_runtime
-        and "rollback_previous(" not in windows_controller_runtime,
-        "runtime-owner candidate ingress must stage only and must not expose activation or rollback",
+        and "apply_vm_credential_candidate" in vm_agent_runtime
+        and "promote_vm_credential_candidate" in vm_agent_runtime
+        and "apply_vm_legacy_credential" in vm_agent_runtime
+        and "retire_vm_legacy_credential" in vm_agent_runtime,
+        "VM local owner must own the bounded Stage 2 candidate/promote/rollback/retire lifecycle",
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
-        and "stage-credential" not in windows_console,
-        "Windows runner/console transport must not gain a credential staging escape hatch in this slice",
+        and "privileged-stage-credential" in windows_console
+        and "privileged-apply-credential-candidate" in windows_console
+        and "privileged-promote-credential" in windows_console
+        and "privileged-apply-active-credential" in windows_console
+        and "privileged-apply-legacy-credential" in windows_console
+        and "privileged-retire-legacy-credential" in windows_console
+        and "runtime_state_from_bundle" in windows_credential_transition
+        and "apply_runtime_state_transaction" in windows_credential_transition,
+        "Windows runner must carry only typed generation/operation intent while SYSTEM owns Stage 2 secret/config transitions",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
@@ -237,6 +250,7 @@ def main() -> None:
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
     require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in credentials, "credential backend must not listen to comments")
+    require("issue_comment:" not in fresh_v2_cutover, "fresh-v2 cutover backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require("issue_comment:" not in dns, "DNS backend must not listen to comments")
 
@@ -357,6 +371,8 @@ def main() -> None:
     )
     require(
         '"contract-plan"' in credentials
+        and '"fresh-v2-cutover"' in credentials
+        and 'uses: ./.github/workflows/credential-fresh-v2-cutover.yml' in credentials
         and '"contract-converge"' in credentials
         and '"contract-verify"' in credentials
         and '"contract-prove"' in credentials
@@ -417,6 +433,32 @@ def main() -> None:
         and "actions/download-artifact" not in credentials,
         "host identity bootstrap must remain create-once, retry-safe, runner-blind, ciphertext-only on Windows and artifact-free",
     )
+    require(
+        "fresh_v2_publish" in credential_command
+        and "generate_fresh_credential_snapshot" in credential_command
+        and "CredentialDeliverySlot::A" in credential_command
+        and "put_worker_secret_text" in credential_command
+        and 'println!("active_slot_mutated=false")' in credential_command,
+        "Stage 2 provider mutation must generate one paired snapshot and publish only the initial inactive A slot",
+    )
+    require(
+        "STAGE2_TERMINAL=PASS" in fresh_v2_cutover
+        and "STAGE2_ROLLBACK_PROOF=PASS" in fresh_v2_cutover
+        and "STAGE2_RESTORE_V2=PASS" in fresh_v2_cutover
+        and "credential-apply-candidate" in fresh_v2_cutover
+        and "credential-promote" in fresh_v2_cutover
+        and "credential-apply-legacy" in fresh_v2_cutover
+        and "credential-retire-legacy" in fresh_v2_cutover
+        and "auto-direct-tunnel" in fresh_v2_cutover
+        and "auto-warp-tunnel" in fresh_v2_cutover
+        and "STRICT_SSH" not in fresh_v2_cutover
+        and "VULTR_SSH_PRIVATE_KEY" not in fresh_v2_cutover
+        and "actions/upload-artifact" not in fresh_v2_cutover
+        and "actions/download-artifact" not in fresh_v2_cutover
+        and "actions/cache" not in fresh_v2_cutover,
+        "Stage 2 must remain one visible terminal local-owner cutover with rollback/restore proof and no SSH/artifact transport",
+    )
+
     diagnostics_index = credential_command.index(
         "let classification = diagnose_access_failure_after_cleanup"
     )
@@ -809,6 +851,11 @@ def main() -> None:
         and "- Linux" in production_runtime
         and "- X64" in production_runtime
         and "- sing-box-production-vm" in production_runtime
+        and "credential-apply-candidate" in production_vm_runner_installer
+        and "credential-promote" in production_vm_runner_installer
+        and "credential-apply-active" in production_vm_runner_installer
+        and "credential-apply-legacy" in production_vm_runner_installer
+        and "credential-retire-legacy" in production_vm_runner_installer
         and "- production-1" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
         and 'sudo -n "${owner}" local "${local_operation}"' in production_runtime

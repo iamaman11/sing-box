@@ -3,6 +3,11 @@ use rand_core::{OsRng, RngCore};
 use std::collections::{BTreeMap, BTreeSet};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use edge_shared_types::{
+    CredentialDeliveryBundle, CredentialProjectionKind, credential_delivery_bundle,
+    validate_credential_delivery_bundle,
+};
+
 pub const APPLICATION_RUNTIME_SECRET_KEYS: &[&str] = &[
     "PROXY_PASSWORD",
     "VLESS_UUID",
@@ -33,6 +38,64 @@ pub struct ApplicationRuntimeSecrets {
 }
 
 impl ApplicationRuntimeSecrets {
+    pub fn from_vm_credential_bundle(bundle: &CredentialDeliveryBundle) -> Result<Self, String> {
+        validate_credential_delivery_bundle(bundle)?;
+        if bundle.projection != CredentialProjectionKind::Vm as i32 {
+            return Err("runtime secret projection requires a VM credential bundle".to_owned());
+        }
+        if bundle.dummy_non_secret {
+            return Err("runtime secret projection refuses dummy credential bundles".to_owned());
+        }
+        let projection = match bundle.payload.as_ref() {
+            Some(credential_delivery_bundle::Payload::Vm(value)) => value,
+            _ => return Err("runtime secret projection requires VM payload".to_owned()),
+        };
+        let tunnel = projection
+            .tunnel_auth
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing tunnel authentication".to_owned())?;
+        let direct = tunnel
+            .direct
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing direct tunnel authentication".to_owned())?;
+        let warp = tunnel
+            .warp
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing WARP tunnel authentication".to_owned())?;
+        let reality = projection
+            .reality_identity
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing Reality identity".to_owned())?;
+        let reality_direct = reality
+            .direct
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing direct Reality private identity".to_owned())?;
+        let reality_warp = reality
+            .warp
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing WARP Reality private identity".to_owned())?;
+        let line2 = projection
+            .line2_proxy
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing Line 2 proxy credential".to_owned())?;
+
+        let result = Self {
+            proxy_password: line2.password.clone(),
+            vless_uuid: direct.vless_uuid.clone(),
+            hy2_password: direct.hysteria2_password.clone(),
+            reality_private_key: reality_direct.private_key.clone(),
+            reality_public_key: reality_public_from_private(&reality_direct.private_key)?,
+            reality_short_id: direct.reality_short_id.clone(),
+            vless_warp_uuid: warp.vless_uuid.clone(),
+            hy2_warp_password: warp.hysteria2_password.clone(),
+            reality_warp_private_key: reality_warp.private_key.clone(),
+            reality_warp_public_key: reality_public_from_private(&reality_warp.private_key)?,
+            reality_warp_short_id: warp.reality_short_id.clone(),
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
     pub fn generate() -> Self {
         let (reality_private_key, reality_public_key) = generate_reality_pair();
         let (reality_warp_private_key, reality_warp_public_key) = generate_reality_pair();
@@ -152,6 +215,19 @@ fn required(values: &BTreeMap<String, String>, key: &str) -> Result<String, Stri
         .ok_or_else(|| format!("secret store is missing {key}"))
 }
 
+fn reality_public_from_private(private_key: &str) -> Result<String, String> {
+    validate_key("Reality private key", private_key)?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(private_key)
+        .map_err(|err| format!("invalid Reality private key encoding: {err}"))?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "Reality private key must decode to 32 bytes".to_owned())?;
+    let secret = StaticSecret::from(bytes);
+    let public = PublicKey::from(&secret);
+    Ok(URL_SAFE_NO_PAD.encode(public.to_bytes()))
+}
+
 fn generate_reality_pair() -> (String, String) {
     let secret = StaticSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&secret);
@@ -237,6 +313,69 @@ fn validate_key(label: &str, value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_projection_maps_to_runtime_secrets_without_new_generation() {
+        use edge_shared_types::{
+            CredentialDeliverySlot, ProxyCredentialGeneration, RealityPrivateIdentity,
+            RealityPrivateIdentityGeneration, TunnelAuthentication, TunnelAuthenticationGeneration,
+            VmCredentialProjection,
+        };
+
+        let (direct_private, direct_public) = generate_reality_pair();
+        let (warp_private, warp_public) = generate_reality_pair();
+        let bundle = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 77,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: false,
+            slot: CredentialDeliverySlot::A as i32,
+            payload: Some(credential_delivery_bundle::Payload::Vm(VmCredentialProjection {
+                tunnel_auth: Some(TunnelAuthenticationGeneration {
+                    generation: 3,
+                    direct: Some(TunnelAuthentication {
+                        vless_uuid: "11111111-1111-4111-8111-111111111111".to_owned(),
+                        hysteria2_password:
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_owned(),
+                        reality_short_id: "1111111111111111".to_owned(),
+                    }),
+                    warp: Some(TunnelAuthentication {
+                        vless_uuid: "22222222-2222-4222-8222-222222222222".to_owned(),
+                        hysteria2_password:
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                                .to_owned(),
+                        reality_short_id: "2222222222222222".to_owned(),
+                    }),
+                }),
+                reality_identity: Some(RealityPrivateIdentityGeneration {
+                    generation: 4,
+                    direct: Some(RealityPrivateIdentity {
+                        private_key: direct_private,
+                    }),
+                    warp: Some(RealityPrivateIdentity {
+                        private_key: warp_private,
+                    }),
+                }),
+                line2_proxy: Some(ProxyCredentialGeneration {
+                    generation: 5,
+                    password:
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                            .to_owned(),
+                }),
+            })),
+        };
+
+        let runtime = ApplicationRuntimeSecrets::from_vm_credential_bundle(&bundle).unwrap();
+        assert_eq!(runtime.reality_public_key, direct_public);
+        assert_eq!(runtime.reality_warp_public_key, warp_public);
+        assert_eq!(runtime.vless_uuid, "11111111-1111-4111-8111-111111111111");
+        assert_eq!(runtime.vless_warp_uuid, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(
+            runtime.proxy_password,
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        );
+    }
 
     #[test]
     fn generated_secrets_round_trip() {
