@@ -260,8 +260,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
         cli::LocalCommand::CredentialDiscardCandidate => {
-            let state = discard_vm_credential_candidate(&stack_dir)
-                .map_err(AgentError::Command)?;
+            let state = discard_vm_credential_candidate(&stack_dir).map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_DISCARD_CANDIDATE");
             println!("credential_projection=VM");
             println!("runner_secret_access=false");
@@ -269,8 +268,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
         cli::LocalCommand::CredentialRetireLegacy => {
-            let state = retire_vm_legacy_credential(&stack_dir)
-                .map_err(AgentError::Command)?;
+            let state = retire_vm_legacy_credential(&stack_dir).map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_RETIRE_LEGACY");
             println!("credential_projection=VM");
             println!("legacy_credential_store_present=false");
@@ -1326,7 +1324,9 @@ fn vm_credential_bundle_by_role(
         VmCredentialRole::Active => state.active.as_ref(),
         VmCredentialRole::Candidate => state.candidate.as_ref(),
     };
-    reference.map(|reference| store.read_bundle(reference)).transpose()
+    reference
+        .map(|reference| store.read_bundle(reference))
+        .transpose()
 }
 
 fn legacy_vm_runtime_secret_path(stack_dir: &Path) -> Result<PathBuf, String> {
@@ -1376,9 +1376,7 @@ async fn apply_vm_runtime_secrets(
     Ok(())
 }
 
-async fn apply_vm_credential_candidate(
-    stack_dir: &Path,
-) -> Result<LocalCredentialState, String> {
+async fn apply_vm_credential_candidate(stack_dir: &Path) -> Result<LocalCredentialState, String> {
     let store = open_vm_credential_store(stack_dir)?;
     let state = store
         .read_state()?
@@ -1398,9 +1396,7 @@ async fn apply_vm_credential_candidate(
     Ok(state)
 }
 
-async fn promote_vm_credential_candidate(
-    stack_dir: &Path,
-) -> Result<LocalCredentialState, String> {
+async fn promote_vm_credential_candidate(stack_dir: &Path) -> Result<LocalCredentialState, String> {
     let store = open_vm_credential_store(stack_dir)?;
     let before = store
         .read_state()?
@@ -1421,9 +1417,7 @@ async fn promote_vm_credential_candidate(
     Ok(state)
 }
 
-async fn apply_vm_active_credential(
-    stack_dir: &Path,
-) -> Result<LocalCredentialState, String> {
+async fn apply_vm_active_credential(stack_dir: &Path) -> Result<LocalCredentialState, String> {
     let store = open_vm_credential_store(stack_dir)?;
     let state = store
         .read_state()?
@@ -1454,9 +1448,7 @@ fn discard_vm_credential_candidate(
         .read_state()?
         .ok_or_else(|| "VM v2 credential state is absent".to_owned())?;
     if state.active.is_some() {
-        return Err(
-            "initial fresh-v2 candidate discard refuses state after promotion".to_owned(),
-        );
+        return Err("initial fresh-v2 candidate discard refuses state after promotion".to_owned());
     }
     store.discard_candidate()
 }
@@ -1484,8 +1476,9 @@ fn retire_vm_legacy_credential(stack_dir: &Path) -> Result<LocalCredentialState,
         expected.push('\n');
     }
     expected.push_str(&secrets.render_env());
-    let observed = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE))
-        .map_err(|err| format!("failed to verify active v2 runtime before legacy retirement: {err}"))?;
+    let observed = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE)).map_err(|err| {
+        format!("failed to verify active v2 runtime before legacy retirement: {err}")
+    })?;
     if observed != expected {
         return Err(
             "legacy retirement refused because live VM runtime environment is not exact active v2"
@@ -3860,7 +3853,11 @@ mod tests {
         let promoted = store.promote_candidate().unwrap();
         assert_eq!(promoted.active.as_ref().unwrap().generation, 101);
         assert!(promoted.previous.is_none());
-        assert!(root.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE).is_file());
+        assert!(
+            root.join(RUNTIME_SECRET_DIR)
+                .join(RUNTIME_SECRET_FILE)
+                .is_file()
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
