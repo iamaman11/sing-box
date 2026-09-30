@@ -10,7 +10,7 @@ Read authority in this order:
 
 1. **GitHub Issue #26** — sole living execution cursor and ordering authority.
 2. **`edge-platform/ARCHITECTURE.md`** — current stable ownership/invariant model.
-3. **GitHub Issue #169** — bounded Cloudflare account/credential convergence vertical.
+3. **GitHub Issue #169** — historical Cloudflare account/credential convergence evidence only; it no longer owns the current cursor.
 4. **GitHub Issue #154** — Windows Slice 2 implementation/evidence record. It does not schedule current work.
 5. **GitHub Issue #60** — bounded Windows diagnostics specification.
 6. **GitHub Issue #1** — Vultr lifecycle architecture reference.
@@ -122,7 +122,7 @@ Do not split large files merely for aesthetics before dead behavior is removed.
 Always start a new engineering session by reading live:
 - protected `main`;
 - #26 current cursor;
-- #169 when the cursor is in Cloudflare/credential convergence;
+- #169 only when historical Cloudflare convergence evidence is specifically needed;
 - open PRs and exact CI;
 - the durable ReleaseSet only when release authority is required.
 
