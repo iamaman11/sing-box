@@ -898,7 +898,9 @@ async fn run_runner_bootstrap(
         "if ss -ltnH 'sport = :50061' 2>/dev/null | grep -q .; then exit 1; else echo PASS; fi",
     )?;
     if rpc_listener_absent != "PASS" {
-        return Err("production enrollment left an edge-agent RPC listener on port 50061".to_owned());
+        return Err(
+            "production enrollment left an edge-agent RPC listener on port 50061".to_owned(),
+        );
     }
     let listener = strict_ssh_capture(
         target_ip,
