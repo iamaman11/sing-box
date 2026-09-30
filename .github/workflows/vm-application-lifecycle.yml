@@ -39,7 +39,7 @@ jobs:
           spec_path = ""
 
           if len(tokens) == 2 and tokens[0] == "/production" and tokens[1] in {
-              "converge", "verify", "diagnose"
+              "enroll-runtime", "converge", "verify", "diagnose"
           }:
               command_family = "production"
               operation = tokens[1]
@@ -68,7 +68,7 @@ jobs:
           else:
               fail(
                   "unsupported command grammar; steady-state production uses "
-                  "/production converge|verify|diagnose, provider-only target-plane commands, "
+                  "/production enroll-runtime|converge|verify|diagnose, provider-only target-plane commands, "
                   "or disposable /application acceptance|cleanup"
               )
 
@@ -165,6 +165,159 @@ jobs:
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+  production_enroll:
+    needs: authorize
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    if: >-
+      needs.authorize.outputs.command_family == 'production' &&
+      needs.authorize.outputs.operation == 'enroll-runtime'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          agent="${dir}/edge-agent-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_ENROLL_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_ENROLL_AGENT=%s\n' "${agent}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Materialize bounded bootstrap SSH authority
+        shell: bash
+        env:
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key_path}"
+          test -s "${key_path}"
+          chmod 600 "${key_path}"
+          printf 'EDGE_SSH_PRIVATE_KEY_PATH=%s\n' "${key_path}" >> "${GITHUB_ENV}"
+
+      - name: Discover bounded bootstrap egress IPv4
+        shell: bash
+        run: |
+          set -euo pipefail
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          python3 - "${ip}" <<'PY'
+          import ipaddress
+          import sys
+          value = ipaddress.ip_address(sys.argv[1].strip())
+          if value.version != 4 or not value.is_global:
+              raise SystemExit("bootstrap egress is not a global IPv4 address")
+          print(value)
+          PY
+          printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
+
+      - name: Mint short-lived runner registration token
+        shell: bash
+        env:
+          IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test -n "${IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN:-}"
+          response="$(curl --fail --silent --show-error --location \
+            --request POST \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/${REPOSITORY}/actions/runners/registration-token")"
+          token="$(jq -er '.token' <<<"${response}")"
+          echo "::add-mask::${token}"
+          printf 'EDGE_RUNNER_REGISTRATION_TOKEN=%s\n' "${token}" >> "${GITHUB_ENV}"
+
+      - name: Enroll canonical production runtime transport
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          "${EDGE_ENROLL_ORCHESTRATOR}" production enroll-runtime \
+            "${EDGE_ENROLL_AGENT}" \
+            "edge-platform/scripts/install-vultr-production-runner.sh" \
+            | tee "${RUNNER_TEMP}/production-enroll-result.txt"
+          grep -Fxq 'operation=ENROLL_RUNTIME' "${RUNNER_TEMP}/production-enroll-result.txt"
+          grep -Fxq 'steady_state_transport=GITHUB_SELF_HOSTED_RUNNER' "${RUNNER_TEMP}/production-enroll-result.txt"
+          grep -Fxq 'transient_support_access=ABSENT' "${RUNNER_TEMP}/production-enroll-result.txt"
+
+      - name: Verify production runner online
+        shell: bash
+        env:
+          IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          expected_name="sing-box-production-production-1"
+          for attempt in {1..20}; do
+            response="$(curl --fail --silent --show-error --location \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/${REPOSITORY}/actions/runners?per_page=100")"
+            if jq -e --arg name "${expected_name}" '
+              .runners[]
+              | select(.name == $name and .status == "online")
+              | [.labels[].name] as $labels
+              | ($labels | index("self-hosted")) != null
+                and ($labels | index("Linux")) != null
+                and ($labels | index("X64")) != null
+                and ($labels | index("sing-box-production-vm")) != null
+                and ($labels | index("production-1")) != null
+                and ($labels | index("vultr-root")) == null
+                and ($labels | index("test-vm")) == null
+            ' <<<"${response}" >/dev/null; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "production runtime runner did not become online" >&2
+          exit 1
+
+      - name: Remove bootstrap SSH authority material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-}" || true
+
+
   production_provider:
     needs: authorize
     concurrency:
@@ -172,7 +325,8 @@ jobs:
       cancel-in-progress: false
     if: >-
       needs.authorize.outputs.command_family == 'production' &&
-      needs.authorize.outputs.operation != 'diagnose'
+      needs.authorize.outputs.operation != 'diagnose' &&
+      needs.authorize.outputs.operation != 'enroll-runtime'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -343,6 +497,7 @@ jobs:
       always() &&
       needs.authorize.result == 'success' &&
       needs.authorize.outputs.command_family == 'production' &&
+      needs.authorize.outputs.operation != 'enroll-runtime' &&
       (
         (
           needs.authorize.outputs.operation == 'diagnose' &&

@@ -426,6 +426,11 @@ The remaining tonic/`edge-trust` server surface is named `acceptance-serve` and 
 invocation. Production enrollment disables `edge-agent.service` and proves port 50061 absent; the
 server code remains only because disposable acceptance still needs a bootstrap-time RPC observer.
 
+Persistent-host bootstrap is explicit: `/production enroll-runtime` may temporarily acquire the
+canonical /32 SSH lease to create/verify the VM substrate, converge VPC attachment, install the exact
+ReleaseSet local owner and register the low-privilege runner. The command compensates the lease before
+PASS. It is enrollment/reinstallation, not steady-state application transport.
+
 Neither runner has provider credentials or plaintext application credential authority. Privileged
 host mutations cross only explicit typed local boundaries. Macro Stage 1 keeps production rollback
 fail-closed; the new local plan/digest rollback contract is completed together with the terminal v2

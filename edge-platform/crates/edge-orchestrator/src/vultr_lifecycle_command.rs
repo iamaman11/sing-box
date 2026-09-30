@@ -771,24 +771,38 @@ async fn run_runner_bootstrap(
     }
 
     let desired = load_desired_state(Path::new(&args[0]))?;
-    let machine_id = &args[1];
+    bootstrap_production_runner(
+        &desired,
+        &args[1],
+        Path::new(&args[2]),
+        Path::new(&args[3]),
+        context,
+    )
+    .await
+}
+
+pub(crate) async fn bootstrap_production_runner(
+    desired: &DesiredState,
+    machine_id: &str,
+    installer_path: &Path,
+    local_owner_artifact: &Path,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
     if !desired
         .machines
         .iter()
-        .any(|machine| machine.id == *machine_id)
+        .any(|machine| machine.id == machine_id)
     {
         return Err(format!(
             "machine {machine_id} is not present in desired state"
         ));
     }
-    let installer_path = Path::new(&args[2]);
     if !installer_path.is_file() {
         return Err(format!(
             "production runner installer was not found: {}",
             installer_path.display()
         ));
     }
-    let local_owner_artifact = Path::new(&args[3]);
     let expected_artifact = context.expected_application_artifact()?;
     context.validate_application_artifact(&expected_artifact, local_owner_artifact)?;
 
@@ -928,6 +942,7 @@ async fn run_runner_bootstrap(
         "registration_token_persisted": false,
     }))
 }
+
 
 fn validate_runner_registration_token(value: &str) -> Result<(), String> {
     if value.len() < 16

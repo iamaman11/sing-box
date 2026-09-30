@@ -13,7 +13,7 @@ use crate::cloudflare_target_plane_command::verify_active_invariant as verify_ac
 use crate::vultr_lifecycle_command::{
     acceptance_converge_substrate as substrate_converge, acceptance_lease_acquire as lease_acquire,
     acceptance_lease_release as lease_release, acceptance_verify_substrate as substrate_verify,
-    exact_existing_machine_observation, production_converge_machine,
+    bootstrap_production_runner, exact_existing_machine_observation, production_converge_machine,
 };
 use crate::vultr_vpc_lifecycle_command::{
     acceptance_verify as vpc_verify, production_converge as vpc_converge,
@@ -30,6 +30,52 @@ pub(crate) fn validate(release_context: &OrchestrationContext) -> Result<(), Str
     let composition = ProductionComposition::from_proto(&desired).map_err(|err| err.to_string())?;
     print_identity(release_context, &composition, "PASS");
     Ok(())
+}
+
+pub(crate) async fn enroll_runtime(
+    release_context: &OrchestrationContext,
+    edge_agent_artifact_path: &Path,
+    runner_installer_path: &Path,
+) -> Result<(), String> {
+    release_context.application_release_authority()?;
+    let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
+
+    production_converge_machine(spec, &composition.machine_id).await?;
+    lease_acquire(spec, &composition.machine_id).await?;
+
+    let operation = async {
+        substrate_converge(spec, &composition.machine_id).await?;
+        vpc_converge(spec).await?;
+        bootstrap_production_runner(
+            &composition.machines,
+            &composition.machine_id,
+            runner_installer_path,
+            edge_agent_artifact_path,
+            release_context,
+        )
+        .await
+    }
+    .await;
+
+    let release_result = lease_release(spec, &composition.machine_id).await;
+    match (operation, release_result) {
+        (Ok(()), Ok(())) => {
+            print_identity(release_context, &composition, "PASS");
+            println!("operation=ENROLL_RUNTIME");
+            println!("bootstrap_transport=STRICT_SSH");
+            println!("steady_state_transport=GITHUB_SELF_HOSTED_RUNNER");
+            println!("transient_support_access=ABSENT");
+            Ok(())
+        }
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(release_err)) => Err(format!(
+            "production runtime enrollment passed but transient support-access cleanup failed: {release_err}"
+        )),
+        (Err(err), Err(release_err)) => Err(format!(
+            "{err}; transient support-access cleanup also failed: {release_err}"
+        )),
+    }
 }
 
 pub(crate) async fn converge(

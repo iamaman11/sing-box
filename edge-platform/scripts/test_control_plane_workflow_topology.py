@@ -440,8 +440,8 @@ def main() -> None:
         "target-plane transport must expose only target-account, shared-DNS and Vultr provider authority",
     )
     require(
-        application.count("group: vultr-control-plane-production") == 5,
-        "application backend must serialize provider, observation, cleanup and disposable acceptance jobs",
+        application.count("group: vultr-control-plane-production") == 6,
+        "application backend must serialize enrollment, provider, observation, cleanup and disposable acceptance jobs",
     )
     production_observe = application.split("  production_observe:\n", 1)[1].split("\n  production_runtime:", 1)[0]
     require(
@@ -729,6 +729,9 @@ def main() -> None:
         "acquire-access-plan" not in vultr and "release-access-plan" not in vultr,
         "Vultr workflow must not own transient-access PlanAuthority plumbing",
     )
+    production_enroll = application.split("\n  production_enroll:\n", 1)[1].split(
+        "\n  production_provider:", 1
+    )[0]
     production_provider = application.split("\n  production_provider:\n", 1)[1].split(
         "\n  production_observe:", 1
     )[0]
@@ -737,7 +740,7 @@ def main() -> None:
     )[0]
     require(
         'tokens[0] == "/production"' in application
-        and '"converge", "verify", "diagnose"' in application
+        and '"enroll-runtime", "converge", "verify", "diagnose"' in application
         and 'tokens == ["/production", "rollback"]' not in application
         and 'spec_path = "infra/production/production.textproto"' in application,
         "steady-state production grammar must expose converge/verify/diagnose only; rollback remains fail-closed until Macro Stage 2",
@@ -747,6 +750,20 @@ def main() -> None:
         and "\n  production:\n" not in application
         and '"plan", "apply", "verify", "upgrade"' not in application,
         "retired hosted SSH application/production jobs and manual application mutation grammar must be absent",
+    )
+    require(
+        "runs-on: ubuntu-24.04" in production_enroll
+        and "production enroll-runtime" in production_enroll
+        and "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in production_enroll
+        and "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}" in production_enroll
+        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_enroll
+        and "api.ipify.org" in production_enroll
+        and "EDGE_RUNNER_REGISTRATION_TOKEN" in production_enroll
+        and "install-vultr-production-runner.sh" in production_enroll
+        and "steady_state_transport=GITHUB_SELF_HOSTED_RUNNER" in production_enroll
+        and "CLOUDFLARE_CONTROL_TOKEN" not in production_enroll
+        and "CLOUDFLARE_DNS_TOKEN" not in production_enroll,
+        "production enrollment must be the sole bounded SSH bootstrap into the permanent self-hosted runtime transport",
     )
     require(
         "runs-on: ubuntu-24.04" in production_provider
@@ -806,7 +823,7 @@ def main() -> None:
         "VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}" in acceptance_job
         and "api.ipify.org" in acceptance_job
         and "application-acceptance" in acceptance_job,
-        "SSH/egress discovery may remain only inside disposable acceptance bootstrap",
+        "acceptance retains its disposable SSH bootstrap; persistent production SSH is isolated to explicit production enrollment",
     )
     require(
         cleanup_job.count("edge-platform/scripts/resolve_durable_release.sh") == 1

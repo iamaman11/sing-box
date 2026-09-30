@@ -97,6 +97,8 @@ The runner has no provider credentials, no generic root, no Docker socket access
 
 The old standalone `/mesh` workflow is not a steady-state control surface. Mesh provider lifecycle is part of the hosted production target plane; VM Mesh runtime operations stay inside the local owner.
 
+For a fresh or re-enrolled production VM, `/production enroll-runtime` is the bounded bootstrap path: temporary strict SSH -> host substrate/VPC -> exact local owner -> permanent self-hosted runner -> SSH lease removed. Normal `/production converge|verify|diagnose` does not use SSH.
+
 ## Build/release model
 
 ```text
