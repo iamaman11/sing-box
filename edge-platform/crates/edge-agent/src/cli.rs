@@ -124,7 +124,9 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-promote"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-apply-active"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-apply-legacy"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-discard-candidate"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-agent", "local", "credential-discard-candidate"]).is_ok()
+        );
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-retire-legacy"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err());
