@@ -20,7 +20,7 @@ Historical plans are never execution authority. If any document conflicts with #
 
 ## Accepted architecture and convergence target
 
-The ownership model below is accepted. Cloudflare account convergence and deletion-first cleanup are still in progress under #169; do not interpret the target placement of Mesh/Zero Trust/credential Workers as already migrated provider state.
+The ownership model below is accepted. Cloudflare account convergence through the single production-account authority flip is closed. Current execution is the final convergence sequence in Issue #26: complete the bounded runtime-host Access identity bootstrap, then perform one terminal fresh-v2 credential cutover, then delete superseded historical/control surfaces. Stable architecture must not reopen the closed provider migration.
 
 ```text
 Git / protected main
@@ -69,11 +69,11 @@ Cloudflare zone alegria.by
 
 ## Cloudflare target
 
-All application-exclusive account-scoped Cloudflare resources converge into the dedicated account `sing-box`.
+All application-exclusive account-scoped Cloudflare resources are owned by the dedicated account `sing-box`.
 
-`alegria.by` deliberately remains a shared external DNS zone. DNS automation is zone-scoped and may mutate only the explicit sing-box record set.
+`alegria.by` deliberately remains a shared external DNS zone. DNS automation is zone-scoped and may mutate only the explicit sing-box record set. Credential-delivery Workers remain intentionally `workers.dev`-only with previews disabled; custom domains are not part of the accepted credential plane.
 
-Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations through isolated Windows/VM credential Workers. Each Worker is only a fixed A/B delivery mailbox: no active pointer, history database or runtime authority. Delivery must remain runner-blind: direct local-owner HTTPS/Cloudflare Access fetch is preferred only after its host-identity bootstrap/rotation lifecycle is proven; otherwise use the smallest audited standard recipient-encrypted handoff. Self-hosted runners carry only non-secret intent and never receive credential plaintext. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
+Runtime credentials are not copied from the legacy Windows installation. The new stack gets fresh credential generations through isolated Windows/VM credential Workers. Each Worker is only a fixed A/B delivery mailbox: no active pointer, history database or runtime authority. Canonical delivery is runner-blind direct HTTPS fetch by the trusted local owner using a projection-specific permanent Cloudflare Access host identity. Windows and VM host identities are physically distinct from each other and from proof identities. Self-hosted runners carry only non-secret intent and never receive credential plaintext. Cloudflare is a convergence/rotation dependency, not a runtime data-path dependency.
 
 ## Release and recovery
 
