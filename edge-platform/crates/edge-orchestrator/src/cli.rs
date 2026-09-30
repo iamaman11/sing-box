@@ -257,6 +257,7 @@ pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
     ContractProve,
     HostBootstrapConverge,
+    FreshV2Publish { generation: u64 },
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]

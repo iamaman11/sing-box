@@ -133,6 +133,16 @@ message WindowsRuntimeState {
   WindowsTunnelBinding warp = 6;
 }
 
+enum CredentialTransitionAction {
+  CREDENTIAL_TRANSITION_ACTION_UNSPECIFIED = 0;
+  CREDENTIAL_TRANSITION_ACTION_VALIDATE_CANDIDATE = 1;
+  CREDENTIAL_TRANSITION_ACTION_APPLY_CANDIDATE = 2;
+  CREDENTIAL_TRANSITION_ACTION_PROMOTE = 3;
+  CREDENTIAL_TRANSITION_ACTION_APPLY_LEGACY = 4;
+  CREDENTIAL_TRANSITION_ACTION_APPLY_ACTIVE = 5;
+  CREDENTIAL_TRANSITION_ACTION_RETIRE_LEGACY = 6;
+}
+
 enum WindowsPrivilegedOperation {
   WINDOWS_PRIVILEGED_OPERATION_UNSPECIFIED = 0;
   WINDOWS_PRIVILEGED_OPERATION_PING = 1;
@@ -140,6 +150,7 @@ enum WindowsPrivilegedOperation {
   WINDOWS_PRIVILEGED_OPERATION_STAGE_CREDENTIAL = 3;
   WINDOWS_PRIVILEGED_OPERATION_PREPARE_CREDENTIAL_ACCESS_BOOTSTRAP = 4;
   WINDOWS_PRIVILEGED_OPERATION_INSTALL_CREDENTIAL_ACCESS_BOOTSTRAP = 5;
+  WINDOWS_PRIVILEGED_OPERATION_CREDENTIAL_TRANSITION = 6;
 }
 
 message WindowsPrivilegedRequest {
@@ -149,6 +160,7 @@ message WindowsPrivilegedRequest {
   optional string accepted_revision = 4;
   optional string release_set_sha256 = 5;
   optional uint64 credential_generation = 6;
+  optional CredentialTransitionAction credential_transition_action = 7;
 }
 
 message WindowsPrivilegedResult {

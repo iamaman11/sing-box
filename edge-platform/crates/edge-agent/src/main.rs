@@ -34,12 +34,13 @@ use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
     BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, CredentialStateObservation,
-    Empty, FileCategory, FilePresence, Ipv4NetworkObservation, LocalCredentialState,
-    MeshContainerDiagnostics, MeshRuntimeConvergeRequest, MeshRuntimeDiagnostics,
-    MeshRuntimeFailureSnapshot, MeshRuntimeState, ReadBundleIdentityRequest,
-    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
-    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
-    StageCredentialCandidateRequest, VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    CredentialTransitionAction, Empty, FileCategory, FilePresence, Ipv4NetworkObservation,
+    LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
+    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
+    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
+    RuntimeProbeEvidence, RuntimeProbeStatus, StageCredentialCandidateRequest,
+    VerifyRuntimeRequest, canonical_apply_bundle_digest, parse_credential_transition_action,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -209,6 +210,19 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("credential_generation={generation}");
             println!("runner_secret_access=false");
             print_credential_state_evidence(Some(&state));
+            Ok(())
+        }
+        cli::LocalCommand::CredentialTransition { action } => {
+            let action =
+                parse_credential_transition_action(&action).map_err(AgentError::Command)?;
+            let state = transition_vm_credential(&stack_dir, action)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_TRANSITION");
+            println!("credential_projection=VM");
+            println!("credential_transition_action={}", action.as_str_name());
+            println!("runner_secret_access=false");
+            print_credential_state_evidence(state.as_ref());
             Ok(())
         }
     }
@@ -1061,35 +1075,14 @@ fn write_application_release(
 }
 
 fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), String> {
-    let policy_path = stack_dir.join(RUNTIME_POLICY_FILE);
-    if !policy_path.is_file() {
+    if !stack_dir.join(RUNTIME_POLICY_FILE).is_file() {
         return Ok(());
     }
-
-    let policy = fs::read_to_string(&policy_path).map_err(|err| {
-        format!(
-            "failed to read runtime policy {}: {err}",
-            policy_path.display()
-        )
-    })?;
-    validate_runtime_policy_env(&policy)?;
-
-    let secrets = ensure_vm_runtime_secret_store(stack_dir)?;
-    let mut runtime = policy;
-    if !runtime.ends_with('\n') {
-        runtime.push('\n');
-    }
-    runtime.push_str(&secrets.render_env());
-
-    let runtime_path = stack_dir.join(RUNTIME_ENV_FILE);
-    fs::write(&runtime_path, runtime.as_bytes()).map_err(|err| {
-        format!(
-            "failed to write derived runtime environment {}: {err}",
-            runtime_path.display()
-        )
-    })?;
-    set_bundle_file_permissions(&runtime_path, false, true)?;
-    Ok(())
+    let secrets = match active_vm_credential_bundle(stack_dir)? {
+        Some(bundle) => ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?,
+        None => ensure_vm_runtime_secret_store(stack_dir)?,
+    };
+    write_vm_runtime_environment(stack_dir, &secrets)
 }
 
 fn validate_runtime_policy_env(raw: &str) -> Result<(), String> {
@@ -1206,6 +1199,269 @@ fn observe_vm_credential_state(stack_dir: &Path) -> Result<Option<LocalCredentia
         return Ok(None);
     };
     store.read_state()
+}
+
+fn open_vm_credential_store(stack_dir: &Path) -> Result<CredentialStore, String> {
+    CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?
+    .ok_or_else(|| "VM v2 credential store is absent".to_owned())
+}
+
+fn active_vm_credential_bundle(
+    stack_dir: &Path,
+) -> Result<Option<edge_shared_types::CredentialDeliveryBundle>, String> {
+    let Some(store) = CredentialStore::open_existing(
+        vm_credential_store_root(stack_dir)?,
+        CredentialProjectionKind::Vm,
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(state) = store.read_state()? else {
+        return Ok(None);
+    };
+    state
+        .active
+        .as_ref()
+        .map(|reference| store.read_bundle(reference))
+        .transpose()
+}
+
+fn vm_runtime_environment(
+    stack_dir: &Path,
+    secrets: &ApplicationRuntimeSecrets,
+) -> Result<String, String> {
+    let policy_path = stack_dir.join(RUNTIME_POLICY_FILE);
+    let policy = fs::read_to_string(&policy_path).map_err(|err| {
+        format!(
+            "failed to read runtime policy {}: {err}",
+            policy_path.display()
+        )
+    })?;
+    validate_runtime_policy_env(&policy)?;
+    secrets.validate()?;
+    let mut runtime = policy;
+    if !runtime.ends_with('\n') {
+        runtime.push('\n');
+    }
+    runtime.push_str(&secrets.render_env());
+    Ok(runtime)
+}
+
+fn write_vm_runtime_environment(
+    stack_dir: &Path,
+    secrets: &ApplicationRuntimeSecrets,
+) -> Result<(), String> {
+    let runtime = vm_runtime_environment(stack_dir, secrets)?;
+    let path = stack_dir.join(RUNTIME_ENV_FILE);
+    let temporary = path.with_extension("runtime.new");
+    fs::write(&temporary, runtime.as_bytes()).map_err(|err| {
+        format!(
+            "failed to stage VM runtime environment {}: {err}",
+            temporary.display()
+        )
+    })?;
+    set_bundle_file_permissions(&temporary, false, true)?;
+    fs::rename(&temporary, &path).map_err(|err| {
+        let _ = fs::remove_file(&temporary);
+        format!(
+            "failed to atomically publish VM runtime environment {}: {err}",
+            path.display()
+        )
+    })
+}
+
+fn legacy_vm_runtime_secret_path(stack_dir: &Path) -> Result<PathBuf, String> {
+    let parent = stack_dir
+        .parent()
+        .ok_or_else(|| "application stack path has no parent".to_owned())?;
+    Ok(parent.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE))
+}
+
+fn read_legacy_vm_runtime_secrets(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {
+    let path = legacy_vm_runtime_secret_path(stack_dir)?;
+    let raw = fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "legacy VM runtime secret store is unavailable at {}: {err}",
+            path.display()
+        )
+    })?;
+    ApplicationRuntimeSecrets::parse_env(&raw)
+}
+
+async fn apply_vm_credential_runtime(
+    stack_dir: &Path,
+    secrets: &ApplicationRuntimeSecrets,
+) -> Result<(), String> {
+    write_vm_runtime_environment(stack_dir, secrets)?;
+    let result = run_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+    if !result.success {
+        return Err(format!(
+            "VM credential runtime failed readiness verification: {}",
+            result.warnings.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+async fn transition_vm_credential(
+    stack_dir: &Path,
+    action: CredentialTransitionAction,
+) -> Result<Option<LocalCredentialState>, String> {
+    let store = open_vm_credential_store(stack_dir)?;
+    let state = store
+        .read_state()?
+        .ok_or_else(|| "VM v2 credential state is absent".to_owned())?;
+
+    match action {
+        CredentialTransitionAction::Unspecified => {
+            Err("credential transition action is required".to_owned())
+        }
+        CredentialTransitionAction::ValidateCandidate => {
+            if state.active.is_some() || state.previous.is_some() {
+                return Err(
+                    "initial fresh-v2 candidate validation requires empty active/previous state"
+                        .to_owned(),
+                );
+            }
+            let candidate = state
+                .candidate
+                .as_ref()
+                .ok_or_else(|| "VM v2 candidate is absent".to_owned())?;
+            let bundle = store.read_bundle(candidate)?;
+            let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+            let _ = vm_runtime_environment(stack_dir, &secrets)?;
+            Ok(Some(state))
+        }
+        CredentialTransitionAction::ApplyCandidate => {
+            if state.active.is_some() || state.previous.is_some() {
+                return Err(
+                    "initial fresh-v2 candidate apply requires empty active/previous state"
+                        .to_owned(),
+                );
+            }
+            let candidate = state
+                .candidate
+                .as_ref()
+                .ok_or_else(|| "VM v2 candidate is absent".to_owned())?;
+            let bundle = store.read_bundle(candidate)?;
+            let candidate_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+            if let Err(err) = apply_vm_credential_runtime(stack_dir, &candidate_secrets).await {
+                let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
+                let recovery = apply_vm_credential_runtime(stack_dir, &legacy).await;
+                return match recovery {
+                    Ok(()) => Err(format!(
+                        "VM candidate runtime failed and legacy LKG was restored: {err}"
+                    )),
+                    Err(recovery_err) => Err(format!(
+                        "VM candidate runtime failed: {err}; legacy recovery also failed: {recovery_err}"
+                    )),
+                };
+            }
+            Ok(Some(state))
+        }
+        CredentialTransitionAction::Promote => {
+            if state.active.is_some() || state.previous.is_some() {
+                return Err(
+                    "initial fresh-v2 promotion requires empty active/previous state".to_owned(),
+                );
+            }
+            Ok(Some(store.promote_candidate()?))
+        }
+        CredentialTransitionAction::ApplyLegacy => {
+            let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
+            if let Err(err) = apply_vm_credential_runtime(stack_dir, &legacy).await {
+                let fallback = state
+                    .candidate
+                    .as_ref()
+                    .or(state.active.as_ref())
+                    .ok_or_else(|| {
+                        format!(
+                            "VM legacy rollback proof failed with no v2 fallback available: {err}"
+                        )
+                    })?;
+                let bundle = store.read_bundle(fallback)?;
+                let v2 = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+                let recovery = apply_vm_credential_runtime(stack_dir, &v2).await;
+                return match recovery {
+                    Ok(()) => Err(format!(
+                        "VM legacy rollback proof failed and v2 LKG was restored: {err}"
+                    )),
+                    Err(recovery_err) => Err(format!(
+                        "VM legacy rollback proof failed: {err}; v2 recovery also failed: {recovery_err}"
+                    )),
+                };
+            }
+            Ok(Some(state))
+        }
+        CredentialTransitionAction::ApplyActive => {
+            if state.candidate.is_some() {
+                return Err("active v2 apply refuses a staged candidate".to_owned());
+            }
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| "VM v2 active credential is absent".to_owned())?;
+            let bundle = store.read_bundle(active)?;
+            let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+            if let Err(err) = apply_vm_credential_runtime(stack_dir, &active_secrets).await {
+                let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
+                let recovery = apply_vm_credential_runtime(stack_dir, &legacy).await;
+                return match recovery {
+                    Ok(()) => Err(format!(
+                        "VM active-v2 recovery failed and legacy LKG was restored: {err}"
+                    )),
+                    Err(recovery_err) => Err(format!(
+                        "VM active-v2 recovery failed: {err}; legacy recovery also failed: {recovery_err}"
+                    )),
+                };
+            }
+            Ok(Some(state))
+        }
+        CredentialTransitionAction::RetireLegacy => {
+            if state.active.is_none() || state.candidate.is_some() {
+                return Err(
+                    "legacy retirement requires one active v2 credential and no candidate"
+                        .to_owned(),
+                );
+            }
+            let active = state.active.as_ref().unwrap();
+            let bundle = store.read_bundle(active)?;
+            let expected = vm_runtime_environment(
+                stack_dir,
+                &ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?,
+            )?;
+            let observed = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE))
+                .map_err(|err| format!("failed to verify live VM runtime environment: {err}"))?;
+            if observed != expected {
+                return Err(
+                    "legacy retirement refused because live VM runtime is not exact active v2"
+                        .to_owned(),
+                );
+            }
+            let runtime = inspect_runtime(stack_dir, AgentMode::Readiness).await;
+            let verified =
+                verify_bootstrap_post_state(stack_dir, BootstrapMode::BootstrapFull, &runtime);
+            if !verified.success {
+                return Err(format!(
+                    "legacy retirement refused because active-v2 runtime is not ready: {}",
+                    verified.warnings.join("; ")
+                ));
+            }
+            let legacy = legacy_vm_runtime_secret_path(stack_dir)?;
+            if legacy.exists() {
+                fs::remove_file(&legacy).map_err(|err| {
+                    format!(
+                        "failed to retire legacy VM runtime secret store {}: {err}",
+                        legacy.display()
+                    )
+                })?;
+            }
+            Ok(Some(state))
+        }
+    }
 }
 
 fn ensure_vm_runtime_secret_store(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {

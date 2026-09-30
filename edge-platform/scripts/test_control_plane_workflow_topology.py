@@ -16,6 +16,7 @@ WINDOWS_INPUT = Path("edge-platform/scripts/windows_input_digest.py")
 WINDOWS_INSTALLER = Path("edge-platform/scripts/install-windows-release.ps1")
 WINDOWS_RUNNER_BOOTSTRAP = Path("edge-platform/scripts/bootstrap-windows-runner.ps1")
 WINDOWS_CONSOLE = Path("edge-platform/crates/edge-console/src/main.rs")
+WINDOWS_CONSOLE_CLI = Path("edge-platform/crates/edge-console/src/cli.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
@@ -54,6 +55,7 @@ def main() -> None:
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
+    windows_console_cli = WINDOWS_CONSOLE_CLI.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
     windows_controller_runtime = windows_controller.split("#[cfg(test)]", 1)[0]
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
@@ -90,6 +92,10 @@ def main() -> None:
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
         and "CredentialState" in vm_agent_cli
+        and "CredentialTransition" in vm_agent_cli
+        and "CredentialApplyCandidate" not in vm_agent_cli
+        and "CredentialPromote" not in vm_agent_cli
+        and "CredentialRollback" not in vm_agent_cli
         and 'Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err()' in vm_agent_cli
         and 'Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err()' in vm_agent_cli,
         "Linux runtime owner must expose only the closed local operation grammar and explicitly reject exec",
@@ -211,24 +217,32 @@ def main() -> None:
             and "rpc GetCredentialState(Empty) returns (CredentialStateObservation);" in owner_proto,
             "both runtime owners must expose the same bounded candidate staging/observation contract",
         )
+    vm_stage_start = vm_agent_runtime.index("fn stage_vm_credential_candidate")
+    vm_stage_end = vm_agent_runtime.index("fn observe_vm_credential_state", vm_stage_start)
+    vm_stage = vm_agent_runtime[vm_stage_start:vm_stage_end]
+    windows_stage_start = windows_controller_runtime.index("fn stage_windows_credential_candidate")
+    windows_stage_end = windows_controller_runtime.index(
+        "fn observe_windows_credential_state", windows_stage_start
+    )
+    windows_stage = windows_controller_runtime[windows_stage_start:windows_stage_end]
     require(
-        "stage_vm_credential_candidate" in vm_agent_runtime
-        and "store.stage_candidate(&bundle)" in vm_agent_runtime
-        and "local_credential_bundle_ref(&bundle)" in vm_agent_runtime
-        and "promote_candidate(" not in vm_agent_runtime
-        and "rollback_previous(" not in vm_agent_runtime
-        and "stage_windows_credential_candidate" in windows_controller_runtime
-        and "require_installed_windows_credential_owner" in windows_controller_runtime
-        and "store.stage_candidate(&bundle)" in windows_controller_runtime
-        and "local_credential_bundle_ref(&bundle)" in windows_controller_runtime
-        and "promote_candidate(" not in windows_controller_runtime
-        and "rollback_previous(" not in windows_controller_runtime,
-        "runtime-owner candidate ingress must stage only and must not expose activation or rollback",
+        "store.stage_candidate(&bundle)" in vm_stage
+        and "local_credential_bundle_ref(&bundle)" in vm_stage
+        and "promote_candidate(" not in vm_stage
+        and "rollback_previous(" not in vm_stage
+        and "require_installed_windows_credential_owner" in windows_stage
+        and "store.stage_candidate(&bundle)" in windows_stage
+        and "local_credential_bundle_ref(&bundle)" in windows_stage
+        and "promote_candidate(" not in windows_stage
+        and "rollback_previous(" not in windows_stage,
+        "candidate ingress functions must remain stage-only; transition authority stays in the bounded local-owner command",
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
-        and "stage-credential" not in windows_console,
-        "Windows runner/console transport must not gain a credential staging escape hatch in this slice",
+        and "PrivilegedStageCredential" in windows_console_cli
+        and "WindowsPrivilegedOperation::StageCredential" in windows_console
+        and "fetch_canonical_credential_bundle" in windows_console,
+        "Windows runner may carry only typed generation intent while SYSTEM fetches and stages the canonical bundle",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
@@ -399,12 +413,15 @@ def main() -> None:
         and "credential.client_secret" not in proof_session,
         "credential proof must use one shared two-projection session with secret-safe provider-native failure evidence and no HTTP replay",
     )
+    host_bootstrap_workflow = credentials.split(
+        "  host_bootstrap_release:\n", 1
+    )[1].split("\n  cutover_release:\n", 1)[0]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
     host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
     host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]
     require(
         '"host-bootstrap-converge"' in credentials
-        and credentials.count("sing-box-windows-lab") == 2
+        and host_bootstrap_workflow.count("sing-box-windows-lab") == 2
         and "CMS/RFC5652 ciphertext only" in credentials
         and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID" in credentials
         and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET" in credentials
@@ -417,6 +434,29 @@ def main() -> None:
         and "actions/download-artifact" not in credentials,
         "host identity bootstrap must remain create-once, retry-safe, runner-blind, ciphertext-only on Windows and artifact-free",
     )
+    fresh_v2_start = credential_command.index("async fn fresh_v2_publish(")
+    fresh_v2_end = credential_command.index(
+        "pub(crate) async fn verify_credential_plane_invariant", fresh_v2_start
+    )
+    fresh_v2 = credential_command[fresh_v2_start:fresh_v2_end]
+    fresh_v2_publish = fresh_v2[: fresh_v2.index("async fn restore_dummy_slot")]
+    require(
+        '"fresh-v2-cutover"' in credentials
+        and not (WORKFLOWS / "credential-fresh-v2-cutover.yml").exists()
+        and "CredentialTransition" in vm_agent_cli
+        and "CredentialTransition" in windows_console_cli
+        and "PrivilegedApplyCredentialCandidate" not in windows_console_cli
+        and "PrivilegedPromoteCredential" not in windows_console_cli
+        and "PrivilegedRollbackCredential" not in windows_console_cli
+        and "credential-transition" in production_vm_runner_installer
+        and "generate_fresh_credential_snapshot" in fresh_v2_publish
+        and fresh_v2_publish.count("cloudflare::put_worker_secret_text(") == 2
+        and "CredentialDeliverySlot::A" in fresh_v2_publish
+        and "async fn restore_dummy_slot" in fresh_v2
+        and "active_slot_mutated=false" in fresh_v2_publish,
+        "Macro Stage 2 must remain one credential workflow with one host transition entrypoint and bounded inactive-slot publication",
+    )
+
     diagnostics_index = credential_command.index(
         "let classification = diagnose_access_failure_after_cleanup"
     )

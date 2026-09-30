@@ -699,6 +699,7 @@ pub fn validate_windows_privileged_request(
             if request.accepted_revision.is_some()
                 || request.release_set_sha256.is_some()
                 || request.credential_generation.is_some()
+                || request.credential_transition_action.is_some()
             {
                 return Err(
                     "PING request must not carry release or credential authority".to_owned(),
@@ -714,15 +715,20 @@ pub fn validate_windows_privileged_request(
                 .release_set_sha256
                 .as_deref()
                 .ok_or_else(|| "ACTIVATE_RELEASE requires release_set_sha256".to_owned())?;
-            if request.credential_generation.is_some() {
+            if request.credential_generation.is_some()
+                || request.credential_transition_action.is_some()
+            {
                 return Err("ACTIVATE_RELEASE must not carry credential authority".to_owned());
             }
             validate_lower_hex("WindowsPrivilegedRequest.accepted_revision", revision, 40)?;
             validate_lower_hex("WindowsPrivilegedRequest.release_set_sha256", release, 64)?;
         }
         WindowsPrivilegedOperation::StageCredential => {
-            if request.accepted_revision.is_some() || request.release_set_sha256.is_some() {
-                return Err("STAGE_CREDENTIAL must not carry release authority".to_owned());
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_transition_action.is_some()
+            {
+                return Err("STAGE_CREDENTIAL must carry generation authority only".to_owned());
             }
             let generation = request
                 .credential_generation
@@ -736,6 +742,7 @@ pub fn validate_windows_privileged_request(
             if request.accepted_revision.is_some()
                 || request.release_set_sha256.is_some()
                 || request.credential_generation.is_some()
+                || request.credential_transition_action.is_some()
             {
                 return Err(
                     "credential Access bootstrap request must carry no release or application credential authority"
@@ -743,8 +750,42 @@ pub fn validate_windows_privileged_request(
                 );
             }
         }
+        WindowsPrivilegedOperation::CredentialTransition => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_generation.is_some()
+            {
+                return Err("CREDENTIAL_TRANSITION must carry action authority only".to_owned());
+            }
+            let action = request
+                .credential_transition_action
+                .ok_or_else(|| {
+                    "CREDENTIAL_TRANSITION requires credential_transition_action".to_owned()
+                })
+                .and_then(|value| {
+                    CredentialTransitionAction::try_from(value)
+                        .map_err(|_| "credential_transition_action is invalid".to_owned())
+                })?;
+            if action == CredentialTransitionAction::Unspecified {
+                return Err("credential_transition_action is required".to_owned());
+            }
+        }
     }
     Ok(())
+}
+
+pub fn parse_credential_transition_action(
+    value: &str,
+) -> Result<CredentialTransitionAction, String> {
+    match value {
+        "validate-candidate" => Ok(CredentialTransitionAction::ValidateCandidate),
+        "apply-candidate" => Ok(CredentialTransitionAction::ApplyCandidate),
+        "promote" => Ok(CredentialTransitionAction::Promote),
+        "apply-legacy" => Ok(CredentialTransitionAction::ApplyLegacy),
+        "apply-active" => Ok(CredentialTransitionAction::ApplyActive),
+        "retire-legacy" => Ok(CredentialTransitionAction::RetireLegacy),
+        _ => Err(format!("unsupported credential transition action: {value}")),
+    }
 }
 
 pub fn encode_windows_privileged_result(
@@ -2123,6 +2164,7 @@ mod tests {
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             ),
             credential_generation: None,
+            credential_transition_action: None,
         };
         let bytes = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), request);
@@ -2141,6 +2183,7 @@ mod tests {
             accepted_revision: None,
             release_set_sha256: None,
             credential_generation: None,
+            credential_transition_action: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2158,6 +2201,7 @@ mod tests {
             accepted_revision: None,
             release_set_sha256: None,
             credential_generation: Some(101),
+            credential_transition_action: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2167,6 +2211,48 @@ mod tests {
 
         let mut invalid = request;
         invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn credential_transition_parser_and_windows_request_share_one_closed_action_set() {
+        for (name, action) in [
+            (
+                "validate-candidate",
+                CredentialTransitionAction::ValidateCandidate,
+            ),
+            (
+                "apply-candidate",
+                CredentialTransitionAction::ApplyCandidate,
+            ),
+            ("promote", CredentialTransitionAction::Promote),
+            ("apply-legacy", CredentialTransitionAction::ApplyLegacy),
+            ("apply-active", CredentialTransitionAction::ApplyActive),
+            ("retire-legacy", CredentialTransitionAction::RetireLegacy),
+        ] {
+            assert_eq!(parse_credential_transition_action(name).unwrap(), action);
+            let request = WindowsPrivilegedRequest {
+                schema_version: 1,
+                request_id: format!("request-transition-{}", action as i32),
+                operation: WindowsPrivilegedOperation::CredentialTransition as i32,
+                accepted_revision: None,
+                release_set_sha256: None,
+                credential_generation: None,
+                credential_transition_action: Some(action as i32),
+            };
+            assert!(encode_windows_privileged_request(&request).is_ok());
+        }
+
+        assert!(parse_credential_transition_action("rotate").is_err());
+        let invalid = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-transition-invalid".to_owned(),
+            operation: WindowsPrivilegedOperation::CredentialTransition as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+            credential_transition_action: None,
+        };
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
@@ -2184,6 +2270,7 @@ mod tests {
                 accepted_revision: None,
                 release_set_sha256: None,
                 credential_generation: None,
+                credential_transition_action: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
 
