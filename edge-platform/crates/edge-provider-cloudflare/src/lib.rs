@@ -543,31 +543,64 @@ pub async fn upload_worker_module_with_secret_text_bindings(
     ensure_secret_mutation_success(response).await
 }
 
-pub async fn put_worker_secret_text(
+pub async fn patch_worker_secrets_with_version_tag(
     api_token: &str,
     account_id: &str,
     script_name: &str,
-    secret_name: &str,
-    secret_text: &str,
+    version_tag: &str,
+    secrets: &[(&str, &str)],
 ) -> Result<(), String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Worker script name", script_name)?;
-    require_non_empty("Cloudflare Worker secret name", secret_name)?;
-    require_non_empty("Cloudflare Worker secret value", secret_text)?;
+    require_non_empty("Cloudflare Worker version tag", version_tag)?;
+
+    let mut secret_patch = serde_json::Map::new();
+    let mut names = std::collections::BTreeSet::new();
+    for (name, text) in secrets {
+        require_non_empty("Cloudflare Worker secret name", name)?;
+        require_non_empty("Cloudflare Worker secret value", text)?;
+        if !names.insert(*name) {
+            return Err(format!("duplicate Cloudflare Worker secret name: {name}"));
+        }
+        secret_patch.insert(
+            (*name).to_owned(),
+            serde_json::json!({
+                "name": name,
+                "text": text,
+                "type": "secret_text"
+            }),
+        );
+    }
+
+    let mut body = serde_json::Map::new();
+    if !secret_patch.is_empty() {
+        body.insert("secrets".to_owned(), serde_json::Value::Object(secret_patch));
+    }
+    body.insert(
+        "version_tags".to_owned(),
+        serde_json::json!({
+            "workers/tag": version_tag,
+            "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
+        }),
+    );
 
     let client = authorized_client(api_token)?;
     let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/secrets"
+        .patch(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk"
         ))
-        .json(&serde_json::json!({
-            "name": secret_name,
-            "text": secret_text,
-            "type": "secret_text"
-        }))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/merge-patch+json",
+        )
+        .body(serde_json::Value::Object(body).to_string())
         .send()
         .await
-        .map_err(|err| format!("failed to update Cloudflare Worker secret binding: {err}"))?;
+        .map_err(|err| {
+            format!(
+                "failed to patch Cloudflare Worker secrets/version tag atomically: {err}"
+            )
+        })?;
     ensure_secret_mutation_success(response).await
 }
 
