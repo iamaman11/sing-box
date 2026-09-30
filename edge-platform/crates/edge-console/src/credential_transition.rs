@@ -176,7 +176,10 @@ fn restore_optional(path: &Path, previous: Option<&[u8]>) -> Result<(), String> 
         None => match fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!("failed to remove {} during rollback: {err}", path.display())),
+            Err(err) => Err(format!(
+                "failed to remove {} during rollback: {err}",
+                path.display()
+            )),
         },
     }
 }
