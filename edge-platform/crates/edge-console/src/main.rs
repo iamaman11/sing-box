@@ -1115,40 +1115,60 @@ async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String
         .await
         .map_err(|err| err.to_string())?;
     if !restart.success {
-        return Err(format!(
-            "Windows local runtime restart failed: {}",
-            restart.note
-        ));
+        let error = format!("Windows local runtime restart failed: {}", restart.note);
+        return match stop_managed_windows_runtime_after_failure(endpoint).await {
+            Ok(()) => Err(format!(
+                "{error}; exact managed runtime was stopped without touching external sing-box"
+            )),
+            Err(cleanup_err) => Err(format!(
+                "{error}; managed-runtime cleanup also failed: {cleanup_err}"
+            )),
+        };
     }
 
-    let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
-        .await
-        .map_err(|err| err.to_string())?;
-    let original = selector
-        .observed_main_route
-        .or(selector.desired_main_route)
-        .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
+    let verification = async {
+        let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
+            .await
+            .map_err(|err| err.to_string())?;
+        let original = selector
+            .observed_main_route
+            .or(selector.desired_main_route)
+            .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
 
-    let direct = verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await;
-    let warp = if direct.is_ok() {
-        verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await
-    } else {
-        Ok(())
-    };
-    let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
-        .await
-        .map_err(|err| err.to_string())
-        .and_then(|response| {
-            if response.success {
-                Ok(())
-            } else {
-                Err("failed to restore original Windows selector".to_owned())
-            }
-        });
+        let direct = verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await;
+        let warp = if direct.is_ok() {
+            verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await
+        } else {
+            Ok(())
+        };
+        let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|response| {
+                if response.success {
+                    Ok(())
+                } else {
+                    Err("failed to restore original Windows selector".to_owned())
+                }
+            });
 
-    direct?;
-    warp?;
-    restore
+        direct?;
+        warp?;
+        restore
+    }
+    .await;
+
+    match verification {
+        Ok(()) => Ok(()),
+        Err(error) => match stop_managed_windows_runtime_after_failure(endpoint).await {
+            Ok(()) => Err(format!(
+                "Windows managed runtime failed functional verification and was stopped without touching external sing-box: {error}"
+            )),
+            Err(cleanup_err) => Err(format!(
+                "Windows managed runtime failed functional verification: {error}; managed-runtime cleanup also failed: {cleanup_err}"
+            )),
+        },
+    }
 }
 
 fn verify_stage2_isolated_prerequisites(install_root: &Path) -> Result<(), String> {
@@ -1215,16 +1235,7 @@ async fn run_windows_credential_transition(
         return Ok(());
     }
 
-    if let Err(err) = restart_and_verify_windows_tunnels(&endpoint).await {
-        return match stop_managed_windows_runtime_after_failure(&endpoint).await {
-            Ok(()) => Err(format!(
-                "Windows managed runtime failed functional verification and was stopped without touching external sing-box: {err}"
-            )),
-            Err(cleanup_err) => Err(format!(
-                "Windows managed runtime failed functional verification: {err}; managed-runtime cleanup also failed: {cleanup_err}"
-            )),
-        };
-    }
+    restart_and_verify_windows_tunnels(&endpoint).await?;
 
     println!("credential_transition_functional=PASS");
     println!("credential_transition_direct=PASS");
