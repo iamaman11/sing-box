@@ -49,6 +49,9 @@ struct ProjectionObservation {
     worker_binding_count: Option<usize>,
     worker_secret_bindings: Vec<cloudflare::CloudflareWorkerSecretBinding>,
     worker_version_tag: Option<String>,
+    worker_latest_version_id: Option<String>,
+    worker_active_deployment_id: Option<String>,
+    worker_active_version_ids: Vec<String>,
     workers_dev_enabled: Option<bool>,
     previews_enabled: Option<bool>,
     custom_domain_count: usize,
@@ -1757,6 +1760,19 @@ async fn observe(
                 )
             };
 
+        let version_head = if worker_script_present {
+            Some(
+                cloudflare::get_worker_script_version_head(
+                    api_token,
+                    &desired.target_account_id,
+                    &projection.worker_name,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         let matching_proof_tokens = service_tokens
             .iter()
             .filter(|token| {
@@ -1824,6 +1840,15 @@ async fn observe(
             worker_binding_count: settings.as_ref().map(|value| value.binding_count),
             worker_secret_bindings: secret_bindings,
             worker_version_tag: settings.and_then(|value| value.version_tag),
+            worker_latest_version_id: version_head
+                .as_ref()
+                .and_then(|value| value.latest_version_id.clone()),
+            worker_active_deployment_id: version_head
+                .as_ref()
+                .and_then(|value| value.active_deployment_id.clone()),
+            worker_active_version_ids: version_head
+                .map(|value| value.active_version_ids)
+                .unwrap_or_default(),
             workers_dev_enabled,
             previews_enabled,
             custom_domain_count: worker_domains
@@ -2036,6 +2061,23 @@ fn print_observation(
                 .unwrap_or_else(|| "ABSENT".to_owned())
         );
         println!(
+            "credential_delivery_projection={} latest_version_id={} active_deployment_id={} active_version_ids={}",
+            projection.projection,
+            current
+                .worker_latest_version_id
+                .as_deref()
+                .unwrap_or("ABSENT"),
+            current
+                .worker_active_deployment_id
+                .as_deref()
+                .unwrap_or("ABSENT"),
+            if current.worker_active_version_ids.is_empty() {
+                "ABSENT".to_owned()
+            } else {
+                current.worker_active_version_ids.join(",")
+            }
+        );
+        println!(
             "credential_delivery_projection={} host_token_enabled={}",
             projection.projection,
             current
@@ -2135,6 +2177,9 @@ mod tests {
             worker_binding_count: Some(0),
             worker_secret_bindings: Vec::new(),
             worker_version_tag: Some(legacy_worker_version_tag(projection_name).unwrap()),
+            worker_latest_version_id: Some(format!("{projection_name}-version-id")),
+            worker_active_deployment_id: Some(format!("{projection_name}-deployment-id")),
+            worker_active_version_ids: vec![format!("{projection_name}-version-id")],
             workers_dev_enabled: Some(true),
             previews_enabled: Some(false),
             custom_domain_count: 0,
