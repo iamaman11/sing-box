@@ -190,6 +190,13 @@ pub struct CloudflareWorkerScriptSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudflareWorkerVersionHead {
+    pub latest_version_id: Option<String>,
+    pub active_deployment_id: Option<String>,
+    pub active_version_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareWorkerSecretBinding {
     pub name: String,
     pub binding_type: String,
@@ -426,6 +433,38 @@ pub async fn list_worker_script_secrets(
         .collect::<Result<Vec<_>, _>>()?;
     bindings.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(bindings)
+}
+
+pub async fn get_worker_script_version_head(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+) -> Result<CloudflareWorkerVersionHead, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let client = authorized_client(api_token)?;
+
+    let versions_response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/versions"
+        ))
+        .query(&[("page", "1"), ("per_page", "1")])
+        .send()
+        .await
+        .map_err(|err| format!("failed to list Cloudflare Worker versions: {err}"))?;
+    let versions: ApiEnvelope<Value> = parse_success_json(versions_response).await?;
+
+    let deployments_response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/deployments"
+        ))
+        .query(&[("page", "1"), ("per_page", "1")])
+        .send()
+        .await
+        .map_err(|err| format!("failed to list Cloudflare Worker deployments: {err}"))?;
+    let deployments: ApiEnvelope<Value> = parse_success_json(deployments_response).await?;
+
+    worker_version_head_from_values(versions.result, deployments.result)
 }
 
 pub async fn upload_worker_module(
@@ -2372,6 +2411,74 @@ fn worker_script_settings_from_value(
     })
 }
 
+fn worker_version_head_from_values(
+    versions: Value,
+    deployments: Value,
+) -> Result<CloudflareWorkerVersionHead, String> {
+    let latest_version_id = value_array(versions, "Cloudflare Worker versions")?
+        .first()
+        .map(|value| {
+            value
+                .as_object()
+                .ok_or_else(|| "Cloudflare Worker version must be an object".to_owned())
+                .and_then(|object| {
+                    required_value_string(object, "id", "Cloudflare Worker version")
+                })
+        })
+        .transpose()?;
+
+    let deployments = deployments
+        .as_object()
+        .ok_or_else(|| "Cloudflare Worker deployments result must be an object".to_owned())?
+        .get("deployments")
+        .cloned()
+        .map(|value| value_array(value, "Cloudflare Worker deployments"))
+        .transpose()?
+        .unwrap_or_default();
+    let active = deployments.first();
+    let active_deployment_id = active
+        .map(|value| {
+            value
+                .as_object()
+                .ok_or_else(|| "Cloudflare Worker deployment must be an object".to_owned())
+                .and_then(|object| {
+                    required_value_string(object, "id", "Cloudflare Worker deployment")
+                })
+        })
+        .transpose()?;
+    let mut active_version_ids = match active {
+        Some(value) => value
+            .as_object()
+            .ok_or_else(|| "Cloudflare Worker deployment must be an object".to_owned())?
+            .get("versions")
+            .cloned()
+            .map(|value| value_array(value, "Cloudflare Worker deployment versions"))
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| {
+                let object = value.as_object().ok_or_else(|| {
+                    "Cloudflare Worker deployment version must be an object".to_owned()
+                })?;
+                required_value_string(
+                    object,
+                    "version_id",
+                    "Cloudflare Worker deployment version",
+                )
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        None => Vec::new(),
+    };
+    active_version_ids.sort();
+    active_version_ids.dedup();
+
+    Ok(CloudflareWorkerVersionHead {
+        latest_version_id,
+        active_deployment_id,
+        active_version_ids,
+    })
+}
+
 fn worker_secret_binding_from_value(value: Value) -> Result<CloudflareWorkerSecretBinding, String> {
     let object = value
         .as_object()
@@ -2950,6 +3057,43 @@ mod tests {
         assert_eq!(credential.enabled, Some(true));
         assert_eq!(credential.duration.as_deref(), Some("1h"));
         assert_eq!(credential.name.as_deref(), Some("proof-token"));
+    }
+
+    #[test]
+    fn parses_latest_worker_version_and_active_deployment_without_secret_values() {
+        let head = worker_version_head_from_values(
+            serde_json::json!([
+                {"id": "version-new", "number": 3},
+                {"id": "version-old", "number": 2}
+            ]),
+            serde_json::json!({
+                "deployments": [{
+                    "id": "deployment-current",
+                    "versions": [{"version_id": "version-old", "percentage": 100.0}]
+                }]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(head.latest_version_id.as_deref(), Some("version-new"));
+        assert_eq!(
+            head.active_deployment_id.as_deref(),
+            Some("deployment-current")
+        );
+        assert_eq!(head.active_version_ids, vec!["version-old".to_owned()]);
+    }
+
+    #[test]
+    fn worker_version_head_accepts_absent_deployment() {
+        let head = worker_version_head_from_values(
+            serde_json::json!([{"id": "version-new", "number": 1}]),
+            serde_json::json!({"deployments": []}),
+        )
+        .unwrap();
+
+        assert_eq!(head.latest_version_id.as_deref(), Some("version-new"));
+        assert!(head.active_deployment_id.is_none());
+        assert!(head.active_version_ids.is_empty());
     }
 
     #[test]
