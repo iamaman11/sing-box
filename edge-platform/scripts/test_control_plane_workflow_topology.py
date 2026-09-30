@@ -233,12 +233,12 @@ def main() -> None:
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
-        and "privileged-stage-credential" in windows_console
-        and "privileged-apply-credential-candidate" in windows_console
-        and "privileged-promote-credential" in windows_console
-        and "privileged-apply-active-credential" in windows_console
-        and "privileged-apply-legacy-credential" in windows_console
-        and "privileged-retire-legacy-credential" in windows_console
+        and "PrivilegedStageCredential" in windows_console
+        and "PrivilegedApplyCredentialCandidate" in windows_console
+        and "PrivilegedPromoteCredential" in windows_console
+        and "PrivilegedApplyActiveCredential" in windows_console
+        and "PrivilegedApplyLegacyCredential" in windows_console
+        and "PrivilegedRetireLegacyCredential" in windows_console
         and "runtime_state_from_bundle" in windows_credential_transition
         and "apply_runtime_state_transaction" in windows_credential_transition,
         "Windows runner must carry only typed generation/operation intent while SYSTEM owns Stage 2 secret/config transitions",
