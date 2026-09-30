@@ -302,7 +302,6 @@ pub fn sync_local_config(
 
 pub fn render_proxy_only_windows_config(
     state: &WindowsRuntimeState,
-    runtime_root: &Path,
 ) -> Result<Vec<u8>, String> {
     edge_shared_types::encode_windows_runtime_state(state)?;
     let desired = canonical_production_desired_state()?;
@@ -321,8 +320,6 @@ pub fn render_proxy_only_windows_config(
         .warp
         .as_ref()
         .ok_or_else(|| "Windows runtime state WARP tunnel is missing".to_owned())?;
-    let runtime_root = runtime_root.display().to_string();
-
     let selector_entries = json!([
         "auto-direct-tunnel",
         "auto-warp-tunnel",
@@ -436,8 +433,7 @@ pub fn render_proxy_only_windows_config(
         },
         "experimental": {
             "clash_api": {
-                "external_controller": format!("127.0.0.1:{STAGE2_CLASH_API_PORT}"),
-                "external_ui": format!("{runtime_root}/metacubexd-ui")
+                "external_controller": format!("127.0.0.1:{STAGE2_CLASH_API_PORT}")
             }
         }
     });
@@ -1767,6 +1763,85 @@ mod tests {
         };
         assert_eq!(endpoint.published_host.as_deref(), Some("172.26.16.1"));
         assert_eq!(endpoint.warnings.len(), 1);
+    }
+
+
+    fn stage2_runtime_state() -> WindowsRuntimeState {
+        WindowsRuntimeState {
+            schema_version: 1,
+            deployment_label: Some("production".to_owned()),
+            instance_id: "production-1".to_owned(),
+            server_ip: "203.0.113.10".to_owned(),
+            direct: Some(WindowsTunnelBinding {
+                domain: "edge.example.com".to_owned(),
+                hy2_port: 8443,
+                hy2_password: "direct-password".to_owned(),
+                vless_port: 443,
+                vless_uuid: "11111111-1111-4111-8111-111111111111".to_owned(),
+                reality_public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                reality_short_id: "0011223344556677".to_owned(),
+            }),
+            warp: Some(WindowsTunnelBinding {
+                domain: "edge.example.com".to_owned(),
+                hy2_port: 9444,
+                hy2_password: "warp-password".to_owned(),
+                vless_port: 5443,
+                vless_uuid: "22222222-2222-4222-8222-222222222222".to_owned(),
+                reality_public_key: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_owned(),
+                reality_short_id: "8899aabbccddeeff".to_owned(),
+            }),
+        }
+    }
+
+    #[test]
+    fn stage2_renderer_is_proxy_only_and_uses_dedicated_ports() {
+        let rendered = render_proxy_only_windows_config(&stage2_runtime_state()).unwrap();
+        let config: Value = serde_json::from_slice(&rendered).unwrap();
+        let inbounds = config
+            .get("inbounds")
+            .and_then(Value::as_array)
+            .unwrap();
+
+        assert!(inbounds.iter().all(|inbound| {
+            inbound.get("type").and_then(Value::as_str) != Some("tun")
+        }));
+        assert_eq!(
+            inbounds[0].get("listen_port").and_then(Value::as_u64),
+            Some(STAGE2_DESKTOP_PROXY_PORT as u64)
+        );
+        assert_eq!(
+            inbounds[1].get("listen_port").and_then(Value::as_u64),
+            Some(STAGE2_WSL_PROXY_PORT as u64)
+        );
+        assert_eq!(
+            config
+                .pointer("/experimental/clash_api/external_controller")
+                .and_then(Value::as_str),
+            Some("127.0.0.1:19091")
+        );
+    }
+
+    #[test]
+    fn exact_sing_box_accepts_stage2_proxy_only_config_when_supplied() {
+        let Some(binary) = std::env::var_os("EDGE_TEST_SING_BOX") else {
+            return;
+        };
+        let repo_root = unique_test_dir();
+        fs::create_dir_all(&repo_root).unwrap();
+        let config_path = repo_root.join("stage2-proxy-only.json");
+        fs::write(
+            &config_path,
+            render_proxy_only_windows_config(&stage2_runtime_state()).unwrap(),
+        )
+        .unwrap();
+
+        let status = Command::new(binary)
+            .args(["check", "-c"])
+            .arg(&config_path)
+            .status()
+            .unwrap();
+        let _ = fs::remove_dir_all(repo_root);
+        assert!(status.success(), "exact sing-box rejected Stage 2 proxy-only config");
     }
 
     fn unique_test_dir() -> PathBuf {
