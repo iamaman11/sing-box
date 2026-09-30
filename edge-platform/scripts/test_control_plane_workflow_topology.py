@@ -411,6 +411,7 @@ def main() -> None:
         and "CLOUDFLARE_VM_ACCESS_CLIENT_ID" in credentials
         and "CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in credentials
         and "WINDOWS_BOOTSTRAP_ESCROW=DELETED" in credentials
+        and "EDGE_RELEASE_CONTEXT_PATH" in credentials
         and "rotate_access_service_token(" not in host_bootstrap
         and "actions/upload-artifact" not in credentials
         and "actions/download-artifact" not in credentials,
