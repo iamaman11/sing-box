@@ -698,12 +698,12 @@ def main() -> None:
         and "sing-box-production-vm" in production_vm_runner_installer
         and "SING_BOX_RUNTIME_READ" in production_vm_runner_installer
         and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
-        and "edge-agent local status" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local status" in production_vm_runner_installer
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "Verify self-hosted runner online" in vultr
         and '.status == "online"' in vultr
         and 'index("sing-box-production-vm")' in vultr
-        and 'index("vultr-root") == null' in vultr
+        and 'index("vultr-root")) == null' in vultr
         and 'index($machine)' in vultr,
         "production VM runner bootstrap must be bounded, Docker-socket blind, and verified through the GitHub runner API",
     )
