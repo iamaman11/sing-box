@@ -460,6 +460,11 @@ def main() -> None:
         and "credential-transition apply-legacy --install-root" not in credentials
         and "credential-transition retire-legacy --install-root" not in credentials
         and "restart-verify-runtime" in credentials
+        and "runtime-state.pb" in credentials
+        and "runtime\\sing-box.json" in credentials
+        and "Get-NetTCPConnection -State Listen" in credentials
+        and "$reservedPorts = @(17891, 17892, 19091)" in credentials
+        and "STAGE2_WINDOWS_ISOLATED_PREREQUISITES=PASS" in credentials
         and "STAGE2_EXTERNAL_SING_BOX=UNTOUCHED" in credentials
         and "STAGE2_TUN_ACTIVATION=DEFERRED" in credentials,
         "Macro Stage 2 must keep Windows side-by-side, proxy-only and outside legacy runtime ownership while preserving one bounded credential workflow",
