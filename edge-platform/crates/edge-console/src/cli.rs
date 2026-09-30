@@ -25,11 +25,13 @@ pub(crate) enum Command {
     Reconcile(EndpointArgs),
     Status(EndpointArgs),
     Doctor(EndpointArgs),
+    CredentialState(EndpointArgs),
     SmokeRuntime,
     ProvisionRuntimeState(InstallRootArgs),
     PrivilegedPing(InstallRootArgs),
     PrivilegedActivate(PrivilegedActivateArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
+    CredentialTransition(CredentialTransitionArgs),
     PrivilegedPrepareCredentialAccess(InstallRootArgs),
     PrivilegedInstallCredentialAccess(InstallRootArgs),
     #[cfg(windows)]
@@ -61,11 +63,13 @@ impl Command {
             Self::Reconcile(_) => "reconcile",
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
+            Self::CredentialState(_) => "credential-state",
             Self::SmokeRuntime => "smoke-runtime",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
             Self::PrivilegedPing(_) => "privileged-ping",
             Self::PrivilegedActivate(_) => "privileged-activate",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
+            Self::CredentialTransition(_) => "credential-transition",
             Self::PrivilegedPrepareCredentialAccess(_) => "privileged-prepare-credential-access",
             Self::PrivilegedInstallCredentialAccess(_) => "privileged-install-credential-access",
             #[cfg(windows)]
@@ -121,7 +125,14 @@ pub(crate) struct PrivilegedActivateArgs {
 #[derive(Debug, Args)]
 pub(crate) struct PrivilegedCredentialStageArgs {
     pub generation: u64,
-    #[arg(long, default_value = r"C:\\sing-box")]
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CredentialTransitionArgs {
+    pub action: String,
+    #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }
 
@@ -189,6 +200,14 @@ mod tests {
         );
         assert!(
             Cli::try_parse_from(["edge-console", "privileged-install-credential-access"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "credential-transition",
+                "validate-candidate"
+            ])
+            .is_ok()
         );
         assert!(
             Cli::try_parse_from([

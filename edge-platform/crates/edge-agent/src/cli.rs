@@ -50,6 +50,7 @@ pub(crate) enum LocalCommand {
     MeshCleanup,
     CredentialState,
     CredentialStage { generation: u64 },
+    CredentialTransition { action: String },
 }
 
 impl LocalCommand {
@@ -65,6 +66,7 @@ impl LocalCommand {
             Self::MeshCleanup => "local-mesh-cleanup",
             Self::CredentialState => "local-credential-state",
             Self::CredentialStage { .. } => "local-credential-stage",
+            Self::CredentialTransition { .. } => "local-credential-transition",
         }
     }
 }
@@ -108,6 +110,15 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-stage", "101"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-agent",
+                "local",
+                "credential-transition",
+                "validate-candidate"
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["edge-agent", "local", "exec"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "exec", "whoami"]).is_err());
     }

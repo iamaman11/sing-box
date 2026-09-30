@@ -5,10 +5,12 @@ pub use credential_delivery::{
 };
 
 mod credential_store;
-pub use credential_store::CredentialStore;
+pub use credential_store::{CredentialStore, write_atomic_private};
 
 mod runtime;
-pub use runtime::{APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets};
+pub use runtime::{
+    APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets, windows_runtime_state_from_bundle,
+};
 
 use std::env;
 use std::fs;

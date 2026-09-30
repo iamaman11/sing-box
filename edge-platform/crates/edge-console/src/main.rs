@@ -1,5 +1,6 @@
 mod cli;
 mod credential_access_bootstrap;
+mod credential_transition;
 mod error;
 
 use clap::Parser;
@@ -23,17 +24,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    DeployRequest, DeployResponse, DestroyRequest, DestroyResponse, DoctorRequest, DoctorResponse,
-    Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
-    ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
-    RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
-    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
-    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
+    CredentialTransitionAction, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
+    DoctorRequest, DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest,
+    GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest, ListSecretRefsRequest,
+    LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest, SecretRefEntry,
+    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
+    WindowsActivationState, WindowsPrivilegedOperation, WindowsPrivilegedRequest,
+    WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
     decode_windows_activation_state, decode_windows_privileged_request,
     decode_windows_privileged_result, decode_windows_runtime_state,
     encode_windows_privileged_request, encode_windows_privileged_result,
-    encode_windows_runtime_state, verify_windows_activation_files,
+    encode_windows_runtime_state, parse_credential_transition_action,
+    verify_windows_activation_files,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -145,6 +148,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 ))
             }
         }
+        Command::CredentialState(args) => {
+            let state = fetch_credential_state(args.resolve()).await?;
+            print_windows_credential_state(state.as_ref());
+            Ok(())
+        }
         Command::SmokeRuntime => {
             let install_root = installed_root_from_console()?;
             let activation = load_verified_activation(&install_root)?;
@@ -182,6 +190,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     accepted_revision: None,
                     release_set_sha256: None,
                     credential_generation: None,
+                    credential_transition_action: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -199,6 +208,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     accepted_revision: Some(args.accepted_revision),
                     release_set_sha256: Some(args.release_set_sha256),
                     credential_generation: None,
+                    credential_transition_action: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -216,10 +226,18 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     accepted_revision: None,
                     release_set_sha256: None,
                     credential_generation: Some(args.generation),
+                    credential_transition_action: None,
                 },
             )?;
             print_privileged_result(&result);
             finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::CredentialTransition(args) => {
+            let action = parse_credential_transition_action(&args.action)?;
+            run_windows_credential_transition(Path::new(&args.install_root), action)
+                .await
+                .map_err(ConsoleError::Command)?;
             Ok(())
         }
         Command::PrivilegedPrepareCredentialAccess(args) => {
@@ -233,6 +251,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     accepted_revision: None,
                     release_set_sha256: None,
                     credential_generation: None,
+                    credential_transition_action: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -250,6 +269,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     accepted_revision: None,
                     release_set_sha256: None,
                     credential_generation: None,
+                    credential_transition_action: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -836,6 +856,21 @@ async fn process_privileged_request(
         Ok(WindowsPrivilegedOperation::InstallCredentialAccessBootstrap) => {
             credential_access_bootstrap::install(install_root)
         }
+        Ok(WindowsPrivilegedOperation::CredentialTransition) => {
+            let action = request
+                .credential_transition_action
+                .and_then(|value| CredentialTransitionAction::try_from(value).ok())
+                .ok_or_else(|| "credential transition action is missing or invalid".to_owned())
+                .and_then(|action| {
+                    let activation =
+                        load_verified_activation(install_root).map_err(|err| err.to_string())?;
+                    let release = activation.release_set_sha256.clone();
+                    let (code, detail) =
+                        credential_transition::transition(install_root, &activation, action)?;
+                    Ok((code, detail, Some(release)))
+                });
+            action
+        }
         Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
             Err("unsupported privileged Windows operation".to_owned())
         }
@@ -1003,6 +1038,195 @@ fn print_privileged_result(result: &WindowsPrivilegedResult) {
     if let Some(release) = result.active_release_set_sha256.as_deref() {
         println!("active_release_set_sha256={release}");
     }
+}
+
+fn submit_windows_credential_transition(
+    install_root: &Path,
+    action: CredentialTransitionAction,
+) -> Result<WindowsPrivilegedResult, String> {
+    submit_privileged_request(
+        install_root,
+        WindowsPrivilegedRequest {
+            schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+            request_id: new_privileged_request_id().map_err(|err| err.to_string())?,
+            operation: WindowsPrivilegedOperation::CredentialTransition as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+            credential_transition_action: Some(action as i32),
+        },
+    )
+    .map_err(|err| err.to_string())
+}
+
+async fn verify_windows_tunnel_route(
+    endpoint: &str,
+    route: &str,
+    expected_warp: &str,
+) -> Result<(), String> {
+    let response = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, route)
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.success {
+        return Err(format!("selector update failed for route {route}"));
+    }
+    let trace = fetch_trace(endpoint.to_owned())
+        .await
+        .map_err(|err| err.to_string())?;
+    if !trace.available || trace.ip.is_none() {
+        return Err(format!("Cloudflare trace is unavailable for route {route}"));
+    }
+    if trace.warp.as_deref() != Some(expected_warp) {
+        return Err(format!(
+            "route {route} expected Cloudflare warp={expected_warp}, observed {:?}",
+            trace.warp
+        ));
+    }
+    Ok(())
+}
+
+async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
+    let restart = restart_local(endpoint.to_owned())
+        .await
+        .map_err(|err| err.to_string())?;
+    if !restart.success {
+        return Err(format!(
+            "Windows local runtime restart failed: {}",
+            restart.note
+        ));
+    }
+
+    let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
+        .await
+        .map_err(|err| err.to_string())?;
+    let original = selector
+        .observed_main_route
+        .or(selector.desired_main_route)
+        .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
+
+    let direct = verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await;
+    let warp = if direct.is_ok() {
+        verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await
+    } else {
+        Ok(())
+    };
+    let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
+        .await
+        .map_err(|err| err.to_string())
+        .and_then(|response| {
+            if response.success {
+                Ok(())
+            } else {
+                Err("failed to restore original Windows selector".to_owned())
+            }
+        });
+
+    direct?;
+    warp?;
+    restore
+}
+
+async fn restore_windows_legacy_after_transition_failure(
+    install_root: &Path,
+    endpoint: &str,
+) -> Result<(), String> {
+    let result = submit_windows_credential_transition(
+        install_root,
+        CredentialTransitionAction::ApplyLegacy,
+    )?;
+    finish_privileged_result(&result).map_err(|err| err.to_string())?;
+    let restart = restart_local(endpoint.to_owned())
+        .await
+        .map_err(|err| err.to_string())?;
+    if !restart.success {
+        return Err(format!(
+            "legacy Windows recovery restart failed: {}",
+            restart.note
+        ));
+    }
+    Ok(())
+}
+
+async fn run_windows_credential_transition(
+    install_root: &Path,
+    action: CredentialTransitionAction,
+) -> Result<(), String> {
+    let endpoint = cli::controller_endpoint(None);
+    let legacy_fallback = if action == CredentialTransitionAction::ApplyLegacy {
+        let state = fetch_credential_state(endpoint.clone())
+            .await
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| "Windows v2 credential state is absent".to_owned())?;
+        if state.candidate.is_some() {
+            Some(CredentialTransitionAction::ApplyCandidate)
+        } else if state.active.is_some() {
+            Some(CredentialTransitionAction::ApplyActive)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let result = submit_windows_credential_transition(install_root, action)?;
+    print_privileged_result(&result);
+    finish_privileged_result(&result).map_err(|err| err.to_string())?;
+
+    if !matches!(
+        action,
+        CredentialTransitionAction::ApplyCandidate
+            | CredentialTransitionAction::ApplyLegacy
+            | CredentialTransitionAction::ApplyActive
+    ) {
+        return Ok(());
+    }
+
+    if let Err(err) = restart_and_verify_windows_tunnels(&endpoint).await {
+        if matches!(
+            action,
+            CredentialTransitionAction::ApplyCandidate | CredentialTransitionAction::ApplyActive
+        ) {
+            return match restore_windows_legacy_after_transition_failure(install_root, &endpoint)
+                .await
+            {
+                Ok(()) => Err(format!(
+                    "Windows credential transition failed functional verification and legacy LKG was restored: {err}"
+                )),
+                Err(recovery_err) => Err(format!(
+                    "Windows credential transition failed functional verification: {err}; legacy recovery also failed: {recovery_err}"
+                )),
+            };
+        }
+        if action == CredentialTransitionAction::ApplyLegacy {
+            let fallback = legacy_fallback.ok_or_else(|| {
+                format!("Windows legacy rollback proof failed with no v2 fallback available: {err}")
+            })?;
+            let recovery =
+                submit_windows_credential_transition(install_root, fallback).and_then(|result| {
+                    finish_privileged_result(&result)
+                        .map_err(|recovery_err| recovery_err.to_string())
+                });
+            if let Err(recovery_err) = recovery {
+                return Err(format!(
+                    "Windows legacy rollback proof failed: {err}; v2 recovery mutation also failed: {recovery_err}"
+                ));
+            }
+            return match restart_and_verify_windows_tunnels(&endpoint).await {
+                Ok(()) => Err(format!(
+                    "Windows legacy rollback proof failed and v2 LKG was restored: {err}"
+                )),
+                Err(recovery_err) => Err(format!(
+                    "Windows legacy rollback proof failed: {err}; v2 recovery verification also failed: {recovery_err}"
+                )),
+            };
+        }
+        return Err(err);
+    }
+
+    println!("credential_transition_functional=PASS");
+    println!("credential_transition_direct=PASS");
+    println!("credential_transition_warp=PASS");
+    Ok(())
 }
 
 fn finish_privileged_result(
@@ -1392,6 +1616,17 @@ async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std:
     let mut client = connect_controller(endpoint).await?;
     let response = client.get_status(Request::new(Empty {})).await?;
     Ok(response.into_inner())
+}
+
+async fn fetch_credential_state(
+    endpoint: String,
+) -> Result<Option<edge_shared_types::LocalCredentialState>, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    Ok(client
+        .get_credential_state(Request::new(Empty {}))
+        .await?
+        .into_inner()
+        .state)
 }
 
 async fn fetch_doctor(endpoint: String) -> Result<DoctorResponse, Box<dyn std::error::Error>> {
@@ -1788,6 +2023,27 @@ fn print_status(status: &ControllerStatus) {
 
     for note in &status.status_notes {
         println!("Status note            : {note}");
+    }
+}
+
+fn print_windows_credential_state(state: Option<&edge_shared_types::LocalCredentialState>) {
+    println!("credential_state_present={}", state.is_some());
+    let Some(state) = state else {
+        return;
+    };
+    println!("credential_schema_version={}", state.schema_version);
+    println!("credential_projection={}", state.projection);
+    for (name, value) in [
+        ("active", state.active.as_ref()),
+        ("candidate", state.candidate.as_ref()),
+        ("previous", state.previous.as_ref()),
+    ] {
+        println!("credential_{name}_present={}", value.is_some());
+        if let Some(value) = value {
+            println!("credential_{name}_generation={}", value.generation);
+            println!("credential_{name}_slot={}", value.slot);
+            println!("credential_{name}_sha256={}", value.sha256);
+        }
     }
 }
 

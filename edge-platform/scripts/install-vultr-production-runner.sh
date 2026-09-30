@@ -65,7 +65,7 @@ unset credential_access_client_id credential_access_client_secret
 
 cat > "${SUDOERS_FILE}" <<EOF
 Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
-Cmnd_Alias SING_BOX_RUNTIME_MUTATE = ${LOCAL_OWNER} local bootstrap-base, ${LOCAL_OWNER} local bootstrap-tunnel, ${LOCAL_OWNER} local bootstrap-full, ${LOCAL_OWNER} local mesh-cleanup, ${LOCAL_OWNER} local credential-stage *
+Cmnd_Alias SING_BOX_RUNTIME_MUTATE = ${LOCAL_OWNER} local bootstrap-base, ${LOCAL_OWNER} local bootstrap-tunnel, ${LOCAL_OWNER} local bootstrap-full, ${LOCAL_OWNER} local mesh-cleanup, ${LOCAL_OWNER} local credential-stage *, ${LOCAL_OWNER} local credential-transition *
 ${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_RUNTIME_MUTATE
 EOF
 chmod 0440 "${SUDOERS_FILE}"

@@ -3,6 +3,9 @@ use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
+use edge_orchestrator::credential_snapshot::{
+    FreshCredentialSnapshotRequest, generate_fresh_credential_snapshot,
+};
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
@@ -154,7 +157,142 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await
         }
+        CredentialDeliveryCommand::FreshV2Publish { generation } => {
+            fresh_v2_publish(&control_token, &desired, generation).await
+        }
     }
+}
+
+async fn fresh_v2_publish(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    generation: u64,
+) -> Result<(), String> {
+    if generation == 0 {
+        return Err("fresh-v2 generation must be greater than zero".to_owned());
+    }
+
+    let before = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, &before)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} credential Worker is not in exact fixed A/B state",
+                projection.projection
+            ));
+        }
+    }
+
+    let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+    if rotation_identity.status != "active" {
+        return Err(format!(
+            "credential-rotation token {} is not active: {}",
+            rotation_identity.id, rotation_identity.status
+        ));
+    }
+    if rotation_identity.id == before.control_token_identity.id {
+        return Err(
+            "credential-rotation token must be physically distinct from CLOUDFLARE_CONTROL_TOKEN"
+                .to_owned(),
+        );
+    }
+
+    let snapshot = generate_fresh_credential_snapshot(FreshCredentialSnapshotRequest {
+        delivery_generation: generation,
+        slot: CredentialDeliverySlot::A,
+        tunnel_auth_generation: generation,
+        reality_identity_generation: generation,
+        line2_proxy_generation: generation,
+    })?;
+    let windows = projection_desired(desired, "windows")?;
+    let vm = projection_desired(desired, "vm")?;
+    let windows_secret = hex_encode(&snapshot.windows.encode_to_vec());
+    let vm_secret = hex_encode(&snapshot.vm.encode_to_vec());
+
+    if let Err(err) = cloudflare::put_worker_secret_text(
+        &rotation_token,
+        &desired.target_account_id,
+        &windows.worker_name,
+        SLOT_A,
+        &windows_secret,
+    )
+    .await
+    {
+        restore_dummy_slot(&rotation_token, desired, &[&windows]).await?;
+        return Err(format!(
+            "Windows fresh-v2 inactive-slot publication failed and baseline was restored: {err}"
+        ));
+    }
+
+    if let Err(err) = cloudflare::put_worker_secret_text(
+        &rotation_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+        SLOT_A,
+        &vm_secret,
+    )
+    .await
+    {
+        restore_dummy_slot(&rotation_token, desired, &[&windows, &vm]).await?;
+        return Err(format!(
+            "VM fresh-v2 inactive-slot publication failed and paired baseline was restored: {err}"
+        ));
+    }
+
+    let after = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &after)?;
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, &after)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} credential Worker left exact fixed A/B contract after publication",
+                projection.projection
+            ));
+        }
+    }
+
+    println!("credential_fresh_v2_status=PASS");
+    println!("credential_generation={generation}");
+    println!("credential_slot=A");
+    println!("paired_projection_count=2");
+    println!("credential_secret_mutations=2");
+    println!("active_slot_mutated=false");
+    println!("runner_plaintext_access=false");
+    Ok(())
+}
+
+async fn restore_dummy_slot(
+    rotation_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    projections: &[&ProjectionDesired],
+) -> Result<(), String> {
+    for projection in projections {
+        let material = delivery_worker_material(&projection.projection)?;
+        let dummy = material
+            .slots
+            .iter()
+            .find(|slot| slot.name == SLOT_A)
+            .ok_or_else(|| "fixed A/B material is missing slot A".to_owned())?;
+        cloudflare::put_worker_secret_text(
+            rotation_token,
+            &desired.target_account_id,
+            &projection.worker_name,
+            SLOT_A,
+            &dummy.secret_text,
+        )
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to restore inactive dummy slot A for {} after partial fresh-v2 publication; mutation state is uncertain: {err}",
+                projection.projection
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn verify_credential_plane_invariant() -> Result<(), String> {

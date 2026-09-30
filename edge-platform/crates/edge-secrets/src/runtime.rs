@@ -3,6 +3,11 @@ use rand_core::{OsRng, RngCore};
 use std::collections::{BTreeMap, BTreeSet};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use edge_shared_types::{
+    CredentialDeliveryBundle, CredentialProjectionKind, WindowsRuntimeState, WindowsTunnelBinding,
+    credential_delivery_bundle, validate_credential_delivery_bundle,
+};
+
 pub const APPLICATION_RUNTIME_SECRET_KEYS: &[&str] = &[
     "PROXY_PASSWORD",
     "VLESS_UUID",
@@ -33,6 +38,59 @@ pub struct ApplicationRuntimeSecrets {
 }
 
 impl ApplicationRuntimeSecrets {
+    pub fn from_vm_bundle(bundle: &CredentialDeliveryBundle) -> Result<Self, String> {
+        validate_credential_delivery_bundle(bundle)?;
+        if bundle.projection != CredentialProjectionKind::Vm as i32 || bundle.dummy_non_secret {
+            return Err("VM runtime projection requires a real VM credential bundle".to_owned());
+        }
+        let projection = match bundle.payload.as_ref() {
+            Some(credential_delivery_bundle::Payload::Vm(value)) => value,
+            _ => return Err("VM runtime projection requires VM credential payload".to_owned()),
+        };
+        let tunnel = projection
+            .tunnel_auth
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing tunnel authentication".to_owned())?;
+        let direct = tunnel.direct.as_ref().ok_or_else(|| {
+            "VM credential bundle is missing direct tunnel authentication".to_owned()
+        })?;
+        let warp = tunnel.warp.as_ref().ok_or_else(|| {
+            "VM credential bundle is missing WARP tunnel authentication".to_owned()
+        })?;
+        let reality = projection
+            .reality_identity
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing Reality identity".to_owned())?;
+        let direct_reality = reality
+            .direct
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing direct Reality identity".to_owned())?;
+        let warp_reality = reality
+            .warp
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing WARP Reality identity".to_owned())?;
+        let line2 = projection
+            .line2_proxy
+            .as_ref()
+            .ok_or_else(|| "VM credential bundle is missing Line 2 proxy credential".to_owned())?;
+
+        let result = Self {
+            proxy_password: line2.password.clone(),
+            vless_uuid: direct.vless_uuid.clone(),
+            hy2_password: direct.hysteria2_password.clone(),
+            reality_private_key: direct_reality.private_key.clone(),
+            reality_public_key: reality_public_from_private(&direct_reality.private_key)?,
+            reality_short_id: direct.reality_short_id.clone(),
+            vless_warp_uuid: warp.vless_uuid.clone(),
+            hy2_warp_password: warp.hysteria2_password.clone(),
+            reality_warp_private_key: warp_reality.private_key.clone(),
+            reality_warp_public_key: reality_public_from_private(&warp_reality.private_key)?,
+            reality_warp_short_id: warp.reality_short_id.clone(),
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
     pub fn generate() -> Self {
         let (reality_private_key, reality_public_key) = generate_reality_pair();
         let (reality_warp_private_key, reality_warp_public_key) = generate_reality_pair();
@@ -110,6 +168,83 @@ impl ApplicationRuntimeSecrets {
     }
 }
 
+pub fn windows_runtime_state_from_bundle(
+    base: &WindowsRuntimeState,
+    bundle: &CredentialDeliveryBundle,
+) -> Result<WindowsRuntimeState, String> {
+    validate_credential_delivery_bundle(bundle)?;
+    if bundle.projection != CredentialProjectionKind::Windows as i32 || bundle.dummy_non_secret {
+        return Err(
+            "Windows runtime projection requires a real Windows credential bundle".to_owned(),
+        );
+    }
+    let projection = match bundle.payload.as_ref() {
+        Some(credential_delivery_bundle::Payload::Windows(value)) => value,
+        _ => {
+            return Err(
+                "Windows runtime projection requires Windows credential payload".to_owned(),
+            );
+        }
+    };
+    let tunnel = projection
+        .tunnel_auth
+        .as_ref()
+        .ok_or_else(|| "Windows credential bundle is missing tunnel authentication".to_owned())?;
+    let direct_auth = tunnel.direct.as_ref().ok_or_else(|| {
+        "Windows credential bundle is missing direct tunnel authentication".to_owned()
+    })?;
+    let warp_auth = tunnel.warp.as_ref().ok_or_else(|| {
+        "Windows credential bundle is missing WARP tunnel authentication".to_owned()
+    })?;
+    let reality = projection
+        .reality_identity
+        .as_ref()
+        .ok_or_else(|| "Windows credential bundle is missing Reality identity".to_owned())?;
+    let direct_reality = reality
+        .direct
+        .as_ref()
+        .ok_or_else(|| "Windows credential bundle is missing direct Reality identity".to_owned())?;
+    let warp_reality = reality
+        .warp
+        .as_ref()
+        .ok_or_else(|| "Windows credential bundle is missing WARP Reality identity".to_owned())?;
+    let base_direct = base
+        .direct
+        .as_ref()
+        .ok_or_else(|| "Windows runtime state direct binding is absent".to_owned())?;
+    let base_warp = base
+        .warp
+        .as_ref()
+        .ok_or_else(|| "Windows runtime state WARP binding is absent".to_owned())?;
+
+    let next = WindowsRuntimeState {
+        schema_version: 1,
+        deployment_label: base.deployment_label.clone(),
+        instance_id: base.instance_id.clone(),
+        server_ip: base.server_ip.clone(),
+        direct: Some(WindowsTunnelBinding {
+            domain: base_direct.domain.clone(),
+            hy2_port: base_direct.hy2_port,
+            hy2_password: direct_auth.hysteria2_password.clone(),
+            vless_port: base_direct.vless_port,
+            vless_uuid: direct_auth.vless_uuid.clone(),
+            reality_public_key: direct_reality.public_key.clone(),
+            reality_short_id: direct_auth.reality_short_id.clone(),
+        }),
+        warp: Some(WindowsTunnelBinding {
+            domain: base_warp.domain.clone(),
+            hy2_port: base_warp.hy2_port,
+            hy2_password: warp_auth.hysteria2_password.clone(),
+            vless_port: base_warp.vless_port,
+            vless_uuid: warp_auth.vless_uuid.clone(),
+            reality_public_key: warp_reality.public_key.clone(),
+            reality_short_id: warp_auth.reality_short_id.clone(),
+        }),
+    };
+    edge_shared_types::encode_windows_runtime_state(&next)?;
+    Ok(next)
+}
+
 fn parse_closed_env(raw: &str) -> Result<BTreeMap<String, String>, String> {
     let expected = APPLICATION_RUNTIME_SECRET_KEYS
         .iter()
@@ -150,6 +285,18 @@ fn required(values: &BTreeMap<String, String>, key: &str) -> Result<String, Stri
         .get(key)
         .cloned()
         .ok_or_else(|| format!("secret store is missing {key}"))
+}
+
+fn reality_public_from_private(private_key: &str) -> Result<String, String> {
+    validate_key("REALITY_PRIVATE_KEY", private_key)?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(private_key)
+        .map_err(|err| format!("invalid Reality private key encoding: {err}"))?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "Reality private key must decode to 32 bytes".to_owned())?;
+    let secret = StaticSecret::from(bytes);
+    Ok(URL_SAFE_NO_PAD.encode(PublicKey::from(&secret).to_bytes()))
 }
 
 fn generate_reality_pair() -> (String, String) {

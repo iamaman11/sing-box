@@ -356,6 +356,7 @@ dependencies = [
  "edge-secrets",
  "clap",
  "edge-shared-types",
+ "edge-singbox",
  "rusqlite",
  "tokio",
  "tonic",
