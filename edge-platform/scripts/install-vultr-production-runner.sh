@@ -64,6 +64,14 @@ if sudo -u "${RUNNER_USER}" test -r /var/run/docker.sock 2>/dev/null; then
 fi
 sudo -u "${RUNNER_USER}" sudo -n "${LOCAL_OWNER}" local status >/dev/null
 
+if systemctl cat edge-agent.service >/dev/null 2>&1; then
+  systemctl disable --now edge-agent.service >/dev/null
+fi
+if ss -ltnH 'sport = :50061' 2>/dev/null | grep -q .; then
+  echo "production enrollment must leave no edge-agent RPC listener on :50061" >&2
+  exit 10
+fi
+
 archive="/tmp/${RUNNER_ARCHIVE}"
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https'   --output "${archive}" "${RUNNER_URL}"
 echo "${RUNNER_SHA256}  ${archive}" | sha256sum --check --status
@@ -96,5 +104,7 @@ echo "runner_user=${RUNNER_USER}"
 echo "generic_root_authority=false"
 echo "bounded_runtime_dispatch=true"
 echo "docker_socket_authority=false"
+echo "acceptance_rpc_service_enabled=false"
+echo "tcp_50061_listener=false"
 echo "local_owner=${LOCAL_OWNER}"
 echo "registration_token_persisted=false"

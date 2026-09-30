@@ -401,6 +401,8 @@ jobs:
                 and .generic_root_authority == false
                 and .bounded_runtime_dispatch == true
                 and .docker_socket_authority == false
+                and .acceptance_rpc_service_enabled == false
+                and .tcp_50061_listener == false
                 and .listener == "PASS"
                 and .registration_token_persisted == false
               ' "${RUNNER_TEMP}/result.json" >/dev/null

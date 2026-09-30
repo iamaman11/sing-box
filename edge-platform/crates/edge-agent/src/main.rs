@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
-const DEFAULT_AGENT_ADDR: &str = "127.0.0.1:50061";
+const DEFAULT_ACCEPTANCE_AGENT_ADDR: &str = "127.0.0.1:50061";
 const DEFAULT_STACK_DIR: &str = "/opt/vultr-edge-stack/stack";
 const APPLICATION_RELEASE_MARKER: &str = ".application-release.pb";
 const PREVIOUS_STACK_DIR: &str = "stack.previous";
@@ -123,13 +123,10 @@ async fn main() -> ExitCode {
 async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     use cli::Command;
 
-    match parsed
-        .command
-        .unwrap_or_else(|| Command::Serve(cli::ServeArgs::default()))
-    {
-        Command::Serve(args) => {
+    match parsed.command {
+        Command::AcceptanceServe(args) => {
             let (addr, stack_dir) = args.resolve().map_err(AgentError::Command)?;
-            serve(addr, stack_dir).await?;
+            serve_acceptance_rpc(addr, stack_dir).await?;
             Ok(())
         }
         Command::Local { command } => run_local(command).await,
@@ -282,7 +279,10 @@ fn print_credential_state_evidence(state: Option<&LocalCredentialState>) {
     }
 }
 
-async fn serve(addr: SocketAddr, stack_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve_acceptance_rpc(
+    addr: SocketAddr,
+    stack_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     validate_existing_vm_credential_store(&stack_dir)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
     let mut builder = Server::builder();

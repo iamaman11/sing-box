@@ -11,18 +11,18 @@ use std::path::PathBuf;
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
 }
 
 impl Cli {
     pub fn command_name(&self) -> &'static str {
-        self.command.as_ref().map(Command::name).unwrap_or("serve")
+        self.command.name()
     }
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    Serve(ServeArgs),
+    AcceptanceServe(AcceptanceServeArgs),
     Local {
         #[command(subcommand)]
         command: LocalCommand,
@@ -32,7 +32,7 @@ pub(crate) enum Command {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
-            Self::Serve(_) => "serve",
+            Self::AcceptanceServe(_) => "acceptance-serve",
             Self::Local { command } => command.name(),
         }
     }
@@ -68,17 +68,17 @@ impl LocalCommand {
 }
 
 #[derive(Debug, Args, Default)]
-pub(crate) struct ServeArgs {
+pub(crate) struct AcceptanceServeArgs {
     pub addr: Option<SocketAddr>,
     pub stack_dir: Option<PathBuf>,
 }
 
-impl ServeArgs {
+impl AcceptanceServeArgs {
     pub fn resolve(self) -> Result<(SocketAddr, PathBuf), String> {
         let addr = match self.addr {
             Some(addr) => addr,
             None => env::var("EDGE_AGENT_ADDR")
-                .unwrap_or_else(|_| crate::DEFAULT_AGENT_ADDR.to_owned())
+                .unwrap_or_else(|_| crate::DEFAULT_ACCEPTANCE_AGENT_ADDR.to_owned())
                 .parse()
                 .map_err(|err| format!("invalid EDGE_AGENT_ADDR: {err}"))?,
         };
@@ -97,7 +97,9 @@ mod tests {
 
     #[test]
     fn agent_cli_is_closed() {
-        assert!(Cli::try_parse_from(["edge-agent", "serve"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "acceptance-serve"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent"]).is_err());
+        assert!(Cli::try_parse_from(["edge-agent", "serve"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "status"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());

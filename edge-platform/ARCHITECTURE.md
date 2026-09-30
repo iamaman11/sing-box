@@ -422,6 +422,10 @@ The standalone `/mesh` operator namespace is retired. Production Mesh provider s
 the hosted `/production target-plane-*` path; Mesh container/runtime state is owned by the VM local
 runtime owner through Compose/Bollard. There is no second normal Mesh transport.
 
+The remaining tonic/`edge-trust` server surface is named `acceptance-serve` and has no default
+invocation. Production enrollment disables `edge-agent.service` and proves port 50061 absent; the
+server code remains only because disposable acceptance still needs a bootstrap-time RPC observer.
+
 Neither runner has provider credentials or plaintext application credential authority. Privileged
 host mutations cross only explicit typed local boundaries. Macro Stage 1 keeps production rollback
 fail-closed; the new local plan/digest rollback contract is completed together with the terminal v2

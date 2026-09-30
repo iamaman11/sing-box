@@ -880,6 +880,26 @@ async fn run_runner_bootstrap(
     if bounded_dispatch != "PASS" {
         return Err("production runner bounded local-runtime dispatch failed".to_owned());
     }
+    let acceptance_rpc_disabled = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "if systemctl is-enabled edge-agent.service >/dev/null 2>&1; then exit 1; else echo PASS; fi",
+    )?;
+    if acceptance_rpc_disabled != "PASS" {
+        return Err("production enrollment left the acceptance RPC service enabled".to_owned());
+    }
+    let rpc_listener_absent = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "if ss -ltnH 'sport = :50061' 2>/dev/null | grep -q .; then exit 1; else echo PASS; fi",
+    )?;
+    if rpc_listener_absent != "PASS" {
+        return Err("production enrollment left an edge-agent RPC listener on port 50061".to_owned());
+    }
     let listener = strict_ssh_capture(
         target_ip,
         machine_id,
@@ -899,6 +919,8 @@ async fn run_runner_bootstrap(
         "generic_root_authority": false,
         "bounded_runtime_dispatch": true,
         "docker_socket_authority": false,
+        "acceptance_rpc_service_enabled": false,
+        "tcp_50061_listener": false,
         "local_owner_sha256": installed_sha,
         "listener": "PASS",
         "registration_token_persisted": false,

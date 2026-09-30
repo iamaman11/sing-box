@@ -79,7 +79,11 @@ def main() -> None:
         if "issue_comment:" in path.read_text(encoding="utf-8")
     )
     require(
-        "LocalCommand" in vm_agent_cli
+        "AcceptanceServe" in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent", "acceptance-serve"]).is_ok()' in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent"]).is_err()' in vm_agent_cli
+        and 'Cli::try_parse_from(["edge-agent", "serve"]).is_err()' in vm_agent_cli
+        and "LocalCommand" in vm_agent_cli
         and "BootstrapBase" in vm_agent_cli
         and "BootstrapTunnel" in vm_agent_cli
         and "BootstrapFull" in vm_agent_cli
@@ -693,6 +697,9 @@ def main() -> None:
         and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
         and "${LOCAL_OWNER} local status" in production_vm_runner_installer
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
+        and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
+        and "acceptance_rpc_service_enabled" in vultr
+        and "tcp_50061_listener" in vultr
         and "Verify self-hosted runner online" in vultr
         and '.status == "online"' in vultr
         and 'index("sing-box-production-vm")' in vultr

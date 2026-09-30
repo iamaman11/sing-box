@@ -20,7 +20,7 @@ write_files:
 
       [Service]
       Type=simple
-      ExecStart=/opt/vultr-edge-stack/bin/edge-agent serve
+      ExecStart=/opt/vultr-edge-stack/bin/edge-agent acceptance-serve
       Restart=always
       RestartSec=2
       Environment=EDGE_AGENT_ADDR=127.0.0.1:50061
