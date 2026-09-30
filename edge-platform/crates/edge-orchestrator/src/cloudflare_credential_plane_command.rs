@@ -2512,8 +2512,7 @@ mod tests {
         make_terminal(&mut observed, "windows");
         make_terminal(&mut observed, "vm");
 
-        observed.projections[0].worker_active_version_ids =
-            vec!["older-active-version".to_owned()];
+        observed.projections[0].worker_active_version_ids = vec!["older-active-version".to_owned()];
         assert!(plan(&desired, &observed).is_err());
     }
 
