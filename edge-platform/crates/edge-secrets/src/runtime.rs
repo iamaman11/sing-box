@@ -196,9 +196,9 @@ pub fn windows_runtime_state_from_canonical_production_bundle(
                     && rule.purpose == purpose
             })
             .ok_or_else(|| format!("canonical production firewall rule is missing: {purpose}"))?;
-        rule.port
-            .parse::<u32>()
-            .map_err(|err| format!("canonical production firewall port is invalid for {purpose}: {err}"))
+        rule.port.parse::<u32>().map_err(|err| {
+            format!("canonical production firewall port is invalid for {purpose}: {err}")
+        })
     };
 
     let server_ip = (desired.public_hostname.as_str(), 443u16)
@@ -225,10 +225,7 @@ pub fn windows_runtime_state_from_canonical_production_bundle(
         server_ip,
         direct: Some(WindowsTunnelBinding {
             domain: line1.tunnel_domain.clone(),
-            hy2_port: port(
-                ProductionTransportProtocol::Udp,
-                "Line 1 Hysteria2 direct",
-            )?,
+            hy2_port: port(ProductionTransportProtocol::Udp, "Line 1 Hysteria2 direct")?,
             hy2_password: String::new(),
             vless_port: port(
                 ProductionTransportProtocol::Tcp,
@@ -240,10 +237,7 @@ pub fn windows_runtime_state_from_canonical_production_bundle(
         }),
         warp: Some(WindowsTunnelBinding {
             domain: line1.tunnel_domain.clone(),
-            hy2_port: port(
-                ProductionTransportProtocol::Udp,
-                "Line 1 Hysteria2 WARP",
-            )?,
+            hy2_port: port(ProductionTransportProtocol::Udp, "Line 1 Hysteria2 WARP")?,
             hy2_password: String::new(),
             vless_port: port(
                 ProductionTransportProtocol::Tcp,
