@@ -4,7 +4,9 @@ mod credential_transition;
 mod error;
 
 use clap::Parser;
-use edge_controller_core::windows_credential_store_path;
+use edge_controller_core::{
+    local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
+};
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
 use edge_singbox::{
@@ -179,7 +181,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             Ok(())
         }
         Command::Stage2Preflight => {
-            verify_stage2_proxy_ports_available().map_err(ConsoleError::Command)?;
+            let install_root = installed_root_from_console()?;
+            verify_stage2_isolated_prerequisites(&install_root).map_err(ConsoleError::Command)?;
             println!("status=PASS");
             println!("stage2_proxy_ports=AVAILABLE");
             println!("stage2_desktop_proxy_port={STAGE2_DESKTOP_PROXY_PORT}");
@@ -1150,7 +1153,22 @@ async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String
     restore
 }
 
-fn verify_stage2_proxy_ports_available() -> Result<(), String> {
+fn verify_stage2_isolated_prerequisites(install_root: &Path) -> Result<(), String> {
+    let managed_state = windows_runtime_state_path(install_root);
+    if managed_state.exists() {
+        return Err(format!(
+            "Stage 2 requires no pre-existing managed Windows runtime state at {}",
+            managed_state.display()
+        ));
+    }
+    let managed_config = local_singbox_config_path(install_root);
+    if managed_config.exists() {
+        return Err(format!(
+            "Stage 2 requires no pre-existing managed Windows runtime config at {}",
+            managed_config.display()
+        ));
+    }
+
     let endpoints = [
         ("desktop proxy", format!("127.0.0.1:{STAGE2_DESKTOP_PROXY_PORT}")),
         ("WSL proxy", format!("0.0.0.0:{STAGE2_WSL_PROXY_PORT}")),
