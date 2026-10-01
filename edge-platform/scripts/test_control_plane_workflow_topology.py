@@ -288,8 +288,19 @@ def main() -> None:
         '("/credentials", "fresh-v2-publication-prove"): "fresh-v2-publication-prove"' in credentials
         and "cutover_publication_prove_complete:" in credentials
         and "FRESH_V2_PUBLICATION_DATA_PLANE_ADMISSION=PASS" in credentials
-        and "FRESH_V2_PUBLICATION_BASELINE_RESTORE=PASS" in credentials,
+        and "FRESH_V2_PUBLICATION_BASELINE_RESTORE=PASS" in credentials
+        and "FRESH_V2_PUBLICATION_PROOF=PASS" in credentials,
         "fresh-v2 publication must have a bounded live proof path that stops before host staging and restores the provider baseline",
+    )
+    publication_proof_index = credentials.index("  cutover_publication_prove_complete:")
+    publication_proof_end = credentials.index("  cutover_windows_promote:", publication_proof_index)
+    publication_proof_block = credentials[publication_proof_index:publication_proof_end]
+    require(
+        "always() &&" in publication_proof_block
+        and "needs.cutover_vm_admit.result == 'success'" in publication_proof_block
+        and "needs.cutover_windows_admit.result == 'success'" in publication_proof_block
+        and "needs.cutover_provider_abort_uncommitted.result == 'success'" in publication_proof_block,
+        "publication proof terminal marker must survive intentional skip propagation and require all accepted proof prerequisites explicitly",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
