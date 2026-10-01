@@ -14,6 +14,7 @@ on:
       - ".github/workflows/edge-platform-ci.yml"
       - ".github/workflows/edge-control-plane.yml"
       - ".github/workflows/credential-lifecycle.yml"
+      - ".github/workflows/windows-physical.yml"
       - ".github/workflows/vultr-lifecycle.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
 
