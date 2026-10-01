@@ -505,7 +505,7 @@ def main() -> None:
         '"fresh-v2-cutover"' in credentials
         and '"fresh-v2-cleanup"' in credentials
         and "credential-transition discard-candidate" in credentials
-        and "cutover_provider_recover_candidate_failure:" in credentials
+        and "cutover_provider_abort_uncommitted:" in credentials
         and "CredentialDeliveryCommand::FreshV2RestoreBaseline" in credential_command
         and "credential_fresh_v2_baseline_restore=PASS" in credential_command
         and not (WORKFLOWS / "credential-fresh-v2-cutover.yml").exists()
