@@ -1834,7 +1834,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 outbound.get("server").and_then(Value::as_str),
-                Some("203.0.113.42")
+                Some("203.0.113.10")
             );
         }
         let hysteria_direct = outbounds
