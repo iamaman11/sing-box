@@ -861,6 +861,9 @@ def main() -> None:
         and "SING_BOX_RUNTIME_READ" in production_vm_runner_installer
         and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
         and "${LOCAL_OWNER} local status" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
         and "acceptance_rpc_service_enabled" in vultr
