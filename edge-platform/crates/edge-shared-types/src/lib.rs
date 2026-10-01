@@ -784,6 +784,7 @@ pub fn parse_credential_transition_action(
         "apply-legacy" => Ok(CredentialTransitionAction::ApplyLegacy),
         "apply-active" => Ok(CredentialTransitionAction::ApplyActive),
         "retire-legacy" => Ok(CredentialTransitionAction::RetireLegacy),
+        "discard-candidate" => Ok(CredentialTransitionAction::DiscardCandidate),
         _ => Err(format!("unsupported credential transition action: {value}")),
     }
 }
