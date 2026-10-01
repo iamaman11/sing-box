@@ -2266,10 +2266,8 @@ mod tests {
         assert!(encode_windows_privileged_request(&invalid).is_err());
 
         let mut invalid = request;
-        invalid.release_set_sha256 = Some(
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                .to_owned(),
-        );
+        invalid.release_set_sha256 =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned());
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
