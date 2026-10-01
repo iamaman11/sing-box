@@ -1266,6 +1266,37 @@ def main() -> None:
         and "workflow run" not in windows_installer,
         "Windows activation must never regress to JSON pointers, gh.exe, or workflow-run artifact authority",
     )
+    metadata_read = windows_installer.split("function Invoke-GitHubJsonGet {", 1)[1].split(
+        "function Invoke-GitHubAssetGet {", 1
+    )[0]
+    asset_read = windows_installer.split("function Invoke-GitHubAssetGet {", 1)[1].split(
+        "function Assert-LowerHexRevision {", 1
+    )[0]
+    require(
+        windows_installer.count("Invoke-RestMethod") == 1
+        and windows_installer.count("Invoke-WebRequest") == 1
+        and "$GitHubReadAttempts = 3" in windows_installer
+        and "$GitHubReadTimeoutSec = 15" in windows_installer
+        and "$GitHubAssetTimeoutSec = 120" in windows_installer
+        and "Test-TransientGitHubReadFailure" in metadata_read
+        and "Test-TransientGitHubReadFailure" in asset_read
+        and "Start-Sleep -Seconds $GitHubRetryDelaySec" in metadata_read
+        and "Start-Sleep -Seconds $GitHubRetryDelaySec" in asset_read
+        and "@(408, 425, 429, 500, 502, 503, 504)" in windows_installer
+        and "Activate-ReleaseAuthority" not in metadata_read
+        and "Activate-ReleaseAuthority" not in asset_read,
+        "Windows GitHub retry must remain bounded and scoped only to read-only metadata/asset transport",
+    )
+    require(
+        'repo_root / "edge-platform" / "scripts" / "install-windows-release.ps1"' in windows_input
+        and '$packageBootstrap = Join-Path $packageRoot "bootstrap"' in edge_platform_ci
+        and 'Copy-Item "edge-platform\\scripts\\install-windows-release.ps1"' in edge_platform_ci
+        and 'bootstrap\\install-windows-release.ps1' in windows_installer
+        and "Refresh-StableBootstrapInstaller" in windows_installer
+        and '$releaseInstaller = Join-Path $releaseDir "bootstrap\\install-windows-release.ps1"' in windows_installer
+        and "Bootstrap installer refresh failed SHA-256 verification" in windows_installer,
+        "Windows installer changes must force a Windows candidate and self-update only from the verified immutable release",
+    )
     require(
         "migrate-windows-runtime-state" not in windows_installer
         and "LegacyRuntimeStatePath" not in windows_installer
