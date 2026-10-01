@@ -283,6 +283,13 @@ def main() -> None:
         and "cutover_vm_recover_windows_restart_failure" not in credentials,
         "all uncommitted fresh-v2 failure phases must collapse into one ordered VM -> Windows -> provider abort path",
     )
+    require(
+        '("/credentials", "fresh-v2-publication-prove"): "fresh-v2-publication-prove"' in credentials
+        and "cutover_publication_prove_complete:" in credentials
+        and "FRESH_V2_PUBLICATION_DATA_PLANE_ADMISSION=PASS" in credentials
+        and "FRESH_V2_PUBLICATION_BASELINE_RESTORE=PASS" in credentials,
+        "fresh-v2 publication must have a bounded live proof path that stops before host staging and restores the provider baseline",
+    )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
