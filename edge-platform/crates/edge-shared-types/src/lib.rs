@@ -706,6 +706,17 @@ pub fn validate_windows_privileged_request(
                 );
             }
         }
+        WindowsPrivilegedOperation::RuntimeEvidence => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_generation.is_some()
+                || request.credential_transition_action.is_some()
+            {
+                return Err(
+                    "RUNTIME_EVIDENCE request must carry no mutation authority".to_owned(),
+                );
+            }
+        }
         WindowsPrivilegedOperation::ActivateRelease => {
             let revision = request
                 .accepted_revision
@@ -2190,6 +2201,24 @@ mod tests {
 
         let mut invalid = request;
         invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_runtime_evidence_carries_no_mutation_authority() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-runtime-evidence".to_owned(),
+            operation: WindowsPrivilegedOperation::RuntimeEvidence as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+            credential_transition_action: None,
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request;
+        invalid.credential_generation = Some(101);
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
