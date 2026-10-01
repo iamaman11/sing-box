@@ -30,7 +30,7 @@ For every instruction:
 
 ## Current Cloudflare boundaries
 
-Issue #169 owns the bounded convergence design while #26 owns ordering.
+Issue #26 owns current execution and ordering. Issue #169 is historical Cloudflare evidence used only when #26 enters bounded Stage 3 classification/deletion.
 
 Target boundaries:
 
