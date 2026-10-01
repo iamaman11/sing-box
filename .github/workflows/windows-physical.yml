@@ -136,6 +136,39 @@ jobs:
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_ACTIVATION_REQUEST_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
 
+      - name: Recover exact stale read-only evidence request
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requestPath = Join-Path $env:EDGE_INSTALL_ROOT 'exchange\requests\request.pb'
+          if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+            Write-Host 'STALE_RUNTIME_EVIDENCE_REQUEST=ABSENT'
+          } else {
+            $item = Get-Item -LiteralPath $requestPath
+            $ageSeconds = ([DateTime]::UtcNow - $item.LastWriteTimeUtc).TotalSeconds
+            if ($ageSeconds -lt 180) {
+              throw "Pending privileged request is too recent for incident recovery: $([int]$ageSeconds)s"
+            }
+            $bytes = [IO.File]::ReadAllBytes($requestPath)
+            $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+            if (-not $ascii.Contains('1790862397323-17868')) {
+              throw 'Pending privileged request is not the exact stale RuntimeEvidence request from run 36870702478'
+            }
+            $runtimeEvidenceOperation = $false
+            for ($i = 0; $i -lt ($bytes.Length - 1); $i++) {
+              if ($bytes[$i] -eq 0x18 -and $bytes[$i + 1] -eq 0x07) {
+                $runtimeEvidenceOperation = $true
+                break
+              }
+            }
+            if (-not $runtimeEvidenceOperation) {
+              throw 'Exact stale request does not encode WindowsPrivilegedOperation::RuntimeEvidence'
+            }
+            Remove-Item -LiteralPath $requestPath -Force
+            Write-Host 'STALE_RUNTIME_EVIDENCE_REQUEST=RECOVERED'
+            Write-Host 'STALE_RUNTIME_EVIDENCE_MUTATION_AUTHORITY=NONE'
+          }
+
       - name: Converge exact accepted ReleaseSet through privileged dispatcher
         shell: powershell
         run: |
