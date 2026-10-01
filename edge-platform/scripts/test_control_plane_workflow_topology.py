@@ -246,17 +246,25 @@ def main() -> None:
         "StageCredentialCandidateRequest" not in windows_console
         and "PrivilegedStageCredential" in windows_console_cli
         and "WindowsPrivilegedOperation::StageCredential" in windows_console
-        and "fetch_canonical_credential_bundle" in windows_console,
-        "Windows runner may carry only typed generation intent while SYSTEM fetches and stages the canonical bundle",
+        and "acquire_windows_credential_generation" in windows_console
+        and "observe_canonical_credential_bundle" in windows_console,
+        "Windows runner may carry only typed generation intent while SYSTEM bounded-acquires and stages the canonical bundle",
     )
     require(
         "CredentialAdmit" in vm_agent_cli
         and "local-credential-admit" in vm_agent_cli
+        and "acquire_vm_credential_generation" in vm_agent_runtime
         and "observe_canonical_credential_bundle" in vm_agent_runtime
         and "PrivilegedAdmitCredential" in windows_console_cli
         and "WindowsPrivilegedOperation::AdmitCredential" in windows_console
         and "observe_canonical_credential_bundle" in windows_console,
-        "fresh-v2 data-plane admission must stay read-only and inside the existing host-local credential owners",
+        "fresh-v2 publication proof admission must stay read-only and inside the existing host-local credential owners",
+    )
+    require(
+        "fetch_and_stage_vm_credential_candidate" in vm_agent_runtime
+        and "let bundle = acquire_vm_credential_generation(stack_dir, generation).await?;" in vm_agent_runtime
+        and "let bundle = acquire_windows_credential_generation(install_root, generation).await?;" in windows_console,
+        "terminal staging must persist the exact bundle returned by its own bounded host-local acquisition instead of performing an unbounded second fetch",
     )
     publish_index = credentials.index("  cutover_publish:")
     vm_admit_index = credentials.index("  cutover_vm_admit:")
@@ -265,7 +273,32 @@ def main() -> None:
     windows_stage_index = credentials.index("  cutover_windows_stage:")
     require(
         publish_index < vm_admit_index < windows_admit_index < vm_stage_index < windows_stage_index,
-        "fresh-v2 provider publication must be admitted by both local owners before either host stages a candidate",
+        "credential workflow layout must keep proof-only admissions and terminal staging explicit",
+    )
+    vm_admit_block = credentials[vm_admit_index:windows_admit_index]
+    windows_admit_block = credentials[windows_admit_index:vm_stage_index]
+    vm_stage_block = credentials[vm_stage_index:windows_stage_index]
+    windows_stage_end = credentials.index("  cutover_vm_candidate:")
+    windows_stage_block = credentials[windows_stage_index:windows_stage_end]
+    require(
+        "if: needs.authorize.outputs.operation == 'fresh-v2-publication-prove'" in vm_admit_block
+        and "fresh-v2-cutover" not in vm_admit_block
+        and "if: needs.authorize.outputs.operation == 'fresh-v2-publication-prove'" in windows_admit_block
+        and "fresh-v2-cutover" not in windows_admit_block,
+        "read-only data-plane admission jobs must be publication-proof-only and must not duplicate terminal cutover acquisition",
+    )
+    require(
+        "needs: [authorize, cutover_release, cutover_publish]" in vm_stage_block
+        and "cutover_vm_admit" not in vm_stage_block
+        and "cutover_windows_admit" not in vm_stage_block
+        and "EXPECTED_AGENT_SHA256" in vm_stage_block
+        and "STAGE2_VM_DATA_PLANE_ACQUIRE_AND_STAGE=PASS" in vm_stage_block
+        and "needs: [authorize, cutover_release, cutover_vm_stage, cutover_publish]" in windows_stage_block
+        and "cutover_vm_admit" not in windows_stage_block
+        and "cutover_windows_admit" not in windows_stage_block
+        and "EDGE_RELEASE_SET_SHA256" in windows_stage_block
+        and "STAGE2_WINDOWS_DATA_PLANE_ACQUIRE_AND_STAGE=PASS" in windows_stage_block,
+        "terminal cutover must go directly from publication to bounded acquire-and-stage while preserving exact owner provenance",
     )
     publish_block = credentials[publish_index:vm_admit_index]
     require(
