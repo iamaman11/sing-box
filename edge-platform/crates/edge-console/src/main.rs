@@ -1072,11 +1072,12 @@ fn truncate_runtime_evidence(value: &str, max_bytes: usize) -> String {
     while end > 0 && !value.is_char_boundary(end) {
         end -= 1;
     }
+    const SUFFIX: &str = "...[truncated]";
     let mut truncated = value[..end].to_owned();
-    while truncated.len() + 13 > max_bytes {
+    while truncated.len() + SUFFIX.len() > max_bytes {
         truncated.pop();
     }
-    truncated.push_str("...[truncated]");
+    truncated.push_str(SUFFIX);
     truncated
 }
 
