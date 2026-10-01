@@ -207,7 +207,7 @@ async fn fresh_v2_publish(
                     projection.projection
                 ));
             }
-            Err(original)
+            Err(_)
                 if projection_has_exact_pending_fixed_ab_activation(projection, &before)? =>
             {
                 pending_activation.push(projection);
@@ -2431,6 +2431,36 @@ mod tests {
             CredentialDeliveryAction::InstallDummyAbContract {
                 projection: "vm".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn recognizes_only_exact_pending_fixed_ab_activation_residue() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "windows");
+        let projection = projection_desired(&desired, "windows").unwrap();
+
+        let current = observed
+            .projections
+            .iter_mut()
+            .find(|item| item.projection == "windows")
+            .unwrap();
+        current.worker_latest_version_id = Some("windows-new-version-id".to_owned());
+
+        assert!(
+            projection_has_exact_pending_fixed_ab_activation(&projection, &observed).unwrap()
+        );
+        assert!(projection_delivery_state(&desired, &projection, &observed).is_err());
+
+        observed
+            .projections
+            .iter_mut()
+            .find(|item| item.projection == "windows")
+            .unwrap()
+            .worker_latest_version_tag = None;
+        assert!(
+            !projection_has_exact_pending_fixed_ab_activation(&projection, &observed).unwrap()
         );
     }
 
