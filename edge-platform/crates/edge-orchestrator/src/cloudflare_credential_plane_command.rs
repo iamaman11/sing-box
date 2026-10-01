@@ -178,18 +178,8 @@ async fn fresh_v2_publish(
         return Err("fresh-v2 generation must be greater than zero".to_owned());
     }
 
-    let before = observe(control_token, desired).await?;
+    let mut before = observe(control_token, desired).await?;
     validate_access_boundary(desired, &before)?;
-    for projection in projections(desired) {
-        if projection_delivery_state(desired, &projection, &before)?
-            != ProjectionDeliveryState::FixedAb
-        {
-            return Err(format!(
-                "{} credential Worker is not in exact fixed A/B state",
-                projection.projection
-            ));
-        }
-    }
 
     let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
     let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
@@ -204,6 +194,47 @@ async fn fresh_v2_publish(
             "credential-rotation token must be physically distinct from CLOUDFLARE_CONTROL_TOKEN"
                 .to_owned(),
         );
+    }
+
+    let projection_set = projections(desired);
+    let mut pending_activation = Vec::new();
+    for projection in &projection_set {
+        match projection_delivery_state(desired, projection, &before) {
+            Ok(ProjectionDeliveryState::FixedAb) => {}
+            Ok(_) => {
+                return Err(format!(
+                    "{} credential Worker is not in exact fixed A/B state",
+                    projection.projection
+                ));
+            }
+            Err(original)
+                if projection_has_exact_pending_fixed_ab_activation(projection, &before)? =>
+            {
+                pending_activation.push(projection);
+                println!(
+                    "credential_fresh_v2_recovery_projection={} action=RESTORE_INACTIVE_A_BASELINE",
+                    projection.projection
+                );
+            }
+            Err(original) => return Err(original),
+        }
+    }
+
+    if !pending_activation.is_empty() {
+        restore_dummy_slot(&rotation_token, desired, &pending_activation).await?;
+        before = observe(control_token, desired).await?;
+        validate_access_boundary(desired, &before)?;
+        for projection in &projection_set {
+            if projection_delivery_state(desired, projection, &before)?
+                != ProjectionDeliveryState::FixedAb
+            {
+                return Err(format!(
+                    "{} credential Worker did not return to exact fixed A/B state after pending-version compensation",
+                    projection.projection
+                ));
+            }
+        }
+        println!("credential_fresh_v2_recovery_status=PASS");
     }
 
     let snapshot = generate_fresh_credential_snapshot(FreshCredentialSnapshotRequest {
@@ -925,6 +956,28 @@ fn projection_delivery_state(
             bindings.as_str()
         }
     ))
+}
+
+fn projection_has_exact_pending_fixed_ab_activation(
+    projection: &ProjectionDesired,
+    observed: &CredentialPlaneObservation,
+) -> Result<bool, String> {
+    let current = projection_observation(observed, &projection.projection)?;
+    if current.worker_binding_count != Some(2) {
+        return Ok(false);
+    }
+    require_exact_secret_bindings(&projection.worker_name, &current.worker_secret_bindings)?;
+    let material = delivery_worker_material(&projection.projection)?;
+    let latest = match current.worker_latest_version_id.as_deref() {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => return Ok(false),
+    };
+    let single_active = current.worker_active_deployment_id.is_some()
+        && current.worker_active_version_ids.len() == 1;
+    Ok(single_active
+        && current.worker_active_version_ids[0] != latest
+        && current.worker_version_tag.as_deref() == Some(material.version_tag.as_str())
+        && current.worker_latest_version_tag.as_deref() == Some(material.version_tag.as_str()))
 }
 
 fn validate_access_boundary(
