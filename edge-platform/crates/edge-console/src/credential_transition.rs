@@ -99,10 +99,11 @@ pub(crate) fn transition(
                     "initial fresh-v2 discard requires empty active/previous state".to_owned(),
                 );
             }
-            store.discard_candidate()?;
+            discard_candidate_and_managed_runtime(install_root, &store)?;
             Ok((
                 "CREDENTIAL_CANDIDATE_DISCARDED".to_owned(),
-                "unpromoted Windows v2 candidate discarded".to_owned(),
+                "unpromoted Windows v2 candidate and managed proxy-only runtime artifacts discarded"
+                    .to_owned(),
             ))
         }
         CredentialTransitionAction::RetireLegacy => Err(
@@ -194,6 +195,34 @@ fn restore_optional(path: &Path, previous: Option<&[u8]>) -> Result<(), String> 
             )),
         },
     }
+}
+
+fn discard_candidate_and_managed_runtime(
+    install_root: &Path,
+    store: &CredentialStore,
+) -> Result<(), String> {
+    let state_path = windows_runtime_state_path(install_root);
+    let config_path = local_singbox_config_path(install_root);
+    let previous_state = read_optional(&state_path)?;
+    let previous_config = read_optional(&config_path)?;
+
+    if let Err(err) = restore_optional(&state_path, None)
+        .and_then(|_| restore_optional(&config_path, None))
+        .and_then(|_| store.discard_candidate().map(|_| ()))
+    {
+        let state_restore = restore_optional(&state_path, previous_state.as_deref());
+        let config_restore = restore_optional(&config_path, previous_config.as_deref());
+        return match (state_restore, config_restore) {
+            (Ok(()), Ok(())) => Err(format!(
+                "Windows candidate discard failed and managed files were rolled back: {err}"
+            )),
+            (state_result, config_result) => Err(format!(
+                "Windows candidate discard failed: {err}; rollback state={state_result:?}; config={config_result:?}"
+            )),
+        };
+    }
+
+    Ok(())
 }
 
 fn apply_runtime_state(
