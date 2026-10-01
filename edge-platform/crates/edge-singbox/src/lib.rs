@@ -328,6 +328,22 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
     ]);
     let config = json!({
         "log": { "level": "info", "timestamp": true },
+        "dns": {
+            "servers": [
+                {
+                    "tag": "upstream-cloudflare",
+                    "type": "udp",
+                    "server": "1.1.1.1"
+                },
+                {
+                    "tag": "upstream-google",
+                    "type": "udp",
+                    "server": "8.8.8.8"
+                }
+            ],
+            "final": "upstream-cloudflare",
+            "strategy": "prefer_ipv4"
+        },
         "inbounds": [
             {
                 "type": "mixed",
@@ -427,7 +443,8 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
                 { "inbound": [WSL_INBOUND_TAG], "outbound": WSL_SELECTOR_TAG }
             ],
             "final": MANAGED_SELECTOR_TAG,
-            "auto_detect_interface": true
+            "auto_detect_interface": true,
+            "default_domain_resolver": "upstream-cloudflare"
         },
         "experimental": {
             "clash_api": {
