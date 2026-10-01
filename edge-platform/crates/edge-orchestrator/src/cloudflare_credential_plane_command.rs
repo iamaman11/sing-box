@@ -345,17 +345,28 @@ async fn fresh_v2_publish(
         ));
     }
 
-    let after = observe(control_token, desired).await?;
-    validate_access_boundary(desired, &after)?;
-    for projection in projections(desired) {
-        if projection_delivery_state(desired, &projection, &after)?
-            != ProjectionDeliveryState::FixedAb
-        {
-            return Err(format!(
-                "{} credential Worker left exact fixed A/B contract after publication",
-                projection.projection
-            ));
+    let post_publish_validation = async {
+        let after = observe(control_token, desired).await?;
+        validate_access_boundary(desired, &after)?;
+        for projection in projections(desired) {
+            if projection_delivery_state(desired, &projection, &after)?
+                != ProjectionDeliveryState::FixedAb
+            {
+                return Err(format!(
+                    "{} credential Worker left exact fixed A/B contract after publication",
+                    projection.projection
+                ));
+            }
         }
+        Ok::<(), String>(())
+    }
+    .await;
+
+    if let Err(err) = post_publish_validation {
+        restore_dummy_slot(&rotation_token, desired, &[&windows, &vm]).await?;
+        return Err(format!(
+            "fresh-v2 provider publication failed post-deploy validation and paired baseline was restored: {err}"
+        ));
     }
 
     println!("credential_fresh_v2_provider_publish=PASS");
