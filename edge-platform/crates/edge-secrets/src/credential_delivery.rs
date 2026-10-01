@@ -7,10 +7,12 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, redirect::Policy};
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 pub const ACCESS_IDENTITY_FILE_NAME: &str = "credential-access-v1.env";
 const MAX_ACCESS_IDENTITY_BYTES: u64 = 16 * 1024;
 const MAX_CREDENTIAL_BUNDLE_BYTES: u64 = 1024 * 1024;
+const CREDENTIAL_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AccessServiceIdentity {
@@ -147,6 +149,7 @@ pub async fn observe_canonical_credential_bundle(
     let client = Client::builder()
         .redirect(Policy::none())
         .default_headers(headers)
+        .timeout(CREDENTIAL_WORKER_REQUEST_TIMEOUT)
         .build()
         .map_err(|err| format!("failed to construct credential Worker client: {err}"))?;
     let response = client
