@@ -466,7 +466,7 @@ def main() -> None:
         and "generate_fresh_credential_snapshot" in fresh_v2_publish
         and fresh_v2_publish.count("cloudflare::patch_latest_worker_version_secrets(") == 2
         and fresh_v2_publish.count("cloudflare::deploy_worker_version(") == 2
-        and "RestoreFixedAbBaseline" in fresh_v2
+        and "RestoreFixedAbBaseline" in credential_command
         and "put_worker_secret_text(" not in fresh_v2
         and "workers/workers/{script_name}/versions/latest" in credential_provider
         and "workers/scripts/{script_name}/deployments" in credential_provider
