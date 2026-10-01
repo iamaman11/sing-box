@@ -126,11 +126,11 @@ pub fn canonical_credential_worker_url(
     ))
 }
 
-pub async fn fetch_canonical_credential_bundle(
+pub async fn observe_canonical_credential_bundle(
     projection: CredentialProjectionKind,
     generation: u64,
     identity_path: &Path,
-) -> Result<CredentialDeliveryBundle, String> {
+) -> Result<Option<CredentialDeliveryBundle>, String> {
     let identity = read_access_service_identity(identity_path)?;
     let url = canonical_credential_worker_url(projection, generation)?;
     let mut headers = HeaderMap::new();
@@ -154,6 +154,9 @@ pub async fn fetch_canonical_credential_bundle(
         .send()
         .await
         .map_err(|err| format!("credential Worker request failed: {err}"))?;
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
     if response.status() != StatusCode::OK {
         return Err(format!(
             "credential Worker returned unexpected HTTP status {}",
@@ -189,7 +192,17 @@ pub async fn fetch_canonical_credential_bundle(
         return Err("credential Worker returned the wrong projection or generation".to_owned());
     }
     local_credential_bundle_ref(&bundle)?;
-    Ok(bundle)
+    Ok(Some(bundle))
+}
+
+pub async fn fetch_canonical_credential_bundle(
+    projection: CredentialProjectionKind,
+    generation: u64,
+    identity_path: &Path,
+) -> Result<CredentialDeliveryBundle, String> {
+    observe_canonical_credential_bundle(projection, generation, identity_path)
+        .await?
+        .ok_or_else(|| "credential Worker returned unexpected HTTP status 404".to_owned())
 }
 
 #[cfg(test)]
