@@ -9,7 +9,10 @@ use edge_controller_core::{
 };
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
-use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
+use edge_secrets::{
+    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
+    observe_canonical_credential_bundle,
+};
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
 use rusqlite::Connection;
@@ -70,6 +73,8 @@ const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
 const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 960;
 const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
+const CREDENTIAL_ADMISSION_ATTEMPTS: usize = 8;
+const CREDENTIAL_ADMISSION_DELAY: Duration = Duration::from_secs(1);
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 
@@ -246,6 +251,24 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     accepted_revision: Some(args.accepted_revision),
                     release_set_sha256: Some(args.release_set_sha256),
                     credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedAdmitCredential(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::AdmitCredential as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: Some(args.generation),
                     credential_transition_action: None,
                 },
             )?;
@@ -980,6 +1003,9 @@ async fn process_privileged_request(
         Ok(WindowsPrivilegedOperation::ActivateRelease) => {
             activate_privileged_release(install_root, request)
         }
+        Ok(WindowsPrivilegedOperation::AdmitCredential) => {
+            admit_windows_credential_generation(install_root, request).await
+        }
         Ok(WindowsPrivilegedOperation::StageCredential) => {
             stage_windows_credential_candidate_from_worker(install_root, request).await
         }
@@ -1201,6 +1227,54 @@ fn append_redacted_runtime_token(output: &mut String, token: &mut String) {
         output.push_str(token);
     }
     token.clear();
+}
+
+async fn admit_windows_credential_generation(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+) -> Result<(String, String, Option<String>), String> {
+    let generation = request
+        .credential_generation
+        .ok_or_else(|| "credential_generation is required".to_owned())?;
+    if generation == 0 {
+        return Err("credential_generation must be greater than zero".to_owned());
+    }
+    let identity_path = install_root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
+
+    for attempt in 1..=CREDENTIAL_ADMISSION_ATTEMPTS {
+        match observe_canonical_credential_bundle(
+            edge_shared_types::CredentialProjectionKind::Windows,
+            generation,
+            &identity_path,
+        )
+        .await?
+        {
+            Some(_) => {
+                let active = load_verified_activation(install_root)
+                    .ok()
+                    .map(|value| value.release_set_sha256);
+                return Ok((
+                    "CREDENTIAL_GENERATION_ADMITTED".to_owned(),
+                    format!(
+                        "credential data-plane admission PASS generation={generation} projection=WINDOWS state_mutated=false"
+                    ),
+                    active,
+                ));
+            }
+            None if attempt < CREDENTIAL_ADMISSION_ATTEMPTS => {
+                tokio::time::sleep(CREDENTIAL_ADMISSION_DELAY).await;
+            }
+            None => {
+                return Err(format!(
+                    "Windows credential generation {generation} was not visible in the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations"
+                ));
+            }
+        }
+    }
+    unreachable!("bounded credential admission loop always returns")
 }
 
 async fn stage_windows_credential_candidate_from_worker(
