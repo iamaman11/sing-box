@@ -155,7 +155,7 @@ async fn send_credential_worker_get(
     for attempt in 1..=CREDENTIAL_WORKER_TRANSPORT_ATTEMPTS {
         match client.get(url).send().await {
             Ok(response) => return Ok(response),
-            Err(error) if credential_worker_transport_retry_allowed(attempt) => {
+            Err(_) if credential_worker_transport_retry_allowed(attempt) => {
                 // This is an exact-generation, read-only GET. Re-observation cannot replay
                 // provider or local state mutation, so bounded transport retry is safe.
                 tokio::time::sleep(CREDENTIAL_WORKER_TRANSPORT_RETRY_DELAY).await;
