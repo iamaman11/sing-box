@@ -248,6 +248,41 @@ def main() -> None:
         and "fetch_canonical_credential_bundle" in windows_console,
         "Windows runner may carry only typed generation intent while SYSTEM fetches and stages the canonical bundle",
     )
+    require(
+        "CredentialAdmit" in vm_agent_cli
+        and "local-credential-admit" in vm_agent_cli
+        and "observe_canonical_credential_bundle" in vm_agent_runtime
+        and "PrivilegedAdmitCredential" in windows_console_cli
+        and "WindowsPrivilegedOperation::AdmitCredential" in windows_console
+        and "observe_canonical_credential_bundle" in windows_console,
+        "fresh-v2 data-plane admission must stay read-only and inside the existing host-local credential owners",
+    )
+    publish_index = credentials.index("  cutover_publish:")
+    vm_admit_index = credentials.index("  cutover_vm_admit:")
+    windows_admit_index = credentials.index("  cutover_windows_admit:")
+    vm_stage_index = credentials.index("  cutover_vm_stage:")
+    windows_stage_index = credentials.index("  cutover_windows_stage:")
+    require(
+        publish_index < vm_admit_index < windows_admit_index < vm_stage_index < windows_stage_index,
+        "fresh-v2 provider publication must be admitted by both local owners before either host stages a candidate",
+    )
+    publish_block = credentials[publish_index:vm_admit_index]
+    require(
+        'GITHUB_RUN_ID' in publish_block
+        and 'GITHUB_RUN_ATTEMPT' in publish_block
+        and 'ACCEPTED_REVISION"][:16]' not in publish_block
+        and "credential_fresh_v2_provider_publish=PASS" in publish_block,
+        "fresh random credential snapshots must use workflow-attempt identity, not commit identity, and provider publish must not masquerade as data-plane admission",
+    )
+    require(
+        "cutover_vm_abort_uncommitted:" in credentials
+        and "cutover_windows_abort_uncommitted:" in credentials
+        and "cutover_provider_abort_uncommitted:" in credentials
+        and "cutover_vm_recover_candidate_failure" not in credentials
+        and "cutover_windows_recover_candidate_failure" not in credentials
+        and "cutover_vm_recover_windows_restart_failure" not in credentials,
+        "all uncommitted fresh-v2 failure phases must collapse into one ordered VM -> Windows -> provider abort path",
+    )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
