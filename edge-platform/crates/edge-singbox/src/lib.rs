@@ -1832,6 +1832,37 @@ mod tests {
                 .and_then(Value::as_str),
             Some("127.0.0.1:19091")
         );
+        assert_eq!(
+            config
+                .pointer("/route/default_domain_resolver")
+                .and_then(Value::as_str),
+            Some("upstream-cloudflare")
+        );
+        assert_eq!(
+            config
+                .pointer("/dns/final")
+                .and_then(Value::as_str),
+            Some("upstream-cloudflare")
+        );
+        assert_eq!(
+            config
+                .pointer("/dns/strategy")
+                .and_then(Value::as_str),
+            Some("prefer_ipv4")
+        );
+        let dns_servers = config
+            .pointer("/dns/servers")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(dns_servers.len(), 2);
+        assert_eq!(
+            dns_servers[0].get("server").and_then(Value::as_str),
+            Some("1.1.1.1")
+        );
+        assert_eq!(
+            dns_servers[1].get("server").and_then(Value::as_str),
+            Some("8.8.8.8")
+        );
     }
 
     #[test]
