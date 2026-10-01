@@ -168,7 +168,66 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::FreshV2Publish { generation } => {
             fresh_v2_publish(&control_token, &desired, generation).await
         }
+        CredentialDeliveryCommand::FreshV2RestoreBaseline => {
+            fresh_v2_restore_baseline(&control_token, &desired).await
+        }
     }
+}
+
+async fn fresh_v2_restore_baseline(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let before = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, &before)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} credential Worker is not in exact fixed A/B topology before baseline restore",
+                projection.projection
+            ));
+        }
+    }
+
+    let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+    if rotation_identity.status != "active" {
+        return Err(format!(
+            "credential-rotation token {} is not active: {}",
+            rotation_identity.id, rotation_identity.status
+        ));
+    }
+    if rotation_identity.id == before.control_token_identity.id {
+        return Err(
+            "credential-rotation token must be physically distinct from CLOUDFLARE_CONTROL_TOKEN"
+                .to_owned(),
+        );
+    }
+
+    let windows = projection_desired(desired, "windows")?;
+    let vm = projection_desired(desired, "vm")?;
+    restore_dummy_slot(&rotation_token, desired, &[&windows, &vm]).await?;
+
+    let after = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &after)?;
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, &after)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} credential Worker did not return to exact fixed A/B baseline",
+                projection.projection
+            ));
+        }
+    }
+
+    println!("credential_fresh_v2_baseline_restore=PASS");
+    println!("credential_secret_mutations=2");
+    println!("credential_deployment_mutations=2");
+    println!("active_slot_mutated=false");
+    Ok(())
 }
 
 async fn fresh_v2_publish(
