@@ -13,6 +13,8 @@ pub const ACCESS_IDENTITY_FILE_NAME: &str = "credential-access-v1.env";
 const MAX_ACCESS_IDENTITY_BYTES: u64 = 16 * 1024;
 const MAX_CREDENTIAL_BUNDLE_BYTES: u64 = 1024 * 1024;
 const CREDENTIAL_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CREDENTIAL_WORKER_TRANSPORT_ATTEMPTS: usize = 3;
+const CREDENTIAL_WORKER_TRANSPORT_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AccessServiceIdentity {
@@ -128,6 +130,47 @@ pub fn canonical_credential_worker_url(
     ))
 }
 
+fn credential_worker_transport_retry_allowed(attempt: usize) -> bool {
+    attempt >= 1 && attempt < CREDENTIAL_WORKER_TRANSPORT_ATTEMPTS
+}
+
+fn credential_worker_transport_error_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_request() {
+        "request"
+    } else if error.is_body() {
+        "body"
+    } else {
+        "other"
+    }
+}
+
+async fn send_credential_worker_get(
+    client: &Client,
+    url: &str,
+) -> Result<reqwest::Response, String> {
+    for attempt in 1..=CREDENTIAL_WORKER_TRANSPORT_ATTEMPTS {
+        match client.get(url).send().await {
+            Ok(response) => return Ok(response),
+            Err(error) if credential_worker_transport_retry_allowed(attempt) => {
+                // This is an exact-generation, read-only GET. Re-observation cannot replay
+                // provider or local state mutation, so bounded transport retry is safe.
+                tokio::time::sleep(CREDENTIAL_WORKER_TRANSPORT_RETRY_DELAY).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "credential Worker request failed after {CREDENTIAL_WORKER_TRANSPORT_ATTEMPTS} bounded read-only attempts: kind={}",
+                    credential_worker_transport_error_kind(&error)
+                ));
+            }
+        }
+    }
+    unreachable!("bounded credential Worker transport loop always returns")
+}
+
 pub async fn observe_canonical_credential_bundle(
     projection: CredentialProjectionKind,
     generation: u64,
@@ -152,11 +195,7 @@ pub async fn observe_canonical_credential_bundle(
         .timeout(CREDENTIAL_WORKER_REQUEST_TIMEOUT)
         .build()
         .map_err(|err| format!("failed to construct credential Worker client: {err}"))?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|err| format!("credential Worker request failed: {err}"))?;
+    let response = send_credential_worker_get(&client, &url).await?;
     if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -222,6 +261,16 @@ mod tests {
         assert!(!debug.contains("client-id"));
         assert!(!debug.contains("client-secret"));
         assert!(AccessServiceIdentity::parse_env("CF_ACCESS_CLIENT_ID=id\nEXTRA=value\n").is_err());
+    }
+
+    #[test]
+    fn credential_worker_transport_retry_policy_is_bounded() {
+        assert_eq!(CREDENTIAL_WORKER_TRANSPORT_ATTEMPTS, 3);
+        assert!(!credential_worker_transport_retry_allowed(0));
+        assert!(credential_worker_transport_retry_allowed(1));
+        assert!(credential_worker_transport_retry_allowed(2));
+        assert!(!credential_worker_transport_retry_allowed(3));
+        assert!(!credential_worker_transport_retry_allowed(4));
     }
 
     #[test]
