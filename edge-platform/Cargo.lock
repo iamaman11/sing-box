@@ -476,6 +476,7 @@ dependencies = [
  "edge-shared-types",
  "rand_core 0.6.4",
  "reqwest",
+ "tokio",
  "windows-sys 0.61.2",
  "x25519-dalek",
 ]
