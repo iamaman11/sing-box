@@ -680,7 +680,42 @@ fn latest_worker_version_secret_patch(
     }))
 }
 
-pub async fn patch_latest_worker_version_secrets(
+fn worker_version_deployment_body(version_id: &str) -> Result<serde_json::Value, String> {
+    require_non_empty("Cloudflare Worker version ID", version_id)?;
+    Ok(serde_json::json!({
+        "strategy": "percentage",
+        "versions": [{
+            "version_id": version_id,
+            "percentage": 100.0
+        }],
+        "annotations": {
+            "workers/message": "sing-box Phase 6 credential version activation"
+        }
+    }))
+}
+
+async fn deploy_worker_version_100(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    version_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let body = worker_version_deployment_body(version_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/deployments"
+        ))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("failed to deploy Cloudflare Worker version {version_id}: {err}"))?;
+    ensure_success(response).await
+}
+
+pub async fn patch_and_deploy_latest_worker_version_secrets(
     api_token: &str,
     account_id: &str,
     script_name: &str,
@@ -706,7 +741,26 @@ pub async fn patch_latest_worker_version_secrets(
         .map_err(|err| {
             format!("failed to patch Cloudflare latest Worker version secrets/annotations: {err}")
         })?;
-    ensure_secret_mutation_success(response).await
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    let version_id = payload
+        .result
+        .as_object()
+        .ok_or_else(|| "Cloudflare latest Worker version mutation result must be an object".to_owned())
+        .and_then(|object| {
+            required_value_string(
+                object,
+                "id",
+                "Cloudflare latest Worker version mutation result",
+            )
+        })?;
+
+    deploy_worker_version_100(api_token, account_id, script_name, &version_id)
+        .await
+        .map_err(|err| {
+            format!(
+                "Cloudflare latest Worker version {version_id} was created but could not be activated: {err}"
+            )
+        })
 }
 
 pub async fn get_worker_script_subdomain(
