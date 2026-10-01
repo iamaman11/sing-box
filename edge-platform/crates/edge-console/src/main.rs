@@ -71,6 +71,7 @@ const PRIVILEGED_ACTIVATE_WAIT_SECS: u64 = 12 * 60;
 const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
 const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
 const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 960;
+const PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES: usize = 960;
 const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
 const CREDENTIAL_ADMISSION_ATTEMPTS: usize = 8;
@@ -1064,6 +1065,19 @@ async fn process_privileged_request(
     }
 }
 
+fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout =
+        compact_runtime_evidence_line(&redact_runtime_evidence(&String::from_utf8_lossy(stdout)));
+    let stderr =
+        compact_runtime_evidence_line(&redact_runtime_evidence(&String::from_utf8_lossy(stderr)));
+    let detail = format!(
+        "installer_evidence=BOUNDED;stderr={};stdout={}",
+        if stderr.is_empty() { "EMPTY" } else { &stderr },
+        if stdout.is_empty() { "EMPTY" } else { &stdout }
+    );
+    truncate_runtime_evidence(&detail, PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES)
+}
+
 fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
     let runtime_root = install_root.join("runtime");
     let stderr =
@@ -1343,7 +1357,7 @@ fn activate_privileged_release(
     let root = install_root
         .to_str()
         .ok_or_else(|| "Windows install root is not UTF-8".to_owned())?;
-    let status = Command::new("powershell.exe")
+    let output = Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1361,14 +1375,13 @@ fn activate_privileged_release(
             root,
         ])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .map_err(|err| format!("failed to start protected Windows installer: {err}"))?;
-    if !status.success() {
+    if !output.status.success() {
         return Err(format!(
-            "protected Windows installer failed with exit code {}",
-            status.code().unwrap_or(-1)
+            "protected Windows installer failed with exit code {}; {}",
+            output.status.code().unwrap_or(-1),
+            bounded_privileged_child_evidence(&output.stdout, &output.stderr)
         ));
     }
 
@@ -3045,6 +3058,32 @@ mod tests {
         );
         assert_eq!(privileged_wait_secs(&ping), PRIVILEGED_SHORT_WAIT_SECS);
         assert!(PRIVILEGED_ACTIVATE_WAIT_SECS > PRIVILEGED_SHORT_WAIT_SECS);
+    }
+
+    #[test]
+    fn privileged_child_failure_evidence_is_bounded_and_secret_safe() {
+        let stdout = b"source_revision=0123456789abcdef0123456789abcdef01234567\n";
+        let stderr = format!(
+            "Invoke-WebRequest failed token={} url=https://example.invalid/path\n{}",
+            "abcdef0123456789abcdef0123456789",
+            "download failed ".repeat(200)
+        );
+        let detail = bounded_privileged_child_evidence(stdout, stderr.as_bytes());
+
+        assert!(detail.len() <= PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES);
+        assert!(!detail.chars().any(|ch| ch.is_control()));
+        assert!(!detail.contains("0123456789abcdef0123456789abcdef01234567"));
+        assert!(!detail.contains("abcdef0123456789abcdef0123456789"));
+
+        let result = WindowsPrivilegedResult {
+            schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
+            request_id: "installer-evidence-test".to_owned(),
+            success: false,
+            code: "PRIVILEGED_OPERATION_FAILED".to_owned(),
+            detail,
+            active_release_set_sha256: None,
+        };
+        assert!(encode_windows_privileged_result(&result).is_ok());
     }
 
     #[test]
