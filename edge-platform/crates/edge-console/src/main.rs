@@ -972,19 +972,36 @@ fn read_bounded_runtime_log_tail(path: &Path, label: &str) -> Result<String, Str
         return Ok(format!("{label}=MISSING"));
     }
 
-    let mut file = File::open(path)
-        .map_err(|err| format!("failed to open managed runtime log {}: {err}", path.display()))?;
+    let mut file = File::open(path).map_err(|err| {
+        format!(
+            "failed to open managed runtime log {}: {err}",
+            path.display()
+        )
+    })?;
     let len = file
         .metadata()
-        .map_err(|err| format!("failed to stat managed runtime log {}: {err}", path.display()))?
+        .map_err(|err| {
+            format!(
+                "failed to stat managed runtime log {}: {err}",
+                path.display()
+            )
+        })?
         .len();
     let start = len.saturating_sub(RUNTIME_EVIDENCE_MAX_BYTES);
-    file.seek(SeekFrom::Start(start))
-        .map_err(|err| format!("failed to seek managed runtime log {}: {err}", path.display()))?;
+    file.seek(SeekFrom::Start(start)).map_err(|err| {
+        format!(
+            "failed to seek managed runtime log {}: {err}",
+            path.display()
+        )
+    })?;
 
     let mut bytes = Vec::with_capacity((len - start) as usize);
-    file.read_to_end(&mut bytes)
-        .map_err(|err| format!("failed to read managed runtime log {}: {err}", path.display()))?;
+    file.read_to_end(&mut bytes).map_err(|err| {
+        format!(
+            "failed to read managed runtime log {}: {err}",
+            path.display()
+        )
+    })?;
     let text = String::from_utf8_lossy(&bytes);
     let mut lines = text
         .lines()
@@ -1024,13 +1041,10 @@ fn append_redacted_runtime_token(output: &mut String, token: &mut String) {
         return;
     }
     let is_uuid = token.len() == 36
-        && token
-            .chars()
-            .enumerate()
-            .all(|(index, ch)| match index {
-                8 | 13 | 18 | 23 => ch == '-',
-                _ => ch.is_ascii_hexdigit(),
-            });
+        && token.chars().enumerate().all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        });
     let is_long_hex = token.len() >= 16 && token.bytes().all(|byte| byte.is_ascii_hexdigit());
 
     if is_uuid {
