@@ -16,8 +16,8 @@ use rusqlite::Connection;
 use std::env;
 #[cfg(windows)]
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -64,6 +64,8 @@ const PRIVILEGED_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_RESULT_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_TASK_NAME: &str = "EdgePlatformPrivilegedDispatch";
 const PRIVILEGED_WAIT_SECS: u64 = 180;
+const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
+const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
 const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
@@ -203,6 +205,24 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
                     request_id: new_privileged_request_id()?,
                     operation: WindowsPrivilegedOperation::Ping as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedRuntimeEvidence(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::RuntimeEvidence as i32,
                     accepted_revision: None,
                     release_set_sha256: None,
                     credential_generation: None,
@@ -898,6 +918,13 @@ async fn process_privileged_request(
                 });
             action
         }
+        Ok(WindowsPrivilegedOperation::RuntimeEvidence) => {
+            let active = load_verified_activation(install_root)
+                .ok()
+                .map(|state| state.release_set_sha256);
+            read_bounded_windows_runtime_evidence(install_root)
+                .map(|detail| ("RUNTIME_EVIDENCE_READ".to_owned(), detail, active))
+        }
         Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
             Err("unsupported privileged Windows operation".to_owned())
         }
@@ -923,6 +950,111 @@ async fn process_privileged_request(
                 .map(|state| state.release_set_sha256),
         },
     }
+}
+
+fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
+    let runtime_root = install_root.join("runtime");
+    let stderr = read_bounded_runtime_log_tail(
+        &runtime_root.join("sing-box.stderr.log"),
+        "managed_stderr_tail",
+    )?;
+    let stdout = read_bounded_runtime_log_tail(
+        &runtime_root.join("sing-box.stdout.log"),
+        "managed_stdout_tail",
+    )?;
+    Ok(format!(
+        "runtime_evidence=BOUNDED_READ_ONLY\n{stderr}\n{stdout}"
+    ))
+}
+
+fn read_bounded_runtime_log_tail(path: &Path, label: &str) -> Result<String, String> {
+    if !path.is_file() {
+        return Ok(format!("{label}=MISSING"));
+    }
+
+    let mut file = File::open(path).map_err(|err| {
+        format!(
+            "failed to open managed runtime log {}: {err}",
+            path.display()
+        )
+    })?;
+    let len = file
+        .metadata()
+        .map_err(|err| {
+            format!(
+                "failed to stat managed runtime log {}: {err}",
+                path.display()
+            )
+        })?
+        .len();
+    let start = len.saturating_sub(RUNTIME_EVIDENCE_MAX_BYTES);
+    file.seek(SeekFrom::Start(start)).map_err(|err| {
+        format!(
+            "failed to seek managed runtime log {}: {err}",
+            path.display()
+        )
+    })?;
+
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut bytes).map_err(|err| {
+        format!(
+            "failed to read managed runtime log {}: {err}",
+            path.display()
+        )
+    })?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .rev()
+        .take(RUNTIME_EVIDENCE_MAX_LINES)
+        .collect::<Vec<_>>();
+    lines.reverse();
+
+    let detail = redact_runtime_evidence(&lines.join("\n"));
+    Ok(format!(
+        "{label}=BEGIN truncated={} bytes={}\n{}\n{label}=END",
+        start > 0,
+        bytes.len(),
+        detail
+    ))
+}
+
+fn redact_runtime_evidence(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut token = String::new();
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            token.push(ch);
+        } else {
+            append_redacted_runtime_token(&mut output, &mut token);
+            output.push(ch);
+        }
+    }
+    append_redacted_runtime_token(&mut output, &mut token);
+    output
+}
+
+fn append_redacted_runtime_token(output: &mut String, token: &mut String) {
+    if token.is_empty() {
+        return;
+    }
+    let is_uuid = token.len() == 36
+        && token.chars().enumerate().all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        });
+    let is_long_hex = token.len() >= 16 && token.bytes().all(|byte| byte.is_ascii_hexdigit());
+
+    if is_uuid {
+        output.push_str("<redacted-uuid>");
+    } else if is_long_hex {
+        output.push_str("<redacted-hex>");
+    } else {
+        output.push_str(token);
+    }
+    token.clear();
 }
 
 async fn stage_windows_credential_candidate_from_worker(
@@ -2649,5 +2781,18 @@ mod tests {
         assert!(err.contains("REALITY_WARP_SHORT_ID"));
         assert!(!err.contains("PRIVATE_KEY"));
         assert!(!err.contains("PROXY_PASSWORD"));
+    }
+
+    #[test]
+    fn redacts_sensitive_runtime_evidence_tokens() {
+        let redacted = redact_runtime_evidence(
+            "uuid=00000000-0000-4000-8000-000000000001 short=0011223344556677 password=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef host=miu.alegria.by",
+        );
+        assert!(!redacted.contains("00000000-0000-4000-8000-000000000001"));
+        assert!(!redacted.contains("0011223344556677"));
+        assert!(!redacted.contains("0123456789abcdef0123456789abcdef"));
+        assert!(redacted.contains("<redacted-uuid>"));
+        assert!(redacted.contains("<redacted-hex>"));
+        assert!(redacted.contains("miu.alegria.by"));
     }
 }

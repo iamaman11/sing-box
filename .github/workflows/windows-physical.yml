@@ -248,6 +248,16 @@ jobs:
             throw "Typed privileged transport ping failed: $LASTEXITCODE"
           }
 
+      - name: Read bounded managed runtime evidence through privileged boundary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bounded privileged runtime evidence failed: $LASTEXITCODE"
+          }
+          Write-Host 'WINDOWS_MANAGED_RUNTIME_EVIDENCE=PASS'
+
       - name: Verify exact activation after authority checks
         shell: powershell
         run: |
@@ -270,6 +280,7 @@ jobs:
             '- Controller startup owner: **Windows SCM**',
             '- Runner private state access: **DENIED**',
             '- Typed privileged transport: **PASS**',
+            '- Managed runtime evidence: **BOUNDED_READ_ONLY**',
             '- TUN requested: **NO**',
             '- DNS/route/system-proxy mutation requested: **NO**',
             '- Legacy runtime mutation requested: **NO**',
