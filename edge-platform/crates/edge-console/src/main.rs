@@ -66,6 +66,7 @@ const PRIVILEGED_TASK_NAME: &str = "EdgePlatformPrivilegedDispatch";
 const PRIVILEGED_WAIT_SECS: u64 = 180;
 const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
 const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
+const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 960;
 const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
@@ -956,15 +957,16 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
     let runtime_root = install_root.join("runtime");
     let stderr = read_bounded_runtime_log_tail(
         &runtime_root.join("sing-box.stderr.log"),
-        "managed_stderr_tail",
+        "stderr",
     )?;
     let stdout = read_bounded_runtime_log_tail(
         &runtime_root.join("sing-box.stdout.log"),
-        "managed_stdout_tail",
+        "stdout",
     )?;
-    Ok(format!(
-        "runtime_evidence=BOUNDED_READ_ONLY\n{stderr}\n{stdout}"
-    ))
+    let detail = format!(
+        "runtime_evidence=BOUNDED_READ_ONLY;{stderr};{stdout}"
+    );
+    Ok(truncate_runtime_evidence(&detail, RUNTIME_EVIDENCE_RESULT_MAX_BYTES))
 }
 
 fn read_bounded_runtime_log_tail(path: &Path, label: &str) -> Result<String, String> {
@@ -1003,21 +1005,82 @@ fn read_bounded_runtime_log_tail(path: &Path, label: &str) -> Result<String, Str
         )
     })?;
     let text = String::from_utf8_lossy(&bytes);
-    let mut lines = text
+    let lines = text
         .lines()
         .filter(|line| !line.trim().is_empty())
         .rev()
         .take(RUNTIME_EVIDENCE_MAX_LINES)
         .collect::<Vec<_>>();
-    lines.reverse();
 
-    let detail = redact_runtime_evidence(&lines.join("\n"));
+    let prioritized = lines
+        .iter()
+        .copied()
+        .filter(|line| is_runtime_evidence_priority(line))
+        .take(6)
+        .collect::<Vec<_>>();
+    let selected = if prioritized.is_empty() {
+        lines.iter().copied().take(4).collect::<Vec<_>>()
+    } else {
+        prioritized
+    };
+
+    let compact = selected
+        .into_iter()
+        .map(redact_runtime_evidence)
+        .map(|line| compact_runtime_evidence_line(&line))
+        .collect::<Vec<_>>()
+        .join(" | ");
     Ok(format!(
-        "{label}=BEGIN truncated={} bytes={}\n{}\n{label}=END",
+        "{label}=truncated:{} bytes:{} {}",
         start > 0,
         bytes.len(),
-        detail
+        compact
     ))
+}
+
+fn is_runtime_evidence_priority(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "error",
+        "fail",
+        "warn",
+        "dial",
+        "connect",
+        "dns",
+        "tls",
+        "hysteria",
+        "vless",
+        "timeout",
+        "refused",
+        "unreachable",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn compact_runtime_evidence_line(line: &str) -> String {
+    line.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn truncate_runtime_evidence(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = value[..end].to_owned();
+    while truncated.len() + 13 > max_bytes {
+        truncated.pop();
+    }
+    truncated.push_str("...[truncated]");
+    truncated
 }
 
 fn redact_runtime_evidence(input: &str) -> String {
@@ -2794,5 +2857,30 @@ mod tests {
         assert!(redacted.contains("<redacted-uuid>"));
         assert!(redacted.contains("<redacted-hex>"));
         assert!(redacted.contains("miu.alegria.by"));
+    }
+
+    #[test]
+    fn runtime_evidence_detail_fits_privileged_result_contract() {
+        let raw = format!(
+            "runtime_evidence=BOUNDED_READ_ONLY;stderr={};stdout={}",
+            "dial tcp failed ".repeat(100),
+            "tls handshake failed ".repeat(100)
+        );
+        let detail = truncate_runtime_evidence(
+            &compact_runtime_evidence_line(&raw),
+            RUNTIME_EVIDENCE_RESULT_MAX_BYTES,
+        );
+        assert!(detail.len() <= RUNTIME_EVIDENCE_RESULT_MAX_BYTES);
+        assert!(!detail.chars().any(|ch| ch.is_control()));
+
+        let result = WindowsPrivilegedResult {
+            schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
+            request_id: "runtime-evidence-test".to_owned(),
+            success: true,
+            code: "RUNTIME_EVIDENCE_READ".to_owned(),
+            detail,
+            active_release_set_sha256: None,
+        };
+        assert!(encode_windows_privileged_result(&result).is_ok());
     }
 }
