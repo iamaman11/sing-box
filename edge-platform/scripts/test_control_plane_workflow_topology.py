@@ -29,6 +29,7 @@ CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare
 CREDENTIAL_PROVIDER = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
+CREDENTIAL_DELIVERY = Path("edge-platform/crates/edge-secrets/src/credential_delivery.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
@@ -72,6 +73,7 @@ def main() -> None:
     credential_provider = CREDENTIAL_PROVIDER.read_text(encoding="utf-8")
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
     credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
+    credential_delivery = CREDENTIAL_DELIVERY.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     controller_proto = CONTROLLER_PROTO.read_text(encoding="utf-8")
@@ -246,8 +248,11 @@ def main() -> None:
         "StageCredentialCandidateRequest" not in windows_console
         and "PrivilegedStageCredential" in windows_console_cli
         and "WindowsPrivilegedOperation::StageCredential" in windows_console
-        and "fetch_canonical_credential_bundle" in windows_console,
-        "Windows runner may carry only typed generation intent while SYSTEM fetches and stages the canonical bundle",
+        and "fetch_canonical_credential_bundle" in windows_console
+        and "fetch_canonical_credential_bundle" in vm_agent_runtime
+        and "send_credential_worker_get" in credential_delivery
+        and "CREDENTIAL_WORKER_TRANSPORT_ATTEMPTS" in credential_delivery,
+        "both host-local staging owners must use the one shared bounded exact-generation credential fetch primitive",
     )
     require(
         "CredentialAdmit" in vm_agent_cli
@@ -256,18 +261,58 @@ def main() -> None:
         and "PrivilegedAdmitCredential" in windows_console_cli
         and "WindowsPrivilegedOperation::AdmitCredential" in windows_console
         and "observe_canonical_credential_bundle" in windows_console,
-        "fresh-v2 data-plane admission must stay read-only and inside the existing host-local credential owners",
+        "fresh-v2 publication proof admission must stay read-only and inside the existing host-local credential owners",
     )
+    vm_preflight_index = credentials.index("  cutover_vm_preflight:")
+    windows_preflight_index = credentials.index("  cutover_windows_preflight:")
     publish_index = credentials.index("  cutover_publish:")
     vm_admit_index = credentials.index("  cutover_vm_admit:")
     windows_admit_index = credentials.index("  cutover_windows_admit:")
     vm_stage_index = credentials.index("  cutover_vm_stage:")
     windows_stage_index = credentials.index("  cutover_windows_stage:")
     require(
-        publish_index < vm_admit_index < windows_admit_index < vm_stage_index < windows_stage_index,
-        "fresh-v2 provider publication must be admitted by both local owners before either host stages a candidate",
+        vm_preflight_index
+        < windows_preflight_index
+        < publish_index
+        < vm_admit_index
+        < windows_admit_index
+        < vm_stage_index
+        < windows_stage_index,
+        "credential workflow layout must keep shared preflight/publication, proof-only admissions and terminal staging explicit",
     )
+    vm_preflight_block = credentials[vm_preflight_index:windows_preflight_index]
+    windows_preflight_block = credentials[windows_preflight_index:publish_index]
     publish_block = credentials[publish_index:vm_admit_index]
+    for block in (vm_preflight_block, windows_preflight_block, publish_block):
+        require(
+            "fresh-v2-cutover" in block and "fresh-v2-publication-prove" in block,
+            "Stage-2 preflight and provider publication must remain shared by proof and terminal cutover",
+        )
+    vm_admit_block = credentials[vm_admit_index:windows_admit_index]
+    windows_admit_block = credentials[windows_admit_index:vm_stage_index]
+    vm_stage_block = credentials[vm_stage_index:windows_stage_index]
+    windows_stage_end = credentials.index("  cutover_vm_candidate:")
+    windows_stage_block = credentials[windows_stage_index:windows_stage_end]
+    require(
+        "if: needs.authorize.outputs.operation == 'fresh-v2-publication-prove'" in vm_admit_block
+        and "fresh-v2-cutover" not in vm_admit_block
+        and "if: needs.authorize.outputs.operation == 'fresh-v2-publication-prove'" in windows_admit_block
+        and "fresh-v2-cutover" not in windows_admit_block,
+        "read-only admission jobs must be publication-proof-only and must not duplicate terminal cutover acquisition",
+    )
+    require(
+        "needs: [authorize, cutover_release, cutover_publish]" in vm_stage_block
+        and "cutover_vm_admit" not in vm_stage_block
+        and "cutover_windows_admit" not in vm_stage_block
+        and "EXPECTED_AGENT_SHA256" in vm_stage_block
+        and "STAGE2_VM_DATA_PLANE_ACQUIRE_AND_STAGE=PASS" in vm_stage_block
+        and "needs: [authorize, cutover_release, cutover_vm_stage, cutover_publish]" in windows_stage_block
+        and "cutover_vm_admit" not in windows_stage_block
+        and "cutover_windows_admit" not in windows_stage_block
+        and "EDGE_RELEASE_SET_SHA256" in windows_stage_block
+        and "STAGE2_WINDOWS_DATA_PLANE_ACQUIRE_AND_STAGE=PASS" in windows_stage_block,
+        "terminal cutover must go directly from publication to bounded acquire-and-stage while preserving exact owner provenance",
+    )
     require(
         'GITHUB_RUN_ID' in publish_block
         and 'GITHUB_RUN_ATTEMPT' in publish_block
