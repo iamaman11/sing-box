@@ -2950,8 +2950,7 @@ mod tests {
             operation: WindowsPrivilegedOperation::ActivateRelease as i32,
             accepted_revision: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             release_set_sha256: Some(
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                    .to_owned(),
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             ),
             credential_generation: None,
             credential_transition_action: None,
@@ -2966,7 +2965,10 @@ mod tests {
             credential_transition_action: None,
         };
 
-        assert_eq!(privileged_wait_secs(&activate), PRIVILEGED_ACTIVATE_WAIT_SECS);
+        assert_eq!(
+            privileged_wait_secs(&activate),
+            PRIVILEGED_ACTIVATE_WAIT_SECS
+        );
         assert_eq!(privileged_wait_secs(&ping), PRIVILEGED_SHORT_WAIT_SECS);
         assert!(PRIVILEGED_ACTIVATE_WAIT_SECS > PRIVILEGED_SHORT_WAIT_SECS);
     }
