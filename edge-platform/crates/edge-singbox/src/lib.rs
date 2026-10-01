@@ -1816,11 +1816,7 @@ mod tests {
             Some("127.0.0.1:19091")
         );
         assert!(config.get("dns").is_none());
-        assert!(
-            config
-                .pointer("/route/default_domain_resolver")
-                .is_none()
-        );
+        assert!(config.pointer("/route/default_domain_resolver").is_none());
         let outbounds = config.get("outbounds").and_then(Value::as_array).unwrap();
         for tag in [
             "hysteria2-direct",
