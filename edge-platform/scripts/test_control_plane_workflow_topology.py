@@ -250,6 +250,13 @@ def main() -> None:
         "Windows runner may carry only typed generation intent while SYSTEM fetches and stages the canonical bundle",
     )
     require(
+        "RELEASE_ALREADY_CONVERGED" in windows_console
+        and "installer not invoked" in windows_console
+        and "RELEASE_CONVERGED_REOBSERVED" in windows_console
+        and "local owner handoff reconciled" in windows_console,
+        "Windows release activation must reconcile exact local authority before replay and after uncertain child failure",
+    )
+    require(
         "CredentialAdmit" in vm_agent_cli
         and "local-credential-admit" in vm_agent_cli
         and "observe_canonical_credential_bundle" in vm_agent_runtime
@@ -283,6 +290,18 @@ def main() -> None:
         and "cutover_windows_recover_candidate_failure" not in credentials
         and "cutover_vm_recover_windows_restart_failure" not in credentials,
         "all uncommitted fresh-v2 failure phases must collapse into one ordered VM -> Windows -> provider abort path",
+    )
+    windows_abort_index = credentials.index("  cutover_windows_abort_uncommitted:")
+    windows_abort_end = credentials.index("  cutover_provider_abort_uncommitted:", windows_abort_index)
+    windows_abort_block = credentials[windows_abort_index:windows_abort_end]
+    require(
+        "privileged-activate" not in windows_abort_block
+        and "exact_release_files" in windows_abort_block
+        and "release_set_sha256" in windows_abort_block
+        and "EDGE_CREDENTIAL_OPERATION" in windows_abort_block
+        and "fresh-v2-cleanup" in windows_abort_block
+        and "STAGE2_WINDOWS_ABORT_RELEASE_VERIFY=PASS" in windows_abort_block,
+        "Windows uncommitted abort must verify the installed activation authority without replaying release activation",
     )
     require(
         '("/credentials", "fresh-v2-publication-prove"): "fresh-v2-publication-prove"' in credentials
