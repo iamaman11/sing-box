@@ -14,7 +14,7 @@ use std::os::windows::process::CommandExt;
 use std::ptr::null_mut;
 
 use edge_shared_types::{LocalSingboxState, decode_windows_runtime_state};
-use edge_singbox::{sync_local_config, sync_local_config_from_runtime_state};
+use edge_singbox::sync_local_config;
 use sysinfo::{Pid, Signal, System};
 
 #[cfg(windows)]
@@ -520,22 +520,14 @@ fn stage_and_validate_config(paths: &LocalRuntimePaths) -> Result<StagedConfig, 
         )
     })?;
 
-    let sync_result = if paths
-        .state_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("pb"))
-    {
+    let preparation = if is_typed_runtime_state(&paths.state_path) {
         fs::read(&paths.state_path)
             .map_err(|err| format!("unable to read typed Windows runtime state: {err}"))
-            .and_then(|bytes| decode_windows_runtime_state(&bytes))
-            .and_then(|state| {
-                sync_local_config_from_runtime_state(&candidate_path, &state, &paths.runtime_root)
-            })
+            .and_then(|bytes| decode_windows_runtime_state(&bytes).map(|_| ()))
     } else {
-        sync_local_config(&candidate_path, &paths.state_path, &paths.runtime_root)
+        sync_local_config(&candidate_path, &paths.state_path, &paths.runtime_root).map(|_| ())
     };
-    if let Err(err) = sync_result {
+    if let Err(err) = preparation {
         let _ = fs::remove_file(&candidate_path);
         return Err(err);
     }
@@ -554,6 +546,13 @@ fn stage_and_validate_config(paths: &LocalRuntimePaths) -> Result<StagedConfig, 
         candidate_path,
         backup_path: paths.runtime_root.join("sing-box.last-known-good.json"),
     })
+}
+
+fn is_typed_runtime_state(state_path: &Path) -> bool {
+    state_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("pb"))
 }
 
 fn validate_singbox_config(binary: &Path, config: &Path) -> Result<(), String> {
@@ -961,6 +960,13 @@ mod tests {
         assert!(is_owned_windows_dns_ipv4([127, 0, 2, 3]));
         assert!(!is_owned_windows_dns_ipv4([127, 0, 2, 4]));
         assert!(!is_owned_windows_dns_ipv4([8, 8, 8, 8]));
+    }
+
+    #[test]
+    fn typed_runtime_state_is_recognized_without_legacy_config_sync() {
+        assert!(is_typed_runtime_state(Path::new("windows-runtime.pb")));
+        assert!(is_typed_runtime_state(Path::new("WINDOWS-RUNTIME.PB")));
+        assert!(!is_typed_runtime_state(Path::new("legacy-runtime.json")));
     }
 
     #[test]
