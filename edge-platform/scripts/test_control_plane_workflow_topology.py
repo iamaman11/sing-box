@@ -266,15 +266,31 @@ def main() -> None:
         and "let bundle = acquire_windows_credential_generation(install_root, generation).await?;" in windows_console,
         "terminal staging must persist the exact bundle returned by its own bounded host-local acquisition instead of performing an unbounded second fetch",
     )
+    vm_preflight_index = credentials.index("  cutover_vm_preflight:")
+    windows_preflight_index = credentials.index("  cutover_windows_preflight:")
     publish_index = credentials.index("  cutover_publish:")
     vm_admit_index = credentials.index("  cutover_vm_admit:")
     windows_admit_index = credentials.index("  cutover_windows_admit:")
     vm_stage_index = credentials.index("  cutover_vm_stage:")
     windows_stage_index = credentials.index("  cutover_windows_stage:")
     require(
-        publish_index < vm_admit_index < windows_admit_index < vm_stage_index < windows_stage_index,
-        "credential workflow layout must keep proof-only admissions and terminal staging explicit",
+        vm_preflight_index
+        < windows_preflight_index
+        < publish_index
+        < vm_admit_index
+        < windows_admit_index
+        < vm_stage_index
+        < windows_stage_index,
+        "credential workflow layout must keep shared preflight/publication, proof-only admissions and terminal staging explicit",
     )
+    vm_preflight_block = credentials[vm_preflight_index:windows_preflight_index]
+    windows_preflight_block = credentials[windows_preflight_index:publish_index]
+    publish_block = credentials[publish_index:vm_admit_index]
+    for block in (vm_preflight_block, windows_preflight_block, publish_block):
+        require(
+            "fresh-v2-cutover" in block and "fresh-v2-publication-prove" in block,
+            "Stage-2 preflight and provider publication must remain shared by proof and terminal cutover",
+        )
     vm_admit_block = credentials[vm_admit_index:windows_admit_index]
     windows_admit_block = credentials[windows_admit_index:vm_stage_index]
     vm_stage_block = credentials[vm_stage_index:windows_stage_index]
@@ -300,7 +316,6 @@ def main() -> None:
         and "STAGE2_WINDOWS_DATA_PLANE_ACQUIRE_AND_STAGE=PASS" in windows_stage_block,
         "terminal cutover must go directly from publication to bounded acquire-and-stage while preserving exact owner provenance",
     )
-    publish_block = credentials[publish_index:vm_admit_index]
     require(
         'GITHUB_RUN_ID' in publish_block
         and 'GITHUB_RUN_ATTEMPT' in publish_block
