@@ -3303,6 +3303,31 @@ mod tests {
     }
 
     #[test]
+    fn renders_exact_single_version_deployment_shape() {
+        let body =
+            worker_version_deployment_body("29c1b3c5-bc3a-4cc5-bdee-9b8c39670ca9").unwrap();
+
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "strategy": "percentage",
+                "versions": [{
+                    "version_id": "29c1b3c5-bc3a-4cc5-bdee-9b8c39670ca9",
+                    "percentage": 100.0
+                }],
+                "annotations": {
+                    "workers/message": "sing-box Phase 6 credential version activation"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn worker_version_deployment_requires_version_id() {
+        assert!(worker_version_deployment_body("").is_err());
+    }
+
+    #[test]
     fn latest_worker_version_secret_patch_requires_real_unique_secrets() {
         assert!(
             latest_worker_version_secret_patch("sing-box-phase6-ab-windows-deadbeef", &[]).is_err()
