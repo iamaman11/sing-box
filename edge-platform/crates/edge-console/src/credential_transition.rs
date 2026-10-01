@@ -93,6 +93,18 @@ pub(crate) fn transition(
             "Windows legacy runtime apply is retired; the external sing-box is not managed state"
                 .to_owned(),
         ),
+        CredentialTransitionAction::DiscardCandidate => {
+            if state.active.is_some() || state.previous.is_some() {
+                return Err(
+                    "initial fresh-v2 discard requires empty active/previous state".to_owned(),
+                );
+            }
+            store.discard_candidate()?;
+            Ok((
+                "CREDENTIAL_CANDIDATE_DISCARDED".to_owned(),
+                "unpromoted Windows v2 candidate discarded".to_owned(),
+            ))
+        }
         CredentialTransitionAction::RetireLegacy => Err(
             "Windows legacy runtime retirement is retired; the external sing-box is out of scope"
                 .to_owned(),
