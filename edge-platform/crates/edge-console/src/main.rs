@@ -64,6 +64,8 @@ const PRIVILEGED_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_RESULT_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_TASK_NAME: &str = "EdgePlatformPrivilegedDispatch";
 const PRIVILEGED_WAIT_SECS: u64 = 180;
+const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
+const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
 
@@ -1095,19 +1097,37 @@ async fn verify_windows_tunnel_route(
     if !response.success {
         return Err(format!("selector update failed for route {route}"));
     }
-    let trace = fetch_trace(endpoint.to_owned())
-        .await
-        .map_err(|err| err.to_string())?;
-    if !trace.available || trace.ip.is_none() {
-        return Err(format!("Cloudflare trace is unavailable for route {route}"));
+
+    let mut last_unavailable = "trace unavailable without provider detail".to_owned();
+    for attempt in 1..=WINDOWS_TRACE_REOBSERVE_ATTEMPTS {
+        match fetch_trace(endpoint.to_owned()).await {
+            Ok(trace) if trace.available && trace.ip.is_some() => {
+                if trace.warp.as_deref() != Some(expected_warp) {
+                    return Err(format!(
+                        "route {route} expected Cloudflare warp={expected_warp}, observed {:?}",
+                        trace.warp
+                    ));
+                }
+                return Ok(());
+            }
+            Ok(trace) => {
+                last_unavailable = trace
+                    .note
+                    .unwrap_or_else(|| "trace unavailable without provider detail".to_owned());
+            }
+            Err(err) => {
+                last_unavailable = format!("controller trace RPC failed: {err}");
+            }
+        }
+
+        if attempt < WINDOWS_TRACE_REOBSERVE_ATTEMPTS {
+            tokio::time::sleep(WINDOWS_TRACE_REOBSERVE_DELAY).await;
+        }
     }
-    if trace.warp.as_deref() != Some(expected_warp) {
-        return Err(format!(
-            "route {route} expected Cloudflare warp={expected_warp}, observed {:?}",
-            trace.warp
-        ));
-    }
-    Ok(())
+
+    Err(format!(
+        "Cloudflare trace is unavailable for route {route} after {WINDOWS_TRACE_REOBSERVE_ATTEMPTS} bounded observations: {last_unavailable}"
+    ))
 }
 
 async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
