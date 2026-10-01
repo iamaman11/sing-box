@@ -227,6 +227,28 @@ function Copy-StableBinary {
     }
     Move-Item -LiteralPath $temp -Destination $Target -Force
 }
+
+function Refresh-StableBootstrapInstaller {
+    param(
+        [Parameter(Mandatory)] [string]$Source,
+        [Parameter(Mandatory)] [string]$InstallRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Verified release is missing bootstrap installer: $Source"
+    }
+
+    $bootstrapDir = Join-Path $InstallRoot "bootstrap"
+    New-Item -ItemType Directory -Force -Path $bootstrapDir | Out-Null
+    $target = Join-Path $bootstrapDir "install-windows-release.ps1"
+    $temp = "$target.new"
+    Copy-Item -LiteralPath $Source -Destination $temp -Force
+    if ((Get-ExactHash -Path $temp) -ne (Get-ExactHash -Path $Source)) {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        throw "Bootstrap installer refresh failed SHA-256 verification"
+    }
+    Move-Item -LiteralPath $temp -Destination $target -Force
+}
 function Activate-ReleaseAuthority {
     param(
         [Parameter(Mandatory)] [string]$Tool,
@@ -291,7 +313,8 @@ $packageSidecar = Join-Path $releaseDir "edge-platform-windows.zip.sha256"
 $requiredInstalled = @(
     $releaseSetPath, $releaseSetSidecar, $packagePath, $packageSidecar,
     (Join-Path $releaseDir "bin\edge-release-set.exe"),
-    (Join-Path $releaseDir "bin\edge-diagnostic.exe")
+    (Join-Path $releaseDir "bin\edge-diagnostic.exe"),
+    (Join-Path $releaseDir "bootstrap\install-windows-release.ps1")
 )
 $needsInstall = @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
 
@@ -316,6 +339,9 @@ if ($needsInstall) {
         foreach ($name in @("edge-controller.exe", "edge-console.exe", "sing-box.exe", "edge-diagnostic.exe", "edge-release-set.exe")) {
             if (-not (Test-Path -LiteralPath (Join-Path $unpacked "bin\$name"))) { throw "Windows release package is missing bin\$name" }
         }
+        if (-not (Test-Path -LiteralPath (Join-Path $unpacked "bootstrap\install-windows-release.ps1") -PathType Leaf)) {
+            throw "Windows release package is missing bootstrap\install-windows-release.ps1"
+        }
 
         $tool = Join-Path $unpacked "bin\edge-release-set.exe"
         $verifyArgs = @(
@@ -339,6 +365,7 @@ if ($needsInstall) {
         Copy-Item -LiteralPath $stagePackage -Destination (Join-Path $releaseStage "edge-platform-windows.zip")
         Copy-Item -LiteralPath $stagePackageSidecar -Destination (Join-Path $releaseStage "edge-platform-windows.zip.sha256")
         Copy-Item -LiteralPath (Join-Path $unpacked "bin") -Destination $releaseStage -Recurse
+        Copy-Item -LiteralPath (Join-Path $unpacked "bootstrap") -Destination $releaseStage -Recurse
         if (Test-Path -LiteralPath $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
         Move-Item -LiteralPath $releaseStage -Destination $releaseDir
     } finally {
@@ -354,6 +381,7 @@ $diagnostic = Join-Path $releaseDir "bin\edge-diagnostic.exe"
 $controller = Join-Path $releaseDir "bin\edge-controller.exe"
 $console = Join-Path $releaseDir "bin\edge-console.exe"
 $singBox = Join-Path $releaseDir "bin\sing-box.exe"
+$releaseInstaller = Join-Path $releaseDir "bootstrap\install-windows-release.ps1"
 $verifyArgs = @(
     "verify-windows", "--input", $releaseSetPath, "--sha256-file", $releaseSetSidecar,
     "--windows-artifact", $packagePath, "--windows-controller", $controller,
@@ -368,6 +396,7 @@ if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
     if ($current["release_set_sha256"] -eq $ReleaseSetSha256) {
         Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
+        Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
         Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
         Write-Output "activation=NOOP"
         Write-Output "current_state=$currentPath"
@@ -391,6 +420,7 @@ $activation = Activate-ReleaseAuthority `
     -SingBox $singBox `
     -InstallRoot $InstallRoot
 
+Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
 Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
 Write-Output "current_state=$($activation["current_state"])"
 Write-Output "console=$($activation["console"])"
