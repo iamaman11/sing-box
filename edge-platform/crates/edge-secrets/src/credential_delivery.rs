@@ -7,10 +7,12 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, redirect::Policy};
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 pub const ACCESS_IDENTITY_FILE_NAME: &str = "credential-access-v1.env";
 const MAX_ACCESS_IDENTITY_BYTES: u64 = 16 * 1024;
 const MAX_CREDENTIAL_BUNDLE_BYTES: u64 = 1024 * 1024;
+const CREDENTIAL_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AccessServiceIdentity {
@@ -126,11 +128,11 @@ pub fn canonical_credential_worker_url(
     ))
 }
 
-pub async fn fetch_canonical_credential_bundle(
+pub async fn observe_canonical_credential_bundle(
     projection: CredentialProjectionKind,
     generation: u64,
     identity_path: &Path,
-) -> Result<CredentialDeliveryBundle, String> {
+) -> Result<Option<CredentialDeliveryBundle>, String> {
     let identity = read_access_service_identity(identity_path)?;
     let url = canonical_credential_worker_url(projection, generation)?;
     let mut headers = HeaderMap::new();
@@ -147,6 +149,7 @@ pub async fn fetch_canonical_credential_bundle(
     let client = Client::builder()
         .redirect(Policy::none())
         .default_headers(headers)
+        .timeout(CREDENTIAL_WORKER_REQUEST_TIMEOUT)
         .build()
         .map_err(|err| format!("failed to construct credential Worker client: {err}"))?;
     let response = client
@@ -154,6 +157,9 @@ pub async fn fetch_canonical_credential_bundle(
         .send()
         .await
         .map_err(|err| format!("credential Worker request failed: {err}"))?;
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
     if response.status() != StatusCode::OK {
         return Err(format!(
             "credential Worker returned unexpected HTTP status {}",
@@ -189,7 +195,17 @@ pub async fn fetch_canonical_credential_bundle(
         return Err("credential Worker returned the wrong projection or generation".to_owned());
     }
     local_credential_bundle_ref(&bundle)?;
-    Ok(bundle)
+    Ok(Some(bundle))
+}
+
+pub async fn fetch_canonical_credential_bundle(
+    projection: CredentialProjectionKind,
+    generation: u64,
+    identity_path: &Path,
+) -> Result<CredentialDeliveryBundle, String> {
+    observe_canonical_credential_bundle(projection, generation, identity_path)
+        .await?
+        .ok_or_else(|| "credential Worker returned unexpected HTTP status 404".to_owned())
 }
 
 #[cfg(test)]

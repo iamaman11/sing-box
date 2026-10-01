@@ -732,18 +732,24 @@ pub fn validate_windows_privileged_request(
             validate_lower_hex("WindowsPrivilegedRequest.accepted_revision", revision, 40)?;
             validate_lower_hex("WindowsPrivilegedRequest.release_set_sha256", release, 64)?;
         }
-        WindowsPrivilegedOperation::StageCredential => {
+        WindowsPrivilegedOperation::StageCredential
+        | WindowsPrivilegedOperation::AdmitCredential => {
             if request.accepted_revision.is_some()
                 || request.release_set_sha256.is_some()
                 || request.credential_transition_action.is_some()
             {
-                return Err("STAGE_CREDENTIAL must carry generation authority only".to_owned());
+                return Err(
+                    "credential stage/admission request must carry generation authority only"
+                        .to_owned(),
+                );
             }
-            let generation = request
-                .credential_generation
-                .ok_or_else(|| "STAGE_CREDENTIAL requires credential_generation".to_owned())?;
+            let generation = request.credential_generation.ok_or_else(|| {
+                "credential stage/admission requires credential_generation".to_owned()
+            })?;
             if generation == 0 {
-                return Err("STAGE_CREDENTIAL generation must be greater than zero".to_owned());
+                return Err(
+                    "credential stage/admission generation must be greater than zero".to_owned(),
+                );
             }
         }
         WindowsPrivilegedOperation::PrepareCredentialAccessBootstrap
@@ -2239,6 +2245,29 @@ mod tests {
 
         let mut invalid = request;
         invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_credential_admission_is_generation_only_and_read_only() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-credential-admit".to_owned(),
+            operation: WindowsPrivilegedOperation::AdmitCredential as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: Some(101),
+            credential_transition_action: None,
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request.clone();
+        invalid.credential_generation = Some(0);
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+
+        let mut invalid = request;
+        invalid.release_set_sha256 =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned());
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
