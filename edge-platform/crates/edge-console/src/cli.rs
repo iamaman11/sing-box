@@ -30,6 +30,7 @@ pub(crate) enum Command {
     Stage2Preflight,
     ProvisionRuntimeState(InstallRootArgs),
     PrivilegedPing(InstallRootArgs),
+    PrivilegedRuntimeEvidence(InstallRootArgs),
     PrivilegedActivate(PrivilegedActivateArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     CredentialTransition(CredentialTransitionArgs),
@@ -70,6 +71,7 @@ impl Command {
             Self::Stage2Preflight => "stage2-preflight",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
             Self::PrivilegedPing(_) => "privileged-ping",
+            Self::PrivilegedRuntimeEvidence(_) => "privileged-runtime-evidence",
             Self::PrivilegedActivate(_) => "privileged-activate",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::CredentialTransition(_) => "credential-transition",
@@ -199,6 +201,7 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["edge-console", "privileged-ping"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "privileged-runtime-evidence"]).is_ok());
         assert!(
             Cli::try_parse_from(["edge-console", "privileged-prepare-credential-access"]).is_ok()
         );
