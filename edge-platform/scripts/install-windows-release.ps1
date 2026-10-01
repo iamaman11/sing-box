@@ -13,6 +13,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
+$GitHubReadAttempts = 3
+$GitHubReadTimeoutSec = 15
+$GitHubAssetTimeoutSec = 120
+$GitHubRetryDelaySec = 2
+
 function Assert-HexSha256 {
     param([string]$Value, [string]$Name)
     if ($Value -notmatch "^[0-9a-f]{64}$") { throw "$Name must be an exact lowercase SHA-256 digest" }
@@ -54,6 +59,61 @@ function Get-GitHubHeaders {
     return $headers
 }
 
+function Test-TransientGitHubReadFailure {
+    param([Parameter(Mandatory)] [System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $response = $ErrorRecord.Exception.Response
+    if ($null -eq $response) { return $true }
+
+    try {
+        $statusCode = [int]$response.StatusCode
+    } catch {
+        return $false
+    }
+
+    return @(408, 425, 429, 500, 502, 503, 504) -contains $statusCode
+}
+
+function Invoke-GitHubJsonGet {
+    param([Parameter(Mandatory)] [string]$Uri)
+
+    for ($attempt = 1; $attempt -le $GitHubReadAttempts; $attempt++) {
+        try {
+            return Invoke-RestMethod -Method Get -Uri $Uri -Headers (Get-GitHubHeaders) -TimeoutSec $GitHubReadTimeoutSec
+        } catch {
+            $transient = Test-TransientGitHubReadFailure -ErrorRecord $_
+            if (-not $transient -or $attempt -ge $GitHubReadAttempts) { throw }
+            Write-Warning "Transient GitHub metadata read failure; retrying attempt $($attempt + 1)/$GitHubReadAttempts"
+            Start-Sleep -Seconds $GitHubRetryDelaySec
+        }
+    }
+
+    throw "GitHub metadata read exhausted without a terminal result"
+}
+
+function Invoke-GitHubAssetGet {
+    param(
+        [Parameter(Mandatory)] [string]$Uri,
+        [Parameter(Mandatory)] [string]$Destination
+    )
+
+    for ($attempt = 1; $attempt -le $GitHubReadAttempts; $attempt++) {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        try {
+            Invoke-WebRequest -UseBasicParsing -Method Get -Uri $Uri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination -TimeoutSec $GitHubAssetTimeoutSec
+            return
+        } catch {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+            $transient = Test-TransientGitHubReadFailure -ErrorRecord $_
+            if (-not $transient -or $attempt -ge $GitHubReadAttempts) { throw }
+            Write-Warning "Transient GitHub asset read failure; retrying attempt $($attempt + 1)/$GitHubReadAttempts"
+            Start-Sleep -Seconds $GitHubRetryDelaySec
+        }
+    }
+
+    throw "GitHub asset read exhausted without a terminal result"
+}
+
 function Assert-LowerHexRevision {
     param([string]$Value, [string]$Name)
     if ($Value -notmatch "^[0-9a-f]{40}$") { throw "$Name must be an exact lowercase 40-character Git revision" }
@@ -67,7 +127,7 @@ function Assert-AcceptedReleaseAuthority {
     Assert-LowerHexRevision -Value $AcceptedRevision -Name "AcceptedRevision"
 
     $branchUri = "https://api.github.com/repos/$Repository/branches/main"
-    $branch = Invoke-RestMethod -Method Get -Uri $branchUri -Headers (Get-GitHubHeaders)
+    $branch = Invoke-GitHubJsonGet -Uri $branchUri
     if ([string]$branch.commit.sha -ne $AcceptedRevision) {
         throw "AcceptedRevision is not the current canonical main"
     }
@@ -76,7 +136,7 @@ function Assert-AcceptedReleaseAuthority {
     }
 
     $tagUri = "https://api.github.com/repos/$Repository/git/ref/tags/$Tag"
-    $tagRef = Invoke-RestMethod -Method Get -Uri $tagUri -Headers (Get-GitHubHeaders)
+    $tagRef = Invoke-GitHubJsonGet -Uri $tagUri
     if ([string]$tagRef.object.type -ne "commit") {
         throw "Durable release tag must resolve directly to a commit"
     }
@@ -89,7 +149,7 @@ function Get-DurableRelease {
     param([Parameter(Mandatory)] [string]$Tag)
     $uri = "https://api.github.com/repos/$Repository/releases/tags/$Tag"
     try {
-        return Invoke-RestMethod -Method Get -Uri $uri -Headers (Get-GitHubHeaders)
+        return Invoke-GitHubJsonGet -Uri $uri
     } catch {
         throw "Failed to resolve exact durable GitHub Release $Tag. For a private repository provide EDGE_GITHUB_TOKEN with read access. $($_.Exception.Message)"
     }
@@ -107,7 +167,7 @@ function Download-DurableReleaseAsset {
     }
     $assetUri = [string]$matches[0].url
     if ([string]::IsNullOrWhiteSpace($assetUri)) { throw "Durable release asset $Name has no API URL" }
-    Invoke-WebRequest -Method Get -Uri $assetUri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination
+    Invoke-GitHubAssetGet -Uri $assetUri -Destination $Destination
     if (-not (Test-Path -LiteralPath $Destination)) { throw "Durable release asset download did not create $Destination" }
 }
 
@@ -125,8 +185,8 @@ function Assert-AcceptedCandidateSource {
     $sourceRevision = ([string]$matches[0]).Substring("source_revision=".Length)
     Assert-LowerHexRevision -Value $sourceRevision -Name "ReleaseSet.source_revision"
 
-    $acceptedCommit = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/git/commits/$AcceptedRevision" -Headers (Get-GitHubHeaders)
-    $sourceCommit = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/git/commits/$sourceRevision" -Headers (Get-GitHubHeaders)
+    $acceptedCommit = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/git/commits/$AcceptedRevision"
+    $sourceCommit = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/git/commits/$sourceRevision"
 
     $parents = @($acceptedCommit.parents)
     if ($parents.Count -ne 2 -or [string]$parents[1].sha -ne $sourceRevision) {
