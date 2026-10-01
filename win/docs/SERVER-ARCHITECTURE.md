@@ -78,7 +78,7 @@ SSH remains only for initial enrollment, migration and explicit break-glass reco
 
 Provider API tokens never belong on the VM application runtime.
 
-Target after Issue #169:
+Canonical credential target:
 - VM receives only the VM credential projection required by its runtime;
 - local active/candidate typed secret state is root/private;
 - missing desired generation fails closed;
