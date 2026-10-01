@@ -30,7 +30,7 @@ Accepted owner-gated production commands include:
 Use only commands currently authorized by #26.
 
 Separate historical `/dns`, `/mesh` and `/zero-trust` surfaces are migration debt and are
-planned to collapse into canonical production composition after #169 proves the replacement path.
+removed only through #26 Stage 3 after exact consumer/replacement proof.
 
 Do not use direct Windows Vultr/Cloudflare deployment.
 
@@ -81,8 +81,7 @@ Never paste or publish application/provider secrets into:
 
 Do not copy legacy VLESS/Hysteria/Reality/Line2 credentials into the new runtime.
 
-Issue #169 defines fresh credential generations and Cloudflare Access delivery. Until its gates pass,
-do not improvise another SSH/DPAPI/Vault/GitHub-secret transport.
+The canonical architecture defines fresh credential generations and host-local Cloudflare Access delivery. Follow #26 for the active gate; do not improvise another SSH/DPAPI/Vault/GitHub-secret transport.
 
 ## 6. VM operations
 
