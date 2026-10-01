@@ -2285,9 +2285,7 @@ fn action_name(action: &CredentialDeliveryAction) -> &'static str {
         CredentialDeliveryAction::RestoreFixedAbVersionTag { .. } => {
             "RESTORE_FIXED_A_B_VERSION_TAG"
         }
-        CredentialDeliveryAction::RestoreFixedAbBaseline { .. } => {
-            "RESTORE_FIXED_A_B_BASELINE"
-        }
+        CredentialDeliveryAction::RestoreFixedAbBaseline { .. } => "RESTORE_FIXED_A_B_BASELINE",
     }
 }
 
