@@ -29,6 +29,7 @@ def materialize(root: Path) -> None:
     scripts = root / "edge-platform/scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     (scripts / "windows_input_digest.py").write_text("algorithm-v1\n", encoding="utf-8")
+    (scripts / "install-windows-release.ps1").write_text("installer-v1\n", encoding="utf-8")
 
     platform = root / "edge-platform"
     (platform / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
@@ -92,6 +93,11 @@ def test_digest_scope() -> None:
 
         shared = root / "edge-platform/crates/edge-shared-types/src/lib.rs"
         shared.write_text("pub struct SharedChanged;\n", encoding="utf-8")
+        assert subject.compute_digest(root, inputs()) != first
+
+        materialize(root)
+        installer = root / "edge-platform/scripts/install-windows-release.ps1"
+        installer.write_text("installer-v2\n", encoding="utf-8")
         assert subject.compute_digest(root, inputs()) != first
 
 

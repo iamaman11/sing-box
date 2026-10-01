@@ -13,6 +13,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
+$GitHubReadAttempts = 3
+$GitHubReadTimeoutSec = 15
+$GitHubAssetTimeoutSec = 120
+$GitHubRetryDelaySec = 2
+
 function Assert-HexSha256 {
     param([string]$Value, [string]$Name)
     if ($Value -notmatch "^[0-9a-f]{64}$") { throw "$Name must be an exact lowercase SHA-256 digest" }
@@ -54,6 +59,61 @@ function Get-GitHubHeaders {
     return $headers
 }
 
+function Test-TransientGitHubReadFailure {
+    param([Parameter(Mandatory)] [System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $response = $ErrorRecord.Exception.Response
+    if ($null -eq $response) { return $true }
+
+    try {
+        $statusCode = [int]$response.StatusCode
+    } catch {
+        return $false
+    }
+
+    return @(408, 425, 429, 500, 502, 503, 504) -contains $statusCode
+}
+
+function Invoke-GitHubJsonGet {
+    param([Parameter(Mandatory)] [string]$Uri)
+
+    for ($attempt = 1; $attempt -le $GitHubReadAttempts; $attempt++) {
+        try {
+            return Invoke-RestMethod -Method Get -Uri $Uri -Headers (Get-GitHubHeaders) -TimeoutSec $GitHubReadTimeoutSec
+        } catch {
+            $transient = Test-TransientGitHubReadFailure -ErrorRecord $_
+            if (-not $transient -or $attempt -ge $GitHubReadAttempts) { throw }
+            Write-Warning "Transient GitHub metadata read failure; retrying attempt $($attempt + 1)/$GitHubReadAttempts"
+            Start-Sleep -Seconds $GitHubRetryDelaySec
+        }
+    }
+
+    throw "GitHub metadata read exhausted without a terminal result"
+}
+
+function Invoke-GitHubAssetGet {
+    param(
+        [Parameter(Mandatory)] [string]$Uri,
+        [Parameter(Mandatory)] [string]$Destination
+    )
+
+    for ($attempt = 1; $attempt -le $GitHubReadAttempts; $attempt++) {
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        try {
+            Invoke-WebRequest -UseBasicParsing -Method Get -Uri $Uri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination -TimeoutSec $GitHubAssetTimeoutSec
+            return
+        } catch {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+            $transient = Test-TransientGitHubReadFailure -ErrorRecord $_
+            if (-not $transient -or $attempt -ge $GitHubReadAttempts) { throw }
+            Write-Warning "Transient GitHub asset read failure; retrying attempt $($attempt + 1)/$GitHubReadAttempts"
+            Start-Sleep -Seconds $GitHubRetryDelaySec
+        }
+    }
+
+    throw "GitHub asset read exhausted without a terminal result"
+}
+
 function Assert-LowerHexRevision {
     param([string]$Value, [string]$Name)
     if ($Value -notmatch "^[0-9a-f]{40}$") { throw "$Name must be an exact lowercase 40-character Git revision" }
@@ -67,7 +127,7 @@ function Assert-AcceptedReleaseAuthority {
     Assert-LowerHexRevision -Value $AcceptedRevision -Name "AcceptedRevision"
 
     $branchUri = "https://api.github.com/repos/$Repository/branches/main"
-    $branch = Invoke-RestMethod -Method Get -Uri $branchUri -Headers (Get-GitHubHeaders)
+    $branch = Invoke-GitHubJsonGet -Uri $branchUri
     if ([string]$branch.commit.sha -ne $AcceptedRevision) {
         throw "AcceptedRevision is not the current canonical main"
     }
@@ -76,7 +136,7 @@ function Assert-AcceptedReleaseAuthority {
     }
 
     $tagUri = "https://api.github.com/repos/$Repository/git/ref/tags/$Tag"
-    $tagRef = Invoke-RestMethod -Method Get -Uri $tagUri -Headers (Get-GitHubHeaders)
+    $tagRef = Invoke-GitHubJsonGet -Uri $tagUri
     if ([string]$tagRef.object.type -ne "commit") {
         throw "Durable release tag must resolve directly to a commit"
     }
@@ -89,7 +149,7 @@ function Get-DurableRelease {
     param([Parameter(Mandatory)] [string]$Tag)
     $uri = "https://api.github.com/repos/$Repository/releases/tags/$Tag"
     try {
-        return Invoke-RestMethod -Method Get -Uri $uri -Headers (Get-GitHubHeaders)
+        return Invoke-GitHubJsonGet -Uri $uri
     } catch {
         throw "Failed to resolve exact durable GitHub Release $Tag. For a private repository provide EDGE_GITHUB_TOKEN with read access. $($_.Exception.Message)"
     }
@@ -107,7 +167,7 @@ function Download-DurableReleaseAsset {
     }
     $assetUri = [string]$matches[0].url
     if ([string]::IsNullOrWhiteSpace($assetUri)) { throw "Durable release asset $Name has no API URL" }
-    Invoke-WebRequest -Method Get -Uri $assetUri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination
+    Invoke-GitHubAssetGet -Uri $assetUri -Destination $Destination
     if (-not (Test-Path -LiteralPath $Destination)) { throw "Durable release asset download did not create $Destination" }
 }
 
@@ -125,8 +185,8 @@ function Assert-AcceptedCandidateSource {
     $sourceRevision = ([string]$matches[0]).Substring("source_revision=".Length)
     Assert-LowerHexRevision -Value $sourceRevision -Name "ReleaseSet.source_revision"
 
-    $acceptedCommit = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/git/commits/$AcceptedRevision" -Headers (Get-GitHubHeaders)
-    $sourceCommit = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/$Repository/git/commits/$sourceRevision" -Headers (Get-GitHubHeaders)
+    $acceptedCommit = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/git/commits/$AcceptedRevision"
+    $sourceCommit = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/git/commits/$sourceRevision"
 
     $parents = @($acceptedCommit.parents)
     if ($parents.Count -ne 2 -or [string]$parents[1].sha -ne $sourceRevision) {
@@ -166,6 +226,28 @@ function Copy-StableBinary {
         throw "Stable binary copy failed SHA-256 verification: $Target"
     }
     Move-Item -LiteralPath $temp -Destination $Target -Force
+}
+
+function Refresh-StableBootstrapInstaller {
+    param(
+        [Parameter(Mandatory)] [string]$Source,
+        [Parameter(Mandatory)] [string]$InstallRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Verified release is missing bootstrap installer: $Source"
+    }
+
+    $bootstrapDir = Join-Path $InstallRoot "bootstrap"
+    New-Item -ItemType Directory -Force -Path $bootstrapDir | Out-Null
+    $target = Join-Path $bootstrapDir "install-windows-release.ps1"
+    $temp = "$target.new"
+    Copy-Item -LiteralPath $Source -Destination $temp -Force
+    if ((Get-ExactHash -Path $temp) -ne (Get-ExactHash -Path $Source)) {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        throw "Bootstrap installer refresh failed SHA-256 verification"
+    }
+    Move-Item -LiteralPath $temp -Destination $target -Force
 }
 function Activate-ReleaseAuthority {
     param(
@@ -231,7 +313,8 @@ $packageSidecar = Join-Path $releaseDir "edge-platform-windows.zip.sha256"
 $requiredInstalled = @(
     $releaseSetPath, $releaseSetSidecar, $packagePath, $packageSidecar,
     (Join-Path $releaseDir "bin\edge-release-set.exe"),
-    (Join-Path $releaseDir "bin\edge-diagnostic.exe")
+    (Join-Path $releaseDir "bin\edge-diagnostic.exe"),
+    (Join-Path $releaseDir "bootstrap\install-windows-release.ps1")
 )
 $needsInstall = @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
 
@@ -256,6 +339,9 @@ if ($needsInstall) {
         foreach ($name in @("edge-controller.exe", "edge-console.exe", "sing-box.exe", "edge-diagnostic.exe", "edge-release-set.exe")) {
             if (-not (Test-Path -LiteralPath (Join-Path $unpacked "bin\$name"))) { throw "Windows release package is missing bin\$name" }
         }
+        if (-not (Test-Path -LiteralPath (Join-Path $unpacked "bootstrap\install-windows-release.ps1") -PathType Leaf)) {
+            throw "Windows release package is missing bootstrap\install-windows-release.ps1"
+        }
 
         $tool = Join-Path $unpacked "bin\edge-release-set.exe"
         $verifyArgs = @(
@@ -279,6 +365,7 @@ if ($needsInstall) {
         Copy-Item -LiteralPath $stagePackage -Destination (Join-Path $releaseStage "edge-platform-windows.zip")
         Copy-Item -LiteralPath $stagePackageSidecar -Destination (Join-Path $releaseStage "edge-platform-windows.zip.sha256")
         Copy-Item -LiteralPath (Join-Path $unpacked "bin") -Destination $releaseStage -Recurse
+        Copy-Item -LiteralPath (Join-Path $unpacked "bootstrap") -Destination $releaseStage -Recurse
         if (Test-Path -LiteralPath $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
         Move-Item -LiteralPath $releaseStage -Destination $releaseDir
     } finally {
@@ -294,6 +381,7 @@ $diagnostic = Join-Path $releaseDir "bin\edge-diagnostic.exe"
 $controller = Join-Path $releaseDir "bin\edge-controller.exe"
 $console = Join-Path $releaseDir "bin\edge-console.exe"
 $singBox = Join-Path $releaseDir "bin\sing-box.exe"
+$releaseInstaller = Join-Path $releaseDir "bootstrap\install-windows-release.ps1"
 $verifyArgs = @(
     "verify-windows", "--input", $releaseSetPath, "--sha256-file", $releaseSetSidecar,
     "--windows-artifact", $packagePath, "--windows-controller", $controller,
@@ -308,6 +396,7 @@ if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
     if ($current["release_set_sha256"] -eq $ReleaseSetSha256) {
         Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
+        Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
         Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
         Write-Output "activation=NOOP"
         Write-Output "current_state=$currentPath"
@@ -331,6 +420,7 @@ $activation = Activate-ReleaseAuthority `
     -SingBox $singBox `
     -InstallRoot $InstallRoot
 
+Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
 Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
 Write-Output "current_state=$($activation["current_state"])"
 Write-Output "console=$($activation["console"])"

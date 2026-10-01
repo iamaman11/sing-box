@@ -990,6 +990,9 @@ jobs:
             if ($artifactSha -ne $env:BASE_ARTIFACT_SHA256) { throw "reused Windows artifact digest mismatch" }
             $unpacked = Join-Path $env:RUNNER_TEMP "edge-platform-windows-reused"
             Expand-Archive -LiteralPath $packagePath -DestinationPath $unpacked -Force
+            if (-not (Test-Path -LiteralPath (Join-Path $unpacked "bootstrap\install-windows-release.ps1") -PathType Leaf)) {
+              throw "reused Windows artifact is missing bootstrap\install-windows-release.ps1"
+            }
             Copy-Item (Join-Path $unpacked "bin\edge-controller.exe") (Join-Path $out "edge-controller.exe")
             Copy-Item (Join-Path $unpacked "bin\edge-console.exe") (Join-Path $out "edge-console.exe")
             Copy-Item (Join-Path $unpacked "bin\sing-box.exe") (Join-Path $out "sing-box.exe")
@@ -1003,7 +1006,9 @@ jobs:
             Copy-Item $resolvedSingBox.FullName (Join-Path $out "sing-box.exe")
             $packageRoot = Join-Path $env:RUNNER_TEMP "edge-platform-windows-package"
             $packageBin = Join-Path $packageRoot "bin"
-            New-Item -ItemType Directory -Force -Path $packageBin | Out-Null
+            $packageBootstrap = Join-Path $packageRoot "bootstrap"
+            New-Item -ItemType Directory -Force -Path $packageBin, $packageBootstrap | Out-Null
+            Copy-Item "edge-platform\scripts\install-windows-release.ps1" (Join-Path $packageBootstrap "install-windows-release.ps1")
             Copy-Item (Join-Path $out "edge-controller.exe") (Join-Path $packageBin "edge-controller.exe")
             Copy-Item (Join-Path $out "edge-console.exe") (Join-Path $packageBin "edge-console.exe")
             Copy-Item (Join-Path $out "edge-diagnostic.exe") (Join-Path $packageBin "edge-diagnostic.exe")
