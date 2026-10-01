@@ -1066,12 +1066,10 @@ async fn process_privileged_request(
 }
 
 fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
-    let stdout = compact_runtime_evidence_line(&redact_runtime_evidence(
-        &String::from_utf8_lossy(stdout),
-    ));
-    let stderr = compact_runtime_evidence_line(&redact_runtime_evidence(
-        &String::from_utf8_lossy(stderr),
-    ));
+    let stdout =
+        compact_runtime_evidence_line(&redact_runtime_evidence(&String::from_utf8_lossy(stdout)));
+    let stderr =
+        compact_runtime_evidence_line(&redact_runtime_evidence(&String::from_utf8_lossy(stderr)));
     let detail = format!(
         "installer_evidence=BOUNDED;stderr={};stdout={}",
         if stderr.is_empty() { "EMPTY" } else { &stderr },
