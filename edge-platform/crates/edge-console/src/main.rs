@@ -10,8 +10,7 @@ use edge_controller_core::{
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
-    observe_canonical_credential_bundle,
+    ACCESS_IDENTITY_FILE_NAME, CredentialStore, observe_canonical_credential_bundle,
 };
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
@@ -1229,6 +1228,43 @@ fn append_redacted_runtime_token(output: &mut String, token: &mut String) {
     token.clear();
 }
 
+async fn acquire_windows_credential_generation(
+    install_root: &Path,
+    generation: u64,
+) -> Result<edge_shared_types::CredentialDeliveryBundle, String> {
+    let identity_path = install_root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
+    let mut last_error = None;
+    for attempt in 1..=CREDENTIAL_ADMISSION_ATTEMPTS {
+        match observe_canonical_credential_bundle(
+            edge_shared_types::CredentialProjectionKind::Windows,
+            generation,
+            &identity_path,
+        )
+        .await
+        {
+            Ok(Some(bundle)) => return Ok(bundle),
+            Ok(None) => last_error = None,
+            Err(err) => last_error = Some(err),
+        }
+        if attempt < CREDENTIAL_ADMISSION_ATTEMPTS {
+            tokio::time::sleep(CREDENTIAL_ADMISSION_DELAY).await;
+            continue;
+        }
+        if let Some(err) = last_error {
+            return Err(format!(
+                "Windows credential generation {generation} could not be read from the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations: {err}"
+            ));
+        }
+        return Err(format!(
+            "Windows credential generation {generation} was not visible in the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations"
+        ));
+    }
+    unreachable!("bounded credential acquisition loop always returns")
+}
+
 async fn admit_windows_credential_generation(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
@@ -1239,42 +1275,17 @@ async fn admit_windows_credential_generation(
     if generation == 0 {
         return Err("credential_generation must be greater than zero".to_owned());
     }
-    let identity_path = install_root
-        .join("state")
-        .join("secrets")
-        .join(ACCESS_IDENTITY_FILE_NAME);
-
-    for attempt in 1..=CREDENTIAL_ADMISSION_ATTEMPTS {
-        match observe_canonical_credential_bundle(
-            edge_shared_types::CredentialProjectionKind::Windows,
-            generation,
-            &identity_path,
-        )
-        .await?
-        {
-            Some(_) => {
-                let active = load_verified_activation(install_root)
-                    .ok()
-                    .map(|value| value.release_set_sha256);
-                return Ok((
-                    "CREDENTIAL_GENERATION_ADMITTED".to_owned(),
-                    format!(
-                        "credential data-plane admission PASS generation={generation} projection=WINDOWS state_mutated=false"
-                    ),
-                    active,
-                ));
-            }
-            None if attempt < CREDENTIAL_ADMISSION_ATTEMPTS => {
-                tokio::time::sleep(CREDENTIAL_ADMISSION_DELAY).await;
-            }
-            None => {
-                return Err(format!(
-                    "Windows credential generation {generation} was not visible in the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations"
-                ));
-            }
-        }
-    }
-    unreachable!("bounded credential admission loop always returns")
+    acquire_windows_credential_generation(install_root, generation).await?;
+    let active = load_verified_activation(install_root)
+        .ok()
+        .map(|value| value.release_set_sha256);
+    Ok((
+        "CREDENTIAL_GENERATION_ADMITTED".to_owned(),
+        format!(
+            "credential data-plane admission PASS generation={generation} projection=WINDOWS state_mutated=false"
+        ),
+        active,
+    ))
 }
 
 async fn stage_windows_credential_candidate_from_worker(
@@ -1287,16 +1298,7 @@ async fn stage_windows_credential_candidate_from_worker(
     if generation == 0 {
         return Err("credential_generation must be greater than zero".to_owned());
     }
-    let identity_path = install_root
-        .join("state")
-        .join("secrets")
-        .join(ACCESS_IDENTITY_FILE_NAME);
-    let bundle = fetch_canonical_credential_bundle(
-        edge_shared_types::CredentialProjectionKind::Windows,
-        generation,
-        &identity_path,
-    )
-    .await?;
+    let bundle = acquire_windows_credential_generation(install_root, generation).await?;
     let store = CredentialStore::new(
         windows_credential_store_path(install_root),
         edge_shared_types::CredentialProjectionKind::Windows,
