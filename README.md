@@ -13,14 +13,14 @@ Read authority in this order:
 3. **GitHub Issue #169** — historical Cloudflare account/credential convergence evidence only; it no longer owns the current cursor.
 4. **GitHub Issue #154** — Windows Slice 2 implementation/evidence record. It does not schedule current work.
 5. **GitHub Issue #60** — bounded Windows diagnostics specification.
-6. **GitHub Issue #1** — Vultr lifecycle architecture reference.
+6. **GitHub Issue #1** — canonical operator command channel/reference.
 7. **Issues #2/#3/#4** — functional acceptance scopes for Lines 1/2/3.
 
 Historical plans are never execution authority. If any document conflicts with #26, #26 wins after live repository state is re-read.
 
 ## Accepted architecture and convergence target
 
-The ownership model below is accepted. Cloudflare account convergence through the single production-account authority flip is closed. Current execution is the final convergence sequence in Issue #26: complete the bounded runtime-host Access identity bootstrap, then perform one terminal fresh-v2 credential cutover, then delete superseded historical/control surfaces. Stable architecture must not reopen the closed provider migration.
+The ownership model below is accepted. Cloudflare account convergence through the single production-account authority flip is closed. Current execution is the final convergence sequence in Issue #26: Stage 1 is closed; Stage 2 proves fresh-v2 credentials plus the managed Windows proxy-only runtime; Stage 3 performs consumer-led contraction; Stage 4 physically shrinks obsolete runtime/state/trust/glue and performs the dedicated final managed Windows TUN cutover. Stable architecture must not reopen closed provider migration.
 
 ```text
 Git / protected main

@@ -7,6 +7,61 @@ Issue #169 is historical Cloudflare convergence evidence and no longer owns curr
 Issue #58 is a closed historical architecture record and must not be used to restore its old
 global-controller model.
 
+## Reading the repository: target architecture vs transitional debt
+
+This document describes the **target steady state**, not a promise that every historical implementation
+path has already been deleted. During final convergence, transitional code may still exist in the
+tree without being architectural authority.
+
+Use this classification whenever current code appears to contradict the target:
+
+- **CANONICAL** — required by the steady-state owner model and may gain new capability;
+- **TRANSITIONAL** — still has a live bounded consumer, but must not gain a second owner or broadened
+  semantics;
+- **DELETION_CANDIDATE** — no steady-state owner needs it; remove it after exact consumer proof;
+- **HISTORICAL_EVIDENCE** — retained only in GitHub history/issues and must not drive execution.
+
+The presence of transitional code is never evidence that it should be generalized or preserved.
+Issue #26 is the only authority for when a transitional consumer has been proven dead and deletion
+may proceed.
+
+### Vertical-contract completeness
+
+A new typed operation is not complete when only its Rust implementation compiles. The same logical
+change must cover every boundary it crosses:
+
+```text
+schema / CLI
+  -> semantic implementation
+  -> workflow invocation
+  -> OS privilege / identity allowlist
+  -> recovery and uncertain-outcome handling
+  -> topology guard
+  -> focused tests and live acceptance
+```
+
+If one boundary is missing, fix that **same vertical contract**. Do not compensate by adding another
+service, state machine, queue, store, workflow namespace, retry loop or generic privilege.
+
+### Complexity and contraction budget
+
+Until final convergence is closed:
+
+- prefer deleting an obsolete path over wrapping it in a new abstraction;
+- do not add a new lifecycle owner, durable store, resident daemon, scheduler or operator namespace
+  unless a requirement cannot be expressed by an accepted owner;
+- workflows remain authorization/transport/composition glue; domain semantics belong in typed Rust;
+- when a replacement path is live-proven, consumer analysis and deletion are part of completion,
+  not optional cleanup;
+- delete dead behavior and its guards/tests before splitting large composition files merely for
+  aesthetics;
+- one semantic artifact has one renderer/owner: staging/validation code may copy, validate and launch
+  generated configuration but must not independently re-render or rewrite its meaning.
+
+The intended end state is smaller than the current transitional implementation. Reduction in owners,
+mutable states, operator commands and orchestration branches is a correctness objective, not only a
+maintainability preference.
+
 ## 1. One-owner architecture
 
 ```text
@@ -517,6 +572,17 @@ dependency.
 ## 11. Deletion-first rule
 
 When a new accepted path replaces an old path, delete the old path after live-consumer proof.
+
+Deletion requires evidence, not intuition. For each candidate record:
+1. current steady-state owner, if any;
+2. exact live consumers;
+3. recovery/rollback consumer, if any;
+4. last accepted evidence that the replacement path works;
+5. classification as CANONICAL, TRANSITIONAL, DELETION_CANDIDATE or HISTORICAL_EVIDENCE.
+
+A DELETION_CANDIDATE is removed as one logical contraction with its obsolete tests, workflow glue,
+privilege entries, persistence projections and documentation. Do not leave compatibility shims with
+zero consumers.
 
 Expected cleanup after convergence includes:
 - production-facing duplicate Cloudflare workflows/commands;

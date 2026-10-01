@@ -39,7 +39,7 @@ Application secret values are never Git desired state.
 Historical/current compatibility code may materialize `.env.runtime` for the container stack.
 That file is a generated consumer artifact and must not become a second durable source of truth.
 
-Accepted target after #169:
+Accepted canonical credential target:
 - typed local active/candidate credential state;
 - fresh generations, not imported legacy Windows credentials;
 - VM/Windows receive separate credential projections;
@@ -72,7 +72,7 @@ than exposing independent production-facing DNS/Mesh/Zero Trust owners.
 
 Keep one previous accepted application release/artifact identity for bounded runtime rollback.
 
-Credential rollback is separate from release rollback. Issue #169 uses a fixed A/B credential
+Credential rollback is separate from release rollback. The canonical credential architecture uses a fixed A/B credential
 buffer so a previous accepted credential generation remains available for a bounded grace/recovery
 period without introducing a secret-history database.
 

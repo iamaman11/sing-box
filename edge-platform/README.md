@@ -2,44 +2,93 @@
 
 Rust control-plane workspace for `iamaman11/sing-box`.
 
-For execution order read GitHub Issue #26 first. For stable ownership/invariants read
-`ARCHITECTURE.md`.
+## Start here
 
-## Runtime owners
+There is one execution cursor and one architecture authority:
+
+- **GitHub Issue #26** — current macro stage, exact next action and accepted live evidence;
+- **`ARCHITECTURE.md`** — stable ownership, safety invariants and target steady state;
+- **`FINALIZATION-PLAN.md`** — tombstone only; it is not executable.
+
+Do not reconstruct current state from old chat context, local clones or historical issue bodies.
+Before a mutation, refresh protected `main`, open PRs, latest Actions and the latest #26 evidence.
+
+## Current convergence model
+
+The target architecture is intentionally smaller than parts of the current repository. Some
+migration/bootstrap/acceptance paths still exist only because their final consumer has not yet been
+retired. Their presence does not make them steady-state authority.
+
+Use the architecture classifications:
+
+- `CANONICAL` — required steady-state path;
+- `TRANSITIONAL` — bounded live consumer remains; do not broaden it;
+- `DELETION_CANDIDATE` — remove after exact consumer proof;
+- `HISTORICAL_EVIDENCE` — GitHub evidence only, never an execution path.
+
+The project is in final convergence. Stage 2 proves fresh-v2 credentials plus the new managed Windows
+proxy-only runtime side-by-side. TUN remains deferred. The currently working external Windows
+sing-box stays untouched until the dedicated final managed-TUN cutover.
+
+## Steady-state owner map
 
 ```text
-edge-orchestrator (GitHub-hosted)
-  -> Vultr / Cloudflare provider lifecycle only
+Git / production.textproto
+          |
+          +--------------------+
+          |                    |
+          v                    v
+ immutable ReleaseSet     edge-orchestrator
+                           provider composition
+                            |             |
+                         Vultr        Cloudflare
 
 production VM:
-GitHub self-hosted runner (low privilege, transport only)
-  -> exact allowlisted sudo commands
-  -> root-owned local edge-agent runtime owner
-  -> fixed Docker Compose mutations
-  -> Bollard + rtnetlink observations
-  -> Docker Engine / four-container runtime
+GitHub self-hosted runner (transport only)
+  -> exact allowlisted local operation
+  -> root-owned typed Linux runtime owner
+  -> Docker Compose / Bollard / Docker Engine
 
 Windows:
 GitHub self-hosted runner (NetworkService transport only)
-  -> SYSTEM EdgePlatformPrivilegedDispatch
+  -> bounded SYSTEM EdgePlatformPrivilegedDispatch
   -> SCM EdgePlatformController
-  -> native sing-box runtime
+  -> native managed sing-box runtime
 
-edge-diagnostic.exe
-  -> independent read-only Windows diagnostics
+independent:
+edge-diagnostic.exe -> read-only Windows observation
 ```
 
-The Linux local owner reuses the existing mature Docker/Compose/Bollard/runtime logic. The target removes its routine TCP/gRPC/SSH transport role, not the Docker runtime itself.
+GitHub Actions authorizes and transports operations. It must not become a second lifecycle engine or
+desired-state store.
+
+## Intended normal operator surface
+
+Final normal operation converges toward:
+
+```text
+/production converge
+/production verify
+/production diagnose
+/production rollback
+
+/credentials rotate
+/credentials verify
+
+/windows <only genuinely Windows-local physical lifecycle operations>
+```
+
+Separate production-facing `/dns`, `/mesh`, `/zero-trust`, provider-internal and migration-only
+commands are transitional unless #26 explicitly says otherwise.
 
 ## Canonical production authority
 
 - desired state: `infra/production/production.textproto`;
 - exact release identity: immutable `ReleaseSet.pb` / durable release publication;
 - provider reality: fresh Vultr/Cloudflare observations;
-- Windows activation: `C:\sing-box\current.pb` plus exact immutable release directory;
-- VM application activation: exact accepted application release/bundle + immutable image digests.
-
-GitHub Actions is an authorization/execution transport. It does not own lifecycle semantics.
+- Windows release activation: `C:\sing-box\current.pb` plus exact immutable release directory;
+- application credential state: typed local `state.pb` plus immutable canonical bundle bytes;
+- generated env/sing-box JSON: reproducible output, never durable authority.
 
 ## Windows trust/runtime boundary
 
@@ -71,35 +120,41 @@ Accepted ownership:
 - SYSTEM privileged bridge: `EdgePlatformPrivilegedDispatch`;
 - runner has no plaintext/decrypted application-secret authority.
 
-The console is not a fallback startup owner. Do not restore child-process controller autostart.
+The console is not a fallback startup owner. The external pre-existing Windows sing-box is not
+adopted as LKG, rollback authority or managed state during Stage 2.
 
 ## Credential transition
 
-Fresh application credentials use the accepted paired Windows/VM projections and fixed Worker A/B slots. Delivery to each local owner is runner-blind direct HTTPS fetch from its projection-specific `workers.dev` Worker through its permanent Cloudflare Access host identity. Windows and VM host identities are physically distinct from each other and from bounded proof identities.
+Fresh application credentials use paired Windows/VM least-privilege projections and fixed Worker A/B
+slots. Each local owner fetches its own exact generation directly through its projection-specific
+`workers.dev` Worker and permanent Cloudflare Access host identity.
 
-Windows host-identity enrollment has one bootstrap-only CMS/RFC5652 recipient-encrypted hop: the runner exposes only a temporary public certificate and later carries only ciphertext; SYSTEM decrypts into controller-owned state and destroys the non-exportable bootstrap key. Windows plaintext escrow exists only temporarily in the protected GitHub Environment and is deleted after installation. Existing host tokens are never silently rotated on retry; exact escrow is reused or the operation fails closed. It is not a steady-state application credential transport.
+Runners carry only non-secret generation/slot/operation intent. They never receive plaintext
+application credential payloads. Candidate publication is not activation. Both hosts admit the exact
+generation before staging, and uncertain provider mutations are resolved by read-only re-observation
+rather than blind replay.
 
-Runners carry only non-secret generation/slot/operation intent and never receive plaintext credential payloads. Custom Worker domains, a second secret database and a project-specific application-credential handoff protocol are not part of the accepted path.
+One semantic config has one renderer. A runtime stage/validate/restart path may copy, check and launch
+that generated config, but may not independently rewrite tunnel bindings or other semantic fields.
 
 ## VM transport
 
-Steady-state VM operations use the repository self-hosted production runner as outbound transport only:
+Steady-state VM operations use the repository self-hosted production runner as outbound transport:
 
 ```text
 GitHub
  -> self-hosted low-privilege runner
- -> exact allowlisted local operation
- -> root-owned edge-agent local owner
+ -> exact allowlisted typed operation
+ -> root-owned local runtime owner
  -> Compose mutation / Bollard observation
 ```
 
-Routine application/runtime operations do not require GitHub-hosted-runner SSH, temporary /32 ingress, SSH local-forwarding or a TCP/gRPC agent listener. Strict SSH remains bootstrap/migration/break-glass only until the last recovery dependency is retired.
+Routine operation does not use hosted-runner SSH, temporary /32 ingress, SSH forwarding or a
+TCP/gRPC agent listener. `/production enroll-runtime` may use bounded strict SSH only for explicit
+bootstrap/re-enrollment and must remove the temporary lease before PASS.
 
-The runner has no provider credentials, no generic root, no Docker socket access and no application credential plaintext authority.
-
-The old standalone `/mesh` workflow is not a steady-state control surface. Mesh provider lifecycle is part of the hosted production target plane; VM Mesh runtime operations stay inside the local owner.
-
-For a fresh or re-enrolled production VM, `/production enroll-runtime` is the bounded bootstrap path: temporary strict SSH -> host substrate/VPC -> exact local owner -> permanent self-hosted runner -> SSH lease removed. Normal `/production converge|verify|diagnose` does not use SSH.
+The runner has no provider credentials, no generic root, no Docker socket access and no application
+credential plaintext authority.
 
 ## Build/release model
 
@@ -110,29 +165,43 @@ exact source
  -> candidate acceptance
  -> protected merge
  -> promotion of exact accepted bytes (no rebuild)
- -> durable immutable ReleaseSet
+ -> immutable ReleaseSet
 ```
 
-Production never builds Rust or project OCI images on the target VM/Windows machine.
+Production hosts do not build project Rust binaries or project OCI images.
 
-## Full lifecycle target
+## Change-completeness rule
 
-Typed owners must eventually cover:
+A new typed operation is complete only across the full vertical slice:
 
-- bootstrap/enrollment;
-- provision;
-- deploy;
-- converge;
-- verify;
-- diagnose;
-- upgrade;
-- release rollback;
-- credential rotation/rollback;
-- reboot/recovery;
-- cleanup/destroy;
-- zero-leak verification.
+```text
+schema/CLI
+ -> implementation
+ -> workflow invocation
+ -> OS privilege/identity allowlist
+ -> recovery / uncertain-outcome handling
+ -> topology guard
+ -> tests / live acceptance
+```
 
-Normal operation must not require manual secret copying or a legacy checkout.
+If one boundary is missing, fix that same contract. Do not add a second service, state machine,
+store, workflow or generic privilege to work around incomplete wiring.
+
+## Deletion-first finalization
+
+After a replacement path is live-proven, classify its old consumers and delete dead behavior before
+adding abstractions or splitting large files. Stage 3 removes transitional provider/operator
+surfaces after consumer proof. Stage 4 removes obsolete runtime/state/trust/glue and then performs the
+separate final managed Windows TUN cutover.
+
+A successful finalization should reduce:
+- lifecycle owners;
+- mutable state locations;
+- operator namespaces;
+- workflow branches and shell glue;
+- legacy/acceptance-only transport;
+- first-party JSON and obsolete persistence;
+- topology guards that protect deleted architecture.
 
 ## First-party serialization
 
@@ -147,8 +216,11 @@ Existing internal JSON is frozen migration debt and may only shrink.
 Never reintroduce:
 - Windows provider mutation authority;
 - arbitrary remote PowerShell/SSH production surfaces;
+- generic root/admin shell;
 - TOFU SSH success paths;
 - mutable release authority;
 - plaintext credentials in Git/Issues/Actions/Release assets;
-- a second desired-state store;
-- a second Windows startup owner.
+- a second desired-state or secret-history store;
+- blind retry after uncertain mutation;
+- a second Windows startup/runtime owner;
+- TUN/default-route/system-proxy ownership before its explicit final gate.

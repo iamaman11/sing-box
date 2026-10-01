@@ -1,7 +1,7 @@
 # Windows local architecture
 
 Execution order: GitHub Issue #26.
-Cloudflare/credential convergence: Issue #169.
+Historical Cloudflare/credential convergence evidence for Stage 3 classification: Issue #169.
 Windows implementation/evidence history: Issue #154.
 Diagnostics specification: Issue #60.
 
