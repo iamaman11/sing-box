@@ -284,6 +284,18 @@ def main() -> None:
         and "cutover_vm_recover_windows_restart_failure" not in credentials,
         "all uncommitted fresh-v2 failure phases must collapse into one ordered VM -> Windows -> provider abort path",
     )
+    windows_abort_index = credentials.index("  cutover_windows_abort_uncommitted:")
+    windows_abort_end = credentials.index("  cutover_provider_abort_uncommitted:", windows_abort_index)
+    windows_abort_block = credentials[windows_abort_index:windows_abort_end]
+    require(
+        "privileged-activate" not in windows_abort_block
+        and "exact_release_files" in windows_abort_block
+        and "release_set_sha256" in windows_abort_block
+        and "EDGE_CREDENTIAL_OPERATION" in windows_abort_block
+        and "fresh-v2-cleanup" in windows_abort_block
+        and "STAGE2_WINDOWS_ABORT_RELEASE_VERIFY=PASS" in windows_abort_block,
+        "Windows uncommitted abort must verify the installed activation authority without replaying release activation",
+    )
     require(
         '("/credentials", "fresh-v2-publication-prove"): "fresh-v2-publication-prove"' in credentials
         and "cutover_publication_prove_complete:" in credentials
