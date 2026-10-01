@@ -42,8 +42,8 @@ protected main
 
 Do not commit `.env.runtime` or rendered credential-bearing config.
 
-Issue #169 owns the transition to fresh typed credential generations delivered through isolated
-VM/Windows Cloudflare projections. Generated runtime env/JSON remains a consumer artifact.
+The canonical architecture owns the fresh typed credential model delivered through isolated
+VM/Windows Cloudflare projections; #26 owns execution. Generated runtime env/JSON remains a consumer artifact.
 
 Do not reintroduce:
 - legacy credential import;
