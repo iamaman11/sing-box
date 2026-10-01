@@ -1,21 +1,39 @@
-# edge-platform Finalization Plan — historical
+# edge-platform Finalization Plan — historical tombstone
 
 > **SUPERSEDED / DO NOT EXECUTE**
 >
-> This file is retained only so old links fail safely. Its original finalization model is no longer
-> current and must not be used as an implementation checklist.
+> This file intentionally contains no executable plan. It exists only so historical links fail safe.
 
-Current authority:
-- GitHub Issue #26 — sole living execution cursor;
-- `edge-platform/ARCHITECTURE.md` — current ownership/invariant model;
-- GitHub Issue #169 — active bounded Cloudflare/credential convergence plan when selected by #26;
-- GitHub Issue #154 — Windows Slice 2 implementation/evidence record;
-- GitHub Issue #60 — Windows diagnostics specification.
+## Current authority
 
-In particular, do **not** restore the historical model in which the installed Windows
-`edge-controller` owns Vultr/Cloudflare deployment, remote agent trust, SecretRef storage or
-global production orchestration.
+Use this order and nothing else:
 
-The current direction is deletion-first: provider/production ownership belongs to the GitHub-only
-`edge-orchestrator`; Windows owns only Windows-local runtime; VM `edge-agent` is bounded and
-loopback-only in canonical production.
+1. fresh protected `main`, open PRs and latest Actions;
+2. GitHub Issue #26 — **sole living execution cursor**;
+3. latest comments/evidence on #26 when newer than its body;
+4. `edge-platform/ARCHITECTURE.md` — stable target ownership and invariants, not execution order;
+5. issue #169 — historical Cloudflare evidence, used only for bounded Stage 3 resource
+   classification/deletion;
+6. issue #154 — Windows implementation/evidence record;
+7. issue #60 — Windows diagnostics specification;
+8. issue #1 — canonical operator command channel.
+
+No historical issue or document may become a competing execution cursor.
+
+## Direction
+
+The target architecture is deletion-first:
+
+- GitHub-only `edge-orchestrator` owns provider composition;
+- Windows owns only Windows-local runtime through SCM `EdgePlatformController`;
+- the production VM uses one bounded local Linux runtime owner;
+- self-hosted runners are outbound transport only;
+- credential delivery is fixed A/B least-privilege projection with host-local acquisition;
+- duplicate operator namespaces, remote-agent trust/transport, obsolete provider responsibilities,
+  legacy persistence and migration proof glue are removed after their exact last consumer disappears.
+
+Do not restore historical designs in which Windows owns Vultr/Cloudflare deployment, a network
+`edge-agent` is routine production control, secrets are copied through runners, or old JSON/state
+contracts become authority.
+
+For the current macro stage and exact next action, read #26.
