@@ -465,10 +465,15 @@ def main() -> None:
         and "credential-transition" in production_vm_runner_installer
         and "generate_fresh_credential_snapshot" in fresh_v2_publish
         and fresh_v2_publish.count("cloudflare::patch_latest_worker_version_secrets(") == 2
+        and fresh_v2_publish.count("cloudflare::deploy_worker_version(") == 2
+        and "RestoreFixedAbBaseline" in credential_command
         and "put_worker_secret_text(" not in fresh_v2
         and "workers/workers/{script_name}/versions/latest" in credential_provider
+        and "workers/scripts/{script_name}/deployments" in credential_provider
         and '"env": env' in credential_provider
         and '"workers/tag": version_tag' in credential_provider
+        and '"strategy": "percentage"' in credential_provider
+        and '"percentage": 100' in credential_provider
         and '"application/merge-patch+json"' in credential_provider
         and "CredentialDeliverySlot::A" in fresh_v2_publish
         and "async fn restore_dummy_slot" in fresh_v2

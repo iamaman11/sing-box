@@ -686,7 +686,7 @@ pub async fn patch_latest_worker_version_secrets(
     script_name: &str,
     version_tag: &str,
     secrets: &[(&str, &str)],
-) -> Result<(), String> {
+) -> Result<String, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Worker script name", script_name)?;
     let body = latest_worker_version_secret_patch(version_tag, secrets)?;
@@ -706,7 +706,56 @@ pub async fn patch_latest_worker_version_secrets(
         .map_err(|err| {
             format!("failed to patch Cloudflare latest Worker version secrets/annotations: {err}")
         })?;
-    ensure_secret_mutation_success(response).await
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    required_cloudflare_result_id("Worker version secret mutation", &payload.result)
+}
+
+fn worker_version_deployment_body(version_id: &str) -> Result<Value, String> {
+    require_non_empty("Cloudflare Worker version ID", version_id)?;
+    Ok(serde_json::json!({
+        "strategy": "percentage",
+        "versions": [{
+            "version_id": version_id,
+            "percentage": 100
+        }],
+        "annotations": {
+            "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
+        }
+    }))
+}
+
+pub async fn deploy_worker_version(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    version_id: &str,
+) -> Result<String, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let body = worker_version_deployment_body(version_id)?;
+
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/deployments"
+        ))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|err| format!("failed to deploy Cloudflare Worker version: {err}"))?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    required_cloudflare_result_id("Worker version deployment", &payload.result)
+}
+
+fn required_cloudflare_result_id(label: &str, value: &Value) -> Result<String, String> {
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{label} response is missing non-empty result.id"))?;
+    Ok(id.to_owned())
 }
 
 pub async fn get_worker_script_subdomain(
@@ -3246,6 +3295,38 @@ mod tests {
         );
         assert!(body.get("secrets").is_none());
         assert!(body.get("version_tags").is_none());
+    }
+
+    #[test]
+    fn renders_wrangler_single_version_deployment_shape() {
+        let body = worker_version_deployment_body("version-id").unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "strategy": "percentage",
+                "versions": [{
+                    "version_id": "version-id",
+                    "percentage": 100
+                }],
+                "annotations": {
+                    "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn worker_version_mutations_require_result_ids() {
+        assert_eq!(
+            required_cloudflare_result_id(
+                "test",
+                &serde_json::json!({"id": "version-or-deployment-id"})
+            )
+            .unwrap(),
+            "version-or-deployment-id"
+        );
+        assert!(required_cloudflare_result_id("test", &serde_json::json!({})).is_err());
+        assert!(worker_version_deployment_body("").is_err());
     }
 
     #[test]
