@@ -1420,6 +1420,14 @@ async fn transition_vm_credential(
             }
             Ok(Some(state))
         }
+        CredentialTransitionAction::DiscardCandidate => {
+            if state.active.is_some() || state.previous.is_some() {
+                return Err(
+                    "initial fresh-v2 discard requires empty active/previous state".to_owned(),
+                );
+            }
+            Ok(store.discard_candidate()?)
+        }
         CredentialTransitionAction::RetireLegacy => {
             if state.active.is_none() || state.candidate.is_some() {
                 return Err(

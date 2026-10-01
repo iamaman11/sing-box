@@ -450,12 +450,20 @@ def main() -> None:
     )
     restart_verify = windows_console[restart_verify_start:restart_verify_end]
     require(
-        "stop_managed_windows_runtime_after_failure" in restart_verify,
-        "Windows restart proof must stop only the exact managed runtime before returning a functional failure",
+        "stop_managed_windows_runtime_after_failure" in restart_verify
+        and "WINDOWS_TRACE_REOBSERVE_ATTEMPTS" in windows_console
+        and "trace.note" in windows_console
+        and "bounded observations" in windows_console,
+        "Windows restart proof must use bounded trace re-observation, preserve provider failure detail and stop only the exact managed runtime on failure",
     )
 
     require(
         '"fresh-v2-cutover"' in credentials
+        and '"fresh-v2-cleanup"' in credentials
+        and "credential-transition discard-candidate" in credentials
+        and "cutover_provider_recover_candidate_failure:" in credentials
+        and "CredentialDeliveryCommand::FreshV2RestoreBaseline" in credential_command
+        and "credential_fresh_v2_baseline_restore=PASS" in credential_command
         and not (WORKFLOWS / "credential-fresh-v2-cutover.yml").exists()
         and "CredentialTransition" in vm_agent_cli
         and "CredentialTransition" in windows_console_cli
