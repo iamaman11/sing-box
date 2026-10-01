@@ -39,7 +39,7 @@ Application secret values are never Git desired state.
 Historical/current compatibility code may materialize `.env.runtime` for the container stack.
 That file is a generated consumer artifact and must not become a second durable source of truth.
 
-Accepted target after #169:
+Accepted canonical credential target:
 - typed local active/candidate credential state;
 - fresh generations, not imported legacy Windows credentials;
 - VM/Windows receive separate credential projections;
