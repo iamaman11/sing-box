@@ -2768,4 +2768,17 @@ mod tests {
         assert!(!err.contains("PRIVATE_KEY"));
         assert!(!err.contains("PROXY_PASSWORD"));
     }
+
+    #[test]
+    fn redacts_sensitive_runtime_evidence_tokens() {
+        let redacted = redact_runtime_evidence(
+            "uuid=00000000-0000-4000-8000-000000000001 short=0011223344556677 password=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef host=miu.alegria.by",
+        );
+        assert!(!redacted.contains("00000000-0000-4000-8000-000000000001"));
+        assert!(!redacted.contains("0011223344556677"));
+        assert!(!redacted.contains("0123456789abcdef0123456789abcdef"));
+        assert!(redacted.contains("<redacted-uuid>"));
+        assert!(redacted.contains("<redacted-hex>"));
+        assert!(redacted.contains("miu.alegria.by"));
+    }
 }
