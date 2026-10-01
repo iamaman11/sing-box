@@ -1345,6 +1345,16 @@ fn activate_privileged_release(
         .as_deref()
         .ok_or_else(|| "release_set_sha256 is required".to_owned())?;
 
+    if let Ok(activation) = load_verified_activation(install_root)
+        && activation.release_set_sha256 == target_release
+    {
+        return Ok((
+            "RELEASE_ALREADY_CONVERGED".to_owned(),
+            "exact target ReleaseSet is already locally verified; installer not invoked".to_owned(),
+            Some(activation.release_set_sha256),
+        ));
+    }
+
     let installer = install_root
         .join("bootstrap")
         .join("install-windows-release.ps1");
@@ -1378,6 +1388,20 @@ fn activate_privileged_release(
         .output()
         .map_err(|err| format!("failed to start protected Windows installer: {err}"))?;
     if !output.status.success() {
+        if let Ok(activation) = load_verified_activation(install_root)
+            && activation.release_set_sha256 == target_release
+        {
+            #[cfg(windows)]
+            converge_controller_service(install_root, Path::new(&activation.controller_path))?;
+            retarget_privileged_task(install_root, &activation.console_path)?;
+            return Ok((
+                "RELEASE_CONVERGED_REOBSERVED".to_owned(),
+                "exact target ReleaseSet committed despite installer failure; local owner handoff reconciled"
+                    .to_owned(),
+                Some(activation.release_set_sha256),
+            ));
+        }
+
         return Err(format!(
             "protected Windows installer failed with exit code {}; {}",
             output.status.code().unwrap_or(-1),
