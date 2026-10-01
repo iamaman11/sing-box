@@ -328,22 +328,6 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
     ]);
     let config = json!({
         "log": { "level": "info", "timestamp": true },
-        "dns": {
-            "servers": [
-                {
-                    "tag": "upstream-cloudflare",
-                    "type": "udp",
-                    "server": "1.1.1.1"
-                },
-                {
-                    "tag": "upstream-google",
-                    "type": "udp",
-                    "server": "8.8.8.8"
-                }
-            ],
-            "final": "upstream-cloudflare",
-            "strategy": "prefer_ipv4"
-        },
         "inbounds": [
             {
                 "type": "mixed",
@@ -388,7 +372,7 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
             {
                 "type": "hysteria2",
                 "tag": "hysteria2-direct",
-                "server": direct.domain,
+                "server": state.server_ip,
                 "server_port": direct.hy2_port,
                 "password": direct.hy2_password,
                 "tls": { "enabled": true, "server_name": direct.domain }
@@ -396,7 +380,7 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
             {
                 "type": "vless",
                 "tag": "vless-reality-direct",
-                "server": direct.domain,
+                "server": state.server_ip,
                 "server_port": direct.vless_port,
                 "uuid": direct.vless_uuid,
                 "tls": {
@@ -413,7 +397,7 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
             {
                 "type": "hysteria2",
                 "tag": "hysteria2-warp",
-                "server": warp.domain,
+                "server": state.server_ip,
                 "server_port": warp.hy2_port,
                 "password": warp.hy2_password,
                 "tls": { "enabled": true, "server_name": warp.domain }
@@ -421,7 +405,7 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
             {
                 "type": "vless",
                 "tag": "vless-reality-warp",
-                "server": warp.domain,
+                "server": state.server_ip,
                 "server_port": warp.vless_port,
                 "uuid": warp.vless_uuid,
                 "tls": {
@@ -443,8 +427,7 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
                 { "inbound": [WSL_INBOUND_TAG], "outbound": WSL_SELECTOR_TAG }
             ],
             "final": MANAGED_SELECTOR_TAG,
-            "auto_detect_interface": true,
-            "default_domain_resolver": "upstream-cloudflare"
+            "auto_detect_interface": true
         },
         "experimental": {
             "clash_api": {
@@ -1832,32 +1815,35 @@ mod tests {
                 .and_then(Value::as_str),
             Some("127.0.0.1:19091")
         );
-        assert_eq!(
-            config
-                .pointer("/route/default_domain_resolver")
-                .and_then(Value::as_str),
-            Some("upstream-cloudflare")
-        );
-        assert_eq!(
-            config.pointer("/dns/final").and_then(Value::as_str),
-            Some("upstream-cloudflare")
-        );
-        assert_eq!(
-            config.pointer("/dns/strategy").and_then(Value::as_str),
-            Some("prefer_ipv4")
-        );
-        let dns_servers = config
-            .pointer("/dns/servers")
-            .and_then(Value::as_array)
+        assert!(config.get("dns").is_none());
+        assert!(config.pointer("/route/default_domain_resolver").is_none());
+        let outbounds = config.get("outbounds").and_then(Value::as_array).unwrap();
+        for tag in [
+            "hysteria2-direct",
+            "vless-reality-direct",
+            "hysteria2-warp",
+            "vless-reality-warp",
+        ] {
+            let outbound = outbounds
+                .iter()
+                .find(|outbound| outbound.get("tag").and_then(Value::as_str) == Some(tag))
+                .unwrap();
+            assert_eq!(
+                outbound.get("server").and_then(Value::as_str),
+                Some("203.0.113.10")
+            );
+        }
+        let hysteria_direct = outbounds
+            .iter()
+            .find(|outbound| {
+                outbound.get("tag").and_then(Value::as_str) == Some("hysteria2-direct")
+            })
             .unwrap();
-        assert_eq!(dns_servers.len(), 2);
         assert_eq!(
-            dns_servers[0].get("server").and_then(Value::as_str),
-            Some("1.1.1.1")
-        );
-        assert_eq!(
-            dns_servers[1].get("server").and_then(Value::as_str),
-            Some("8.8.8.8")
+            hysteria_direct
+                .pointer("/tls/server_name")
+                .and_then(Value::as_str),
+            Some("edge.example.com")
         );
     }
 
