@@ -63,7 +63,8 @@ const WINDOWS_CONTROLLER_SERVICE_ACCOUNT: &str = r"NT SERVICE\EdgePlatformContro
 const PRIVILEGED_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_RESULT_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_TASK_NAME: &str = "EdgePlatformPrivilegedDispatch";
-const PRIVILEGED_WAIT_SECS: u64 = 180;
+const PRIVILEGED_SHORT_WAIT_SECS: u64 = 180;
+const PRIVILEGED_ACTIVATE_WAIT_SECS: u64 = 12 * 60;
 const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
 const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
 const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 960;
@@ -820,35 +821,119 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+fn privileged_wait_secs(request: &WindowsPrivilegedRequest) -> u64 {
+    match WindowsPrivilegedOperation::try_from(request.operation) {
+        Ok(WindowsPrivilegedOperation::ActivateRelease) => PRIVILEGED_ACTIVATE_WAIT_SECS,
+        _ => PRIVILEGED_SHORT_WAIT_SECS,
+    }
+}
+
+fn read_matching_privileged_result(
+    result_path: &Path,
+    request_id: &str,
+) -> Result<Option<WindowsPrivilegedResult>, Box<dyn std::error::Error>> {
+    match fs::read(result_path) {
+        Ok(bytes) => {
+            let result = decode_windows_privileged_result(&bytes)?;
+            if result.request_id == request_id {
+                Ok(Some(result))
+            } else {
+                Ok(None)
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn activation_matches_request(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+) -> Option<WindowsActivationState> {
+    if WindowsPrivilegedOperation::try_from(request.operation).ok()
+        != Some(WindowsPrivilegedOperation::ActivateRelease)
+    {
+        return None;
+    }
+    let target_release = request.release_set_sha256.as_deref()?;
+    let activation = load_verified_activation(install_root).ok()?;
+    (activation.release_set_sha256 == target_release).then_some(activation)
+}
+
+fn reconcile_completed_privileged_exchange(
+    install_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request_path = privileged_request_path(install_root);
+    if !request_path.exists() {
+        return Ok(());
+    }
+
+    let pending_bytes = fs::read(&request_path)?;
+    let pending = decode_windows_privileged_request(&pending_bytes)?;
+    let result_path = privileged_result_path(install_root);
+
+    if read_matching_privileged_result(&result_path, &pending.request_id)?.is_some() {
+        fs::remove_file(&request_path)?;
+        return Ok(());
+    }
+
+    let age = fs::metadata(&request_path)?
+        .modified()?
+        .elapsed()
+        .unwrap_or_default();
+    if age >= Duration::from_secs(PRIVILEGED_ACTIVATE_WAIT_SECS)
+        && activation_matches_request(install_root, &pending).is_some()
+    {
+        fs::remove_file(&request_path)?;
+        return Ok(());
+    }
+
+    Err(format!(
+        "privileged Windows request is still pending: request_id={} operation={}; do not retry blindly",
+        pending.request_id, pending.operation
+    )
+    .into())
+}
+
 fn submit_privileged_request(
     install_root: &Path,
     request: WindowsPrivilegedRequest,
 ) -> Result<WindowsPrivilegedResult, Box<dyn std::error::Error>> {
+    reconcile_completed_privileged_exchange(install_root)?;
+
     let request_path = privileged_request_path(install_root);
-    if request_path.exists() {
-        return Err("a privileged Windows request is already pending".into());
-    }
     let bytes = encode_windows_privileged_request(&request)?;
     write_atomic(&request_path, &bytes)?;
 
     let result_path = privileged_result_path(install_root);
-    let deadline = Instant::now() + Duration::from_secs(PRIVILEGED_WAIT_SECS);
+    let wait_secs = privileged_wait_secs(&request);
+    let deadline = Instant::now() + Duration::from_secs(wait_secs);
     while Instant::now() < deadline {
-        match fs::read(&result_path) {
-            Ok(bytes) => {
-                let result = decode_windows_privileged_result(&bytes)?;
-                if result.request_id == request.request_id {
-                    return Ok(result);
-                }
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
+        if let Some(result) = read_matching_privileged_result(&result_path, &request.request_id)? {
+            return Ok(result);
         }
         thread::sleep(Duration::from_millis(500));
     }
+
+    if let Some(result) = read_matching_privileged_result(&result_path, &request.request_id)? {
+        return Ok(result);
+    }
+
+    if let Some(activation) = activation_matches_request(install_root, &request) {
+        reconcile_completed_privileged_exchange(install_root)?;
+        return Ok(WindowsPrivilegedResult {
+            schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
+            request_id: request.request_id,
+            success: true,
+            code: "RELEASE_CONVERGED_REOBSERVED".to_owned(),
+            detail: "exact target ReleaseSet is active after bounded activation wait".to_owned(),
+            active_release_set_sha256: Some(activation.release_set_sha256),
+        });
+    }
+
     Err(format!(
-        "timed out waiting {} seconds for privileged Windows request {}",
-        PRIVILEGED_WAIT_SECS, request.request_id
+        "privileged Windows request outcome is uncertain after {wait_secs} seconds: request_id={} operation={}; do not retry blindly",
+        request.request_id, request.operation
     )
     .into())
 }
@@ -2855,6 +2940,37 @@ mod tests {
         assert!(redacted.contains("<redacted-uuid>"));
         assert!(redacted.contains("<redacted-hex>"));
         assert!(redacted.contains("miu.alegria.by"));
+    }
+
+    #[test]
+    fn privileged_activation_has_operation_specific_wait_budget() {
+        let activate = WindowsPrivilegedRequest {
+            schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+            request_id: "activate".to_owned(),
+            operation: WindowsPrivilegedOperation::ActivateRelease as i32,
+            accepted_revision: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            release_set_sha256: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            ),
+            credential_generation: None,
+            credential_transition_action: None,
+        };
+        let ping = WindowsPrivilegedRequest {
+            schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+            request_id: "ping".to_owned(),
+            operation: WindowsPrivilegedOperation::Ping as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+            credential_transition_action: None,
+        };
+
+        assert_eq!(
+            privileged_wait_secs(&activate),
+            PRIVILEGED_ACTIVATE_WAIT_SECS
+        );
+        assert_eq!(privileged_wait_secs(&ping), PRIVILEGED_SHORT_WAIT_SECS);
+        assert!(PRIVILEGED_ACTIVATE_WAIT_SECS > PRIVILEGED_SHORT_WAIT_SECS);
     }
 
     #[test]

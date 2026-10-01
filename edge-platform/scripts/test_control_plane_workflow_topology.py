@@ -595,6 +595,15 @@ def main() -> None:
         "Windows physical cycle must target only the dedicated repository runner",
     )
     require(
+        "PRIVILEGED_SHORT_WAIT_SECS" in windows_console
+        and "PRIVILEGED_ACTIVATE_WAIT_SECS" in windows_console
+        and "RELEASE_CONVERGED_REOBSERVED" in windows_console
+        and "do not retry blindly" in windows_console
+        and "1790862397323-17868" not in windows_physical
+        and "STALE_RUNTIME_EVIDENCE_REQUEST" not in windows_physical,
+        "Windows privileged activation must use operation-specific completion reconciliation without incident-specific stale-request cleanup",
+    )
+    require(
         'test "$COMMAND_BODY" = "/windows smoke"' in windows_physical
         and 'test "$CONTROL_PROTECTED" = "true"' in windows_physical
         and "github.ref_protected" in windows_physical
