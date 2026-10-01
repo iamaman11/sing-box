@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use edge_observability::init as init_observability;
 use edge_secrets::{
     ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore,
-    fetch_canonical_credential_bundle, observe_canonical_credential_bundle,
+    observe_canonical_credential_bundle,
 };
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
@@ -1176,40 +1176,51 @@ fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, Strin
         .join(ACCESS_IDENTITY_FILE_NAME))
 }
 
-async fn admit_vm_credential_generation(stack_dir: &Path, generation: u64) -> Result<(), String> {
+async fn acquire_vm_credential_generation(
+    stack_dir: &Path,
+    generation: u64,
+) -> Result<edge_shared_types::CredentialDeliveryBundle, String> {
     let identity_path = vm_credential_access_identity_path(stack_dir)?;
+    let mut last_error = None;
     for attempt in 1..=CREDENTIAL_ADMISSION_ATTEMPTS {
         match observe_canonical_credential_bundle(
             CredentialProjectionKind::Vm,
             generation,
             &identity_path,
         )
-        .await?
+        .await
         {
-            Some(_) => return Ok(()),
-            None if attempt < CREDENTIAL_ADMISSION_ATTEMPTS => {
-                tokio::time::sleep(CREDENTIAL_ADMISSION_DELAY).await;
-            }
-            None => {
-                return Err(format!(
-                    "VM credential generation {generation} was not visible in the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations"
-                ));
-            }
+            Ok(Some(bundle)) => return Ok(bundle),
+            Ok(None) => last_error = None,
+            Err(err) => last_error = Some(err),
         }
+        if attempt < CREDENTIAL_ADMISSION_ATTEMPTS {
+            tokio::time::sleep(CREDENTIAL_ADMISSION_DELAY).await;
+            continue;
+        }
+        if let Some(err) = last_error {
+            return Err(format!(
+                "VM credential generation {generation} could not be read from the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations: {err}"
+            ));
+        }
+        return Err(format!(
+            "VM credential generation {generation} was not visible in the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations"
+        ));
     }
-    unreachable!("bounded credential admission loop always returns")
+    unreachable!("bounded credential acquisition loop always returns")
+}
+
+async fn admit_vm_credential_generation(stack_dir: &Path, generation: u64) -> Result<(), String> {
+    acquire_vm_credential_generation(stack_dir, generation)
+        .await
+        .map(|_| ())
 }
 
 async fn fetch_and_stage_vm_credential_candidate(
     stack_dir: &Path,
     generation: u64,
 ) -> Result<LocalCredentialState, String> {
-    let bundle = fetch_canonical_credential_bundle(
-        CredentialProjectionKind::Vm,
-        generation,
-        &vm_credential_access_identity_path(stack_dir)?,
-    )
-    .await?;
+    let bundle = acquire_vm_credential_generation(stack_dir, generation).await?;
     stage_vm_credential_candidate(stack_dir, bundle)
 }
 
