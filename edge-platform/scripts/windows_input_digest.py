@@ -94,6 +94,7 @@ def _tracked_files(repo_root: Path) -> list[Path]:
         repo_root / "edge-platform" / "Cargo.lock",
         repo_root / "edge-platform" / "proto",
         repo_root / "edge-platform" / "scripts" / "windows_input_digest.py",
+        repo_root / "edge-platform" / "scripts" / "install-windows-release.ps1",
     ]
     required.extend(_reachable_package_dirs(repo_root))
 
