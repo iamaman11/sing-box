@@ -250,6 +250,13 @@ def main() -> None:
         "Windows runner may carry only typed generation intent while SYSTEM fetches and stages the canonical bundle",
     )
     require(
+        "RELEASE_ALREADY_CONVERGED" in windows_console
+        and "installer not invoked" in windows_console
+        and "RELEASE_CONVERGED_REOBSERVED" in windows_console
+        and "local owner handoff reconciled" in windows_console,
+        "Windows release activation must reconcile exact local authority before replay and after uncertain child failure",
+    )
+    require(
         "CredentialAdmit" in vm_agent_cli
         and "local-credential-admit" in vm_agent_cli
         and "observe_canonical_credential_bundle" in vm_agent_runtime
