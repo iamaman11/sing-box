@@ -86,12 +86,14 @@ enum CredentialDeliveryAction {
     Noop,
     InstallDummyAbContract { projection: String },
     RestoreFixedAbVersionTag { projection: String },
+    RestoreFixedAbBaseline { projection: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectionDeliveryState {
     LegacyLocked,
     FixedAbVersionTagMissing,
+    FixedAbLatestPendingDeployment,
     FixedAb,
 }
 
@@ -220,7 +222,7 @@ async fn fresh_v2_publish(
     let windows_secret = hex_encode(&snapshot.windows.encode_to_vec());
     let vm_secret = hex_encode(&snapshot.vm.encode_to_vec());
 
-    if let Err(err) = cloudflare::patch_latest_worker_version_secrets(
+    let windows_version_id = match cloudflare::patch_latest_worker_version_secrets(
         &rotation_token,
         &desired.target_account_id,
         &windows.worker_name,
@@ -229,13 +231,16 @@ async fn fresh_v2_publish(
     )
     .await
     {
-        restore_dummy_slot(&rotation_token, desired, &[&windows]).await?;
-        return Err(format!(
-            "Windows fresh-v2 inactive-slot publication failed and baseline was restored: {err}"
-        ));
-    }
+        Ok(version_id) => version_id,
+        Err(err) => {
+            restore_dummy_slot(&rotation_token, desired, &[&windows]).await?;
+            return Err(format!(
+                "Windows fresh-v2 inactive-slot publication failed and baseline was restored: {err}"
+            ));
+        }
+    };
 
-    if let Err(err) = cloudflare::patch_latest_worker_version_secrets(
+    let vm_version_id = match cloudflare::patch_latest_worker_version_secrets(
         &rotation_token,
         &desired.target_account_id,
         &vm.worker_name,
@@ -244,9 +249,40 @@ async fn fresh_v2_publish(
     )
     .await
     {
+        Ok(version_id) => version_id,
+        Err(err) => {
+            restore_dummy_slot(&rotation_token, desired, &[&windows, &vm]).await?;
+            return Err(format!(
+                "VM fresh-v2 inactive-slot publication failed and paired baseline was restored: {err}"
+            ));
+        }
+    };
+
+    if let Err(err) = cloudflare::deploy_worker_version(
+        &rotation_token,
+        &desired.target_account_id,
+        &windows.worker_name,
+        &windows_version_id,
+    )
+    .await
+    {
         restore_dummy_slot(&rotation_token, desired, &[&windows, &vm]).await?;
         return Err(format!(
-            "VM fresh-v2 inactive-slot publication failed and paired baseline was restored: {err}"
+            "Windows fresh-v2 version deployment failed and paired baseline was restored: {err}"
+        ));
+    }
+
+    if let Err(err) = cloudflare::deploy_worker_version(
+        &rotation_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+        &vm_version_id,
+    )
+    .await
+    {
+        restore_dummy_slot(&rotation_token, desired, &[&windows, &vm]).await?;
+        return Err(format!(
+            "VM fresh-v2 version deployment failed and paired baseline was restored: {err}"
         ));
     }
 
@@ -268,6 +304,7 @@ async fn fresh_v2_publish(
     println!("credential_slot=A");
     println!("paired_projection_count=2");
     println!("credential_secret_mutations=2");
+    println!("credential_deployment_mutations=2");
     println!("active_slot_mutated=false");
     println!("runner_plaintext_access=false");
     Ok(())
@@ -285,7 +322,7 @@ async fn restore_dummy_slot(
             .iter()
             .find(|slot| slot.name == SLOT_A)
             .ok_or_else(|| "fixed A/B material is missing slot A".to_owned())?;
-        cloudflare::patch_latest_worker_version_secrets(
+        let version_id = cloudflare::patch_latest_worker_version_secrets(
             rotation_token,
             &desired.target_account_id,
             &projection.worker_name,
@@ -296,6 +333,19 @@ async fn restore_dummy_slot(
         .map_err(|err| {
             format!(
                 "failed to restore inactive dummy slot A for {} after partial fresh-v2 publication; mutation state is uncertain: {err}",
+                projection.projection
+            )
+        })?;
+        cloudflare::deploy_worker_version(
+            rotation_token,
+            &desired.target_account_id,
+            &projection.worker_name,
+            &version_id,
+        )
+        .await
+        .map_err(|err| {
+            format!(
+                "failed to deploy restored dummy slot A for {} after partial fresh-v2 publication; mutation state is uncertain: {err}",
                 projection.projection
             )
         })?;
@@ -799,6 +849,58 @@ async fn apply_once(
             .await?;
             1
         }
+        CredentialDeliveryAction::RestoreFixedAbBaseline { projection } => {
+            let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+            let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+            if rotation_identity.status != "active" {
+                return Err(format!(
+                    "credential-rotation token {} is not active: {}",
+                    rotation_identity.id, rotation_identity.status
+                ));
+            }
+            if rotation_identity.id == before.control_token_identity.id {
+                return Err(
+                    "credential-rotation token must be physically distinct from CLOUDFLARE_CONTROL_TOKEN"
+                        .to_owned(),
+                );
+            }
+
+            let projection = projection_desired(desired, projection)?;
+            if projection_delivery_state(desired, &projection, &before)?
+                != ProjectionDeliveryState::FixedAbLatestPendingDeployment
+            {
+                return Err(format!(
+                    "fixed A/B baseline recovery requires one exact tagged latest version pending deployment for {}",
+                    projection.projection
+                ));
+            }
+            let material = delivery_worker_material(&projection.projection)?;
+            let dummy = material
+                .slots
+                .iter()
+                .find(|slot| slot.name == SLOT_A)
+                .ok_or_else(|| "fixed A/B material is missing slot A".to_owned())?;
+            println!(
+                "credential_rotation_token_identity={} credential_rotation_token_status={}",
+                rotation_identity.id, rotation_identity.status
+            );
+            let version_id = cloudflare::patch_latest_worker_version_secrets(
+                &rotation_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+                &material.version_tag,
+                &[(SLOT_A, dummy.secret_text.as_str())],
+            )
+            .await?;
+            cloudflare::deploy_worker_version(
+                &rotation_token,
+                &desired.target_account_id,
+                &projection.worker_name,
+                &version_id,
+            )
+            .await?;
+            2
+        }
     };
 
     let after = observe(control_token, desired).await?;
@@ -843,6 +945,11 @@ fn plan(
                     projection: projection.projection,
                 });
             }
+            ProjectionDeliveryState::FixedAbLatestPendingDeployment => {
+                return Ok(CredentialDeliveryAction::RestoreFixedAbBaseline {
+                    projection: projection.projection,
+                });
+            }
             ProjectionDeliveryState::FixedAb => {}
         }
     }
@@ -882,6 +989,18 @@ fn projection_delivery_state(
             && latest_tag == Some(material.version_tag.as_str())
         {
             return Ok(ProjectionDeliveryState::FixedAb);
+        }
+        let latest_is_pending_deployment = current.worker_active_deployment_id.is_some()
+            && current.worker_active_version_ids.len() == 1
+            && current
+                .worker_latest_version_id
+                .as_ref()
+                .is_some_and(|latest| current.worker_active_version_ids[0] != *latest);
+        if latest_is_pending_deployment
+            && settings_tag == Some(material.version_tag.as_str())
+            && latest_tag == Some(material.version_tag.as_str())
+        {
+            return Ok(ProjectionDeliveryState::FixedAbLatestPendingDeployment);
         }
         if latest_is_only_active && settings_tag.is_none() && latest_tag.is_none() {
             return Ok(ProjectionDeliveryState::FixedAbVersionTagMissing);
@@ -2166,6 +2285,9 @@ fn action_name(action: &CredentialDeliveryAction) -> &'static str {
         CredentialDeliveryAction::RestoreFixedAbVersionTag { .. } => {
             "RESTORE_FIXED_A_B_VERSION_TAG"
         }
+        CredentialDeliveryAction::RestoreFixedAbBaseline { .. } => {
+            "RESTORE_FIXED_A_B_BASELINE"
+        }
     }
 }
 
@@ -2506,14 +2628,28 @@ mod tests {
     }
 
     #[test]
-    fn delivery_contract_requires_latest_version_to_be_the_only_active_version() {
+    fn delivery_contract_recovers_tagged_latest_version_pending_deployment() {
         let desired = desired();
         let mut observed = observation(&desired);
         make_terminal(&mut observed, "windows");
         make_terminal(&mut observed, "vm");
 
         observed.projections[0].worker_active_version_ids = vec!["older-active-version".to_owned()];
-        assert!(plan(&desired, &observed).is_err());
+        assert_eq!(
+            projection_delivery_state(
+                &desired,
+                &projection_desired(&desired, "windows").unwrap(),
+                &observed,
+            )
+            .unwrap(),
+            ProjectionDeliveryState::FixedAbLatestPendingDeployment
+        );
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::RestoreFixedAbBaseline {
+                projection: "windows".to_owned(),
+            }
+        );
     }
 
     #[test]
