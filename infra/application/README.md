@@ -72,7 +72,7 @@ than exposing independent production-facing DNS/Mesh/Zero Trust owners.
 
 Keep one previous accepted application release/artifact identity for bounded runtime rollback.
 
-Credential rollback is separate from release rollback. Issue #169 uses a fixed A/B credential
+Credential rollback is separate from release rollback. The canonical credential architecture uses a fixed A/B credential
 buffer so a previous accepted credential generation remains available for a bounded grace/recovery
 period without introducing a secret-history database.
 
