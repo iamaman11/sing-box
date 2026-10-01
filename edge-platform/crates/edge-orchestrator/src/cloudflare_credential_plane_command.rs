@@ -358,7 +358,7 @@ async fn fresh_v2_publish(
         }
     }
 
-    println!("credential_fresh_v2_status=PASS");
+    println!("credential_fresh_v2_provider_publish=PASS");
     println!("credential_generation={generation}");
     println!("credential_slot=A");
     println!("paired_projection_count=2");
