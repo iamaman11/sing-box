@@ -1839,15 +1839,11 @@ mod tests {
             Some("upstream-cloudflare")
         );
         assert_eq!(
-            config
-                .pointer("/dns/final")
-                .and_then(Value::as_str),
+            config.pointer("/dns/final").and_then(Value::as_str),
             Some("upstream-cloudflare")
         );
         assert_eq!(
-            config
-                .pointer("/dns/strategy")
-                .and_then(Value::as_str),
+            config.pointer("/dns/strategy").and_then(Value::as_str),
             Some("prefer_ipv4")
         );
         let dns_servers = config
