@@ -20,6 +20,7 @@ WINDOWS_CONSOLE_CLI = Path("edge-platform/crates/edge-console/src/cli.rs")
 WINDOWS_CONTROLLER = Path("edge-platform/crates/edge-controller/src/main.rs")
 WINDOWS_CONTROLLER_CLI = Path("edge-platform/crates/edge-controller/src/cli.rs")
 WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/lib.rs")
+EDGE_LOCAL_RUNTIME = Path("edge-platform/crates/edge-local-runtime/src/lib.rs")
 VM_AGENT = Path("edge-platform/crates/edge-agent/src/main.rs")
 VM_AGENT_CLI = Path("edge-platform/crates/edge-agent/src/cli.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
@@ -61,6 +62,7 @@ def main() -> None:
     windows_controller_runtime = windows_controller.split("#[cfg(test)]", 1)[0]
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
+    edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
     vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
@@ -602,6 +604,12 @@ def main() -> None:
         and "1790862397323-17868" not in windows_physical
         and "STALE_RUNTIME_EVIDENCE_REQUEST" not in windows_physical,
         "Windows privileged activation must use operation-specific completion reconciliation without incident-specific stale-request cleanup",
+    )
+    require(
+        "sync_local_config_from_runtime_state" not in edge_local_runtime
+        and "decode_windows_runtime_state" in edge_local_runtime
+        and "is_typed_runtime_state" in edge_local_runtime,
+        "typed Windows runtime config must be validated/launched as already rendered; legacy semantic sync must not regain typed-config ownership",
     )
     require(
         'test "$COMMAND_BODY" = "/windows smoke"' in windows_physical
