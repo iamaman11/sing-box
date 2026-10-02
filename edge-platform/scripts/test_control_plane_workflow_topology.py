@@ -491,6 +491,7 @@ def main() -> None:
         and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_historical_retirement
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_historical_retirement
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_historical_retirement
+        and "CLOUDFLARE_HISTORICAL_RETIRE_TOKEN: ${{ secrets.CLOUDFLARE_HISTORICAL_RETIRE_TOKEN }}" in production_historical_retirement
         and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_historical_retirement
         and "VULTR_SSH_PRIVATE_KEY" not in production_historical_retirement
         and "api.ipify.org" not in production_historical_retirement
@@ -501,19 +502,21 @@ def main() -> None:
     )
     require(
         'verify_active_invariant().await' in historical_retirement
-        and 'const MAX_MUTATIONS: usize = 6;' in historical_retirement
+        and 'const MAX_MUTATIONS: usize = 2;' in historical_retirement
         and '"singbox-line3-production"' in historical_retirement
         and '"vultr"' in historical_retirement
         and '"sing-box Mesh nodes"' in historical_retirement
         and '"edge-lease-reaper"' in historical_retirement
         and '"lease.alegria.by/*"' in historical_retirement
-        and "delete_mesh_cidr_route" in historical_retirement
-        and "delete_mesh_node" in historical_retirement
-        and "delete_device_profile" in historical_retirement
+        and "CLOUDFLARE_HISTORICAL_RETIRE_TOKEN" in historical_retirement
+        and "delete_mesh_cidr_route" not in historical_retirement
+        and "delete_mesh_node" not in historical_retirement
+        and "delete_device_profile" not in historical_retirement
         and "delete_worker_route" in historical_retirement
         and "delete_worker_script" in historical_retirement
+        and "previously retired historical Mesh/profile resource reappeared" in historical_retirement
         and "mutation was not replayed" in historical_retirement,
-        "historical retirement owner must re-prove target replacement and use only exact bounded one-shot deletes with no replay",
+        "post-partial historical retirement must fail closed on reappeared Mesh/profile state and use a dedicated token only for the two remaining Worker deletes",
     )
     require(
         "serde_json::to_string" not in production_inventory
