@@ -597,7 +597,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                 return Err("schema v3 must not contain VM runtime reuse identity".to_owned());
             }
         }
-        4 | 5 | 6 => {
+        4 | 5 | 6 | 7 => {
             validate_sha256_bytes(
                 "vm_runtime.edge_controller_sha256",
                 &vm.edge_controller_sha256,
