@@ -1781,6 +1781,15 @@ mod release_set_tests {
         windows.diagnostic_sha256.clear();
     }
 
+    fn clear_application_bundle_identity(release: &mut ReleaseSet) {
+        release
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .application_bundle_sha256
+            .clear();
+    }
+
     fn valid_release() -> ReleaseSet {
         ReleaseSet {
             schema_version: RELEASE_SET_SCHEMA_VERSION,
@@ -1852,6 +1861,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v1_without_controller_hash() {
         let mut release = valid_release();
         release.schema_version = 1;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
@@ -1885,6 +1895,7 @@ mod release_set_tests {
     fn release_set_rejects_v1_with_v2_controller_hash() {
         let mut release = valid_release();
         release.schema_version = 1;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }
@@ -1893,6 +1904,7 @@ mod release_set_tests {
     fn release_set_rejects_missing_v2_controller_hash() {
         let mut release = valid_release();
         release.schema_version = 2;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
@@ -1925,6 +1937,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v2_without_orchestrator_hash() {
         let mut release = valid_release();
         release.schema_version = 2;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
@@ -1952,6 +1965,7 @@ mod release_set_tests {
     fn release_set_rejects_v2_with_v3_orchestrator_hash() {
         let mut release = valid_release();
         release.schema_version = 2;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }
@@ -1960,6 +1974,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v3_without_runtime_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 3;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
@@ -1981,6 +1996,7 @@ mod release_set_tests {
     fn release_set_rejects_v3_with_v4_runtime_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 3;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }
@@ -1989,6 +2005,7 @@ mod release_set_tests {
     fn release_set_rejects_missing_v4_runtime_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 4;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
@@ -1999,6 +2016,7 @@ mod release_set_tests {
         assert!(validate_release_set(&release).is_err());
         let mut release = valid_release();
         release.schema_version = 4;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
@@ -2013,6 +2031,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v4_without_windows_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 4;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         let bytes = encode_release_set(&release).unwrap();
         assert_eq!(decode_release_set(&bytes).unwrap(), release);
@@ -2022,6 +2041,7 @@ mod release_set_tests {
     fn release_set_accepts_legacy_v5_without_windows_diagnostic_identity() {
         let mut release = valid_release();
         release.schema_version = 5;
+        clear_application_bundle_identity(&mut release);
         release
             .windows_runtime
             .as_mut()
@@ -2036,6 +2056,7 @@ mod release_set_tests {
     fn release_set_rejects_missing_v5_windows_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 5;
+        clear_application_bundle_identity(&mut release);
         release
             .windows_runtime
             .as_mut()
@@ -2052,6 +2073,7 @@ mod release_set_tests {
 
         let mut release = valid_release();
         release.schema_version = 5;
+        clear_application_bundle_identity(&mut release);
         release
             .windows_runtime
             .as_mut()
@@ -2080,9 +2102,33 @@ mod release_set_tests {
     }
 
     #[test]
+    fn release_set_accepts_legacy_v6_without_application_bundle_identity() {
+        let mut release = valid_release();
+        release.schema_version = 6;
+        clear_application_bundle_identity(&mut release);
+        let bytes = encode_release_set(&release).unwrap();
+        assert_eq!(decode_release_set(&bytes).unwrap(), release);
+    }
+
+    #[test]
+    fn release_set_rejects_v6_with_application_bundle_identity() {
+        let mut release = valid_release();
+        release.schema_version = 6;
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn release_set_rejects_v7_without_application_bundle_identity() {
+        let mut release = valid_release();
+        clear_application_bundle_identity(&mut release);
+        assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
     fn release_set_rejects_missing_v3_orchestrator_hash() {
         let mut release = valid_release();
         release.schema_version = 3;
+        clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         release
             .vm_runtime
