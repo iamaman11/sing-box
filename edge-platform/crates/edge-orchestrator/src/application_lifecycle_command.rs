@@ -1,9 +1,10 @@
 use crate::application_lifecycle_service::{
     ApplicationAuthority, ApplicationObservationView, DesiredMutationMode,
     authorize_application_plan, authorize_application_recovery, authorize_application_rollback,
-    execute_desired, execute_recovery, execute_rollback, observe_application,
-    prepare_application_bundle, recovery_plan_remote, rollback_plan_remote, verify_desired,
-    verify_exact_agent_artifact,
+    candidate_application_image_environment, exact_file_sha256, execute_desired, execute_recovery,
+    execute_rollback, observe_application, prepare_application_bundle,
+    prepare_application_bundle_with_image_environment, recovery_plan_remote, rollback_plan_remote,
+    verify_desired, verify_exact_agent_artifact,
 };
 use crate::vultr_host_bootstrap::{strict_ssh_accept, verify_operator_key_matches};
 use crate::vultr_lifecycle_command::{
@@ -28,6 +29,57 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+pub(crate) fn build_candidate_application_bundle(
+    spec_path: &Path,
+    runtime_source_revision: &str,
+    edge_agent_artifact_path: &Path,
+    edge_gateway_image: &str,
+    edge_warp_egress_image: &str,
+    mesh_image: &str,
+    output_protobuf_path: &Path,
+) -> Result<(), String> {
+    let desired = load_application_desired(spec_path)?;
+    let artifact = AgentArtifactManifest {
+        schema: 1,
+        source_revision: runtime_source_revision.to_owned(),
+        sha256: exact_file_sha256(edge_agent_artifact_path)?,
+    };
+    artifact.validate().map_err(|err| err.to_string())?;
+    verify_exact_agent_artifact(&artifact, edge_agent_artifact_path)?;
+    let image_environment = candidate_application_image_environment(
+        edge_gateway_image,
+        edge_warp_egress_image,
+        mesh_image,
+    )?;
+    let prepared = prepare_application_bundle_with_image_environment(
+        Path::new("."),
+        &desired,
+        &artifact,
+        &image_environment,
+    )?;
+    let encoded = prepared.request.encode_to_vec();
+    fs::write(output_protobuf_path, &encoded).map_err(|err| {
+        format!(
+            "failed to write candidate application bundle {}: {err}",
+            output_protobuf_path.display()
+        )
+    })?;
+    println!(
+        "application_bundle_id={}",
+        prepared.request.bundle_id.as_deref().unwrap_or("")
+    );
+    println!(
+        "application_bundle_digest={}",
+        prepared.request.bundle_digest.as_deref().unwrap_or("")
+    );
+    println!(
+        "application_bundle_sha256={}",
+        exact_file_sha256(output_protobuf_path)?
+    );
+    println!("application_bundle_bytes={}", encoded.len());
+    Ok(())
+}
 
 pub(crate) async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<(), String> {
     context.application_release_authority()?;

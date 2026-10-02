@@ -39,6 +39,31 @@ async fn main() -> ExitCode {
         }
     };
     let command = parsed.command_name();
+    if let cli::Command::ApplicationBundleBuild(args) = &parsed.command {
+        let result = application_lifecycle_command::build_candidate_application_bundle(
+            &args.spec_path,
+            &args.runtime_source_revision,
+            &args.edge_agent_artifact_path,
+            &args.edge_gateway_image,
+            &args.edge_warp_egress_image,
+            &args.mesh_image,
+            &args.output_protobuf_path,
+        );
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                tracing::error!(
+                    component = "edge-orchestrator",
+                    correlation_id = %telemetry.id(),
+                    command,
+                    event = "candidate_bundle.failure",
+                    "candidate application bundle build failed"
+                );
+                eprintln!("{err}");
+                ExitCode::from(1)
+            }
+        };
+    }
     let release_context = match edge_orchestrator::OrchestrationContext::from_process_env() {
         Ok(context) => context,
         Err(err) => {
@@ -105,6 +130,10 @@ async fn run(
         Command::ApplicationAcceptance(args) => {
             application_acceptance_command::run(args, release_context).await
         }
+        Command::ApplicationBundleBuild(_) => Err(
+            "application-bundle-build must execute before durable runtime context resolution"
+                .to_owned(),
+        ),
         Command::ApplicationCleanup(args) => {
             application_acceptance_command::run_cleanup(args, release_context).await
         }

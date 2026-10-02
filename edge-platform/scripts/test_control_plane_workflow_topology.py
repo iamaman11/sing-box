@@ -109,7 +109,6 @@ def main() -> None:
         listeners == [ROUTER.name],
         f"exactly one issue_comment listener is required, observed: {listeners}",
     )
-
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
@@ -997,8 +996,13 @@ def main() -> None:
         and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_provider
         and "VULTR_SSH_PRIVATE_KEY" not in production_provider
         and "api.ipify.org" not in production_provider
-        and "lease-acquire" not in production_provider,
-        "production provider plane must remain GitHub-hosted and guest-transport blind",
+        and "lease-acquire" not in production_provider
+        and "application_bundle_sha256" in production_provider
+        and "application_bundle_asset_id" in production_provider
+        and 'releases/tags/${EDGE_RELEASE_TAG}' in production_provider
+        and 'select(.name == "application-bundle.pb")' in production_provider
+        and "actions/upload-artifact" not in production_provider,
+        "production provider plane must remain GitHub-hosted, verify the promoted ReleaseSet and export only exact immutable bundle identity",
     )
     require(
         "- self-hosted" in production_runtime
@@ -1007,13 +1011,29 @@ def main() -> None:
         and "- sing-box-production-vm" in production_runtime
         and "- production-1" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
-        and '"${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle materialize' in production_runtime
-        and '"${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle export-bundle' in production_runtime
+        and "PROVIDER_APPLICATION_BUNDLE_SHA256" in production_runtime
+        and "PROVIDER_APPLICATION_BUNDLE_ASSET_ID" in production_runtime
+        and '/releases/assets/${PROVIDER_APPLICATION_BUNDLE_ASSET_ID}' in production_runtime
+        and "--proto '=https'" in production_runtime
+        and "--proto-redir '=https'" in production_runtime
+        and "--connect-timeout 10" in production_runtime
+        and "--max-time 60" in production_runtime
+        and 'sha256sum "${bundle}"' in production_runtime
         and 'sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}"' in production_runtime
         and 'local_operation="bundle-converge"' in production_runtime
         and 'local_operation="bundle-verify"' in production_runtime
         and 'local_operation="diagnose"' in production_runtime
         and 'local_operation="bootstrap-full"' not in production_runtime
+        and "edge-platform/scripts/resolve_durable_release.sh" not in production_runtime
+        and "EDGE_LOCAL_ORCHESTRATOR" not in production_runtime
+        and "application-lifecycle materialize" not in production_runtime
+        and "application-lifecycle export-bundle" not in production_runtime
+        and "actions/upload-artifact" not in production_runtime
+        and "actions/download-artifact" not in production_runtime
+        and "git init ." not in production_runtime
+        and "git fetch " not in production_runtime
+        and "git checkout " not in production_runtime
+        and "/tarball/" not in production_runtime
         and "VULTR_API_KEY" not in production_runtime
         and "CLOUDFLARE_CONTROL_TOKEN" not in production_runtime
         and "CLOUDFLARE_DNS_TOKEN" not in production_runtime
@@ -1022,7 +1042,7 @@ def main() -> None:
         and "lease-acquire" not in production_runtime
         and "/var/run/docker.sock" in production_runtime
         and "sudo -n id -u" in production_runtime,
-        "production runtime plane must use only self-hosted runner -> bounded local owner with no provider/generic-root authority",
+        "production runtime plane must remain transport-only: immutable ReleaseSet-bound bundle -> SHA verify -> fixed sudo local owner, with no source/render/provider/generic-root authority",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
@@ -1211,9 +1231,10 @@ def main() -> None:
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
         and 'local_operation="bundle-converge"' in production_runtime
-        and "export-bundle" in application
+        and edge_platform_ci.count("application-bundle-build") == 2
+        and "export-bundle" not in application
         and "VULTR_SSH_PRIVATE_KEY" not in production_runtime,
-        "Mesh ownership must be split between hosted production target-plane provider authority and the self-hosted VM local runtime owner",
+        "Mesh ownership must remain split: hosted provider authority, candidate-only semantic bundle build, and self-hosted local runtime owner",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(

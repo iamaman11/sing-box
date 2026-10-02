@@ -23,7 +23,7 @@ out="$OUTPUT_DIR"
 rm -rf "$out"
 install -d -m 0755 "$out"
 
-expected_assets=(
+base_expected_assets=(
   acceptance.json
   edge-agent-linux-amd64
   edge-agent-linux-amd64.sha256
@@ -37,6 +37,10 @@ expected_assets=(
   edge-release-set-linux-amd64.sha256
   release-set.pb
   release-set.pb.sha256
+)
+bundle_expected_assets=(
+  application-bundle.pb
+  application-bundle.pb.sha256
 )
 
 candidate_releases="${out}/.candidate-releases.jsonl"
@@ -102,6 +106,21 @@ test "$(jq -r '.draft' <<<"$release_json")" = "false"
 test "$(jq -r '.prerelease' <<<"$release_json")" = "false"
 
 mapfile -t actual_assets < <(jq -r '.assets[].name' <<<"$release_json" | sort)
+bundle_asset_count="$(jq '[.assets[] | select(.name == "application-bundle.pb" or .name == "application-bundle.pb.sha256")] | length' <<<"$release_json")"
+case "$bundle_asset_count" in
+  0)
+    expected_assets=("${base_expected_assets[@]}")
+    has_application_bundle=false
+    ;;
+  2)
+    expected_assets=("${base_expected_assets[@]}" "${bundle_expected_assets[@]}")
+    has_application_bundle=true
+    ;;
+  *)
+    echo "durable release must contain either both application bundle assets or neither" >&2
+    exit 1
+    ;;
+esac
 mapfile -t sorted_expected_assets < <(printf '%s\n' "${expected_assets[@]}" | sort)
 test "${#actual_assets[@]}" -eq "${#sorted_expected_assets[@]}"
 if ! diff -u <(printf '%s\n' "${sorted_expected_assets[@]}") <(printf '%s\n' "${actual_assets[@]}"); then
@@ -160,6 +179,10 @@ for name in \
   release-set.pb.sha256; do
   download_asset "$name"
 done
+if [[ "$has_application_bundle" = "true" ]]; then
+  download_asset application-bundle.pb
+  download_asset application-bundle.pb.sha256
+fi
 
 verify_sidecar() {
   local file="$1"
@@ -177,6 +200,9 @@ verify_sidecar "${out}/edge-agent-linux-amd64" "${out}/edge-agent-linux-amd64.sh
 verify_sidecar "${out}/edge-controller-linux-amd64" "${out}/edge-controller-linux-amd64.sha256" "edge-controller-linux-amd64"
 verify_sidecar "${out}/edge-orchestrator-linux-amd64" "${out}/edge-orchestrator-linux-amd64.sha256" "edge-orchestrator-linux-amd64"
 verify_sidecar "${out}/edge-release-set-linux-amd64" "${out}/edge-release-set-linux-amd64.sha256" "edge-release-set-linux-amd64"
+if [[ "$has_application_bundle" = "true" ]]; then
+  verify_sidecar "${out}/application-bundle.pb" "${out}/application-bundle.pb.sha256" "application-bundle.pb"
+fi
 
 test "$(cat "${out}/release-set.pb.sha256")" = "${release_set_sha}  release-set.pb"
 test "$(sha256sum "${out}/release-set.pb" | awk '{print $1}')" = "$release_set_sha"
@@ -198,13 +224,19 @@ test "$(jq -er '.tree.sha' <<<"$candidate_commit")" = "$source_tree"
 
 verifier="${out}/edge-release-set-linux-amd64"
 chmod 0755 "$verifier"
-verify_output="$("$verifier" verify-vm \
-  --input "${out}/release-set.pb" \
-  --sha256-file "${out}/release-set.pb.sha256" \
-  --source-revision "$candidate_revision" \
-  --edge-agent "${out}/edge-agent-linux-amd64" \
-  --edge-controller "${out}/edge-controller-linux-amd64" \
-  --edge-orchestrator "${out}/edge-orchestrator-linux-amd64")"
+verify_args=(
+  verify-vm
+  --input "${out}/release-set.pb"
+  --sha256-file "${out}/release-set.pb.sha256"
+  --source-revision "$candidate_revision"
+  --edge-agent "${out}/edge-agent-linux-amd64"
+  --edge-controller "${out}/edge-controller-linux-amd64"
+  --edge-orchestrator "${out}/edge-orchestrator-linux-amd64"
+)
+if [[ "$has_application_bundle" = "true" ]]; then
+  verify_args+=(--application-bundle "${out}/application-bundle.pb")
+fi
+verify_output="$("$verifier" "${verify_args[@]}")"
 printf '%s\n' "$verify_output"
 
 extract_single() {
@@ -230,11 +262,21 @@ containerd_version="$(extract_single containerd_version)"
 compose_version="$(extract_single compose_version)"
 runtime_source_revision="$verified_source_revision"
 runtime_input_sha=""
-if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = "6" ]]; then
+if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" ]]; then
   runtime_source_revision="$(extract_single runtime_source_revision)"
   runtime_input_sha="$(extract_single runtime_input_sha256)"
   [[ "$runtime_source_revision" =~ ^[0-9a-f]{40}$ ]]
   [[ "$runtime_input_sha" =~ ^[0-9a-f]{64}$ ]]
+fi
+
+application_bundle_sha=""
+if [[ "$schema_version" = "7" ]]; then
+  test "$has_application_bundle" = "true"
+  application_bundle_sha="$(extract_single application_bundle_sha256)"
+  [[ "$application_bundle_sha" =~ ^[0-9a-f]{64}$ ]]
+  test "$application_bundle_sha" = "$(sha256sum "${out}/application-bundle.pb" | awk '{print $1}')"
+else
+  test "$has_application_bundle" = "false"
 fi
 
 windows_source_revision="$verified_source_revision"
@@ -244,14 +286,14 @@ windows_controller_sha=""
 windows_console_sha=""
 windows_sing_box_sha=""
 windows_diagnostic_sha=""
-if [[ "$schema_version" = "5" || "$schema_version" = "6" ]]; then
+if [[ "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" ]]; then
   windows_source_revision="$(extract_single windows_source_revision)"
   windows_input_sha="$(extract_single windows_input_sha256)"
   windows_artifact_sha="$(extract_single windows_artifact_sha256)"
   windows_controller_sha="$(extract_single windows_controller_sha256)"
   windows_console_sha="$(extract_single windows_console_sha256)"
   windows_sing_box_sha="$(extract_single windows_sing_box_sha256)"
-  if [[ "$schema_version" = "6" ]]; then
+  if [[ "$schema_version" = "6" || "$schema_version" = "7" ]]; then
     windows_diagnostic_sha="$(extract_single windows_diagnostic_sha256)"
   fi
   [[ "$windows_source_revision" =~ ^[0-9a-f]{40}$ ]]
@@ -260,7 +302,7 @@ if [[ "$schema_version" = "5" || "$schema_version" = "6" ]]; then
   [[ "$windows_controller_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_console_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_sing_box_sha" =~ ^[0-9a-f]{64}$ ]]
-  if [[ "$schema_version" = "6" ]]; then
+  if [[ "$schema_version" = "6" || "$schema_version" = "7" ]]; then
     [[ "$windows_diagnostic_sha" =~ ^[0-9a-f]{64}$ ]]
   fi
 fi
@@ -271,7 +313,7 @@ done
 
 test "$verified_release_set_sha" = "$release_set_sha"
 case "$schema_version" in
-  3|4|5|6) ;;
+  3|4|5|6|7) ;;
   *) echo "unsupported durable ReleaseSet schema_version=$schema_version" >&2; exit 1 ;;
 esac
 test "$verified_source_revision" = "$candidate_revision"
@@ -295,6 +337,7 @@ EDGE_RELEASE_SET_SHA256=$release_set_sha
 EDGE_RELEASE_SCHEMA_VERSION=$schema_version
 EDGE_RUNTIME_SOURCE_REVISION=$runtime_source_revision
 EDGE_RUNTIME_INPUT_SHA256=$runtime_input_sha
+EDGE_APPLICATION_BUNDLE_SHA256=$application_bundle_sha
 EDGE_WINDOWS_SOURCE_REVISION=$windows_source_revision
 EDGE_WINDOWS_INPUT_SHA256=$windows_input_sha
 EDGE_WINDOWS_ARTIFACT_SHA256=$windows_artifact_sha
@@ -323,6 +366,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
 printf 'schema_version=%s\n' "$schema_version"
 printf 'runtime_source_revision=%s\n' "$runtime_source_revision"
 printf 'runtime_input_sha256=%s\n' "$runtime_input_sha"
+printf 'application_bundle_sha256=%s\n' "$application_bundle_sha"
 printf 'windows_source_revision=%s\n' "$windows_source_revision"
 printf 'windows_input_sha256=%s\n' "$windows_input_sha"
 printf 'windows_artifact_sha256=%s\n' "$windows_artifact_sha"

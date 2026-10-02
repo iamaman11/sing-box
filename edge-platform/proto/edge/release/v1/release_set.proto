@@ -67,6 +67,9 @@ message VmRuntime {
   // Source revision that originally produced the reusable VM runtime artifact
   // set. This remains stable when a later control-plane-only release reuses it.
   string runtime_source_revision = 10;
+  // SHA-256 of the exact canonical ApplyBundleRequest bytes produced once in
+  // candidate CI and transported unchanged to the VM local owner. Present from v7.
+  bytes application_bundle_sha256 = 11;
 }
 
 message CloudflareRuntime {
