@@ -351,6 +351,7 @@ fn next_action(observed: &HistoricalObservation) -> Result<HistoricalAction, Str
         if let Some(route) = node.routes.first() {
             if route.network != LEGACY_ROUTE_NETWORK
                 || route.tunnel_type.as_deref() != Some("warp_connector")
+                || route.comment.as_deref() != Some("managed-by-sing-box:line3:production")
             {
                 return Err(format!(
                     "historical production Mesh route ownership drifted: {:?}",
@@ -372,10 +373,11 @@ fn next_action(observed: &HistoricalObservation) -> Result<HistoricalAction, Str
                 "legacy vultr Mesh node unexpectedly owns routes; deletion is blocked".to_owned(),
             );
         }
-        if node.node.status.as_deref() == Some("healthy") {
-            return Err(
-                "legacy vultr Mesh node is healthy/active; deletion is blocked".to_owned(),
-            );
+        if node.node.status.as_deref() != Some("inactive") {
+            return Err(format!(
+                "legacy vultr Mesh node status is not the accepted inactive residual: {:?}",
+                node.node.status
+            ));
         }
         return Ok(HistoricalAction::DeleteLegacyVultrNode {
             node_id: node.node.id.clone(),
