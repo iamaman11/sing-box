@@ -92,7 +92,7 @@ pub(crate) async fn plan() -> Result<(), String> {
     let inputs = Inputs::load()?;
     verify_replacement_plane().await?;
     let observation = observe(&inputs).await?;
-    let action = next_action(&inputs, &observation)?;
+    let action = next_action(&observation)?;
     print_state("PLAN", 0, &observation, &action);
     Ok(())
 }
@@ -104,7 +104,7 @@ pub(crate) async fn apply() -> Result<(), String> {
     for step in 1..=MAX_MUTATIONS {
         verify_replacement_plane().await?;
         let before = observe(&inputs).await?;
-        let action = next_action(&inputs, &before)?;
+        let action = next_action(&before)?;
         println!("retirement_step={step}");
         println!("action={}", action_name(&action));
 
@@ -115,7 +115,7 @@ pub(crate) async fn apply() -> Result<(), String> {
 
         let mutation = execute_once(&inputs, &action).await;
         let after = observe(&inputs).await?;
-        let next = next_action(&inputs, &after)?;
+        let next = next_action(&after)?;
 
         match mutation {
             Ok(()) => {
@@ -154,7 +154,7 @@ pub(crate) async fn verify() -> Result<(), String> {
     let inputs = Inputs::load()?;
     verify_replacement_plane().await?;
     let observation = observe(&inputs).await?;
-    let action = next_action(&inputs, &observation)?;
+    let action = next_action(&observation)?;
     if action != HistoricalAction::Noop {
         return Err(format!(
             "historical retirement verify requires NOOP; observed {}",
@@ -340,10 +340,7 @@ async fn validate_historical_profile(
     Ok(())
 }
 
-fn next_action(
-    _inputs: &Inputs,
-    observed: &HistoricalObservation,
-) -> Result<HistoricalAction, String> {
+fn next_action(observed: &HistoricalObservation) -> Result<HistoricalAction, String> {
     if let Some(node) = &observed.production_node {
         if node.routes.len() > 1 {
             return Err(format!(
@@ -547,7 +544,7 @@ mod tests {
     #[test]
     fn retirement_order_is_route_before_nodes() {
         let observed = observation();
-        let action = next_action_for_test(&observed).unwrap();
+        let action = next_action(&observed).unwrap();
         assert!(matches!(
             action,
             HistoricalAction::DeleteProductionMeshRoute { .. }
@@ -555,14 +552,14 @@ mod tests {
 
         let mut observed = observed;
         observed.production_node.as_mut().unwrap().routes.clear();
-        let action = next_action_for_test(&observed).unwrap();
+        let action = next_action(&observed).unwrap();
         assert!(matches!(
             action,
             HistoricalAction::DeleteProductionMeshNode { .. }
         ));
 
         observed.production_node = None;
-        let action = next_action_for_test(&observed).unwrap();
+        let action = next_action(&observed).unwrap();
         assert!(matches!(
             action,
             HistoricalAction::DeleteLegacyVultrNode { .. }
@@ -574,7 +571,7 @@ mod tests {
         let mut observed = observation();
         observed.production_node = None;
         observed.legacy_vultr_node.as_mut().unwrap().node.status = Some("healthy".to_owned());
-        assert!(next_action_for_test(&observed).is_err());
+        assert!(next_action(&observed).is_err());
     }
 
     #[test]
@@ -594,54 +591,7 @@ mod tests {
                 zone_id: "zone".to_owned(),
                 zone_name: "example".to_owned(),
             });
-        assert!(next_action_for_test(&observed).is_err());
+        assert!(next_action(&observed).is_err());
     }
 
-    fn next_action_for_test(
-        observed: &HistoricalObservation,
-    ) -> Result<HistoricalAction, String> {
-        if let Some(node) = &observed.production_node {
-            if node.routes.len() > 1 {
-                return Err("ambiguous routes".to_owned());
-            }
-            if let Some(route) = node.routes.first() {
-                if route.network != LEGACY_ROUTE_NETWORK
-                    || route.tunnel_type.as_deref() != Some("warp_connector")
-                {
-                    return Err("route drift".to_owned());
-                }
-                return Ok(HistoricalAction::DeleteProductionMeshRoute {
-                    route_id: route.id.clone(),
-                });
-            }
-            return Ok(HistoricalAction::DeleteProductionMeshNode {
-                node_id: node.node.id.clone(),
-            });
-        }
-        if let Some(node) = &observed.legacy_vultr_node {
-            if !node.routes.is_empty() || node.node.status.as_deref() == Some("healthy") {
-                return Err("legacy node is not safely deletable".to_owned());
-            }
-            return Ok(HistoricalAction::DeleteLegacyVultrNode {
-                node_id: node.node.id.clone(),
-            });
-        }
-        if let Some(profile) = &observed.mesh_profile {
-            return Ok(HistoricalAction::DeleteMeshProfile {
-                profile_id: profile.profile.id.clone(),
-            });
-        }
-        if let Some(route) = &observed.worker_route {
-            return Ok(HistoricalAction::DeleteLegacyWorkerRoute {
-                route_id: route.id.clone(),
-            });
-        }
-        if observed.worker_script.is_some() {
-            if !observed.worker_domains_referencing_legacy_script.is_empty() {
-                return Err("worker domain references remain".to_owned());
-            }
-            return Ok(HistoricalAction::DeleteLegacyWorkerScript);
-        }
-        Ok(HistoricalAction::Noop)
-    }
 }
