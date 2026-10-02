@@ -1231,9 +1231,10 @@ def main() -> None:
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
         and 'local_operation="bundle-converge"' in production_runtime
-        and "export-bundle" in application
+        and edge_platform_ci.count("application-bundle-build") == 2
+        and "export-bundle" not in application
         and "VULTR_SSH_PRIVATE_KEY" not in production_runtime,
-        "Mesh ownership must be split between hosted production target-plane provider authority and the self-hosted VM local runtime owner",
+        "Mesh ownership must remain split: hosted provider authority, candidate-only semantic bundle build, and self-hosted local runtime owner",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
