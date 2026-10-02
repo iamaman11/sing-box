@@ -339,6 +339,11 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      accepted_revision: ${{ steps.release.outputs.accepted_revision }}
+      release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
+      agent_sha256: ${{ steps.release.outputs.agent_sha256 }}
+      application_bundle_sha256: ${{ steps.release.outputs.application_bundle_sha256 }}
     env:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
       SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
@@ -360,6 +365,7 @@ jobs:
           test -f "${SPEC_PATH}"
 
       - name: Resolve exact durable Edge Platform release
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -378,6 +384,10 @@ jobs:
           chmod 0755 "${orchestrator}"
           printf 'EDGE_PROVIDER_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+          printf 'accepted_revision=%s\n' "${EDGE_ACCEPTED_REVISION}" >> "${GITHUB_OUTPUT}"
+          printf 'release_set_sha256=%s\n' "${EDGE_RELEASE_SET_SHA256}" >> "${GITHUB_OUTPUT}"
+          printf 'agent_sha256=%s\n' "${EDGE_AGENT_SHA256}" >> "${GITHUB_OUTPUT}"
+          printf 'application_bundle_sha256=%s\n' "${EDGE_APPLICATION_BUNDLE_SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Converge or verify provider plane
         shell: bash
@@ -412,6 +422,14 @@ jobs:
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Stage exact ReleaseSet-bound VM bundle transport
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: production-runtime-bundle-${{ github.run_id }}
+          path: ${{ runner.temp }}/edge-platform-release/application-bundle.pb
+          if-no-files-found: error
+          retention-days: 1
+
   production_observe:
     needs: authorize
     concurrency:
@@ -427,6 +445,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    outputs:
+      accepted_revision: ${{ steps.release.outputs.accepted_revision }}
+      release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
+      agent_sha256: ${{ steps.release.outputs.agent_sha256 }}
     env:
       SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
 
@@ -447,6 +469,7 @@ jobs:
           test -f "${SPEC_PATH}"
 
       - name: Resolve exact durable Edge Platform release
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -465,6 +488,9 @@ jobs:
           chmod 0755 "${orchestrator}"
           printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
           printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+          printf 'accepted_revision=%s\n' "${EDGE_ACCEPTED_REVISION}" >> "${GITHUB_OUTPUT}"
+          printf 'release_set_sha256=%s\n' "${EDGE_RELEASE_SET_SHA256}" >> "${GITHUB_OUTPUT}"
+          printf 'agent_sha256=%s\n' "${EDGE_AGENT_SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Execute read-only production provider inventory
         shell: bash
@@ -492,7 +518,6 @@ jobs:
           cat "${result}" >> "${GITHUB_STEP_SUMMARY}"
           echo '~~~' >> "${GITHUB_STEP_SUMMARY}"
           exit "${command_rc}"
-
   production_runtime:
     needs:
       - authorize
@@ -524,75 +549,24 @@ jobs:
       - production-1
     timeout-minutes: 30
     permissions:
-      contents: read
+      actions: read
     env:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
-      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+      PROVIDER_ACCEPTED_REVISION: ${{ needs.production_provider.outputs.accepted_revision }}
+      PROVIDER_RELEASE_SET_SHA256: ${{ needs.production_provider.outputs.release_set_sha256 }}
+      PROVIDER_AGENT_SHA256: ${{ needs.production_provider.outputs.agent_sha256 }}
+      PROVIDER_APPLICATION_BUNDLE_SHA256: ${{ needs.production_provider.outputs.application_bundle_sha256 }}
+      OBSERVE_ACCEPTED_REVISION: ${{ needs.production_observe.outputs.accepted_revision }}
+      OBSERVE_RELEASE_SET_SHA256: ${{ needs.production_observe.outputs.release_set_sha256 }}
+      OBSERVE_AGENT_SHA256: ${{ needs.production_observe.outputs.agent_sha256 }}
 
     steps:
-      - name: Materialize exact canonical revision without Git
-        shell: bash
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test "${SPEC_PATH}" = "infra/production/production.textproto"
-          source_root="${RUNNER_TEMP}/canonical-source"
-          commit_json="${RUNNER_TEMP}/canonical-commit.json"
-          source_archive="${RUNNER_TEMP}/canonical-source.tar.gz"
-          rm -rf "${source_root}"
-          install -d -m 0755 "${source_root}"
-
-          curl --fail --silent --show-error --location \
-            --proto '=https' --proto-redir '=https' \
-            --connect-timeout 10 --max-time 30 \
-            --header 'Accept: application/vnd.github+json' \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header 'X-GitHub-Api-Version: 2026-03-10' \
-            "https://api.github.com/repos/${REPOSITORY}/commits/${REVISION}" \
-            --output "${commit_json}"
-          test "$(jq -er '.sha' "${commit_json}")" = "${REVISION}"
-
-          curl --fail --silent --show-error --location \
-            --proto '=https' --proto-redir '=https' \
-            --connect-timeout 10 --max-time 60 \
-            --header 'Accept: application/vnd.github+json' \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header 'X-GitHub-Api-Version: 2026-03-10' \
-            "https://api.github.com/repos/${REPOSITORY}/tarball/${REVISION}" \
-            --output "${source_archive}"
-          tar -xzf "${source_archive}" -C "${source_root}" --strip-components=1
-          rm -f "${commit_json}" "${source_archive}"
-
-          test -f "${source_root}/${SPEC_PATH}"
-          test -f "${source_root}/edge-platform/scripts/resolve_durable_release.sh"
-          printf 'EDGE_CANONICAL_SOURCE=%s\n' "${source_root}" >> "${GITHUB_ENV}"
-
-      - name: Resolve exact durable release identity
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.sha }}
-          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
-        run: |
-          set -euo pipefail
-          cd "${EDGE_CANONICAL_SOURCE}"
-          bash edge-platform/scripts/resolve_durable_release.sh
-          dir="${RUNNER_TEMP}/edge-platform-release"
-          source "${dir}/resolved.env"
-          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
-          orchestrator="${dir}/edge-orchestrator-linux-amd64"
-          agent="${dir}/edge-agent-linux-amd64"
-          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
-          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
-          chmod 0755 "${orchestrator}" "${agent}"
-          printf 'EDGE_EXPECTED_LOCAL_OWNER_SHA256=%s\n' "${EDGE_AGENT_SHA256}" >> "${GITHUB_ENV}"
-          printf 'EDGE_LOCAL_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
-          printf 'EDGE_LOCAL_AGENT_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
+      - name: Download exact ReleaseSet-bound VM bundle
+        if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: production-runtime-bundle-${{ github.run_id }}
+          path: ${{ runner.temp }}/production-runtime-bundle
 
       - name: Verify bounded local runtime authority
         shell: bash
@@ -600,8 +574,29 @@ jobs:
           set -euo pipefail
           owner="/usr/local/libexec/sing-box/edge-agent"
           test -x "${owner}"
+
+          case "${REQUESTED_OPERATION}" in
+            converge|verify)
+              expected_revision="${PROVIDER_ACCEPTED_REVISION}"
+              expected_release_set="${PROVIDER_RELEASE_SET_SHA256}"
+              expected_owner="${PROVIDER_AGENT_SHA256}"
+              ;;
+            diagnose)
+              expected_revision="${OBSERVE_ACCEPTED_REVISION}"
+              expected_release_set="${OBSERVE_RELEASE_SET_SHA256}"
+              expected_owner="${OBSERVE_AGENT_SHA256}"
+              ;;
+            *)
+              echo "runtime plane received unsupported production operation" >&2
+              exit 1
+              ;;
+          esac
+
+          test "${expected_revision}" = "${GITHUB_SHA}"
+          [[ "${expected_release_set}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${expected_owner}" =~ ^[0-9a-f]{64}$ ]]
           observed="$(sha256sum "${owner}" | awk '{print $1}')"
-          test "${observed}" = "${EDGE_EXPECTED_LOCAL_OWNER_SHA256}"
+          test "${observed}" = "${expected_owner}"
 
           if [[ "$(id -u)" = "0" ]]; then
             echo "production self-hosted runner must not run as root" >&2
@@ -617,17 +612,16 @@ jobs:
           fi
           sudo -n "${owner}" local status >/dev/null
 
-      - name: Materialize exact digest-bound application bundle
+      - name: Verify exact transported application bundle
         if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify'
         shell: bash
         run: |
           set -euo pipefail
-          cd "${EDGE_CANONICAL_SOURCE}"
-          manifest="${RUNNER_TEMP}/production-agent-artifact.json"
-          bundle="${RUNNER_TEMP}/production-application-bundle.pb"
-          "${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle materialize             "${SPEC_PATH}" "${manifest}" "${EDGE_LOCAL_AGENT_ARTIFACT}"
-          "${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle export-bundle             "${SPEC_PATH}" "${manifest}" "${EDGE_LOCAL_AGENT_ARTIFACT}" "${bundle}"             | tee "${RUNNER_TEMP}/production-bundle-evidence.txt"
+          bundle="${RUNNER_TEMP}/production-runtime-bundle/application-bundle.pb"
           test -s "${bundle}"
+          [[ "${PROVIDER_APPLICATION_BUNDLE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          observed="$(sha256sum "${bundle}" | awk '{print $1}')"
+          test "${observed}" = "${PROVIDER_APPLICATION_BUNDLE_SHA256}"
           chmod 0600 "${bundle}"
           printf 'EDGE_LOCAL_APPLICATION_BUNDLE=%s\n' "${bundle}" >> "${GITHUB_ENV}"
 
@@ -665,9 +659,9 @@ jobs:
             echo
             printf 'Operation: `%s` -> local owner `%s`\n' "${REQUESTED_OPERATION}" "${local_operation}"
             echo
-            echo 'Transport: repository self-hosted runner.'
+            echo 'Transport: exact ReleaseSet-bound application bundle via GitHub Actions artifact.'
             echo 'Privilege boundary: fixed sudo allowlist -> root-owned local edge-agent.'
-            echo 'Docker mutation/observation remains inside the local owner through Compose/Bollard.'
+            echo 'The self-hosted runner performs no source checkout, semantic rendering, provider mutation or direct Docker operation.'
             echo
             echo '~~~text'
             cat "${result}"
