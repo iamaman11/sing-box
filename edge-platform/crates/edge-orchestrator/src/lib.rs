@@ -517,6 +517,7 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
         };
 
         let path = root.join("resolved.env");
+        let current_schema = RELEASE_SET_SCHEMA_VERSION.to_string();
         fs::write(&path, render("5", &"5".repeat(40), &"6".repeat(64))).unwrap();
         assert!(
             OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
@@ -524,21 +525,30 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
                 .contains("requires ReleaseSet schema")
         );
 
-        fs::write(&path, render("6", "not-a-revision", &"6".repeat(64))).unwrap();
+        fs::write(
+            &path,
+            render(&current_schema, "not-a-revision", &"6".repeat(64)),
+        )
+        .unwrap();
         assert!(
             OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
                 .unwrap_err()
                 .contains("EDGE_RUNTIME_SOURCE_REVISION")
         );
 
-        fs::write(&path, render("6", &"5".repeat(40), "not-a-digest")).unwrap();
+        fs::write(
+            &path,
+            render(&current_schema, &"5".repeat(40), "not-a-digest"),
+        )
+        .unwrap();
         assert!(
             OrchestrationContext::from_resolved_env_file(&path, Some(&accepted), &executable)
                 .unwrap_err()
                 .contains("EDGE_RUNTIME_INPUT_SHA256")
         );
 
-        let missing_runtime_input = render("6", &"5".repeat(40), &"6".repeat(64))
+        let missing_runtime_input =
+            render(&current_schema, &"5".repeat(40), &"6".repeat(64))
             .lines()
             .filter(|line| !line.starts_with("EDGE_RUNTIME_INPUT_SHA256="))
             .collect::<Vec<_>>()
