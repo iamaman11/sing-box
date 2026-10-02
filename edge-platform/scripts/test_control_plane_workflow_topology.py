@@ -48,10 +48,8 @@ def main() -> None:
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
-    zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
-    dns = DNS.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
@@ -112,7 +110,6 @@ def main() -> None:
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
-    require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
     tunnel_auth = credential_proto.split("message TunnelAuthentication {", 1)[1].split("}", 1)[0]
     reality_public = credential_proto.split("message RealityPublicIdentity {", 1)[1].split("}", 1)[0]
@@ -362,8 +359,10 @@ def main() -> None:
         "retired generic root-runner routing/workflow/installer must be absent",
     )
     require(
-        "uses: ./.github/workflows/zero-trust-lifecycle.yml" in router,
-        "router must call the Zero Trust backend",
+        "startsWith(github.event.comment.body, '/zero-trust ')" not in router
+        and "zero-trust-lifecycle.yml" not in router
+        and not ZERO_TRUST.exists(),
+        "duplicate production-facing /zero-trust operator workflow must be retired",
     )
     require(
         "/credential-plane " not in router
@@ -375,14 +374,16 @@ def main() -> None:
         "router must call the VPC backend",
     )
     require(
-        "uses: ./.github/workflows/cloudflare-dns-lifecycle.yml" in router,
-        "router must call the DNS backend",
+        "startsWith(github.event.comment.body, '/dns ')" not in router
+        and "cloudflare-dns-lifecycle.yml" not in router
+        and not DNS.exists(),
+        "duplicate production-facing /dns operator workflow must be retired",
     )
     require(
         "startsWith(github.event.comment.body, '/mesh ')" not in router
         and "cloudflare-mesh-lifecycle.yml" not in router
         and not (WORKFLOWS / "cloudflare-mesh-lifecycle.yml").exists(),
-        "parallel /mesh operator transport must be retired; provider Mesh belongs to /production target-plane and VM runtime Mesh belongs to the local owner",
+        "parallel /mesh operator transport must be retired; provider Mesh belongs to canonical /production composition and VM runtime Mesh belongs to the local owner",
     )
     require(
         "vultr-control-plane-production" not in router,
@@ -401,9 +402,7 @@ def main() -> None:
     for name, backend in [
         ("application", application),
         ("vultr", vultr),
-        ("zero-trust", zero_trust),
         ("vpc", vpc),
-        ("dns", dns),
     ]:
         require(
             "edge-orchestrator-linux-amd64" in backend
@@ -593,47 +592,27 @@ def main() -> None:
     )
 
     require(
-        '"target-plane-inventory"' in application
-        and '"target-plane-plan"' in application
-        and '"target-plane-converge"' in application
-        and '"target-plane-verify"' in application
-        and 'command_family = "production_target_plane"' in application,
-        "Vertical B target-plane operations must remain under the canonical /production command family",
-    )
-    production_target_plane = application.split(
-        "  production_target_plane:\n", 1
-    )[1].split("\n  production_enroll:", 1)[0]
-    require(
-        '"${EDGE_TARGET_PLANE_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
-        in production_target_plane
-        and production_target_plane.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}"
-        in production_target_plane
-        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}"
-        in production_target_plane
-        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_target_plane
-        and "CLOUDFLARE_API_TOKEN" not in production_target_plane
-        and "VULTR_SSH_PRIVATE_KEY" not in production_target_plane
-        and "EDGE_SSH_PRIVATE_KEY_PATH" not in production_target_plane
-        and "api.ipify.org" not in production_target_plane
-        and "lease-acquire" not in production_target_plane
-        and "lease-release" not in production_target_plane
-        and "jq " not in production_target_plane,
-        "target-plane transport must expose only target-account, shared-DNS and Vultr provider authority",
+        '"target-plane-inventory"' not in application
+        and '"target-plane-plan"' not in application
+        and '"target-plane-converge"' not in application
+        and '"target-plane-verify"' not in application
+        and 'command_family = "production_target_plane"' not in application
+        and "  production_target_plane:\n" not in application,
+        "provider target-plane logic may remain internal, but its public transitional operator surface must be retired",
     )
     require(
-        application.count("group: vultr-control-plane-production") == 6,
+        application.count("group: vultr-control-plane-production") == 5,
         "application backend must serialize enrollment, provider, observation, cleanup and disposable acceptance jobs",
     )
     production_observe = application.split("  production_observe:\n", 1)[1].split("\n  production_runtime:", 1)[0]
     require(
         '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
-        and "cloudflare-phase0-inventory.txt" in production_observe
+        and "cloudflare-production-inventory.txt" in production_observe
         and "~~~text" in production_observe
-        and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_observe
+        and "CLOUDFLARE_API_TOKEN" not in production_observe
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_observe
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_observe
-        and "CLOUDFLARE_TARGET_ACCOUNT_ID: ${{ vars.CLOUDFLARE_TARGET_ACCOUNT_ID }}" in production_observe
+        and "CLOUDFLARE_TARGET_ACCOUNT_ID" not in production_observe
         and "jq " not in production_observe
         and ".mutations_performed" not in production_observe
         and ".observation_status" not in production_observe
@@ -650,12 +629,16 @@ def main() -> None:
         "serde_json::to_string" not in phase0_inventory
         and "serde::Serialize" not in phase0_inventory
         and "list_membership_accounts" not in phase0_inventory
-        and "CLOUDFLARE_TARGET_ACCOUNT_ID" in phase0_inventory
+        and "CLOUDFLARE_API_TOKEN" not in phase0_inventory
+        and "CLOUDFLARE_TARGET_ACCOUNT_ID" not in phase0_inventory
         and "CLOUDFLARE_CONTROL_TOKEN" in phase0_inventory
         and "CLOUDFLARE_DNS_TOKEN" in phase0_inventory
-        and "Cloudflare Phase 0 inventory BLOCKED by" in phase0_inventory
+        and "current_account_id" in phase0_inventory
+        and "shared_dns_account_id" in phase0_inventory
+        and "migration_target_present" in phase0_inventory
+        and "Cloudflare production inventory BLOCKED by" in phase0_inventory
         and 'println!("{inventory:#?}")' in phase0_inventory,
-        "Phase 0 Rust owner must own fail-closed status and emit text evidence without a first-party JSON contract",
+        "steady-state production inventory owner must observe current account + shared DNS without historical migration authority or a first-party JSON contract",
     )
 
     require(
