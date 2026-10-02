@@ -47,6 +47,7 @@ pub struct LocalConfigObservation {
 
 #[derive(Debug, Clone)]
 pub struct ExpectedTunnelBindings {
+    pub server: String,
     pub direct: TunnelBinding,
     pub warp: TunnelBinding,
 }
@@ -182,6 +183,7 @@ pub fn inspect_local_config(
             &parsed,
             "hysteria2-direct",
             "vless-reality-direct",
+            &expected.server,
             &expected.direct,
             &mut local_singbox,
             &mut selector,
@@ -190,6 +192,7 @@ pub fn inspect_local_config(
             &parsed,
             "hysteria2-warp",
             "vless-reality-warp",
+            &expected.server,
             &expected.warp,
             &mut local_singbox,
             &mut selector,
@@ -945,6 +948,7 @@ fn compare_tunnel_binding(
     parsed: &SingboxConfig,
     hy2_tag: &str,
     vless_tag: &str,
+    expected_server: &str,
     expected: &TunnelBinding,
     local_singbox: &mut LocalSingboxState,
     selector: &mut SelectorState,
@@ -979,7 +983,7 @@ fn compare_tunnel_binding(
         hy2_tag,
         "server",
         hy2.server.as_deref(),
-        Some(expected.domain.as_str()),
+        Some(expected_server),
     );
     compare_field(
         local_singbox,
@@ -1011,7 +1015,7 @@ fn compare_tunnel_binding(
         vless_tag,
         "server",
         vless.server.as_deref(),
-        Some(expected.domain.as_str()),
+        Some(expected_server),
     );
     compare_field(
         local_singbox,
@@ -1376,7 +1380,7 @@ mod tests {
     {
       "type": "hysteria2",
       "tag": "hysteria2-direct",
-      "server": "edge.alegria.by",
+      "server": "203.0.113.10",
       "server_port": 8443,
       "password": "direct-password",
       "tls": { "server_name": "edge.alegria.by" }
@@ -1384,7 +1388,7 @@ mod tests {
     {
       "type": "vless",
       "tag": "vless-reality-direct",
-      "server": "edge.alegria.by",
+      "server": "203.0.113.10",
       "server_port": 443,
       "uuid": "direct-uuid",
       "tls": {
@@ -1397,7 +1401,7 @@ mod tests {
     {
       "type": "hysteria2",
       "tag": "hysteria2-warp",
-      "server": "edge.alegria.by",
+      "server": "203.0.113.10",
       "server_port": 9444,
       "password": "warp-password",
       "tls": { "server_name": "edge.alegria.by" }
@@ -1405,7 +1409,7 @@ mod tests {
     {
       "type": "vless",
       "tag": "vless-reality-warp",
-      "server": "edge.alegria.by",
+      "server": "203.0.113.10",
       "server_port": 5443,
       "uuid": "warp-uuid",
       "tls": {
@@ -1423,6 +1427,7 @@ mod tests {
         let observation = inspect_local_config(
             &config_path,
             Some(&ExpectedTunnelBindings {
+                server: "203.0.113.10".to_owned(),
                 direct: TunnelBinding {
                     domain: "edge.alegria.by".to_owned(),
                     hy2_port: 8443,
@@ -1535,7 +1540,7 @@ mod tests {
     {
       "type": "hysteria2",
       "tag": "hysteria2-direct",
-      "server": "wrong.example.com",
+      "server": "198.51.100.9",
       "server_port": 8443,
       "password": "direct-password",
       "tls": { "server_name": "wrong.example.com" }
@@ -1543,7 +1548,7 @@ mod tests {
     {
       "type": "vless",
       "tag": "vless-reality-direct",
-      "server": "edge.alegria.by",
+      "server": "203.0.113.10",
       "server_port": 443,
       "uuid": "direct-uuid",
       "tls": {
@@ -1556,7 +1561,7 @@ mod tests {
     {
       "type": "hysteria2",
       "tag": "hysteria2-warp",
-      "server": "edge.alegria.by",
+      "server": "203.0.113.10",
       "server_port": 9444,
       "password": "warp-password",
       "tls": { "server_name": "edge.alegria.by" }
@@ -1564,7 +1569,7 @@ mod tests {
     {
       "type": "vless",
       "tag": "vless-reality-warp",
-      "server": "edge.alegria.by",
+      "server": "203.0.113.10",
       "server_port": 5443,
       "uuid": "warp-uuid",
       "tls": {
@@ -1582,6 +1587,7 @@ mod tests {
         let observation = inspect_local_config(
             &config_path,
             Some(&ExpectedTunnelBindings {
+                server: "203.0.113.10".to_owned(),
                 direct: TunnelBinding {
                     domain: "edge.alegria.by".to_owned(),
                     hy2_port: 8443,
