@@ -389,7 +389,9 @@ async fn execute_once(inputs: &Inputs, action: &HistoricalAction) -> Result<(), 
     match action {
         HistoricalAction::Noop => Ok(()),
         HistoricalAction::DeleteLegacyWorkerRoute { route_id } => {
-            cloudflare::delete_worker_route(retirement_token, inputs.zone_name(), route_id).await
+            let zone_id =
+                cloudflare::resolve_zone_id(&inputs.dns_token, inputs.zone_name()).await?;
+            cloudflare::delete_worker_route(retirement_token, &zone_id, route_id).await
         }
         HistoricalAction::DeleteLegacyWorkerScript => {
             cloudflare::delete_worker_script(
