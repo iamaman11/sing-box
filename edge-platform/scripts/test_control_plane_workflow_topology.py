@@ -32,7 +32,7 @@ CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
-PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
+PRODUCTION_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_production_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-production-runner.sh")
@@ -73,7 +73,7 @@ def main() -> None:
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     controller_proto = CONTROLLER_PROTO.read_text(encoding="utf-8")
-    phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
+    production_inventory = PRODUCTION_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     production_vm_runner_installer = PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
@@ -626,18 +626,18 @@ def main() -> None:
         "production diagnose workflow must remain a thin GET-only wrapper: no jq/JSON lifecycle semantics and no Vultr/SSH authority",
     )
     require(
-        "serde_json::to_string" not in phase0_inventory
-        and "serde::Serialize" not in phase0_inventory
-        and "list_membership_accounts" not in phase0_inventory
-        and "CLOUDFLARE_API_TOKEN" not in phase0_inventory
-        and "CLOUDFLARE_TARGET_ACCOUNT_ID" not in phase0_inventory
-        and "CLOUDFLARE_CONTROL_TOKEN" in phase0_inventory
-        and "CLOUDFLARE_DNS_TOKEN" in phase0_inventory
-        and "current_account_id" in phase0_inventory
-        and "shared_dns_account_id" in phase0_inventory
-        and "migration_target_present" in phase0_inventory
-        and "Cloudflare production inventory BLOCKED by" in phase0_inventory
-        and 'println!("{inventory:#?}")' in phase0_inventory,
+        "serde_json::to_string" not in production_inventory
+        and "serde::Serialize" not in production_inventory
+        and "list_membership_accounts" not in production_inventory
+        and "CLOUDFLARE_API_TOKEN" not in production_inventory
+        and "CLOUDFLARE_TARGET_ACCOUNT_ID" not in production_inventory
+        and "CLOUDFLARE_CONTROL_TOKEN" in production_inventory
+        and "CLOUDFLARE_DNS_TOKEN" in production_inventory
+        and "current_account_id" in production_inventory
+        and "shared_dns_account_id" in production_inventory
+        and "migration_target_present" in production_inventory
+        and "Cloudflare production inventory BLOCKED by" in production_inventory
+        and 'println!("{inventory:#?}")' in production_inventory,
         "steady-state production inventory owner must observe current account + shared DNS without historical migration authority or a first-party JSON contract",
     )
 
