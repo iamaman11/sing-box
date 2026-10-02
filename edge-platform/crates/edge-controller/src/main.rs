@@ -4536,7 +4536,8 @@ mod tests {
             status
                 .status_notes
                 .iter()
-                .all(|note| !note.contains("server agent") && !note.contains("server runtime observation"))
+                .all(|note| !note.contains("server agent")
+                    && !note.contains("server runtime observation"))
         );
 
         std::fs::remove_dir_all(root).unwrap();
