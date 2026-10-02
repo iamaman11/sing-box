@@ -4962,9 +4962,7 @@ mod tests {
             ]),
             vec![LINE1_CONTAINER, LINE2_CONTAINER]
         );
-        assert!(
-            runtime_probe_consumers(&["vultr-warp-egress".to_owned()]).is_empty()
-        );
+        assert!(runtime_probe_consumers(&["vultr-warp-egress".to_owned()]).is_empty());
     }
 
     fn assert_gateway_uses_docker_local_warp_resolver(raw: &str) {
@@ -4975,7 +4973,9 @@ mod tests {
             .unwrap();
         let local = servers
             .iter()
-            .find(|server| server.get("tag").and_then(serde_json::Value::as_str) == Some("docker-local"))
+            .find(|server| {
+                server.get("tag").and_then(serde_json::Value::as_str) == Some("docker-local")
+            })
             .unwrap();
         assert_eq!(
             local.get("type").and_then(serde_json::Value::as_str),
@@ -4992,14 +4992,17 @@ mod tests {
             .unwrap();
         let warp = outbounds
             .iter()
-            .find(|outbound| outbound.get("tag").and_then(serde_json::Value::as_str) == Some("warp-local"))
+            .find(|outbound| {
+                outbound.get("tag").and_then(serde_json::Value::as_str) == Some("warp-local")
+            })
             .unwrap();
         assert_eq!(
             warp.get("server").and_then(serde_json::Value::as_str),
             Some("warp-egress")
         );
         assert_eq!(
-            warp.get("domain_resolver").and_then(serde_json::Value::as_str),
+            warp.get("domain_resolver")
+                .and_then(serde_json::Value::as_str),
             Some("docker-local")
         );
     }
