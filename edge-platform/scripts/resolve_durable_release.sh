@@ -23,10 +23,8 @@ out="$OUTPUT_DIR"
 rm -rf "$out"
 install -d -m 0755 "$out"
 
-expected_assets=(
+base_expected_assets=(
   acceptance.json
-  application-bundle.pb
-  application-bundle.pb.sha256
   edge-agent-linux-amd64
   edge-agent-linux-amd64.sha256
   edge-controller-linux-amd64
@@ -39,6 +37,10 @@ expected_assets=(
   edge-release-set-linux-amd64.sha256
   release-set.pb
   release-set.pb.sha256
+)
+bundle_expected_assets=(
+  application-bundle.pb
+  application-bundle.pb.sha256
 )
 
 candidate_releases="${out}/.candidate-releases.jsonl"
@@ -104,6 +106,21 @@ test "$(jq -r '.draft' <<<"$release_json")" = "false"
 test "$(jq -r '.prerelease' <<<"$release_json")" = "false"
 
 mapfile -t actual_assets < <(jq -r '.assets[].name' <<<"$release_json" | sort)
+bundle_asset_count="$(jq '[.assets[] | select(.name == "application-bundle.pb" or .name == "application-bundle.pb.sha256")] | length' <<<"$release_json")"
+case "$bundle_asset_count" in
+  0)
+    expected_assets=("${base_expected_assets[@]}")
+    has_application_bundle=false
+    ;;
+  2)
+    expected_assets=("${base_expected_assets[@]}" "${bundle_expected_assets[@]}")
+    has_application_bundle=true
+    ;;
+  *)
+    echo "durable release must contain either both application bundle assets or neither" >&2
+    exit 1
+    ;;
+esac
 mapfile -t sorted_expected_assets < <(printf '%s\n' "${expected_assets[@]}" | sort)
 test "${#actual_assets[@]}" -eq "${#sorted_expected_assets[@]}"
 if ! diff -u <(printf '%s\n' "${sorted_expected_assets[@]}") <(printf '%s\n' "${actual_assets[@]}"); then
@@ -150,8 +167,6 @@ download_asset() {
 
 for name in \
   acceptance.json \
-  application-bundle.pb \
-  application-bundle.pb.sha256 \
   edge-agent-linux-amd64 \
   edge-agent-linux-amd64.sha256 \
   edge-controller-linux-amd64 \
@@ -164,6 +179,10 @@ for name in \
   release-set.pb.sha256; do
   download_asset "$name"
 done
+if [[ "$has_application_bundle" = "true" ]]; then
+  download_asset application-bundle.pb
+  download_asset application-bundle.pb.sha256
+fi
 
 verify_sidecar() {
   local file="$1"
@@ -181,7 +200,9 @@ verify_sidecar "${out}/edge-agent-linux-amd64" "${out}/edge-agent-linux-amd64.sh
 verify_sidecar "${out}/edge-controller-linux-amd64" "${out}/edge-controller-linux-amd64.sha256" "edge-controller-linux-amd64"
 verify_sidecar "${out}/edge-orchestrator-linux-amd64" "${out}/edge-orchestrator-linux-amd64.sha256" "edge-orchestrator-linux-amd64"
 verify_sidecar "${out}/edge-release-set-linux-amd64" "${out}/edge-release-set-linux-amd64.sha256" "edge-release-set-linux-amd64"
-verify_sidecar "${out}/application-bundle.pb" "${out}/application-bundle.pb.sha256" "application-bundle.pb"
+if [[ "$has_application_bundle" = "true" ]]; then
+  verify_sidecar "${out}/application-bundle.pb" "${out}/application-bundle.pb.sha256" "application-bundle.pb"
+fi
 
 test "$(cat "${out}/release-set.pb.sha256")" = "${release_set_sha}  release-set.pb"
 test "$(sha256sum "${out}/release-set.pb" | awk '{print $1}')" = "$release_set_sha"
@@ -203,14 +224,19 @@ test "$(jq -er '.tree.sha' <<<"$candidate_commit")" = "$source_tree"
 
 verifier="${out}/edge-release-set-linux-amd64"
 chmod 0755 "$verifier"
-verify_output="$("$verifier" verify-vm \
-  --input "${out}/release-set.pb" \
-  --sha256-file "${out}/release-set.pb.sha256" \
-  --source-revision "$candidate_revision" \
-  --edge-agent "${out}/edge-agent-linux-amd64" \
-  --edge-controller "${out}/edge-controller-linux-amd64" \
-  --edge-orchestrator "${out}/edge-orchestrator-linux-amd64" \
-  --application-bundle "${out}/application-bundle.pb")"
+verify_args=(
+  verify-vm
+  --input "${out}/release-set.pb"
+  --sha256-file "${out}/release-set.pb.sha256"
+  --source-revision "$candidate_revision"
+  --edge-agent "${out}/edge-agent-linux-amd64"
+  --edge-controller "${out}/edge-controller-linux-amd64"
+  --edge-orchestrator "${out}/edge-orchestrator-linux-amd64"
+)
+if [[ "$has_application_bundle" = "true" ]]; then
+  verify_args+=(--application-bundle "${out}/application-bundle.pb")
+fi
+verify_output="$("$verifier" "${verify_args[@]}")"
 printf '%s\n' "$verify_output"
 
 extract_single() {
@@ -245,9 +271,12 @@ fi
 
 application_bundle_sha=""
 if [[ "$schema_version" = "7" ]]; then
+  test "$has_application_bundle" = "true"
   application_bundle_sha="$(extract_single application_bundle_sha256)"
   [[ "$application_bundle_sha" =~ ^[0-9a-f]{64}$ ]]
   test "$application_bundle_sha" = "$(sha256sum "${out}/application-bundle.pb" | awk '{print $1}')"
+else
+  test "$has_application_bundle" = "false"
 fi
 
 windows_source_revision="$verified_source_revision"
