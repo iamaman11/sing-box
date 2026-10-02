@@ -25,6 +25,7 @@ pub(crate) enum Command {
         command: ApplicationLifecycleCommand,
     },
     ApplicationAcceptance(ApplicationAcceptanceArgs),
+    ApplicationBundleBuild(ApplicationBundleBuildArgs),
     ApplicationCleanup(ApplicationCleanupArgs),
     CloudflareDns {
         #[command(subcommand)]
@@ -66,6 +67,7 @@ impl Command {
         match self {
             Self::ApplicationLifecycle { .. } => "application-lifecycle",
             Self::ApplicationAcceptance(_) => "application-acceptance",
+            Self::ApplicationBundleBuild(_) => "application-bundle-build",
             Self::ApplicationCleanup(_) => "application-cleanup",
             Self::CloudflareDns { .. } => "cloudflare-dns",
             Self::CloudflareTargetPlane { .. } => "cloudflare-target-plane",
@@ -87,6 +89,17 @@ pub(crate) struct ApplicationAcceptanceArgs {
     pub dns_spec_path: PathBuf,
     pub mesh_base_spec_path: PathBuf,
     pub vpc_spec_path: PathBuf,
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct ApplicationBundleBuildArgs {
+    pub spec_path: PathBuf,
+    pub runtime_source_revision: String,
+    pub edge_agent_artifact_path: PathBuf,
+    pub edge_gateway_image: String,
+    pub edge_warp_egress_image: String,
+    pub mesh_image: String,
+    pub output_protobuf_path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]
