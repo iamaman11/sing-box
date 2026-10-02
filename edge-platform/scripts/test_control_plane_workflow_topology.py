@@ -36,7 +36,6 @@ PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_p
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-production-runner.sh")
-DURABLE_RELEASE_RESOLVER = Path("edge-platform/scripts/resolve_durable_release.sh")
 
 
 def require(condition: bool, message: str) -> None:
@@ -80,7 +79,6 @@ def main() -> None:
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     production_vm_runner_installer = PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
-    durable_release_resolver = DURABLE_RELEASE_RESOLVER.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -111,20 +109,6 @@ def main() -> None:
         listeners == [ROUTER.name],
         f"exactly one issue_comment listener is required, observed: {listeners}",
     )
-    require(
-        "github_api_get()" in durable_release_resolver
-        and "--proto '=https'" in durable_release_resolver
-        and "--proto-redir '=https'" in durable_release_resolver
-        and "--connect-timeout 10" in durable_release_resolver
-        and "--max-time 30" in durable_release_resolver
-        and "Authorization: Bearer ${GH_TOKEN}" in durable_release_resolver
-        and "Accept: application/vnd.github+json" in durable_release_resolver
-        and "X-GitHub-Api-Version: 2026-03-10" in durable_release_resolver
-        and durable_release_resolver.count("github_api_get ") == 5
-        and "gh api" not in durable_release_resolver,
-        "durable release resolution must use one bounded HTTPS GitHub API reader and no gh CLI dependency",
-    )
-
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
@@ -1012,8 +996,11 @@ def main() -> None:
         and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_provider
         and "VULTR_SSH_PRIVATE_KEY" not in production_provider
         and "api.ipify.org" not in production_provider
-        and "lease-acquire" not in production_provider,
-        "production provider plane must remain GitHub-hosted and guest-transport blind",
+        and "lease-acquire" not in production_provider
+        and "application_bundle_sha256" in production_provider
+        and "application-bundle.pb" in production_provider
+        and "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in production_provider,
+        "production provider plane must remain GitHub-hosted, verify the promoted bundle, and export only exact runtime transport bytes",
     )
     require(
         "- self-hosted" in production_runtime
@@ -1022,23 +1009,22 @@ def main() -> None:
         and "- sing-box-production-vm" in production_runtime
         and "- production-1" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
-        and '"${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle materialize' in production_runtime
-        and '"${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle export-bundle' in production_runtime
+        and "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in production_runtime
+        and "PROVIDER_APPLICATION_BUNDLE_SHA256" in production_runtime
+        and 'sha256sum "${bundle}"' in production_runtime
         and 'sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}"' in production_runtime
         and 'local_operation="bundle-converge"' in production_runtime
         and 'local_operation="bundle-verify"' in production_runtime
         and 'local_operation="diagnose"' in production_runtime
         and 'local_operation="bootstrap-full"' not in production_runtime
-        and "Materialize exact canonical revision without Git" in production_runtime
-        and "/commits/${REVISION}" in production_runtime
-        and "/tarball/${REVISION}" in production_runtime
-        and 'jq -er \'.sha\'' in production_runtime
-        and 'tar -xzf "${source_archive}"' in production_runtime
-        and "EDGE_CANONICAL_SOURCE" in production_runtime
+        and "edge-platform/scripts/resolve_durable_release.sh" not in production_runtime
+        and "EDGE_LOCAL_ORCHESTRATOR" not in production_runtime
+        and "application-lifecycle materialize" not in production_runtime
+        and "application-lifecycle export-bundle" not in production_runtime
         and "git init ." not in production_runtime
         and "git fetch " not in production_runtime
         and "git checkout " not in production_runtime
-        and "actions/checkout" not in production_runtime
+        and "/tarball/" not in production_runtime
         and "VULTR_API_KEY" not in production_runtime
         and "CLOUDFLARE_CONTROL_TOKEN" not in production_runtime
         and "CLOUDFLARE_DNS_TOKEN" not in production_runtime
@@ -1047,7 +1033,7 @@ def main() -> None:
         and "lease-acquire" not in production_runtime
         and "/var/run/docker.sock" in production_runtime
         and "sudo -n id -u" in production_runtime,
-        "production runtime plane must use only self-hosted runner -> bounded local owner with no provider/generic-root authority",
+        "production runtime plane must remain transport-only: exact bound bundle -> fixed sudo local owner, with no source/render/provider/generic-root authority",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
