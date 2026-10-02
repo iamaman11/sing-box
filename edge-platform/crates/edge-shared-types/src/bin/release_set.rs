@@ -31,6 +31,7 @@ const VERIFY_FLAGS: &[&str] = &[
     "edge-agent",
     "edge-controller",
     "edge-orchestrator",
+    "application-bundle",
 ];
 
 const VERIFY_VM_FLAGS: &[&str] = &[
@@ -39,6 +40,7 @@ const VERIFY_VM_FLAGS: &[&str] = &[
     "source-revision",
     "edge-agent",
     "edge-controller",
+    "application-bundle",
 ];
 
 const VERIFY_WINDOWS_FLAGS: &[&str] = &[
@@ -78,6 +80,7 @@ const CREATE_FLAGS: &[&str] = &[
     "edge-agent",
     "edge-controller",
     "edge-orchestrator",
+    "application-bundle",
 ];
 
 const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
@@ -96,6 +99,7 @@ const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
     "edge-agent",
     "edge-controller",
     "edge-orchestrator",
+    "application-bundle",
 ];
 
 const WRITE_WINDOWS_MANIFEST_FLAGS: &[&str] = &[
@@ -295,9 +299,15 @@ fn create_release_set_from_build_manifests(flags: &BTreeMap<String, String>) -> 
         None,
     )?;
     verify_build_manifest_artifacts(flags, &windows, &linux)?;
+    let application_bundle_sha256 =
+        sha256_file(Path::new(flag(flags, "application-bundle")?))?;
 
-    let release =
-        release_set_from_build_manifests(flag(flags, "source-revision")?, &windows, &linux)?;
+    let release = release_set_from_build_manifests(
+        flag(flags, "source-revision")?,
+        &windows,
+        &linux,
+        &application_bundle_sha256,
+    )?;
     let digest = write_release_set_files(
         &release,
         Path::new(flag(flags, "output")?),
@@ -322,9 +332,15 @@ fn verify_candidate_release_set(flags: &BTreeMap<String, String>) -> Result<(), 
         Some(flag(flags, "source-tree")?),
     )?;
     verify_build_manifest_artifacts(flags, &windows, &linux)?;
+    let application_bundle_sha256 =
+        sha256_file(Path::new(flag(flags, "application-bundle")?))?;
 
-    let expected =
-        release_set_from_build_manifests(flag(flags, "source-revision")?, &windows, &linux)?;
+    let expected = release_set_from_build_manifests(
+        flag(flags, "source-revision")?,
+        &windows,
+        &linux,
+        &application_bundle_sha256,
+    )?;
     if release != expected {
         return Err(
             "release-set contents do not exactly match the typed platform build manifests"
@@ -423,6 +439,7 @@ fn release_set_from_build_manifests(
     source_revision: &str,
     windows: &WindowsBuildManifest,
     linux: &LinuxBuildManifest,
+    application_bundle_sha256: &[u8],
 ) -> Result<ReleaseSet, String> {
     Ok(ReleaseSet {
         schema_version: RELEASE_SET_SCHEMA_VERSION,
@@ -494,6 +511,7 @@ fn release_set_from_build_manifests(
             docker_engine_version: linux.docker_engine_version.clone(),
             containerd_version: linux.containerd_version.clone(),
             compose_version: linux.compose_version.clone(),
+            application_bundle_sha256: application_bundle_sha256.to_vec(),
         }),
         cloudflare: Some(CloudflareRuntime {
             warp_version: linux.warp_version.clone(),
@@ -659,6 +677,13 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
             &vm.edge_orchestrator_sha256,
         )?;
     }
+    if release.schema_version >= 7 {
+        verify_file_digest(
+            "application bundle",
+            Path::new(flag(flags, "application-bundle")?),
+            &vm.application_bundle_sha256,
+        )?;
+    }
 
     print_vm_evidence(&release, &digest)
 }
@@ -814,6 +839,13 @@ fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String>
     } else if flags.contains_key("edge-orchestrator") {
         return Err("schema v2 verify-vm must not receive --edge-orchestrator".to_owned());
     }
+    if release.schema_version >= 7 {
+        verify_file_digest(
+            "application bundle",
+            Path::new(flag(flags, "application-bundle")?),
+            &vm.application_bundle_sha256,
+        )?;
+    }
 
     print_vm_evidence(&release, &digest)
 }
@@ -883,6 +915,12 @@ fn print_vm_evidence(release: &ReleaseSet, digest: &str) -> Result<(), String> {
             digest_to_hex(&vm.runtime_input_sha256)
         );
         println!("runtime_source_revision={}", vm.runtime_source_revision);
+    }
+    if release.schema_version >= 7 {
+        println!(
+            "application_bundle_sha256={}",
+            digest_to_hex(&vm.application_bundle_sha256)
+        );
     }
     println!(
         "sing_box_image={}",
