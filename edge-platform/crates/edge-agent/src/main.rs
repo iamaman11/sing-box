@@ -277,8 +277,9 @@ async fn run_local_bundle_verify(stack_dir: &Path) -> Result<(), AgentError> {
     let request = read_local_bundle_request().map_err(AgentError::Command)?;
     let (expected_id, expected_digest) =
         validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
-    let active = read_application_release(stack_dir)
-        .ok_or_else(|| AgentError::Command("active application release marker is missing".to_owned()))?;
+    let active = read_application_release(stack_dir).ok_or_else(|| {
+        AgentError::Command("active application release marker is missing".to_owned())
+    })?;
     if active.bundle_id != expected_id || active.bundle_digest != expected_digest {
         return Err(AgentError::Command(format!(
             "active application bundle does not match exact requested bundle: expected_id={expected_id} expected_digest={expected_digest} observed_id={} observed_digest={}",
@@ -340,12 +341,9 @@ async fn run_local_bundle_converge(stack_dir: &Path) -> Result<(), AgentError> {
         )
     };
 
-    if before
-        .as_ref()
-        .is_some_and(|release| {
-            release.bundle_id == expected_id && release.bundle_digest == expected_digest
-        })
-    {
+    if before.as_ref().is_some_and(|release| {
+        release.bundle_id == expected_id && release.bundle_digest == expected_digest
+    }) {
         return Err(AgentError::Command(format!(
             "{failure}; exact bundle was already active, so no bundle rollback was attempted"
         )));
@@ -4187,8 +4185,7 @@ mod tests {
         let digest = canonical_apply_bundle_digest(&request).unwrap();
         request.bundle_digest = Some(digest.clone());
 
-        let (bundle_id, observed_digest) =
-            validate_digest_bound_bundle_request(&request).unwrap();
+        let (bundle_id, observed_digest) = validate_digest_bound_bundle_request(&request).unwrap();
         assert_eq!(bundle_id, "release-a");
         assert_eq!(observed_digest, digest);
 
