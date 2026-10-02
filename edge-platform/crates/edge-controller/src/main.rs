@@ -850,27 +850,36 @@ impl ControllerService for ControllerServerImpl {
             .map_err(Status::internal)?;
         let mut status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
-        let (agent_state, runtime) = observe_agent(&self.state, &self.agent_endpoint).await;
         let backend_ready_from_state = status
             .deployment
             .as_ref()
             .is_some_and(|deployment| deployment.live_state_present);
         let live_state_artifact_present = live_state_artifact_present(&self.repo_root);
 
-        if !agent_state.ready && !backend_ready_from_state {
-            status
-                .status_notes
-                .push("server agent has not reached runtime readiness".to_owned());
-        }
-        if !runtime.edge_agent_reachable && !backend_ready_from_state {
-            status
-                .status_notes
-                .push("server runtime observation is running in degraded fallback mode".to_owned());
-        } else if !runtime.edge_agent_reachable && backend_ready_from_state {
-            status.status_notes.push(
-                "server runtime observation is unavailable; using persisted live deployment state"
-                    .to_owned(),
-            );
+        if is_installed_windows_root(&self.repo_root) {
+            // Persistent Windows runtime ownership is local to EdgePlatformController.
+            // The retired server-agent RPC endpoint is not a Windows health dependency.
+            status.agent_state = None;
+            status.runtime = None;
+        } else {
+            let (agent_state, runtime) = observe_agent(&self.state, &self.agent_endpoint).await;
+            if !agent_state.ready && !backend_ready_from_state {
+                status
+                    .status_notes
+                    .push("server agent has not reached runtime readiness".to_owned());
+            }
+            if !runtime.edge_agent_reachable && !backend_ready_from_state {
+                status.status_notes.push(
+                    "server runtime observation is running in degraded fallback mode".to_owned(),
+                );
+            } else if !runtime.edge_agent_reachable && backend_ready_from_state {
+                status.status_notes.push(
+                    "server runtime observation is unavailable; using persisted live deployment state"
+                        .to_owned(),
+                );
+            }
+            status.agent_state = Some(agent_state);
+            status.runtime = Some(runtime);
         }
         if backend_ready_from_state && !live_state_artifact_present {
             status.status_notes.push(
@@ -882,8 +891,6 @@ impl ControllerService for ControllerServerImpl {
                 .to_owned(),
             );
         }
-        status.agent_state = Some(agent_state);
-        status.runtime = Some(runtime);
 
         let local_config_path = default_local_config_path(&self.repo_root);
         let merged_local = merge_local_runtime(
@@ -2469,19 +2476,6 @@ fn build_doctor_checks(
             evidence: Vec::new(),
         },
         DoctorCheck {
-            name: "server.edge_agent_reachable".to_owned(),
-            ok: runtime.is_some_and(|value| value.edge_agent_reachable),
-            detail: runtime
-                .map(|value| value.warnings.join("; "))
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "edge-agent status unavailable".to_owned()),
-
-            check_id: String::new(),
-            status: CheckStatus::Unspecified as i32,
-            subsystem: DiagnosticSubsystem::Unspecified as i32,
-            evidence: Vec::new(),
-        },
-        DoctorCheck {
             name: "local.singbox_running".to_owned(),
             ok: local.is_some_and(|value| value.process_running),
             detail: local
@@ -2550,7 +2544,23 @@ fn build_doctor_checks(
         },
     ];
 
-    if request.require_server_ready {
+    if !is_installed_windows_root(repo_root) {
+        checks.push(DoctorCheck {
+            name: "server.edge_agent_reachable".to_owned(),
+            ok: runtime.is_some_and(|value| value.edge_agent_reachable),
+            detail: runtime
+                .map(|value| value.warnings.join("; "))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "edge-agent status unavailable".to_owned()),
+
+            check_id: String::new(),
+            status: CheckStatus::Unspecified as i32,
+            subsystem: DiagnosticSubsystem::Unspecified as i32,
+            evidence: Vec::new(),
+        });
+    }
+
+    if request.require_server_ready && !is_installed_windows_root(repo_root) {
         checks.push(DoctorCheck {
             name: "server.runtime_ready".to_owned(),
             ok: runtime.is_some_and(|value| {
