@@ -547,8 +547,7 @@ EDGE_COMPOSE_VERSION=2.39.4-1~debian.13~trixie\n",
                 .contains("EDGE_RUNTIME_INPUT_SHA256")
         );
 
-        let missing_runtime_input =
-            render(&current_schema, &"5".repeat(40), &"6".repeat(64))
+        let missing_runtime_input = render(&current_schema, &"5".repeat(40), &"6".repeat(64))
             .lines()
             .filter(|line| !line.starts_with("EDGE_RUNTIME_INPUT_SHA256="))
             .collect::<Vec<_>>()
