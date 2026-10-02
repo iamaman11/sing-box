@@ -22,6 +22,7 @@ use edge_controller_core::production::{
 use edge_controller_core::vultr_lifecycle::PlanClass;
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::get_instance_typed;
+use prost::Message;
 use serde_json::json;
 use std::env;
 use std::fs;
@@ -33,6 +34,7 @@ pub(crate) async fn run(args: Vec<String>, context: &OrchestrationContext) -> Re
     let operation = args.first().map(String::as_str).ok_or_else(usage)?;
     match operation {
         "materialize" => run_materialize(&args[1..], context),
+        "export-bundle" => run_export_bundle(&args[1..], context),
         "plan" => run_plan(&args[1..], context).await,
         "apply" => run_mutation(&args[1..], DesiredMutationMode::Apply, context).await,
         "verify" => run_verify(&args[1..], context).await,
@@ -52,6 +54,44 @@ fn run_materialize(args: &[String], context: &OrchestrationContext) -> Result<()
     context.materialize_application_inputs(&bundle_root, &manifest_path, &artifact_path)?;
     let artifact = load_artifact_manifest(&manifest_path)?;
     verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)
+}
+
+fn run_export_bundle(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
+    if args.len() != 4 {
+        return Err(
+            "usage: edge-orchestrator application-lifecycle export-bundle <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <output-protobuf-path>"
+                .to_owned(),
+        );
+    }
+    let spec_path = PathBuf::from(&args[0]);
+    let manifest_path = PathBuf::from(&args[1]);
+    let artifact_path = PathBuf::from(&args[2]);
+    let output_path = PathBuf::from(&args[3]);
+    let desired = load_application_desired(&spec_path)?;
+    let artifact = load_artifact_manifest(&manifest_path)?;
+    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
+    let bundle_id = prepared
+        .request
+        .bundle_id
+        .as_deref()
+        .ok_or_else(|| "prepared application bundle is missing bundle_id".to_owned())?;
+    let bundle_digest = prepared
+        .request
+        .bundle_digest
+        .as_deref()
+        .ok_or_else(|| "prepared application bundle is missing bundle_digest".to_owned())?;
+    let encoded = prepared.request.encode_to_vec();
+    fs::write(&output_path, &encoded).map_err(|err| {
+        format!(
+            "failed to write digest-bound application bundle {}: {err}",
+            output_path.display()
+        )
+    })?;
+    println!("application_bundle_id={bundle_id}");
+    println!("application_bundle_digest={bundle_digest}");
+    println!("application_bundle_bytes={}", encoded.len());
+    Ok(())
 }
 
 async fn run_plan(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
@@ -638,6 +678,7 @@ fn usage() -> String {
     [
         "usage:",
         "  edge-orchestrator application-lifecycle materialize <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
+        "  edge-orchestrator application-lifecycle export-bundle <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <output-protobuf-path>",
         "  edge-orchestrator application-lifecycle plan <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
         "  edge-orchestrator application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
         "  edge-orchestrator application-lifecycle verify <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
