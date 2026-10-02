@@ -297,8 +297,7 @@ fn create_release_set_from_build_manifests(flags: &BTreeMap<String, String>) -> 
         None,
     )?;
     verify_build_manifest_artifacts(flags, &windows, &linux)?;
-    let application_bundle_sha256 =
-        sha256_file(Path::new(flag(flags, "application-bundle")?))?;
+    let application_bundle_sha256 = sha256_file(Path::new(flag(flags, "application-bundle")?))?;
 
     let release = release_set_from_build_manifests(
         flag(flags, "source-revision")?,
@@ -330,8 +329,7 @@ fn verify_candidate_release_set(flags: &BTreeMap<String, String>) -> Result<(), 
         Some(flag(flags, "source-tree")?),
     )?;
     verify_build_manifest_artifacts(flags, &windows, &linux)?;
-    let application_bundle_sha256 =
-        sha256_file(Path::new(flag(flags, "application-bundle")?))?;
+    let application_bundle_sha256 = sha256_file(Path::new(flag(flags, "application-bundle")?))?;
 
     let expected = release_set_from_build_manifests(
         flag(flags, "source-revision")?,
@@ -691,7 +689,9 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
             &vm.application_bundle_sha256,
         )?;
     } else if flags.contains_key("application-bundle") {
-        return Err("ReleaseSet schemas before v7 must not receive --application-bundle".to_owned());
+        return Err(
+            "ReleaseSet schemas before v7 must not receive --application-bundle".to_owned(),
+        );
     }
 
     print_vm_evidence(&release, &digest)
@@ -858,7 +858,9 @@ fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String>
             &vm.application_bundle_sha256,
         )?;
     } else if flags.contains_key("application-bundle") {
-        return Err("ReleaseSet schemas before v7 must not receive --application-bundle".to_owned());
+        return Err(
+            "ReleaseSet schemas before v7 must not receive --application-bundle".to_owned(),
+        );
     }
 
     print_vm_evidence(&release, &digest)
