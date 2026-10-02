@@ -445,20 +445,20 @@ def main() -> None:
         "transitional Phase 2 credential commands must be retired after production authority cutover",
     )
     require(
-        '"contract-plan"' in credentials
-        and '"contract-converge"' in credentials
-        and '"contract-verify"' in credentials
-        and '"contract-prove"' in credentials
-        and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials "${REQUESTED_OPERATION}"' in credentials
-        and "EDGE_RELEASE_CONTEXT_PATH" in credentials
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in credentials
-        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}" in credentials
-        and "if: needs.authorize.outputs.operation == 'contract-converge'" in credentials
-        and "if: needs.authorize.outputs.operation != 'contract-converge'" in credentials
+        '("/credentials", "verify"): "verify"' in credentials
+        and '("/credentials", "host-bootstrap-converge"): "host-bootstrap-converge"' in credentials
+        and '"contract-plan"' not in credentials
+        and '"contract-converge"' not in credentials
+        and '"contract-prove"' not in credentials
+        and '"fresh-v2-cutover"' not in credentials
+        and '"fresh-v2-publication-prove"' not in credentials
+        and '"fresh-v2-cleanup"' not in credentials
+        and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
+        and "if: needs.authorize.outputs.operation == 'verify'" in credentials
         and "group: vultr-control-plane-production" in credentials
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
         and "cancel-in-progress: false" in credentials
-        and "credential-lifecycle-production" not in credentials
+        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" not in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
@@ -468,31 +468,10 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential delivery workflow must be dedicated, GitHub-hosted, least-authority and artifact-free",
+        "credential operator workflow must expose only steady-state verify plus explicit host bootstrap; closed Stage-2 proof/cutover commands must be absent",
     )
-    require(
-        "if next == CredentialDeliveryAction::Noop {" in credential_command
-        and "print_terminal(desired, &after, mutations)?;" in credential_command,
-        "credential convergence must accept terminal NOOP observed after the final bounded mutation",
-    )
-    proof_start = credential_command.index("async fn prove_ab_session(")
-    proof_end = credential_command.index(
-        "fn validate_rotated_proof_credential", proof_start
-    )
-    proof_session = credential_command[proof_start:proof_end]
-    require(
-        "preflight_access_analytics(control_token, desired).await?;" in credential_command
-        and "proof_token_state projection={} stage={}" in credential_command
-        and "access_failure_capture projection={}" in credential_command
-        and "diagnose_access_failure_after_cleanup(" in credential_command
-        and "no HTTP probe replay performed" in credential_command
-        and "async fn prove_projection(" not in credential_command
-        and "credential.client_secret" not in proof_session,
-        "credential proof must use one shared two-projection session with secret-safe provider-native failure evidence and no HTTP replay",
-    )
-    host_bootstrap_workflow = credentials.split(
-        "  host_bootstrap_release:\n", 1
-    )[1].split("\n  cutover_release:\n", 1)[0]
+
+    host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
     host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
     host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]
@@ -511,84 +490,12 @@ def main() -> None:
         and "actions/download-artifact" not in credentials,
         "host identity bootstrap must remain create-once, retry-safe, runner-blind, ciphertext-only on Windows and artifact-free",
     )
-    fresh_v2_start = credential_command.index("async fn fresh_v2_publish(")
-    fresh_v2_end = credential_command.index(
-        "pub(crate) async fn verify_credential_plane_invariant", fresh_v2_start
-    )
-    fresh_v2 = credential_command[fresh_v2_start:fresh_v2_end]
-    fresh_v2_publish = fresh_v2[: fresh_v2.index("async fn restore_dummy_slot")]
-    restart_verify_start = windows_console.index(
-        "async fn restart_and_verify_windows_tunnels("
-    )
-    restart_verify_end = windows_console.index(
-        "fn verify_stage2_isolated_prerequisites(", restart_verify_start
-    )
-    restart_verify = windows_console[restart_verify_start:restart_verify_end]
     require(
-        "stop_managed_windows_runtime_after_failure" in restart_verify
-        and "WINDOWS_TRACE_REOBSERVE_ATTEMPTS" in windows_console
-        and "trace.note" in windows_console
-        and "bounded observations" in windows_console,
-        "Windows restart proof must use bounded trace re-observation, preserve provider failure detail and stop only the exact managed runtime on failure",
-    )
-
-    require(
-        '"fresh-v2-cutover"' in credentials
-        and '"fresh-v2-cleanup"' in credentials
-        and "credential-transition discard-candidate" in credentials
-        and "cutover_provider_abort_uncommitted:" in credentials
-        and "CredentialDeliveryCommand::FreshV2RestoreBaseline" in credential_command
-        and "credential_fresh_v2_baseline_restore=PASS" in credential_command
-        and not (WORKFLOWS / "credential-fresh-v2-cutover.yml").exists()
-        and "CredentialTransition" in vm_agent_cli
-        and "CredentialTransition" in windows_console_cli
-        and "PrivilegedApplyCredentialCandidate" not in windows_console_cli
-        and "PrivilegedPromoteCredential" not in windows_console_cli
-        and "PrivilegedRollbackCredential" not in windows_console_cli
-        and "credential-transition" in production_vm_runner_installer
-        and "generate_fresh_credential_snapshot" in fresh_v2_publish
-        and fresh_v2_publish.count("cloudflare::patch_latest_worker_version_secrets(") == 2
-        and fresh_v2_publish.count("cloudflare::deploy_worker_version(") == 2
-        and "RestoreFixedAbBaseline" in credential_command
-        and "put_worker_secret_text(" not in fresh_v2
-        and "workers/workers/{script_name}/versions/latest" in credential_provider
-        and "workers/scripts/{script_name}/deployments" in credential_provider
-        and '"env": env' in credential_provider
-        and '"workers/tag": version_tag' in credential_provider
-        and '"strategy": "percentage"' in credential_provider
-        and '"percentage": 100' in credential_provider
-        and '"application/merge-patch+json"' in credential_provider
-        and "CredentialDeliverySlot::A" in fresh_v2_publish
-        and "async fn restore_dummy_slot" in fresh_v2
-        and "active_slot_mutated=false" in fresh_v2_publish
-        and "cutover_windows_rollback:" not in credentials
-        and "cutover_windows_restore:" not in credentials
-        and "cutover_windows_retire:" not in credentials
-        and "credential-transition apply-legacy --install-root" not in credentials
-        and "credential-transition retire-legacy --install-root" not in credentials
-        and "stage2-preflight" in credentials
-        and "restart-verify-runtime" in credentials
-        and "Get-NetTCPConnection -State Listen" not in credentials
-        and "$reservedPorts = @(17891, 17892, 19091)" not in credentials
-        and "STAGE2_WINDOWS_ISOLATED_PREREQUISITES=PASS" in credentials
-        and "STAGE2_EXTERNAL_SING_BOX=UNTOUCHED" in credentials
-        and "STAGE2_TUN_ACTIVATION=DEFERRED" in credentials,
-        "Macro Stage 2 must keep Windows side-by-side, proxy-only and outside legacy runtime ownership while preserving one bounded credential workflow",
-    )
-
-    diagnostics_index = credential_command.index(
-        "let classification = diagnose_access_failure_after_cleanup"
-    )
-    require(
-        credential_command.index(
-            "let disable_windows = cloudflare::set_access_service_token_enabled"
-        )
-        < diagnostics_index
-        and credential_command.index(
-            "let disable_vm = cloudflare::set_access_service_token_enabled"
-        )
-        < diagnostics_index,
-        "credential proof must disable both proof tokens before post-failure Access diagnostics",
+        "  cutover_release:\n" not in credentials
+        and "cutover_publish:" not in credentials
+        and "cutover_final_verify:" not in credentials
+        and "STAGE2_FRESH_V2_CUTOVER=PASS" not in credentials,
+        "terminal Stage-2 cutover/proof workflow branches must be deleted after accepted cutover",
     )
 
     require(
