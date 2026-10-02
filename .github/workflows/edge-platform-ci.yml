@@ -1319,6 +1319,31 @@ jobs:
           test "${sing_box_binary_sha}" = "${SING_BOX_BINARY_SHA256}"
           source_tree="$(git rev-parse 'HEAD^{tree}')"
 
+          bundle="${out}/application-bundle.pb"
+          bundle_repeat="${RUNNER_TEMP}/application-bundle-repeat.pb"
+          edge-platform/target/release/edge-orchestrator application-bundle-build \
+            infra/production/production.textproto \
+            "${RUNTIME_SOURCE_REVISION}" \
+            "${out}/edge-agent" \
+            "${EDGE_GATEWAY_IMAGE}" \
+            "${EDGE_WARP_EGRESS_IMAGE}" \
+            "${MESH_IMAGE}" \
+            "${bundle}"
+          edge-platform/target/release/edge-orchestrator application-bundle-build \
+            infra/production/production.textproto \
+            "${RUNTIME_SOURCE_REVISION}" \
+            "${out}/edge-agent" \
+            "${EDGE_GATEWAY_IMAGE}" \
+            "${EDGE_WARP_EGRESS_IMAGE}" \
+            "${MESH_IMAGE}" \
+            "${bundle_repeat}"
+          cmp --silent "${bundle}" "${bundle_repeat}"
+          rm -f "${bundle_repeat}"
+          (
+            cd "${out}"
+            sha256sum application-bundle.pb > application-bundle.pb.sha256
+          )
+
           edge-platform/target/release/edge-release-set write-linux-manifest \
             --output "${out}/linux-build-manifest.pb" \
             --candidate-source-revision "${CANDIDATE_REVISION}" \
@@ -1414,7 +1439,8 @@ jobs:
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
             --edge-controller "${linux}/edge-controller" \
-            --edge-orchestrator "${linux}/edge-orchestrator")"
+            --edge-orchestrator "${linux}/edge-orchestrator" \
+            --application-bundle "${linux}/application-bundle.pb")"
           printf '%s\n' "${create_output}"
 
           release_set_sha="$(sed -n 's/^release_set_sha256=//p' <<<"${create_output}")"
@@ -1434,7 +1460,8 @@ jobs:
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
             --edge-controller "${linux}/edge-controller" \
-            --edge-orchestrator "${linux}/edge-orchestrator")"
+            --edge-orchestrator "${linux}/edge-orchestrator" \
+            --application-bundle "${linux}/application-bundle.pb")"
           printf '%s\n' "${verify_output}"
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"
           warp_ref="$(sed -n 's/^warp_egress_image=//p' <<<"${verify_output}")"
@@ -1444,6 +1471,15 @@ jobs:
           docker buildx imagetools inspect "${warp_ref}" >/dev/null
           docker logout ghcr.io >/dev/null
           docker buildx imagetools inspect "${mesh_ref}" >/dev/null
+
+          cp "${linux}/application-bundle.pb" "${authority}/application-bundle.pb"
+          cp "${linux}/application-bundle.pb.sha256" "${authority}/application-bundle.pb.sha256"
+          (
+            cd "${authority}"
+            sha256sum -c application-bundle.pb.sha256
+          )
+          application_bundle_sha="$(sed -n 's/^application_bundle_sha256=//p' <<<"${verify_output}")"
+          test "${application_bundle_sha}" = "$(sha256sum "${authority}/application-bundle.pb" | awk '{print $1}')"
 
           {
             echo '### Canonical ReleaseSet candidate'
@@ -1595,7 +1631,8 @@ jobs:
             --linux-sing-box "${linux}/sing-box-linux" \
             --edge-agent "${linux}/edge-agent" \
             --edge-controller "${linux}/edge-controller" \
-            --edge-orchestrator "${linux}/edge-orchestrator")"
+            --edge-orchestrator "${linux}/edge-orchestrator" \
+            --application-bundle "${linux}/application-bundle.pb")"
           printf '%s\n' "${verify_output}"
 
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"
