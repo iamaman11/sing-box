@@ -1,15 +1,12 @@
 use edge_controller_core::production::ProductionComposition;
 use edge_provider_cloudflare::{
     self as cloudflare, CloudflareAccessApplication, CloudflareAccessPolicy,
-    CloudflareAccessServiceToken, CloudflareApiTokenIdentity, CloudflareDevicePostureRule,
-    CloudflareDeviceProfile, CloudflareDnsObservedRecord, CloudflareDnsRecordSummary,
-    CloudflareGatewayRule, CloudflareMeshNode, CloudflareMeshRoute, CloudflareSplitTunnelEntry,
-    CloudflareWorkerDomain, CloudflareWorkerRoute, CloudflareWorkerScript,
-    CloudflareZeroTrustDeviceSettings,
+    CloudflareAccessServiceToken, CloudflareDevicePostureRule, CloudflareDeviceProfile,
+    CloudflareDnsObservedRecord, CloudflareDnsRecordSummary, CloudflareGatewayRule,
+    CloudflareMeshNode, CloudflareMeshRoute, CloudflareSplitTunnelEntry, CloudflareWorkerDomain,
+    CloudflareWorkerRoute, CloudflareWorkerScript, CloudflareZeroTrustDeviceSettings,
 };
 use std::env;
-
-const TARGET_ACCOUNT_NAME: &str = "sing-box";
 
 #[derive(Debug)]
 enum ReadObservation<T> {
@@ -129,58 +126,32 @@ impl SharedDnsSnapshot {
 }
 
 #[derive(Debug)]
-struct Phase0Inventory {
+struct ProductionInventory {
     schema_version: u32,
     mutations_performed: u32,
     observation_status: &'static str,
     blockers: Vec<String>,
-    historical_account_id: String,
-    target_account_name: &'static str,
-    target_account_id: Option<String>,
-    historical_token_identity: ReadObservation<CloudflareApiTokenIdentity>,
-    historical_account: AccountSnapshot,
-    target_account: ReadObservation<AccountSnapshot>,
+    current_account_id: String,
+    shared_dns_account_id: String,
+    migration_target_present: bool,
+    current_account: ReadObservation<AccountSnapshot>,
     shared_dns: SharedDnsSnapshot,
 }
 
 pub(crate) async fn run() -> Result<(), String> {
     let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    let historical_token = env::var("CLOUDFLARE_API_TOKEN").map_err(|_| {
-        "CLOUDFLARE_API_TOKEN is required for historical-account inventory".to_owned()
-    })?;
-    if historical_token.trim().is_empty() {
-        return Err("CLOUDFLARE_API_TOKEN must be non-empty".to_owned());
-    }
+    let current_account_id = composition.cloudflare.active_account_id.clone();
+    let shared_dns_account_id = composition.shared_dns_account_id.clone();
+    let migration_target_present = composition.cloudflare.migration_target_account_id.is_some();
 
-    let historical_account_id = composition.mesh.account_id.clone();
-    let target_account_id = nonempty_env("CLOUDFLARE_TARGET_ACCOUNT_ID");
     let control_token = nonempty_env("CLOUDFLARE_CONTROL_TOKEN");
     let dns_token = nonempty_env("CLOUDFLARE_DNS_TOKEN");
-    let historical_token_identity =
-        ReadObservation::from(cloudflare::verify_api_token(&historical_token).await);
 
-    let historical_account = observe_account(&historical_token, &historical_account_id).await;
-
-    let target_account = match target_account_id.as_deref() {
+    let current_account = match control_token.as_deref() {
+        Some(token) => ReadObservation::Pass(observe_account(token, &current_account_id).await),
         None => ReadObservation::Blocked {
-            error: "CLOUDFLARE_TARGET_ACCOUNT_ID is required for dedicated sing-box account observation"
+            error: "CLOUDFLARE_CONTROL_TOKEN is required for current production account read-only observation"
                 .to_owned(),
-        },
-        Some(account_id) if !is_cloudflare_id(account_id) => ReadObservation::Blocked {
-            error: "CLOUDFLARE_TARGET_ACCOUNT_ID must be exactly 32 hexadecimal characters"
-                .to_owned(),
-        },
-        Some(account_id) if account_id == historical_account_id => ReadObservation::Blocked {
-            error: format!(
-                "target account {TARGET_ACCOUNT_NAME} must differ from historical account {historical_account_id}"
-            ),
-        },
-        Some(account_id) => match control_token.as_deref() {
-            Some(token) => ReadObservation::Pass(observe_account(token, account_id).await),
-            None => ReadObservation::Blocked {
-                error: "CLOUDFLARE_CONTROL_TOKEN is required for dedicated sing-box account read-only observation"
-                    .to_owned(),
-            },
         },
     };
 
@@ -201,16 +172,21 @@ pub(crate) async fn run() -> Result<(), String> {
     };
 
     let mut blockers = Vec::new();
-    if !historical_token_identity.is_pass() {
-        blockers.push("historical automation token identity has blocked read surface".to_owned());
+    if migration_target_present {
+        blockers.push(
+            "cloudflare migration target must be absent after the accepted account authority flip"
+                .to_owned(),
+        );
     }
-    if !historical_account.complete() {
-        blockers.push("historical account inventory has blocked read surfaces".to_owned());
+    if current_account_id == shared_dns_account_id {
+        blockers.push(
+            "current production account must remain distinct from the shared DNS account".to_owned(),
+        );
     }
-    match &target_account {
+    match &current_account {
         ReadObservation::Pass(snapshot) if snapshot.complete() => {}
         ReadObservation::Pass(_) => {
-            blockers.push("target account inventory has blocked read surfaces".to_owned())
+            blockers.push("current production account inventory has blocked read surfaces".to_owned())
         }
         ReadObservation::NotConfigured { reason } => blockers.push(reason.clone()),
         ReadObservation::Blocked { error } => blockers.push(error.clone()),
@@ -224,46 +200,27 @@ pub(crate) async fn run() -> Result<(), String> {
     } else {
         "BLOCKED"
     };
-    let inventory = Phase0Inventory {
-        schema_version: 1,
+    let inventory = ProductionInventory {
+        schema_version: 2,
         mutations_performed: 0,
         observation_status,
         blockers,
-        historical_account_id,
-        target_account_name: TARGET_ACCOUNT_NAME,
-        target_account_id,
-        historical_token_identity,
-        historical_account,
-        target_account,
+        current_account_id,
+        shared_dns_account_id,
+        migration_target_present,
+        current_account,
         shared_dns,
     };
 
-    println!("Cloudflare Phase 0 read-only inventory");
+    println!("Cloudflare production read-only inventory");
     println!("observation_status={}", inventory.observation_status);
     println!("mutations_performed={}", inventory.mutations_performed);
-    println!("historical_account_id={}", inventory.historical_account_id);
-    println!("target_account_name={}", inventory.target_account_name);
+    println!("current_account_id={}", inventory.current_account_id);
+    println!("shared_dns_account_id={}", inventory.shared_dns_account_id);
     println!(
-        "target_account_id={}",
-        inventory
-            .target_account_id
-            .as_deref()
-            .unwrap_or("<missing>")
+        "migration_target_present={}",
+        inventory.migration_target_present
     );
-    match &inventory.historical_token_identity {
-        ReadObservation::Pass(identity) => {
-            println!("historical_token_id={}", identity.id);
-            println!("historical_token_status={}", identity.status);
-        }
-        ReadObservation::NotConfigured { reason } => {
-            println!("historical_token_id=<not-configured>");
-            println!("historical_token_status={reason}");
-        }
-        ReadObservation::Blocked { .. } => {
-            println!("historical_token_id=<blocked>");
-            println!("historical_token_status=<blocked>");
-        }
-    }
     println!();
     println!("{inventory:#?}");
 
@@ -271,7 +228,7 @@ pub(crate) async fn run() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Cloudflare Phase 0 inventory BLOCKED by {} read/ownership condition(s)",
+            "Cloudflare production inventory BLOCKED by {} read/ownership condition(s)",
             inventory.blockers.len()
         ))
     }
