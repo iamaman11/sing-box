@@ -1893,24 +1893,6 @@ pub async fn update_device_profile(
     device_profile_from_value(payload.result)
 }
 
-pub async fn delete_device_profile(
-    api_token: &str,
-    account_id: &str,
-    profile_id: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare device profile ID", profile_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .delete(format!(
-            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"
-        ))
-        .send()
-        .await
-        .map_err(|err| format!("failed to delete Cloudflare device profile: {err}"))?;
-    ensure_success(response).await
-}
-
 pub async fn get_device_profile_includes(
     api_token: &str,
     account_id: &str,
