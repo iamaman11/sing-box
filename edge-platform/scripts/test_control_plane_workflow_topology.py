@@ -33,6 +33,7 @@ CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.p
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
 PRODUCTION_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_production_inventory.rs")
+HISTORICAL_RETIREMENT = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_historical_retirement.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-production-runner.sh")
@@ -74,6 +75,7 @@ def main() -> None:
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     controller_proto = CONTROLLER_PROTO.read_text(encoding="utf-8")
     production_inventory = PRODUCTION_INVENTORY.read_text(encoding="utf-8")
+    historical_retirement = HISTORICAL_RETIREMENT.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     production_vm_runner_installer = PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
@@ -450,10 +452,15 @@ def main() -> None:
         "provider target-plane logic may remain internal, but its public transitional operator surface must be retired",
     )
     require(
-        application.count("group: vultr-control-plane-production") == 5,
-        "application backend must serialize enrollment, provider, observation, cleanup and disposable acceptance jobs",
+        application.count("group: vultr-control-plane-production") == 6,
+        "application backend must serialize enrollment, provider, observation, bounded historical retirement, cleanup and disposable acceptance jobs",
     )
-    production_observe = application.split("  production_observe:\n", 1)[1].split("\n  production_runtime:", 1)[0]
+    production_observe = application.split("  production_observe:\n", 1)[1].split(
+        "\n  production_historical_retirement:", 1
+    )[0]
+    production_historical_retirement = application.split(
+        "\n  production_historical_retirement:\n", 1
+    )[1].split("\n  production_runtime:", 1)[0]
     require(
         '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
         and "cloudflare-production-inventory.txt" in production_observe
@@ -473,6 +480,40 @@ def main() -> None:
         and "lease-acquire" not in production_observe
         and "lease-release" not in production_observe,
         "production diagnose workflow must remain a thin GET-only wrapper: no jq/JSON lifecycle semantics and no Vultr/SSH authority",
+    )
+    require(
+        '"retire-historical-plan"' in application
+        and '"retire-historical-apply"' in application
+        and '"retire-historical-verify"' in application
+        and "runs-on: ubuntu-24.04" in production_historical_retirement
+        and production_historical_retirement.count("edge-platform/scripts/resolve_durable_release.sh") == 1
+        and '"${EDGE_HISTORICAL_RETIREMENT_ORCHESTRATOR}" production "${typed_operation}"' in production_historical_retirement
+        and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_historical_retirement
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_historical_retirement
+        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_historical_retirement
+        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_historical_retirement
+        and "VULTR_SSH_PRIVATE_KEY" not in production_historical_retirement
+        and "api.ipify.org" not in production_historical_retirement
+        and "lease-acquire" not in production_historical_retirement
+        and "lease-release" not in production_historical_retirement
+        and "- self-hosted" not in production_historical_retirement,
+        "historical retirement must be a temporary GitHub-hosted exact-ReleaseSet provider path with no host mutation authority",
+    )
+    require(
+        'verify_active_invariant().await' in historical_retirement
+        and 'const MAX_MUTATIONS: usize = 6;' in historical_retirement
+        and '"singbox-line3-production"' in historical_retirement
+        and '"vultr"' in historical_retirement
+        and '"sing-box Mesh nodes"' in historical_retirement
+        and '"edge-lease-reaper"' in historical_retirement
+        and '"lease.alegria.by/*"' in historical_retirement
+        and "delete_mesh_cidr_route" in historical_retirement
+        and "delete_mesh_node" in historical_retirement
+        and "delete_device_profile" in historical_retirement
+        and "delete_worker_route" in historical_retirement
+        and "delete_worker_script" in historical_retirement
+        and "mutation was not replayed" in historical_retirement,
+        "historical retirement owner must re-prove target replacement and use only exact bounded one-shot deletes with no replay",
     )
     require(
         "serde_json::to_string" not in production_inventory
@@ -734,10 +775,16 @@ def main() -> None:
     )[0]
     require(
         'tokens[0] == "/production"' in application
-        and '"enroll-runtime", "converge", "verify", "diagnose"' in application
+        and '"enroll-runtime",' in application
+        and '"converge",' in application
+        and '"verify",' in application
+        and '"diagnose",' in application
+        and '"retire-historical-plan",' in application
+        and '"retire-historical-apply",' in application
+        and '"retire-historical-verify",' in application
         and 'tokens == ["/production", "rollback"]' not in application
         and 'spec_path = "infra/production/production.textproto"' in application,
-        "steady-state production grammar must expose converge/verify/diagnose only; rollback remains fail-closed until Macro Stage 2",
+        "production grammar may add only the bounded Stage-3 historical retirement commands beside the accepted steady-state surface",
     )
     require(
         "\n  execute:\n" not in application
@@ -800,6 +847,7 @@ def main() -> None:
         and 'local_operation="bundle-converge"' in production_runtime
         and 'local_operation="bundle-verify"' in production_runtime
         and 'local_operation="diagnose"' in production_runtime
+        and "retire-historical-" not in production_runtime
         and 'local_operation="bootstrap-full"' not in production_runtime
         and "edge-platform/scripts/resolve_durable_release.sh" not in production_runtime
         and "EDGE_LOCAL_ORCHESTRATOR" not in production_runtime
