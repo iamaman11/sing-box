@@ -31,7 +31,6 @@ const VERIFY_FLAGS: &[&str] = &[
     "edge-agent",
     "edge-controller",
     "edge-orchestrator",
-    "application-bundle",
 ];
 
 const VERIFY_VM_FLAGS: &[&str] = &[
@@ -40,7 +39,6 @@ const VERIFY_VM_FLAGS: &[&str] = &[
     "source-revision",
     "edge-agent",
     "edge-controller",
-    "application-bundle",
 ];
 
 const VERIFY_WINDOWS_FLAGS: &[&str] = &[
@@ -613,7 +611,16 @@ fn load_verified_release_set(
 }
 
 fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
-    require_allowed(flags, VERIFY_FLAGS)?;
+    for name in flags.keys() {
+        if !VERIFY_FLAGS.contains(&name.as_str()) && name != "application-bundle" {
+            return Err(format!("unsupported --{name}"));
+        }
+    }
+    for name in VERIFY_FLAGS {
+        if !flags.contains_key(*name) {
+            return Err(format!("missing required --{name}"));
+        }
+    }
     let (release, digest) = load_verified_release_set(flags)?;
 
     let sing_box = release
@@ -683,6 +690,8 @@ fn verify_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
             Path::new(flag(flags, "application-bundle")?),
             &vm.application_bundle_sha256,
         )?;
+    } else if flags.contains_key("application-bundle") {
+        return Err("ReleaseSet schemas before v7 must not receive --application-bundle".to_owned());
     }
 
     print_vm_evidence(&release, &digest)
@@ -801,7 +810,10 @@ fn write_windows_activation_state(flags: &BTreeMap<String, String>) -> Result<()
 
 fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String> {
     for name in flags.keys() {
-        if !VERIFY_VM_FLAGS.contains(&name.as_str()) && name != "edge-orchestrator" {
+        if !VERIFY_VM_FLAGS.contains(&name.as_str())
+            && name != "edge-orchestrator"
+            && name != "application-bundle"
+        {
             return Err(format!("unsupported --{name}"));
         }
     }
@@ -845,6 +857,8 @@ fn verify_vm_release_set(flags: &BTreeMap<String, String>) -> Result<(), String>
             Path::new(flag(flags, "application-bundle")?),
             &vm.application_bundle_sha256,
         )?;
+    } else if flags.contains_key("application-bundle") {
+        return Err("ReleaseSet schemas before v7 must not receive --application-bundle".to_owned());
     }
 
     print_vm_evidence(&release, &digest)
