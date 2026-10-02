@@ -223,7 +223,7 @@ Steady-state direction:
 /production rollback
 /production diagnose
 
-/credentials rotate
+/credentials rotate <credential-class>
 /credentials verify
 
 /windows <bounded physical/local operations>
@@ -231,9 +231,14 @@ Steady-state direction:
 
 Exact grammar may become smaller.
 
-After Cloudflare ownership convergence, separate production-facing `/dns`, `/mesh` and
-`/zero-trust` command/workflow ownership should disappear into canonical typed
-`/production` composition.
+After Cloudflare ownership convergence, separate production-facing `/dns`, `/mesh`,
+`/zero-trust` and public `/production target-plane-*` command/workflow ownership disappears into
+canonical typed `/production` composition. Provider-specific target-plane logic may remain as an
+internal typed implementation detail; it is not a second steady-state operator namespace.
+
+Disposable `/application acceptance|cleanup` and `/production enroll-runtime` are exceptional
+acceptance/bootstrap surfaces, not normal steady-state operator API. They remain only while their
+exact disposable-acceptance or reinstallation consumers exist.
 
 Workflows may:
 - authorize actor/repository/environment;
@@ -362,6 +367,13 @@ publication is not activation; runtime owners promote only after both projection
 verification pass. An uncertain slot mutation is resolved by read-only exact-generation
 re-observation before any replay.
 
+Operator-visible application rotation is class-scoped. The independent classes are
+`tunnel-auth`, `reality-identity` and `line2-proxy-auth`; rotating one must preserve the other
+two generations. Windows and VM Cloudflare Access host identities are separate credential classes
+with explicit bootstrap/recovery/rotation semantics and must never rotate implicitly as a side
+effect of application credential rotation. The accepted Stage-2 `fresh-v2-*` and contract-proof
+operations are migration/proof surfaces, not steady-state rotation commands.
+
 Non-secret endpoint/domain/port policy remains Git-owned desired state and is not duplicated into
 credential payloads.
 
@@ -472,9 +484,10 @@ SSH tunnels or TCP/gRPC agent transport. The only retained remote-agent consumer
 the disposable acceptance/bootstrap path, where a fresh temporary VM has no self-hosted runner yet.
 It is not steady-state production transport.
 
-The standalone `/mesh` operator namespace is retired. Production Mesh provider state is owned by
-the hosted `/production target-plane-*` path; Mesh container/runtime state is owned by the VM local
-runtime owner through Compose/Bollard. There is no second normal Mesh transport.
+The standalone `/mesh` and public `/production target-plane-*` operator namespaces are retired.
+Production Mesh provider state remains owned by the GitHub-only typed production composition;
+Mesh container/runtime state is owned by the VM local runtime owner through Compose/Bollard. There
+is no second normal Mesh transport or public target-plane control surface.
 
 The remaining tonic/`edge-trust` server surface is named `acceptance-serve` and has no default
 invocation. Production enrollment disables `edge-agent.service` and proves port 50061 absent; the
@@ -486,9 +499,12 @@ ReleaseSet local owner and register the low-privilege runner. The command compen
 PASS. It is enrollment/reinstallation, not steady-state application transport.
 
 Neither runner has provider credentials or plaintext application credential authority. Privileged
-host mutations cross only explicit typed local boundaries. Macro Stage 1 keeps production rollback
-fail-closed; the new local plan/digest rollback contract is completed together with the terminal v2
-cutover in Macro Stage 2 rather than falling back to SSH.
+host mutations cross only explicit typed local boundaries.
+
+Production rollback must use the same accepted persistent-host transport as normal production
+runtime operations: self-hosted runner -> typed local owner. Historical rollback semantics and
+authorization may be reused, but the legacy implementation that acquires transient support access
+and performs remote rollback is not a steady-state operator path and must not be exposed as-is.
 
 ## 7. Diagnostics contract
 
@@ -510,6 +526,14 @@ Final diagnostics must provide secret-safe read-only evidence for:
 - bounded failure reasons.
 
 A diagnostic result does not repair the machine.
+
+Installed Windows diagnostics/status must observe the SCM-owned managed runtime directly and must
+not treat the intentionally absent server-agent RPC listener on port 50061 as a Windows health
+failure. The 50061/`acceptance-serve` surface is transitional only for disposable bootstrap-time
+acceptance. Runtime dial `server_ip` and logical tunnel/TLS domain are distinct diagnostic fields
+and must not be compared as interchangeable identities. Persisted selector intent remains canonical
+while start/restart recovery consumes it; status must distinguish desired intent from live observed
+selection rather than deleting or silently overriding that recovery state.
 
 ## 8. Full lifecycle closure
 
