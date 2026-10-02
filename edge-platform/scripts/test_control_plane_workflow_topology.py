@@ -36,6 +36,7 @@ PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_p
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-production-runner.sh")
+DURABLE_RELEASE_RESOLVER = Path("edge-platform/scripts/resolve_durable_release.sh")
 
 
 def require(condition: bool, message: str) -> None:
@@ -79,6 +80,7 @@ def main() -> None:
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     production_vm_runner_installer = PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
+    durable_release_resolver = DURABLE_RELEASE_RESOLVER.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -108,6 +110,19 @@ def main() -> None:
     require(
         listeners == [ROUTER.name],
         f"exactly one issue_comment listener is required, observed: {listeners}",
+    )
+    require(
+        "github_api_get()" in durable_release_resolver
+        and "--proto '=https'" in durable_release_resolver
+        and "--proto-redir '=https'" in durable_release_resolver
+        and "--connect-timeout 10" in durable_release_resolver
+        and "--max-time 30" in durable_release_resolver
+        and "Authorization: Bearer ${GH_TOKEN}" in durable_release_resolver
+        and "Accept: application/vnd.github+json" in durable_release_resolver
+        and "X-GitHub-Api-Version: 2026-03-10" in durable_release_resolver
+        and durable_release_resolver.count("github_api_get ") == 5
+        and "gh api" not in durable_release_resolver,
+        "durable release resolution must use one bounded HTTPS GitHub API reader and no gh CLI dependency",
     )
 
     require("workflow_call:" in application, "application lifecycle must be reusable")
