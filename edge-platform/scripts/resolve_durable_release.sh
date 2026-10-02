@@ -13,6 +13,23 @@ for name in GH_TOKEN REPOSITORY ACCEPTED_REVISION OUTPUT_DIR; do
   require_env "$name"
 done
 
+github_api_get() {
+  local path="$1"
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --connect-timeout 10 \
+    --max-time 30 \
+    --header "Authorization: Bearer ${GH_TOKEN}" \
+    --header "Accept: application/vnd.github+json" \
+    --header "X-GitHub-Api-Version: 2026-03-10" \
+    "https://api.github.com/${path}"
+}
+
 [[ "$REPOSITORY" = "iamaman11/sing-box" ]]
 [[ "$ACCEPTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
 if [[ -n "${EXPECTED_RELEASE_TAG:-}" ]]; then
@@ -46,7 +63,7 @@ matching_releases="${out}/.matching-releases.jsonl"
 
 page=1
 while :; do
-  page_json="$(gh api "repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
+  page_json="$(github_api_get "repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
   jq -c --arg accepted "$ACCEPTED_REVISION" '
     .[]
     | select(.draft == false)
@@ -65,7 +82,7 @@ done
 while IFS= read -r candidate_release; do
   [[ -n "$candidate_release" ]] || continue
   candidate_tag="$(jq -er '.tag_name' <<<"$candidate_release")"
-  ref_json="$(gh api "repos/${REPOSITORY}/git/ref/tags/${candidate_tag}")"
+  ref_json="$(github_api_get "repos/${REPOSITORY}/git/ref/tags/${candidate_tag}")"
   test "$(jq -er '.object.type' <<<"$ref_json")" = "commit"
   ref_sha="$(jq -er '.object.sha' <<<"$ref_json")"
   [[ "$ref_sha" =~ ^[0-9a-f]{40}$ ]]
@@ -95,7 +112,7 @@ if [[ -n "${EXPECTED_RELEASE_TAG:-}" ]]; then
   }
 fi
 
-release_json="$(gh api "repos/${REPOSITORY}/releases/${release_id}")"
+release_json="$(github_api_get "repos/${REPOSITORY}/releases/${release_id}")"
 test "$(jq -er '.id' <<<"$release_json")" = "$release_id"
 test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
 test "$(jq -r '.draft' <<<"$release_json")" = "false"
@@ -191,8 +208,8 @@ candidate_run_id="$(jq -r '.candidate_run_id' "$acceptance")"
 [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]]
 [[ "$candidate_run_id" =~ ^[0-9]+$ ]]
 
-accepted_commit="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}")"
-candidate_commit="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}")"
+accepted_commit="$(github_api_get "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}")"
+candidate_commit="$(github_api_get "repos/${REPOSITORY}/git/commits/${candidate_revision}")"
 test "$(jq -er '.tree.sha' <<<"$accepted_commit")" = "$source_tree"
 test "$(jq -er '.tree.sha' <<<"$candidate_commit")" = "$source_tree"
 
