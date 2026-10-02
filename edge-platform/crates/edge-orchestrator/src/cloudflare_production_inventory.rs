@@ -180,14 +180,14 @@ pub(crate) async fn run() -> Result<(), String> {
     }
     if current_account_id == shared_dns_account_id {
         blockers.push(
-            "current production account must remain distinct from the shared DNS account".to_owned(),
+            "current production account must remain distinct from the shared DNS account"
+                .to_owned(),
         );
     }
     match &current_account {
         ReadObservation::Pass(snapshot) if snapshot.complete() => {}
-        ReadObservation::Pass(_) => {
-            blockers.push("current production account inventory has blocked read surfaces".to_owned())
-        }
+        ReadObservation::Pass(_) => blockers
+            .push("current production account inventory has blocked read surfaces".to_owned()),
         ReadObservation::NotConfigured { reason } => blockers.push(reason.clone()),
         ReadObservation::Blocked { error } => blockers.push(error.clone()),
     }
