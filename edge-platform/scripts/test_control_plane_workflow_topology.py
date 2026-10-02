@@ -1014,6 +1014,15 @@ def main() -> None:
         and 'local_operation="bundle-verify"' in production_runtime
         and 'local_operation="diagnose"' in production_runtime
         and 'local_operation="bootstrap-full"' not in production_runtime
+        and "Materialize exact canonical revision without Git" in production_runtime
+        and "/commits/${REVISION}" in production_runtime
+        and "/tarball/${REVISION}" in production_runtime
+        and 'jq -er \'.sha\'' in production_runtime
+        and 'tar -xzf "${source_archive}"' in production_runtime
+        and "EDGE_CANONICAL_SOURCE" in production_runtime
+        and "git init ." not in production_runtime
+        and "git fetch " not in production_runtime
+        and "actions/checkout" not in production_runtime
         and "VULTR_API_KEY" not in production_runtime
         and "CLOUDFLARE_CONTROL_TOKEN" not in production_runtime
         and "CLOUDFLARE_DNS_TOKEN" not in production_runtime
