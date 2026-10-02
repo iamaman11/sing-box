@@ -9,7 +9,7 @@ mod cloudflare_dns_lifecycle_command;
 mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
-mod cloudflare_phase0_inventory;
+mod cloudflare_production_inventory;
 mod cloudflare_target_plane_command;
 mod cloudflare_zero_trust_doctor;
 mod cloudflare_zero_trust_lifecycle_command;
@@ -174,7 +174,7 @@ async fn run(
         }
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
-            cli::ProductionCommand::Diagnose => cloudflare_phase0_inventory::run().await,
+            cli::ProductionCommand::Diagnose => cloudflare_production_inventory::run().await,
             cli::ProductionCommand::EnrollRuntime(args) => {
                 production_command::enroll_runtime(
                     release_context,
