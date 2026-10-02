@@ -458,6 +458,8 @@ def main() -> None:
         and "if: needs.authorize.outputs.operation == 'contract-converge'" in credentials
         and "if: needs.authorize.outputs.operation != 'contract-converge'" in credentials
         and "group: vultr-control-plane-production" in credentials
+        and "group: credential-transaction-${{ github.repository_id }}" in credentials
+        and "cancel-in-progress: false" in credentials
         and "credential-lifecycle-production" not in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials

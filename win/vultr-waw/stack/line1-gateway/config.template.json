@@ -14,6 +14,11 @@
         "tag": "upstream-google",
         "type": "udp",
         "server": "8.8.8.8"
+      },
+      {
+        "tag": "docker-local",
+        "type": "local",
+        "prefer_go": true
       }
     ],
     "final": "upstream-cloudflare",
@@ -137,7 +142,8 @@
       "server": "warp-egress",
       "server_port": 11080,
       "version": "5",
-      "network": "tcp"
+      "network": "tcp",
+      "domain_resolver": "docker-local"
     },
     {
       "type": "direct",

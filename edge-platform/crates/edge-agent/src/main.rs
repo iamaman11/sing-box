@@ -3035,45 +3035,41 @@ fn wait_for_warp_datapath() -> Result<(), String> {
     Err("WARP egress datapath did not become ready within 90 seconds".to_owned())
 }
 
-fn runtime_probe_consumer(running_containers: &[String]) -> Option<&'static str> {
-    if running_containers
-        .iter()
-        .any(|name| name == LINE2_CONTAINER)
-    {
-        return Some(LINE2_CONTAINER);
-    }
-    if running_containers
-        .iter()
-        .any(|name| name == LINE1_CONTAINER)
-    {
-        return Some(LINE1_CONTAINER);
-    }
-    None
+fn runtime_probe_consumers(running_containers: &[String]) -> Vec<&'static str> {
+    [LINE1_CONTAINER, LINE2_CONTAINER]
+        .into_iter()
+        .filter(|candidate| {
+            running_containers
+                .iter()
+                .any(|running| running == candidate)
+        })
+        .collect()
 }
 
 fn probe_direct_egress(running_containers: &[String]) -> bool {
-    let Some(consumer) = runtime_probe_consumer(running_containers) else {
-        return false;
-    };
-    bounded_command_output(
-        "docker",
-        &[
-            "exec",
-            consumer,
-            "curl",
-            "-4",
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--connect-timeout",
-            "3",
-            "--max-time",
-            "8",
-            CLOUDFLARE_TRACE_URL,
-        ],
-        12,
-    )
-    .is_some_and(|output| cloudflare_trace_has_warp_mode(&output, "off"))
+    let consumers = runtime_probe_consumers(running_containers);
+    !consumers.is_empty()
+        && consumers.into_iter().all(|consumer| {
+            bounded_command_output(
+                "docker",
+                &[
+                    "exec",
+                    consumer,
+                    "curl",
+                    "-4",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--connect-timeout",
+                    "3",
+                    "--max-time",
+                    "8",
+                    CLOUDFLARE_TRACE_URL,
+                ],
+                12,
+            )
+            .is_some_and(|output| cloudflare_trace_has_warp_mode(&output, "off"))
+        })
 }
 
 fn warp_client_connected() -> bool {
@@ -3119,33 +3115,34 @@ fn probe_warp_egress(running_containers: &[String]) -> bool {
     if !warp_client_connected() {
         return false;
     }
-    let Some(consumer) = runtime_probe_consumer(running_containers) else {
-        return false;
-    };
-    bounded_command_output(
-        "docker",
-        &[
-            "exec",
-            consumer,
-            "curl",
-            "-4",
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--connect-timeout",
-            "3",
-            "--max-time",
-            "8",
-            "--socks5-hostname",
-            "warp-egress:11080",
-            CLOUDFLARE_TRACE_URL,
-        ],
-        12,
-    )
-    .is_some_and(|output| {
-        cloudflare_trace_has_warp_mode(&output, "on")
-            || cloudflare_trace_has_warp_mode(&output, "plus")
-    })
+    let consumers = runtime_probe_consumers(running_containers);
+    !consumers.is_empty()
+        && consumers.into_iter().all(|consumer| {
+            bounded_command_output(
+                "docker",
+                &[
+                    "exec",
+                    consumer,
+                    "curl",
+                    "-4",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--connect-timeout",
+                    "3",
+                    "--max-time",
+                    "8",
+                    "--socks5-hostname",
+                    "warp-egress:11080",
+                    CLOUDFLARE_TRACE_URL,
+                ],
+                12,
+            )
+            .is_some_and(|output| {
+                cloudflare_trace_has_warp_mode(&output, "on")
+                    || cloudflare_trace_has_warp_mode(&output, "plus")
+            })
+        })
 }
 
 fn parse_warp_connection_state(probe: &BoundedCommandProbe) -> Option<String> {
@@ -4953,22 +4950,75 @@ mod tests {
     }
 
     #[test]
-    fn datapath_probe_uses_an_enabled_gateway_consumer() {
+    fn datapath_probe_requires_every_enabled_gateway_consumer() {
         assert_eq!(
-            runtime_probe_consumer(&["vultr-line1-gateway".to_owned()]),
-            Some(LINE1_CONTAINER)
+            runtime_probe_consumers(&["vultr-line1-gateway".to_owned()]),
+            vec![LINE1_CONTAINER]
         );
         assert_eq!(
-            runtime_probe_consumer(&[
+            runtime_probe_consumers(&[
                 "vultr-line1-gateway".to_owned(),
                 "vultr-line2-proxy".to_owned(),
             ]),
-            Some(LINE2_CONTAINER)
+            vec![LINE1_CONTAINER, LINE2_CONTAINER]
+        );
+        assert!(runtime_probe_consumers(&["vultr-warp-egress".to_owned()]).is_empty());
+    }
+
+    fn assert_gateway_uses_docker_local_warp_resolver(raw: &str) {
+        let config: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let servers = config
+            .pointer("/dns/servers")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        let local = servers
+            .iter()
+            .find(|server| {
+                server.get("tag").and_then(serde_json::Value::as_str) == Some("docker-local")
+            })
+            .unwrap();
+        assert_eq!(
+            local.get("type").and_then(serde_json::Value::as_str),
+            Some("local")
         );
         assert_eq!(
-            runtime_probe_consumer(&["vultr-warp-egress".to_owned()]),
-            None
+            local.get("prefer_go").and_then(serde_json::Value::as_bool),
+            Some(true)
         );
+
+        let outbounds = config
+            .get("outbounds")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        let warp = outbounds
+            .iter()
+            .find(|outbound| {
+                outbound.get("tag").and_then(serde_json::Value::as_str) == Some("warp-local")
+            })
+            .unwrap();
+        assert_eq!(
+            warp.get("server").and_then(serde_json::Value::as_str),
+            Some("warp-egress")
+        );
+        assert_eq!(
+            warp.get("domain_resolver")
+                .and_then(serde_json::Value::as_str),
+            Some("docker-local")
+        );
+    }
+
+    #[test]
+    fn line1_gateway_warp_outbound_uses_container_local_dns() {
+        assert_gateway_uses_docker_local_warp_resolver(include_str!(
+            "../../../../win/vultr-waw/stack/line1-gateway/config.template.json"
+        ));
+    }
+
+    #[test]
+    fn line2_gateway_warp_outbound_uses_container_local_dns() {
+        assert_gateway_uses_docker_local_warp_resolver(include_str!(
+            "../../../../win/vultr-waw/stack/line2-proxy/config.template.json"
+        ));
     }
 
     #[test]
