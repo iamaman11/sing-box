@@ -39,7 +39,13 @@ jobs:
           spec_path = ""
 
           if len(tokens) == 2 and tokens[0] == "/production" and tokens[1] in {
-              "enroll-runtime", "converge", "verify", "diagnose"
+              "enroll-runtime",
+              "converge",
+              "verify",
+              "diagnose",
+              "retire-historical-plan",
+              "retire-historical-apply",
+              "retire-historical-verify",
           }:
               command_family = "production"
               operation = tokens[1]
@@ -230,8 +236,10 @@ jobs:
       cancel-in-progress: false
     if: >-
       needs.authorize.outputs.command_family == 'production' &&
-      needs.authorize.outputs.operation != 'diagnose' &&
-      needs.authorize.outputs.operation != 'enroll-runtime'
+      (
+        needs.authorize.outputs.operation == 'converge' ||
+        needs.authorize.outputs.operation == 'verify'
+      )
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -416,6 +424,99 @@ jobs:
           cat "${result}" >> "${GITHUB_STEP_SUMMARY}"
           echo '~~~' >> "${GITHUB_STEP_SUMMARY}"
           exit "${command_rc}"
+  production_historical_retirement:
+    needs: authorize
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    if: >-
+      needs.authorize.outputs.command_family == 'production' &&
+      startsWith(needs.authorize.outputs.operation, 'retire-historical-')
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
+
+    steps:
+      - name: Checkout exact canonical revision
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+          test "${SPEC_PATH}" = "infra/production/production.textproto"
+          test -f "${SPEC_PATH}"
+
+      - name: Resolve exact durable Edge Platform release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/resolve_durable_release.sh
+          dir="${RUNNER_TEMP}/edge-platform-release"
+          source "${dir}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${orchestrator}"
+          printf 'EDGE_HISTORICAL_RETIREMENT_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${dir}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Execute bounded historical Cloudflare retirement
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          case "${REQUESTED_OPERATION}" in
+            retire-historical-plan)
+              typed_operation="historical-retirement-plan"
+              ;;
+            retire-historical-apply)
+              typed_operation="historical-retirement-apply"
+              ;;
+            retire-historical-verify)
+              typed_operation="historical-retirement-verify"
+              ;;
+            *)
+              echo "unsupported historical retirement operation" >&2
+              exit 1
+              ;;
+          esac
+          result="${RUNNER_TEMP}/historical-retirement-result.txt"
+          "${EDGE_HISTORICAL_RETIREMENT_ORCHESTRATOR}" production "${typed_operation}" | tee "${result}"
+          {
+            echo '### Stage 3 historical Cloudflare retirement'
+            echo
+            printf 'Operation: `%s`\n' "${REQUESTED_OPERATION}"
+            echo
+            echo 'The typed owner re-verifies the accepted current target plane before every historical mutation, touches only exact historical sing-box identities, and re-observes after each mutation. Shared/unrelated account resources and canonical shared DNS remain out of scope.'
+            echo
+            echo '~~~text'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   production_runtime:
     needs:
       - authorize
@@ -425,14 +526,16 @@ jobs:
       always() &&
       needs.authorize.result == 'success' &&
       needs.authorize.outputs.command_family == 'production' &&
-      needs.authorize.outputs.operation != 'enroll-runtime' &&
       (
         (
           needs.authorize.outputs.operation == 'diagnose' &&
           needs.production_observe.result == 'success'
         ) ||
         (
-          needs.authorize.outputs.operation != 'diagnose' &&
+          (
+            needs.authorize.outputs.operation == 'converge' ||
+            needs.authorize.outputs.operation == 'verify'
+          ) &&
           needs.production_provider.result == 'success'
         )
       )

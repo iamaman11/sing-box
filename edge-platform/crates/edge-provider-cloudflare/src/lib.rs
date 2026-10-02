@@ -1390,6 +1390,44 @@ pub async fn list_worker_routes(
     Ok(routes)
 }
 
+pub async fn delete_worker_route(
+    api_token: &str,
+    zone_name: &str,
+    route_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare DNS zone", zone_name)?;
+    require_non_empty("Cloudflare Worker route ID", route_id)?;
+    let client = authorized_client(api_token)?;
+    let zone = fetch_zone(&client, zone_name).await?;
+    let response = client
+        .delete(format!(
+            "{API_ROOT}/zones/{}/workers/routes/{route_id}",
+            zone.id
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to delete Cloudflare Worker route: {err}"))?;
+    ensure_success(response).await
+}
+
+pub async fn delete_worker_script(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .delete(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to delete Cloudflare Worker script: {err}"))?;
+    ensure_success(response).await
+}
+
 pub async fn upsert_a_record(
     api_token: &str,
     zone_name: &str,
@@ -1853,6 +1891,24 @@ pub async fn update_device_profile(
         .map_err(|err| format!("failed to update Cloudflare device profile: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
     device_profile_from_value(payload.result)
+}
+
+pub async fn delete_device_profile(
+    api_token: &str,
+    account_id: &str,
+    profile_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare device profile ID", profile_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .delete(format!(
+            "{API_ROOT}/accounts/{account_id}/devices/policy/{profile_id}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to delete Cloudflare device profile: {err}"))?;
+    ensure_success(response).await
 }
 
 pub async fn get_device_profile_includes(

@@ -236,6 +236,13 @@ After Cloudflare ownership convergence, separate production-facing `/dns`, `/mes
 canonical typed `/production` composition. Provider-specific target-plane logic may remain as an
 internal typed implementation detail; it is not a second steady-state operator namespace.
 
+Stage 3 may temporarily expose bounded `/production retire-historical-plan|apply|verify` commands
+only to remove the previously classified application-exclusive residuals from the historical/shared
+Cloudflare account. That owner must re-prove the accepted current target plane before every delete,
+match exact historical identities, mutate one resource at a time with read-only re-observation, and
+never broaden cleanup across the shared account or zone. The temporary commands, their historical
+write authority and their dedicated implementation must be deleted immediately after terminal NOOP.
+
 Disposable `/application acceptance|cleanup` and `/production enroll-runtime` are exceptional
 acceptance/bootstrap surfaces, not normal steady-state operator API. They remain only while their
 exact disposable-acceptance or reinstallation consumers exist.
