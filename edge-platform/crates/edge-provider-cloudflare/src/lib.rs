@@ -1390,19 +1390,23 @@ pub async fn list_worker_routes(
     Ok(routes)
 }
 
+pub async fn resolve_zone_id(api_token: &str, zone_name: &str) -> Result<String, String> {
+    require_non_empty("Cloudflare DNS zone", zone_name)?;
+    let client = authorized_client(api_token)?;
+    Ok(fetch_zone(&client, zone_name).await?.id)
+}
+
 pub async fn delete_worker_route(
     api_token: &str,
-    zone_name: &str,
+    zone_id: &str,
     route_id: &str,
 ) -> Result<(), String> {
-    require_non_empty("Cloudflare DNS zone", zone_name)?;
+    require_non_empty("Cloudflare zone ID", zone_id)?;
     require_non_empty("Cloudflare Worker route ID", route_id)?;
     let client = authorized_client(api_token)?;
-    let zone = fetch_zone(&client, zone_name).await?;
     let response = client
         .delete(format!(
-            "{API_ROOT}/zones/{}/workers/routes/{route_id}",
-            zone.id
+            "{API_ROOT}/zones/{zone_id}/workers/routes/{route_id}"
         ))
         .send()
         .await
