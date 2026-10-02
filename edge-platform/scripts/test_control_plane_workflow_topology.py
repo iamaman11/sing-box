@@ -261,71 +261,13 @@ def main() -> None:
         and "observe_canonical_credential_bundle" in windows_console,
         "fresh-v2 data-plane admission must stay read-only and inside the existing host-local credential owners",
     )
-    publish_index = credentials.index("  cutover_publish:")
-    vm_admit_index = credentials.index("  cutover_vm_admit:")
-    windows_admit_index = credentials.index("  cutover_windows_admit:")
-    vm_stage_index = credentials.index("  cutover_vm_stage:")
-    windows_stage_index = credentials.index("  cutover_windows_stage:")
-    require(
-        publish_index < vm_admit_index < windows_admit_index < vm_stage_index < windows_stage_index,
-        "fresh-v2 provider publication must be admitted by both local owners before either host stages a candidate",
-    )
-    publish_block = credentials[publish_index:vm_admit_index]
-    require(
-        'GITHUB_RUN_ID' in publish_block
-        and 'GITHUB_RUN_ATTEMPT' in publish_block
-        and 'ACCEPTED_REVISION"][:16]' not in publish_block
-        and "credential_fresh_v2_provider_publish=PASS" in publish_block,
-        "fresh random credential snapshots must use workflow-attempt identity, not commit identity, and provider publish must not masquerade as data-plane admission",
-    )
-    require(
-        "cutover_vm_abort_uncommitted:" in credentials
-        and "cutover_windows_abort_uncommitted:" in credentials
-        and "cutover_provider_abort_uncommitted:" in credentials
-        and "cutover_vm_recover_candidate_failure" not in credentials
-        and "cutover_windows_recover_candidate_failure" not in credentials
-        and "cutover_vm_recover_windows_restart_failure" not in credentials,
-        "all uncommitted fresh-v2 failure phases must collapse into one ordered VM -> Windows -> provider abort path",
-    )
-    windows_abort_index = credentials.index("  cutover_windows_abort_uncommitted:")
-    windows_abort_end = credentials.index("  cutover_provider_abort_uncommitted:", windows_abort_index)
-    windows_abort_block = credentials[windows_abort_index:windows_abort_end]
-    require(
-        "privileged-activate" not in windows_abort_block
-        and "exact_release_files" in windows_abort_block
-        and "release_set_sha256" in windows_abort_block
-        and "EDGE_CREDENTIAL_OPERATION" in windows_abort_block
-        and "fresh-v2-cleanup" in windows_abort_block
-        and "STAGE2_WINDOWS_ABORT_RELEASE_VERIFY=PASS" in windows_abort_block,
-        "Windows uncommitted abort must verify the installed activation authority without replaying release activation",
-    )
-    require(
-        '("/credentials", "fresh-v2-publication-prove"): "fresh-v2-publication-prove"' in credentials
-        and "cutover_publication_prove_complete:" in credentials
-        and "FRESH_V2_PUBLICATION_DATA_PLANE_ADMISSION=PASS" in credentials
-        and "FRESH_V2_PUBLICATION_BASELINE_RESTORE=PASS" in credentials
-        and "FRESH_V2_PUBLICATION_PROOF=PASS" in credentials,
-        "fresh-v2 publication must have a bounded live proof path that stops before host staging and restores the provider baseline",
-    )
-    publication_proof_index = credentials.index("  cutover_publication_prove_complete:")
-    publication_proof_end = credentials.index("  cutover_windows_promote:", publication_proof_index)
-    publication_proof_block = credentials[publication_proof_index:publication_proof_end]
-    require(
-        "always() &&" in publication_proof_block
-        and "needs.cutover_vm_admit.result == 'success'" in publication_proof_block
-        and "needs.cutover_windows_admit.result == 'success'" in publication_proof_block
-        and "needs.cutover_provider_abort_uncommitted.result == 'success'" in publication_proof_block,
-        "publication proof terminal marker must survive intentional skip propagation and require all accepted proof prerequisites explicitly",
-    )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
-    require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
-    require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in credentials, "credential backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
-    require("issue_comment:" not in dns, "DNS backend must not listen to comments")
+    require(not ZERO_TRUST.exists() and not DNS.exists(), "retired standalone Cloudflare operator workflows must stay absent")
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
@@ -679,67 +621,12 @@ def main() -> None:
         "Vultr backend must expose the existing typed read-only instance action plan through the sole router",
     )
     require(
-        zero_trust.count("group: vultr-control-plane-production") == 1,
-        "Zero Trust backend must serialize its execute mutation job",
-    )
-    require(
         vpc.count("group: vultr-control-plane-production") == 1,
         "VPC backend must serialize its execute mutation job",
     )
     require(
-        dns.count("group: vultr-control-plane-production") == 1,
-        "DNS backend must serialize its execute mutation job",
-    )
-    require(
-        "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
-        "Zero Trust backend must consume the durable accepted ReleaseSet",
-    )
-    require(
-        "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in zero_trust,
-        "Zero Trust backend must use the production Cloudflare token secret",
-    )
-    require(
-        "CLOUDFLARE_ANDROID_PROFILE_ID: ${{ secrets.CLOUDFLARE_ANDROID_PROFILE_ID }}"
-        in zero_trust,
-        "Android profile authority must stay outside Git",
-    )
-    require(
-        "CLOUDFLARE_ANDROID_IDENTITY_EMAIL: ${{ secrets.CLOUDFLARE_ANDROID_IDENTITY_EMAIL }}"
-        in zero_trust,
-        "Android identity authority must stay outside Git",
-    )
-    require(
-        "CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED: ${{ vars.CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED }}"
-        in zero_trust,
-        "dashboard reachability must remain an explicit production attestation",
-    )
-    require(
-        'case "${operation}" in' in zero_trust
-        and "preflight)" in zero_trust
-        and "converge)" in zero_trust
-        and "verify)" in zero_trust,
-        "Zero Trust backend must retain typed preflight/converge/verify operations",
-    )
-    require(
-        'for iteration in $(seq 1 8)' in zero_trust,
-        "Zero Trust convergence must stay bounded",
-    )
-    require(
-        "cloudflare-zero-trust apply" in zero_trust
-        and "plan_authority.authority_digest" in zero_trust,
-        "Zero Trust mutations must consume exact PlanAuthority",
-    )
-
-    require(
-        'echo "Operation: `${operation}`"' not in zero_trust
-        and "printf 'Operation: `%s`\\n' \"${operation}\"" in zero_trust,
-        "Zero Trust workflow summary must not execute the operation through shell command substitution",
-    )
-
-    require(
-        "edge-platform/scripts/resolve_durable_release.sh" in vpc
-        and "edge-platform/scripts/resolve_durable_release.sh" in dns,
-        "staged substrate backends must consume the durable accepted ReleaseSet",
+        "edge-platform/scripts/resolve_durable_release.sh" in vpc,
+        "staged VPC substrate backend must consume the durable accepted ReleaseSet",
     )
     require(
         '"attachment-apply"' in vpc
@@ -1033,42 +920,13 @@ def main() -> None:
         "VPC host-substrate verification must bind exact ReleaseSet substrate versions",
     )
     require(
-        '"apply"' in dns
-        and "cloudflare-dns plan" in dns
-        and "cloudflare-dns apply" in dns
-        and "plan_authority.authority_digest" in dns,
-        "DNS backend mutations must consume fresh exact PlanAuthority",
-    )
-    require(
-        "TARGET_IPV4" not in dns and "target_ipv4" not in dns,
-        "DNS workflow must not accept or transport a manually derived target IPv4",
-    )
-    require(
-        "APPLICATION_SPEC_PATH" in dns,
-        "DNS workflow must delegate target derivation to the typed orchestrator from application/Vultr observation",
-    )
-    require(
-        "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in dns,
-        "DNS composition must have bounded Vultr read authority for current VM observation",
-    )
-    require(
         "dns_create(&args.dns_spec_path, &args.spec_path)" in acceptance_coordinator
         and "dns_verify_noop(&args.dns_spec_path, &args.spec_path)" in acceptance_coordinator,
-        "typed acceptance must keep DNS target derivation inside the existing DNS owner",
+        "typed acceptance must keep DNS target derivation inside the existing internal DNS owner",
     )
     require(
         "vm_ip=" not in application and "vm_ip" not in acceptance_coordinator,
         "application acceptance must not own derived VM public-IP plumbing",
-    )
-    require(
-        "cloudflare-dns cleanup-plan" in dns
-        and dns.count("cloudflare-dns cleanup-apply") == 1
-        and 'tokens[1] in {"inventory", "cleanup-plan", "cleanup-apply"}' in dns
-        and '.plan.action.kind == "DELETE"' in dns
-        and 'destructive_digest="$(jq -er' in dns
-        and 'authority="$(plan_authority' in dns
-        and '.[1].performed.kind == .[0].plan.action.kind' in dns,
-        "DNS backend must expose only typed exact-authority cleanup with one delete per invocation",
     )
     require(
         "vultr-vpc cleanup-plan" in vpc
@@ -1081,11 +939,9 @@ def main() -> None:
         "VPC backend must expose one-at-a-time typed cleanup with fresh destructive digest and PlanAuthority",
     )
     require(
-        "RECORD_ID" not in dns
-        and "ZONE_ID" not in dns
-        and "VPC_ID" not in vpc
+        "VPC_ID" not in vpc
         and "INSTANCE_ID" not in vpc,
-        "cleanup workflows must not accept raw provider identifiers as command authority",
+        "VPC cleanup workflow must not accept raw provider identifiers as command authority",
     )
 
     acquire_pos = vpc.index("vpc-access-acquire.json")
