@@ -491,14 +491,15 @@ def main() -> None:
         and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_historical_retirement
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_historical_retirement
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_historical_retirement
-        and "CLOUDFLARE_HISTORICAL_RETIRE_TOKEN: ${{ secrets.CLOUDFLARE_HISTORICAL_RETIRE_TOKEN }}" in production_historical_retirement
+        and "CLOUDFLARE_HISTORICAL_RETIRE_TOKEN: ${{ needs.authorize.outputs.operation == 'retire-historical-apply' && secrets.CLOUDFLARE_HISTORICAL_RETIRE_TOKEN || '' }}" in production_historical_retirement
+        and "CLOUDFLARE_HISTORICAL_RETIRE_TOKEN: ${{ secrets.CLOUDFLARE_HISTORICAL_RETIRE_TOKEN }}" not in production_historical_retirement
         and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_historical_retirement
         and "VULTR_SSH_PRIVATE_KEY" not in production_historical_retirement
         and "api.ipify.org" not in production_historical_retirement
         and "lease-acquire" not in production_historical_retirement
         and "lease-release" not in production_historical_retirement
         and "- self-hosted" not in production_historical_retirement,
-        "historical retirement must be a temporary GitHub-hosted exact-ReleaseSet provider path with no host mutation authority",
+        "historical retirement must be a temporary GitHub-hosted exact-ReleaseSet provider path; read-only plan/verify must not receive the temporary write token",
     )
     require(
         'verify_active_invariant().await' in historical_retirement
@@ -512,11 +513,12 @@ def main() -> None:
         and "delete_mesh_cidr_route" not in historical_retirement
         and "delete_mesh_node" not in historical_retirement
         and "delete_device_profile" not in historical_retirement
+        and "resolve_zone_id(&inputs.dns_token" in historical_retirement
         and "delete_worker_route" in historical_retirement
         and "delete_worker_script" in historical_retirement
         and "previously retired historical Mesh/profile resource reappeared" in historical_retirement
         and "mutation was not replayed" in historical_retirement,
-        "post-partial historical retirement must fail closed on reappeared Mesh/profile state and use a dedicated token only for the two remaining Worker deletes",
+        "post-partial historical retirement must fail closed on reappeared Mesh/profile state, resolve zone identity through read-only DNS authority, and use the dedicated token only for the two exact Worker deletes",
     )
     require(
         "serde_json::to_string" not in production_inventory
