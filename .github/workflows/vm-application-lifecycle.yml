@@ -344,6 +344,7 @@ jobs:
       release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
       agent_sha256: ${{ steps.release.outputs.agent_sha256 }}
       application_bundle_sha256: ${{ steps.release.outputs.application_bundle_sha256 }}
+      application_bundle_asset_id: ${{ steps.release.outputs.application_bundle_asset_id }}
     env:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
       SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
@@ -388,6 +389,13 @@ jobs:
           printf 'release_set_sha256=%s\n' "${EDGE_RELEASE_SET_SHA256}" >> "${GITHUB_OUTPUT}"
           printf 'agent_sha256=%s\n' "${EDGE_AGENT_SHA256}" >> "${GITHUB_OUTPUT}"
           printf 'application_bundle_sha256=%s\n' "${EDGE_APPLICATION_BUNDLE_SHA256}" >> "${GITHUB_OUTPUT}"
+          release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${EDGE_RELEASE_TAG}")"
+          application_bundle_asset_id="$(jq -er '
+            [.assets[] | select(.name == "application-bundle.pb")]
+            | if length == 1 then .[0].id else error("application-bundle.pb asset cardinality mismatch") end
+          ' <<<"${release_json}")"
+          [[ "${application_bundle_asset_id}" =~ ^[0-9]+$ ]]
+          printf 'application_bundle_asset_id=%s\n' "${application_bundle_asset_id}" >> "${GITHUB_OUTPUT}"
 
       - name: Converge or verify provider plane
         shell: bash
@@ -421,14 +429,6 @@ jobs:
             cat "${result}"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Stage exact ReleaseSet-bound VM bundle transport
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: production-runtime-bundle-${{ github.run_id }}
-          path: ${{ runner.temp }}/edge-platform-release/application-bundle.pb
-          if-no-files-found: error
-          retention-days: 1
 
   production_observe:
     needs: authorize
@@ -549,13 +549,14 @@ jobs:
       - production-1
     timeout-minutes: 30
     permissions:
-      actions: read
+      contents: read
     env:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
       PROVIDER_ACCEPTED_REVISION: ${{ needs.production_provider.outputs.accepted_revision }}
       PROVIDER_RELEASE_SET_SHA256: ${{ needs.production_provider.outputs.release_set_sha256 }}
       PROVIDER_AGENT_SHA256: ${{ needs.production_provider.outputs.agent_sha256 }}
       PROVIDER_APPLICATION_BUNDLE_SHA256: ${{ needs.production_provider.outputs.application_bundle_sha256 }}
+      PROVIDER_APPLICATION_BUNDLE_ASSET_ID: ${{ needs.production_provider.outputs.application_bundle_asset_id }}
       OBSERVE_ACCEPTED_REVISION: ${{ needs.production_observe.outputs.accepted_revision }}
       OBSERVE_RELEASE_SET_SHA256: ${{ needs.production_observe.outputs.release_set_sha256 }}
       OBSERVE_AGENT_SHA256: ${{ needs.production_observe.outputs.agent_sha256 }}
@@ -563,10 +564,31 @@ jobs:
     steps:
       - name: Download exact ReleaseSet-bound VM bundle
         if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: production-runtime-bundle-${{ github.run_id }}
-          path: ${{ runner.temp }}/production-runtime-bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "${PROVIDER_APPLICATION_BUNDLE_ASSET_ID}" =~ ^[0-9]+$ ]]
+          out="${RUNNER_TEMP}/production-runtime-bundle"
+          install -d -m 0700 "${out}"
+          bundle="${out}/application-bundle.pb"
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --connect-timeout 10 \
+            --max-time 60 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/octet-stream" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output "${bundle}" \
+            "https://api.github.com/repos/${REPOSITORY}/releases/assets/${PROVIDER_APPLICATION_BUNDLE_ASSET_ID}"
+          test -s "${bundle}"
 
       - name: Verify bounded local runtime authority
         shell: bash
