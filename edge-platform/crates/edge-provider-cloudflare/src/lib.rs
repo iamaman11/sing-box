@@ -1400,7 +1400,10 @@ pub async fn delete_worker_route(
     let client = authorized_client(api_token)?;
     let zone = fetch_zone(&client, zone_name).await?;
     let response = client
-        .delete(format!("{API_ROOT}/zones/{}/workers/routes/{route_id}", zone.id))
+        .delete(format!(
+            "{API_ROOT}/zones/{}/workers/routes/{route_id}",
+            zone.id
+        ))
         .send()
         .await
         .map_err(|err| format!("failed to delete Cloudflare Worker route: {err}"))?;
