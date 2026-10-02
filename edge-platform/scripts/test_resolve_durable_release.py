@@ -197,6 +197,14 @@ def run(state,meta,expected=None,ok=False,expected_tag_ref_calls=None):
         assert p.returncode!=0,p.stdout
 
 def main():
+    resolver_text = RESOLVER.read_text()
+    assert "--connect-timeout 10" in resolver_text
+    assert "--max-time 180" in resolver_text
+    assert "--retry 2" in resolver_text
+    assert "--retry-delay 1" in resolver_text
+    assert "--retry-max-time 300" in resolver_text
+    assert "--retry-all-errors" not in resolver_text
+
     s,m=make_state(schema=3); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
     s,m=make_state(schema=4); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
     s,m=make_state(schema=5); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
