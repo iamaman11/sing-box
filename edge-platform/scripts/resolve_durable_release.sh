@@ -13,23 +13,6 @@ for name in GH_TOKEN REPOSITORY ACCEPTED_REVISION OUTPUT_DIR; do
   require_env "$name"
 done
 
-github_api_get() {
-  local path="$1"
-  curl \
-    --fail \
-    --silent \
-    --show-error \
-    --location \
-    --proto '=https' \
-    --proto-redir '=https' \
-    --connect-timeout 10 \
-    --max-time 30 \
-    --header "Authorization: Bearer ${GH_TOKEN}" \
-    --header "Accept: application/vnd.github+json" \
-    --header "X-GitHub-Api-Version: 2026-03-10" \
-    "https://api.github.com/${path}"
-}
-
 [[ "$REPOSITORY" = "iamaman11/sing-box" ]]
 [[ "$ACCEPTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
 if [[ -n "${EXPECTED_RELEASE_TAG:-}" ]]; then
@@ -42,6 +25,8 @@ install -d -m 0755 "$out"
 
 expected_assets=(
   acceptance.json
+  application-bundle.pb
+  application-bundle.pb.sha256
   edge-agent-linux-amd64
   edge-agent-linux-amd64.sha256
   edge-controller-linux-amd64
@@ -63,7 +48,7 @@ matching_releases="${out}/.matching-releases.jsonl"
 
 page=1
 while :; do
-  page_json="$(github_api_get "repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
+  page_json="$(gh api "repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
   jq -c --arg accepted "$ACCEPTED_REVISION" '
     .[]
     | select(.draft == false)
@@ -82,7 +67,7 @@ done
 while IFS= read -r candidate_release; do
   [[ -n "$candidate_release" ]] || continue
   candidate_tag="$(jq -er '.tag_name' <<<"$candidate_release")"
-  ref_json="$(github_api_get "repos/${REPOSITORY}/git/ref/tags/${candidate_tag}")"
+  ref_json="$(gh api "repos/${REPOSITORY}/git/ref/tags/${candidate_tag}")"
   test "$(jq -er '.object.type' <<<"$ref_json")" = "commit"
   ref_sha="$(jq -er '.object.sha' <<<"$ref_json")"
   [[ "$ref_sha" =~ ^[0-9a-f]{40}$ ]]
@@ -112,7 +97,7 @@ if [[ -n "${EXPECTED_RELEASE_TAG:-}" ]]; then
   }
 fi
 
-release_json="$(github_api_get "repos/${REPOSITORY}/releases/${release_id}")"
+release_json="$(gh api "repos/${REPOSITORY}/releases/${release_id}")"
 test "$(jq -er '.id' <<<"$release_json")" = "$release_id"
 test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
 test "$(jq -r '.draft' <<<"$release_json")" = "false"
@@ -165,6 +150,8 @@ download_asset() {
 
 for name in \
   acceptance.json \
+  application-bundle.pb \
+  application-bundle.pb.sha256 \
   edge-agent-linux-amd64 \
   edge-agent-linux-amd64.sha256 \
   edge-controller-linux-amd64 \
@@ -194,6 +181,7 @@ verify_sidecar "${out}/edge-agent-linux-amd64" "${out}/edge-agent-linux-amd64.sh
 verify_sidecar "${out}/edge-controller-linux-amd64" "${out}/edge-controller-linux-amd64.sha256" "edge-controller-linux-amd64"
 verify_sidecar "${out}/edge-orchestrator-linux-amd64" "${out}/edge-orchestrator-linux-amd64.sha256" "edge-orchestrator-linux-amd64"
 verify_sidecar "${out}/edge-release-set-linux-amd64" "${out}/edge-release-set-linux-amd64.sha256" "edge-release-set-linux-amd64"
+verify_sidecar "${out}/application-bundle.pb" "${out}/application-bundle.pb.sha256" "application-bundle.pb"
 
 test "$(cat "${out}/release-set.pb.sha256")" = "${release_set_sha}  release-set.pb"
 test "$(sha256sum "${out}/release-set.pb" | awk '{print $1}')" = "$release_set_sha"
@@ -208,8 +196,8 @@ candidate_run_id="$(jq -r '.candidate_run_id' "$acceptance")"
 [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]]
 [[ "$candidate_run_id" =~ ^[0-9]+$ ]]
 
-accepted_commit="$(github_api_get "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}")"
-candidate_commit="$(github_api_get "repos/${REPOSITORY}/git/commits/${candidate_revision}")"
+accepted_commit="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}")"
+candidate_commit="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}")"
 test "$(jq -er '.tree.sha' <<<"$accepted_commit")" = "$source_tree"
 test "$(jq -er '.tree.sha' <<<"$candidate_commit")" = "$source_tree"
 
@@ -221,7 +209,8 @@ verify_output="$("$verifier" verify-vm \
   --source-revision "$candidate_revision" \
   --edge-agent "${out}/edge-agent-linux-amd64" \
   --edge-controller "${out}/edge-controller-linux-amd64" \
-  --edge-orchestrator "${out}/edge-orchestrator-linux-amd64")"
+  --edge-orchestrator "${out}/edge-orchestrator-linux-amd64" \
+  --application-bundle "${out}/application-bundle.pb")"
 printf '%s\n' "$verify_output"
 
 extract_single() {
@@ -247,11 +236,18 @@ containerd_version="$(extract_single containerd_version)"
 compose_version="$(extract_single compose_version)"
 runtime_source_revision="$verified_source_revision"
 runtime_input_sha=""
-if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = "6" ]]; then
+if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" ]]; then
   runtime_source_revision="$(extract_single runtime_source_revision)"
   runtime_input_sha="$(extract_single runtime_input_sha256)"
   [[ "$runtime_source_revision" =~ ^[0-9a-f]{40}$ ]]
   [[ "$runtime_input_sha" =~ ^[0-9a-f]{64}$ ]]
+fi
+
+application_bundle_sha=""
+if [[ "$schema_version" = "7" ]]; then
+  application_bundle_sha="$(extract_single application_bundle_sha256)"
+  [[ "$application_bundle_sha" =~ ^[0-9a-f]{64}$ ]]
+  test "$application_bundle_sha" = "$(sha256sum "${out}/application-bundle.pb" | awk '{print $1}')"
 fi
 
 windows_source_revision="$verified_source_revision"
@@ -261,14 +257,14 @@ windows_controller_sha=""
 windows_console_sha=""
 windows_sing_box_sha=""
 windows_diagnostic_sha=""
-if [[ "$schema_version" = "5" || "$schema_version" = "6" ]]; then
+if [[ "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" ]]; then
   windows_source_revision="$(extract_single windows_source_revision)"
   windows_input_sha="$(extract_single windows_input_sha256)"
   windows_artifact_sha="$(extract_single windows_artifact_sha256)"
   windows_controller_sha="$(extract_single windows_controller_sha256)"
   windows_console_sha="$(extract_single windows_console_sha256)"
   windows_sing_box_sha="$(extract_single windows_sing_box_sha256)"
-  if [[ "$schema_version" = "6" ]]; then
+  if [[ "$schema_version" = "6" || "$schema_version" = "7" ]]; then
     windows_diagnostic_sha="$(extract_single windows_diagnostic_sha256)"
   fi
   [[ "$windows_source_revision" =~ ^[0-9a-f]{40}$ ]]
@@ -277,7 +273,7 @@ if [[ "$schema_version" = "5" || "$schema_version" = "6" ]]; then
   [[ "$windows_controller_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_console_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_sing_box_sha" =~ ^[0-9a-f]{64}$ ]]
-  if [[ "$schema_version" = "6" ]]; then
+  if [[ "$schema_version" = "6" || "$schema_version" = "7" ]]; then
     [[ "$windows_diagnostic_sha" =~ ^[0-9a-f]{64}$ ]]
   fi
 fi
@@ -288,7 +284,7 @@ done
 
 test "$verified_release_set_sha" = "$release_set_sha"
 case "$schema_version" in
-  3|4|5|6) ;;
+  3|4|5|6|7) ;;
   *) echo "unsupported durable ReleaseSet schema_version=$schema_version" >&2; exit 1 ;;
 esac
 test "$verified_source_revision" = "$candidate_revision"
@@ -312,6 +308,7 @@ EDGE_RELEASE_SET_SHA256=$release_set_sha
 EDGE_RELEASE_SCHEMA_VERSION=$schema_version
 EDGE_RUNTIME_SOURCE_REVISION=$runtime_source_revision
 EDGE_RUNTIME_INPUT_SHA256=$runtime_input_sha
+EDGE_APPLICATION_BUNDLE_SHA256=$application_bundle_sha
 EDGE_WINDOWS_SOURCE_REVISION=$windows_source_revision
 EDGE_WINDOWS_INPUT_SHA256=$windows_input_sha
 EDGE_WINDOWS_ARTIFACT_SHA256=$windows_artifact_sha
@@ -340,6 +337,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
 printf 'schema_version=%s\n' "$schema_version"
 printf 'runtime_source_revision=%s\n' "$runtime_source_revision"
 printf 'runtime_input_sha256=%s\n' "$runtime_input_sha"
+printf 'application_bundle_sha256=%s\n' "$application_bundle_sha"
 printf 'windows_source_revision=%s\n' "$windows_source_revision"
 printf 'windows_input_sha256=%s\n' "$windows_input_sha"
 printf 'windows_artifact_sha256=%s\n' "$windows_artifact_sha"
