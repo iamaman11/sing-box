@@ -12,10 +12,9 @@ use std::env;
 const LEGACY_PRODUCTION_NODE: &str = "singbox-line3-production";
 const LEGACY_VULTR_NODE: &str = "vultr";
 const LEGACY_PROFILE: &str = "sing-box Mesh nodes";
-const LEGACY_ROUTE_NETWORK: &str = "10.27.96.0/20";
 const LEGACY_WORKER: &str = "edge-lease-reaper";
 const LEGACY_WORKER_ROUTE: &str = "lease.alegria.by/*";
-const MAX_MUTATIONS: usize = 6;
+const MAX_MUTATIONS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct HistoricalNodeObservation {
@@ -43,10 +42,6 @@ struct HistoricalObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 enum HistoricalAction {
     Noop,
-    DeleteProductionMeshRoute { route_id: String },
-    DeleteProductionMeshNode { node_id: String },
-    DeleteLegacyVultrNode { node_id: String },
-    DeleteMeshProfile { profile_id: String },
     DeleteLegacyWorkerRoute { route_id: String },
     DeleteLegacyWorkerScript,
 }
@@ -55,10 +50,11 @@ struct Inputs {
     production: ProductionComposition,
     historical_token: String,
     dns_token: String,
+    retirement_token: Option<String>,
 }
 
 impl Inputs {
-    fn load() -> Result<Self, String> {
+    fn load_read_only() -> Result<Self, String> {
         let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
         if production.cloudflare.migration_target_account_id.is_some() {
             return Err(
@@ -76,6 +72,20 @@ impl Inputs {
             production,
             historical_token: required_env("CLOUDFLARE_API_TOKEN")?,
             dns_token: required_env("CLOUDFLARE_DNS_TOKEN")?,
+            retirement_token: None,
+        })
+    }
+
+    fn load_apply() -> Result<Self, String> {
+        let mut inputs = Self::load_read_only()?;
+        inputs.retirement_token = Some(required_env("CLOUDFLARE_HISTORICAL_RETIRE_TOKEN")?);
+        Ok(inputs)
+    }
+
+    fn retirement_token(&self) -> Result<&str, String> {
+        self.retirement_token.as_deref().ok_or_else(|| {
+            "CLOUDFLARE_HISTORICAL_RETIRE_TOKEN is required only for bounded historical Worker deletion"
+                .to_owned()
         })
     }
 
@@ -89,7 +99,7 @@ impl Inputs {
 }
 
 pub(crate) async fn plan() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_read_only()?;
     verify_replacement_plane().await?;
     let observation = observe(&inputs).await?;
     let action = next_action(&observation)?;
@@ -98,7 +108,7 @@ pub(crate) async fn plan() -> Result<(), String> {
 }
 
 pub(crate) async fn apply() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_apply()?;
     let mut mutations = 0u32;
 
     for step in 1..=MAX_MUTATIONS {
@@ -151,7 +161,7 @@ pub(crate) async fn apply() -> Result<(), String> {
 }
 
 pub(crate) async fn verify() -> Result<(), String> {
-    let inputs = Inputs::load()?;
+    let inputs = Inputs::load_read_only()?;
     verify_replacement_plane().await?;
     let observation = observe(&inputs).await?;
     let action = next_action(&observation)?;
@@ -345,53 +355,14 @@ async fn validate_historical_profile(
 }
 
 fn next_action(observed: &HistoricalObservation) -> Result<HistoricalAction, String> {
-    if let Some(node) = &observed.production_node {
-        if node.routes.len() > 1 {
-            return Err(format!(
-                "historical production Mesh node has {} routes; broad cleanup is forbidden",
-                node.routes.len()
-            ));
-        }
-        if let Some(route) = node.routes.first() {
-            if route.network != LEGACY_ROUTE_NETWORK
-                || route.tunnel_type.as_deref() != Some("warp_connector")
-                || route.comment.as_deref() != Some("managed-by-sing-box:line3:production")
-            {
-                return Err(format!(
-                    "historical production Mesh route ownership drifted: {:?}",
-                    route
-                ));
-            }
-            return Ok(HistoricalAction::DeleteProductionMeshRoute {
-                route_id: route.id.clone(),
-            });
-        }
-        return Ok(HistoricalAction::DeleteProductionMeshNode {
-            node_id: node.node.id.clone(),
-        });
-    }
-
-    if let Some(node) = &observed.legacy_vultr_node {
-        if !node.routes.is_empty() {
-            return Err(
-                "legacy vultr Mesh node unexpectedly owns routes; deletion is blocked".to_owned(),
-            );
-        }
-        if node.node.status.as_deref() != Some("inactive") {
-            return Err(format!(
-                "legacy vultr Mesh node status is not the accepted inactive residual: {:?}",
-                node.node.status
-            ));
-        }
-        return Ok(HistoricalAction::DeleteLegacyVultrNode {
-            node_id: node.node.id.clone(),
-        });
-    }
-
-    if let Some(profile) = &observed.mesh_profile {
-        return Ok(HistoricalAction::DeleteMeshProfile {
-            profile_id: profile.profile.id.clone(),
-        });
+    if observed.production_node.is_some()
+        || observed.legacy_vultr_node.is_some()
+        || observed.mesh_profile.is_some()
+    {
+        return Err(
+            "a previously retired historical Mesh/profile resource reappeared; automatic deletion is blocked"
+                .to_owned(),
+        );
     }
 
     if let Some(route) = &observed.worker_route {
@@ -414,39 +385,15 @@ fn next_action(observed: &HistoricalObservation) -> Result<HistoricalAction, Str
 }
 
 async fn execute_once(inputs: &Inputs, action: &HistoricalAction) -> Result<(), String> {
+    let retirement_token = inputs.retirement_token()?;
     match action {
         HistoricalAction::Noop => Ok(()),
-        HistoricalAction::DeleteProductionMeshRoute { route_id } => {
-            cloudflare::delete_mesh_cidr_route(
-                &inputs.historical_token,
-                inputs.historical_account_id(),
-                route_id,
-            )
-            .await
-        }
-        HistoricalAction::DeleteProductionMeshNode { node_id }
-        | HistoricalAction::DeleteLegacyVultrNode { node_id } => {
-            cloudflare::delete_mesh_node(
-                &inputs.historical_token,
-                inputs.historical_account_id(),
-                node_id,
-            )
-            .await
-        }
-        HistoricalAction::DeleteMeshProfile { profile_id } => {
-            cloudflare::delete_device_profile(
-                &inputs.historical_token,
-                inputs.historical_account_id(),
-                profile_id,
-            )
-            .await
-        }
         HistoricalAction::DeleteLegacyWorkerRoute { route_id } => {
-            cloudflare::delete_worker_route(&inputs.dns_token, inputs.zone_name(), route_id).await
+            cloudflare::delete_worker_route(retirement_token, inputs.zone_name(), route_id).await
         }
         HistoricalAction::DeleteLegacyWorkerScript => {
             cloudflare::delete_worker_script(
-                &inputs.historical_token,
+                retirement_token,
                 inputs.historical_account_id(),
                 LEGACY_WORKER,
             )
@@ -494,10 +441,6 @@ fn print_state(
 fn action_name(action: &HistoricalAction) -> &'static str {
     match action {
         HistoricalAction::Noop => "NOOP",
-        HistoricalAction::DeleteProductionMeshRoute { .. } => "DELETE_PRODUCTION_MESH_ROUTE",
-        HistoricalAction::DeleteProductionMeshNode { .. } => "DELETE_PRODUCTION_MESH_NODE",
-        HistoricalAction::DeleteLegacyVultrNode { .. } => "DELETE_LEGACY_VULTR_NODE",
-        HistoricalAction::DeleteMeshProfile { .. } => "DELETE_HISTORICAL_MESH_PROFILE",
         HistoricalAction::DeleteLegacyWorkerRoute { .. } => "DELETE_LEGACY_WORKER_ROUTE",
         HistoricalAction::DeleteLegacyWorkerScript => "DELETE_LEGACY_WORKER_SCRIPT",
     }
@@ -515,79 +458,61 @@ fn required_env(name: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    fn node(name: &str, id: &str, status: Option<&str>) -> CloudflareMeshNode {
-        CloudflareMeshNode {
-            id: id.to_owned(),
-            name: name.to_owned(),
-            status: status.map(ToOwned::to_owned),
-        }
-    }
-
     fn observation() -> HistoricalObservation {
         HistoricalObservation {
             account_id: "historical".to_owned(),
-            production_node: Some(HistoricalNodeObservation {
-                node: node(LEGACY_PRODUCTION_NODE, "prod-node", Some("healthy")),
-                routes: vec![CloudflareMeshRoute {
-                    id: "route".to_owned(),
-                    network: LEGACY_ROUTE_NETWORK.to_owned(),
-                    tunnel_id: "prod-node".to_owned(),
-                    tunnel_type: Some("warp_connector".to_owned()),
-                    comment: Some("managed-by-sing-box:line3:production".to_owned()),
-                }],
-            }),
-            legacy_vultr_node: Some(HistoricalNodeObservation {
-                node: node(LEGACY_VULTR_NODE, "vultr-node", Some("inactive")),
-                routes: vec![],
-            }),
+            production_node: None,
+            legacy_vultr_node: None,
             mesh_profile: None,
-            worker_route: None,
-            worker_script: None,
+            worker_route: Some(CloudflareWorkerRoute {
+                id: "route".to_owned(),
+                pattern: LEGACY_WORKER_ROUTE.to_owned(),
+                script: Some(LEGACY_WORKER.to_owned()),
+            }),
+            worker_script: Some(CloudflareWorkerScript {
+                id: LEGACY_WORKER.to_owned(),
+            }),
             worker_domains_referencing_legacy_script: vec![],
         }
     }
 
     #[test]
-    fn retirement_order_is_route_before_nodes() {
+    fn remaining_retirement_order_is_route_before_script() {
         let observed = observation();
-        let action = next_action(&observed).unwrap();
         assert!(matches!(
-            action,
-            HistoricalAction::DeleteProductionMeshRoute { .. }
+            next_action(&observed).unwrap(),
+            HistoricalAction::DeleteLegacyWorkerRoute { .. }
         ));
 
         let mut observed = observed;
-        observed.production_node.as_mut().unwrap().routes.clear();
-        let action = next_action(&observed).unwrap();
-        assert!(matches!(
-            action,
-            HistoricalAction::DeleteProductionMeshNode { .. }
-        ));
+        observed.worker_route = None;
+        assert_eq!(
+            next_action(&observed).unwrap(),
+            HistoricalAction::DeleteLegacyWorkerScript
+        );
 
-        observed.production_node = None;
-        let action = next_action(&observed).unwrap();
-        assert!(matches!(
-            action,
-            HistoricalAction::DeleteLegacyVultrNode { .. }
-        ));
+        observed.worker_script = None;
+        assert_eq!(next_action(&observed).unwrap(), HistoricalAction::Noop);
     }
 
     #[test]
-    fn healthy_legacy_vultr_node_fails_closed() {
+    fn previously_retired_resource_reappearance_fails_closed() {
         let mut observed = observation();
-        observed.production_node = None;
-        observed.legacy_vultr_node.as_mut().unwrap().node.status = Some("healthy".to_owned());
+        observed.production_node = Some(HistoricalNodeObservation {
+            node: CloudflareMeshNode {
+                id: "reappeared".to_owned(),
+                name: LEGACY_PRODUCTION_NODE.to_owned(),
+                status: Some("healthy".to_owned()),
+            },
+            routes: vec![],
+        });
         assert!(next_action(&observed).is_err());
     }
 
     #[test]
-    fn unrelated_worker_domain_blocks_script_delete() {
+    fn worker_domain_reference_blocks_script_delete() {
         let mut observed = observation();
-        observed.production_node = None;
-        observed.legacy_vultr_node = None;
-        observed.worker_script = Some(CloudflareWorkerScript {
-            id: LEGACY_WORKER.to_owned(),
-        });
+        observed.worker_route = None;
         observed
             .worker_domains_referencing_legacy_script
             .push(CloudflareWorkerDomain {
