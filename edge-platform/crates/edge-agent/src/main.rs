@@ -998,10 +998,9 @@ fn apply_legacy_bundle(
     })
 }
 
-fn apply_digest_bound_bundle(
-    stack_dir: &Path,
-    request: ApplyBundleRequest,
-) -> Result<ApplyBundleResponse, String> {
+fn validate_digest_bound_bundle_request(
+    request: &ApplyBundleRequest,
+) -> Result<(String, String), String> {
     if !request.prune_existing {
         return Err("digest-bound application bundles require prune_existing=true".to_owned());
     }
@@ -1024,12 +1023,20 @@ fn apply_digest_bound_bundle(
         .clone()
         .ok_or_else(|| "bundle_digest is required".to_owned())?;
     validate_lower_hex("bundle_digest", &expected_digest, 64)?;
-    let computed_digest = canonical_apply_bundle_digest(&request)?;
+    let computed_digest = canonical_apply_bundle_digest(request)?;
     if computed_digest != expected_digest {
         return Err(format!(
             "bundle digest mismatch: expected {expected_digest}, computed {computed_digest}"
         ));
     }
+    Ok((bundle_id, expected_digest))
+}
+
+fn apply_digest_bound_bundle(
+    stack_dir: &Path,
+    request: ApplyBundleRequest,
+) -> Result<ApplyBundleResponse, String> {
+    let (bundle_id, expected_digest) = validate_digest_bound_bundle_request(&request)?;
 
     if let Some(current) = read_application_release(stack_dir)
         && current.bundle_id == bundle_id
