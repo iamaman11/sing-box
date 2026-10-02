@@ -23,7 +23,7 @@ use std::io::Read;
 use std::path::Path;
 
 pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
-pub const RELEASE_SET_SCHEMA_VERSION: u32 = 6;
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 7;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 
@@ -615,6 +615,20 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
         }
         _ => unreachable!("release-set schema range was validated above"),
     }
+    if release.schema_version < 7 {
+        if !vm.application_bundle_sha256.is_empty() {
+            return Err(
+                "ReleaseSet schemas before v7 must not contain VM application bundle identity"
+                    .to_owned(),
+            );
+        }
+    } else {
+        validate_sha256_bytes(
+            "vm_runtime.application_bundle_sha256",
+            &vm.application_bundle_sha256,
+        )?;
+    }
+
     validate_oci_image(
         "vm_runtime.sing_box_image",
         vm.sing_box_image
@@ -1796,6 +1810,7 @@ mod release_set_tests {
                 docker_engine_version: "29.0.1".to_owned(),
                 containerd_version: "2.1.4".to_owned(),
                 compose_version: "2.39.2".to_owned(),
+                application_bundle_sha256: digest(16),
             }),
             cloudflare: Some(CloudflareRuntime {
                 warp_version: "2026.9.1".to_owned(),
