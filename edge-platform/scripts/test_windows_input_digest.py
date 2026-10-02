@@ -124,7 +124,7 @@ def test_contract_and_dependency_change_identity() -> None:
         assert subject.compute_digest(root, changed) != first
 
 
-def test_reuse_requires_schema_six_and_exact_identity() -> None:
+def test_reuse_requires_supported_schema_and_exact_identity() -> None:
     digest = "a" * 64
     kwargs = dict(
         candidate_digest=digest,
@@ -138,6 +138,7 @@ def test_reuse_requires_schema_six_and_exact_identity() -> None:
         base_diagnostic_sha256="1" * 64,
     )
     assert subject.decide_reuse(**kwargs)
+    assert subject.decide_reuse(**{**kwargs, "base_schema": "7"})
     assert not subject.decide_reuse(**{**kwargs, "base_schema": "5"})
     assert not subject.decide_reuse(**{**kwargs, "base_digest": "0" * 64})
 
@@ -145,7 +146,7 @@ def test_reuse_requires_schema_six_and_exact_identity() -> None:
 def main() -> None:
     test_digest_scope()
     test_contract_and_dependency_change_identity()
-    test_reuse_requires_schema_six_and_exact_identity()
+    test_reuse_requires_supported_schema_and_exact_identity()
     print("windows input digest tests: PASS")
 
 

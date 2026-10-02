@@ -152,6 +152,11 @@ download_asset() {
     --location \
     --proto '=https' \
     --proto-redir '=https' \
+    --connect-timeout 10 \
+    --max-time 180 \
+    --retry 2 \
+    --retry-delay 1 \
+    --retry-max-time 300 \
     --header "Authorization: Bearer ${GH_TOKEN}" \
     --header "Accept: application/octet-stream" \
     --header "X-GitHub-Api-Version: 2022-11-28" \

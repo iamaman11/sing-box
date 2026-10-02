@@ -1510,9 +1510,9 @@ def main() -> None:
         in windows_input
         and "_reachable_package_dirs(repo_root)" in windows_input
         and "WINDOWS_BUILD_CONTRACT_PATH" in windows_input
-        and 'base_schema != "6"' in windows_input
+        and 'base_schema not in {"6", "7"}' in windows_input
         and "base_diagnostic_sha256" in windows_input,
-        "Windows identity must cover controller/console/diagnostic transitive local dependencies, marked build contract and fail closed before ReleaseSet v6",
+        "Windows identity must cover controller/console/diagnostic transitive local dependencies, marked build contract and allow exact reuse only from ReleaseSet v6/v7",
     )
 
     require(
