@@ -559,7 +559,14 @@ jobs:
           source "${dir}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          orchestrator="${dir}/edge-orchestrator-linux-amd64"
+          agent="${dir}/edge-agent-linux-amd64"
+          test "$(sha256sum "${orchestrator}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${orchestrator}" "${agent}"
           printf 'EDGE_EXPECTED_LOCAL_OWNER_SHA256=%s\n' "${EDGE_AGENT_SHA256}" >> "${GITHUB_ENV}"
+          printf 'EDGE_LOCAL_ORCHESTRATOR=%s\n' "${orchestrator}" >> "${GITHUB_ENV}"
+          printf 'EDGE_LOCAL_AGENT_ARTIFACT=%s\n' "${agent}" >> "${GITHUB_ENV}"
 
       - name: Verify bounded local runtime authority
         shell: bash
@@ -584,6 +591,19 @@ jobs:
           fi
           sudo -n "${owner}" local status >/dev/null
 
+      - name: Materialize exact digest-bound application bundle
+        if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify'
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="${RUNNER_TEMP}/production-agent-artifact.json"
+          bundle="${RUNNER_TEMP}/production-application-bundle.pb"
+          "${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle materialize             "${SPEC_PATH}" "${manifest}" "${EDGE_LOCAL_AGENT_ARTIFACT}"
+          "${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle export-bundle             "${SPEC_PATH}" "${manifest}" "${EDGE_LOCAL_AGENT_ARTIFACT}" "${bundle}"             | tee "${RUNNER_TEMP}/production-bundle-evidence.txt"
+          test -s "${bundle}"
+          chmod 0600 "${bundle}"
+          printf 'EDGE_LOCAL_APPLICATION_BUNDLE=%s\n' "${bundle}" >> "${GITHUB_ENV}"
+
       - name: Execute typed local runtime operation
         shell: bash
         run: |
@@ -591,10 +611,10 @@ jobs:
           owner="/usr/local/libexec/sing-box/edge-agent"
           case "${REQUESTED_OPERATION}" in
             converge)
-              local_operation="bootstrap-full"
+              local_operation="bundle-converge"
               ;;
             verify)
-              local_operation="verify"
+              local_operation="bundle-verify"
               ;;
             diagnose)
               local_operation="diagnose"
@@ -606,7 +626,12 @@ jobs:
           esac
 
           result="${RUNNER_TEMP}/production-runtime-result.txt"
-          sudo -n "${owner}" local "${local_operation}" | tee "${result}"
+          if [[ "${REQUESTED_OPERATION}" = "converge" || "${REQUESTED_OPERATION}" = "verify" ]]; then
+            test -s "${EDGE_LOCAL_APPLICATION_BUNDLE}"
+            sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}" | tee "${result}"
+          else
+            sudo -n "${owner}" local "${local_operation}" | tee "${result}"
+          fi
 
           {
             echo '### Production VM runtime plane'

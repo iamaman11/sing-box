@@ -895,8 +895,12 @@ def main() -> None:
         and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
         and "${LOCAL_OWNER} local status" in production_vm_runner_installer
         and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer
         and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
         and "acceptance_rpc_service_enabled" in vultr
@@ -1003,10 +1007,13 @@ def main() -> None:
         and "- sing-box-production-vm" in production_runtime
         and "- production-1" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
-        and 'sudo -n "${owner}" local "${local_operation}"' in production_runtime
-        and 'local_operation="bootstrap-full"' in production_runtime
-        and 'local_operation="verify"' in production_runtime
+        and '"${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle materialize' in production_runtime
+        and '"${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle export-bundle' in production_runtime
+        and 'sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}"' in production_runtime
+        and 'local_operation="bundle-converge"' in production_runtime
+        and 'local_operation="bundle-verify"' in production_runtime
         and 'local_operation="diagnose"' in production_runtime
+        and 'local_operation="bootstrap-full"' not in production_runtime
         and "VULTR_API_KEY" not in production_runtime
         and "CLOUDFLARE_CONTROL_TOKEN" not in production_runtime
         and "CLOUDFLARE_DNS_TOKEN" not in production_runtime
@@ -1203,7 +1210,8 @@ def main() -> None:
         and 'provider_operation="verify-active"' in production_provider
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
-        and 'local_operation="bootstrap-full"' in production_runtime
+        and 'local_operation="bundle-converge"' in production_runtime
+        and "export-bundle" in application
         and "VULTR_SSH_PRIVATE_KEY" not in production_runtime,
         "Mesh ownership must be split between hosted production target-plane provider authority and the self-hosted VM local runtime owner",
     )

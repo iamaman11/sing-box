@@ -46,6 +46,8 @@ pub(crate) enum LocalCommand {
     BootstrapBase,
     BootstrapTunnel,
     BootstrapFull,
+    BundleConverge,
+    BundleVerify,
     MeshVerify,
     MeshCleanup,
     CredentialState,
@@ -63,6 +65,8 @@ impl LocalCommand {
             Self::BootstrapBase => "local-bootstrap-base",
             Self::BootstrapTunnel => "local-bootstrap-tunnel",
             Self::BootstrapFull => "local-bootstrap-full",
+            Self::BundleConverge => "local-bundle-converge",
+            Self::BundleVerify => "local-bundle-verify",
             Self::MeshVerify => "local-mesh-verify",
             Self::MeshCleanup => "local-mesh-cleanup",
             Self::CredentialState => "local-credential-state",
@@ -110,6 +114,8 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-converge"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-admit", "101"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-stage", "101"]).is_ok());
