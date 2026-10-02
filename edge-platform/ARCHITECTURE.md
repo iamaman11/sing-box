@@ -245,8 +245,10 @@ Mesh/profile state, the owner must fail closed if any of those resources reappea
 mutation authority only for the two remaining Worker residuals. Those final deletes use one
 temporary least-privilege credential scoped only to Workers Routes Write for `alegria.by` and
 Workers Scripts Write for the historical/shared account; normal DNS, target-control and historical
-read credentials are not broadened. The temporary commands, credential and dedicated implementation
-must be deleted immediately after terminal NOOP.
+read credentials are not broadened. Read-only plan/verify must not receive that write credential.
+The exact zone ID is resolved through the existing read-only DNS authority before the route DELETE,
+so the temporary mutation token does not need Zone Read or DNS permissions. The temporary commands,
+credential and dedicated implementation must be deleted immediately after terminal NOOP.
 
 Disposable `/application acceptance|cleanup` and `/production enroll-runtime` are exceptional
 acceptance/bootstrap surfaces, not normal steady-state operator API. They remain only while their
