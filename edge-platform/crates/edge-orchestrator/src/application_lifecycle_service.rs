@@ -158,6 +158,58 @@ pub(crate) fn prepare_application_bundle(
     desired: &DesiredApplicationState,
     artifact: &AgentArtifactManifest,
 ) -> Result<PreparedApplicationBundle, String> {
+    let bundle_root = repo_root.join(&desired.bundle_root);
+    let image_environment = fs::read_to_string(bundle_root.join(".images.env")).map_err(|err| {
+        format!(
+            "exact application image environment is missing or unreadable at {}: {err}",
+            bundle_root.join(".images.env").display()
+        )
+    })?;
+    prepare_application_bundle_with_image_environment(
+        repo_root,
+        desired,
+        artifact,
+        &image_environment,
+    )
+}
+
+pub(crate) fn candidate_application_image_environment(
+    gateway_image: &str,
+    warp_egress_image: &str,
+    mesh_image: &str,
+) -> Result<String, String> {
+    validate_exact_image_ref(
+        "EDGE_GATEWAY_IMAGE",
+        gateway_image,
+        "ghcr.io/iamaman11/vultr-edge-gateway",
+    )?;
+    validate_exact_image_ref(
+        "EDGE_WARP_EGRESS_IMAGE",
+        warp_egress_image,
+        "ghcr.io/iamaman11/vultr-warp-egress",
+    )?;
+    validate_exact_image_ref(
+        "CLOUDFLARE_MESH_IMAGE",
+        mesh_image,
+        "docker.io/cloudflare/mesh",
+    )?;
+    Ok(format!(
+        "EDGE_GATEWAY_IMAGE={gateway_image}\nEDGE_WARP_EGRESS_IMAGE={warp_egress_image}\nCLOUDFLARE_MESH_IMAGE={mesh_image}\n"
+    ))
+}
+
+pub(crate) fn exact_file_sha256(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path)
+        .map_err(|err| format!("failed to read exact artifact {}: {err}", path.display()))?;
+    Ok(sha256_hex(&bytes))
+}
+
+pub(crate) fn prepare_application_bundle_with_image_environment(
+    repo_root: &Path,
+    desired: &DesiredApplicationState,
+    artifact: &AgentArtifactManifest,
+    image_environment: &str,
+) -> Result<PreparedApplicationBundle, String> {
     desired.validate().map_err(|err| err.to_string())?;
     artifact.validate().map_err(|err| err.to_string())?;
 
@@ -180,11 +232,17 @@ pub(crate) fn prepare_application_bundle(
                 .to_owned(),
         );
     }
-    validate_materialized_image_environment(&bundle_root.join(".images.env"))?;
+    validate_materialized_image_environment_content(image_environment)?;
 
     let mut stack_files = Vec::new();
     collect_bundle_files(&bundle_root, &bundle_root, &mut stack_files)?;
-
+    stack_files.retain(|file| file.relative_path != ".images.env");
+    stack_files.push(BundleFile {
+        relative_path: ".images.env".to_owned(),
+        content: image_environment.as_bytes().to_vec(),
+        executable: false,
+        sensitive: false,
+    });
     stack_files.push(BundleFile {
         relative_path: ".env.runtime.policy".to_owned(),
         content: render_runtime_policy_environment(desired).into_bytes(),
@@ -217,6 +275,10 @@ fn validate_materialized_image_environment(path: &Path) -> Result<(), String> {
             path.display()
         )
     })?;
+    validate_materialized_image_environment_content(&raw)
+}
+
+fn validate_materialized_image_environment_content(raw: &str) -> Result<(), String> {
     let mut values = BTreeMap::new();
     for (index, line) in raw.lines().enumerate() {
         if line.is_empty() {
