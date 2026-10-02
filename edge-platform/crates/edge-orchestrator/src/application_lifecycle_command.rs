@@ -1,8 +1,8 @@
 use crate::application_lifecycle_service::{
     ApplicationAuthority, ApplicationObservationView, DesiredMutationMode,
     authorize_application_plan, authorize_application_recovery, authorize_application_rollback,
-    candidate_application_image_environment, exact_file_sha256, execute_desired,
-    execute_recovery, execute_rollback, observe_application, prepare_application_bundle,
+    candidate_application_image_environment, exact_file_sha256, execute_desired, execute_recovery,
+    execute_rollback, observe_application, prepare_application_bundle,
     prepare_application_bundle_with_image_environment, recovery_plan_remote, rollback_plan_remote,
     verify_desired, verify_exact_agent_artifact,
 };
@@ -65,7 +65,10 @@ pub(crate) fn build_candidate_application_bundle(
             output_protobuf_path.display()
         )
     })?;
-    println!("application_bundle_id={}", prepared.request.bundle_id.as_deref().unwrap_or(""));
+    println!(
+        "application_bundle_id={}",
+        prepared.request.bundle_id.as_deref().unwrap_or("")
+    );
     println!(
         "application_bundle_digest={}",
         prepared.request.bundle_digest.as_deref().unwrap_or("")
