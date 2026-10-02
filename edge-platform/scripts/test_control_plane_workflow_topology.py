@@ -998,9 +998,11 @@ def main() -> None:
         and "api.ipify.org" not in production_provider
         and "lease-acquire" not in production_provider
         and "application_bundle_sha256" in production_provider
-        and "application-bundle.pb" in production_provider
-        and "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in production_provider,
-        "production provider plane must remain GitHub-hosted, verify the promoted bundle, and export only exact runtime transport bytes",
+        and "application_bundle_asset_id" in production_provider
+        and 'releases/tags/${EDGE_RELEASE_TAG}' in production_provider
+        and 'select(.name == "application-bundle.pb")' in production_provider
+        and "actions/upload-artifact" not in production_provider,
+        "production provider plane must remain GitHub-hosted, verify the promoted ReleaseSet and export only exact immutable bundle identity",
     )
     require(
         "- self-hosted" in production_runtime
@@ -1009,8 +1011,13 @@ def main() -> None:
         and "- sing-box-production-vm" in production_runtime
         and "- production-1" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
-        and "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in production_runtime
         and "PROVIDER_APPLICATION_BUNDLE_SHA256" in production_runtime
+        and "PROVIDER_APPLICATION_BUNDLE_ASSET_ID" in production_runtime
+        and '/releases/assets/${PROVIDER_APPLICATION_BUNDLE_ASSET_ID}' in production_runtime
+        and "--proto '=https'" in production_runtime
+        and "--proto-redir '=https'" in production_runtime
+        and "--connect-timeout 10" in production_runtime
+        and "--max-time 60" in production_runtime
         and 'sha256sum "${bundle}"' in production_runtime
         and 'sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}"' in production_runtime
         and 'local_operation="bundle-converge"' in production_runtime
@@ -1021,6 +1028,8 @@ def main() -> None:
         and "EDGE_LOCAL_ORCHESTRATOR" not in production_runtime
         and "application-lifecycle materialize" not in production_runtime
         and "application-lifecycle export-bundle" not in production_runtime
+        and "actions/upload-artifact" not in production_runtime
+        and "actions/download-artifact" not in production_runtime
         and "git init ." not in production_runtime
         and "git fetch " not in production_runtime
         and "git checkout " not in production_runtime
@@ -1033,7 +1042,7 @@ def main() -> None:
         and "lease-acquire" not in production_runtime
         and "/var/run/docker.sock" in production_runtime
         and "sudo -n id -u" in production_runtime,
-        "production runtime plane must remain transport-only: exact bound bundle -> fixed sudo local owner, with no source/render/provider/generic-root authority",
+        "production runtime plane must remain transport-only: immutable ReleaseSet-bound bundle -> SHA verify -> fixed sudo local owner, with no source/render/provider/generic-root authority",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
