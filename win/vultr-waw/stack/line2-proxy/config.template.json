@@ -14,6 +14,11 @@
         "tag": "quad9",
         "type": "udp",
         "server": "9.9.9.9"
+      },
+      {
+        "tag": "docker-local",
+        "type": "local",
+        "prefer_go": true
       }
     ],
     "final": "cloudflare",
@@ -120,7 +125,8 @@
       "server": "warp-egress",
       "server_port": 11080,
       "version": "5",
-      "network": "tcp"
+      "network": "tcp",
+      "domain_resolver": "docker-local"
     },
     {
       "type": "direct",
