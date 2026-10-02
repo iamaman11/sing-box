@@ -1037,6 +1037,7 @@ def main() -> None:
         and "EDGE_CANONICAL_SOURCE" in production_runtime
         and "git init ." not in production_runtime
         and "git fetch " not in production_runtime
+        and "git checkout " not in production_runtime
         and "actions/checkout" not in production_runtime
         and "VULTR_API_KEY" not in production_runtime
         and "CLOUDFLARE_CONTROL_TOKEN" not in production_runtime
