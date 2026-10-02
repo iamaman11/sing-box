@@ -530,20 +530,45 @@ jobs:
       SPEC_PATH: ${{ needs.authorize.outputs.spec_path }}
 
     steps:
-      - name: Checkout exact canonical revision
+      - name: Materialize exact canonical revision without Git
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
           REVISION: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "${REVISION}"
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${REVISION}"
           test "${SPEC_PATH}" = "infra/production/production.textproto"
-          test -f "${SPEC_PATH}"
+          source_root="${RUNNER_TEMP}/canonical-source"
+          commit_json="${RUNNER_TEMP}/canonical-commit.json"
+          source_archive="${RUNNER_TEMP}/canonical-source.tar.gz"
+          rm -rf "${source_root}"
+          install -d -m 0755 "${source_root}"
+
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 30 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/${REPOSITORY}/commits/${REVISION}" \
+            --output "${commit_json}"
+          test "$(jq -er '.sha' "${commit_json}")" = "${REVISION}"
+
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 60 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/${REPOSITORY}/tarball/${REVISION}" \
+            --output "${source_archive}"
+          tar -xzf "${source_archive}" -C "${source_root}" --strip-components=1
+          rm -f "${commit_json}" "${source_archive}"
+
+          test -f "${source_root}/${SPEC_PATH}"
+          test -f "${source_root}/edge-platform/scripts/resolve_durable_release.sh"
+          printf 'EDGE_CANONICAL_SOURCE=%s\n' "${source_root}" >> "${GITHUB_ENV}"
 
       - name: Resolve exact durable release identity
         shell: bash
@@ -554,6 +579,7 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
         run: |
           set -euo pipefail
+          cd "${EDGE_CANONICAL_SOURCE}"
           bash edge-platform/scripts/resolve_durable_release.sh
           dir="${RUNNER_TEMP}/edge-platform-release"
           source "${dir}/resolved.env"
@@ -596,6 +622,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cd "${EDGE_CANONICAL_SOURCE}"
           manifest="${RUNNER_TEMP}/production-agent-artifact.json"
           bundle="${RUNNER_TEMP}/production-application-bundle.pb"
           "${EDGE_LOCAL_ORCHESTRATOR}" application-lifecycle materialize             "${SPEC_PATH}" "${manifest}" "${EDGE_LOCAL_AGENT_ARTIFACT}"
