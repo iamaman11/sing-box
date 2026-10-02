@@ -130,9 +130,10 @@ async fn run(
         Command::ApplicationAcceptance(args) => {
             application_acceptance_command::run(args, release_context).await
         }
-        Command::ApplicationBundleBuild(_) => {
-            Err("application-bundle-build must execute before durable runtime context resolution".to_owned())
-        }
+        Command::ApplicationBundleBuild(_) => Err(
+            "application-bundle-build must execute before durable runtime context resolution"
+                .to_owned(),
+        ),
         Command::ApplicationCleanup(args) => {
             application_acceptance_command::run_cleanup(args, release_context).await
         }
