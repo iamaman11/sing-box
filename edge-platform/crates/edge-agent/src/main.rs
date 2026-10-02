@@ -4169,6 +4169,44 @@ mod tests {
     }
 
     #[test]
+    fn local_bundle_transport_accepts_only_exact_digest_bound_stack_bundle() {
+        let mut request = ApplyBundleRequest {
+            stack_files: vec![BundleFile {
+                relative_path: "docker-compose.yml".to_owned(),
+                content: b"services: {}\n".to_vec(),
+                executable: false,
+                sensitive: false,
+            }],
+            host_files: Vec::new(),
+            deployment_summary: None,
+            agent_env_file: None,
+            prune_existing: true,
+            bundle_id: Some("release-a".to_owned()),
+            bundle_digest: None,
+        };
+        let digest = canonical_apply_bundle_digest(&request).unwrap();
+        request.bundle_digest = Some(digest.clone());
+
+        let (bundle_id, observed_digest) =
+            validate_digest_bound_bundle_request(&request).unwrap();
+        assert_eq!(bundle_id, "release-a");
+        assert_eq!(observed_digest, digest);
+
+        let mut tampered = request.clone();
+        tampered.stack_files[0].content = b"services: {changed: {}}\n".to_vec();
+        assert!(validate_digest_bound_bundle_request(&tampered).is_err());
+
+        let mut host_mutation = request;
+        host_mutation.host_files.push(BundleFile {
+            relative_path: "forbidden".to_owned(),
+            content: Vec::new(),
+            executable: false,
+            sensitive: false,
+        });
+        assert!(validate_digest_bound_bundle_request(&host_mutation).is_err());
+    }
+
+    #[test]
     fn mesh_warp_cli_probes_accept_tos_non_interactively() {
         assert_eq!(
             mesh_warp_cli_probe_args("status"),
