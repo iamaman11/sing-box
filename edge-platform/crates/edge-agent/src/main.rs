@@ -18,6 +18,7 @@ use clap::Parser;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -79,6 +80,7 @@ const POST_BOOTSTRAP_REOBSERVE_ATTEMPTS: usize = 45;
 const POST_BOOTSTRAP_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
 const CREDENTIAL_ADMISSION_ATTEMPTS: usize = 8;
 const CREDENTIAL_ADMISSION_DELAY: Duration = Duration::from_secs(1);
+const MAX_LOCAL_BUNDLE_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -180,6 +182,8 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::BootstrapFull => {
             run_local_bootstrap(&stack_dir, BootstrapMode::BootstrapFull).await
         }
+        cli::LocalCommand::BundleConverge => run_local_bundle_converge(&stack_dir).await,
+        cli::LocalCommand::BundleVerify => run_local_bundle_verify(&stack_dir).await,
         cli::LocalCommand::MeshVerify => {
             let state = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
             print_mesh_state_evidence(&state);
@@ -240,6 +244,149 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
     }
+}
+
+fn read_local_bundle_request() -> Result<ApplyBundleRequest, String> {
+    let mut bytes = Vec::new();
+    io::stdin()
+        .take(MAX_LOCAL_BUNDLE_REQUEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("failed to read local bundle request from stdin: {err}"))?;
+    if bytes.len() as u64 > MAX_LOCAL_BUNDLE_REQUEST_BYTES {
+        return Err(format!(
+            "local bundle request exceeds {} bytes",
+            MAX_LOCAL_BUNDLE_REQUEST_BYTES
+        ));
+    }
+    if bytes.is_empty() {
+        return Err("local bundle request stdin is empty".to_owned());
+    }
+    ApplyBundleRequest::decode(bytes.as_slice())
+        .map_err(|err| format!("failed to decode local bundle request: {err}"))
+}
+
+fn print_bundle_release(prefix: &str, release: Option<&ApplicationBundleReleaseState>) {
+    println!("{prefix}_present={}", release.is_some());
+    if let Some(release) = release {
+        println!("{prefix}_id={}", release.bundle_id);
+        println!("{prefix}_digest={}", release.bundle_digest);
+    }
+}
+
+async fn run_local_bundle_verify(stack_dir: &Path) -> Result<(), AgentError> {
+    let request = read_local_bundle_request().map_err(AgentError::Command)?;
+    let (expected_id, expected_digest) =
+        validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
+    let active = read_application_release(stack_dir)
+        .ok_or_else(|| AgentError::Command("active application release marker is missing".to_owned()))?;
+    if active.bundle_id != expected_id || active.bundle_digest != expected_digest {
+        return Err(AgentError::Command(format!(
+            "active application bundle does not match exact requested bundle: expected_id={expected_id} expected_digest={expected_digest} observed_id={} observed_digest={}",
+            active.bundle_id, active.bundle_digest
+        )));
+    }
+
+    let state = inspect_runtime(stack_dir, AgentMode::Readiness).await;
+    print_agent_state_evidence("BUNDLE_VERIFY", &state);
+    print_bundle_release("application_active_bundle", Some(&active));
+    print_bundle_release(
+        "application_previous_bundle",
+        read_application_release(&previous_stack_dir(stack_dir)).as_ref(),
+    );
+    println!("application_bundle_match=true");
+    if state.ready {
+        Ok(())
+    } else {
+        Err(AgentError::Command(
+            "exact application bundle is active but runtime verification did not reach READY"
+                .to_owned(),
+        ))
+    }
+}
+
+async fn run_local_bundle_converge(stack_dir: &Path) -> Result<(), AgentError> {
+    let request = read_local_bundle_request().map_err(AgentError::Command)?;
+    let (expected_id, expected_digest) =
+        validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
+    let before = read_application_release(stack_dir);
+
+    let response = apply_bundle(stack_dir, request).map_err(AgentError::Command)?;
+    if response.active_bundle_id.as_deref() != Some(expected_id.as_str())
+        || response.active_bundle_digest.as_deref() != Some(expected_digest.as_str())
+    {
+        return Err(AgentError::Command(
+            "local bundle apply returned unexpected active release identity".to_owned(),
+        ));
+    }
+
+    let bootstrap = run_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+    if bootstrap.success {
+        println!("operation=BUNDLE_CONVERGE");
+        println!("application_bundle_id={expected_id}");
+        println!("application_bundle_digest={expected_digest}");
+        println!("bootstrap_success=true");
+        if let Some(state) = bootstrap.post_state.as_ref() {
+            print_agent_state_evidence("BUNDLE_CONVERGE", state);
+        }
+        return Ok(());
+    }
+
+    let failure = if bootstrap.warnings.is_empty() {
+        "new bundle bootstrap did not reach READY".to_owned()
+    } else {
+        format!(
+            "new bundle bootstrap did not reach READY: {}",
+            bootstrap.warnings.join("; ")
+        )
+    };
+
+    if before
+        .as_ref()
+        .is_some_and(|release| {
+            release.bundle_id == expected_id && release.bundle_digest == expected_digest
+        })
+    {
+        return Err(AgentError::Command(format!(
+            "{failure}; exact bundle was already active, so no bundle rollback was attempted"
+        )));
+    }
+
+    let Some(previous) = before else {
+        return Err(AgentError::Command(format!(
+            "{failure}; no previous application release exists for recovery"
+        )));
+    };
+
+    let rollback = rollback_bundle(
+        stack_dir,
+        RollbackBundleRequest {
+            expected_current_bundle_digest: expected_digest.clone(),
+        },
+    )
+    .map_err(|err| {
+        AgentError::Command(format!(
+            "{failure}; previous bundle recovery failed before runtime restore: {err}"
+        ))
+    })?;
+    if rollback.active_bundle_id.as_deref() != Some(previous.bundle_id.as_str())
+        || rollback.active_bundle_digest.as_deref() != Some(previous.bundle_digest.as_str())
+    {
+        return Err(AgentError::Command(format!(
+            "{failure}; bundle rollback completed with unexpected recovered identity"
+        )));
+    }
+
+    let recovery = run_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+    if recovery.success {
+        return Err(AgentError::Command(format!(
+            "{failure}; previous application LKG was restored successfully"
+        )));
+    }
+
+    Err(AgentError::Command(format!(
+        "{failure}; previous bundle was restored but its runtime also failed readiness: {}",
+        recovery.warnings.join("; ")
+    )))
 }
 
 async fn run_local_bootstrap(stack_dir: &Path, mode: BootstrapMode) -> Result<(), AgentError> {
