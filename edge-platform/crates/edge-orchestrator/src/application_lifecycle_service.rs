@@ -159,6 +159,7 @@ pub(crate) fn prepare_application_bundle(
     artifact: &AgentArtifactManifest,
 ) -> Result<PreparedApplicationBundle, String> {
     let bundle_root = repo_root.join(&desired.bundle_root);
+    validate_application_bundle_root(&bundle_root)?;
     let image_environment = fs::read_to_string(bundle_root.join(".images.env")).map_err(|err| {
         format!(
             "exact application image environment is missing or unreadable at {}: {err}",
@@ -214,24 +215,7 @@ pub(crate) fn prepare_application_bundle_with_image_environment(
     artifact.validate().map_err(|err| err.to_string())?;
 
     let bundle_root = repo_root.join(&desired.bundle_root);
-    if !bundle_root.is_dir() {
-        return Err(format!(
-            "application bundle root is missing: {}",
-            bundle_root.display()
-        ));
-    }
-    if bundle_root.join(".env.runtime").exists() {
-        return Err(
-            "committed application bundle must not contain .env.runtime; the VM derives it from Git-owned policy and VM-owned credentials"
-                .to_owned(),
-        );
-    }
-    if bundle_root.join(".env.runtime.policy").exists() {
-        return Err(
-            "committed application bundle must not contain .env.runtime.policy; runtime policy is derived only from application desired state"
-                .to_owned(),
-        );
-    }
+    validate_application_bundle_root(&bundle_root)?;
     validate_materialized_image_environment_content(image_environment)?;
 
     let mut stack_files = Vec::new();
@@ -266,6 +250,28 @@ pub(crate) fn prepare_application_bundle_with_image_environment(
         desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
 
     Ok(PreparedApplicationBundle { request, release })
+}
+
+fn validate_application_bundle_root(bundle_root: &Path) -> Result<(), String> {
+    if !bundle_root.is_dir() {
+        return Err(format!(
+            "application bundle root is missing: {}",
+            bundle_root.display()
+        ));
+    }
+    if bundle_root.join(".env.runtime").exists() {
+        return Err(
+            "committed application bundle must not contain .env.runtime; the VM derives it from Git-owned policy and VM-owned credentials"
+                .to_owned(),
+        );
+    }
+    if bundle_root.join(".env.runtime.policy").exists() {
+        return Err(
+            "committed application bundle must not contain .env.runtime.policy; runtime policy is derived only from application desired state"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_materialized_image_environment(path: &Path) -> Result<(), String> {
