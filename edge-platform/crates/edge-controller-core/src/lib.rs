@@ -560,6 +560,7 @@ fn expected_tunnel_bindings_from_runtime_state(
     let direct = state.direct.as_ref()?;
     let warp = state.warp.as_ref()?;
     Some(ExpectedTunnelBindings {
+        server: state.server_ip.clone(),
         direct: TunnelBinding {
             domain: direct.domain.clone(),
             hy2_port: direct.hy2_port,
@@ -650,11 +651,16 @@ fn read_expected_tunnel_bindings(
         }
     }?;
 
+    let server = parsed.ip.clone()?;
     let direct = parsed.tunnel.and_then(tunnel_binding_from_state)?;
     let warp = parsed
         .tunnel_warp
         .and_then(warp_tunnel_binding_from_state)?;
-    Some(ExpectedTunnelBindings { direct, warp })
+    Some(ExpectedTunnelBindings {
+        server,
+        direct,
+        warp,
+    })
 }
 
 fn tunnel_binding_from_state(tunnel: CurrentTunnelState) -> Option<TunnelBinding> {

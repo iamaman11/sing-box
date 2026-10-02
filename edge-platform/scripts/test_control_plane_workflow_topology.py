@@ -32,7 +32,7 @@ CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
-PHASE0_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_phase0_inventory.rs")
+PRODUCTION_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_production_inventory.rs")
 ACCEPTANCE_COORDINATOR = Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs")
 VULTR_LIFECYCLE_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs")
 PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-production-runner.sh")
@@ -48,10 +48,8 @@ def main() -> None:
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
-    zero_trust = ZERO_TRUST.read_text(encoding="utf-8")
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     vpc = VPC.read_text(encoding="utf-8")
-    dns = DNS.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
@@ -75,7 +73,7 @@ def main() -> None:
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     controller_proto = CONTROLLER_PROTO.read_text(encoding="utf-8")
-    phase0_inventory = PHASE0_INVENTORY.read_text(encoding="utf-8")
+    production_inventory = PRODUCTION_INVENTORY.read_text(encoding="utf-8")
     acceptance_coordinator = ACCEPTANCE_COORDINATOR.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     production_vm_runner_installer = PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
@@ -112,7 +110,6 @@ def main() -> None:
     require("workflow_call:" in application, "application lifecycle must be reusable")
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
-    require("workflow_call:" in zero_trust, "Zero Trust lifecycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
     tunnel_auth = credential_proto.split("message TunnelAuthentication {", 1)[1].split("}", 1)[0]
     reality_public = credential_proto.split("message RealityPublicIdentity {", 1)[1].split("}", 1)[0]
@@ -264,71 +261,13 @@ def main() -> None:
         and "observe_canonical_credential_bundle" in windows_console,
         "fresh-v2 data-plane admission must stay read-only and inside the existing host-local credential owners",
     )
-    publish_index = credentials.index("  cutover_publish:")
-    vm_admit_index = credentials.index("  cutover_vm_admit:")
-    windows_admit_index = credentials.index("  cutover_windows_admit:")
-    vm_stage_index = credentials.index("  cutover_vm_stage:")
-    windows_stage_index = credentials.index("  cutover_windows_stage:")
-    require(
-        publish_index < vm_admit_index < windows_admit_index < vm_stage_index < windows_stage_index,
-        "fresh-v2 provider publication must be admitted by both local owners before either host stages a candidate",
-    )
-    publish_block = credentials[publish_index:vm_admit_index]
-    require(
-        'GITHUB_RUN_ID' in publish_block
-        and 'GITHUB_RUN_ATTEMPT' in publish_block
-        and 'ACCEPTED_REVISION"][:16]' not in publish_block
-        and "credential_fresh_v2_provider_publish=PASS" in publish_block,
-        "fresh random credential snapshots must use workflow-attempt identity, not commit identity, and provider publish must not masquerade as data-plane admission",
-    )
-    require(
-        "cutover_vm_abort_uncommitted:" in credentials
-        and "cutover_windows_abort_uncommitted:" in credentials
-        and "cutover_provider_abort_uncommitted:" in credentials
-        and "cutover_vm_recover_candidate_failure" not in credentials
-        and "cutover_windows_recover_candidate_failure" not in credentials
-        and "cutover_vm_recover_windows_restart_failure" not in credentials,
-        "all uncommitted fresh-v2 failure phases must collapse into one ordered VM -> Windows -> provider abort path",
-    )
-    windows_abort_index = credentials.index("  cutover_windows_abort_uncommitted:")
-    windows_abort_end = credentials.index("  cutover_provider_abort_uncommitted:", windows_abort_index)
-    windows_abort_block = credentials[windows_abort_index:windows_abort_end]
-    require(
-        "privileged-activate" not in windows_abort_block
-        and "exact_release_files" in windows_abort_block
-        and "release_set_sha256" in windows_abort_block
-        and "EDGE_CREDENTIAL_OPERATION" in windows_abort_block
-        and "fresh-v2-cleanup" in windows_abort_block
-        and "STAGE2_WINDOWS_ABORT_RELEASE_VERIFY=PASS" in windows_abort_block,
-        "Windows uncommitted abort must verify the installed activation authority without replaying release activation",
-    )
-    require(
-        '("/credentials", "fresh-v2-publication-prove"): "fresh-v2-publication-prove"' in credentials
-        and "cutover_publication_prove_complete:" in credentials
-        and "FRESH_V2_PUBLICATION_DATA_PLANE_ADMISSION=PASS" in credentials
-        and "FRESH_V2_PUBLICATION_BASELINE_RESTORE=PASS" in credentials
-        and "FRESH_V2_PUBLICATION_PROOF=PASS" in credentials,
-        "fresh-v2 publication must have a bounded live proof path that stops before host staging and restores the provider baseline",
-    )
-    publication_proof_index = credentials.index("  cutover_publication_prove_complete:")
-    publication_proof_end = credentials.index("  cutover_windows_promote:", publication_proof_index)
-    publication_proof_block = credentials[publication_proof_index:publication_proof_end]
-    require(
-        "always() &&" in publication_proof_block
-        and "needs.cutover_vm_admit.result == 'success'" in publication_proof_block
-        and "needs.cutover_windows_admit.result == 'success'" in publication_proof_block
-        and "needs.cutover_provider_abort_uncommitted.result == 'success'" in publication_proof_block,
-        "publication proof terminal marker must survive intentional skip propagation and require all accepted proof prerequisites explicitly",
-    )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
-    require("workflow_call:" in dns, "DNS lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
     require("issue_comment:" not in vultr, "Vultr backend must not listen to comments")
     require("issue_comment:" not in windows_physical, "Windows physical cycle must not listen to comments")
-    require("issue_comment:" not in zero_trust, "Zero Trust backend must not listen to comments")
     require("issue_comment:" not in credentials, "credential backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
-    require("issue_comment:" not in dns, "DNS backend must not listen to comments")
+    require(not ZERO_TRUST.exists() and not DNS.exists(), "retired standalone Cloudflare operator workflows must stay absent")
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
@@ -362,8 +301,10 @@ def main() -> None:
         "retired generic root-runner routing/workflow/installer must be absent",
     )
     require(
-        "uses: ./.github/workflows/zero-trust-lifecycle.yml" in router,
-        "router must call the Zero Trust backend",
+        "startsWith(github.event.comment.body, '/zero-trust ')" not in router
+        and "zero-trust-lifecycle.yml" not in router
+        and not ZERO_TRUST.exists(),
+        "duplicate production-facing /zero-trust operator workflow must be retired",
     )
     require(
         "/credential-plane " not in router
@@ -375,14 +316,16 @@ def main() -> None:
         "router must call the VPC backend",
     )
     require(
-        "uses: ./.github/workflows/cloudflare-dns-lifecycle.yml" in router,
-        "router must call the DNS backend",
+        "startsWith(github.event.comment.body, '/dns ')" not in router
+        and "cloudflare-dns-lifecycle.yml" not in router
+        and not DNS.exists(),
+        "duplicate production-facing /dns operator workflow must be retired",
     )
     require(
         "startsWith(github.event.comment.body, '/mesh ')" not in router
         and "cloudflare-mesh-lifecycle.yml" not in router
         and not (WORKFLOWS / "cloudflare-mesh-lifecycle.yml").exists(),
-        "parallel /mesh operator transport must be retired; provider Mesh belongs to /production target-plane and VM runtime Mesh belongs to the local owner",
+        "parallel /mesh operator transport must be retired; provider Mesh belongs to canonical /production composition and VM runtime Mesh belongs to the local owner",
     )
     require(
         "vultr-control-plane-production" not in router,
@@ -401,9 +344,7 @@ def main() -> None:
     for name, backend in [
         ("application", application),
         ("vultr", vultr),
-        ("zero-trust", zero_trust),
         ("vpc", vpc),
-        ("dns", dns),
     ]:
         require(
             "edge-orchestrator-linux-amd64" in backend
@@ -446,20 +387,20 @@ def main() -> None:
         "transitional Phase 2 credential commands must be retired after production authority cutover",
     )
     require(
-        '"contract-plan"' in credentials
-        and '"contract-converge"' in credentials
-        and '"contract-verify"' in credentials
-        and '"contract-prove"' in credentials
-        and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials "${REQUESTED_OPERATION}"' in credentials
-        and "EDGE_RELEASE_CONTEXT_PATH" in credentials
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in credentials
-        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}" in credentials
-        and "if: needs.authorize.outputs.operation == 'contract-converge'" in credentials
-        and "if: needs.authorize.outputs.operation != 'contract-converge'" in credentials
+        '("/credentials", "verify"): "verify"' in credentials
+        and '("/credentials", "host-bootstrap-converge"): "host-bootstrap-converge"' in credentials
+        and '"contract-plan"' not in credentials
+        and '"contract-converge"' not in credentials
+        and '"contract-prove"' not in credentials
+        and '"fresh-v2-cutover"' not in credentials
+        and '"fresh-v2-publication-prove"' not in credentials
+        and '"fresh-v2-cleanup"' not in credentials
+        and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
+        and "if: needs.authorize.outputs.operation == 'verify'" in credentials
         and "group: vultr-control-plane-production" in credentials
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
         and "cancel-in-progress: false" in credentials
-        and "credential-lifecycle-production" not in credentials
+        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" not in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
@@ -469,31 +410,10 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential delivery workflow must be dedicated, GitHub-hosted, least-authority and artifact-free",
+        "credential operator workflow must expose only steady-state verify plus explicit host bootstrap; closed Stage-2 proof/cutover commands must be absent",
     )
-    require(
-        "if next == CredentialDeliveryAction::Noop {" in credential_command
-        and "print_terminal(desired, &after, mutations)?;" in credential_command,
-        "credential convergence must accept terminal NOOP observed after the final bounded mutation",
-    )
-    proof_start = credential_command.index("async fn prove_ab_session(")
-    proof_end = credential_command.index(
-        "fn validate_rotated_proof_credential", proof_start
-    )
-    proof_session = credential_command[proof_start:proof_end]
-    require(
-        "preflight_access_analytics(control_token, desired).await?;" in credential_command
-        and "proof_token_state projection={} stage={}" in credential_command
-        and "access_failure_capture projection={}" in credential_command
-        and "diagnose_access_failure_after_cleanup(" in credential_command
-        and "no HTTP probe replay performed" in credential_command
-        and "async fn prove_projection(" not in credential_command
-        and "credential.client_secret" not in proof_session,
-        "credential proof must use one shared two-projection session with secret-safe provider-native failure evidence and no HTTP replay",
-    )
-    host_bootstrap_workflow = credentials.split(
-        "  host_bootstrap_release:\n", 1
-    )[1].split("\n  cutover_release:\n", 1)[0]
+
+    host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
     host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
     host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]
@@ -512,128 +432,36 @@ def main() -> None:
         and "actions/download-artifact" not in credentials,
         "host identity bootstrap must remain create-once, retry-safe, runner-blind, ciphertext-only on Windows and artifact-free",
     )
-    fresh_v2_start = credential_command.index("async fn fresh_v2_publish(")
-    fresh_v2_end = credential_command.index(
-        "pub(crate) async fn verify_credential_plane_invariant", fresh_v2_start
-    )
-    fresh_v2 = credential_command[fresh_v2_start:fresh_v2_end]
-    fresh_v2_publish = fresh_v2[: fresh_v2.index("async fn restore_dummy_slot")]
-    restart_verify_start = windows_console.index(
-        "async fn restart_and_verify_windows_tunnels("
-    )
-    restart_verify_end = windows_console.index(
-        "fn verify_stage2_isolated_prerequisites(", restart_verify_start
-    )
-    restart_verify = windows_console[restart_verify_start:restart_verify_end]
     require(
-        "stop_managed_windows_runtime_after_failure" in restart_verify
-        and "WINDOWS_TRACE_REOBSERVE_ATTEMPTS" in windows_console
-        and "trace.note" in windows_console
-        and "bounded observations" in windows_console,
-        "Windows restart proof must use bounded trace re-observation, preserve provider failure detail and stop only the exact managed runtime on failure",
+        "  cutover_release:\n" not in credentials
+        and "cutover_publish:" not in credentials
+        and "cutover_final_verify:" not in credentials
+        and "STAGE2_FRESH_V2_CUTOVER=PASS" not in credentials,
+        "terminal Stage-2 cutover/proof workflow branches must be deleted after accepted cutover",
     )
 
     require(
-        '"fresh-v2-cutover"' in credentials
-        and '"fresh-v2-cleanup"' in credentials
-        and "credential-transition discard-candidate" in credentials
-        and "cutover_provider_abort_uncommitted:" in credentials
-        and "CredentialDeliveryCommand::FreshV2RestoreBaseline" in credential_command
-        and "credential_fresh_v2_baseline_restore=PASS" in credential_command
-        and not (WORKFLOWS / "credential-fresh-v2-cutover.yml").exists()
-        and "CredentialTransition" in vm_agent_cli
-        and "CredentialTransition" in windows_console_cli
-        and "PrivilegedApplyCredentialCandidate" not in windows_console_cli
-        and "PrivilegedPromoteCredential" not in windows_console_cli
-        and "PrivilegedRollbackCredential" not in windows_console_cli
-        and "credential-transition" in production_vm_runner_installer
-        and "generate_fresh_credential_snapshot" in fresh_v2_publish
-        and fresh_v2_publish.count("cloudflare::patch_latest_worker_version_secrets(") == 2
-        and fresh_v2_publish.count("cloudflare::deploy_worker_version(") == 2
-        and "RestoreFixedAbBaseline" in credential_command
-        and "put_worker_secret_text(" not in fresh_v2
-        and "workers/workers/{script_name}/versions/latest" in credential_provider
-        and "workers/scripts/{script_name}/deployments" in credential_provider
-        and '"env": env' in credential_provider
-        and '"workers/tag": version_tag' in credential_provider
-        and '"strategy": "percentage"' in credential_provider
-        and '"percentage": 100' in credential_provider
-        and '"application/merge-patch+json"' in credential_provider
-        and "CredentialDeliverySlot::A" in fresh_v2_publish
-        and "async fn restore_dummy_slot" in fresh_v2
-        and "active_slot_mutated=false" in fresh_v2_publish
-        and "cutover_windows_rollback:" not in credentials
-        and "cutover_windows_restore:" not in credentials
-        and "cutover_windows_retire:" not in credentials
-        and "credential-transition apply-legacy --install-root" not in credentials
-        and "credential-transition retire-legacy --install-root" not in credentials
-        and "stage2-preflight" in credentials
-        and "restart-verify-runtime" in credentials
-        and "Get-NetTCPConnection -State Listen" not in credentials
-        and "$reservedPorts = @(17891, 17892, 19091)" not in credentials
-        and "STAGE2_WINDOWS_ISOLATED_PREREQUISITES=PASS" in credentials
-        and "STAGE2_EXTERNAL_SING_BOX=UNTOUCHED" in credentials
-        and "STAGE2_TUN_ACTIVATION=DEFERRED" in credentials,
-        "Macro Stage 2 must keep Windows side-by-side, proxy-only and outside legacy runtime ownership while preserving one bounded credential workflow",
-    )
-
-    diagnostics_index = credential_command.index(
-        "let classification = diagnose_access_failure_after_cleanup"
+        '"target-plane-inventory"' not in application
+        and '"target-plane-plan"' not in application
+        and '"target-plane-converge"' not in application
+        and '"target-plane-verify"' not in application
+        and 'command_family = "production_target_plane"' not in application
+        and "  production_target_plane:\n" not in application,
+        "provider target-plane logic may remain internal, but its public transitional operator surface must be retired",
     )
     require(
-        credential_command.index(
-            "let disable_windows = cloudflare::set_access_service_token_enabled"
-        )
-        < diagnostics_index
-        and credential_command.index(
-            "let disable_vm = cloudflare::set_access_service_token_enabled"
-        )
-        < diagnostics_index,
-        "credential proof must disable both proof tokens before post-failure Access diagnostics",
-    )
-
-    require(
-        '"target-plane-inventory"' in application
-        and '"target-plane-plan"' in application
-        and '"target-plane-converge"' in application
-        and '"target-plane-verify"' in application
-        and 'command_family = "production_target_plane"' in application,
-        "Vertical B target-plane operations must remain under the canonical /production command family",
-    )
-    production_target_plane = application.split(
-        "  production_target_plane:\n", 1
-    )[1].split("\n  production_enroll:", 1)[0]
-    require(
-        '"${EDGE_TARGET_PLANE_ORCHESTRATOR}" cloudflare-target-plane "${REQUESTED_OPERATION}"'
-        in production_target_plane
-        and production_target_plane.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}"
-        in production_target_plane
-        and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}"
-        in production_target_plane
-        and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_target_plane
-        and "CLOUDFLARE_API_TOKEN" not in production_target_plane
-        and "VULTR_SSH_PRIVATE_KEY" not in production_target_plane
-        and "EDGE_SSH_PRIVATE_KEY_PATH" not in production_target_plane
-        and "api.ipify.org" not in production_target_plane
-        and "lease-acquire" not in production_target_plane
-        and "lease-release" not in production_target_plane
-        and "jq " not in production_target_plane,
-        "target-plane transport must expose only target-account, shared-DNS and Vultr provider authority",
-    )
-    require(
-        application.count("group: vultr-control-plane-production") == 6,
+        application.count("group: vultr-control-plane-production") == 5,
         "application backend must serialize enrollment, provider, observation, cleanup and disposable acceptance jobs",
     )
     production_observe = application.split("  production_observe:\n", 1)[1].split("\n  production_runtime:", 1)[0]
     require(
         '"${EDGE_APPLICATION_ORCHESTRATOR}" production diagnose' in production_observe
-        and "cloudflare-phase0-inventory.txt" in production_observe
+        and "cloudflare-production-inventory.txt" in production_observe
         and "~~~text" in production_observe
-        and "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in production_observe
+        and "CLOUDFLARE_API_TOKEN" not in production_observe
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_observe
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_observe
-        and "CLOUDFLARE_TARGET_ACCOUNT_ID: ${{ vars.CLOUDFLARE_TARGET_ACCOUNT_ID }}" in production_observe
+        and "CLOUDFLARE_TARGET_ACCOUNT_ID" not in production_observe
         and "jq " not in production_observe
         and ".mutations_performed" not in production_observe
         and ".observation_status" not in production_observe
@@ -647,15 +475,19 @@ def main() -> None:
         "production diagnose workflow must remain a thin GET-only wrapper: no jq/JSON lifecycle semantics and no Vultr/SSH authority",
     )
     require(
-        "serde_json::to_string" not in phase0_inventory
-        and "serde::Serialize" not in phase0_inventory
-        and "list_membership_accounts" not in phase0_inventory
-        and "CLOUDFLARE_TARGET_ACCOUNT_ID" in phase0_inventory
-        and "CLOUDFLARE_CONTROL_TOKEN" in phase0_inventory
-        and "CLOUDFLARE_DNS_TOKEN" in phase0_inventory
-        and "Cloudflare Phase 0 inventory BLOCKED by" in phase0_inventory
-        and 'println!("{inventory:#?}")' in phase0_inventory,
-        "Phase 0 Rust owner must own fail-closed status and emit text evidence without a first-party JSON contract",
+        "serde_json::to_string" not in production_inventory
+        and "serde::Serialize" not in production_inventory
+        and "list_membership_accounts" not in production_inventory
+        and "CLOUDFLARE_API_TOKEN" not in production_inventory
+        and "CLOUDFLARE_TARGET_ACCOUNT_ID" not in production_inventory
+        and "CLOUDFLARE_CONTROL_TOKEN" in production_inventory
+        and "CLOUDFLARE_DNS_TOKEN" in production_inventory
+        and "current_account_id" in production_inventory
+        and "shared_dns_account_id" in production_inventory
+        and "migration_target_present" in production_inventory
+        and "Cloudflare production inventory BLOCKED by" in production_inventory
+        and 'println!("{inventory:#?}")' in production_inventory,
+        "steady-state production inventory owner must observe current account + shared DNS without historical migration authority or a first-party JSON contract",
     )
 
     require(
@@ -789,67 +621,12 @@ def main() -> None:
         "Vultr backend must expose the existing typed read-only instance action plan through the sole router",
     )
     require(
-        zero_trust.count("group: vultr-control-plane-production") == 1,
-        "Zero Trust backend must serialize its execute mutation job",
-    )
-    require(
         vpc.count("group: vultr-control-plane-production") == 1,
         "VPC backend must serialize its execute mutation job",
     )
     require(
-        dns.count("group: vultr-control-plane-production") == 1,
-        "DNS backend must serialize its execute mutation job",
-    )
-    require(
-        "edge-platform/scripts/resolve_durable_release.sh" in zero_trust,
-        "Zero Trust backend must consume the durable accepted ReleaseSet",
-    )
-    require(
-        "CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}" in zero_trust,
-        "Zero Trust backend must use the production Cloudflare token secret",
-    )
-    require(
-        "CLOUDFLARE_ANDROID_PROFILE_ID: ${{ secrets.CLOUDFLARE_ANDROID_PROFILE_ID }}"
-        in zero_trust,
-        "Android profile authority must stay outside Git",
-    )
-    require(
-        "CLOUDFLARE_ANDROID_IDENTITY_EMAIL: ${{ secrets.CLOUDFLARE_ANDROID_IDENTITY_EMAIL }}"
-        in zero_trust,
-        "Android identity authority must stay outside Git",
-    )
-    require(
-        "CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED: ${{ vars.CLOUDFLARE_ENROLLED_DEVICE_REACHABILITY_CONFIRMED }}"
-        in zero_trust,
-        "dashboard reachability must remain an explicit production attestation",
-    )
-    require(
-        'case "${operation}" in' in zero_trust
-        and "preflight)" in zero_trust
-        and "converge)" in zero_trust
-        and "verify)" in zero_trust,
-        "Zero Trust backend must retain typed preflight/converge/verify operations",
-    )
-    require(
-        'for iteration in $(seq 1 8)' in zero_trust,
-        "Zero Trust convergence must stay bounded",
-    )
-    require(
-        "cloudflare-zero-trust apply" in zero_trust
-        and "plan_authority.authority_digest" in zero_trust,
-        "Zero Trust mutations must consume exact PlanAuthority",
-    )
-
-    require(
-        'echo "Operation: `${operation}`"' not in zero_trust
-        and "printf 'Operation: `%s`\\n' \"${operation}\"" in zero_trust,
-        "Zero Trust workflow summary must not execute the operation through shell command substitution",
-    )
-
-    require(
-        "edge-platform/scripts/resolve_durable_release.sh" in vpc
-        and "edge-platform/scripts/resolve_durable_release.sh" in dns,
-        "staged substrate backends must consume the durable accepted ReleaseSet",
+        "edge-platform/scripts/resolve_durable_release.sh" in vpc,
+        "staged VPC substrate backend must consume the durable accepted ReleaseSet",
     )
     require(
         '"attachment-apply"' in vpc
@@ -1143,42 +920,13 @@ def main() -> None:
         "VPC host-substrate verification must bind exact ReleaseSet substrate versions",
     )
     require(
-        '"apply"' in dns
-        and "cloudflare-dns plan" in dns
-        and "cloudflare-dns apply" in dns
-        and "plan_authority.authority_digest" in dns,
-        "DNS backend mutations must consume fresh exact PlanAuthority",
-    )
-    require(
-        "TARGET_IPV4" not in dns and "target_ipv4" not in dns,
-        "DNS workflow must not accept or transport a manually derived target IPv4",
-    )
-    require(
-        "APPLICATION_SPEC_PATH" in dns,
-        "DNS workflow must delegate target derivation to the typed orchestrator from application/Vultr observation",
-    )
-    require(
-        "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in dns,
-        "DNS composition must have bounded Vultr read authority for current VM observation",
-    )
-    require(
         "dns_create(&args.dns_spec_path, &args.spec_path)" in acceptance_coordinator
         and "dns_verify_noop(&args.dns_spec_path, &args.spec_path)" in acceptance_coordinator,
-        "typed acceptance must keep DNS target derivation inside the existing DNS owner",
+        "typed acceptance must keep DNS target derivation inside the existing internal DNS owner",
     )
     require(
         "vm_ip=" not in application and "vm_ip" not in acceptance_coordinator,
         "application acceptance must not own derived VM public-IP plumbing",
-    )
-    require(
-        "cloudflare-dns cleanup-plan" in dns
-        and dns.count("cloudflare-dns cleanup-apply") == 1
-        and 'tokens[1] in {"inventory", "cleanup-plan", "cleanup-apply"}' in dns
-        and '.plan.action.kind == "DELETE"' in dns
-        and 'destructive_digest="$(jq -er' in dns
-        and 'authority="$(plan_authority' in dns
-        and '.[1].performed.kind == .[0].plan.action.kind' in dns,
-        "DNS backend must expose only typed exact-authority cleanup with one delete per invocation",
     )
     require(
         "vultr-vpc cleanup-plan" in vpc
@@ -1191,11 +939,9 @@ def main() -> None:
         "VPC backend must expose one-at-a-time typed cleanup with fresh destructive digest and PlanAuthority",
     )
     require(
-        "RECORD_ID" not in dns
-        and "ZONE_ID" not in dns
-        and "VPC_ID" not in vpc
+        "VPC_ID" not in vpc
         and "INSTANCE_ID" not in vpc,
-        "cleanup workflows must not accept raw provider identifiers as command authority",
+        "VPC cleanup workflow must not accept raw provider identifiers as command authority",
     )
 
     acquire_pos = vpc.index("vpc-access-acquire.json")
