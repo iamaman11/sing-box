@@ -172,9 +172,12 @@ async fn verify_replacement_plane() -> Result<(), String> {
 async fn observe(inputs: &Inputs) -> Result<HistoricalObservation, String> {
     let account_id = inputs.historical_account_id();
 
-    let production_nodes =
-        cloudflare::list_mesh_nodes(&inputs.historical_token, account_id, Some(LEGACY_PRODUCTION_NODE))
-            .await?;
+    let production_nodes = cloudflare::list_mesh_nodes(
+        &inputs.historical_token,
+        account_id,
+        Some(LEGACY_PRODUCTION_NODE),
+    )
+    .await?;
     let production_node = exact_node(
         &inputs.historical_token,
         account_id,
@@ -183,9 +186,12 @@ async fn observe(inputs: &Inputs) -> Result<HistoricalObservation, String> {
     )
     .await?;
 
-    let vultr_nodes =
-        cloudflare::list_mesh_nodes(&inputs.historical_token, account_id, Some(LEGACY_VULTR_NODE))
-            .await?;
+    let vultr_nodes = cloudflare::list_mesh_nodes(
+        &inputs.historical_token,
+        account_id,
+        Some(LEGACY_VULTR_NODE),
+    )
+    .await?;
     let legacy_vultr_node = exact_node(
         &inputs.historical_token,
         account_id,
@@ -239,8 +245,7 @@ async fn observe(inputs: &Inputs) -> Result<HistoricalObservation, String> {
     let route_matches = routes
         .into_iter()
         .filter(|route| {
-            route.pattern == LEGACY_WORKER_ROUTE
-                || route.script.as_deref() == Some(LEGACY_WORKER)
+            route.pattern == LEGACY_WORKER_ROUTE || route.script.as_deref() == Some(LEGACY_WORKER)
         })
         .collect::<Vec<_>>();
     let worker_route = match route_matches.as_slice() {
@@ -327,8 +332,7 @@ async fn validate_historical_profile(
         || profile.description.as_deref() != Some(desired.mesh_profile_description.as_str())
         || profile.enabled != Some(true)
         || profile.service_mode.as_deref() != Some(desired.mesh_profile_service_mode.as_str())
-        || profile.tunnel_protocol.as_deref()
-            != Some(desired.mesh_profile_tunnel_protocol.as_str())
+        || profile.tunnel_protocol.as_deref() != Some(desired.mesh_profile_tunnel_protocol.as_str())
         || profile.auto_connect != Some(desired.mesh_profile_auto_connect)
         || profile.switch_locked != Some(desired.mesh_profile_switch_locked)
     {
@@ -595,5 +599,4 @@ mod tests {
             });
         assert!(next_action(&observed).is_err());
     }
-
 }
