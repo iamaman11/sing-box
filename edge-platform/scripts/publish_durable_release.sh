@@ -40,11 +40,14 @@ test -f "${linux}/edge-orchestrator"
 test -f "${linux}/edge-release-set"
 test -f "${authority}/release-set.pb"
 test -f "${authority}/release-set.pb.sha256"
+test -f "${authority}/application-bundle.pb"
+test -f "${authority}/application-bundle.pb.sha256"
 test -f "${authority}/acceptance.json"
 
 (
   cd "$authority"
   sha256sum -c release-set.pb.sha256
+  sha256sum -c application-bundle.pb.sha256
 )
 
 release_set_sha="$(awk 'NR == 1 { print $1 }' "${authority}/release-set.pb.sha256")"
@@ -60,6 +63,8 @@ rm -rf "$stage" "$verify_dir"
 install -d -m 0755 "$stage" "$verify_dir"
 install -m 0644 "${authority}/release-set.pb" "${stage}/release-set.pb"
 install -m 0644 "${authority}/release-set.pb.sha256" "${stage}/release-set.pb.sha256"
+install -m 0644 "${authority}/application-bundle.pb" "${stage}/application-bundle.pb"
+install -m 0644 "${authority}/application-bundle.pb.sha256" "${stage}/application-bundle.pb.sha256"
 install -m 0644 "${authority}/acceptance.json" "${stage}/acceptance.json"
 install -m 0644 "${windows}/edge-platform-windows.zip" "${stage}/edge-platform-windows.zip"
 install -m 0644 "${linux}/edge-agent" "${stage}/edge-agent-linux-amd64"
@@ -78,6 +83,8 @@ install -m 0644 "${linux}/edge-release-set" "${stage}/edge-release-set-linux-amd
 
 expected_assets=(
   acceptance.json
+  application-bundle.pb
+  application-bundle.pb.sha256
   edge-agent-linux-amd64
   edge-agent-linux-amd64.sha256
   edge-controller-linux-amd64
