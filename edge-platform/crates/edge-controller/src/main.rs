@@ -4516,6 +4516,58 @@ mod tests {
         assert_eq!(BootstrapMode::BootstrapFull.as_str_name(), "BOOTSTRAP_FULL");
     }
 
+    #[tokio::test]
+    async fn installed_windows_status_does_not_probe_legacy_agent_rpc() {
+        let root = installed_windows_test_root();
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        let db_path = controller_state_db_path(&root);
+        let state = Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap()));
+        let service = ControllerServerImpl {
+            repo_root: root.clone(),
+            state,
+            agent_endpoint: "http://127.0.0.1:59999".to_owned(),
+        };
+
+        let response = service.get_status(Request::new(Empty {})).await.unwrap();
+        let status = response.get_ref();
+        assert!(status.agent_state.is_none());
+        assert!(status.runtime.is_none());
+        assert!(
+            status
+                .status_notes
+                .iter()
+                .all(|note| !note.contains("server agent") && !note.contains("server runtime observation"))
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn installed_windows_doctor_omits_legacy_server_rpc_checks() {
+        let root = installed_windows_test_root();
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        let status = collect_controller_status(&root).unwrap();
+        let checks = build_doctor_checks(
+            &root,
+            &status,
+            None,
+            None,
+            &DoctorRequest {
+                require_server_ready: true,
+                ..DoctorRequest::default()
+            },
+        );
+
+        assert!(
+            checks
+                .iter()
+                .all(|check| check.name != "server.edge_agent_reachable"
+                    && check.name != "server.runtime_ready")
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn typed_diagnostic_evidence_does_not_copy_legacy_detail() {
         let mut check = DoctorCheck {
