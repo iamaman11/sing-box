@@ -296,32 +296,6 @@ pub async fn get_access_organization(
     access_organization_from_value(payload.result)
 }
 
-pub async fn create_access_organization(
-    api_token: &str,
-    account_id: &str,
-    name: &str,
-    auth_domain: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access organization name", name)?;
-    require_non_empty("Cloudflare Access auth domain", auth_domain)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!(
-            "{API_ROOT}/accounts/{account_id}/access/organizations"
-        ))
-        .json(&serde_json::json!({
-            "name": name,
-            "auth_domain": auth_domain,
-            "session_duration": "1h",
-            "deny_unmatched_requests": true
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to create Cloudflare Access organization: {err}"))?;
-    ensure_success(response).await
-}
-
 pub async fn list_workers(
     api_token: &str,
     account_id: &str,
@@ -353,30 +327,6 @@ pub async fn list_workers(
         .collect::<Result<Vec<_>, _>>()?;
     workers.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     Ok(workers)
-}
-
-pub async fn create_worker_identity_locked(
-    api_token: &str,
-    account_id: &str,
-    worker_name: &str,
-) -> Result<CloudflareWorkerIdentity, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker name", worker_name)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!("{API_ROOT}/accounts/{account_id}/workers/workers"))
-        .json(&serde_json::json!({
-            "name": worker_name,
-            "subdomain": {
-                "enabled": false,
-                "previews_enabled": false
-            }
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to create locked Cloudflare Worker identity: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    worker_identity_from_value(payload.result)
 }
 
 pub async fn get_worker_script_settings(
@@ -473,161 +423,6 @@ pub async fn get_worker_version_tag(
         .map_err(|err| format!("failed to get Cloudflare Worker version metadata: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
     worker_version_tag_from_value(payload.result)
-}
-
-pub async fn upload_worker_module(
-    api_token: &str,
-    account_id: &str,
-    script_name: &str,
-    source: &str,
-    compatibility_date: &str,
-    version_tag: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker script name", script_name)?;
-    require_non_empty("Cloudflare Worker source", source)?;
-    require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
-    require_non_empty("Cloudflare Worker version tag", version_tag)?;
-    let client = authorized_client(api_token)?;
-    let version_message = if version_tag.starts_with("sing-box-phase6-ab-") {
-        "sing-box Phase 6 fixed A/B credential delivery contract"
-    } else {
-        "sing-box Phase 2 dummy credential projection"
-    };
-    let metadata = serde_json::json!({
-        "main_module": "worker.js",
-        "compatibility_date": compatibility_date,
-        "bindings": [],
-        "annotations": {
-            "workers/tag": version_tag,
-            "workers/message": version_message
-        }
-    })
-    .to_string();
-    let boundary = "edge-sing-box-credential-plane-v1";
-    let body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{metadata}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"worker.js\"; filename=\"worker.js\"\r\nContent-Type: application/javascript+module\r\n\r\n{source}\r\n--{boundary}--\r\n"
-    );
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}"
-        ))
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| format!("failed to upload Cloudflare Worker module: {err}"))?;
-    ensure_success(response).await
-}
-
-pub async fn upload_worker_module_with_secret_text_bindings(
-    api_token: &str,
-    account_id: &str,
-    script_name: &str,
-    source: &str,
-    compatibility_date: &str,
-    version_tag: &str,
-    secrets: &[(&str, &str)],
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker script name", script_name)?;
-    require_non_empty("Cloudflare Worker source", source)?;
-    require_non_empty("Cloudflare Worker compatibility date", compatibility_date)?;
-    require_non_empty("Cloudflare Worker version tag", version_tag)?;
-    if secrets.is_empty() {
-        return Err(
-            "Cloudflare Worker atomic secret upload requires at least one secret".to_owned(),
-        );
-    }
-
-    let mut names = std::collections::BTreeSet::new();
-    let mut bindings = Vec::with_capacity(secrets.len());
-    for (name, text) in secrets {
-        require_non_empty("Cloudflare Worker secret name", name)?;
-        require_non_empty("Cloudflare Worker secret value", text)?;
-        if !names.insert(*name) {
-            return Err(format!("duplicate Cloudflare Worker secret name: {name}"));
-        }
-        bindings.push(serde_json::json!({
-            "type": "secret_text",
-            "name": name,
-            "text": text
-        }));
-    }
-
-    let metadata = serde_json::json!({
-        "main_module": "worker.js",
-        "compatibility_date": compatibility_date,
-        "bindings": bindings,
-        "annotations": {
-            "workers/tag": version_tag,
-            "workers/message": "sing-box Phase 6 atomic fixed A/B credential delivery contract"
-        }
-    })
-    .to_string();
-    let boundary = "edge-sing-box-credential-delivery-v1";
-    let body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{metadata}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"worker.js\"; filename=\"worker.js\"\r\nContent-Type: application/javascript+module\r\n\r\n{source}\r\n--{boundary}--\r\n"
-    );
-    let client = authorized_client(api_token)?;
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}"
-        ))
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| {
-            format!("failed to atomically upload Cloudflare Worker credential contract: {err}")
-        })?;
-    ensure_secret_mutation_success(response).await
-}
-
-fn worker_version_annotation_patch_multipart(
-    version_tag: &str,
-) -> Result<(String, String), String> {
-    require_non_empty("Cloudflare Worker version tag", version_tag)?;
-    let settings = serde_json::json!({
-        "annotations": {
-            "workers/tag": version_tag,
-            "workers/message": "sing-box Phase 6 fixed A/B credential delivery contract"
-        }
-    })
-    .to_string();
-    let boundary = "edge-sing-box-worker-version-annotation-v1";
-    let body = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"settings\"\r\nContent-Type: application/json\r\n\r\n{settings}\r\n--{boundary}--\r\n"
-    );
-    Ok((format!("multipart/form-data; boundary={boundary}"), body))
-}
-
-pub async fn patch_worker_version_annotations(
-    api_token: &str,
-    account_id: &str,
-    script_name: &str,
-    version_tag: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker script name", script_name)?;
-    let (content_type, body) = worker_version_annotation_patch_multipart(version_tag)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .patch(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/settings"
-        ))
-        .header(reqwest::header::CONTENT_TYPE, content_type)
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| format!("failed to patch Cloudflare Worker version annotations: {err}"))?;
-    ensure_success(response).await
 }
 
 fn latest_worker_version_secret_patch(
@@ -764,30 +559,6 @@ pub async fn get_worker_script_subdomain(
     worker_subdomain_from_value(payload.result)
 }
 
-pub async fn set_worker_script_subdomain(
-    api_token: &str,
-    account_id: &str,
-    script_name: &str,
-    enabled: bool,
-    previews_enabled: bool,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Worker script name", script_name)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/subdomain"
-        ))
-        .json(&serde_json::json!({
-            "enabled": enabled,
-            "previews_enabled": previews_enabled
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to configure Cloudflare Worker subdomain: {err}"))?;
-    ensure_success(response).await
-}
-
 pub async fn get_workers_subdomain(
     api_token: &str,
     account_id: &str,
@@ -801,28 +572,6 @@ pub async fn get_workers_subdomain(
         .send()
         .await
         .map_err(|err| format!("failed to get Cloudflare workers.dev subdomain: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    workers_subdomain_from_value(payload.result)
-}
-
-pub async fn create_workers_subdomain(
-    api_token: &str,
-    account_id: &str,
-    subdomain: &str,
-) -> Result<CloudflareWorkersSubdomain, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare workers.dev subdomain", subdomain)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/workers/subdomain"
-        ))
-        .json(&serde_json::json!({
-            "subdomain": subdomain
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to create Cloudflare workers.dev subdomain: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
     workers_subdomain_from_value(payload.result)
 }
@@ -852,164 +601,6 @@ pub async fn create_access_service_token(
         .map_err(|err| format!("failed to create Cloudflare Access service token: {err}"))?;
     let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
     access_service_credential_from_value(payload.result, None)
-}
-
-pub async fn rotate_access_service_token(
-    api_token: &str,
-    account_id: &str,
-    token_id: &str,
-) -> Result<CloudflareAccessServiceCredential, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access service token ID", token_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!(
-            "{API_ROOT}/accounts/{account_id}/access/service_tokens/{token_id}/rotate"
-        ))
-        .send()
-        .await
-        .map_err(|err| format!("failed to rotate Cloudflare Access service token: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    access_service_credential_from_value(payload.result, Some(token_id))
-}
-
-pub async fn set_access_service_token_enabled(
-    api_token: &str,
-    account_id: &str,
-    token_id: &str,
-    name: &str,
-    duration: &str,
-    enabled: bool,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access service token ID", token_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/access/service_tokens/{token_id}"
-        ))
-        .json(&serde_json::json!({
-            "name": name,
-            "duration": duration,
-            "enabled": enabled
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to update Cloudflare Access service token: {err}"))?;
-    ensure_success(response).await
-}
-
-pub async fn create_hostname_access_application(
-    api_token: &str,
-    account_id: &str,
-    name: &str,
-    hostname: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access application name", name)?;
-    require_non_empty("Cloudflare Access public hostname", hostname)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!("{API_ROOT}/accounts/{account_id}/access/apps"))
-        .json(&serde_json::json!({
-            "name": name,
-            "type": "self_hosted",
-            "session_duration": "1h",
-            "service_auth_401_redirect": true,
-            "destinations": [{
-                "type": "public",
-                "uri": hostname
-            }]
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to create Cloudflare hostname Access application: {err}"))?;
-    ensure_success(response).await
-}
-
-pub async fn update_hostname_access_application(
-    api_token: &str,
-    account_id: &str,
-    application_id: &str,
-    name: &str,
-    hostname: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access application ID", application_id)?;
-    require_non_empty("Cloudflare Access application name", name)?;
-    require_non_empty("Cloudflare Access public hostname", hostname)?;
-    let client = authorized_client(api_token)?;
-
-    // Cloudflare documents Access application updates as PUT and recommends
-    // preserving the existing application fields. Read the exact application,
-    // validate its identity, and replace only the destination contract.
-    let get_response = client
-        .get(format!(
-            "{API_ROOT}/accounts/{account_id}/access/apps/{application_id}"
-        ))
-        .send()
-        .await
-        .map_err(|err| {
-            format!("failed to get Cloudflare Access application before update: {err}")
-        })?;
-    let payload: ApiEnvelope<Value> = parse_success_json(get_response).await?;
-    let mut application = payload.result.as_object().cloned().ok_or_else(|| {
-        "Cloudflare Access application update source must be an object".to_owned()
-    })?;
-    if application.get("id").and_then(Value::as_str) != Some(application_id)
-        || application.get("name").and_then(Value::as_str) != Some(name)
-        || application.get("type").and_then(Value::as_str) != Some("self_hosted")
-    {
-        return Err(
-            "Cloudflare Access application identity changed before destination update".to_owned(),
-        );
-    }
-    application.insert(
-        "destinations".to_owned(),
-        serde_json::json!([{
-            "type": "public",
-            "uri": hostname
-        }]),
-    );
-
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/access/apps/{application_id}"
-        ))
-        .json(&application)
-        .send()
-        .await
-        .map_err(|err| format!("failed to update Cloudflare hostname Access application: {err}"))?;
-    ensure_success(response).await
-}
-
-pub async fn create_access_service_policy(
-    api_token: &str,
-    account_id: &str,
-    application_id: &str,
-    policy_name: &str,
-    service_token_id: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access application ID", application_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!(
-            "{API_ROOT}/accounts/{account_id}/access/apps/{application_id}/policies"
-        ))
-        .json(&serde_json::json!({
-            "name": policy_name,
-            "decision": "non_identity",
-            "include": [{
-                "service_token": {
-                    "token_id": service_token_id
-                }
-            }]
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to create Cloudflare Access service-auth policy: {err}"))?;
-    ensure_success(response).await
 }
 
 pub async fn update_access_service_policy_tokens(
@@ -3197,26 +2788,6 @@ mod tests {
         }))
         .unwrap();
         assert!(absent.is_none());
-    }
-
-    #[test]
-    fn renders_official_worker_version_annotation_settings_multipart_shape() {
-        let (content_type, body) =
-            worker_version_annotation_patch_multipart("sing-box-phase6-ab-windows-deadbeef")
-                .unwrap();
-
-        assert_eq!(
-            content_type,
-            "multipart/form-data; boundary=edge-sing-box-worker-version-annotation-v1"
-        );
-        assert!(body.contains("Content-Disposition: form-data; name=\"settings\""));
-        assert!(body.contains("Content-Type: application/json"));
-        assert!(body.contains("\"workers/tag\":\"sing-box-phase6-ab-windows-deadbeef\""));
-        assert!(body.contains(
-            "\"workers/message\":\"sing-box Phase 6 fixed A/B credential delivery contract\""
-        ));
-        assert!(!body.contains("EDGE_CREDENTIAL_BUNDLE_A"));
-        assert!(!body.contains("EDGE_CREDENTIAL_BUNDLE_B"));
     }
 
     #[test]
