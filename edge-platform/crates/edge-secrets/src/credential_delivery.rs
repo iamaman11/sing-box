@@ -32,12 +32,6 @@ impl std::fmt::Debug for AccessServiceIdentity {
 }
 
 impl AccessServiceIdentity {
-    pub fn from_parts(client_id: &str, client_secret: &str) -> Result<Self, String> {
-        Self::parse_env(&format!(
-            "CF_ACCESS_CLIENT_ID={client_id}\nCF_ACCESS_CLIENT_SECRET={client_secret}\n"
-        ))
-    }
-
     pub fn parse_env(raw: &str) -> Result<Self, String> {
         let mut client_id = None;
         let mut client_secret = None;
@@ -186,7 +180,7 @@ pub async fn observe_canonical_credential_bundle(
     observe_canonical_credential_bundle_with_identity(projection, generation, &identity).await
 }
 
-pub async fn observe_canonical_credential_bundle_with_identity(
+async fn observe_canonical_credential_bundle_with_identity(
     projection: CredentialProjectionKind,
     generation: u64,
     identity: &AccessServiceIdentity,
@@ -256,18 +250,6 @@ pub async fn fetch_canonical_credential_bundle(
     identity_path: &Path,
 ) -> Result<CredentialDeliveryBundle, String> {
     observe_canonical_credential_bundle(projection, generation, identity_path)
-        .await?
-        .ok_or_else(|| "credential Worker returned unexpected HTTP status 404".to_owned())
-}
-
-pub async fn fetch_canonical_credential_bundle_with_identity(
-    projection: CredentialProjectionKind,
-    generation: u64,
-    client_id: &str,
-    client_secret: &str,
-) -> Result<CredentialDeliveryBundle, String> {
-    let identity = AccessServiceIdentity::from_parts(client_id, client_secret)?;
-    observe_canonical_credential_bundle_with_identity(projection, generation, &identity)
         .await?
         .ok_or_else(|| "credential Worker returned unexpected HTTP status 404".to_owned())
 }
