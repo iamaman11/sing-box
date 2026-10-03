@@ -294,7 +294,7 @@ async fn rotate_application_publish(
     println!("credential_slot={}", slot.as_str());
     println!("paired_projection_count=2");
     println!("active_slot_mutated=false");
-    println!("active_vm_snapshot_proof_identity=BOUNDED_EPHEMERAL");
+    println!("active_vm_snapshot_proof_session=BOUNDED_DISABLED_AT_REST");
     println!("candidate_data_plane_reobservation=DEFERRED_TO_LOCAL_OWNERS");
     println!("runner_plaintext_access=false");
     Ok(())
