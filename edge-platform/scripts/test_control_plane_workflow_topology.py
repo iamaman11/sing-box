@@ -488,6 +488,14 @@ def main() -> None:
         "application rotation must recover only observed uncommitted candidates and fail closed on half-promoted cross-host state",
     )
 
+    require(
+        "proven_unchanged: ${{ steps.promote.outputs.proven_unchanged }}" in rotation_workflow
+        and "VM_ROTATION_PROMOTE=PROVEN_UNCHANGED_AFTER_BOUNDED_RETRY" in rotation_workflow
+        and "needs.rotate_vm_promote.outputs.proven_unchanged == 'true'" in rotation_workflow
+        and "no automatic cross-host compensation is authorized" in rotation_workflow,
+        "cross-host credential promotion compensation must run only after the VM owner proves the promotion remained unchanged; uncertain outcomes must fail closed",
+    )
+
     rotation_jobs = re.findall(r"^  rotate_[a-z0-9_]+:$", rotation_workflow, re.MULTILINE)
     require(
         len(rotation_jobs) <= 12
