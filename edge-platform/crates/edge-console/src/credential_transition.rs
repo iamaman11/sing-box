@@ -157,7 +157,9 @@ pub(crate) fn transition(
         }
         CredentialTransitionAction::DropPrevious => {
             if state.candidate.is_some() {
-                return Err("previous credential cannot be dropped while a candidate is staged".to_owned());
+                return Err(
+                    "previous credential cannot be dropped while a candidate is staged".to_owned(),
+                );
             }
             let active = state
                 .active
@@ -203,8 +205,7 @@ fn verify_exact_active_runtime(
     active: &edge_shared_types::LocalCredentialBundleRef,
 ) -> Result<(), String> {
     let bundle = store.read_bundle(active)?;
-    let expected_state =
-        windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+    let expected_state = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
     let expected_state_bytes = encode_windows_runtime_state(&expected_state)?;
     let observed_state = fs::read(windows_runtime_state_path(install_root))
         .map_err(|err| format!("failed to read active Windows runtime state: {err}"))?;
