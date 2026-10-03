@@ -377,7 +377,6 @@ dependencies = [
  "edge-local-runtime",
  "edge-provider-cloudflare",
  "edge-provider-vultr",
- "edge-secrets",
  "edge-shared-types",
  "edge-singbox",
  "edge-state",
