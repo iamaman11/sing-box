@@ -457,7 +457,7 @@ pub fn credential_delivery_bundle_sha256(
 
 pub fn credential_delivery_is_rotation_delta(bundle: &CredentialDeliveryBundle) -> bool {
     matches!(
-        bundle.payload,
+        bundle.payload.as_ref(),
         Some(credential_delivery_bundle::Payload::WindowsRotation(_))
             | Some(credential_delivery_bundle::Payload::VmRotation(_))
     )
@@ -639,6 +639,11 @@ pub fn verify_local_credential_bundle_reference(
     validate_credential_delivery_bundle(bundle)?;
     if bundle.dummy_non_secret {
         return Err("local credential state cannot reference a dummy delivery bundle".to_owned());
+    }
+    if credential_delivery_is_rotation_delta(bundle) {
+        return Err(
+            "local credential state cannot reference an unmaterialized rotation delta".to_owned(),
+        );
     }
     if bundle.projection != projection as i32 {
         return Err(
