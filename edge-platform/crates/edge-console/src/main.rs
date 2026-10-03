@@ -26,14 +26,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
-    ControllerStatus, CredentialTransitionAction,
-    DoctorRequest, DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest,
-    GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest, ListSecretRefsRequest,
-    LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest, SecretRefEntry,
-    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
-    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
-    WindowsActivationState, WindowsPrivilegedOperation, WindowsPrivilegedRequest,
-    WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
+    ControllerStatus, CredentialTransitionAction, DoctorRequest, DoctorResponse, Empty,
+    GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
+    ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
+    RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
+    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
+    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
+    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
     decode_windows_activation_state, decode_windows_privileged_request,
     decode_windows_privileged_result, decode_windows_runtime_state,
     encode_windows_privileged_request, encode_windows_privileged_result,
