@@ -236,19 +236,9 @@ After Cloudflare ownership convergence, separate production-facing `/dns`, `/mes
 canonical typed `/production` composition. Provider-specific target-plane logic may remain as an
 internal typed implementation detail; it is not a second steady-state operator namespace.
 
-Stage 3 may temporarily expose bounded `/production retire-historical-plan|apply|verify` commands
-only to remove the previously classified application-exclusive residuals from the historical/shared
-Cloudflare account. That owner must re-prove the accepted current target plane before every delete,
-match exact historical identities, mutate one resource at a time with read-only re-observation, and
-never broaden cleanup across the shared account or zone. After the accepted deletion of historical
-Mesh/profile state, the owner must fail closed if any of those resources reappear and may retain
-mutation authority only for the two remaining Worker residuals. Those final deletes use one
-temporary least-privilege credential scoped only to Workers Routes Write for `alegria.by` and
-Workers Scripts Write for the historical/shared account; normal DNS, target-control and historical
-read credentials are not broadened. Read-only plan/verify must not receive that write credential.
-The exact zone ID is resolved through the existing read-only DNS authority before the route DELETE,
-so the temporary mutation token does not need Zone Read or DNS permissions. The temporary commands,
-credential and dedicated implementation must be deleted immediately after terminal NOOP.
+Historical application-exclusive account-scoped Cloudflare residuals have been retired.
+The historical/shared account remains only as an explicit shared-DNS/external dependency boundary;
+no historical retirement operator surface or historical write credential belongs to steady state.
 
 Disposable `/application acceptance|cleanup` and `/production enroll-runtime` are exceptional
 acceptance/bootstrap surfaces, not normal steady-state operator API. They remain only while their
