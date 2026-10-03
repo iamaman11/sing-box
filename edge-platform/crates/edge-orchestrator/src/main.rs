@@ -138,9 +138,6 @@ async fn run(
         Command::ApplicationLifecycle { command } => {
             application_lifecycle_command::run(command.into_legacy_args(), release_context).await
         }
-        Command::CloudflareDns { command } => {
-            cloudflare_dns_lifecycle_command::run(command.into_legacy_args()).await
-        }
         Command::CloudflareTargetPlane { command } => match command {
             cli::CloudflareTargetPlaneCommand::Inventory => {
                 cloudflare_target_plane_command::inventory().await
@@ -168,9 +165,6 @@ async fn run(
         },
         Command::Credentials { command } => {
             cloudflare_credential_plane_command::run_delivery(command).await
-        }
-        Command::Line3Mesh { command } => {
-            cloudflare_mesh_lifecycle_command::run(command.into_legacy_args()).await
         }
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
