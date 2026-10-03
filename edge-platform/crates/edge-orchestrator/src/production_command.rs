@@ -1,5 +1,5 @@
 use crate::application_lifecycle_command::{
-    production_converge_desired, production_rollback_desired, production_verify_desired,
+    production_converge_desired, production_verify_desired,
 };
 use crate::cloudflare_dns_lifecycle_command::{
     acceptance_verify_noop as dns_verify_noop, production_converge as dns_converge,
@@ -151,46 +151,6 @@ pub(crate) async fn verify(
         (Err(err), Ok(())) => Err(err),
         (Ok(()), Err(release_err)) => Err(format!(
             "production verification passed but transient support-access cleanup failed: {release_err}"
-        )),
-        (Err(err), Err(release_err)) => Err(format!(
-            "{err}; transient support-access cleanup also failed: {release_err}"
-        )),
-    }
-}
-
-pub(crate) async fn rollback(release_context: &OrchestrationContext) -> Result<(), String> {
-    release_context.application_release_authority()?;
-    let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
-
-    exact_existing_machine_observation(&composition.machines, &composition.machine_id).await?;
-    lease_acquire(spec, &composition.machine_id).await?;
-    let operation = async {
-        let (rolled_back_from, rolled_back_to) =
-            production_rollback_desired(&composition.application).await?;
-        mesh_runtime_apply(spec, spec, spec).await?;
-        mesh_runtime_verify(spec, spec, spec).await?;
-        dns_verify_noop(spec, spec).await?;
-        vpc_verify(spec).await?;
-        substrate_verify(spec, &composition.machine_id).await?;
-        Ok::<_, String>((rolled_back_from, rolled_back_to))
-    }
-    .await;
-    let release_result = lease_release(spec, &composition.machine_id).await;
-
-    match (operation, release_result) {
-        (Ok((rolled_back_from, rolled_back_to)), Ok(())) => {
-            println!("status=PASS");
-            println!("operation=ROLLBACK");
-            println!("production_authority={CANONICAL_PRODUCTION_AUTHORITY_PATH}");
-            println!("rolled_back_from={rolled_back_from}");
-            println!("rolled_back_to={rolled_back_to}");
-            println!("transient_support_access=ABSENT");
-            Ok(())
-        }
-        (Err(err), Ok(())) => Err(err),
-        (Ok(_), Err(release_err)) => Err(format!(
-            "production rollback passed but transient support-access cleanup failed: {release_err}"
         )),
         (Err(err), Err(release_err)) => Err(format!(
             "{err}; transient support-access cleanup also failed: {release_err}"
