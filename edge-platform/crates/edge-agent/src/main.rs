@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use edge_observability::init as init_observability;
 use edge_secrets::{
     ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore,
-    fetch_canonical_credential_bundle, observe_canonical_credential_bundle,
+    fetch_canonical_credential_bundle,
 };
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
@@ -78,8 +78,6 @@ const MESH_CONTAINER: &str = "vultr-cloudflare-mesh";
 const CLOUDFLARE_TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 const POST_BOOTSTRAP_REOBSERVE_ATTEMPTS: usize = 45;
 const POST_BOOTSTRAP_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
-const CREDENTIAL_ADMISSION_ATTEMPTS: usize = 8;
-const CREDENTIAL_ADMISSION_DELAY: Duration = Duration::from_secs(1);
 const MAX_LOCAL_BUNDLE_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
 
 #[tokio::main]
@@ -206,18 +204,6 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::CredentialState => {
             let state = observe_vm_credential_state(&stack_dir).map_err(AgentError::Command)?;
             print_credential_state_evidence(state.as_ref());
-            Ok(())
-        }
-        cli::LocalCommand::CredentialAdmit { generation } => {
-            admit_vm_credential_generation(&stack_dir, generation)
-                .await
-                .map_err(AgentError::Command)?;
-            println!("operation=CREDENTIAL_ADMIT");
-            println!("credential_projection=VM");
-            println!("credential_generation={generation}");
-            println!("credential_data_plane_admission=PASS");
-            println!("credential_state_mutated=false");
-            println!("runner_secret_access=false");
             Ok(())
         }
         cli::LocalCommand::CredentialStage { generation } => {
@@ -1414,30 +1400,6 @@ fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, Strin
     Ok(parent
         .join(RUNTIME_SECRET_DIR)
         .join(ACCESS_IDENTITY_FILE_NAME))
-}
-
-async fn admit_vm_credential_generation(stack_dir: &Path, generation: u64) -> Result<(), String> {
-    let identity_path = vm_credential_access_identity_path(stack_dir)?;
-    for attempt in 1..=CREDENTIAL_ADMISSION_ATTEMPTS {
-        match observe_canonical_credential_bundle(
-            CredentialProjectionKind::Vm,
-            generation,
-            &identity_path,
-        )
-        .await?
-        {
-            Some(_) => return Ok(()),
-            None if attempt < CREDENTIAL_ADMISSION_ATTEMPTS => {
-                tokio::time::sleep(CREDENTIAL_ADMISSION_DELAY).await;
-            }
-            None => {
-                return Err(format!(
-                    "VM credential generation {generation} was not visible in the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations"
-                ));
-            }
-        }
-    }
-    unreachable!("bounded credential admission loop always returns")
 }
 
 async fn fetch_and_stage_vm_credential_candidate(
