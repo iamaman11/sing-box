@@ -468,6 +468,15 @@ def main() -> None:
         "application rotation must use the bounded disabled-at-rest proof identity, never a permanent host identity on the hosted runner",
     )
 
+    require(
+        "ROTATION_VM_UNCOMMITTED_RECOVERY=ACTIVE_RESTORED" in rotation_workflow
+        and "ROTATION_WINDOWS_UNCOMMITTED_RECOVERY=ACTIVE_RESTORED" in rotation_workflow
+        and "half-promoted recovery requires explicit diagnosis" in rotation_workflow
+        and "credential-transition apply-active" in rotation_workflow
+        and "credential-transition discard-candidate" in rotation_workflow,
+        "application rotation must recover only observed uncommitted candidates and fail closed on half-promoted cross-host state",
+    )
+
     host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
     host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
