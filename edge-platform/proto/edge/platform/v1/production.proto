@@ -113,17 +113,16 @@ message ProductionCredentialPlane {
   string vm_access_application_name = 6;
   string windows_access_policy_name = 7;
   string vm_access_policy_name = 8;
-  string windows_service_token_name = 9;
-  string vm_service_token_name = 10;
+  reserved 9, 10, 12;
+  reserved "windows_service_token_name", "vm_service_token_name", "proof_token_duration";
+
   string worker_compatibility_date = 11;
-  string proof_token_duration = 12;
 
   // Explicit account-level workers.dev namespace. Creating this namespace is a
   // separate provider action from enabling any individual Worker route.
   string workers_dev_subdomain = 13;
 
-  // Permanent host identities are physically distinct from the short-lived
-  // proof tokens above. They authenticate only trusted local runtime owners.
+  // Permanent host identities authenticate only trusted local runtime owners.
   string windows_host_service_token_name = 14;
   string vm_host_service_token_name = 15;
   string host_service_token_duration = 16;
