@@ -145,9 +145,10 @@ slots. Each local owner fetches its own exact generation directly through its pr
 `workers.dev` Worker and permanent Cloudflare Access host identity.
 
 Runners carry only non-secret generation/slot/operation intent. They never receive plaintext
-application credential payloads. Candidate publication is not activation. Both hosts admit the exact
-generation before staging, and uncertain provider mutations are resolved by read-only re-observation
-rather than blind replay.
+application credential payloads. Candidate publication is not activation. Each host-local stage fetches
+the exact generation, materializes any class-scoped delta only inside its protected active store and
+validates the candidate; both hosts are staged before the first runtime activation. Uncertain provider
+mutations are resolved by read-only re-observation rather than blind replay.
 
 One semantic config has one renderer. A runtime stage/validate/restart path may copy, check and launch
 that generated config, but may not independently rewrite tunnel bindings or other semantic fields.
