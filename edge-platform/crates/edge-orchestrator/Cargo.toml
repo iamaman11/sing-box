@@ -12,6 +12,7 @@ edge-controller-core = { path = "../edge-controller-core" }
 edge-observability = { path = "../edge-observability" }
 edge-provider-cloudflare = { path = "../edge-provider-cloudflare" }
 edge-provider-vultr = { path = "../edge-provider-vultr" }
+edge-secrets = { path = "../edge-secrets" }
 edge-shared-types = { path = "../edge-shared-types" }
 ring = "0.17.14"
 prost = "0.14.3"
