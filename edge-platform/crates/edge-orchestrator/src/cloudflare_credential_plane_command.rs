@@ -237,9 +237,13 @@ async fn rotate_application_publish(
         );
     }
 
-    let active_vm =
-        fetch_active_vm_bundle_with_bounded_proof(control_token, desired, &before, active_generation)
-            .await?;
+    let active_vm = fetch_active_vm_bundle_with_bounded_proof(
+        control_token,
+        desired,
+        &before,
+        active_generation,
+    )
+    .await?;
     let candidate_slot = match slot {
         CredentialDeliverySlotArg::A => CredentialDeliverySlot::A,
         CredentialDeliverySlotArg::B => CredentialDeliverySlot::B,
@@ -326,8 +330,7 @@ async fn fetch_active_vm_bundle_with_bounded_proof(
     )
     .await;
     if let Err(enable_err) = enable_result {
-        let cleanup =
-            disable_and_verify_proof_token(control_token, desired, &vm, token_id).await;
+        let cleanup = disable_and_verify_proof_token(control_token, desired, &vm, token_id).await;
         return match cleanup {
             Ok(()) => Err(format!(
                 "failed to enable VM bounded proof identity; cleanup converged it disabled: {enable_err}"
@@ -409,12 +412,9 @@ async fn disable_and_verify_proof_token(
         false,
     )
     .await?;
-    let observed = cloudflare::get_access_service_token(
-        control_token,
-        &desired.target_account_id,
-        token_id,
-    )
-    .await?;
+    let observed =
+        cloudflare::get_access_service_token(control_token, &desired.target_account_id, token_id)
+            .await?;
     if observed.id != token_id
         || observed.name.as_deref() != Some(projection.proof_service_token_name.as_str())
         || observed.enabled != Some(false)
