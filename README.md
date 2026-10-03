@@ -20,7 +20,7 @@ Historical plans are never execution authority. If any document conflicts with #
 
 ## Accepted architecture and convergence target
 
-The ownership model below is accepted. Cloudflare account convergence, Stage 2 fresh-v2/proxy-only acceptance, and the Stage-3 historical application-exclusive Cloudflare retirement are closed. Current execution is late Stage 3 in Issue #26: the persistent local-owner production rollback path and class-scoped application credential rotation are being converged as one lifecycle slice; explicit Access host-identity rotation and deletion of superseded zero-consumer proof/legacy paths remain before Stage 3 can close. Stage 4 then physically shrinks obsolete runtime/state/trust/glue and performs the dedicated final managed Windows TUN cutover. Stable architecture must not reopen closed provider migration or historical retirement.
+The ownership model below is accepted. Cloudflare account convergence, Stage 2 fresh-v2/proxy-only acceptance, the Stage-3 historical application-exclusive Cloudflare retirement, local-owner production rollback and class-scoped application credential rotation are closed. Current execution is late Stage 3 in Issue #26: only deletion-first contraction of superseded zero-consumer migration/proof paths and final verification remain before Stage 3 can close. Permanent Windows/VM Access host identities keep the already accepted create-once bootstrap/recovery contract; no separate steady-state host-token rotation subsystem is required. Stage 4 then physically shrinks obsolete runtime/state/trust/glue and performs the dedicated final managed Windows TUN cutover. Stable architecture must not reopen closed provider migration or historical retirement.
 
 ```text
 Git / protected main
