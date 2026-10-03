@@ -380,7 +380,7 @@ jobs:
           mesh_service = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_service.rs").read_text()
           vpc_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_vpc_lifecycle_service.rs").read_text()
           vultr_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_service.rs").read_text()
-          for planner in [vpc_command_authority, vultr_command_authority]:
+          for planner in [application_command, vpc_command_authority, vultr_command_authority]:
               assert "plan_authority" in planner
           for mutation_boundary in [application_service, dns_service, mesh_service, vpc_service, vultr_service]:
               assert "verify_exact_authority" in mutation_boundary
@@ -388,25 +388,15 @@ jobs:
           assert "authorize_dns_cleanup" in dns_command
           assert "authorize_mesh_apply" in mesh_command
           assert "authorize_mesh_cleanup" in mesh_command
-          assert "pub(crate) fn materialize(" in application_command
-          for retired_application_cli in [
-              "async fn run_plan(",
-              "async fn run_mutation(",
-              "async fn run_verify(",
-              "async fn run_recovery_plan(",
-              "async fn run_recovery_apply(",
-              "async fn run_rollback_plan(",
-              "async fn run_rollback_apply(",
-              "export-bundle",
-              "authorized-plan-sha256",
-          ]:
-              assert retired_application_cli not in application_command
+          assert "authorized-plan-sha256" in application_command
           assert "authorized-plan-sha256" in vpc_command_authority
           assert "authorized-plan-sha256" in vultr_command_authority
           vultr_workflow = Path(".github/workflows/vultr-lifecycle.yml").read_text()
           application_workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           assert ".destroy_digest // empty" in vultr_workflow
           assert "plan_authority" in vultr_workflow
+          assert "recover-plan" in application_command
+          assert "recover-apply" in application_command
           assert "production_runtime:" in application_workflow
           assert "sing-box-production-vm" in application_workflow
           assert 'sudo -n "${owner}" local "${local_operation}"' in application_workflow
@@ -437,12 +427,6 @@ jobs:
           assert "Line3Mesh" not in controller_cli
           assert "VultrVpc" not in controller_cli
           assert "ApplicationLifecycle" in orchestrator_cli
-          assert "Materialize(DesiredApplicationArgs)" in orchestrator_cli
-          assert "DesiredApplicationAuthorizedArgs" not in orchestrator_cli
-          assert "RecoverPlan(" not in orchestrator_cli
-          assert "RecoverApply(" not in orchestrator_cli
-          assert "RollbackPlan(" not in orchestrator_cli
-          assert "RollbackApply(" not in orchestrator_cli
           assert "VultrLifecycle" in orchestrator_cli
           assert "cloudflare-dns" not in orchestrator_cli
           assert "line3-mesh" not in orchestrator_cli
