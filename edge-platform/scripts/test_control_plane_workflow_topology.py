@@ -454,7 +454,9 @@ def main() -> None:
         and '"fresh-v2-publication-prove"' not in credentials
         and '"fresh-v2-cleanup"' not in credentials
         and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
-        and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials retire-proof-tokens' in credentials
+        and '"retire-proof-tokens"' not in credentials
+        and "RetireProofTokens" not in credential_cli
+        and "delete_access_service_token" not in credential_command
         and "credentials rotate-application" in credentials
         and "credential-transition drop-previous" in credentials
         and "credential-transition apply-candidate" in credentials
@@ -477,7 +479,7 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential operator workflow must expose the bounded Stage-3 proof-token retirement bridge plus steady-state rotation/verify/bootstrap without reviving Stage-2 proof/cutover surfaces",
+        "credential operator workflow must expose only steady-state rotation/verify/bootstrap after Stage-3 proof-token retirement plumbing is physically deleted",
     )
 
     rotation_workflow = credentials.split("  rotate_release:\n", 1)[1].split(

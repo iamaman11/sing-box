@@ -912,24 +912,6 @@ pub async fn set_access_service_token_enabled(
     ensure_success(response).await
 }
 
-pub async fn delete_access_service_token(
-    api_token: &str,
-    account_id: &str,
-    token_id: &str,
-) -> Result<(), String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access service token ID", token_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .delete(format!(
-            "{API_ROOT}/accounts/{account_id}/access/service_tokens/{token_id}"
-        ))
-        .send()
-        .await
-        .map_err(|err| format!("failed to delete Cloudflare Access service token: {err}"))?;
-    ensure_success(response).await
-}
-
 pub async fn create_hostname_access_application(
     api_token: &str,
     account_id: &str,
