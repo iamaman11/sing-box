@@ -348,7 +348,7 @@ async fn publish_rotation_slot(
     Ok(())
 }
 
-fn verify_credential_plane_invariant() -> Result<(), String> {
+pub(crate) async fn verify_credential_plane_invariant() -> Result<(), String> {
     let control_token = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let desired = &production.cloudflare.credential_plane;
