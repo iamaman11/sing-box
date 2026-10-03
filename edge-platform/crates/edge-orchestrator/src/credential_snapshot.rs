@@ -287,16 +287,14 @@ mod tests {
     fn windows_projection(snapshot: &FreshCredentialSnapshot) -> &WindowsCredentialProjection {
         match snapshot.windows.payload.as_ref().unwrap() {
             credential_delivery_bundle::Payload::Windows(value) => value,
-            credential_delivery_bundle::Payload::Vm(_) => panic!("unexpected VM payload"),
+            _ => panic!("unexpected non-full Windows payload"),
         }
     }
 
     fn vm_projection(snapshot: &FreshCredentialSnapshot) -> &VmCredentialProjection {
         match snapshot.vm.payload.as_ref().unwrap() {
             credential_delivery_bundle::Payload::Vm(value) => value,
-            credential_delivery_bundle::Payload::Windows(_) => {
-                panic!("unexpected Windows payload")
-            }
+            _ => panic!("unexpected non-full VM payload"),
         }
     }
 
@@ -370,23 +368,13 @@ mod tests {
     }
 
     #[test]
-    fn class_scoped_rotation_preserves_unselected_generations() {
-        let active = generate_fresh_credential_snapshot(FreshCredentialSnapshotRequest {
-            delivery_generation: 100,
-            slot: CredentialDeliverySlot::A,
-            tunnel_auth_generation: 11,
-            reality_identity_generation: 22,
-            line2_proxy_generation: 33,
-        })
-        .unwrap();
-
+    fn class_scoped_rotation_emits_only_selected_secret_material() {
         for class in [
-            ApplicationCredentialClass::TunnelAuth,
-            ApplicationCredentialClass::RealityIdentity,
-            ApplicationCredentialClass::Line2ProxyAuth,
+            CredentialRotationClass::TunnelAuth,
+            CredentialRotationClass::RealityIdentity,
+            CredentialRotationClass::Line2ProxyAuth,
         ] {
-            let rotated = rotate_credential_snapshot(
-                &active.vm,
+            let rotated = generate_rotation_credential_snapshot(
                 RotateCredentialSnapshotRequest {
                     delivery_generation: 101,
                     slot: CredentialDeliverySlot::B,
@@ -394,30 +382,39 @@ mod tests {
                 },
             )
             .unwrap();
-            let old_vm = vm_projection(&active);
-            let new_vm = vm_projection(&rotated);
-            let new_windows = windows_projection(&rotated);
 
-            assert_eq!(rotated.vm.generation, 101);
             assert_eq!(rotated.windows.generation, 101);
-            assert_eq!(rotated.vm.slot, CredentialDeliverySlot::B as i32);
+            assert_eq!(rotated.vm.generation, 101);
             assert_eq!(rotated.windows.slot, CredentialDeliverySlot::B as i32);
-            assert_eq!(new_vm.tunnel_auth, new_windows.tunnel_auth);
+            assert_eq!(rotated.vm.slot, CredentialDeliverySlot::B as i32);
+
+            let windows = match rotated.windows.payload.as_ref().unwrap() {
+                credential_delivery_bundle::Payload::WindowsRotation(value) => value,
+                _ => panic!("unexpected Windows rotation payload"),
+            };
+            let vm = match rotated.vm.payload.as_ref().unwrap() {
+                credential_delivery_bundle::Payload::VmRotation(value) => value,
+                _ => panic!("unexpected VM rotation payload"),
+            };
+            assert_eq!(windows.credential_class, class as i32);
+            assert_eq!(vm.credential_class, class as i32);
 
             match class {
-                ApplicationCredentialClass::TunnelAuth => {
-                    assert_eq!(new_vm.tunnel_auth.as_ref().unwrap().generation, 101);
-                    assert_ne!(new_vm.tunnel_auth, old_vm.tunnel_auth);
-                    assert_eq!(new_vm.reality_identity, old_vm.reality_identity);
-                    assert_eq!(new_vm.line2_proxy, old_vm.line2_proxy);
+                CredentialRotationClass::TunnelAuth => {
+                    assert_eq!(windows.tunnel_auth, vm.tunnel_auth);
+                    assert_eq!(vm.tunnel_auth.as_ref().unwrap().generation, 101);
+                    assert!(windows.reality_identity.is_none());
+                    assert!(vm.reality_identity.is_none());
+                    assert!(vm.line2_proxy.is_none());
                 }
-                ApplicationCredentialClass::RealityIdentity => {
-                    assert_eq!(new_vm.reality_identity.as_ref().unwrap().generation, 101);
-                    assert_ne!(new_vm.reality_identity, old_vm.reality_identity);
-                    assert_eq!(new_vm.tunnel_auth, old_vm.tunnel_auth);
-                    assert_eq!(new_vm.line2_proxy, old_vm.line2_proxy);
-                    let private = new_vm.reality_identity.as_ref().unwrap();
-                    let public = new_windows.reality_identity.as_ref().unwrap();
+                CredentialRotationClass::RealityIdentity => {
+                    assert!(windows.tunnel_auth.is_none());
+                    assert!(vm.tunnel_auth.is_none());
+                    assert!(vm.line2_proxy.is_none());
+                    let public = windows.reality_identity.as_ref().unwrap();
+                    let private = vm.reality_identity.as_ref().unwrap();
+                    assert_eq!(public.generation, 101);
+                    assert_eq!(private.generation, 101);
                     assert_reality_pair(
                         &private.direct.as_ref().unwrap().private_key,
                         &public.direct.as_ref().unwrap().public_key,
@@ -427,46 +424,43 @@ mod tests {
                         &public.warp.as_ref().unwrap().public_key,
                     );
                 }
-                ApplicationCredentialClass::Line2ProxyAuth => {
-                    assert_eq!(new_vm.line2_proxy.as_ref().unwrap().generation, 101);
-                    assert_ne!(new_vm.line2_proxy, old_vm.line2_proxy);
-                    assert_eq!(new_vm.tunnel_auth, old_vm.tunnel_auth);
-                    assert_eq!(new_vm.reality_identity, old_vm.reality_identity);
+                CredentialRotationClass::Line2ProxyAuth => {
+                    assert!(windows.tunnel_auth.is_none());
+                    assert!(windows.reality_identity.is_none());
+                    assert!(vm.tunnel_auth.is_none());
+                    assert!(vm.reality_identity.is_none());
+                    assert_eq!(vm.line2_proxy.as_ref().unwrap().generation, 101);
                 }
+                CredentialRotationClass::Unspecified => unreachable!(),
             }
         }
     }
 
     #[test]
-    fn rotation_requires_opposite_slot_and_new_delivery_generation() {
-        let active = generate_fresh_credential_snapshot(FreshCredentialSnapshotRequest {
-            delivery_generation: 100,
-            slot: CredentialDeliverySlot::A,
-            tunnel_auth_generation: 11,
-            reality_identity_generation: 22,
-            line2_proxy_generation: 33,
-        })
-        .unwrap();
-        assert!(
-            rotate_credential_snapshot(
-                &active.vm,
-                RotateCredentialSnapshotRequest {
+    fn rotation_delta_requires_real_fixed_slot_and_class() {
+        for (slot, class) in [
+            (
+                CredentialDeliverySlot::Unspecified,
+                CredentialRotationClass::TunnelAuth,
+            ),
+            (CredentialDeliverySlot::A, CredentialRotationClass::Unspecified),
+        ] {
+            assert!(
+                generate_rotation_credential_snapshot(RotateCredentialSnapshotRequest {
                     delivery_generation: 101,
-                    slot: CredentialDeliverySlot::A,
-                    class: ApplicationCredentialClass::TunnelAuth,
-                },
-            )
-            .is_err()
-        );
+                    slot,
+                    class,
+                })
+                .is_err()
+            );
+        }
+
         assert!(
-            rotate_credential_snapshot(
-                &active.vm,
-                RotateCredentialSnapshotRequest {
-                    delivery_generation: 100,
-                    slot: CredentialDeliverySlot::B,
-                    class: ApplicationCredentialClass::TunnelAuth,
-                },
-            )
+            generate_rotation_credential_snapshot(RotateCredentialSnapshotRequest {
+                delivery_generation: 0,
+                slot: CredentialDeliverySlot::A,
+                class: CredentialRotationClass::TunnelAuth,
+            })
             .is_err()
         );
     }
