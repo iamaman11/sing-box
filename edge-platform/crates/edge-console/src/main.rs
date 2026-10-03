@@ -984,6 +984,10 @@ async fn process_privileged_request(
         Ok(WindowsPrivilegedOperation::StageCredential) => {
             stage_windows_credential_candidate_from_worker(install_root, request).await
         }
+        Ok(WindowsPrivilegedOperation::AdmitCredential) => Err(
+            "ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate"
+                .to_owned(),
+        ),
         Ok(WindowsPrivilegedOperation::PrepareCredentialAccessBootstrap) => {
             credential_access_bootstrap::prepare(install_root)
         }
