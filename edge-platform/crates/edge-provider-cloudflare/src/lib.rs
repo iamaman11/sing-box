@@ -121,19 +121,6 @@ pub struct CloudflareServiceModeWrite {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareGatewayRuleWrite {
-    pub name: String,
-    pub description: String,
-    pub action: String,
-    pub enabled: bool,
-    pub precedence: u64,
-    pub filters: Vec<String>,
-    pub traffic: String,
-    pub identity: String,
-    pub device_posture: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareAccessDestination {
     pub destination_type: String,
     pub worker_id: Option<String>,
@@ -2023,44 +2010,6 @@ pub async fn list_device_posture_rules(
     ))
 }
 
-pub async fn create_gateway_rule(
-    api_token: &str,
-    account_id: &str,
-    request: &CloudflareGatewayRuleWrite,
-) -> Result<CloudflareGatewayRule, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!("{API_ROOT}/accounts/{account_id}/gateway/rules"))
-        .json(request)
-        .send()
-        .await
-        .map_err(|err| format!("failed to create Cloudflare Gateway rule: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    gateway_rule_from_value(payload.result)
-}
-
-pub async fn update_gateway_rule(
-    api_token: &str,
-    account_id: &str,
-    rule_id: &str,
-    request: &CloudflareGatewayRuleWrite,
-) -> Result<CloudflareGatewayRule, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Gateway rule ID", rule_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .put(format!(
-            "{API_ROOT}/accounts/{account_id}/gateway/rules/{rule_id}"
-        ))
-        .json(request)
-        .send()
-        .await
-        .map_err(|err| format!("failed to update Cloudflare Gateway rule: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    gateway_rule_from_value(payload.result)
-}
-
 pub async fn list_access_applications(
     api_token: &str,
     account_id: &str,
@@ -3540,37 +3489,6 @@ mod tests {
         assert_eq!(value["switch_locked"], true);
         assert_eq!(value["include"][0]["address"], "100.96.0.0/12");
         assert!(value.get("exclude").is_none());
-    }
-
-    #[test]
-    fn serializes_zero_trust_gateway_write_contract() {
-        let value = serde_json::to_value(CloudflareGatewayRuleWrite {
-            name: "sing-box Mesh Android allow".to_owned(),
-            description: "Project Mesh allow".to_owned(),
-            action: "allow".to_owned(),
-            enabled: true,
-            precedence: 9999,
-            filters: vec!["l4".to_owned()],
-            traffic: "net.dst.ip in {100.96.0.0/12}".to_owned(),
-            identity: "identity.email == \"android@example.com\"".to_owned(),
-            device_posture: "any(device_posture.checks.passed[*] in {\"posture-android\"})"
-                .to_owned(),
-        })
-        .unwrap();
-
-        assert_eq!(value["action"], "allow");
-        assert_eq!(value["filters"][0], "l4");
-        assert_eq!(value["traffic"], "net.dst.ip in {100.96.0.0/12}");
-        assert_eq!(
-            value["identity"],
-            "identity.email == \"android@example.com\""
-        );
-        assert!(
-            value["device_posture"]
-                .as_str()
-                .unwrap()
-                .contains("posture-android")
-        );
     }
 
     #[test]
