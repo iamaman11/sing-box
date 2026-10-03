@@ -95,7 +95,9 @@ separate lifecycle. Windows/VM Access host identities are permanent (`forever`) 
 installed host identity implicitly.
 
 Separate production-facing `/dns`, `/mesh` and `/zero-trust` operator namespaces are retired.
-The old executable Zero Trust inventory/plan/apply/verify lifecycle is deleted; the internal
+The standalone `cloudflare-dns` and `line3-mesh` CLI namespaces are deleted; acceptance and
+production composition use typed internal functions instead. The old executable Zero Trust
+inventory/plan/apply/verify lifecycle is deleted; the internal
 read-only `cloudflare-zero-trust doctor` remains only for acceptance guardrail observation.
 Other provider-internal and migration-only commands remain transitional unless #26 explicitly says otherwise.
 
