@@ -1597,9 +1597,9 @@ async fn transition_vm_credential(
             Err("credential transition action is required".to_owned())
         }
         CredentialTransitionAction::ValidateCandidate => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 candidate validation requires empty active/previous state"
+                    "previous credential rollback buffer must be dropped before validating a new candidate"
                         .to_owned(),
                 );
             }
@@ -1613,9 +1613,9 @@ async fn transition_vm_credential(
             Ok(Some(state))
         }
         CredentialTransitionAction::ApplyCandidate => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 candidate apply requires empty active/previous state"
+                    "previous credential rollback buffer must be dropped before applying a new candidate"
                         .to_owned(),
                 );
             }
@@ -1626,24 +1626,34 @@ async fn transition_vm_credential(
             let bundle = store.read_bundle(candidate)?;
             let candidate_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
             if let Err(err) = apply_vm_credential_runtime(stack_dir, &candidate_secrets).await {
-                let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
-                let recovery = apply_vm_credential_runtime(stack_dir, &legacy).await;
+                let recovery = if let Some(active) = state.active.as_ref() {
+                    let active_bundle = store.read_bundle(active)?;
+                    let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&active_bundle)?;
+                    apply_vm_credential_runtime(stack_dir, &active_secrets).await
+                } else {
+                    let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
+                    apply_vm_credential_runtime(stack_dir, &legacy).await
+                };
                 return match recovery {
                     Ok(()) => Err(format!(
-                        "VM candidate runtime failed and legacy LKG was restored: {err}"
+                        "VM candidate runtime failed and the pre-candidate runtime was restored: {err}"
                     )),
                     Err(recovery_err) => Err(format!(
-                        "VM candidate runtime failed: {err}; legacy recovery also failed: {recovery_err}"
+                        "VM candidate runtime failed: {err}; pre-candidate recovery also failed: {recovery_err}"
                     )),
                 };
             }
             Ok(Some(state))
         }
         CredentialTransitionAction::Promote => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 promotion requires empty active/previous state".to_owned(),
+                    "previous credential rollback buffer must be dropped before promotion"
+                        .to_owned(),
                 );
+            }
+            if state.candidate.is_none() {
+                return Err("VM v2 candidate is absent".to_owned());
             }
             Ok(Some(store.promote_candidate()?))
         }
@@ -1683,27 +1693,95 @@ async fn transition_vm_credential(
                 .ok_or_else(|| "VM v2 active credential is absent".to_owned())?;
             let bundle = store.read_bundle(active)?;
             let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
-            if let Err(err) = apply_vm_credential_runtime(stack_dir, &active_secrets).await {
-                let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
-                let recovery = apply_vm_credential_runtime(stack_dir, &legacy).await;
-                return match recovery {
-                    Ok(()) => Err(format!(
-                        "VM active-v2 recovery failed and legacy LKG was restored: {err}"
-                    )),
-                    Err(recovery_err) => Err(format!(
-                        "VM active-v2 recovery failed: {err}; legacy recovery also failed: {recovery_err}"
-                    )),
-                };
-            }
+            apply_vm_credential_runtime(stack_dir, &active_secrets).await?;
             Ok(Some(state))
         }
         CredentialTransitionAction::DiscardCandidate => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 discard requires empty active/previous state".to_owned(),
+                    "candidate discard refuses a state that also contains previous rollback authority"
+                        .to_owned(),
                 );
             }
             Ok(store.discard_candidate()?)
+        }
+        CredentialTransitionAction::RollbackPrevious => {
+            if state.candidate.is_some() {
+                return Err("credential rollback refuses a staged candidate".to_owned());
+            }
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| "VM active credential is absent".to_owned())?;
+            let previous = state
+                .previous
+                .as_ref()
+                .ok_or_else(|| "VM previous credential is absent".to_owned())?;
+            let active_bundle = store.read_bundle(active)?;
+            let previous_bundle = store.read_bundle(previous)?;
+            let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&active_bundle)?;
+            let previous_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&previous_bundle)?;
+
+            if let Err(err) = apply_vm_credential_runtime(stack_dir, &previous_secrets).await {
+                let recovery = apply_vm_credential_runtime(stack_dir, &active_secrets).await;
+                return match recovery {
+                    Ok(()) => Err(format!(
+                        "VM credential rollback target failed and active generation was restored: {err}"
+                    )),
+                    Err(recovery_err) => Err(format!(
+                        "VM credential rollback target failed: {err}; active recovery also failed: {recovery_err}"
+                    )),
+                };
+            }
+            match store.rollback_previous() {
+                Ok(next) => Ok(Some(next)),
+                Err(err) => {
+                    let recovery = apply_vm_credential_runtime(stack_dir, &active_secrets).await;
+                    match recovery {
+                        Ok(()) => Err(format!(
+                            "VM credential runtime switched to previous but pointer rollback failed; active runtime was restored: {err}"
+                        )),
+                        Err(recovery_err) => Err(format!(
+                            "VM credential pointer rollback failed after previous runtime apply: {err}; active runtime recovery also failed: {recovery_err}"
+                        )),
+                    }
+                }
+            }
+        }
+        CredentialTransitionAction::DropPrevious => {
+            if state.candidate.is_some() {
+                return Err("previous credential cannot be dropped while a candidate is staged".to_owned());
+            }
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| "VM active credential is absent".to_owned())?;
+            if state.previous.is_none() {
+                return Ok(Some(state));
+            }
+            let bundle = store.read_bundle(active)?;
+            let expected = vm_runtime_environment(
+                stack_dir,
+                &ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?,
+            )?;
+            let observed = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE))
+                .map_err(|err| format!("failed to verify live VM runtime environment: {err}"))?;
+            if observed != expected {
+                return Err(
+                    "previous credential retirement refused because live VM runtime is not exact active generation"
+                        .to_owned(),
+                );
+            }
+            let runtime = inspect_runtime(stack_dir, AgentMode::Readiness).await;
+            let verified =
+                verify_bootstrap_post_state(stack_dir, BootstrapMode::BootstrapFull, &runtime);
+            if !verified.success {
+                return Err(format!(
+                    "previous credential retirement refused because active runtime is not ready: {}",
+                    verified.warnings.join("; ")
+                ));
+            }
+            Ok(store.drop_previous()?)
         }
         CredentialTransitionAction::RetireLegacy => {
             if state.active.is_none() || state.candidate.is_some() {
