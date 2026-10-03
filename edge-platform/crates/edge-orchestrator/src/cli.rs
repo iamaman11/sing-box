@@ -188,9 +188,6 @@ pub(crate) enum ProductionCommand {
     EnrollRuntime(ProductionEnrollRuntimeArgs),
     Converge(ProductionRuntimeArgs),
     Verify(ProductionRuntimeArgs),
-    HistoricalRetirementPlan,
-    HistoricalRetirementApply,
-    HistoricalRetirementVerify,
     Rollback,
 }
 
