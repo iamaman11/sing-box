@@ -374,13 +374,11 @@ mod tests {
             CredentialRotationClass::RealityIdentity,
             CredentialRotationClass::Line2ProxyAuth,
         ] {
-            let rotated = generate_rotation_credential_snapshot(
-                RotateCredentialSnapshotRequest {
-                    delivery_generation: 101,
-                    slot: CredentialDeliverySlot::B,
-                    class,
-                },
-            )
+            let rotated = generate_rotation_credential_snapshot(RotateCredentialSnapshotRequest {
+                delivery_generation: 101,
+                slot: CredentialDeliverySlot::B,
+                class,
+            })
             .unwrap();
 
             assert_eq!(rotated.windows.generation, 101);
@@ -443,7 +441,10 @@ mod tests {
                 CredentialDeliverySlot::Unspecified,
                 CredentialRotationClass::TunnelAuth,
             ),
-            (CredentialDeliverySlot::A, CredentialRotationClass::Unspecified),
+            (
+                CredentialDeliverySlot::A,
+                CredentialRotationClass::Unspecified,
+            ),
         ] {
             assert!(
                 generate_rotation_credential_snapshot(RotateCredentialSnapshotRequest {
