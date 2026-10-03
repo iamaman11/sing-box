@@ -433,16 +433,22 @@ fn validate_host_bootstrap_preconditions(
             ));
         }
 
-        let proof_id = current
-            .proof_service_token_id
-            .as_deref()
-            .ok_or_else(|| format!("{} proof service token is missing", projection.projection))?;
-        if current.proof_service_token_enabled != Some(false)
-            || current.proof_service_token_duration.as_deref()
-                != Some(desired.proof_token_duration.as_str())
+        let proof_id = current.proof_service_token_id.as_deref();
+        if proof_id.is_some() {
+            if current.proof_service_token_enabled != Some(false)
+                || current.proof_service_token_duration.as_deref()
+                    != Some(desired.proof_token_duration.as_str())
+            {
+                return Err(format!(
+                    "{} proof service token drifted",
+                    projection.projection
+                ));
+            }
+        } else if current.proof_service_token_enabled.is_some()
+            || current.proof_service_token_duration.is_some()
         {
             return Err(format!(
-                "{} proof service token drifted",
+                "{} absent proof service token has inconsistent provider metadata",
                 projection.projection
             ));
         }
@@ -507,12 +513,21 @@ fn validate_host_bootstrap_preconditions(
 }
 
 fn bootstrap_policy_tokens_are_recoverable(
-    proof_id: &str,
+    proof_id: Option<&str>,
     host_id: Option<&str>,
     actual_ids: &[String],
 ) -> bool {
     let mut actual = actual_ids.to_vec();
     actual.sort();
+
+    let Some(proof_id) = proof_id else {
+        let Some(host_id) = host_id else {
+            return false;
+        };
+        let mut host_only = vec![host_id.to_owned()];
+        host_only.sort();
+        return actual == host_only;
+    };
 
     let mut proof_only = vec![proof_id.to_owned()];
     proof_only.sort();
@@ -663,10 +678,7 @@ async fn host_bootstrap_converge(
             _ => return Err("unsupported host bootstrap projection".to_owned()),
         }
 
-        let proof_id = current
-            .proof_service_token_id
-            .as_deref()
-            .ok_or_else(|| format!("{} proof token disappeared", projection.projection))?;
+        let proof_id = current.proof_service_token_id.as_deref();
         let app_id = current
             .access_application_id
             .as_deref()
@@ -675,7 +687,10 @@ async fn host_bootstrap_converge(
             .access_policies
             .first()
             .ok_or_else(|| format!("{} Access policy disappeared", projection.projection))?;
-        let expected_ids = vec![proof_id.to_owned(), credential.id.clone()];
+        let mut expected_ids = vec![credential.id.clone()];
+        if let Some(proof_id) = proof_id {
+            expected_ids.push(proof_id.to_owned());
+        }
         let mut actual_ids = policy.include_service_token_ids.clone();
         let mut sorted_expected = expected_ids.clone();
         actual_ids.sort();
@@ -1769,24 +1784,34 @@ mod tests {
         let proof = "proof-token-id";
         let host = "host-token-id";
         assert!(bootstrap_policy_tokens_are_recoverable(
-            proof,
+            Some(proof),
             Some(host),
             &[proof.to_owned()],
         ));
         assert!(bootstrap_policy_tokens_are_recoverable(
-            proof,
+            Some(proof),
             Some(host),
             &[host.to_owned(), proof.to_owned()],
         ));
         assert!(!bootstrap_policy_tokens_are_recoverable(
-            proof,
+            Some(proof),
             Some(host),
             &[proof.to_owned(), "foreign-token-id".to_owned()],
         ));
         assert!(!bootstrap_policy_tokens_are_recoverable(
-            proof,
+            Some(proof),
             None,
             &[proof.to_owned(), host.to_owned()],
+        ));
+        assert!(bootstrap_policy_tokens_are_recoverable(
+            None,
+            Some(host),
+            &[host.to_owned()],
+        ));
+        assert!(!bootstrap_policy_tokens_are_recoverable(
+            None,
+            Some(host),
+            &["foreign-token-id".to_owned()],
         ));
     }
 
