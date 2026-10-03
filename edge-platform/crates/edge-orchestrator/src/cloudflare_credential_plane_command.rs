@@ -484,10 +484,7 @@ fn validate_host_bootstrap_preconditions(
     Ok(())
 }
 
-fn bootstrap_policy_is_safe(
-    host_id: Option<&str>,
-    actual_ids: &[String],
-) -> bool {
+fn bootstrap_policy_is_safe(host_id: Option<&str>, actual_ids: &[String]) -> bool {
     let mut actual = actual_ids.to_vec();
     actual.sort();
 
@@ -1513,10 +1510,7 @@ mod tests {
     #[test]
     fn host_bootstrap_policy_allows_only_exact_host_or_empty_create_once_state() {
         let host = "host-token-id";
-        assert!(bootstrap_policy_is_safe(
-            Some(host),
-            &[host.to_owned()],
-        ));
+        assert!(bootstrap_policy_is_safe(Some(host), &[host.to_owned()],));
         assert!(!bootstrap_policy_is_safe(
             Some(host),
             &["foreign-token-id".to_owned()],
