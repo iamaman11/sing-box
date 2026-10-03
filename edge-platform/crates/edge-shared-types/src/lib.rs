@@ -991,6 +991,12 @@ pub fn validate_windows_privileged_request(
             validate_lower_hex("WindowsPrivilegedRequest.accepted_revision", revision, 40)?;
             validate_lower_hex("WindowsPrivilegedRequest.release_set_sha256", release, 64)?;
         }
+        WindowsPrivilegedOperation::AdmitCredential => {
+            return Err(
+                "ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate"
+                    .to_owned(),
+            );
+        }
         WindowsPrivilegedOperation::StageCredential => {
             if request.accepted_revision.is_some()
                 || request.release_set_sha256.is_some()
