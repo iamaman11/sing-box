@@ -321,26 +321,6 @@ pub(crate) enum CloudflareTargetPlaneCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareZeroTrustCommand {
     Doctor(SpecArgs),
-    Inventory(SpecArgs),
-    Plan(SpecArgs),
-    Apply(AuthorizedSpecArgs),
-    Verify(SpecArgs),
-}
-
-impl CloudflareZeroTrustCommand {
-    pub fn into_legacy_args(self) -> Vec<String> {
-        match self {
-            Self::Doctor(args) => vec!["doctor".to_owned(), path(args.spec_path)],
-            Self::Inventory(args) => vec!["inventory".to_owned(), path(args.spec_path)],
-            Self::Plan(args) => vec!["plan".to_owned(), path(args.spec_path)],
-            Self::Apply(args) => vec![
-                "apply".to_owned(),
-                path(args.spec_path),
-                args.authorized_plan_sha256,
-            ],
-            Self::Verify(args) => vec!["verify".to_owned(), path(args.spec_path)],
-        }
-    }
 }
 
 #[derive(Debug, Args, Clone)]

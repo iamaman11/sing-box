@@ -94,8 +94,10 @@ separate lifecycle. Windows/VM Access host identities are permanent (`forever`) 
 `host-bootstrap-converge` is their explicit bootstrap/recovery boundary, and retries never rotate an
 installed host identity implicitly.
 
-Separate production-facing `/dns`, `/mesh`, `/zero-trust`, provider-internal and migration-only
-commands are transitional unless #26 explicitly says otherwise.
+Separate production-facing `/dns`, `/mesh` and `/zero-trust` operator namespaces are retired.
+The old executable Zero Trust inventory/plan/apply/verify lifecycle is deleted; the internal
+read-only `cloudflare-zero-trust doctor` remains only for acceptance guardrail observation.
+Other provider-internal and migration-only commands remain transitional unless #26 explicitly says otherwise.
 
 ## Canonical production authority
 

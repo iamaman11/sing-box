@@ -8,6 +8,9 @@ APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
+ZERO_TRUST_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_zero_trust_lifecycle_command.rs")
+ZERO_TRUST_SERVICE = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_zero_trust_lifecycle_service.rs")
+ZERO_TRUST_CORE = Path("edge-platform/crates/edge-controller-core/src/cloudflare_zero_trust_lifecycle.rs")
 CREDENTIALS = WORKFLOWS / "credential-lifecycle.yml"
 VPC = WORKFLOWS / "vultr-vpc-lifecycle.yml"
 DNS = WORKFLOWS / "cloudflare-dns-lifecycle.yml"
@@ -314,6 +317,13 @@ def main() -> None:
     require("issue_comment:" not in credentials, "credential backend must not listen to comments")
     require("issue_comment:" not in vpc, "VPC backend must not listen to comments")
     require(not ZERO_TRUST.exists() and not DNS.exists(), "retired standalone Cloudflare operator workflows must stay absent")
+    require(
+        not ZERO_TRUST_COMMAND.exists()
+        and not ZERO_TRUST_SERVICE.exists()
+        and not ZERO_TRUST_CORE.exists()
+        and "pub(crate) enum CloudflareZeroTrustCommand {\n    Doctor(SpecArgs),\n}" in credential_cli,
+        "retired Zero Trust mutation lifecycle must stay physically absent; only the read-only doctor CLI may remain",
+    )
 
     require(
         "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,

@@ -12,8 +12,6 @@ mod cloudflare_mesh_lifecycle_service;
 mod cloudflare_production_inventory;
 mod cloudflare_target_plane_command;
 mod cloudflare_zero_trust_doctor;
-mod cloudflare_zero_trust_lifecycle_command;
-mod cloudflare_zero_trust_lifecycle_service;
 mod production_command;
 mod vultr_host_bootstrap;
 mod vultr_host_substrate_service;
@@ -163,9 +161,11 @@ async fn run(
                 cloudflare_target_plane_command::verify_active_invariant().await
             }
         },
-        Command::CloudflareZeroTrust { command } => {
-            cloudflare_zero_trust_lifecycle_command::run(command.into_legacy_args()).await
-        }
+        Command::CloudflareZeroTrust { command } => match command {
+            cli::CloudflareZeroTrustCommand::Doctor(args) => {
+                cloudflare_zero_trust_doctor::run(&args.spec_path).await
+            }
+        },
         Command::Credentials { command } => {
             cloudflare_credential_plane_command::run_delivery(command).await
         }
