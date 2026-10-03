@@ -1,10 +1,9 @@
 use crate::application_lifecycle_service::{
-    ApplicationAuthority, ApplicationObservationView, DesiredMutationMode,
-    authorize_application_plan, authorize_application_recovery, authorize_application_rollback,
-    candidate_application_image_environment, exact_file_sha256, execute_desired, execute_recovery,
-    execute_rollback, observe_application, prepare_application_bundle,
-    prepare_application_bundle_with_image_environment, recovery_plan_remote, rollback_plan_remote,
-    verify_desired, verify_exact_agent_artifact,
+    ApplicationAuthority, DesiredMutationMode, authorize_application_plan,
+    authorize_application_rollback, candidate_application_image_environment, exact_file_sha256,
+    execute_desired, execute_rollback, observe_application, prepare_application_bundle,
+    prepare_application_bundle_with_image_environment, rollback_plan_remote, verify_desired,
+    verify_exact_agent_artifact,
 };
 use crate::vultr_host_bootstrap::{strict_ssh_accept, verify_operator_key_matches};
 use crate::vultr_lifecycle_command::{
@@ -16,7 +15,6 @@ use crate::vultr_lifecycle_service::plan_desired_state_with_firewall_profiles;
 use edge_controller_core::application_lifecycle::{
     AgentArtifactManifest, ApplicationPlanClass, DesiredApplicationState, plan_application,
 };
-use edge_controller_core::lifecycle::{PlanDisposition, authorize_plan};
 use edge_controller_core::production::{
     CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
 };
@@ -24,10 +22,9 @@ use edge_controller_core::vultr_lifecycle::PlanClass;
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::get_instance_typed;
 use prost::Message;
-use serde_json::json;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 pub(crate) fn build_candidate_application_bundle(
@@ -81,266 +78,18 @@ pub(crate) fn build_candidate_application_bundle(
     Ok(())
 }
 
-pub(crate) async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<(), String> {
-    context.application_release_authority()?;
-    let operation = args.first().map(String::as_str).ok_or_else(usage)?;
-    match operation {
-        "materialize" => run_materialize(&args[1..], context),
-        "export-bundle" => run_export_bundle(&args[1..], context),
-        "plan" => run_plan(&args[1..], context).await,
-        "apply" => run_mutation(&args[1..], DesiredMutationMode::Apply, context).await,
-        "verify" => run_verify(&args[1..], context).await,
-        "upgrade" => run_mutation(&args[1..], DesiredMutationMode::Upgrade, context).await,
-        "recover-plan" => run_recovery_plan(&args[1..]).await,
-        "recover-apply" => run_recovery_apply(&args[1..]).await,
-        "rollback-plan" => run_rollback_plan(&args[1..]).await,
-        "rollback-apply" => run_rollback_apply(&args[1..]).await,
-        _ => Err(usage()),
-    }
-}
-
-fn run_materialize(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
-    let (spec_path, manifest_path, artifact_path) = desired_args(args, "materialize")?;
-    let desired = load_application_desired(&spec_path)?;
-    let bundle_root = Path::new(".").join(&desired.bundle_root);
-    context.materialize_application_inputs(&bundle_root, &manifest_path, &artifact_path)?;
-    let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)
-}
-
-fn run_export_bundle(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
-    if args.len() != 4 {
-        return Err(
-            "usage: edge-orchestrator application-lifecycle export-bundle <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <output-protobuf-path>"
-                .to_owned(),
-        );
-    }
-    let spec_path = PathBuf::from(&args[0]);
-    let manifest_path = PathBuf::from(&args[1]);
-    let artifact_path = PathBuf::from(&args[2]);
-    let output_path = PathBuf::from(&args[3]);
-    let desired = load_application_desired(&spec_path)?;
-    let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
-    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
-    let bundle_id = prepared
-        .request
-        .bundle_id
-        .as_deref()
-        .ok_or_else(|| "prepared application bundle is missing bundle_id".to_owned())?;
-    let bundle_digest = prepared
-        .request
-        .bundle_digest
-        .as_deref()
-        .ok_or_else(|| "prepared application bundle is missing bundle_digest".to_owned())?;
-    let encoded = prepared.request.encode_to_vec();
-    fs::write(&output_path, &encoded).map_err(|err| {
-        format!(
-            "failed to write digest-bound application bundle {}: {err}",
-            output_path.display()
-        )
-    })?;
-    println!("application_bundle_id={bundle_id}");
-    println!("application_bundle_digest={bundle_digest}");
-    println!("application_bundle_bytes={}", encoded.len());
-    Ok(())
-}
-
-async fn run_plan(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
-    let (spec_path, manifest_path, artifact_path) = desired_args(args, "plan")?;
-    let desired = load_application_desired(&spec_path)?;
-    let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
-    let authority = resolve_application_authority(&desired).await?;
-    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
-    let observation = observe_application(&authority, &desired).await?;
-    let plan = plan_application(
-        &desired,
-        &artifact,
-        &prepared.release.bundle_digest,
-        &observation,
-    )
-    .map_err(|err| err.to_string())?;
-    let authorized = authorize_application_plan(
-        &desired,
-        &artifact,
-        &prepared.release.bundle_digest,
-        &observation,
-        plan.clone(),
-    )?;
-
-    print_json(json!({
-        "plan": plan,
-        "plan_authority": authorized.authority,
-        "plan_disposition": authorized.disposition,
-        "observation": ApplicationObservationView::from(&observation),
-        "mutations_performed": 0
-    }))
-}
-
-async fn run_mutation(
-    args: &[String],
-    mode: DesiredMutationMode,
+pub(crate) fn materialize(
     context: &OrchestrationContext,
+    spec_path: &Path,
+    manifest_path: &Path,
+    artifact_path: &Path,
 ) -> Result<(), String> {
-    let operation = match mode {
-        DesiredMutationMode::Apply => "apply",
-        DesiredMutationMode::Upgrade => "upgrade",
-    };
-    if args.len() != 4 {
-        return Err(format!(
-            "usage: edge-orchestrator application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>"
-        ));
-    }
-    let spec_path = PathBuf::from(&args[0]);
-    let manifest_path = PathBuf::from(&args[1]);
-    let artifact_path = PathBuf::from(&args[2]);
-    let authorized_plan_digest = &args[3];
-    let desired = load_application_desired(&spec_path)?;
-    let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
-    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
-    let authority = resolve_application_authority(&desired).await?;
-    let report = execute_desired(
-        &authority,
-        &desired,
-        &artifact,
-        &artifact_path,
-        &prepared,
-        authorized_plan_digest,
-        mode,
-    )
-    .await?;
-    print_json(serde_json::to_value(report).map_err(|err| err.to_string())?)
-}
-
-async fn run_verify(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
-    let (spec_path, manifest_path, artifact_path) = desired_args(args, "verify")?;
-    let desired = load_application_desired(&spec_path)?;
-    let artifact = load_artifact_manifest(&manifest_path)?;
-    verify_release_bound_application_inputs(context, &desired, &artifact, &artifact_path)?;
-    let prepared = prepare_application_bundle(Path::new("."), &desired, &artifact)?;
-    let authority = resolve_application_authority(&desired).await?;
-    let (plan, observation) = verify_desired(&authority, &desired, &artifact, &prepared).await?;
-    let healthy = plan.class == ApplicationPlanClass::Noop;
-    let disposition = if healthy {
-        PlanDisposition::Noop
-    } else if plan.class == ApplicationPlanClass::Blocked {
-        PlanDisposition::Blocked
-    } else {
-        PlanDisposition::Mutate
-    };
-    let desired_material = json!({
-        "desired": &desired,
-        "artifact": &artifact,
-        "bundle_digest": &prepared.release.bundle_digest,
-    });
-    let authorized = authorize_plan(
-        "application",
-        &desired_material,
-        &observation,
-        plan.clone(),
-        disposition,
-    )
-    .map_err(|err| err.to_string())?;
-    print_json(json!({
-        "status": if healthy { "PASS" } else { "FAIL" },
-        "plan": plan,
-        "plan_authority": authorized.authority,
-        "plan_disposition": authorized.disposition,
-        "observation": observation,
-        "mutations_performed": 0
-    }))?;
-    if healthy {
-        Ok(())
-    } else {
-        Err("application verify did not observe exact healthy desired release".to_owned())
-    }
-}
-
-async fn run_recovery_plan(args: &[String]) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err(
-            "usage: edge-orchestrator application-lifecycle recover-plan <spec-path>".to_owned(),
-        );
-    }
-    let desired = load_application_desired(Path::new(&args[0]))?;
-    let authority = resolve_application_authority(&desired).await?;
-    let (observation, plan) = recovery_plan_remote(&authority, &desired).await?;
-    let authorized = authorize_application_recovery(&desired, &observation, plan.clone())?;
-    print_json(json!({
-        "recovery": plan,
-        "plan_authority": authorized.authority,
-        "plan_disposition": authorized.disposition,
-        "observation": observation,
-        "mutations_performed": 0
-    }))
-}
-
-async fn run_recovery_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 2 {
-        return Err(
-            "usage: edge-orchestrator application-lifecycle recover-apply <spec-path> <authorized-plan-sha256>"
-                .to_owned(),
-        );
-    }
-    validate_digest(&args[1])?;
-    let desired = load_application_desired(Path::new(&args[0]))?;
-    let authority = resolve_application_authority(&desired).await?;
-    let report = execute_recovery(&authority, &desired, &args[1]).await?;
-    print_json(json!({
-        "status": "RECOVERED",
-        "report": report
-    }))
-}
-
-async fn run_rollback_plan(args: &[String]) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err(
-            "usage: edge-orchestrator application-lifecycle rollback-plan <spec-path>".to_owned(),
-        );
-    }
-    let desired = load_application_desired(Path::new(&args[0]))?;
-    let authority = resolve_application_authority(&desired).await?;
-    let (observation, plan) = rollback_plan_remote(&authority, &desired).await?;
-    let authorized = authorize_application_rollback(&desired, &observation, plan.clone())?;
-    print_json(json!({
-        "rollback": plan,
-        "plan_authority": authorized.authority,
-        "plan_disposition": authorized.disposition,
-        "mutations_performed": 0
-    }))
-}
-
-async fn run_rollback_apply(args: &[String]) -> Result<(), String> {
-    if args.len() != 3 {
-        return Err(
-            "usage: edge-orchestrator application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>"
-                .to_owned(),
-        );
-    }
-    validate_digest(&args[1])?;
-    validate_digest(&args[2])?;
-    let desired = load_application_desired(Path::new(&args[0]))?;
-    let authority = resolve_application_authority(&desired).await?;
-    let observation = execute_rollback(&authority, &desired, &args[1], &args[2]).await?;
-    print_json(json!({
-        "status": "ROLLED_BACK",
-        "observation": observation
-    }))
-}
-
-fn desired_args(args: &[String], operation: &str) -> Result<(PathBuf, PathBuf, PathBuf), String> {
-    if args.len() != 3 {
-        return Err(format!(
-            "usage: edge-orchestrator application-lifecycle {operation} <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>"
-        ));
-    }
-    Ok((
-        PathBuf::from(&args[0]),
-        PathBuf::from(&args[1]),
-        PathBuf::from(&args[2]),
-    ))
+    context.application_release_authority()?;
+    let desired = load_application_desired(spec_path)?;
+    let bundle_root = Path::new(".").join(&desired.bundle_root);
+    context.materialize_application_inputs(&bundle_root, manifest_path, artifact_path)?;
+    let artifact = load_artifact_manifest(manifest_path)?;
+    verify_release_bound_application_inputs(context, &desired, &artifact, artifact_path)
 }
 
 pub(crate) async fn production_converge_desired(
@@ -686,41 +435,4 @@ pub(crate) async fn resolve_application_authority(
         operator_private_key_path,
         canonical_operator_public_key,
     })
-}
-
-fn validate_digest(value: &str) -> Result<(), String> {
-    if value.len() != 64
-        || !value
-            .chars()
-            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
-    {
-        return Err(
-            "rollback digest must be exactly 64 lowercase hexadecimal characters".to_owned(),
-        );
-    }
-    Ok(())
-}
-
-fn print_json(value: serde_json::Value) -> Result<(), String> {
-    let rendered = serde_json::to_string_pretty(&value)
-        .map_err(|err| format!("failed to serialize application lifecycle result: {err}"))?;
-    println!("{rendered}");
-    Ok(())
-}
-
-fn usage() -> String {
-    [
-        "usage:",
-        "  edge-orchestrator application-lifecycle materialize <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
-        "  edge-orchestrator application-lifecycle export-bundle <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <output-protobuf-path>",
-        "  edge-orchestrator application-lifecycle plan <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
-        "  edge-orchestrator application-lifecycle apply <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
-        "  edge-orchestrator application-lifecycle verify <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>",
-        "  edge-orchestrator application-lifecycle upgrade <spec-path> <artifact-manifest-path> <edge-agent-artifact-path> <authorized-plan-sha256>",
-        "  edge-orchestrator application-lifecycle recover-plan <spec-path>",
-        "  edge-orchestrator application-lifecycle recover-apply <spec-path> <authorized-plan-sha256>",
-        "  edge-orchestrator application-lifecycle rollback-plan <spec-path>",
-        "  edge-orchestrator application-lifecycle rollback-apply <spec-path> <rollback-digest> <authorized-plan-sha256>",
-    ]
-    .join("\n")
 }
