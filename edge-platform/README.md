@@ -27,11 +27,11 @@ Use the architecture classifications:
 - `HISTORICAL_EVIDENCE` — GitHub evidence only, never an execution path.
 
 The project is in late Stage 3 of final convergence. Stage 2 (fresh-v2 credentials plus the managed
-Windows proxy-only runtime) is closed, and the historical application-exclusive Cloudflare retirement
-slice is also closed with its temporary write authority deleted. Remaining Stage-3 work is the
-steady-state lifecycle closure: production release rollback through the persistent local-owner path
-and class-scoped credential rotation. TUN remains deferred. The currently working external Windows
-sing-box stays untouched until the dedicated final managed-TUN cutover.
+Windows proxy-only runtime), historical application-exclusive Cloudflare retirement, persistent
+local-owner production rollback and class-scoped application credential rotation are closed. Remaining
+Stage-3 work is deletion-first contraction of superseded migration/proof paths plus final verification.
+TUN remains deferred. The currently working external Windows sing-box stays untouched until the
+dedicated final managed-TUN cutover.
 
 ## Steady-state owner map
 
@@ -90,8 +90,9 @@ The credential surface includes read-only `/credentials verify`, explicit
 `host-bootstrap-converge`, and class-scoped application rotation:
 `/credentials rotate tunnel-auth|reality-identity|line2-proxy-auth`. Application rotation preserves
 unselected nested generations, publishes only the inactive A/B slot, and keeps host identities as a
-separate lifecycle. Explicit steady-state host-identity rotation remains a separate Stage-3 boundary;
-bootstrap retries still never rotate an installed host identity implicitly.
+separate lifecycle. Windows/VM Access host identities are permanent (`forever`) create-once identities;
+`host-bootstrap-converge` is their explicit bootstrap/recovery boundary, and retries never rotate an
+installed host identity implicitly.
 
 Separate production-facing `/dns`, `/mesh`, `/zero-trust`, provider-internal and migration-only
 commands are transitional unless #26 explicitly says otherwise.
