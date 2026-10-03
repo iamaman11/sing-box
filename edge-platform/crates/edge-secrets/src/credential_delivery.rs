@@ -1,7 +1,7 @@
 use crate::credential_store::write_atomic_private;
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialProjectionKind, canonical_production_desired_state,
-    decode_credential_delivery_bundle, local_credential_bundle_ref,
+    decode_credential_delivery_bundle,
 };
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, redirect::Policy};
@@ -177,6 +177,14 @@ pub async fn observe_canonical_credential_bundle(
     identity_path: &Path,
 ) -> Result<Option<CredentialDeliveryBundle>, String> {
     let identity = read_access_service_identity(identity_path)?;
+    observe_canonical_credential_bundle_with_identity(projection, generation, &identity).await
+}
+
+async fn observe_canonical_credential_bundle_with_identity(
+    projection: CredentialProjectionKind,
+    generation: u64,
+    identity: &AccessServiceIdentity,
+) -> Result<Option<CredentialDeliveryBundle>, String> {
     let url = canonical_credential_worker_url(projection, generation)?;
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -233,7 +241,6 @@ pub async fn observe_canonical_credential_bundle(
     if bundle.projection != projection as i32 || bundle.generation != generation {
         return Err("credential Worker returned the wrong projection or generation".to_owned());
     }
-    local_credential_bundle_ref(&bundle)?;
     Ok(Some(bundle))
 }
 

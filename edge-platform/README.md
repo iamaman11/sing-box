@@ -81,13 +81,17 @@ Final normal operation converges toward:
 /windows <only genuinely Windows-local physical lifecycle operations>
 ```
 
-Current `main` intentionally exposes only `/production converge|verify|diagnose` as routine public
-production operations, plus exceptional `/production enroll-runtime` for explicit bootstrap. The
-legacy lease-based production rollback implementation is **not** in the public workflow grammar;
-`/production rollback` becomes supported only when the same persistent self-hosted-runner -> local-owner
-boundary is complete and accepted. Likewise, the current public credential workflow exposes
-`/credentials verify` plus explicit `host-bootstrap-converge`; class-scoped `/credentials rotate`
-is the remaining target, not an already accepted command.
+The routine production surface is `/production converge|verify|diagnose|rollback`, plus exceptional
+`/production enroll-runtime` for explicit bootstrap/re-enrollment. Rollback uses the same persistent
+self-hosted-runner -> typed local-owner boundary as converge/verify; the legacy lease/SSH rollback
+dispatch is removed.
+
+The credential surface includes read-only `/credentials verify`, explicit
+`host-bootstrap-converge`, and class-scoped application rotation:
+`/credentials rotate tunnel-auth|reality-identity|line2-proxy-auth`. Application rotation preserves
+unselected nested generations, publishes only the inactive A/B slot, and keeps host identities as a
+separate lifecycle. Explicit steady-state host-identity rotation remains a separate Stage-3 boundary;
+bootstrap retries still never rotate an installed host identity implicitly.
 
 Separate production-facing `/dns`, `/mesh`, `/zero-trust`, provider-internal and migration-only
 commands are transitional unless #26 explicitly says otherwise.
@@ -141,9 +145,10 @@ slots. Each local owner fetches its own exact generation directly through its pr
 `workers.dev` Worker and permanent Cloudflare Access host identity.
 
 Runners carry only non-secret generation/slot/operation intent. They never receive plaintext
-application credential payloads. Candidate publication is not activation. Both hosts admit the exact
-generation before staging, and uncertain provider mutations are resolved by read-only re-observation
-rather than blind replay.
+application credential payloads. Candidate publication is not activation. Each host-local stage fetches
+the exact generation, materializes any class-scoped delta only inside its protected active store and
+validates the candidate; both hosts are staged before the first runtime activation. Uncertain provider
+mutations are resolved by read-only re-observation rather than blind replay.
 
 One semantic config has one renderer. A runtime stage/validate/restart path may copy, check and launch
 that generated config, but may not independently rewrite tunnel bindings or other semantic fields.

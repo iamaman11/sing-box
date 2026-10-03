@@ -2,7 +2,8 @@ use edge_shared_types::{
     CredentialDeliveryBundle, CredentialProjectionKind, LocalCredentialBundleRef,
     LocalCredentialState, credential_delivery_bundle_sha256, decode_credential_delivery_bundle,
     decode_local_credential_state, encode_credential_delivery_bundle,
-    encode_local_credential_state, local_credential_bundle_ref, validate_local_credential_state,
+    encode_local_credential_state, local_credential_bundle_ref,
+    materialize_credential_delivery_candidate, validate_local_credential_state,
     verify_local_credential_bundle_reference,
 };
 use std::collections::BTreeSet;
@@ -25,12 +26,10 @@ impl CredentialStore {
         projection: CredentialProjectionKind,
     ) -> Result<Self, String> {
         require_projection(projection)?;
-        let store = Self {
+        Ok(Self {
             root: root.into(),
             projection,
-        };
-        store.prepare_directories()?;
-        Ok(store)
+        })
     }
 
     pub fn open_existing(
@@ -81,6 +80,19 @@ impl CredentialStore {
         Ok(Some(state))
     }
 
+    pub fn stage_delivery_candidate(
+        &self,
+        delivery: &CredentialDeliveryBundle,
+    ) -> Result<LocalCredentialState, String> {
+        let active_bundle = match self.read_state()?.and_then(|state| state.active) {
+            Some(reference) => Some(self.read_bundle(&reference)?),
+            None => None,
+        };
+        let candidate =
+            materialize_credential_delivery_candidate(active_bundle.as_ref(), delivery)?;
+        self.stage_candidate(&candidate)
+    }
+
     pub fn stage_candidate(
         &self,
         bundle: &CredentialDeliveryBundle,
@@ -128,6 +140,10 @@ impl CredentialStore {
 
         next.candidate = Some(candidate.clone());
         validate_local_credential_state(&next)?;
+
+        // Candidate validation/materialization must be side-effect free. Create the
+        // protected store only after the complete next state is known valid.
+        self.prepare_directories()?;
         self.persist_bundle(bundle, &candidate)?;
         self.write_state(&next)?;
         self.gc_unreferenced_bundles(&next)?;
@@ -663,6 +679,18 @@ mod tests {
                 },
             )),
         }
+    }
+
+    #[test]
+    fn invalid_candidate_validation_has_no_filesystem_side_effect() {
+        let root = unique_root("invalid-side-effect");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        assert!(!root.exists());
+
+        let mut invalid = vm_bundle(101, CredentialDeliverySlot::B);
+        invalid.dummy_non_secret = true;
+        assert!(store.stage_delivery_candidate(&invalid).is_err());
+        assert!(!root.exists());
     }
 
     #[test]

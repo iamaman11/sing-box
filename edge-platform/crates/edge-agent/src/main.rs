@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use edge_observability::init as init_observability;
 use edge_secrets::{
     ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore,
-    fetch_canonical_credential_bundle, observe_canonical_credential_bundle,
+    fetch_canonical_credential_bundle,
 };
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
@@ -78,8 +78,6 @@ const MESH_CONTAINER: &str = "vultr-cloudflare-mesh";
 const CLOUDFLARE_TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 const POST_BOOTSTRAP_REOBSERVE_ATTEMPTS: usize = 45;
 const POST_BOOTSTRAP_REOBSERVE_DELAY: Duration = Duration::from_secs(2);
-const CREDENTIAL_ADMISSION_ATTEMPTS: usize = 8;
-const CREDENTIAL_ADMISSION_DELAY: Duration = Duration::from_secs(1);
 const MAX_LOCAL_BUNDLE_REQUEST_BYTES: u64 = 8 * 1024 * 1024;
 
 #[tokio::main]
@@ -184,6 +182,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         }
         cli::LocalCommand::BundleConverge => run_local_bundle_converge(&stack_dir).await,
         cli::LocalCommand::BundleVerify => run_local_bundle_verify(&stack_dir).await,
+        cli::LocalCommand::BundleRollback => run_local_bundle_rollback(&stack_dir).await,
         cli::LocalCommand::MeshVerify => {
             let state = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
             print_mesh_state_evidence(&state);
@@ -205,18 +204,6 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::CredentialState => {
             let state = observe_vm_credential_state(&stack_dir).map_err(AgentError::Command)?;
             print_credential_state_evidence(state.as_ref());
-            Ok(())
-        }
-        cli::LocalCommand::CredentialAdmit { generation } => {
-            admit_vm_credential_generation(&stack_dir, generation)
-                .await
-                .map_err(AgentError::Command)?;
-            println!("operation=CREDENTIAL_ADMIT");
-            println!("credential_projection=VM");
-            println!("credential_generation={generation}");
-            println!("credential_data_plane_admission=PASS");
-            println!("credential_state_mutated=false");
-            println!("runner_secret_access=false");
             Ok(())
         }
         cli::LocalCommand::CredentialStage { generation } => {
@@ -302,6 +289,93 @@ async fn run_local_bundle_verify(stack_dir: &Path) -> Result<(), AgentError> {
             "exact application bundle is active but runtime verification did not reach READY"
                 .to_owned(),
         ))
+    }
+}
+
+async fn run_local_bundle_rollback(stack_dir: &Path) -> Result<(), AgentError> {
+    let request = read_local_bundle_request().map_err(AgentError::Command)?;
+    let (expected_current_id, expected_current_digest) =
+        validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
+
+    let current = read_application_release(stack_dir).ok_or_else(|| {
+        AgentError::Command("active application release marker is missing".to_owned())
+    })?;
+    if current.bundle_id != expected_current_id || current.bundle_digest != expected_current_digest
+    {
+        return Err(AgentError::Command(format!(
+            "active application bundle changed since rollback authorization; expected_id={expected_current_id} expected_digest={expected_current_digest} observed_id={} observed_digest={}",
+            current.bundle_id, current.bundle_digest
+        )));
+    }
+    let previous = read_application_release(&previous_stack_dir(stack_dir)).ok_or_else(|| {
+        AgentError::Command("previous application release is unavailable".to_owned())
+    })?;
+
+    let rollback = rollback_bundle(
+        stack_dir,
+        RollbackBundleRequest {
+            expected_current_bundle_digest: expected_current_digest.clone(),
+        },
+    )
+    .map_err(AgentError::Command)?;
+    if rollback.active_bundle_id.as_deref() != Some(previous.bundle_id.as_str())
+        || rollback.active_bundle_digest.as_deref() != Some(previous.bundle_digest.as_str())
+    {
+        return Err(AgentError::Command(
+            "bundle rollback returned an unexpected active release identity".to_owned(),
+        ));
+    }
+
+    let recovery = run_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+    if recovery.success {
+        println!("operation=BUNDLE_ROLLBACK");
+        println!("rollback_authorized_current_bundle_id={expected_current_id}");
+        println!("rollback_authorized_current_bundle_digest={expected_current_digest}");
+        println!("rolled_back_to_bundle_id={}", previous.bundle_id);
+        println!("rolled_back_to_bundle_digest={}", previous.bundle_digest);
+        print_agent_state_evidence("BUNDLE_ROLLBACK", recovery.post_state.as_ref().unwrap());
+        return Ok(());
+    }
+
+    let failure = if recovery.warnings.is_empty() {
+        "rolled-back application release did not reach READY".to_owned()
+    } else {
+        format!(
+            "rolled-back application release did not reach READY: {}",
+            recovery.warnings.join("; ")
+        )
+    };
+
+    // The first swap completed with a known exact target. Compensate exactly once back to
+    // the authorized pre-rollback release; this is not a retry of an uncertain mutation.
+    let compensation = rollback_bundle(
+        stack_dir,
+        RollbackBundleRequest {
+            expected_current_bundle_digest: previous.bundle_digest.clone(),
+        },
+    )
+    .map_err(|err| {
+        AgentError::Command(format!(
+            "{failure}; exact rollback compensation to the authorized current release failed: {err}"
+        ))
+    })?;
+    if compensation.active_bundle_id.as_deref() != Some(current.bundle_id.as_str())
+        || compensation.active_bundle_digest.as_deref() != Some(current.bundle_digest.as_str())
+    {
+        return Err(AgentError::Command(format!(
+            "{failure}; rollback compensation completed with unexpected release identity"
+        )));
+    }
+    let restored = run_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+    if restored.success {
+        Err(AgentError::Command(format!(
+            "{failure}; authorized pre-rollback release was restored successfully"
+        )))
+    } else {
+        Err(AgentError::Command(format!(
+            "{failure}; authorized pre-rollback release was restored but also failed readiness: {}",
+            restored.warnings.join("; ")
+        )))
     }
 }
 
@@ -1328,30 +1402,6 @@ fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, Strin
         .join(ACCESS_IDENTITY_FILE_NAME))
 }
 
-async fn admit_vm_credential_generation(stack_dir: &Path, generation: u64) -> Result<(), String> {
-    let identity_path = vm_credential_access_identity_path(stack_dir)?;
-    for attempt in 1..=CREDENTIAL_ADMISSION_ATTEMPTS {
-        match observe_canonical_credential_bundle(
-            CredentialProjectionKind::Vm,
-            generation,
-            &identity_path,
-        )
-        .await?
-        {
-            Some(_) => return Ok(()),
-            None if attempt < CREDENTIAL_ADMISSION_ATTEMPTS => {
-                tokio::time::sleep(CREDENTIAL_ADMISSION_DELAY).await;
-            }
-            None => {
-                return Err(format!(
-                    "VM credential generation {generation} was not visible in the Worker data plane after {CREDENTIAL_ADMISSION_ATTEMPTS} bounded observations"
-                ));
-            }
-        }
-    }
-    unreachable!("bounded credential admission loop always returns")
-}
-
 async fn fetch_and_stage_vm_credential_candidate(
     stack_dir: &Path,
     generation: u64,
@@ -1369,7 +1419,6 @@ fn stage_vm_credential_candidate(
     stack_dir: &Path,
     bundle: edge_shared_types::CredentialDeliveryBundle,
 ) -> Result<LocalCredentialState, String> {
-    edge_shared_types::local_credential_bundle_ref(&bundle)?;
     if bundle.projection != CredentialProjectionKind::Vm as i32 {
         return Err("VM credential owner rejects non-VM projection".to_owned());
     }
@@ -1377,7 +1426,7 @@ fn stage_vm_credential_candidate(
         vm_credential_store_root(stack_dir)?,
         CredentialProjectionKind::Vm,
     )?;
-    store.stage_candidate(&bundle)
+    store.stage_delivery_candidate(&bundle)
 }
 
 fn observe_vm_credential_state(stack_dir: &Path) -> Result<Option<LocalCredentialState>, String> {
@@ -1510,9 +1559,9 @@ async fn transition_vm_credential(
             Err("credential transition action is required".to_owned())
         }
         CredentialTransitionAction::ValidateCandidate => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 candidate validation requires empty active/previous state"
+                    "previous credential rollback buffer must be dropped before validating a new candidate"
                         .to_owned(),
                 );
             }
@@ -1526,9 +1575,9 @@ async fn transition_vm_credential(
             Ok(Some(state))
         }
         CredentialTransitionAction::ApplyCandidate => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 candidate apply requires empty active/previous state"
+                    "previous credential rollback buffer must be dropped before applying a new candidate"
                         .to_owned(),
                 );
             }
@@ -1539,24 +1588,34 @@ async fn transition_vm_credential(
             let bundle = store.read_bundle(candidate)?;
             let candidate_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
             if let Err(err) = apply_vm_credential_runtime(stack_dir, &candidate_secrets).await {
-                let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
-                let recovery = apply_vm_credential_runtime(stack_dir, &legacy).await;
+                let recovery = if let Some(active) = state.active.as_ref() {
+                    let active_bundle = store.read_bundle(active)?;
+                    let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&active_bundle)?;
+                    apply_vm_credential_runtime(stack_dir, &active_secrets).await
+                } else {
+                    let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
+                    apply_vm_credential_runtime(stack_dir, &legacy).await
+                };
                 return match recovery {
                     Ok(()) => Err(format!(
-                        "VM candidate runtime failed and legacy LKG was restored: {err}"
+                        "VM candidate runtime failed and the pre-candidate runtime was restored: {err}"
                     )),
                     Err(recovery_err) => Err(format!(
-                        "VM candidate runtime failed: {err}; legacy recovery also failed: {recovery_err}"
+                        "VM candidate runtime failed: {err}; pre-candidate recovery also failed: {recovery_err}"
                     )),
                 };
             }
             Ok(Some(state))
         }
         CredentialTransitionAction::Promote => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 promotion requires empty active/previous state".to_owned(),
+                    "previous credential rollback buffer must be dropped before promotion"
+                        .to_owned(),
                 );
+            }
+            if state.candidate.is_none() {
+                return Err("VM v2 candidate is absent".to_owned());
             }
             Ok(Some(store.promote_candidate()?))
         }
@@ -1587,36 +1646,103 @@ async fn transition_vm_credential(
             Ok(Some(state))
         }
         CredentialTransitionAction::ApplyActive => {
-            if state.candidate.is_some() {
-                return Err("active v2 apply refuses a staged candidate".to_owned());
-            }
             let active = state
                 .active
                 .as_ref()
                 .ok_or_else(|| "VM v2 active credential is absent".to_owned())?;
             let bundle = store.read_bundle(active)?;
             let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
-            if let Err(err) = apply_vm_credential_runtime(stack_dir, &active_secrets).await {
-                let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
-                let recovery = apply_vm_credential_runtime(stack_dir, &legacy).await;
-                return match recovery {
-                    Ok(()) => Err(format!(
-                        "VM active-v2 recovery failed and legacy LKG was restored: {err}"
-                    )),
-                    Err(recovery_err) => Err(format!(
-                        "VM active-v2 recovery failed: {err}; legacy recovery also failed: {recovery_err}"
-                    )),
-                };
-            }
+            apply_vm_credential_runtime(stack_dir, &active_secrets).await?;
             Ok(Some(state))
         }
         CredentialTransitionAction::DiscardCandidate => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 discard requires empty active/previous state".to_owned(),
+                    "candidate discard refuses a state that also contains previous rollback authority"
+                        .to_owned(),
                 );
             }
             Ok(store.discard_candidate()?)
+        }
+        CredentialTransitionAction::RollbackPrevious => {
+            if state.candidate.is_some() {
+                return Err("credential rollback refuses a staged candidate".to_owned());
+            }
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| "VM active credential is absent".to_owned())?;
+            let previous = state
+                .previous
+                .as_ref()
+                .ok_or_else(|| "VM previous credential is absent".to_owned())?;
+            let active_bundle = store.read_bundle(active)?;
+            let previous_bundle = store.read_bundle(previous)?;
+            let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&active_bundle)?;
+            let previous_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&previous_bundle)?;
+
+            if let Err(err) = apply_vm_credential_runtime(stack_dir, &previous_secrets).await {
+                let recovery = apply_vm_credential_runtime(stack_dir, &active_secrets).await;
+                return match recovery {
+                    Ok(()) => Err(format!(
+                        "VM credential rollback target failed and active generation was restored: {err}"
+                    )),
+                    Err(recovery_err) => Err(format!(
+                        "VM credential rollback target failed: {err}; active recovery also failed: {recovery_err}"
+                    )),
+                };
+            }
+            match store.rollback_previous() {
+                Ok(next) => Ok(Some(next)),
+                Err(err) => {
+                    let recovery = apply_vm_credential_runtime(stack_dir, &active_secrets).await;
+                    match recovery {
+                        Ok(()) => Err(format!(
+                            "VM credential runtime switched to previous but pointer rollback failed; active runtime was restored: {err}"
+                        )),
+                        Err(recovery_err) => Err(format!(
+                            "VM credential pointer rollback failed after previous runtime apply: {err}; active runtime recovery also failed: {recovery_err}"
+                        )),
+                    }
+                }
+            }
+        }
+        CredentialTransitionAction::DropPrevious => {
+            if state.candidate.is_some() {
+                return Err(
+                    "previous credential cannot be dropped while a candidate is staged".to_owned(),
+                );
+            }
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| "VM active credential is absent".to_owned())?;
+            if state.previous.is_none() {
+                return Ok(Some(state));
+            }
+            let bundle = store.read_bundle(active)?;
+            let expected = vm_runtime_environment(
+                stack_dir,
+                &ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?,
+            )?;
+            let observed = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE))
+                .map_err(|err| format!("failed to verify live VM runtime environment: {err}"))?;
+            if observed != expected {
+                return Err(
+                    "previous credential retirement refused because live VM runtime is not exact active generation"
+                        .to_owned(),
+                );
+            }
+            let runtime = inspect_runtime(stack_dir, AgentMode::Readiness).await;
+            let verified =
+                verify_bootstrap_post_state(stack_dir, BootstrapMode::BootstrapFull, &runtime);
+            if !verified.success {
+                return Err(format!(
+                    "previous credential retirement refused because active runtime is not ready: {}",
+                    verified.warnings.join("; ")
+                ));
+            }
+            Ok(store.drop_previous()?)
         }
         CredentialTransitionAction::RetireLegacy => {
             if state.active.is_none() || state.candidate.is_some() {

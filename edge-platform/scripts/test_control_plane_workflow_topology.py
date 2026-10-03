@@ -24,12 +24,14 @@ WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/li
 EDGE_LOCAL_RUNTIME = Path("edge-platform/crates/edge-local-runtime/src/lib.rs")
 VM_AGENT = Path("edge-platform/crates/edge-agent/src/main.rs")
 VM_AGENT_CLI = Path("edge-platform/crates/edge-agent/src/cli.rs")
+SHARED_TYPES = Path("edge-platform/crates/edge-shared-types/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
 CREDENTIAL_PROVIDER = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
+RUNTIME_PROTO = Path("edge-platform/proto/edge/platform/v1/runtime.proto")
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
 PRODUCTION_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_production_inventory.rs")
@@ -72,6 +74,7 @@ def main() -> None:
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
     vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
+    shared_types = SHARED_TYPES.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
@@ -79,6 +82,7 @@ def main() -> None:
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
     credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
+    runtime_proto = RUNTIME_PROTO.read_text(encoding="utf-8")
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     controller_proto = CONTROLLER_PROTO.read_text(encoding="utf-8")
     production_inventory = PRODUCTION_INVENTORY.read_text(encoding="utf-8")
@@ -103,17 +107,19 @@ def main() -> None:
         "Stage-3 historical application-exclusive Cloudflare retirement are closed" in architecture
         and "remaining Stage-3 steady-state lifecycle closure" in architecture
         and "The project is in late Stage 3" in readme
-        and "legacy lease-based production rollback implementation is **not** in the public workflow grammar" in readme
-        and "/production rollback` is **not currently exposed by the production workflow**" in runbook
-        and "Current `main` does **not** expose `/credentials rotate`" in runbook
-        and "Routine production converge/verify/diagnose does not acquire a support lease" in server_architecture
+        and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
+        and "class-scoped application rotation" in readme
+        and "/production rollback" in runbook
+        and "/credentials rotate tunnel-auth" in runbook
+        and "host-identity rotation remains a Stage-3 boundary" in runbook
+        and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
         and "Current execution is late Stage 3" in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
-        and "does not expose `/production rollback`" in application_readme
+        and "`/production rollback` uses the same" in application_readme
         and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
-        "operator documentation must match the late-Stage-3 public workflow surface and must not advertise historical #169, legacy rollback, or Stage-2 proof commands as current authority",
+        "operator documentation must match the current Stage-3 local rollback/application-rotation surface and must not advertise historical #169 or Stage-2 proof commands as current authority",
     )
     require(
         "AcceptanceServe" in vm_agent_cli
@@ -259,16 +265,18 @@ def main() -> None:
     )
     windows_stage = windows_controller_runtime[windows_stage_start:windows_stage_end]
     require(
-        "store.stage_candidate(&bundle)" in vm_stage
-        and "local_credential_bundle_ref(&bundle)" in vm_stage
+        "store.stage_delivery_candidate(&bundle)" in vm_stage
+        and "local_credential_bundle_ref(&bundle)" not in vm_stage
         and "promote_candidate(" not in vm_stage
         and "rollback_previous(" not in vm_stage
         and "require_installed_windows_credential_owner" in windows_stage
-        and "store.stage_candidate(&bundle)" in windows_stage
-        and "local_credential_bundle_ref(&bundle)" in windows_stage
+        and "store.stage_delivery_candidate(&bundle)" in windows_stage
+        and "local_credential_bundle_ref(&bundle)" not in windows_stage
         and "promote_candidate(" not in windows_stage
-        and "rollback_previous(" not in windows_stage,
-        "candidate ingress functions must remain stage-only; transition authority stays in the bounded local-owner command",
+        and "rollback_previous(" not in windows_stage
+        and "materialize_credential_delivery_candidate" in credential_store
+        and "self.stage_candidate(&candidate)" in credential_store,
+        "candidate ingress must materialize typed rotation deltas inside the local secret store and remain stage-only; transition authority stays in the bounded local-owner command",
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
@@ -285,13 +293,16 @@ def main() -> None:
         "Windows release activation must reconcile exact local authority before replay and after uncertain child failure",
     )
     require(
-        "CredentialAdmit" in vm_agent_cli
-        and "local-credential-admit" in vm_agent_cli
-        and "observe_canonical_credential_bundle" in vm_agent_runtime
-        and "PrivilegedAdmitCredential" in windows_console_cli
-        and "WindowsPrivilegedOperation::AdmitCredential" in windows_console
-        and "observe_canonical_credential_bundle" in windows_console,
-        "fresh-v2 data-plane admission must stay read-only and inside the existing host-local credential owners",
+        "CredentialAdmit" not in vm_agent_cli
+        and "local-credential-admit" not in vm_agent_cli
+        and "PrivilegedAdmitCredential" not in windows_console_cli
+        and "admit_vm_credential_generation" not in vm_agent_runtime
+        and "admit_windows_credential_generation" not in windows_console
+        and windows_console.count("WindowsPrivilegedOperation::AdmitCredential") == 1
+        and 'ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate' in windows_console
+        and 'WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL = 8 [deprecated = true];' in runtime_proto
+        and 'ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate' in shared_types,
+        "retired Stage-2 read-only credential admission must stay non-executable; exact-generation staging is the sole steady-state data-plane gate while the old Windows wire identity remains a deprecated fail-closed tombstone",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
@@ -421,6 +432,9 @@ def main() -> None:
     require(
         '("/credentials", "verify"): "verify"' in credentials
         and '("/credentials", "host-bootstrap-converge"): "host-bootstrap-converge"' in credentials
+        and 'tokens[0:2] == ["/credentials", "rotate"]' in credentials
+        and '"tunnel-auth", "reality-identity", "line2-proxy-auth"' in credentials
+        and 'operation = "rotate-application"' in credentials
         and '"contract-plan"' not in credentials
         and '"contract-converge"' not in credentials
         and '"contract-prove"' not in credentials
@@ -428,11 +442,19 @@ def main() -> None:
         and '"fresh-v2-publication-prove"' not in credentials
         and '"fresh-v2-cleanup"' not in credentials
         and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
-        and "if: needs.authorize.outputs.operation == 'verify'" in credentials
+        and "credentials rotate-application" in credentials
+        and "credential-transition drop-previous" in credentials
+        and "credential-transition apply-candidate" in credentials
+        and "credential-transition apply-active" in credentials
+        and "credential-transition promote" in credentials
+        and "credential-transition rollback-previous" in credentials
         and "group: vultr-control-plane-production" in credentials
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
         and "cancel-in-progress: false" in credentials
-        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" not in credentials
+        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" in credentials
+        and "credential_rotation_delivery=CLASS_SCOPED_DELTA" in credentials
+        and "active_credential_plaintext_readback=false" in credentials
+        and "candidate_data_plane_reobservation=LOCAL_OWNERS" in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
@@ -442,7 +464,53 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential operator workflow must expose only steady-state verify plus explicit host bootstrap; closed Stage-2 proof/cutover commands must be absent",
+        "credential operator workflow must expose class-scoped application rotation plus verify and explicit host bootstrap without reviving Stage-2 proof/cutover surfaces",
+    )
+
+    rotation_workflow = credentials.split("  rotate_release:\n", 1)[1].split(
+        "  host_bootstrap_release:\n", 1
+    )[0]
+    require(
+        "CLOUDFLARE_VM_ACCESS_CLIENT_ID" not in rotation_workflow
+        and "CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" not in rotation_workflow
+        and "fetch_active_vm_bundle_with_bounded_proof" not in credential_command
+        and "fetch_canonical_credential_bundle_with_identity" not in credential_command
+        and "credential_rotation_delivery=CLASS_SCOPED_DELTA" in rotation_workflow
+        and "active_credential_plaintext_readback=false" in rotation_workflow,
+        "application rotation must publish only the selected typed class delta and must never read back the active credential plaintext",
+    )
+
+    require(
+        "ROTATION_VM_UNCOMMITTED_RECOVERY=ACTIVE_RESTORED" in rotation_workflow
+        and "ROTATION_WINDOWS_UNCOMMITTED_RECOVERY=ACTIVE_RESTORED" in rotation_workflow
+        and "half-promoted recovery requires explicit diagnosis" in rotation_workflow
+        and "credential-transition apply-active" in rotation_workflow
+        and "credential-transition discard-candidate" in rotation_workflow,
+        "application rotation must recover only observed uncommitted candidates and fail closed on half-promoted cross-host state",
+    )
+
+    require(
+        "proven_unchanged: ${{ steps.promote.outputs.proven_unchanged }}" in rotation_workflow
+        and "VM_ROTATION_PROMOTE=PROVEN_UNCHANGED_AFTER_BOUNDED_RETRY" in rotation_workflow
+        and "needs.rotate_vm_promote.outputs.proven_unchanged == 'true'" in rotation_workflow
+        and "no automatic cross-host compensation is authorized" in rotation_workflow,
+        "cross-host credential promotion compensation must run only after the VM owner proves the promotion remained unchanged; uncertain outcomes must fail closed",
+    )
+
+    rotation_jobs = re.findall(r"^  rotate_[a-z0-9_]+:$", rotation_workflow, re.MULTILINE)
+    require(
+        len(rotation_jobs) <= 12
+        and "  rotate_vm_admit:\n" not in rotation_workflow
+        and "  rotate_windows_admit:\n" not in rotation_workflow
+        and "  rotate_vm_recover_uncommitted:\n" not in rotation_workflow
+        and "  rotate_windows_recover_uncommitted:\n" not in rotation_workflow
+        and "  rotate_vm_retire_previous:\n" not in rotation_workflow
+        and "  rotate_windows_retire_previous:\n" not in rotation_workflow
+        and "  rotate_windows_prepare:\n" in rotation_workflow
+        and "  rotate_vm_prepare:\n" in rotation_workflow
+        and "  rotate_windows_stage:\n" in rotation_workflow
+        and "  rotate_vm_candidate:\n" in rotation_workflow,
+        "steady-state credential rotation must keep cross-host barriers explicit without expanding into redundant admission/recovery micro-jobs",
     )
 
     host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
@@ -710,13 +778,16 @@ def main() -> None:
         and "SING_BOX_RUNTIME_READ" in production_vm_runner_installer
         and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
         and "${LOCAL_OWNER} local status" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer
+        and "${LOCAL_OWNER} local credential-stage *" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
-        and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local credential-stage *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local bundle-rollback" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
         and "acceptance_rpc_service_enabled" in vultr
@@ -778,7 +849,7 @@ def main() -> None:
         and '"converge",' in application
         and '"verify",' in application
         and '"diagnose",' in application
-        and 'tokens == ["/production", "rollback"]' not in application
+        and '"rollback",' in application
         and 'spec_path = "infra/production/production.textproto"' in application,
         "production grammar must expose only the accepted steady-state surface plus explicit enrollment",
     )
@@ -810,6 +881,7 @@ def main() -> None:
         and production_provider.count("edge-platform/scripts/resolve_durable_release.sh") == 1
         and 'provider_operation="active-converge"' in production_provider
         and 'provider_operation="verify-active"' in production_provider
+        and 'verify|rollback)' in production_provider
         and '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${provider_operation}"' in production_provider
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_provider
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_provider
@@ -842,6 +914,7 @@ def main() -> None:
         and 'sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}"' in production_runtime
         and 'local_operation="bundle-converge"' in production_runtime
         and 'local_operation="bundle-verify"' in production_runtime
+        and 'local_operation="bundle-rollback"' in production_runtime
         and 'local_operation="diagnose"' in production_runtime
         and "retire-historical-" not in production_runtime
         and 'local_operation="bootstrap-full"' not in production_runtime
@@ -864,6 +937,11 @@ def main() -> None:
         and "/var/run/docker.sock" in production_runtime
         and "sudo -n id -u" in production_runtime,
         "production runtime plane must remain transport-only: immutable ReleaseSet-bound bundle -> SHA verify -> fixed sudo local owner, with no source/render/provider/generic-root authority",
+    )
+    require(
+        "production_rollback_desired" not in production_command
+        and "pub(crate) async fn rollback(" not in production_command,
+        "steady-state production rollback must have no legacy orchestrator lease/SSH implementation",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]

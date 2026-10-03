@@ -29,7 +29,7 @@ pub(crate) fn transition(
             Err("credential transition action is required".to_owned())
         }
         CredentialTransitionAction::ValidateCandidate => {
-            require_initial_candidate_state(&state)?;
+            require_candidate_without_previous(&state)?;
             let candidate = state
                 .candidate
                 .as_ref()
@@ -46,7 +46,7 @@ pub(crate) fn transition(
             ))
         }
         CredentialTransitionAction::ApplyCandidate => {
-            require_initial_candidate_state(&state)?;
+            require_candidate_without_previous(&state)?;
             let candidate = state
                 .candidate
                 .as_ref()
@@ -57,13 +57,13 @@ pub(crate) fn transition(
             Ok((
                 "CREDENTIAL_CANDIDATE_APPLIED".to_owned(),
                 format!(
-                    "candidate generation {} applied to isolated managed runtime without promotion",
+                    "candidate generation {} applied to managed proxy-only runtime without promotion",
                     bundle.generation
                 ),
             ))
         }
         CredentialTransitionAction::Promote => {
-            require_initial_candidate_state(&state)?;
+            require_candidate_without_previous(&state)?;
             let next = store.promote_candidate()?;
             let active = next.active.as_ref().ok_or_else(|| {
                 "Windows v2 active credential is absent after promotion".to_owned()
@@ -74,9 +74,6 @@ pub(crate) fn transition(
             ))
         }
         CredentialTransitionAction::ApplyActive => {
-            if state.candidate.is_some() {
-                return Err("active v2 apply refuses a staged candidate".to_owned());
-            }
             let active = state
                 .active
                 .as_ref()
@@ -94,16 +91,91 @@ pub(crate) fn transition(
                 .to_owned(),
         ),
         CredentialTransitionAction::DiscardCandidate => {
-            if state.active.is_some() || state.previous.is_some() {
+            if state.previous.is_some() {
                 return Err(
-                    "initial fresh-v2 discard requires empty active/previous state".to_owned(),
+                    "candidate discard refuses a state that also contains previous rollback authority"
+                        .to_owned(),
                 );
+            }
+            if state.active.is_some() {
+                let next = store.discard_candidate()?;
+                return Ok((
+                    "CREDENTIAL_CANDIDATE_DISCARDED".to_owned(),
+                    format!(
+                        "candidate discarded; active generation {} preserved",
+                        state.active.as_ref().unwrap().generation
+                    ),
+                ));
             }
             discard_candidate_and_managed_runtime(install_root, &store)?;
             Ok((
                 "CREDENTIAL_CANDIDATE_DISCARDED".to_owned(),
-                "unpromoted Windows v2 candidate and managed proxy-only runtime artifacts discarded"
+                "unpromoted initial candidate and managed proxy-only runtime artifacts discarded"
                     .to_owned(),
+            ))
+        }
+        CredentialTransitionAction::RollbackPrevious => {
+            if state.candidate.is_some() {
+                return Err("credential rollback refuses a staged candidate".to_owned());
+            }
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| "Windows active credential is absent".to_owned())?;
+            let previous = state
+                .previous
+                .as_ref()
+                .ok_or_else(|| "Windows previous credential is absent".to_owned())?;
+            let active_bundle = store.read_bundle(active)?;
+            let previous_bundle = store.read_bundle(previous)?;
+            let active_runtime =
+                windows_runtime_state_from_canonical_production_bundle(&active_bundle)?;
+            let previous_runtime =
+                windows_runtime_state_from_canonical_production_bundle(&previous_bundle)?;
+
+            apply_runtime_state(install_root, activation, &previous_runtime)?;
+            match store.rollback_previous() {
+                Ok(next) => Ok((
+                    "CREDENTIAL_ROLLED_BACK".to_owned(),
+                    format!(
+                        "active generation {} restored; generation {} retained as previous",
+                        previous.generation, active.generation
+                    ),
+                )),
+                Err(err) => {
+                    let recovery = apply_runtime_state(install_root, activation, &active_runtime);
+                    match recovery {
+                        Ok(()) => Err(format!(
+                            "Windows credential runtime switched to previous but pointer rollback failed; active runtime was restored: {err}"
+                        )),
+                        Err(recovery_err) => Err(format!(
+                            "Windows credential pointer rollback failed after previous runtime apply: {err}; active runtime recovery also failed: {recovery_err}"
+                        )),
+                    }
+                }
+            }
+        }
+        CredentialTransitionAction::DropPrevious => {
+            if state.candidate.is_some() {
+                return Err(
+                    "previous credential cannot be dropped while a candidate is staged".to_owned(),
+                );
+            }
+            let active = state
+                .active
+                .as_ref()
+                .ok_or_else(|| "Windows active credential is absent".to_owned())?;
+            if state.previous.is_none() {
+                return Ok((
+                    "CREDENTIAL_PREVIOUS_ALREADY_ABSENT".to_owned(),
+                    format!("active generation {} unchanged", active.generation),
+                ));
+            }
+            verify_exact_active_runtime(install_root, activation, &store, active)?;
+            store.drop_previous()?;
+            Ok((
+                "CREDENTIAL_PREVIOUS_DROPPED".to_owned(),
+                format!("active generation {} preserved", active.generation),
             ))
         }
         CredentialTransitionAction::RetireLegacy => Err(
@@ -113,14 +185,44 @@ pub(crate) fn transition(
     }
 }
 
-fn require_initial_candidate_state(state: &LocalCredentialState) -> Result<(), String> {
-    if state.active.is_some() || state.previous.is_some() {
+fn require_candidate_without_previous(state: &LocalCredentialState) -> Result<(), String> {
+    if state.previous.is_some() {
         return Err(
-            "initial fresh-v2 candidate transition requires empty active/previous state".to_owned(),
+            "previous credential rollback buffer must be dropped before a new candidate transition"
+                .to_owned(),
         );
     }
     if state.candidate.is_none() {
         return Err("Windows v2 candidate is absent".to_owned());
+    }
+    Ok(())
+}
+
+fn verify_exact_active_runtime(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    store: &CredentialStore,
+    active: &edge_shared_types::LocalCredentialBundleRef,
+) -> Result<(), String> {
+    let bundle = store.read_bundle(active)?;
+    let expected_state = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+    let expected_state_bytes = encode_windows_runtime_state(&expected_state)?;
+    let observed_state = fs::read(windows_runtime_state_path(install_root))
+        .map_err(|err| format!("failed to read active Windows runtime state: {err}"))?;
+    if observed_state != expected_state_bytes {
+        return Err(
+            "previous credential retirement refused because Windows runtime state is not exact active generation"
+                .to_owned(),
+        );
+    }
+    let expected_config = validate_rendered_state(install_root, activation, &expected_state)?;
+    let observed_config = fs::read(local_singbox_config_path(install_root))
+        .map_err(|err| format!("failed to read active Windows sing-box config: {err}"))?;
+    if observed_config != expected_config {
+        return Err(
+            "previous credential retirement refused because Windows config is not exact active generation"
+                .to_owned(),
+        );
     }
     Ok(())
 }

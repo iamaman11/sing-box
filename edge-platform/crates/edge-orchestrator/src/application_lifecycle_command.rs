@@ -436,24 +436,6 @@ pub(crate) async fn production_verify_desired(
     Ok(())
 }
 
-pub(crate) async fn production_rollback_desired(
-    desired: &DesiredApplicationState,
-) -> Result<(String, String), String> {
-    let authority = resolve_application_authority(desired).await?;
-    let (observation, rollback) = rollback_plan_remote(&authority, desired).await?;
-    let current_release = rollback.current_release.release_id.clone();
-    let previous_release = rollback.previous_release.release_id.clone();
-    let authorized = authorize_application_rollback(desired, &observation, rollback.clone())?;
-    execute_rollback(
-        &authority,
-        desired,
-        &rollback.rollback_digest,
-        &authorized.authority.authority_digest,
-    )
-    .await?;
-    Ok((current_release, previous_release))
-}
-
 pub(crate) async fn acceptance_apply_desired(
     context: &OrchestrationContext,
     desired: &DesiredApplicationState,
