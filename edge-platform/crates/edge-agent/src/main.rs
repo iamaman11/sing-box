@@ -1684,9 +1684,6 @@ async fn transition_vm_credential(
             Ok(Some(state))
         }
         CredentialTransitionAction::ApplyActive => {
-            if state.candidate.is_some() {
-                return Err("active v2 apply refuses a staged candidate".to_owned());
-            }
             let active = state
                 .active
                 .as_ref()
