@@ -26,8 +26,11 @@ Use the architecture classifications:
 - `DELETION_CANDIDATE` — remove after exact consumer proof;
 - `HISTORICAL_EVIDENCE` — GitHub evidence only, never an execution path.
 
-The project is in final convergence. Stage 2 proves fresh-v2 credentials plus the new managed Windows
-proxy-only runtime side-by-side. TUN remains deferred. The currently working external Windows
+The project is in late Stage 3 of final convergence. Stage 2 (fresh-v2 credentials plus the managed
+Windows proxy-only runtime) is closed, and the historical application-exclusive Cloudflare retirement
+slice is also closed with its temporary write authority deleted. Remaining Stage-3 work is the
+steady-state lifecycle closure: production release rollback through the persistent local-owner path
+and class-scoped credential rotation. TUN remains deferred. The currently working external Windows
 sing-box stays untouched until the dedicated final managed-TUN cutover.
 
 ## Steady-state owner map
@@ -78,6 +81,14 @@ Final normal operation converges toward:
 /windows <only genuinely Windows-local physical lifecycle operations>
 ```
 
+Current `main` intentionally exposes only `/production converge|verify|diagnose` as routine public
+production operations, plus exceptional `/production enroll-runtime` for explicit bootstrap. The
+legacy lease-based production rollback implementation is **not** in the public workflow grammar;
+`/production rollback` becomes supported only when the same persistent self-hosted-runner -> local-owner
+boundary is complete and accepted. Likewise, the current public credential workflow exposes
+`/credentials verify` plus explicit `host-bootstrap-converge`; class-scoped `/credentials rotate`
+is the remaining target, not an already accepted command.
+
 Separate production-facing `/dns`, `/mesh`, `/zero-trust`, provider-internal and migration-only
 commands are transitional unless #26 explicitly says otherwise.
 
@@ -121,7 +132,7 @@ Accepted ownership:
 - runner has no plaintext/decrypted application-secret authority.
 
 The console is not a fallback startup owner. The external pre-existing Windows sing-box is not
-adopted as LKG, rollback authority or managed state during Stage 2.
+adopted as LKG, rollback authority or managed state before the final managed-TUN cutover.
 
 ## Credential transition
 

@@ -92,7 +92,7 @@ The installed runtime does not depend on:
 
 Do not migrate legacy Windows credentials into the new application.
 
-Accepted target from #169:
+Accepted target from `edge-platform/ARCHITECTURE.md` (#169 is retained only as historical evidence):
 - fresh credential generations;
 - Windows receives only the client projection;
 - Cloudflare Access machine identity is controller-private;
@@ -101,8 +101,9 @@ Accepted target from #169:
 - active runtime continues when Cloudflare is unavailable;
 - failed candidate never replaces active state.
 
-The current repository contains transitional provisioning capability, but #26/#169 determine when it
-may be used. Do not revive DPAPI/Vault/SecretRef/current-edge as production authority.
+The current repository contains transitional provisioning capability, but only #26 determines when it
+may be used; #169 does not authorize current execution. Do not revive DPAPI/Vault/SecretRef/current-edge
+as production authority.
 
 ## Local runtime
 

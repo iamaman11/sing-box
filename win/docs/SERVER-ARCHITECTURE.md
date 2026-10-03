@@ -91,22 +91,26 @@ rotation.
 
 ## Lifecycle
 
-Normal production path:
+Normal steady-state production path:
 
 ```text
-observe provider
- -> plan
- -> converge machine/VPC/support resources
- -> materialize exact accepted application
- -> install/update exact edge-agent
- -> apply runtime
- -> DNS/Mesh/Zero Trust composition
- -> verify
- -> release support access
- -> prove cleanup
+resolve exact accepted ReleaseSet
+ -> GitHub-hosted typed provider observe/converge
+ -> transport the exact ReleaseSet-bound application bundle
+ -> production VM self-hosted low-privilege runner
+ -> fixed sudo allowlist -> root-owned local edge-agent
+ -> local bundle-converge / bundle-verify / diagnose
+ -> provider + runtime verification
 ```
 
-Rollback restores the previous exact accepted application release and re-verifies runtime.
+Routine production converge/verify/diagnose does not acquire a support lease, open SSH, or use a
+TCP/gRPC agent listener. `/production enroll-runtime` is the explicit bootstrap/re-enrollment exception
+and must compensate its bounded temporary support access before PASS.
+
+Target steady-state rollback restores the previous exact accepted application release through that same
+persistent self-hosted-runner -> local-owner boundary and re-verifies runtime. Current `main` deliberately
+does not expose `/production rollback` until this replacement path is complete; the internal legacy
+lease/remote rollback implementation is transitional and must not be used as normal operation.
 
 Credential rollback is independent from application-release rollback.
 

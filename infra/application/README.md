@@ -66,7 +66,9 @@ Lower-level typed application operations remain implementation boundaries for:
 - rollback.
 
 Normal production operation converges toward the single `/production` composition surface rather
-than exposing independent production-facing DNS/Mesh/Zero Trust owners.
+than exposing independent production-facing DNS/Mesh/Zero Trust owners. Current `main` intentionally
+does not expose `/production rollback` until the internal rollback primitive is wired through the same
+persistent self-hosted-runner -> root-owned local-owner boundary used by converge/verify.
 
 ## Rollback
 

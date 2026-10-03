@@ -10,7 +10,7 @@
 Current sources:
 - GitHub Issue #26 — sole execution cursor;
 - `edge-platform/ARCHITECTURE.md` — current architecture;
-- GitHub Issue #169 — historical Cloudflare/credential convergence evidence for bounded Stage 3 classification;
+- GitHub Issue #169 — historical Cloudflare convergence/retirement evidence only; it does not schedule current Stage-3 work;
 - Issue #154 — Windows Slice 2 implementation/evidence;
 - Issue #60 — Windows diagnostics specification.
 
