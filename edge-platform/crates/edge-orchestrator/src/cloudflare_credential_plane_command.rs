@@ -9,8 +9,8 @@ use edge_orchestrator::credential_snapshot::{
     ApplicationCredentialClass, FreshCredentialSnapshotRequest, RotateCredentialSnapshotRequest,
     generate_fresh_credential_snapshot, rotate_credential_snapshot,
 };
-use edge_secrets::fetch_canonical_credential_bundle_with_identity;
 use edge_provider_cloudflare as cloudflare;
+use edge_secrets::fetch_canonical_credential_bundle_with_identity;
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
     CredentialProjectionKind,
@@ -330,8 +330,7 @@ async fn publish_rotation_slot(
 ) -> Result<(), String> {
     let before = observe(control_token, desired).await?;
     let before_projection = projection_observation(&before, &projection.projection)?;
-    if projection_delivery_state(desired, projection, &before)?
-        != ProjectionDeliveryState::FixedAb
+    if projection_delivery_state(desired, projection, &before)? != ProjectionDeliveryState::FixedAb
     {
         return Err(format!(
             "{} credential Worker drifted before inactive-slot publication",
@@ -415,8 +414,7 @@ async fn publish_rotation_slot(
     }
 
     let after = observe(control_token, desired).await?;
-    if projection_delivery_state(desired, projection, &after)? != ProjectionDeliveryState::FixedAb
-    {
+    if projection_delivery_state(desired, projection, &after)? != ProjectionDeliveryState::FixedAb {
         return Err(format!(
             "{} credential Worker did not return to exact fixed A/B topology after candidate deployment",
             projection.projection
