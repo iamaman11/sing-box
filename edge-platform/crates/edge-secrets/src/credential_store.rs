@@ -2,7 +2,8 @@ use edge_shared_types::{
     CredentialDeliveryBundle, CredentialProjectionKind, LocalCredentialBundleRef,
     LocalCredentialState, credential_delivery_bundle_sha256, decode_credential_delivery_bundle,
     decode_local_credential_state, encode_credential_delivery_bundle,
-    encode_local_credential_state, local_credential_bundle_ref, validate_local_credential_state,
+    encode_local_credential_state, local_credential_bundle_ref,
+    materialize_credential_delivery_candidate, validate_local_credential_state,
     verify_local_credential_bundle_reference,
 };
 use std::collections::BTreeSet;
@@ -79,6 +80,19 @@ impl CredentialStore {
         self.require_state_projection(&state)?;
         self.verify_state_references(&state)?;
         Ok(Some(state))
+    }
+
+    pub fn stage_delivery_candidate(
+        &self,
+        delivery: &CredentialDeliveryBundle,
+    ) -> Result<LocalCredentialState, String> {
+        let active_bundle = match self.read_state()?.and_then(|state| state.active) {
+            Some(reference) => Some(self.read_bundle(&reference)?),
+            None => None,
+        };
+        let candidate =
+            materialize_credential_delivery_candidate(active_bundle.as_ref(), delivery)?;
+        self.stage_candidate(&candidate)
     }
 
     pub fn stage_candidate(
