@@ -326,15 +326,8 @@ async fn fetch_active_vm_bundle_with_bounded_proof(
     )
     .await;
     if let Err(enable_err) = enable_result {
-        let cleanup = cloudflare::set_access_service_token_enabled(
-            control_token,
-            &desired.target_account_id,
-            token_id,
-            &vm.proof_service_token_name,
-            &desired.proof_token_duration,
-            false,
-        )
-        .await;
+        let cleanup =
+            disable_and_verify_proof_token(control_token, desired, &vm, token_id).await;
         return match cleanup {
             Ok(()) => Err(format!(
                 "failed to enable VM bounded proof identity; cleanup converged it disabled: {enable_err}"
@@ -383,15 +376,7 @@ async fn fetch_active_vm_bundle_with_bounded_proof(
     }
     .await;
 
-    let cleanup = cloudflare::set_access_service_token_enabled(
-        control_token,
-        &desired.target_account_id,
-        token_id,
-        &vm.proof_service_token_name,
-        &desired.proof_token_duration,
-        false,
-    )
-    .await;
+    let cleanup = disable_and_verify_proof_token(control_token, desired, &vm, token_id).await;
     match (read_result, cleanup) {
         (Ok(bundle), Ok(())) => {
             println!("rotation_active_snapshot_proof_token=DISABLED_AFTER_USE");
@@ -407,6 +392,40 @@ async fn fetch_active_vm_bundle_with_bounded_proof(
             "active VM credential snapshot read failed: {err}; bounded proof identity cleanup also failed: {cleanup_err}"
         )),
     }
+}
+
+async fn disable_and_verify_proof_token(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    projection: &ProjectionDesired,
+    token_id: &str,
+) -> Result<(), String> {
+    cloudflare::set_access_service_token_enabled(
+        control_token,
+        &desired.target_account_id,
+        token_id,
+        &projection.proof_service_token_name,
+        &desired.proof_token_duration,
+        false,
+    )
+    .await?;
+    let observed = cloudflare::get_access_service_token(
+        control_token,
+        &desired.target_account_id,
+        token_id,
+    )
+    .await?;
+    if observed.id != token_id
+        || observed.name.as_deref() != Some(projection.proof_service_token_name.as_str())
+        || observed.enabled != Some(false)
+        || observed.duration.as_deref() != Some(desired.proof_token_duration.as_str())
+    {
+        return Err(format!(
+            "{} bounded proof token did not converge to exact disabled-at-rest state",
+            projection.projection
+        ));
+    }
+    Ok(())
 }
 
 async fn publish_rotation_slot(
