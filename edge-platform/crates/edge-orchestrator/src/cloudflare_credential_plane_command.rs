@@ -237,15 +237,9 @@ async fn rotate_application_publish(
         );
     }
 
-    let vm_client_id = required_env("CLOUDFLARE_VM_ACCESS_CLIENT_ID")?;
-    let vm_client_secret = required_env("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET")?;
-    let active_vm = fetch_canonical_credential_bundle_with_identity(
-        CredentialProjectionKind::Vm,
-        active_generation,
-        &vm_client_id,
-        &vm_client_secret,
-    )
-    .await?;
+    let active_vm =
+        fetch_active_vm_bundle_with_bounded_proof(control_token, desired, &before, active_generation)
+            .await?;
     let candidate_slot = match slot {
         CredentialDeliverySlotArg::A => CredentialDeliverySlot::A,
         CredentialDeliverySlotArg::B => CredentialDeliverySlot::B,
@@ -283,20 +277,6 @@ async fn rotate_application_publish(
         &vm_secret,
     )
     .await?;
-    let observed_vm = fetch_canonical_credential_bundle_with_identity(
-        CredentialProjectionKind::Vm,
-        generation,
-        &vm_client_id,
-        &vm_client_secret,
-    )
-    .await?;
-    if observed_vm != snapshot.vm {
-        return Err(
-            "VM candidate data-plane re-observation did not return the exact generated projection"
-                .to_owned(),
-        );
-    }
-
     publish_rotation_slot(
         control_token,
         &rotation_token,
@@ -314,10 +294,119 @@ async fn rotate_application_publish(
     println!("credential_slot={}", slot.as_str());
     println!("paired_projection_count=2");
     println!("active_slot_mutated=false");
-    println!("vm_candidate_data_plane_reobservation=PASS");
-    println!("windows_candidate_data_plane_reobservation=DEFERRED_TO_LOCAL_OWNER");
+    println!("active_vm_snapshot_proof_identity=BOUNDED_EPHEMERAL");
+    println!("candidate_data_plane_reobservation=DEFERRED_TO_LOCAL_OWNERS");
     println!("runner_plaintext_access=false");
     Ok(())
+}
+
+async fn fetch_active_vm_bundle_with_bounded_proof(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    generation: u64,
+) -> Result<CredentialDeliveryBundle, String> {
+    let vm = projection_desired(desired, "vm")?;
+    let vm_observed = projection_observation(observed, "vm")?;
+    let token_id = vm_observed
+        .proof_service_token_id
+        .as_deref()
+        .ok_or_else(|| "VM bounded proof token ID is missing".to_owned())?;
+    if vm_observed.proof_service_token_enabled != Some(false) {
+        return Err("VM bounded proof token must be disabled at rest before rotation".to_owned());
+    }
+
+    let enable_result = cloudflare::set_access_service_token_enabled(
+        control_token,
+        &desired.target_account_id,
+        token_id,
+        &vm.proof_service_token_name,
+        &desired.proof_token_duration,
+        true,
+    )
+    .await;
+    if let Err(enable_err) = enable_result {
+        let cleanup = cloudflare::set_access_service_token_enabled(
+            control_token,
+            &desired.target_account_id,
+            token_id,
+            &vm.proof_service_token_name,
+            &desired.proof_token_duration,
+            false,
+        )
+        .await;
+        return match cleanup {
+            Ok(()) => Err(format!(
+                "failed to enable VM bounded proof identity; cleanup converged it disabled: {enable_err}"
+            )),
+            Err(cleanup_err) => Err(format!(
+                "failed to enable VM bounded proof identity: {enable_err}; cleanup to disabled state also failed: {cleanup_err}"
+            )),
+        };
+    }
+
+    let read_result = async {
+        let enabled = cloudflare::get_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            token_id,
+        )
+        .await?;
+        let client_id = validate_enabled_proof_token(
+            &vm,
+            token_id,
+            &desired.proof_token_duration,
+            None,
+            &enabled,
+        )?;
+
+        let credential = cloudflare::rotate_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            token_id,
+        )
+        .await?;
+        validate_rotated_proof_credential(
+            &vm,
+            token_id,
+            &client_id,
+            &desired.proof_token_duration,
+            &credential,
+        )?;
+        fetch_canonical_credential_bundle_with_identity(
+            CredentialProjectionKind::Vm,
+            generation,
+            &credential.client_id,
+            &credential.client_secret,
+        )
+        .await
+    }
+    .await;
+
+    let cleanup = cloudflare::set_access_service_token_enabled(
+        control_token,
+        &desired.target_account_id,
+        token_id,
+        &vm.proof_service_token_name,
+        &desired.proof_token_duration,
+        false,
+    )
+    .await;
+    match (read_result, cleanup) {
+        (Ok(bundle), Ok(())) => {
+            println!("rotation_active_snapshot_proof_token=DISABLED_AFTER_USE");
+            Ok(bundle)
+        }
+        (Err(err), Ok(())) => Err(format!(
+            "active VM credential snapshot read failed; bounded proof identity was disabled: {err}"
+        )),
+        (Ok(_), Err(cleanup_err)) => Err(format!(
+            "active VM credential snapshot read passed but bounded proof identity cleanup failed: {cleanup_err}"
+        )),
+        (Err(err), Err(cleanup_err)) => Err(format!(
+            "active VM credential snapshot read failed: {err}; bounded proof identity cleanup also failed: {cleanup_err}"
+        )),
+    }
 }
 
 async fn publish_rotation_slot(
