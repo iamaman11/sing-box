@@ -24,6 +24,7 @@ WINDOWS_CONTROLLER_CORE = Path("edge-platform/crates/edge-controller-core/src/li
 EDGE_LOCAL_RUNTIME = Path("edge-platform/crates/edge-local-runtime/src/lib.rs")
 VM_AGENT = Path("edge-platform/crates/edge-agent/src/main.rs")
 VM_AGENT_CLI = Path("edge-platform/crates/edge-agent/src/cli.rs")
+SHARED_TYPES = Path("edge-platform/crates/edge-shared-types/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
 CREDENTIAL_PROVIDER = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs")
@@ -73,6 +74,7 @@ def main() -> None:
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
     vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
+    shared_types = SHARED_TYPES.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
@@ -297,9 +299,9 @@ def main() -> None:
         and "WindowsPrivilegedOperation::AdmitCredential" not in windows_console
         and "admit_vm_credential_generation" not in vm_agent_runtime
         and "admit_windows_credential_generation" not in windows_console
-        and 'reserved 8;' in runtime_proto
-        and 'reserved "WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL";' in runtime_proto,
-        "retired Stage-2 read-only credential admission must stay deleted; exact-generation staging is the sole steady-state data-plane gate and the old Windows wire identity remains reserved",
+        and 'WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL = 8 [deprecated = true];' in runtime_proto
+        and 'ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate' in shared_types,
+        "retired Stage-2 read-only credential admission must stay non-executable; exact-generation staging is the sole steady-state data-plane gate while the old Windows wire identity remains a deprecated fail-closed tombstone",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
