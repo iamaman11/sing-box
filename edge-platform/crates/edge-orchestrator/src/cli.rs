@@ -683,6 +683,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_retired_application_lifecycle_mutation_commands() {
+        for operation in [
+            "plan",
+            "apply",
+            "verify",
+            "upgrade",
+            "recover-plan",
+            "recover-apply",
+            "rollback-plan",
+            "rollback-apply",
+            "export-bundle",
+        ] {
+            assert!(
+                Cli::try_parse_from(["edge-orchestrator", "application-lifecycle", operation])
+                    .is_err(),
+                "retired standalone application lifecycle command must stay absent: {operation}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_unknown_command_before_mutation() {
         assert!(Cli::try_parse_from(["edge-orchestrator", "shell"]).is_err());
     }
