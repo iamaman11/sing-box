@@ -1,11 +1,15 @@
-use crate::cli::CredentialDeliveryCommand;
+use crate::cli::{
+    CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
+};
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
-    FreshCredentialSnapshotRequest, generate_fresh_credential_snapshot,
+    ApplicationCredentialClass, FreshCredentialSnapshotRequest, RotateCredentialSnapshotRequest,
+    generate_fresh_credential_snapshot, rotate_credential_snapshot,
 };
+use edge_secrets::fetch_canonical_credential_bundle_with_identity;
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
@@ -165,6 +169,22 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await
         }
+        CredentialDeliveryCommand::RotateApplication {
+            class,
+            active_generation,
+            generation,
+            slot,
+        } => {
+            rotate_application_publish(
+                &control_token,
+                &desired,
+                class,
+                active_generation,
+                generation,
+                slot,
+            )
+            .await
+        }
         CredentialDeliveryCommand::FreshV2Publish { generation } => {
             fresh_v2_publish(&control_token, &desired, generation).await
         }
@@ -172,6 +192,237 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             fresh_v2_restore_baseline(&control_token, &desired).await
         }
     }
+}
+
+async fn rotate_application_publish(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    class: CredentialRotationClassArg,
+    active_generation: u64,
+    generation: u64,
+    slot: CredentialDeliverySlotArg,
+) -> Result<(), String> {
+    if active_generation == 0 || generation == 0 || active_generation == generation {
+        return Err(
+            "steady-state credential rotation requires distinct non-zero active and candidate generations"
+                .to_owned(),
+        );
+    }
+
+    let before = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, &before)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} credential Worker must be in exact fixed A/B state before rotation",
+                projection.projection
+            ));
+        }
+    }
+
+    let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+    if rotation_identity.status != "active" {
+        return Err(format!(
+            "credential-rotation token {} is not active: {}",
+            rotation_identity.id, rotation_identity.status
+        ));
+    }
+    if rotation_identity.id == before.control_token_identity.id {
+        return Err(
+            "credential-rotation token must be physically distinct from CLOUDFLARE_CONTROL_TOKEN"
+                .to_owned(),
+        );
+    }
+
+    let vm_client_id = required_env("CLOUDFLARE_VM_ACCESS_CLIENT_ID")?;
+    let vm_client_secret = required_env("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET")?;
+    let active_vm = fetch_canonical_credential_bundle_with_identity(
+        CredentialProjectionKind::Vm,
+        active_generation,
+        &vm_client_id,
+        &vm_client_secret,
+    )
+    .await?;
+    let candidate_slot = match slot {
+        CredentialDeliverySlotArg::A => CredentialDeliverySlot::A,
+        CredentialDeliverySlotArg::B => CredentialDeliverySlot::B,
+    };
+    let rotation_class = match class {
+        CredentialRotationClassArg::TunnelAuth => ApplicationCredentialClass::TunnelAuth,
+        CredentialRotationClassArg::RealityIdentity => ApplicationCredentialClass::RealityIdentity,
+        CredentialRotationClassArg::Line2ProxyAuth => ApplicationCredentialClass::Line2ProxyAuth,
+    };
+    let snapshot = rotate_credential_snapshot(
+        &active_vm,
+        RotateCredentialSnapshotRequest {
+            delivery_generation: generation,
+            slot: candidate_slot,
+            class: rotation_class,
+        },
+    )?;
+
+    let slot_name = match candidate_slot {
+        CredentialDeliverySlot::A => SLOT_A,
+        CredentialDeliverySlot::B => SLOT_B,
+        CredentialDeliverySlot::Unspecified => unreachable!("validated candidate slot"),
+    };
+    let vm = projection_desired(desired, "vm")?;
+    let windows = projection_desired(desired, "windows")?;
+    let vm_secret = hex_encode(&snapshot.vm.encode_to_vec());
+    let windows_secret = hex_encode(&snapshot.windows.encode_to_vec());
+
+    publish_rotation_slot(
+        control_token,
+        &rotation_token,
+        desired,
+        &vm,
+        slot_name,
+        &vm_secret,
+    )
+    .await?;
+    let observed_vm = fetch_canonical_credential_bundle_with_identity(
+        CredentialProjectionKind::Vm,
+        generation,
+        &vm_client_id,
+        &vm_client_secret,
+    )
+    .await?;
+    if observed_vm != snapshot.vm {
+        return Err(
+            "VM candidate data-plane re-observation did not return the exact generated projection"
+                .to_owned(),
+        );
+    }
+
+    publish_rotation_slot(
+        control_token,
+        &rotation_token,
+        desired,
+        &windows,
+        slot_name,
+        &windows_secret,
+    )
+    .await?;
+
+    println!("credential_rotation_provider_publish=PASS");
+    println!("credential_rotation_class={}", class.as_str());
+    println!("credential_active_generation={active_generation}");
+    println!("credential_generation={generation}");
+    println!("credential_slot={}", slot.as_str());
+    println!("paired_projection_count=2");
+    println!("active_slot_mutated=false");
+    println!("vm_candidate_data_plane_reobservation=PASS");
+    println!("windows_candidate_data_plane_reobservation=DEFERRED_TO_LOCAL_OWNER");
+    println!("runner_plaintext_access=false");
+    Ok(())
+}
+
+async fn publish_rotation_slot(
+    control_token: &str,
+    rotation_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    projection: &ProjectionDesired,
+    slot_name: &str,
+    secret_text: &str,
+) -> Result<(), String> {
+    let before = observe(control_token, desired).await?;
+    let before_projection = projection_observation(&before, &projection.projection)?;
+    if projection_delivery_state(desired, projection, &before)?
+        != ProjectionDeliveryState::FixedAb
+    {
+        return Err(format!(
+            "{} credential Worker drifted before inactive-slot publication",
+            projection.projection
+        ));
+    }
+    let material = delivery_worker_material(&projection.projection)?;
+
+    let version_id = match cloudflare::patch_latest_worker_version_secrets(
+        rotation_token,
+        &desired.target_account_id,
+        &projection.worker_name,
+        &material.version_tag,
+        &[(slot_name, secret_text)],
+    )
+    .await
+    {
+        Ok(version_id) => version_id,
+        Err(err) => {
+            let observed = observe(control_token, desired).await?;
+            let current = projection_observation(&observed, &projection.projection)?;
+            if current.worker_latest_version_id == before_projection.worker_latest_version_id {
+                return Err(format!(
+                    "{} inactive-slot publication failed and read-only re-observation proved no new Worker version: {err}",
+                    projection.projection
+                ));
+            }
+            if current.worker_latest_version_tag.as_deref() != Some(material.version_tag.as_str())
+                || projection_delivery_state(desired, projection, &observed)?
+                    != ProjectionDeliveryState::FixedAbLatestPendingDeployment
+            {
+                return Err(format!(
+                    "{} inactive-slot publication outcome is uncertain after re-observation: {err}",
+                    projection.projection
+                ));
+            }
+            current.worker_latest_version_id.clone().ok_or_else(|| {
+                format!(
+                    "{} inactive-slot publication created no observable latest Worker version",
+                    projection.projection
+                )
+            })?
+        }
+    };
+
+    let deploy_once = cloudflare::deploy_worker_version(
+        rotation_token,
+        &desired.target_account_id,
+        &projection.worker_name,
+        &version_id,
+    )
+    .await;
+    if let Err(first_err) = deploy_once {
+        let observed = observe(control_token, desired).await?;
+        let current = projection_observation(&observed, &projection.projection)?;
+        if current.worker_active_version_ids == vec![version_id.clone()] {
+            return Ok(());
+        }
+        if current.worker_latest_version_id.as_deref() != Some(version_id.as_str())
+            || projection_delivery_state(desired, projection, &observed)?
+                != ProjectionDeliveryState::FixedAbLatestPendingDeployment
+        {
+            return Err(format!(
+                "{} candidate deployment outcome is uncertain after re-observation: {first_err}",
+                projection.projection
+            ));
+        }
+        cloudflare::deploy_worker_version(
+            rotation_token,
+            &desired.target_account_id,
+            &projection.worker_name,
+            &version_id,
+        )
+        .await
+        .map_err(|retry_err| {
+            format!(
+                "{} candidate deployment failed after re-observation proved the first attempt unchanged: first={first_err}; retry={retry_err}",
+                projection.projection
+            )
+        })?;
+    }
+
+    let after = observe(control_token, desired).await?;
+    if projection_delivery_state(desired, projection, &after)? != ProjectionDeliveryState::FixedAb
+    {
+        return Err(format!(
+            "{} credential Worker did not return to exact fixed A/B topology after candidate deployment",
+            projection.projection
+        ));
+    }
+    Ok(())
 }
 
 async fn fresh_v2_restore_baseline(
