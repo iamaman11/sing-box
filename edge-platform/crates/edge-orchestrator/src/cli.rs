@@ -106,9 +106,28 @@ pub(crate) struct DesiredApplicationArgs {
     pub edge_agent_artifact_path: PathBuf,
 }
 
+impl DesiredApplicationArgs {
+    fn into_legacy(self) -> Vec<String> {
+        vec![
+            "materialize".to_owned(),
+            path(self.spec_path),
+            path(self.artifact_manifest_path),
+            path(self.edge_agent_artifact_path),
+        ]
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationLifecycleCommand {
     Materialize(DesiredApplicationArgs),
+}
+
+impl ApplicationLifecycleCommand {
+    pub fn into_legacy_args(self) -> Vec<String> {
+        match self {
+            Self::Materialize(args) => args.into_legacy(),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
