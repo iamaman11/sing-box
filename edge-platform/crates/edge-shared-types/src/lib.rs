@@ -1757,6 +1757,201 @@ mod credential_delivery_tests {
         }
     }
 
+    fn full_bundle(
+        projection: CredentialProjectionKind,
+        generation: u64,
+        slot: CredentialDeliverySlot,
+    ) -> CredentialDeliveryBundle {
+        let payload = match projection {
+            CredentialProjectionKind::Windows => {
+                credential_delivery_bundle::Payload::Windows(windows_projection())
+            }
+            CredentialProjectionKind::Vm => {
+                credential_delivery_bundle::Payload::Vm(vm_projection())
+            }
+            CredentialProjectionKind::Unspecified => panic!("test projection must be concrete"),
+        };
+        CredentialDeliveryBundle {
+            schema_version: 1,
+            generation,
+            projection: projection as i32,
+            dummy_non_secret: false,
+            slot: slot as i32,
+            payload: Some(payload),
+        }
+    }
+
+    #[test]
+    fn rotation_delta_materialization_preserves_unselected_windows_classes() {
+        let active = full_bundle(
+            CredentialProjectionKind::Windows,
+            100,
+            CredentialDeliverySlot::A,
+        );
+        let active_projection = match active.payload.as_ref().unwrap() {
+            credential_delivery_bundle::Payload::Windows(value) => value.clone(),
+            _ => unreachable!(),
+        };
+
+        for class in [
+            CredentialRotationClass::TunnelAuth,
+            CredentialRotationClass::RealityIdentity,
+            CredentialRotationClass::Line2ProxyAuth,
+        ] {
+            let delta = WindowsCredentialRotationDelta {
+                credential_class: class as i32,
+                tunnel_auth: (class == CredentialRotationClass::TunnelAuth).then(|| {
+                    TunnelAuthenticationGeneration {
+                        generation: 101,
+                        direct: Some(tunnel_auth(7)),
+                        warp: Some(tunnel_auth(8)),
+                    }
+                }),
+                reality_identity: (class == CredentialRotationClass::RealityIdentity).then(|| {
+                    RealityPublicIdentityGeneration {
+                        generation: 101,
+                        direct: Some(public_identity(7)),
+                        warp: Some(public_identity(8)),
+                    }
+                }),
+            };
+            let delivery = CredentialDeliveryBundle {
+                schema_version: 1,
+                generation: 101,
+                projection: CredentialProjectionKind::Windows as i32,
+                dummy_non_secret: false,
+                slot: CredentialDeliverySlot::B as i32,
+                payload: Some(credential_delivery_bundle::Payload::WindowsRotation(delta)),
+            };
+            let materialized =
+                materialize_credential_delivery_candidate(Some(&active), &delivery).unwrap();
+            let next = match materialized.payload.as_ref().unwrap() {
+                credential_delivery_bundle::Payload::Windows(value) => value,
+                _ => panic!("rotation must materialize a full Windows projection"),
+            };
+
+            match class {
+                CredentialRotationClass::TunnelAuth => {
+                    assert_eq!(next.tunnel_auth.as_ref().unwrap().generation, 101);
+                    assert_eq!(next.reality_identity, active_projection.reality_identity);
+                }
+                CredentialRotationClass::RealityIdentity => {
+                    assert_eq!(next.reality_identity.as_ref().unwrap().generation, 101);
+                    assert_eq!(next.tunnel_auth, active_projection.tunnel_auth);
+                }
+                CredentialRotationClass::Line2ProxyAuth => {
+                    assert_eq!(next.tunnel_auth, active_projection.tunnel_auth);
+                    assert_eq!(next.reality_identity, active_projection.reality_identity);
+                }
+                CredentialRotationClass::Unspecified => unreachable!(),
+            }
+            assert_eq!(materialized.generation, 101);
+            assert_eq!(materialized.slot, CredentialDeliverySlot::B as i32);
+            assert!(!credential_delivery_is_rotation_delta(&materialized));
+        }
+    }
+
+    #[test]
+    fn rotation_delta_materialization_preserves_unselected_vm_classes() {
+        let active = full_bundle(
+            CredentialProjectionKind::Vm,
+            100,
+            CredentialDeliverySlot::A,
+        );
+        let active_projection = match active.payload.as_ref().unwrap() {
+            credential_delivery_bundle::Payload::Vm(value) => value.clone(),
+            _ => unreachable!(),
+        };
+
+        for class in [
+            CredentialRotationClass::TunnelAuth,
+            CredentialRotationClass::RealityIdentity,
+            CredentialRotationClass::Line2ProxyAuth,
+        ] {
+            let delta = VmCredentialRotationDelta {
+                credential_class: class as i32,
+                tunnel_auth: (class == CredentialRotationClass::TunnelAuth).then(|| {
+                    TunnelAuthenticationGeneration {
+                        generation: 101,
+                        direct: Some(tunnel_auth(9)),
+                        warp: Some(tunnel_auth(10)),
+                    }
+                }),
+                reality_identity: (class == CredentialRotationClass::RealityIdentity).then(|| {
+                    RealityPrivateIdentityGeneration {
+                        generation: 101,
+                        direct: Some(private_identity(9)),
+                        warp: Some(private_identity(10)),
+                    }
+                }),
+                line2_proxy: (class == CredentialRotationClass::Line2ProxyAuth).then(|| {
+                    ProxyCredentialGeneration {
+                        generation: 101,
+                        password: hex('f', 64),
+                    }
+                }),
+            };
+            let delivery = CredentialDeliveryBundle {
+                schema_version: 1,
+                generation: 101,
+                projection: CredentialProjectionKind::Vm as i32,
+                dummy_non_secret: false,
+                slot: CredentialDeliverySlot::B as i32,
+                payload: Some(credential_delivery_bundle::Payload::VmRotation(delta)),
+            };
+            let materialized =
+                materialize_credential_delivery_candidate(Some(&active), &delivery).unwrap();
+            let next = match materialized.payload.as_ref().unwrap() {
+                credential_delivery_bundle::Payload::Vm(value) => value,
+                _ => panic!("rotation must materialize a full VM projection"),
+            };
+
+            match class {
+                CredentialRotationClass::TunnelAuth => {
+                    assert_eq!(next.tunnel_auth.as_ref().unwrap().generation, 101);
+                    assert_eq!(next.reality_identity, active_projection.reality_identity);
+                    assert_eq!(next.line2_proxy, active_projection.line2_proxy);
+                }
+                CredentialRotationClass::RealityIdentity => {
+                    assert_eq!(next.reality_identity.as_ref().unwrap().generation, 101);
+                    assert_eq!(next.tunnel_auth, active_projection.tunnel_auth);
+                    assert_eq!(next.line2_proxy, active_projection.line2_proxy);
+                }
+                CredentialRotationClass::Line2ProxyAuth => {
+                    assert_eq!(next.line2_proxy.as_ref().unwrap().generation, 101);
+                    assert_eq!(next.tunnel_auth, active_projection.tunnel_auth);
+                    assert_eq!(next.reality_identity, active_projection.reality_identity);
+                }
+                CredentialRotationClass::Unspecified => unreachable!(),
+            }
+            assert_eq!(materialized.generation, 101);
+            assert_eq!(materialized.slot, CredentialDeliverySlot::B as i32);
+            assert!(!credential_delivery_is_rotation_delta(&materialized));
+        }
+    }
+
+    #[test]
+    fn rotation_delta_never_becomes_local_state_before_materialization() {
+        let delivery = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 101,
+            projection: CredentialProjectionKind::Windows as i32,
+            dummy_non_secret: false,
+            slot: CredentialDeliverySlot::B as i32,
+            payload: Some(credential_delivery_bundle::Payload::WindowsRotation(
+                WindowsCredentialRotationDelta {
+                    credential_class: CredentialRotationClass::Line2ProxyAuth as i32,
+                    tunnel_auth: None,
+                    reality_identity: None,
+                },
+            )),
+        };
+        validate_credential_delivery_bundle(&delivery).unwrap();
+        assert!(credential_delivery_is_rotation_delta(&delivery));
+        assert!(local_credential_bundle_ref(&delivery).is_err());
+        assert!(materialize_credential_delivery_candidate(None, &delivery).is_err());
+    }
+
     #[test]
     fn dummy_ab_bundle_remains_payload_free_and_canonical() {
         let bundle = CredentialDeliveryBundle {
@@ -1821,7 +2016,7 @@ mod credential_delivery_tests {
             payload: Some(credential_delivery_bundle::Payload::Vm(vm_projection())),
         };
         let error = validate_credential_delivery_bundle(&bundle).unwrap_err();
-        assert!(error.contains("Windows credential-delivery bundle cannot carry a VM projection"));
+        assert!(error.contains("Windows credential-delivery bundle cannot carry a VM payload"));
     }
 
     #[test]
