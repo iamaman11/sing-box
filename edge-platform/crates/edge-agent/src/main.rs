@@ -184,6 +184,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         }
         cli::LocalCommand::BundleConverge => run_local_bundle_converge(&stack_dir).await,
         cli::LocalCommand::BundleVerify => run_local_bundle_verify(&stack_dir).await,
+        cli::LocalCommand::BundleRollback => run_local_bundle_rollback(&stack_dir).await,
         cli::LocalCommand::MeshVerify => {
             let state = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
             print_mesh_state_evidence(&state);
@@ -302,6 +303,92 @@ async fn run_local_bundle_verify(stack_dir: &Path) -> Result<(), AgentError> {
             "exact application bundle is active but runtime verification did not reach READY"
                 .to_owned(),
         ))
+    }
+}
+
+async fn run_local_bundle_rollback(stack_dir: &Path) -> Result<(), AgentError> {
+    let request = read_local_bundle_request().map_err(AgentError::Command)?;
+    let (expected_current_id, expected_current_digest) =
+        validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
+
+    let current = read_application_release(stack_dir).ok_or_else(|| {
+        AgentError::Command("active application release marker is missing".to_owned())
+    })?;
+    if current.bundle_id != expected_current_id || current.bundle_digest != expected_current_digest {
+        return Err(AgentError::Command(format!(
+            "active application bundle changed since rollback authorization; expected_id={expected_current_id} expected_digest={expected_current_digest} observed_id={} observed_digest={}",
+            current.bundle_id, current.bundle_digest
+        )));
+    }
+    let previous = read_application_release(&previous_stack_dir(stack_dir)).ok_or_else(|| {
+        AgentError::Command("previous application release is unavailable".to_owned())
+    })?;
+
+    let rollback = rollback_bundle(
+        stack_dir,
+        RollbackBundleRequest {
+            expected_current_bundle_digest: expected_current_digest.clone(),
+        },
+    )
+    .map_err(AgentError::Command)?;
+    if rollback.active_bundle_id.as_deref() != Some(previous.bundle_id.as_str())
+        || rollback.active_bundle_digest.as_deref() != Some(previous.bundle_digest.as_str())
+    {
+        return Err(AgentError::Command(
+            "bundle rollback returned an unexpected active release identity".to_owned(),
+        ));
+    }
+
+    let recovery = run_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+    if recovery.success {
+        println!("operation=BUNDLE_ROLLBACK");
+        println!("rollback_authorized_current_bundle_id={expected_current_id}");
+        println!("rollback_authorized_current_bundle_digest={expected_current_digest}");
+        println!("rolled_back_to_bundle_id={}", previous.bundle_id);
+        println!("rolled_back_to_bundle_digest={}", previous.bundle_digest);
+        print_agent_state_evidence("BUNDLE_ROLLBACK", recovery.post_state.as_ref().unwrap());
+        return Ok(());
+    }
+
+    let failure = if recovery.warnings.is_empty() {
+        "rolled-back application release did not reach READY".to_owned()
+    } else {
+        format!(
+            "rolled-back application release did not reach READY: {}",
+            recovery.warnings.join("; ")
+        )
+    };
+
+    // The first swap completed with a known exact target. Compensate exactly once back to
+    // the authorized pre-rollback release; this is not a retry of an uncertain mutation.
+    let compensation = rollback_bundle(
+        stack_dir,
+        RollbackBundleRequest {
+            expected_current_bundle_digest: previous.bundle_digest.clone(),
+        },
+    )
+    .map_err(|err| {
+        AgentError::Command(format!(
+            "{failure}; exact rollback compensation to the authorized current release failed: {err}"
+        ))
+    })?;
+    if compensation.active_bundle_id.as_deref() != Some(current.bundle_id.as_str())
+        || compensation.active_bundle_digest.as_deref() != Some(current.bundle_digest.as_str())
+    {
+        return Err(AgentError::Command(format!(
+            "{failure}; rollback compensation completed with unexpected release identity"
+        )));
+    }
+    let restored = run_bootstrap(stack_dir, BootstrapMode::BootstrapFull).await;
+    if restored.success {
+        Err(AgentError::Command(format!(
+            "{failure}; authorized pre-rollback release was restored successfully"
+        )))
+    } else {
+        Err(AgentError::Command(format!(
+            "{failure}; authorized pre-rollback release was restored but also failed readiness: {}",
+            restored.warnings.join("; ")
+        )))
     }
 }
 
