@@ -20,7 +20,7 @@ Historical plans are never execution authority. If any document conflicts with #
 
 ## Accepted architecture and convergence target
 
-The ownership model below is accepted. Cloudflare account convergence through the single production-account authority flip is closed. Current execution is the final convergence sequence in Issue #26: Stage 1 is closed; Stage 2 proves fresh-v2 credentials plus the managed Windows proxy-only runtime; Stage 3 performs consumer-led contraction; Stage 4 physically shrinks obsolete runtime/state/trust/glue and performs the dedicated final managed Windows TUN cutover. Stable architecture must not reopen closed provider migration.
+The ownership model below is accepted. Cloudflare account convergence, Stage 2 fresh-v2/proxy-only acceptance, and the Stage-3 historical application-exclusive Cloudflare retirement are closed. Current execution is late Stage 3 in Issue #26: finish the steady-state lifecycle contract by moving production release rollback onto the persistent self-hosted-runner -> local-owner boundary and implementing class-scoped credential rotation. Stage 4 then physically shrinks obsolete runtime/state/trust/glue and performs the dedicated final managed Windows TUN cutover. Stable architecture must not reopen closed provider migration or historical retirement.
 
 ```text
 Git / protected main
