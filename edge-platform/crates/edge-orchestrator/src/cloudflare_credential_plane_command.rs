@@ -770,8 +770,7 @@ async fn retire_proof_tokens(
 
             let after_policy = observe(control_token, desired).await?;
             validate_access_retirement_boundary(desired, &after_policy)?;
-            let after_current =
-                projection_observation(&after_policy, &projection.projection)?;
+            let after_current = projection_observation(&after_policy, &projection.projection)?;
             let after_policy = after_current
                 .access_policies
                 .first()
@@ -803,8 +802,7 @@ async fn retire_proof_tokens(
 
         let after_delete = observe(control_token, desired).await?;
         validate_access_retirement_boundary(desired, &after_delete)?;
-        let after_current =
-            projection_observation(&after_delete, &projection.projection)?;
+        let after_current = projection_observation(&after_delete, &projection.projection)?;
         if after_current.proof_service_token_id.is_some() {
             return Err(match delete_error {
                 Some(err) => format!(
@@ -1095,8 +1093,7 @@ fn validate_access_boundary_with_retirement_mode(
                     ));
                 }
 
-                let mut legacy_ids =
-                    vec![proof_token_id.to_owned(), host_token_id.to_owned()];
+                let mut legacy_ids = vec![proof_token_id.to_owned(), host_token_id.to_owned()];
                 legacy_ids.sort();
                 let mut host_only_ids = vec![host_token_id.to_owned()];
                 host_only_ids.sort();
