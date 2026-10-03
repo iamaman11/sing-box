@@ -380,7 +380,7 @@ jobs:
           mesh_service = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_service.rs").read_text()
           vpc_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_vpc_lifecycle_service.rs").read_text()
           vultr_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_service.rs").read_text()
-          for planner in [application_command, vpc_command_authority, vultr_command_authority]:
+          for planner in [vpc_command_authority, vultr_command_authority]:
               assert "plan_authority" in planner
           for mutation_boundary in [application_service, dns_service, mesh_service, vpc_service, vultr_service]:
               assert "verify_exact_authority" in mutation_boundary
@@ -388,15 +388,12 @@ jobs:
           assert "authorize_dns_cleanup" in dns_command
           assert "authorize_mesh_apply" in mesh_command
           assert "authorize_mesh_cleanup" in mesh_command
-          assert "authorized-plan-sha256" in application_command
           assert "authorized-plan-sha256" in vpc_command_authority
           assert "authorized-plan-sha256" in vultr_command_authority
           vultr_workflow = Path(".github/workflows/vultr-lifecycle.yml").read_text()
           application_workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           assert ".destroy_digest // empty" in vultr_workflow
           assert "plan_authority" in vultr_workflow
-          assert "recover-plan" in application_command
-          assert "recover-apply" in application_command
           assert "production_runtime:" in application_workflow
           assert "sing-box-production-vm" in application_workflow
           assert 'sudo -n "${owner}" local "${local_operation}"' in application_workflow

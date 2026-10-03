@@ -953,7 +953,6 @@ def main() -> None:
         and "edge-platform/scripts/resolve_durable_release.sh" not in production_runtime
         and "EDGE_LOCAL_ORCHESTRATOR" not in production_runtime
         and "application-lifecycle materialize" not in production_runtime
-        and "application-lifecycle export-bundle" not in production_runtime
         and "actions/upload-artifact" not in production_runtime
         and "actions/download-artifact" not in production_runtime
         and "git init ." not in production_runtime
@@ -1026,14 +1025,6 @@ def main() -> None:
         "vultr-vpc ",
         "cloudflare-dns ",
         "line3-mesh ",
-        "application-lifecycle plan ",
-        "application-lifecycle apply ",
-        "application-lifecycle verify ",
-        "application-lifecycle upgrade ",
-        "application-lifecycle recover-plan ",
-        "application-lifecycle recover-apply ",
-        "application-lifecycle rollback-plan ",
-        "application-lifecycle rollback-apply ",
     ]:
         require(
             forbidden not in acceptance_job,

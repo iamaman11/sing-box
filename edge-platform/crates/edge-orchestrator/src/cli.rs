@@ -107,32 +107,12 @@ pub(crate) struct DesiredApplicationArgs {
 }
 
 impl DesiredApplicationArgs {
-    fn into_legacy(self, operation: &str) -> Vec<String> {
+    fn into_legacy(self) -> Vec<String> {
         vec![
-            operation.to_owned(),
+            "materialize".to_owned(),
             path(self.spec_path),
             path(self.artifact_manifest_path),
             path(self.edge_agent_artifact_path),
-        ]
-    }
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct DesiredApplicationAuthorizedArgs {
-    pub spec_path: PathBuf,
-    pub artifact_manifest_path: PathBuf,
-    pub edge_agent_artifact_path: PathBuf,
-    pub authorized_plan_sha256: String,
-}
-
-impl DesiredApplicationAuthorizedArgs {
-    fn into_legacy(self, operation: &str) -> Vec<String> {
-        vec![
-            operation.to_owned(),
-            path(self.spec_path),
-            path(self.artifact_manifest_path),
-            path(self.edge_agent_artifact_path),
-            self.authorized_plan_sha256,
         ]
     }
 }
@@ -140,32 +120,12 @@ impl DesiredApplicationAuthorizedArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationLifecycleCommand {
     Materialize(DesiredApplicationArgs),
-    Plan(DesiredApplicationArgs),
-    Apply(DesiredApplicationAuthorizedArgs),
-    Verify(DesiredApplicationArgs),
-    Upgrade(DesiredApplicationAuthorizedArgs),
-    RecoverPlan(SpecArgs),
-    RecoverApply(AuthorizedSpecArgs),
-    RollbackPlan(SpecArgs),
-    RollbackApply(CleanupApplyArgs),
 }
 
 impl ApplicationLifecycleCommand {
     pub fn into_legacy_args(self) -> Vec<String> {
         match self {
-            Self::Materialize(args) => args.into_legacy("materialize"),
-            Self::Plan(args) => args.into_legacy("plan"),
-            Self::Apply(args) => args.into_legacy("apply"),
-            Self::Verify(args) => args.into_legacy("verify"),
-            Self::Upgrade(args) => args.into_legacy("upgrade"),
-            Self::RecoverPlan(args) => vec!["recover-plan".to_owned(), path(args.spec_path)],
-            Self::RecoverApply(args) => vec![
-                "recover-apply".to_owned(),
-                path(args.spec_path),
-                args.authorized_plan_sha256,
-            ],
-            Self::RollbackPlan(args) => vec!["rollback-plan".to_owned(), path(args.spec_path)],
-            Self::RollbackApply(args) => destructive_apply("rollback-apply", args),
+            Self::Materialize(args) => args.into_legacy(),
         }
     }
 }
@@ -564,26 +524,10 @@ mod tests {
             vec![
                 "edge-orchestrator",
                 "application-lifecycle",
-                "apply",
-                "infra/application/production.json",
+                "materialize",
+                "infra/application/disposable-acceptance.json",
                 "artifact.json",
                 "edge-agent",
-                &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "application-lifecycle",
-                "recover-apply",
-                "infra/application/production.json",
-                &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "application-lifecycle",
-                "rollback-apply",
-                "infra/application/production.json",
-                &digest,
-                &digest,
             ],
             vec![
                 "edge-orchestrator",
@@ -736,6 +680,27 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn rejects_retired_application_lifecycle_mutation_commands() {
+        for operation in [
+            "plan",
+            "apply",
+            "verify",
+            "upgrade",
+            "recover-plan",
+            "recover-apply",
+            "rollback-plan",
+            "rollback-apply",
+            "export-bundle",
+        ] {
+            assert!(
+                Cli::try_parse_from(["edge-orchestrator", "application-lifecycle", operation])
+                    .is_err(),
+                "retired standalone application lifecycle command must stay absent: {operation}"
+            );
+        }
     }
 
     #[test]
