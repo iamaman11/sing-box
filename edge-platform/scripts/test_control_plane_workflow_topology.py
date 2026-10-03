@@ -40,6 +40,10 @@ ARCHITECTURE = Path("edge-platform/ARCHITECTURE.md")
 README = Path("edge-platform/README.md")
 RUNBOOK = Path("win/docs/RUNBOOK.md")
 SERVER_ARCHITECTURE = Path("win/docs/SERVER-ARCHITECTURE.md")
+ROOT_README = Path("README.md")
+LOCAL_AGENT_CONTRACT = Path("infra/LOCAL_AGENT_EXECUTION_CONTRACT.md")
+APPLICATION_README = Path("infra/application/README.md")
+VULTR_STACK_README = Path("win/vultr-waw/README.md")
 
 
 def require(condition: bool, message: str) -> None:
@@ -85,6 +89,10 @@ def main() -> None:
     readme = README.read_text(encoding="utf-8")
     runbook = RUNBOOK.read_text(encoding="utf-8")
     server_architecture = SERVER_ARCHITECTURE.read_text(encoding="utf-8")
+    root_readme = ROOT_README.read_text(encoding="utf-8")
+    local_agent_contract = LOCAL_AGENT_CONTRACT.read_text(encoding="utf-8")
+    application_readme = APPLICATION_README.read_text(encoding="utf-8")
+    vultr_stack_readme = VULTR_STACK_README.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -99,6 +107,11 @@ def main() -> None:
         and "/production rollback` is **not currently exposed by the production workflow**" in runbook
         and "Current `main` does **not** expose `/credentials rotate`" in runbook
         and "Routine production converge/verify/diagnose does not acquire a support lease" in server_architecture
+        and "Current execution is late Stage 3" in root_readme
+        and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
+        and "does not expose `/production rollback`" in application_readme
+        and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
+        and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
         "operator documentation must match the late-Stage-3 public workflow surface and must not advertise historical #169, legacy rollback, or Stage-2 proof commands as current authority",
     )
