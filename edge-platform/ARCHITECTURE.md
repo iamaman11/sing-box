@@ -233,7 +233,9 @@ Exact grammar may become smaller.
 
 After Cloudflare ownership convergence, separate production-facing `/dns`, `/mesh`,
 `/zero-trust` and public `/production target-plane-*` command/workflow ownership disappears into
-canonical typed `/production` composition. The obsolete executable Zero Trust
+canonical typed `/production` composition. The standalone `cloudflare-dns` and `line3-mesh`
+operator CLI namespaces are physically removed; disposable acceptance and production composition
+invoke their typed internal functions directly. The obsolete executable Zero Trust
 inventory/plan/apply/verify lifecycle is physically removed; only the internal read-only
 `cloudflare-zero-trust doctor` remains for acceptance guardrail observation. Provider-specific
 target-plane logic may remain as an internal typed implementation detail; it is not a second

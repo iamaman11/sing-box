@@ -384,6 +384,13 @@ def main() -> None:
         "parallel /mesh operator transport must be retired; provider Mesh belongs to canonical /production composition and VM runtime Mesh belongs to the local owner",
     )
     require(
+        "CloudflareDns" not in credential_cli
+        and "cloudflare-dns" not in credential_cli
+        and "Line3Mesh" not in credential_cli
+        and "line3-mesh" not in credential_cli,
+        "retired standalone DNS/Mesh operator CLI namespaces must stay absent; acceptance/production call typed internal functions directly",
+    )
+    require(
         "vultr-control-plane-production" not in router,
         "router and skipped comments must never occupy production concurrency",
     )

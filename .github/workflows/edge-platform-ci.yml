@@ -187,8 +187,8 @@ jobs:
           grep -Fq 'ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env"' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'run_mesh_compose(' edge-platform/crates/edge-agent/src/main.rs
-          grep -Fq 'runtime-apply <mesh-spec-path> <application-spec-path>' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
-          grep -Fq 'runtime-cleanup <application-spec-path>' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq 'pub(crate) async fn acceptance_runtime_apply(' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq 'pub(crate) async fn acceptance_runtime_cleanup(' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
           grep -Fq '${MESH_STATE_DIR:-../mesh-state}:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml
           grep -Fq 'mesh_registration_state_dir' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_STATE_DIR_KEY' edge-platform/crates/edge-agent/src/main.rs
@@ -380,13 +380,15 @@ jobs:
           mesh_service = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_service.rs").read_text()
           vpc_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_vpc_lifecycle_service.rs").read_text()
           vultr_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_service.rs").read_text()
-          for planner in [application_command, dns_command, mesh_command, vpc_command_authority, vultr_command_authority]:
+          for planner in [application_command, vpc_command_authority, vultr_command_authority]:
               assert "plan_authority" in planner
           for mutation_boundary in [application_service, dns_service, mesh_service, vpc_service, vultr_service]:
               assert "verify_exact_authority" in mutation_boundary
+          assert "authorize_dns_apply" in dns_command
+          assert "authorize_dns_cleanup" in dns_command
+          assert "authorize_mesh_apply" in mesh_command
+          assert "authorize_mesh_cleanup" in mesh_command
           assert "authorized-plan-sha256" in application_command
-          assert "authorized-plan-sha256" in dns_command
-          assert "authorized-plan-sha256" in mesh_command
           assert "authorized-plan-sha256" in vpc_command_authority
           assert "authorized-plan-sha256" in vultr_command_authority
           vultr_workflow = Path(".github/workflows/vultr-lifecycle.yml").read_text()
@@ -426,8 +428,10 @@ jobs:
           assert "VultrVpc" not in controller_cli
           assert "ApplicationLifecycle" in orchestrator_cli
           assert "VultrLifecycle" in orchestrator_cli
-          assert "cloudflare-dns" in orchestrator_cli
-          assert "line3-mesh" in orchestrator_cli
+          assert "cloudflare-dns" not in orchestrator_cli
+          assert "line3-mesh" not in orchestrator_cli
+          assert "pub async fn run(args: Vec<String>)" not in dns_command
+          assert "pub async fn run(args: Vec<String>)" not in mesh_command
           assert "EDGE_CORRELATION_ID" in observability
           assert "with_max_level(Level::INFO)" in observability
           assert 'clap = { version = "=4.6.7"' in agent_manifest
@@ -456,13 +460,6 @@ jobs:
           assert "observe_ipv4_network_remote" in application_service
           assert ".observe_ipv4_network(" in application_service
 
-          for surface in [
-              "line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-              "line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-              "line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-              "line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-          ]:
-              assert surface in mesh_command
           assert "verify_vpc_ready" in mesh_command
           assert "observe_ipv4_network_remote" in mesh_command
           assert "run-local route authority comes only from verified Vultr VPC state" in mesh_command
