@@ -713,10 +713,13 @@ def main() -> None:
         and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer
         and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local bundle-rollback" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
         and "acceptance_rpc_service_enabled" in vultr
@@ -778,7 +781,7 @@ def main() -> None:
         and '"converge",' in application
         and '"verify",' in application
         and '"diagnose",' in application
-        and 'tokens == ["/production", "rollback"]' not in application
+        and '"rollback",' in application
         and 'spec_path = "infra/production/production.textproto"' in application,
         "production grammar must expose only the accepted steady-state surface plus explicit enrollment",
     )
@@ -810,6 +813,7 @@ def main() -> None:
         and production_provider.count("edge-platform/scripts/resolve_durable_release.sh") == 1
         and 'provider_operation="active-converge"' in production_provider
         and 'provider_operation="verify-active"' in production_provider
+        and 'verify|rollback)' in production_provider
         and '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${provider_operation}"' in production_provider
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_provider
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_provider
@@ -842,6 +846,7 @@ def main() -> None:
         and 'sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}"' in production_runtime
         and 'local_operation="bundle-converge"' in production_runtime
         and 'local_operation="bundle-verify"' in production_runtime
+        and 'local_operation="bundle-rollback"' in production_runtime
         and 'local_operation="diagnose"' in production_runtime
         and "retire-historical-" not in production_runtime
         and 'local_operation="bootstrap-full"' not in production_runtime
@@ -864,6 +869,11 @@ def main() -> None:
         and "/var/run/docker.sock" in production_runtime
         and "sudo -n id -u" in production_runtime,
         "production runtime plane must remain transport-only: immutable ReleaseSet-bound bundle -> SHA verify -> fixed sudo local owner, with no source/render/provider/generic-root authority",
+    )
+    require(
+        "production_rollback_desired" not in production_command
+        and "pub(crate) async fn rollback(" not in production_command,
+        "steady-state production rollback must have no legacy orchestrator lease/SSH implementation",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
