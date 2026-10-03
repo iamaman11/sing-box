@@ -443,8 +443,8 @@ def main() -> None:
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
         and "cancel-in-progress: false" in credentials
         and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" in credentials
-        and "CLOUDFLARE_VM_ACCESS_CLIENT_ID" in credentials
-        and "CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in credentials
+        and "active_vm_snapshot_proof_identity=BOUNDED_EPHEMERAL" in credentials
+        and "candidate_data_plane_reobservation=DEFERRED_TO_LOCAL_OWNERS" in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
