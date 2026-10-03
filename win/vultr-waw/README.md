@@ -26,17 +26,24 @@ not build project images on the VM.
 
 ## Control flow
 
+Routine steady-state production flow:
+
 ```text
 protected main
   -> exact-head CI / candidate acceptance
   -> immutable ReleaseSet
-  -> edge-orchestrator
-       -> Vultr lifecycle
-       -> strict SSH local-forward
-       -> loopback edge-agent
-       -> exact application apply/verify/rollback
-       -> Cloudflare/DNS production composition
+  -> GitHub-hosted edge-orchestrator provider composition
+  -> production VM self-hosted low-privilege runner
+  -> fixed sudo allowlist
+  -> root-owned local edge-agent
+  -> exact application bundle converge / verify / diagnose
 ```
+
+Routine production does not acquire a temporary support lease, open SSH, local-forward to port 50061,
+or use the network edge-agent service. Strict SSH remains only for explicit enrollment/reinstallation,
+migration, or break-glass recovery and must be compensated before PASS. Production rollback is not yet
+a public operator command on current `main`; the remaining Stage-3 slice must reuse the persistent
+runner -> local-owner boundary rather than the legacy lease/remote rollback path.
 
 ## Runtime secrets
 
