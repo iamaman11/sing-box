@@ -296,9 +296,10 @@ def main() -> None:
         "CredentialAdmit" not in vm_agent_cli
         and "local-credential-admit" not in vm_agent_cli
         and "PrivilegedAdmitCredential" not in windows_console_cli
-        and "WindowsPrivilegedOperation::AdmitCredential" not in windows_console
         and "admit_vm_credential_generation" not in vm_agent_runtime
         and "admit_windows_credential_generation" not in windows_console
+        and windows_console.count("WindowsPrivilegedOperation::AdmitCredential") == 1
+        and 'ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate' in windows_console
         and 'WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL = 8 [deprecated = true];' in runtime_proto
         and 'ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate' in shared_types,
         "retired Stage-2 read-only credential admission must stay non-executable; exact-generation staging is the sole steady-state data-plane gate while the old Windows wire identity remains a deprecated fail-closed tombstone",
