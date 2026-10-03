@@ -426,8 +426,10 @@ jobs:
           assert "VultrVpc" not in controller_cli
           assert "ApplicationLifecycle" in orchestrator_cli
           assert "VultrLifecycle" in orchestrator_cli
-          assert "cloudflare-dns" in orchestrator_cli
-          assert "line3-mesh" in orchestrator_cli
+          assert "cloudflare-dns" not in orchestrator_cli
+          assert "line3-mesh" not in orchestrator_cli
+          assert "pub async fn run(args: Vec<String>)" not in dns_command
+          assert "pub async fn run(args: Vec<String>)" not in mesh_command
           assert "EDGE_CORRELATION_ID" in observability
           assert "with_max_level(Level::INFO)" in observability
           assert 'clap = { version = "=4.6.7"' in agent_manifest
@@ -456,13 +458,6 @@ jobs:
           assert "observe_ipv4_network_remote" in application_service
           assert ".observe_ipv4_network(" in application_service
 
-          for surface in [
-              "line3-mesh vpc-plan <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-              "line3-mesh vpc-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-              "line3-mesh vpc-runtime-apply <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-              "line3-mesh vpc-runtime-verify <mesh-base-spec-path> <vpc-spec-path> <application-spec-path>",
-          ]:
-              assert surface in mesh_command
           assert "verify_vpc_ready" in mesh_command
           assert "observe_ipv4_network_remote" in mesh_command
           assert "run-local route authority comes only from verified Vultr VPC state" in mesh_command
