@@ -27,10 +27,6 @@ pub(crate) enum Command {
     ApplicationAcceptance(ApplicationAcceptanceArgs),
     ApplicationBundleBuild(ApplicationBundleBuildArgs),
     ApplicationCleanup(ApplicationCleanupArgs),
-    CloudflareDns {
-        #[command(subcommand)]
-        command: CloudflareDnsCommand,
-    },
     CloudflareTargetPlane {
         #[command(subcommand)]
         command: CloudflareTargetPlaneCommand,
@@ -42,11 +38,6 @@ pub(crate) enum Command {
     Credentials {
         #[command(subcommand)]
         command: CredentialDeliveryCommand,
-    },
-    #[command(name = "line3-mesh")]
-    Line3Mesh {
-        #[command(subcommand)]
-        command: MeshCommand,
     },
     Production {
         #[command(subcommand)]
@@ -69,11 +60,9 @@ impl Command {
             Self::ApplicationAcceptance(_) => "application-acceptance",
             Self::ApplicationBundleBuild(_) => "application-bundle-build",
             Self::ApplicationCleanup(_) => "application-cleanup",
-            Self::CloudflareDns { .. } => "cloudflare-dns",
             Self::CloudflareTargetPlane { .. } => "cloudflare-target-plane",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Credentials { .. } => "credentials",
-            Self::Line3Mesh { .. } => "line3-mesh",
             Self::Production { .. } => "production",
             Self::VultrLifecycle { .. } => "vultr-lifecycle",
             Self::VultrVpc { .. } => "vultr-vpc",
@@ -219,49 +208,6 @@ pub(crate) struct CleanupApplyArgs {
     pub authorized_plan_sha256: String,
 }
 
-#[derive(Debug, Args, Clone)]
-pub(crate) struct DnsDerivedArgs {
-    pub spec_path: PathBuf,
-    pub application_spec_path: PathBuf,
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct DnsDerivedAuthorizedArgs {
-    pub spec_path: PathBuf,
-    pub application_spec_path: PathBuf,
-    pub authorized_plan_sha256: String,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum CloudflareDnsCommand {
-    Inventory(SpecArgs),
-    Plan(DnsDerivedArgs),
-    Apply(DnsDerivedAuthorizedArgs),
-    CleanupPlan(SpecArgs),
-    CleanupApply(CleanupApplyArgs),
-}
-
-impl CloudflareDnsCommand {
-    pub fn into_legacy_args(self) -> Vec<String> {
-        match self {
-            Self::Inventory(args) => vec!["inventory".to_owned(), path(args.spec_path)],
-            Self::Plan(args) => vec![
-                "plan".to_owned(),
-                path(args.spec_path),
-                path(args.application_spec_path),
-            ],
-            Self::Apply(args) => vec![
-                "apply".to_owned(),
-                path(args.spec_path),
-                path(args.application_spec_path),
-                args.authorized_plan_sha256,
-            ],
-            Self::CleanupPlan(args) => vec!["cleanup-plan".to_owned(), path(args.spec_path)],
-            Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum CredentialRotationClassArg {
     TunnelAuth,
@@ -321,89 +267,6 @@ pub(crate) enum CloudflareTargetPlaneCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareZeroTrustCommand {
     Doctor(SpecArgs),
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct MeshVpcArgs {
-    pub mesh_base_spec_path: PathBuf,
-    pub vpc_spec_path: PathBuf,
-    pub application_spec_path: PathBuf,
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct MeshVpcAuthorizedArgs {
-    pub mesh_base_spec_path: PathBuf,
-    pub vpc_spec_path: PathBuf,
-    pub application_spec_path: PathBuf,
-    pub authorized_plan_sha256: String,
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct MeshRuntimeArgs {
-    pub mesh_spec_path: PathBuf,
-    pub application_spec_path: PathBuf,
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct RuntimeCleanupArgs {
-    pub application_spec_path: PathBuf,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum MeshCommand {
-    Inventory(SpecArgs),
-    Plan(SpecArgs),
-    Apply(AuthorizedSpecArgs),
-    VpcPlan(MeshVpcArgs),
-    VpcApply(MeshVpcAuthorizedArgs),
-    CleanupPlan(SpecArgs),
-    CleanupApply(CleanupApplyArgs),
-    RuntimeApply(MeshRuntimeArgs),
-    VpcRuntimeApply(MeshVpcArgs),
-    RuntimeVerify(MeshRuntimeArgs),
-    VpcRuntimeVerify(MeshVpcArgs),
-    RuntimeObserve(RuntimeCleanupArgs),
-    RuntimeCleanup(RuntimeCleanupArgs),
-}
-
-impl MeshCommand {
-    pub fn into_legacy_args(self) -> Vec<String> {
-        match self {
-            Self::Inventory(args) => one("inventory", args),
-            Self::Plan(args) => one("plan", args),
-            Self::Apply(args) => authorized_spec("apply", args),
-            Self::VpcPlan(args) => mesh_vpc("vpc-plan", args),
-            Self::VpcApply(args) => vec![
-                "vpc-apply".to_owned(),
-                path(args.mesh_base_spec_path),
-                path(args.vpc_spec_path),
-                path(args.application_spec_path),
-                args.authorized_plan_sha256,
-            ],
-            Self::CleanupPlan(args) => one("cleanup-plan", args),
-            Self::CleanupApply(args) => destructive_apply("cleanup-apply", args),
-            Self::RuntimeApply(args) => vec![
-                "runtime-apply".to_owned(),
-                path(args.mesh_spec_path),
-                path(args.application_spec_path),
-            ],
-            Self::VpcRuntimeApply(args) => mesh_vpc("vpc-runtime-apply", args),
-            Self::RuntimeVerify(args) => vec![
-                "runtime-verify".to_owned(),
-                path(args.mesh_spec_path),
-                path(args.application_spec_path),
-            ],
-            Self::VpcRuntimeVerify(args) => mesh_vpc("vpc-runtime-verify", args),
-            Self::RuntimeObserve(args) => vec![
-                "runtime-observe".to_owned(),
-                path(args.application_spec_path),
-            ],
-            Self::RuntimeCleanup(args) => vec![
-                "runtime-cleanup".to_owned(),
-                path(args.application_spec_path),
-            ],
-        }
-    }
 }
 
 #[derive(Debug, Args, Clone)]
@@ -653,15 +516,6 @@ fn machine(operation: &str, args: VultrMachineArgs) -> Vec<String> {
     vec![operation.to_owned(), path(args.spec_path), args.machine_id]
 }
 
-fn mesh_vpc(operation: &str, args: MeshVpcArgs) -> Vec<String> {
-    vec![
-        operation.to_owned(),
-        path(args.mesh_base_spec_path),
-        path(args.vpc_spec_path),
-        path(args.application_spec_path),
-    ]
-}
-
 fn path(value: PathBuf) -> String {
     value.to_string_lossy().into_owned()
 }
@@ -730,52 +584,6 @@ mod tests {
                 "infra/application/production.json",
                 &digest,
                 &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "cloudflare-dns",
-                "apply",
-                "infra/cloudflare/dns.json",
-                "infra/application/production.json",
-                &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "cloudflare-dns",
-                "cleanup-apply",
-                "infra/cloudflare/dns.json",
-                &digest,
-                &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "line3-mesh",
-                "apply",
-                "infra/cloudflare/mesh.json",
-                &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "line3-mesh",
-                "vpc-apply",
-                "infra/cloudflare/mesh.json",
-                "infra/vultr/vpc.json",
-                "infra/application/production.json",
-                &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "line3-mesh",
-                "cleanup-apply",
-                "infra/cloudflare/mesh.json",
-                &digest,
-                &digest,
-            ],
-            vec![
-                "edge-orchestrator",
-                "line3-mesh",
-                "runtime-observe",
-                "infra/application/production.json",
             ],
             vec![
                 "edge-orchestrator",
