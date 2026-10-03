@@ -118,10 +118,9 @@ pub fn validate_credential_delivery_bundle(
             CredentialProjectionKind::Windows,
             credential_delivery_bundle::Payload::WindowsRotation(value),
         ) => validate_windows_credential_rotation_delta(bundle.generation, value),
-        (
-            CredentialProjectionKind::Vm,
-            credential_delivery_bundle::Payload::VmRotation(value),
-        ) => validate_vm_credential_rotation_delta(bundle.generation, value),
+        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::VmRotation(value)) => {
+            validate_vm_credential_rotation_delta(bundle.generation, value)
+        }
         (
             CredentialProjectionKind::Windows,
             credential_delivery_bundle::Payload::Vm(_)
@@ -204,18 +203,16 @@ fn validate_windows_credential_rotation_delta(
     let class = validate_rotation_class(value.credential_class)?;
     match class {
         CredentialRotationClass::TunnelAuth => {
-            let tunnel = value.tunnel_auth.as_ref().ok_or_else(|| {
-                "Windows tunnel-auth rotation requires tunnel_auth".to_owned()
-            })?;
+            let tunnel = value
+                .tunnel_auth
+                .as_ref()
+                .ok_or_else(|| "Windows tunnel-auth rotation requires tunnel_auth".to_owned())?;
             if value.reality_identity.is_some() {
                 return Err(
                     "Windows tunnel-auth rotation must not carry Reality identity".to_owned(),
                 );
             }
-            validate_tunnel_auth_generation(
-                "WindowsCredentialRotationDelta.tunnel_auth",
-                tunnel,
-            )?;
+            validate_tunnel_auth_generation("WindowsCredentialRotationDelta.tunnel_auth", tunnel)?;
             if tunnel.generation != delivery_generation {
                 return Err(
                     "Windows tunnel-auth rotation generation must equal delivery generation"
@@ -230,9 +227,10 @@ fn validate_windows_credential_rotation_delta(
                     "Windows Reality rotation must not carry tunnel authentication".to_owned(),
                 );
             }
-            let reality = value.reality_identity.as_ref().ok_or_else(|| {
-                "Windows Reality rotation requires reality_identity".to_owned()
-            })?;
+            let reality = value
+                .reality_identity
+                .as_ref()
+                .ok_or_else(|| "Windows Reality rotation requires reality_identity".to_owned())?;
             validate_reality_public_generation(
                 "WindowsCredentialRotationDelta.reality_identity",
                 reality,
@@ -246,9 +244,7 @@ fn validate_windows_credential_rotation_delta(
         }
         CredentialRotationClass::Line2ProxyAuth => {
             if value.tunnel_auth.is_some() || value.reality_identity.is_some() {
-                return Err(
-                    "Windows Line 2 rotation carries no Windows secret material".to_owned(),
-                );
+                return Err("Windows Line 2 rotation carries no Windows secret material".to_owned());
             }
             Ok(())
         }
@@ -307,10 +303,7 @@ fn validate_vm_credential_rotation_delta(
                 .line2_proxy
                 .as_ref()
                 .ok_or_else(|| "VM Line 2 rotation requires line2_proxy".to_owned())?;
-            validate_proxy_credential_generation(
-                "VmCredentialRotationDelta.line2_proxy",
-                line2,
-            )?;
+            validate_proxy_credential_generation("VmCredentialRotationDelta.line2_proxy", line2)?;
             if line2.generation != delivery_generation {
                 return Err(
                     "VM Line 2 rotation generation must equal delivery generation".to_owned(),
@@ -501,7 +494,9 @@ pub fn materialize_credential_delivery_candidate(
     validate_credential_delivery_bundle(active)?;
     local_credential_bundle_ref(active)?;
     if active.projection != delivery.projection {
-        return Err("credential rotation delta projection differs from active projection".to_owned());
+        return Err(
+            "credential rotation delta projection differs from active projection".to_owned(),
+        );
     }
     if active.generation == delivery.generation {
         return Err("credential rotation delivery generation must differ from active".to_owned());
@@ -1858,11 +1853,7 @@ mod credential_delivery_tests {
 
     #[test]
     fn rotation_delta_materialization_preserves_unselected_vm_classes() {
-        let active = full_bundle(
-            CredentialProjectionKind::Vm,
-            100,
-            CredentialDeliverySlot::A,
-        );
+        let active = full_bundle(CredentialProjectionKind::Vm, 100, CredentialDeliverySlot::A);
         let active_projection = match active.payload.as_ref().unwrap() {
             credential_delivery_bundle::Payload::Vm(value) => value.clone(),
             _ => unreachable!(),
