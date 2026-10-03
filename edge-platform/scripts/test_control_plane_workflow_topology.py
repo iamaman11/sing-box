@@ -27,6 +27,7 @@ VM_AGENT_CLI = Path("edge-platform/crates/edge-agent/src/cli.rs")
 SHARED_TYPES = Path("edge-platform/crates/edge-shared-types/src/lib.rs")
 PRODUCTION_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/production_command.rs")
 CREDENTIAL_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs")
+CREDENTIAL_CLI = Path("edge-platform/crates/edge-orchestrator/src/cli.rs")
 CREDENTIAL_PROVIDER = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs")
 CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credential_snapshot.rs")
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
@@ -78,6 +79,7 @@ def main() -> None:
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
+    credential_cli = CREDENTIAL_CLI.read_text(encoding="utf-8")
     credential_provider = CREDENTIAL_PROVIDER.read_text(encoding="utf-8")
     credential_snapshot = CREDENTIAL_SNAPSHOT.read_text(encoding="utf-8")
     credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
@@ -111,7 +113,8 @@ def main() -> None:
         and "class-scoped application rotation" in readme
         and "/production rollback" in runbook
         and "/credentials rotate tunnel-auth" in runbook
-        and "host-identity rotation remains a Stage-3 boundary" in runbook
+        and "canonical permanent" in runbook
+        and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
         and "Current execution is late Stage 3" in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
@@ -438,6 +441,15 @@ def main() -> None:
         and '"contract-plan"' not in credentials
         and '"contract-converge"' not in credentials
         and '"contract-prove"' not in credentials
+        and "ContractPlan" not in credential_cli
+        and "ContractConverge" not in credential_cli
+        and "ContractProve" not in credential_cli
+        and "FreshV2Publish" not in credential_cli
+        and "FreshV2RestoreBaseline" not in credential_cli
+        and "async fn converge(" not in credential_command
+        and "async fn prove(" not in credential_command
+        and "fresh_v2_publish" not in credential_command
+        and "fresh_v2_restore_baseline" not in credential_command
         and '"fresh-v2-cutover"' not in credentials
         and '"fresh-v2-publication-prove"' not in credentials
         and '"fresh-v2-cleanup"' not in credentials
@@ -515,7 +527,7 @@ def main() -> None:
 
     host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
-    host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
+    host_bootstrap_end = credential_command.index("fn plan(", host_bootstrap_start)
     host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]
     require(
         '"host-bootstrap-converge"' in credentials

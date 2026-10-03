@@ -296,10 +296,7 @@ impl CredentialDeliverySlotArg {
 
 #[derive(Debug, Clone, Copy, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
-    ContractPlan,
-    ContractConverge,
     ContractVerify,
-    ContractProve,
     HostBootstrapConverge,
     RotateApplication {
         #[arg(value_enum)]
@@ -309,10 +306,6 @@ pub(crate) enum CredentialDeliveryCommand {
         #[arg(value_enum)]
         slot: CredentialDeliverySlotArg,
     },
-    FreshV2Publish {
-        generation: u64,
-    },
-    FreshV2RestoreBaseline,
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]

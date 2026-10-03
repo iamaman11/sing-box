@@ -163,9 +163,10 @@ verification precedes promotion, and promotion is re-observed before any bounded
 uncommitted candidate is compensated back to the observed active generation. Do not reuse Stage-2
 `fresh-v2-*` proof/cutover commands.
 
-Windows/VM Access host identities remain a separate lifecycle. `host-bootstrap-converge` is create-once
-bootstrap/recovery and never implicitly rotates an installed host identity; explicit steady-state
-host-identity rotation remains a Stage-3 boundary until its replacement contract is accepted.
+Windows/VM Access host identities remain a separate lifecycle. They are canonical permanent
+(`forever`) create-once identities. `host-bootstrap-converge` is the accepted explicit
+bootstrap/recovery boundary and never implicitly rotates an installed host identity. Do not add a
+second steady-state host-token rotation transport or custom X25519/HKDF/AEAD handoff.
 
 ## 10. Recovery
 
