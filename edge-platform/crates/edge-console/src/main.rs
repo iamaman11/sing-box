@@ -9,9 +9,7 @@ use edge_controller_core::{
 };
 use edge_local_runtime::run_non_tun_loopback_smoke;
 use edge_observability::init as init_observability;
-use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
-};
+use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
 use rusqlite::Connection;
