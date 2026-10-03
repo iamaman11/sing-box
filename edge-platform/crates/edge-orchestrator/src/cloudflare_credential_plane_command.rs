@@ -125,6 +125,9 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await
         }
+        CredentialDeliveryCommand::RetireProofTokens => {
+            retire_proof_tokens(&control_token, &desired).await
+        }
         CredentialDeliveryCommand::RotateApplication {
             class,
             active_generation,
@@ -703,6 +706,124 @@ async fn host_bootstrap_converge(
     Ok(())
 }
 
+async fn retire_proof_tokens(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+) -> Result<(), String> {
+    let before = observe(control_token, desired).await?;
+    validate_access_retirement_boundary(desired, &before)?;
+
+    let mut mutations = 0u32;
+    for projection in projections(desired) {
+        let current_observation = observe(control_token, desired).await?;
+        validate_access_retirement_boundary(desired, &current_observation)?;
+        let current = projection_observation(&current_observation, &projection.projection)?;
+
+        let Some(proof_id) = current.proof_service_token_id.as_deref() else {
+            continue;
+        };
+        let host_id = current
+            .host_service_token_id
+            .as_deref()
+            .ok_or_else(|| format!("{} host service token is missing", projection.projection))?;
+        let app_id = current
+            .access_application_id
+            .as_deref()
+            .ok_or_else(|| format!("{} Access application is missing", projection.projection))?;
+        let policy = current
+            .access_policies
+            .first()
+            .ok_or_else(|| format!("{} Access policy is missing", projection.projection))?;
+
+        let host_only = vec![host_id.to_owned()];
+        let mut actual_ids = policy.include_service_token_ids.clone();
+        actual_ids.sort();
+        let mut expected_host_only = host_only.clone();
+        expected_host_only.sort();
+
+        if actual_ids != expected_host_only {
+            let update_error = cloudflare::update_access_service_policy_tokens(
+                control_token,
+                &desired.target_account_id,
+                app_id,
+                &policy.id,
+                &projection.access_policy_name,
+                &host_only,
+            )
+            .await
+            .err();
+
+            let after_policy = observe(control_token, desired).await?;
+            validate_access_retirement_boundary(desired, &after_policy)?;
+            let after_current =
+                projection_observation(&after_policy, &projection.projection)?;
+            let after_policy = after_current
+                .access_policies
+                .first()
+                .ok_or_else(|| format!("{} Access policy disappeared", projection.projection))?;
+            let mut after_ids = after_policy.include_service_token_ids.clone();
+            after_ids.sort();
+            if after_ids != expected_host_only {
+                return Err(match update_error {
+                    Some(err) => format!(
+                        "{} proof retirement policy update outcome is uncertain and was not replayed: {err}",
+                        projection.projection
+                    ),
+                    None => format!(
+                        "{} proof retirement policy update returned success but exact host-only policy was not observed",
+                        projection.projection
+                    ),
+                });
+            }
+            mutations += 1;
+        }
+
+        let delete_error = cloudflare::delete_access_service_token(
+            control_token,
+            &desired.target_account_id,
+            proof_id,
+        )
+        .await
+        .err();
+
+        let after_delete = observe(control_token, desired).await?;
+        validate_access_retirement_boundary(desired, &after_delete)?;
+        let after_current =
+            projection_observation(&after_delete, &projection.projection)?;
+        if after_current.proof_service_token_id.is_some() {
+            return Err(match delete_error {
+                Some(err) => format!(
+                    "{} proof service-token delete outcome is uncertain and was not replayed: {err}",
+                    projection.projection
+                ),
+                None => format!(
+                    "{} proof service-token delete returned success but the token is still present",
+                    projection.projection
+                ),
+            });
+        }
+        mutations += 1;
+    }
+
+    let after = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &after)?;
+    if after
+        .projections
+        .iter()
+        .any(|projection| projection.proof_service_token_id.is_some())
+    {
+        return Err("proof service-token retirement is not terminal".to_owned());
+    }
+
+    println!("credential_proof_token_retirement=PASS");
+    println!("proof_service_tokens_present=0");
+    println!("provider_mutations={mutations}");
+    println!("mutation_replay_after_uncertain=false");
+    println!("real_credentials_created=0");
+    println!("production_runtime_mutations=0");
+    Ok(())
+}
+
 fn plan(
     desired: &ProductionCredentialPlaneOwnership,
     observed: &CredentialPlaneObservation,
@@ -825,6 +946,21 @@ fn validate_access_boundary(
     desired: &ProductionCredentialPlaneOwnership,
     observed: &CredentialPlaneObservation,
 ) -> Result<(), String> {
+    validate_access_boundary_with_retirement_mode(desired, observed, false)
+}
+
+fn validate_access_retirement_boundary(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<(), String> {
+    validate_access_boundary_with_retirement_mode(desired, observed, true)
+}
+
+fn validate_access_boundary_with_retirement_mode(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    allow_retirement_intermediate: bool,
+) -> Result<(), String> {
     if observed.control_token_identity.status != "active" {
         return Err("CLOUDFLARE_CONTROL_TOKEN is not active".to_owned());
     }
@@ -866,25 +1002,6 @@ fn validate_access_boundary(
             return Err(format!(
                 "Worker {} must be published only on workers.dev with previews disabled",
                 projection.worker_name
-            ));
-        }
-
-        let proof_token_id = current
-            .proof_service_token_id
-            .as_deref()
-            .ok_or_else(|| format!("{} proof service token is missing", projection.projection))?;
-        if current.proof_service_token_enabled != Some(false) {
-            return Err(format!(
-                "{} proof service token must be disabled at rest",
-                projection.projection
-            ));
-        }
-        if current.proof_service_token_duration.as_deref()
-            != Some(desired.proof_token_duration.as_str())
-        {
-            return Err(format!(
-                "{} proof service token duration drifted",
-                projection.projection
             ));
         }
 
@@ -934,20 +1051,68 @@ fn validate_access_boundary(
             ));
         }
         let policy = &current.access_policies[0];
-        let mut observed_service_token_ids = policy.include_service_token_ids.clone();
-        observed_service_token_ids.sort();
-        let mut expected_service_token_ids =
-            vec![proof_token_id.to_owned(), host_token_id.to_owned()];
-        expected_service_token_ids.sort();
         if policy.name != projection.access_policy_name
             || policy.decision.as_deref() != Some("non_identity")
-            || observed_service_token_ids != expected_service_token_ids
             || policy.has_extra_rules
         {
             return Err(format!(
                 "{} Access service-token isolation policy drifted",
                 projection.projection
             ));
+        }
+
+        let mut observed_service_token_ids = policy.include_service_token_ids.clone();
+        observed_service_token_ids.sort();
+        match current.proof_service_token_id.as_deref() {
+            Some(proof_token_id) => {
+                if current.proof_service_token_enabled != Some(false) {
+                    return Err(format!(
+                        "{} proof service token must be disabled at rest",
+                        projection.projection
+                    ));
+                }
+                if current.proof_service_token_duration.as_deref()
+                    != Some(desired.proof_token_duration.as_str())
+                {
+                    return Err(format!(
+                        "{} proof service token duration drifted",
+                        projection.projection
+                    ));
+                }
+
+                let mut legacy_ids =
+                    vec![proof_token_id.to_owned(), host_token_id.to_owned()];
+                legacy_ids.sort();
+                let mut host_only_ids = vec![host_token_id.to_owned()];
+                host_only_ids.sort();
+                if observed_service_token_ids != legacy_ids
+                    && (!allow_retirement_intermediate
+                        || observed_service_token_ids != host_only_ids)
+                {
+                    return Err(format!(
+                        "{} Access service-token isolation policy drifted",
+                        projection.projection
+                    ));
+                }
+            }
+            None => {
+                if current.proof_service_token_enabled.is_some()
+                    || current.proof_service_token_duration.is_some()
+                {
+                    return Err(format!(
+                        "{} absent proof token has inconsistent provider metadata",
+                        projection.projection
+                    ));
+                }
+                let mut host_only_ids = vec![host_token_id.to_owned()];
+                host_only_ids.sort();
+                if observed_service_token_ids != host_only_ids {
+                    return Err(format!(
+                        "{} retired proof-token policy is not exact host-only Service Auth",
+                        projection.projection
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -1559,6 +1724,22 @@ mod tests {
         }
     }
 
+    fn retire_proof_in_observation(
+        observed: &mut CredentialPlaneObservation,
+        projection_name: &str,
+    ) {
+        let current = observed
+            .projections
+            .iter_mut()
+            .find(|projection| projection.projection == projection_name)
+            .unwrap();
+        let host_id = current.host_service_token_id.clone().unwrap();
+        current.proof_service_token_id = None;
+        current.proof_service_token_enabled = None;
+        current.proof_service_token_duration = None;
+        current.access_policies[0].include_service_token_ids = vec![host_id];
+    }
+
     fn make_terminal(observed: &mut CredentialPlaneObservation, projection_name: &str) {
         let current = observed
             .projections
@@ -1680,6 +1861,27 @@ mod tests {
             .include_service_token_ids
             .pop();
         assert!(plan(&desired, &observed).is_err());
+    }
+
+    #[test]
+    fn proof_retirement_accepts_only_exact_legacy_retired_or_command_intermediate_state() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "windows");
+        make_terminal(&mut observed, "vm");
+        assert!(validate_access_boundary(&desired, &observed).is_ok());
+
+        let host_id = observed.projections[0]
+            .host_service_token_id
+            .clone()
+            .unwrap();
+        observed.projections[0].access_policies[0].include_service_token_ids = vec![host_id];
+        assert!(validate_access_boundary(&desired, &observed).is_err());
+        assert!(validate_access_retirement_boundary(&desired, &observed).is_ok());
+
+        retire_proof_in_observation(&mut observed, "windows");
+        assert!(validate_access_boundary(&desired, &observed).is_ok());
+        assert!(validate_access_retirement_boundary(&desired, &observed).is_ok());
     }
 
     #[test]
