@@ -7,7 +7,6 @@ mod cli;
 mod cloudflare_credential_plane_command;
 mod cloudflare_dns_lifecycle_command;
 mod cloudflare_dns_lifecycle_service;
-mod cloudflare_historical_retirement;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
 mod cloudflare_production_inventory;
@@ -189,15 +188,6 @@ async fn run(
             }
             cli::ProductionCommand::Verify(args) => {
                 production_command::verify(release_context, &args.edge_agent_artifact_path).await
-            }
-            cli::ProductionCommand::HistoricalRetirementPlan => {
-                cloudflare_historical_retirement::plan().await
-            }
-            cli::ProductionCommand::HistoricalRetirementApply => {
-                cloudflare_historical_retirement::apply().await
-            }
-            cli::ProductionCommand::HistoricalRetirementVerify => {
-                cloudflare_historical_retirement::verify().await
             }
             cli::ProductionCommand::Rollback => production_command::rollback(release_context).await,
         },
