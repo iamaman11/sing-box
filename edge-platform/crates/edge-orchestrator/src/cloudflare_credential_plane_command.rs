@@ -1835,6 +1835,4 @@ mod tests {
         observed.projections[0].worker_binding_count = Some(3);
         assert!(plan(&desired, &observed).is_err());
     }
-
-
 }
