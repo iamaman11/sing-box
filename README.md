@@ -20,7 +20,7 @@ Historical plans are never execution authority. If any document conflicts with #
 
 ## Accepted architecture and convergence target
 
-The ownership model below is accepted. Cloudflare account convergence, Stage 2 fresh-v2/proxy-only acceptance, the Stage-3 historical application-exclusive Cloudflare retirement, local-owner production rollback and class-scoped application credential rotation are closed. Current execution is late Stage 3 in Issue #26: only deletion-first contraction of superseded zero-consumer migration/proof paths and final verification remain before Stage 3 can close. Permanent Windows/VM Access host identities keep the already accepted create-once bootstrap/recovery contract; no separate steady-state host-token rotation subsystem is required. Stage 4 then physically shrinks obsolete runtime/state/trust/glue and performs the dedicated final managed Windows TUN cutover. Stable architecture must not reopen closed provider migration or historical retirement.
+The ownership model below is accepted. Cloudflare account convergence, Stage 2 fresh-v2/proxy-only acceptance and Stage 3 are closed, including historical application-exclusive Cloudflare retirement, local-owner production rollback, class-scoped application credential rotation and proof-token retirement/contraction. Current execution is Stage 4A deletion-first physical shrink: remove only complete transitional vertical slices whose exact production/acceptance/bootstrap/recovery/rollback consumer set is zero. Permanent Windows/VM Access host identities keep the accepted create-once bootstrap/recovery contract; no separate steady-state host-token rotation subsystem is required. Stage 4A ends with one fresh repository-wide last-consumer audit; if every remaining transitional boundary still has a real consumer, record `STAGE4A=CLOSED` in Issue #26 and proceed to the dedicated Stage 4B managed Windows TUN cutover. Stable architecture must not reopen closed provider migration, Stage 3 or accepted Stage 4A deletions merely for confidence.
 
 ```text
 Git / protected main
@@ -127,3 +127,5 @@ Always start a new engineering session by reading live:
 - the durable ReleaseSet only when release authority is required.
 
 Never continue from a saved SHA or chat memory without re-observation.
+
+Stage-transition rule: finish and terminally record any already-open contraction PR before selecting another boundary. After the final Stage 4A contraction, perform one fresh read-only last-consumer audit. Do not start managed TUN until Issue #26 explicitly records `STAGE4A=CLOSED`; do not invent replacement subsystems just to make a still-live boundary deletable.
