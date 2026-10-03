@@ -43,6 +43,7 @@ jobs:
               "converge",
               "verify",
               "diagnose",
+              "rollback",
           }:
               command_family = "production"
               operation = tokens[1]
@@ -58,7 +59,7 @@ jobs:
           else:
               fail(
                   "unsupported command grammar; steady-state production uses "
-                  "/production enroll-runtime|converge|verify|diagnose, provider-only target-plane commands, "
+                  "/production enroll-runtime|converge|verify|diagnose|rollback, provider-only target-plane commands, "
                   "or disposable /application acceptance|cleanup"
               )
 
@@ -235,7 +236,8 @@ jobs:
       needs.authorize.outputs.command_family == 'production' &&
       (
         needs.authorize.outputs.operation == 'converge' ||
-        needs.authorize.outputs.operation == 'verify'
+        needs.authorize.outputs.operation == 'verify' ||
+        needs.authorize.outputs.operation == 'rollback'
       )
     runs-on: ubuntu-24.04
     environment:
@@ -314,7 +316,7 @@ jobs:
             converge)
               provider_operation="active-converge"
               ;;
-            verify)
+            verify|rollback)
               provider_operation="verify-active"
               ;;
             *)
@@ -438,7 +440,8 @@ jobs:
         (
           (
             needs.authorize.outputs.operation == 'converge' ||
-            needs.authorize.outputs.operation == 'verify'
+            needs.authorize.outputs.operation == 'verify' ||
+            needs.authorize.outputs.operation == 'rollback'
           ) &&
           needs.production_provider.result == 'success'
         )
@@ -468,7 +471,7 @@ jobs:
 
     steps:
       - name: Download exact ReleaseSet-bound VM bundle
-        if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify'
+        if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify' || env.REQUESTED_OPERATION == 'rollback' || env.REQUESTED_OPERATION == 'rollback'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -503,7 +506,7 @@ jobs:
           test -x "${owner}"
 
           case "${REQUESTED_OPERATION}" in
-            converge|verify)
+            converge|verify|rollback)
               expected_revision="${PROVIDER_ACCEPTED_REVISION}"
               expected_release_set="${PROVIDER_RELEASE_SET_SHA256}"
               expected_owner="${PROVIDER_AGENT_SHA256}"
@@ -564,6 +567,9 @@ jobs:
             verify)
               local_operation="bundle-verify"
               ;;
+            rollback)
+              local_operation="bundle-rollback"
+              ;;
             diagnose)
               local_operation="diagnose"
               ;;
@@ -574,7 +580,7 @@ jobs:
           esac
 
           result="${RUNNER_TEMP}/production-runtime-result.txt"
-          if [[ "${REQUESTED_OPERATION}" = "converge" || "${REQUESTED_OPERATION}" = "verify" ]]; then
+          if [[ "${REQUESTED_OPERATION}" = "converge" || "${REQUESTED_OPERATION}" = "verify" || "${REQUESTED_OPERATION}" = "rollback" ]]; then
             test -s "${EDGE_LOCAL_APPLICATION_BUNDLE}"
             sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}" | tee "${result}"
           else
