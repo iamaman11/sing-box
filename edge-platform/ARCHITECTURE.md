@@ -379,10 +379,10 @@ re-observation before any replay.
 
 Operator-visible application rotation is class-scoped. The independent classes are
 `tunnel-auth`, `reality-identity` and `line2-proxy-auth`; rotating one must preserve the other
-two generations. Windows and VM Cloudflare Access host identities are separate credential classes
-with explicit bootstrap/recovery/rotation semantics and must never rotate implicitly as a side
-effect of application credential rotation. The accepted Stage-2 `fresh-v2-*` and contract-proof
-operations are migration/proof surfaces, not steady-state rotation commands.
+two generations. Windows and VM Cloudflare Access host identities are separate permanent
+(`forever`) identities with explicit create-once bootstrap/recovery semantics and must never rotate
+implicitly as a side effect of application credential rotation or retry. The accepted Stage-2
+`fresh-v2-*` and contract-proof operations are migration/proof surfaces, not steady-state commands.
 
 Non-secret endpoint/domain/port policy remains Git-owned desired state and is not duplicated into
 credential payloads.
