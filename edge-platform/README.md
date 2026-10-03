@@ -81,13 +81,17 @@ Final normal operation converges toward:
 /windows <only genuinely Windows-local physical lifecycle operations>
 ```
 
-Current `main` intentionally exposes only `/production converge|verify|diagnose` as routine public
-production operations, plus exceptional `/production enroll-runtime` for explicit bootstrap. The
-legacy lease-based production rollback implementation is **not** in the public workflow grammar;
-`/production rollback` becomes supported only when the same persistent self-hosted-runner -> local-owner
-boundary is complete and accepted. Likewise, the current public credential workflow exposes
-`/credentials verify` plus explicit `host-bootstrap-converge`; class-scoped `/credentials rotate`
-is the remaining target, not an already accepted command.
+The routine production surface is `/production converge|verify|diagnose|rollback`, plus exceptional
+`/production enroll-runtime` for explicit bootstrap/re-enrollment. Rollback uses the same persistent
+self-hosted-runner -> typed local-owner boundary as converge/verify; the legacy lease/SSH rollback
+dispatch is removed.
+
+The credential surface includes read-only `/credentials verify`, explicit
+`host-bootstrap-converge`, and class-scoped application rotation:
+`/credentials rotate tunnel-auth|reality-identity|line2-proxy-auth`. Application rotation preserves
+unselected nested generations, publishes only the inactive A/B slot, and keeps host identities as a
+separate lifecycle. Explicit steady-state host-identity rotation remains a separate Stage-3 boundary;
+bootstrap retries still never rotate an installed host identity implicitly.
 
 Separate production-facing `/dns`, `/mesh`, `/zero-trust`, provider-internal and migration-only
 commands are transitional unless #26 explicitly says otherwise.
