@@ -99,18 +99,19 @@ resolve exact accepted ReleaseSet
  -> transport the exact ReleaseSet-bound application bundle
  -> production VM self-hosted low-privilege runner
  -> fixed sudo allowlist -> root-owned local edge-agent
- -> local bundle-converge / bundle-verify / diagnose
+ -> local bundle-converge / bundle-verify / bundle-rollback / diagnose
  -> provider + runtime verification
 ```
 
-Routine production converge/verify/diagnose does not acquire a support lease, open SSH, or use a
+Routine production converge/verify/diagnose/rollback does not acquire a support lease, open SSH, or use a
 TCP/gRPC agent listener. `/production enroll-runtime` is the explicit bootstrap/re-enrollment exception
 and must compensate its bounded temporary support access before PASS.
 
-Target steady-state rollback restores the previous exact accepted application release through that same
-persistent self-hosted-runner -> local-owner boundary and re-verifies runtime. Current `main` deliberately
-does not expose `/production rollback` until this replacement path is complete; the internal legacy
-lease/remote rollback implementation is transitional and must not be used as normal operation.
+Steady-state rollback restores the previous exact accepted application release through the same persistent
+self-hosted-runner -> local-owner boundary. The exact current ReleaseSet-bound bundle is used only as stale
+authorization: the local owner refuses the swap if active changed, switches to the previous immutable
+bundle, and accepts the rollback only after full runtime readiness. The old lease/remote rollback
+implementation is deleted from the normal orchestrator surface.
 
 Credential rollback is independent from application-release rollback.
 
