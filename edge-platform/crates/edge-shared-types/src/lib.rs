@@ -114,12 +114,24 @@ pub fn validate_credential_delivery_bundle(
         (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Vm(value)) => {
             validate_vm_credential_projection(value)
         }
-        (CredentialProjectionKind::Windows, credential_delivery_bundle::Payload::Vm(_)) => {
-            Err("Windows credential-delivery bundle cannot carry a VM projection".to_owned())
-        }
-        (CredentialProjectionKind::Vm, credential_delivery_bundle::Payload::Windows(_)) => {
-            Err("VM credential-delivery bundle cannot carry a Windows projection".to_owned())
-        }
+        (
+            CredentialProjectionKind::Windows,
+            credential_delivery_bundle::Payload::WindowsRotation(value),
+        ) => validate_windows_credential_rotation_delta(bundle.generation, value),
+        (
+            CredentialProjectionKind::Vm,
+            credential_delivery_bundle::Payload::VmRotation(value),
+        ) => validate_vm_credential_rotation_delta(bundle.generation, value),
+        (
+            CredentialProjectionKind::Windows,
+            credential_delivery_bundle::Payload::Vm(_)
+            | credential_delivery_bundle::Payload::VmRotation(_),
+        ) => Err("Windows credential-delivery bundle cannot carry a VM payload".to_owned()),
+        (
+            CredentialProjectionKind::Vm,
+            credential_delivery_bundle::Payload::Windows(_)
+            | credential_delivery_bundle::Payload::WindowsRotation(_),
+        ) => Err("VM credential-delivery bundle cannot carry a Windows payload".to_owned()),
         (CredentialProjectionKind::Unspecified, _) => unreachable!("validated above"),
     }
 }
@@ -163,16 +175,151 @@ fn validate_vm_credential_projection(value: &VmCredentialProjection) -> Result<(
         .line2_proxy
         .as_ref()
         .ok_or_else(|| "VM credential projection requires Line 2 proxy credentials".to_owned())?;
-    if line2.generation == 0 {
-        return Err(
-            "VmCredentialProjection.line2_proxy.generation must be greater than zero".to_owned(),
-        );
+    validate_proxy_credential_generation("VmCredentialProjection.line2_proxy", line2)
+}
+
+fn validate_proxy_credential_generation(
+    label: &str,
+    value: &ProxyCredentialGeneration,
+) -> Result<(), String> {
+    if value.generation == 0 {
+        return Err(format!("{label}.generation must be greater than zero"));
     }
-    validate_lower_hex(
-        "VmCredentialProjection.line2_proxy.password",
-        &line2.password,
-        64,
-    )
+    validate_lower_hex(&format!("{label}.password"), &value.password, 64)
+}
+
+fn validate_rotation_class(value: i32) -> Result<CredentialRotationClass, String> {
+    let class = CredentialRotationClass::try_from(value)
+        .map_err(|_| "credential rotation class is unknown".to_owned())?;
+    if class == CredentialRotationClass::Unspecified {
+        return Err("credential rotation class is required".to_owned());
+    }
+    Ok(class)
+}
+
+fn validate_windows_credential_rotation_delta(
+    delivery_generation: u64,
+    value: &WindowsCredentialRotationDelta,
+) -> Result<(), String> {
+    let class = validate_rotation_class(value.credential_class)?;
+    match class {
+        CredentialRotationClass::TunnelAuth => {
+            let tunnel = value.tunnel_auth.as_ref().ok_or_else(|| {
+                "Windows tunnel-auth rotation requires tunnel_auth".to_owned()
+            })?;
+            if value.reality_identity.is_some() {
+                return Err(
+                    "Windows tunnel-auth rotation must not carry Reality identity".to_owned(),
+                );
+            }
+            validate_tunnel_auth_generation(
+                "WindowsCredentialRotationDelta.tunnel_auth",
+                tunnel,
+            )?;
+            if tunnel.generation != delivery_generation {
+                return Err(
+                    "Windows tunnel-auth rotation generation must equal delivery generation"
+                        .to_owned(),
+                );
+            }
+            Ok(())
+        }
+        CredentialRotationClass::RealityIdentity => {
+            if value.tunnel_auth.is_some() {
+                return Err(
+                    "Windows Reality rotation must not carry tunnel authentication".to_owned(),
+                );
+            }
+            let reality = value.reality_identity.as_ref().ok_or_else(|| {
+                "Windows Reality rotation requires reality_identity".to_owned()
+            })?;
+            validate_reality_public_generation(
+                "WindowsCredentialRotationDelta.reality_identity",
+                reality,
+            )?;
+            if reality.generation != delivery_generation {
+                return Err(
+                    "Windows Reality rotation generation must equal delivery generation".to_owned(),
+                );
+            }
+            Ok(())
+        }
+        CredentialRotationClass::Line2ProxyAuth => {
+            if value.tunnel_auth.is_some() || value.reality_identity.is_some() {
+                return Err(
+                    "Windows Line 2 rotation carries no Windows secret material".to_owned(),
+                );
+            }
+            Ok(())
+        }
+        CredentialRotationClass::Unspecified => unreachable!("validated above"),
+    }
+}
+
+fn validate_vm_credential_rotation_delta(
+    delivery_generation: u64,
+    value: &VmCredentialRotationDelta,
+) -> Result<(), String> {
+    let class = validate_rotation_class(value.credential_class)?;
+    match class {
+        CredentialRotationClass::TunnelAuth => {
+            let tunnel = value
+                .tunnel_auth
+                .as_ref()
+                .ok_or_else(|| "VM tunnel-auth rotation requires tunnel_auth".to_owned())?;
+            if value.reality_identity.is_some() || value.line2_proxy.is_some() {
+                return Err(
+                    "VM tunnel-auth rotation must carry only tunnel authentication".to_owned(),
+                );
+            }
+            validate_tunnel_auth_generation("VmCredentialRotationDelta.tunnel_auth", tunnel)?;
+            if tunnel.generation != delivery_generation {
+                return Err(
+                    "VM tunnel-auth rotation generation must equal delivery generation".to_owned(),
+                );
+            }
+            Ok(())
+        }
+        CredentialRotationClass::RealityIdentity => {
+            if value.tunnel_auth.is_some() || value.line2_proxy.is_some() {
+                return Err("VM Reality rotation must carry only Reality identity".to_owned());
+            }
+            let reality = value
+                .reality_identity
+                .as_ref()
+                .ok_or_else(|| "VM Reality rotation requires reality_identity".to_owned())?;
+            validate_reality_private_generation(
+                "VmCredentialRotationDelta.reality_identity",
+                reality,
+            )?;
+            if reality.generation != delivery_generation {
+                return Err(
+                    "VM Reality rotation generation must equal delivery generation".to_owned(),
+                );
+            }
+            Ok(())
+        }
+        CredentialRotationClass::Line2ProxyAuth => {
+            if value.tunnel_auth.is_some() || value.reality_identity.is_some() {
+                return Err("VM Line 2 rotation must carry only line2_proxy".to_owned());
+            }
+            let line2 = value
+                .line2_proxy
+                .as_ref()
+                .ok_or_else(|| "VM Line 2 rotation requires line2_proxy".to_owned())?;
+            validate_proxy_credential_generation(
+                "VmCredentialRotationDelta.line2_proxy",
+                line2,
+            )?;
+            if line2.generation != delivery_generation {
+                return Err(
+                    "VM Line 2 rotation generation must equal delivery generation".to_owned(),
+                );
+            }
+            Ok(())
+        }
+        CredentialRotationClass::Unspecified => unreachable!("validated above"),
+    }
 }
 
 fn validate_tunnel_auth_generation(
@@ -308,6 +455,14 @@ pub fn credential_delivery_bundle_sha256(
         .collect())
 }
 
+pub fn credential_delivery_is_rotation_delta(bundle: &CredentialDeliveryBundle) -> bool {
+    matches!(
+        bundle.payload,
+        Some(credential_delivery_bundle::Payload::WindowsRotation(_))
+            | Some(credential_delivery_bundle::Payload::VmRotation(_))
+    )
+}
+
 pub fn local_credential_bundle_ref(
     bundle: &CredentialDeliveryBundle,
 ) -> Result<LocalCredentialBundleRef, String> {
@@ -315,11 +470,101 @@ pub fn local_credential_bundle_ref(
     if bundle.dummy_non_secret {
         return Err("local credential state cannot reference a dummy delivery bundle".to_owned());
     }
+    if credential_delivery_is_rotation_delta(bundle) {
+        return Err(
+            "local credential state cannot reference an unmaterialized rotation delta".to_owned(),
+        );
+    }
     Ok(LocalCredentialBundleRef {
         generation: bundle.generation,
         slot: bundle.slot,
         sha256: credential_delivery_bundle_sha256(bundle)?,
     })
+}
+
+pub fn materialize_credential_delivery_candidate(
+    active: Option<&CredentialDeliveryBundle>,
+    delivery: &CredentialDeliveryBundle,
+) -> Result<CredentialDeliveryBundle, String> {
+    validate_credential_delivery_bundle(delivery)?;
+    if delivery.dummy_non_secret {
+        return Err("credential candidate materialization refuses dummy bundles".to_owned());
+    }
+    if !credential_delivery_is_rotation_delta(delivery) {
+        local_credential_bundle_ref(delivery)?;
+        return Ok(delivery.clone());
+    }
+
+    let active = active.ok_or_else(|| {
+        "credential rotation delta requires one validated active local projection".to_owned()
+    })?;
+    validate_credential_delivery_bundle(active)?;
+    local_credential_bundle_ref(active)?;
+    if active.projection != delivery.projection {
+        return Err("credential rotation delta projection differs from active projection".to_owned());
+    }
+    if active.generation == delivery.generation {
+        return Err("credential rotation delivery generation must differ from active".to_owned());
+    }
+    if active.slot == delivery.slot {
+        return Err("credential rotation delta must use the slot opposite active".to_owned());
+    }
+
+    let payload = match (active.payload.as_ref(), delivery.payload.as_ref()) {
+        (
+            Some(credential_delivery_bundle::Payload::Windows(active)),
+            Some(credential_delivery_bundle::Payload::WindowsRotation(delta)),
+        ) => {
+            let mut next = active.clone();
+            match validate_rotation_class(delta.credential_class)? {
+                CredentialRotationClass::TunnelAuth => {
+                    next.tunnel_auth = delta.tunnel_auth.clone();
+                }
+                CredentialRotationClass::RealityIdentity => {
+                    next.reality_identity = delta.reality_identity.clone();
+                }
+                CredentialRotationClass::Line2ProxyAuth => {}
+                CredentialRotationClass::Unspecified => unreachable!("validated above"),
+            }
+            credential_delivery_bundle::Payload::Windows(next)
+        }
+        (
+            Some(credential_delivery_bundle::Payload::Vm(active)),
+            Some(credential_delivery_bundle::Payload::VmRotation(delta)),
+        ) => {
+            let mut next = active.clone();
+            match validate_rotation_class(delta.credential_class)? {
+                CredentialRotationClass::TunnelAuth => {
+                    next.tunnel_auth = delta.tunnel_auth.clone();
+                }
+                CredentialRotationClass::RealityIdentity => {
+                    next.reality_identity = delta.reality_identity.clone();
+                }
+                CredentialRotationClass::Line2ProxyAuth => {
+                    next.line2_proxy = delta.line2_proxy.clone();
+                }
+                CredentialRotationClass::Unspecified => unreachable!("validated above"),
+            }
+            credential_delivery_bundle::Payload::Vm(next)
+        }
+        _ => {
+            return Err(
+                "credential rotation delta and active projection payloads do not match".to_owned(),
+            );
+        }
+    };
+
+    let materialized = CredentialDeliveryBundle {
+        schema_version: delivery.schema_version,
+        generation: delivery.generation,
+        projection: delivery.projection,
+        dummy_non_secret: false,
+        slot: delivery.slot,
+        payload: Some(payload),
+    };
+    validate_credential_delivery_bundle(&materialized)?;
+    local_credential_bundle_ref(&materialized)?;
+    Ok(materialized)
 }
 
 pub fn encode_local_credential_state(state: &LocalCredentialState) -> Result<Vec<u8>, String> {
