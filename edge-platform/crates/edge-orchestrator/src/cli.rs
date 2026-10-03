@@ -188,7 +188,6 @@ pub(crate) enum ProductionCommand {
     EnrollRuntime(ProductionEnrollRuntimeArgs),
     Converge(ProductionRuntimeArgs),
     Verify(ProductionRuntimeArgs),
-    Rollback,
 }
 
 #[derive(Debug, Args, Clone)]
