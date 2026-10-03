@@ -25,12 +25,14 @@ Current routine owner-gated production commands on `main` are:
 /production verify
 /production converge
 /production diagnose
+/production rollback
 ```
 
 `/production enroll-runtime` is an exceptional bootstrap/re-enrollment operation, not normal steady-state
-control. `/production rollback` is **not currently exposed by the production workflow**: the remaining
-Stage-3 work must move rollback onto the accepted self-hosted-runner -> typed local-owner boundary before
-it becomes an operator command. Do not invoke the internal legacy lease/remote rollback implementation.
+control. Production rollback is ReleaseSet-bound: the workflow transports the exact currently authorized
+application bundle to the production self-hosted runner, and the root-owned local owner refuses rollback
+if its active bundle no longer matches that authorization. Rollback never opens routine support access,
+SSH forwarding or TCP/gRPC agent control.
 
 Use only commands currently authorized by #26. Historical provider-specific operator surfaces are not
 normal production API and must not be revived merely because lower-level typed implementation remains.
@@ -144,10 +146,24 @@ publishes one new candidate into the inactive fixed A/B slot, preserves unrelate
 generations, verifies both least-privilege projections and host-local runtime behavior, then promotes
 through the typed active/candidate/previous state transition with bounded rollback/grace.
 
-Current `main` does **not** expose `/credentials rotate`; the public credential workflow currently supports
-read-only `/credentials verify` plus explicit `host-bootstrap-converge`. Do not reuse Stage-2 `fresh-v2-*`
-proof/cutover commands as steady-state rotation. #26 owns the remaining rotation implementation and live
-acceptance gate.
+The public credential workflow supports:
+```text
+/credentials verify
+/credentials rotate tunnel-auth
+/credentials rotate reality-identity
+/credentials rotate line2-proxy-auth
+/credentials host-bootstrap-converge
+```
+
+Application rotation first proves paired active cursors, explicitly retires an older previous buffer
+when beginning the next requested rotation, publishes only the slot opposite active, performs read-only
+data-plane admission on both hosts, stages and functionally verifies both projections, and promotes with
+re-observation before any bounded retry. A failed uncommitted candidate is compensated back to the
+observed active generation. Do not reuse Stage-2 `fresh-v2-*` proof/cutover commands.
+
+Windows/VM Access host identities remain a separate lifecycle. `host-bootstrap-converge` is create-once
+bootstrap/recovery and never implicitly rotates an installed host identity; explicit steady-state
+host-identity rotation remains a Stage-3 boundary until its replacement contract is accepted.
 
 ## 10. Recovery
 
