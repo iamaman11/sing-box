@@ -261,16 +261,18 @@ def main() -> None:
     )
     windows_stage = windows_controller_runtime[windows_stage_start:windows_stage_end]
     require(
-        "store.stage_candidate(&bundle)" in vm_stage
-        and "local_credential_bundle_ref(&bundle)" in vm_stage
+        "store.stage_delivery_candidate(&bundle)" in vm_stage
+        and "local_credential_bundle_ref(&bundle)" not in vm_stage
         and "promote_candidate(" not in vm_stage
         and "rollback_previous(" not in vm_stage
         and "require_installed_windows_credential_owner" in windows_stage
-        and "store.stage_candidate(&bundle)" in windows_stage
-        and "local_credential_bundle_ref(&bundle)" in windows_stage
+        and "store.stage_delivery_candidate(&bundle)" in windows_stage
+        and "local_credential_bundle_ref(&bundle)" not in windows_stage
         and "promote_candidate(" not in windows_stage
-        and "rollback_previous(" not in windows_stage,
-        "candidate ingress functions must remain stage-only; transition authority stays in the bounded local-owner command",
+        and "rollback_previous(" not in windows_stage
+        and "materialize_credential_delivery_candidate" in credential_store
+        and "self.stage_candidate(&candidate)" in credential_store,
+        "candidate ingress must materialize typed rotation deltas inside the local secret store and remain stage-only; transition authority stays in the bounded local-owner command",
     )
     require(
         "StageCredentialCandidateRequest" not in windows_console
