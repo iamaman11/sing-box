@@ -7,6 +7,14 @@ const API_ROOT: &str = "https://api.cloudflare.com/client/v4";
 const MAX_API_PAGES: u32 = 1000;
 const API_PAGE_SIZE: u32 = 1000;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareDnsRecord {
+    pub zone_name: String,
+    pub zone_id: String,
+    pub record_name: String,
+    pub ip: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareDnsObservedRecord {
     pub id: String,
@@ -2006,6 +2014,15 @@ fn api_token_identity_from_record(
     }
 }
 
+pub fn mock_upsert_a_record(zone_name: &str, record_name: &str, ip: &str) -> CloudflareDnsRecord {
+    CloudflareDnsRecord {
+        zone_name: zone_name.to_owned(),
+        zone_id: format!("mock-zone-{}", zone_name.replace('.', "-")),
+        record_name: record_name.to_owned(),
+        ip: ip.to_owned(),
+    }
+}
+
 fn mesh_node_from_record(record: MeshNodeRecord) -> CloudflareMeshNode {
     CloudflareMeshNode {
         id: record.id,
@@ -2087,17 +2104,6 @@ async fn fetch_zone(client: &Client, zone_name: &str) -> Result<ZoneRecord, Stri
         .into_iter()
         .next()
         .ok_or_else(|| format!("Cloudflare zone not found: {zone_name}"))
-}
-
-async fn fetch_record(
-    client: &Client,
-    zone_id: &str,
-    record_name: &str,
-) -> Result<Option<DnsRecord>, String> {
-    Ok(fetch_records(client, zone_id, record_name)
-        .await?
-        .into_iter()
-        .next())
 }
 
 async fn fetch_records(
@@ -2456,6 +2462,13 @@ mod tests {
         assert!(!is_workers_subdomain_not_configured_error(
             "Cloudflare API returned 404 Not Found: {\"errors\":[{\"code\":10007,\"message\":\"different\"}]}"
         ));
+    }
+
+    #[test]
+    fn creates_mock_cloudflare_record() {
+        let record = mock_upsert_a_record("example.com", "edge.example.com", "203.0.113.10");
+        assert_eq!(record.zone_id, "mock-zone-example-com");
+        assert_eq!(record.record_name, "edge.example.com");
     }
 
     #[test]
