@@ -262,6 +262,38 @@ impl CloudflareDnsCommand {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum CredentialRotationClassArg {
+    TunnelAuth,
+    RealityIdentity,
+    Line2ProxyAuth,
+}
+
+impl CredentialRotationClassArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::TunnelAuth => "tunnel-auth",
+            Self::RealityIdentity => "reality-identity",
+            Self::Line2ProxyAuth => "line2-proxy-auth",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum CredentialDeliverySlotArg {
+    A,
+    B,
+}
+
+impl CredentialDeliverySlotArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::B => "B",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractPlan,
@@ -269,6 +301,14 @@ pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
     ContractProve,
     HostBootstrapConverge,
+    RotateApplication {
+        #[arg(value_enum)]
+        class: CredentialRotationClassArg,
+        active_generation: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+    },
     FreshV2Publish { generation: u64 },
     FreshV2RestoreBaseline,
 }
@@ -675,6 +715,15 @@ mod tests {
         let cases = [
             vec!["edge-orchestrator", "production", "diagnose"],
             vec!["edge-orchestrator", "credentials", "contract-verify"],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "rotate-application",
+                "tunnel-auth",
+                "100",
+                "101",
+                "b",
+            ],
             vec![
                 "edge-orchestrator",
                 "application-cleanup",
