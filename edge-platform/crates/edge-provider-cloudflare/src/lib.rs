@@ -7,14 +7,6 @@ const API_ROOT: &str = "https://api.cloudflare.com/client/v4";
 const MAX_API_PAGES: u32 = 1000;
 const API_PAGE_SIZE: u32 = 1000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CloudflareDnsRecord {
-    pub zone_name: String,
-    pub zone_id: String,
-    pub record_name: String,
-    pub ip: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareDnsObservedRecord {
     pub id: String,
@@ -198,24 +190,6 @@ pub struct CloudflareWorkerSubdomain {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CloudflareWorkersSubdomain {
     pub subdomain: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareWorkerProbe {
-    pub status: u16,
-    pub content_type: Option<String>,
-    pub cf_ray: Option<String>,
-    pub body: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CloudflareAccessLoginEvent {
-    pub datetime: Option<String>,
-    pub is_successful_login: Option<bool>,
-    pub approving_policy_id: Option<String>,
-    pub cf_ray_id: Option<String>,
-    pub identity_provider: Option<String>,
-    pub service_token_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -644,69 +618,6 @@ pub async fn update_access_service_policy_tokens(
     ensure_success(response).await
 }
 
-pub async fn probe_worker(
-    url: &str,
-    credential: Option<&CloudflareAccessServiceCredential>,
-) -> Result<CloudflareWorkerProbe, String> {
-    require_non_empty("Cloudflare Worker probe URL", url)?;
-    let client = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("failed to build bounded Cloudflare Worker probe client: {err}"))?;
-    let mut request = client.get(url);
-    if let Some(credential) = credential {
-        request = request
-            .header("CF-Access-Client-ID", &credential.client_id)
-            .header("CF-Access-Client-Secret", &credential.client_secret);
-    }
-    let response = request.send().await.map_err(|err| {
-        format!(
-            "Cloudflare Worker probe request failed: {err}; timeout={} connect={} request={} body={} decode={} status={}",
-            err.is_timeout(),
-            err.is_connect(),
-            err.is_request(),
-            err.is_body(),
-            err.is_decode(),
-            err.status()
-                .map(|status| status.as_u16().to_string())
-                .unwrap_or_else(|| "NONE".to_owned())
-        )
-    })?;
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    let cf_ray = response
-        .headers()
-        .get("cf-ray")
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    if status != 200 {
-        return Ok(CloudflareWorkerProbe {
-            status,
-            content_type,
-            cf_ray,
-            body: Vec::new(),
-        });
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|err| format!("failed to read Cloudflare Worker probe body: {err}"))?;
-    if bytes.len() > 4096 {
-        return Err("Cloudflare Worker 200 probe body exceeded 4096-byte bound".to_owned());
-    }
-    Ok(CloudflareWorkerProbe {
-        status,
-        content_type,
-        cf_ray,
-        body: bytes.to_vec(),
-    })
-}
-
 pub async fn list_worker_scripts(
     api_token: &str,
     account_id: &str,
@@ -783,130 +694,6 @@ pub async fn list_access_service_tokens(
     ))
 }
 
-pub async fn get_access_service_token(
-    api_token: &str,
-    account_id: &str,
-    token_id: &str,
-) -> Result<CloudflareAccessServiceToken, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access service token ID", token_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .get(format!(
-            "{API_ROOT}/accounts/{account_id}/access/service_tokens/{token_id}"
-        ))
-        .send()
-        .await
-        .map_err(|err| format!("failed to get Cloudflare Access service token: {err}"))?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-    access_service_token_from_value(payload.result)
-}
-
-pub async fn list_access_login_events(
-    api_token: &str,
-    account_id: &str,
-    ray_id: &str,
-    datetime_start: &str,
-    datetime_end: &str,
-) -> Result<Vec<CloudflareAccessLoginEvent>, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Access login Ray ID", ray_id)?;
-    require_non_empty("Cloudflare Access login datetime_start", datetime_start)?;
-    require_non_empty("Cloudflare Access login datetime_end", datetime_end)?;
-
-    const QUERY: &str = r#"query accessLoginRequestsAdaptiveGroups($accountTag: string, $rayId: string, $datetimeStart: string, $datetimeEnd: string) {
-  viewer {
-    accounts(filter: {accountTag: $accountTag}) {
-      accessLoginRequestsAdaptiveGroups(
-        limit: 100
-        filter: {datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd, cfRayId: $rayId}
-        orderBy: [datetime_ASC]
-      ) {
-        dimensions {
-          datetime
-          isSuccessfulLogin
-          approvingPolicyId
-          cfRayId
-          identityProvider
-          serviceTokenId
-        }
-      }
-    }
-  }
-}"#;
-
-    let client = authorized_client(api_token)?;
-    let response = client
-        .post(format!("{API_ROOT}/graphql"))
-        .json(&serde_json::json!({
-            "query": QUERY,
-            "variables": {
-                "accountTag": account_id,
-                "rayId": ray_id,
-                "datetimeStart": datetime_start,
-                "datetimeEnd": datetime_end
-            }
-        }))
-        .send()
-        .await
-        .map_err(|err| format!("failed to query Cloudflare GraphQL Access login events: {err}"))?;
-    let status = response.status();
-    let payload = response
-        .json::<Value>()
-        .await
-        .map_err(|err| format!("failed to decode Cloudflare GraphQL response: {err}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "Cloudflare GraphQL returned {status}: {}",
-            graphql_error_summary(&payload)
-        ));
-    }
-    if payload
-        .get("errors")
-        .and_then(Value::as_array)
-        .is_some_and(|errors| !errors.is_empty())
-    {
-        return Err(format!(
-            "Cloudflare GraphQL returned errors: {}",
-            graphql_error_summary(&payload)
-        ));
-    }
-
-    let accounts = payload
-        .get("data")
-        .and_then(|value| value.get("viewer"))
-        .and_then(|value| value.get("accounts"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            "Cloudflare GraphQL Access response is missing data.viewer.accounts".to_owned()
-        })?;
-    if accounts.len() != 1 {
-        return Err(format!(
-            "Cloudflare GraphQL Access response expected one account, observed {}",
-            accounts.len()
-        ));
-    }
-    accounts[0]
-        .get("accessLoginRequestsAdaptiveGroups")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            "Cloudflare GraphQL Access response is missing accessLoginRequestsAdaptiveGroups"
-                .to_owned()
-        })?
-        .iter()
-        .cloned()
-        .map(access_login_event_from_value)
-        .collect()
-}
-
-pub fn is_graphql_authorization_error(error: &str) -> bool {
-    let error = error.to_ascii_lowercase();
-    error.contains("403")
-        || error.contains("unauthorized")
-        || error.contains("not authorized for that account")
-        || error.contains("does not have access to the path")
-}
-
 pub async fn list_dns_record_summaries(
     api_token: &str,
     zone_name: &str,
@@ -966,74 +753,6 @@ pub async fn list_worker_routes(
             .then(left.id.cmp(&right.id))
     });
     Ok(routes)
-}
-
-pub async fn upsert_a_record(
-    api_token: &str,
-    zone_name: &str,
-    record_name: &str,
-    ip: &str,
-) -> Result<CloudflareDnsRecord, String> {
-    let client = authorized_client(api_token)?;
-    let zone = fetch_zone(&client, zone_name).await?;
-    let body = DnsRecordWriteRequest {
-        record_type: "A".to_owned(),
-        name: record_name.to_owned(),
-        content: ip.to_owned(),
-        ttl: 120,
-        proxied: false,
-    };
-    let record = fetch_record(&client, &zone.id, record_name).await?;
-
-    if let Some(record) = record {
-        let response = client
-            .put(format!(
-                "{API_ROOT}/zones/{}/dns_records/{}",
-                zone.id, record.id
-            ))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| format!("failed to update Cloudflare DNS record: {err}"))?;
-        ensure_success(response).await?;
-    } else {
-        let response = client
-            .post(format!("{API_ROOT}/zones/{}/dns_records", zone.id))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| format!("failed to create Cloudflare DNS record: {err}"))?;
-        ensure_success(response).await?;
-    }
-
-    Ok(CloudflareDnsRecord {
-        zone_name: zone_name.to_owned(),
-        zone_id: zone.id,
-        record_name: record_name.to_owned(),
-        ip: ip.to_owned(),
-    })
-}
-
-pub async fn delete_a_record(
-    api_token: &str,
-    zone_name: &str,
-    record_name: &str,
-) -> Result<(), String> {
-    let client = authorized_client(api_token)?;
-    let zone = fetch_zone(&client, zone_name).await?;
-    let Some(record) = fetch_record(&client, &zone.id, record_name).await? else {
-        return Ok(());
-    };
-    let response = client
-        .delete(format!(
-            "{API_ROOT}/zones/{}/dns_records/{}",
-            zone.id, record.id
-        ))
-        .send()
-        .await
-        .map_err(|err| format!("failed to delete Cloudflare DNS record: {err}"))?;
-    ensure_success(response).await?;
-    Ok(())
 }
 
 pub async fn list_a_records(
@@ -1172,25 +891,6 @@ pub async fn list_mesh_nodes(
     Err(format!(
         "Cloudflare Mesh node pagination exceeded {MAX_API_PAGES} pages"
     ))
-}
-
-pub async fn get_mesh_node(
-    api_token: &str,
-    account_id: &str,
-    node_id: &str,
-) -> Result<CloudflareMeshNode, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    require_non_empty("Cloudflare Mesh node ID", node_id)?;
-    let client = authorized_client(api_token)?;
-    let response = client
-        .get(format!(
-            "{API_ROOT}/accounts/{account_id}/warp_connector/{node_id}"
-        ))
-        .send()
-        .await
-        .map_err(|err| format!("failed to get Cloudflare Mesh node: {err}"))?;
-    let payload: ApiEnvelope<MeshNodeRecord> = parse_success_json(response).await?;
-    Ok(mesh_node_from_record(payload.result))
 }
 
 pub async fn create_mesh_node(
@@ -1484,15 +1184,6 @@ pub async fn set_device_profile_includes(
     set_device_profile_split_tunnels(api_token, account_id, profile_id, "include", entries).await
 }
 
-pub async fn set_device_profile_excludes(
-    api_token: &str,
-    account_id: &str,
-    profile_id: &str,
-    entries: &[CloudflareSplitTunnelWrite],
-) -> Result<Vec<CloudflareSplitTunnelEntry>, String> {
-    set_device_profile_split_tunnels(api_token, account_id, profile_id, "exclude", entries).await
-}
-
 async fn set_device_profile_split_tunnels(
     api_token: &str,
     account_id: &str,
@@ -1652,36 +1343,6 @@ pub async fn list_access_application_policies(
         .into_iter()
         .map(access_policy_from_value)
         .collect()
-}
-
-pub async fn list_access_reusable_policies(
-    api_token: &str,
-    account_id: &str,
-) -> Result<Vec<CloudflareAccessPolicy>, String> {
-    require_non_empty("Cloudflare account ID", account_id)?;
-    let client = authorized_client(api_token)?;
-    let mut policies = Vec::new();
-    for page in 1..=MAX_API_PAGES {
-        let response = client
-            .get(format!("{API_ROOT}/accounts/{account_id}/access/policies"))
-            .query(&[("page", page.to_string()), ("per_page", "50".to_owned())])
-            .send()
-            .await
-            .map_err(|err| format!("failed to list Cloudflare Access reusable policies: {err}"))?;
-        let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
-        let values = value_array(payload.result, "Cloudflare Access reusable policies")?;
-        let page_count = values.len();
-        for value in values {
-            policies.push(access_policy_from_value(value)?);
-        }
-        if page_count < 50 {
-            policies.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-            return Ok(policies);
-        }
-    }
-    Err(format!(
-        "Cloudflare Access reusable policy pagination exceeded {MAX_API_PAGES} pages"
-    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2269,53 +1930,6 @@ fn access_service_token_from_value(value: Value) -> Result<CloudflareAccessServi
     })
 }
 
-fn access_login_event_from_value(value: Value) -> Result<CloudflareAccessLoginEvent, String> {
-    let dimensions = value
-        .get("dimensions")
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            "Cloudflare GraphQL Access login event dimensions must be an object".to_owned()
-        })?;
-    Ok(CloudflareAccessLoginEvent {
-        datetime: optional_value_string(dimensions, "datetime"),
-        is_successful_login: optional_boolish(dimensions, "isSuccessfulLogin")?,
-        approving_policy_id: optional_value_string(dimensions, "approvingPolicyId"),
-        cf_ray_id: optional_value_string(dimensions, "cfRayId"),
-        identity_provider: optional_value_string(dimensions, "identityProvider"),
-        service_token_id: optional_value_string(dimensions, "serviceTokenId"),
-    })
-}
-
-fn optional_boolish(
-    object: &serde_json::Map<String, Value>,
-    key: &str,
-) -> Result<Option<bool>, String> {
-    match object.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(value)) => Ok(Some(*value)),
-        Some(Value::Number(value)) if value.as_i64() == Some(0) => Ok(Some(false)),
-        Some(Value::Number(value)) if value.as_i64() == Some(1) => Ok(Some(true)),
-        Some(other) => Err(format!(
-            "Cloudflare GraphQL field {key} must be bool or 0/1, observed {other}"
-        )),
-    }
-}
-
-fn graphql_error_summary(payload: &Value) -> String {
-    payload
-        .get("errors")
-        .and_then(Value::as_array)
-        .map(|errors| {
-            errors
-                .iter()
-                .filter_map(|error| error.get("message").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        })
-        .filter(|summary| !summary.is_empty())
-        .unwrap_or_else(|| "response did not include GraphQL error messages".to_owned())
-}
-
 fn dns_record_summary_from_value(
     zone_id: &str,
     value: Value,
@@ -2389,15 +2003,6 @@ fn api_token_identity_from_record(
             "Cloudflare API token status is unsupported: {}",
             record.status
         )),
-    }
-}
-
-pub fn mock_upsert_a_record(zone_name: &str, record_name: &str, ip: &str) -> CloudflareDnsRecord {
-    CloudflareDnsRecord {
-        zone_name: zone_name.to_owned(),
-        zone_id: format!("mock-zone-{}", zone_name.replace('.', "-")),
-        record_name: record_name.to_owned(),
-        ip: ip.to_owned(),
     }
 }
 
@@ -2508,23 +2113,6 @@ async fn fetch_records(
         .map_err(|err| format!("failed to query Cloudflare DNS records: {err}"))?;
     let payload: ApiEnvelope<Vec<DnsRecord>> = parse_success_json(response).await?;
     Ok(payload.result)
-}
-
-async fn ensure_secret_mutation_success(response: reqwest::Response) -> Result<(), String> {
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!(
-            "Cloudflare Worker secret mutation failed with HTTP status {status}"
-        ));
-    }
-    let payload: ApiEnvelope<Value> = response
-        .json()
-        .await
-        .map_err(|_| "invalid Cloudflare Worker secret mutation JSON response".to_owned())?;
-    if !payload.success {
-        return Err("Cloudflare Worker secret mutation returned success=false".to_owned());
-    }
-    Ok(())
 }
 
 async fn ensure_success(response: reqwest::Response) -> Result<(), String> {
@@ -2658,39 +2246,6 @@ mod tests {
         assert!(envelope.success);
         assert!(envelope.result.is_null());
         assert!(envelope.errors.is_empty());
-    }
-
-    #[test]
-    fn parses_graphql_access_login_correlation_without_identity_secrets() {
-        let event = access_login_event_from_value(serde_json::json!({
-            "dimensions": {
-                "datetime": "2026-09-28T12:00:00Z",
-                "isSuccessfulLogin": 1,
-                "approvingPolicyId": "policy-id",
-                "cfRayId": "187d944c61940c77",
-                "identityProvider": "nonidentity",
-                "serviceTokenId": "token-id"
-            }
-        }))
-        .unwrap();
-        assert_eq!(event.is_successful_login, Some(true));
-        assert_eq!(event.approving_policy_id.as_deref(), Some("policy-id"));
-        assert_eq!(event.cf_ray_id.as_deref(), Some("187d944c61940c77"));
-        assert_eq!(event.identity_provider.as_deref(), Some("nonidentity"));
-        assert_eq!(event.service_token_id.as_deref(), Some("token-id"));
-    }
-
-    #[test]
-    fn recognizes_graphql_authorization_errors_without_hiding_schema_errors() {
-        assert!(is_graphql_authorization_error(
-            "Cloudflare GraphQL returned 403 Forbidden: not authorized for that account"
-        ));
-        assert!(is_graphql_authorization_error(
-            "Cloudflare GraphQL returned errors: does not have access to the path viewer.accounts"
-        ));
-        assert!(!is_graphql_authorization_error(
-            "Cloudflare GraphQL returned errors: unknown field accessLoginRequestsAdaptiveGroups"
-        ));
     }
 
     #[test]
@@ -2901,13 +2456,6 @@ mod tests {
         assert!(!is_workers_subdomain_not_configured_error(
             "Cloudflare API returned 404 Not Found: {\"errors\":[{\"code\":10007,\"message\":\"different\"}]}"
         ));
-    }
-
-    #[test]
-    fn creates_mock_cloudflare_record() {
-        let record = mock_upsert_a_record("example.com", "edge.example.com", "203.0.113.10");
-        assert_eq!(record.zone_id, "mock-zone-example-com");
-        assert_eq!(record.record_name, "edge.example.com");
     }
 
     #[test]
