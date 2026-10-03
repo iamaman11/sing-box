@@ -152,6 +152,25 @@ def main() -> None:
     require("workflow_call:" in vultr, "Vultr lifecycle must be reusable")
     require("workflow_call:" in windows_physical, "Windows physical cycle must be reusable")
     require("workflow_call:" in credentials, "credential lifecycle must be reusable")
+    production_proto = Path("edge-platform/proto/edge/platform/v1/production.proto").read_text(encoding="utf-8")
+    production_spec = Path("infra/production/production.textproto").read_text(encoding="utf-8")
+    production_core = Path("edge-platform/crates/edge-controller-core/src/production.rs").read_text(encoding="utf-8")
+    require(
+        "retire-proof-tokens" not in credentials
+        and "RetireProofTokens" not in credential_cli
+        and "delete_access_service_token" not in credential_provider
+        and "proof_service_token" not in credential_command
+        and "windows_service_token_name" not in production_spec
+        and "vm_service_token_name" not in production_spec
+        and "proof_token_duration" not in production_spec
+        and "windows_service_token_name" not in production_core
+        and "vm_service_token_name" not in production_core
+        and "proof_token_duration" not in production_core
+        and "reserved 9, 10, 12;" in production_proto
+        and 'reserved "windows_service_token_name", "vm_service_token_name", "proof_token_duration";' in production_proto,
+        "physically retired Stage-2 proof-token resources and execution plumbing must remain absent",
+    )
+
     tunnel_auth = credential_proto.split("message TunnelAuthentication {", 1)[1].split("}", 1)[0]
     reality_public = credential_proto.split("message RealityPublicIdentity {", 1)[1].split("}", 1)[0]
     reality_private = credential_proto.split("message RealityPrivateIdentity {", 1)[1].split("}", 1)[0]
@@ -454,7 +473,6 @@ def main() -> None:
         and '"fresh-v2-publication-prove"' not in credentials
         and '"fresh-v2-cleanup"' not in credentials
         and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
-        and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials retire-proof-tokens' in credentials
         and "credentials rotate-application" in credentials
         and "credential-transition drop-previous" in credentials
         and "credential-transition apply-candidate" in credentials
@@ -477,7 +495,7 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential operator workflow must expose the bounded Stage-3 proof-token retirement bridge plus steady-state rotation/verify/bootstrap without reviving Stage-2 proof/cutover surfaces",
+        "credential operator workflow must expose class-scoped application rotation plus verify and explicit host bootstrap without reviving retired proof/cutover surfaces",
     )
 
     rotation_workflow = credentials.split("  rotate_release:\n", 1)[1].split(
