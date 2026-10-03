@@ -289,13 +289,15 @@ def main() -> None:
         "Windows release activation must reconcile exact local authority before replay and after uncertain child failure",
     )
     require(
-        "CredentialAdmit" in vm_agent_cli
-        and "local-credential-admit" in vm_agent_cli
-        and "observe_canonical_credential_bundle" in vm_agent_runtime
-        and "PrivilegedAdmitCredential" in windows_console_cli
-        and "WindowsPrivilegedOperation::AdmitCredential" in windows_console
-        and "observe_canonical_credential_bundle" in windows_console,
-        "fresh-v2 data-plane admission must stay read-only and inside the existing host-local credential owners",
+        "CredentialAdmit" not in vm_agent_cli
+        and "local-credential-admit" not in vm_agent_cli
+        and "PrivilegedAdmitCredential" not in windows_console_cli
+        and "WindowsPrivilegedOperation::AdmitCredential" not in windows_console
+        and "admit_vm_credential_generation" not in vm_agent_runtime
+        and "admit_windows_credential_generation" not in windows_console
+        and 'reserved 8;' in runtime_proto
+        and 'reserved "WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL";' in runtime_proto,
+        "retired Stage-2 read-only credential admission must stay deleted; exact-generation staging is the sole steady-state data-plane gate and the old Windows wire identity remains reserved",
     )
     require("workflow_call:" in vpc, "VPC lifecycle must be reusable")
     require("issue_comment:" not in application, "application backend must not listen to comments")
@@ -763,13 +765,13 @@ def main() -> None:
         and "SING_BOX_RUNTIME_READ" in production_vm_runner_installer
         and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
         and "${LOCAL_OWNER} local status" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer
+        and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer
+        and "${LOCAL_OWNER} local credential-stage *" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer
         and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local credential-admit *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
-        and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
+        and "${LOCAL_OWNER} local credential-stage *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
         and "${LOCAL_OWNER} local bundle-rollback" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
