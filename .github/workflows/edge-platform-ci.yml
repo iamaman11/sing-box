@@ -187,8 +187,8 @@ jobs:
           grep -Fq 'ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env"' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'run_mesh_compose(' edge-platform/crates/edge-agent/src/main.rs
-          grep -Fq 'runtime-apply <mesh-spec-path> <application-spec-path>' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
-          grep -Fq 'runtime-cleanup <application-spec-path>' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq 'pub(crate) async fn acceptance_runtime_apply(' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
+          grep -Fq 'pub(crate) async fn acceptance_runtime_cleanup(' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
           grep -Fq '${MESH_STATE_DIR:-../mesh-state}:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml
           grep -Fq 'mesh_registration_state_dir' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_STATE_DIR_KEY' edge-platform/crates/edge-agent/src/main.rs
