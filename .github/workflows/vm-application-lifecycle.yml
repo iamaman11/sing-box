@@ -471,7 +471,7 @@ jobs:
 
     steps:
       - name: Download exact ReleaseSet-bound VM bundle
-        if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify' || env.REQUESTED_OPERATION == 'rollback' || env.REQUESTED_OPERATION == 'rollback'
+        if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify' || env.REQUESTED_OPERATION == 'rollback'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
