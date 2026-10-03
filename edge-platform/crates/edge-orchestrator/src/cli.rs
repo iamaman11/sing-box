@@ -309,7 +309,9 @@ pub(crate) enum CredentialDeliveryCommand {
         #[arg(value_enum)]
         slot: CredentialDeliverySlotArg,
     },
-    FreshV2Publish { generation: u64 },
+    FreshV2Publish {
+        generation: u64,
+    },
     FreshV2RestoreBaseline,
 }
 
