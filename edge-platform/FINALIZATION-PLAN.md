@@ -12,8 +12,8 @@ Use this order and nothing else:
 2. GitHub Issue #26 — **sole living execution cursor**;
 3. latest comments/evidence on #26 when newer than its body;
 4. `edge-platform/ARCHITECTURE.md` — stable target ownership and invariants, not execution order;
-5. issue #169 — historical Cloudflare evidence, used only for bounded Stage 3 resource
-   classification/deletion;
+5. issue #169 — historical Cloudflare convergence/retirement evidence only; it is no longer a
+   current Stage-3 execution dependency;
 6. issue #154 — Windows implementation/evidence record;
 7. issue #60 — Windows diagnostics specification;
 8. issue #1 — canonical operator command channel.

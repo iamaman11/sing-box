@@ -9,7 +9,7 @@ Before any mutation:
 
 1. read protected `main`;
 2. read #26 current cursor;
-3. read the bounded issue selected by #26 (currently #169 for Cloudflare/credential convergence);
+3. read only the bounded issue explicitly selected by the latest #26 cursor; #169 is historical evidence and is not the current execution owner;
 4. inspect open PR/CI state;
 5. resolve the durable ReleaseSet only when release authority is required.
 
@@ -19,18 +19,21 @@ Never operate from a saved SHA in old chat/documentation.
 
 The normal production owner is the GitHub-only typed orchestrator.
 
-Accepted owner-gated production commands include:
+Current routine owner-gated production commands on `main` are:
 
 ```text
 /production verify
 /production converge
-/production rollback
+/production diagnose
 ```
 
-Use only commands currently authorized by #26.
+`/production enroll-runtime` is an exceptional bootstrap/re-enrollment operation, not normal steady-state
+control. `/production rollback` is **not currently exposed by the production workflow**: the remaining
+Stage-3 work must move rollback onto the accepted self-hosted-runner -> typed local-owner boundary before
+it becomes an operator command. Do not invoke the internal legacy lease/remote rollback implementation.
 
-Separate historical `/dns`, `/mesh` and `/zero-trust` surfaces are migration debt and are
-removed only through #26 Stage 3 after exact consumer/replacement proof.
+Use only commands currently authorized by #26. Historical provider-specific operator surfaces are not
+normal production API and must not be revived merely because lower-level typed implementation remains.
 
 Do not use direct Windows Vultr/Cloudflare deployment.
 
@@ -94,7 +97,7 @@ GitHub -> production VM self-hosted runner -> root-owned local runtime owner
 
 The runner is low privilege. It must not have generic root, Docker socket access, provider credentials or application credential plaintext authority.
 
-Use hosted-runner SSH only for bootstrap/migration/break-glass. Do not reopen routine /32 support access or TCP/gRPC local forwarding for ordinary status, verify, bootstrap, diagnostics, rollback or cleanup once the local runner path owns that operation.
+Use hosted-runner SSH only for bootstrap/migration/break-glass. Do not reopen routine /32 support access or TCP/gRPC local forwarding for ordinary status, verify, diagnostics or cleanup. Production release rollback is not yet a supported public operation on current `main`; its replacement must use the same persistent local-runner owner boundary rather than the internal legacy lease/remote path.
 
 ## 7. Diagnosis before repair
 
@@ -135,19 +138,16 @@ Keep the previous accepted release long enough for bounded rollback.
 
 Credential rotation is not part of every release.
 
-The target flow from #169 is:
+The steady-state target is defined by `edge-platform/ARCHITECTURE.md`, not by #169. Rotation is
+class-scoped (`tunnel-auth`, `reality-identity`, `line2-proxy-auth`, with host identities separate),
+publishes one new candidate into the inactive fixed A/B slot, preserves unrelated credential-class
+generations, verifies both least-privilege projections and host-local runtime behavior, then promotes
+through the typed active/candidate/previous state transition with bounded rollback/grace.
 
-```text
-write candidate into inactive A/B slots
- -> verify isolated Workers/Access
- -> Git declares candidate generation
- -> server accepts active + candidate
- -> Windows proves candidate direct/WARP traffic
- -> promote candidate to active
- -> keep previous generation for bounded rollback/grace
-```
-
-This flow is not authorized for real values until #26 reaches that checkpoint.
+Current `main` does **not** expose `/credentials rotate`; the public credential workflow currently supports
+read-only `/credentials verify` plus explicit `host-bootstrap-converge`. Do not reuse Stage-2 `fresh-v2-*`
+proof/cutover commands as steady-state rotation. #26 owns the remaining rotation implementation and live
+acceptance gate.
 
 ## 10. Recovery
 

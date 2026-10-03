@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence through the single production-account authority flip is closed; provider reality must still be freshly observed before any mutation. Issue #26 owns the remaining bounded host-identity bootstrap, terminal fresh-v2 cutover and deletion-first cleanup.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence, Stage-2 fresh-v2/proxy-only acceptance, and the Stage-3 historical application-exclusive Cloudflare retirement are closed; provider reality must still be freshly observed before any mutation. Issue #26 owns the remaining Stage-3 steady-state lifecycle closure (local-owner production rollback and class-scoped credential rotation) and the later Stage-4 physical shrink / managed-TUN cutover.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 is historical Cloudflare convergence evidence and no longer owns current execution.
