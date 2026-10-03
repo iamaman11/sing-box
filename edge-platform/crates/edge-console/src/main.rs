@@ -26,15 +26,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
-    BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse, ControllerStatus,
-    CredentialTransitionAction, DeployRequest, DeployResponse, DestroyRequest, DestroyResponse,
-    DoctorRequest, DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest,
-    GetSelectorStateRequest, GetTraceRequest, ListOperationEventsRequest, ListSecretRefsRequest,
-    LocalRuntimeResponse, OperationStatus, RestartLocalRuntimeRequest, SecretRefEntry,
-    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
-    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
-    WindowsActivationState, WindowsPrivilegedOperation, WindowsPrivilegedRequest,
-    WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
+    ControllerStatus, CredentialTransitionAction, DoctorRequest, DoctorResponse, Empty,
+    GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
+    ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
+    RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
+    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
+    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
+    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
     decode_windows_activation_state, decode_windows_privileged_request,
     decode_windows_privileged_result, decode_windows_runtime_state,
     encode_windows_privileged_request, encode_windows_privileged_result,
@@ -53,7 +51,6 @@ use windows_service::service::{
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 const DEFAULT_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:50051";
-const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
 #[cfg(windows)]
 const INSTALLED_CONTROLLER_ADDR: &str = "127.0.0.1:51051";
 #[cfg(windows)]
@@ -2032,17 +2029,6 @@ async fn set_secret_ref(
     Ok(response.into_inner())
 }
 
-async fn bootstrap_runtime(
-    endpoint: String,
-    mode: BootstrapMode,
-) -> Result<BootstrapRuntimeResponse, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    let response = client
-        .bootstrap_runtime(Request::new(BootstrapRuntimeRequest { mode: mode as i32 }))
-        .await?;
-    Ok(response.into_inner())
-}
-
 async fn start_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client
@@ -2157,24 +2143,6 @@ async fn fetch_trace_with_proxy(
     Ok(response.into_inner())
 }
 
-async fn deploy(
-    endpoint: String,
-    request: DeployRequest,
-) -> Result<DeployResponse, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    let response = client.deploy(Request::new(request)).await?;
-    Ok(response.into_inner())
-}
-
-async fn destroy(
-    endpoint: String,
-    request: DestroyRequest,
-) -> Result<DestroyResponse, Box<dyn std::error::Error>> {
-    let mut client = connect_controller(endpoint).await?;
-    let response = client.destroy(Request::new(request)).await?;
-    Ok(response.into_inner())
-}
-
 async fn get_operation(
     endpoint: String,
     operation_id: i64,
@@ -2228,18 +2196,6 @@ async fn watch_operation(
 
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
-}
-
-fn prompt(label: &str) -> Result<String, Box<dyn std::error::Error>> {
-    print!("{label}: ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_owned())
-}
-
-fn confirm_exact(label: &str, expected: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(prompt(label)? == expected)
 }
 
 fn print_status(status: &ControllerStatus) {
@@ -2575,24 +2531,6 @@ fn ubuntu_proxy_url_from_status(status: &ControllerStatus) -> Option<String> {
         .and_then(|proxy| proxy.url.clone())
 }
 
-fn print_bootstrap_result(response: &BootstrapRuntimeResponse) {
-    println!();
-    println!(
-        "Bootstrap mode         : {}",
-        bootstrap_mode_label(response.mode)
-    );
-    println!(
-        "Bootstrap success      : {}",
-        if response.success { "yes" } else { "no" }
-    );
-    println!("Exit code              : {}", response.exit_code);
-    if !response.warnings.is_empty() {
-        for warning in &response.warnings {
-            println!("Bootstrap warning      : {warning}");
-        }
-    }
-}
-
 fn app_readiness_label(value: i32) -> &'static str {
     match edge_shared_types::AppReadinessPhase::try_from(value)
         .unwrap_or(edge_shared_types::AppReadinessPhase::Unspecified)
@@ -2668,71 +2606,6 @@ fn print_set_selector_result(response: &SetSelectorResponse) {
     }
 }
 
-fn print_deploy_result(response: &DeployResponse) {
-    println!();
-    println!(
-        "Deploy success         : {}",
-        if response.success { "yes" } else { "no" }
-    );
-    if let Some(deployment) = &response.deployment {
-        if let Some(label) = &deployment.deployment_label {
-            println!("Deploy label           : {label}");
-        }
-        if let Some(instance_id) = &deployment.instance_id {
-            println!("Deploy instance id     : {instance_id}");
-        }
-        if let Some(server_ip) = &deployment.server_ip {
-            println!("Deploy server IP       : {server_ip}");
-        }
-    }
-    if let Some(runtime) = &response.runtime {
-        println!(
-            "Deploy runtime ready   : {}",
-            if runtime.edge_agent_reachable && runtime.docker_reachable {
-                "yes"
-            } else {
-                "no"
-            }
-        );
-    }
-    if let Some(operation) = &response.operation {
-        println!("Operation id           : {}", operation.id);
-        println!(
-            "Operation status       : {}",
-            lifecycle_status_label(operation.status)
-        );
-    }
-    for warning in &response.warnings {
-        println!("Deploy warning         : {warning}");
-    }
-}
-
-fn print_destroy_result(response: &DestroyResponse) {
-    println!();
-    println!(
-        "Destroy success        : {}",
-        if response.success { "yes" } else { "no" }
-    );
-    if let Some(deployment) = &response.deployment {
-        if let Some(label) = &deployment.deployment_label {
-            println!("Removed label          : {label}");
-        }
-        if let Some(instance_id) = &deployment.instance_id {
-            println!("Removed instance id    : {instance_id}");
-        }
-    }
-    if let Some(operation) = &response.operation {
-        println!("Operation id           : {}", operation.id);
-        println!(
-            "Operation status       : {}",
-            lifecycle_status_label(operation.status)
-        );
-    }
-    for warning in &response.warnings {
-        println!("Destroy warning        : {warning}");
-    }
-}
-
 fn print_operation_status(status: &OperationStatus) {
     println!();
     print_operation_summary(status);
@@ -2753,15 +2626,6 @@ fn print_operation_summary(status: &OperationStatus) {
     }
 }
 
-fn bootstrap_mode_label(mode: i32) -> &'static str {
-    match BootstrapMode::try_from(mode) {
-        Ok(BootstrapMode::BootstrapBase) => "base",
-        Ok(BootstrapMode::BootstrapTunnel) => "tunnel",
-        Ok(BootstrapMode::BootstrapFull) => "full",
-        _ => "unknown",
-    }
-}
-
 fn lifecycle_status_label(status: i32) -> &'static str {
     match edge_shared_types::OperationLifecycleStatus::try_from(status) {
         Ok(edge_shared_types::OperationLifecycleStatus::Requested) => "requested",
@@ -2772,37 +2636,12 @@ fn lifecycle_status_label(status: i32) -> &'static str {
     }
 }
 
-fn format_bootstrap_failure(response: &BootstrapRuntimeResponse) -> String {
-    let mut parts = vec![format!(
-        "controller bootstrap {} failed with exit code {}",
-        bootstrap_mode_label(response.mode),
-        response.exit_code
-    )];
-    if !response.stderr.trim().is_empty() {
-        parts.push(response.stderr.trim().to_owned());
-    }
-    if !response.warnings.is_empty() {
-        parts.push(format!("warnings: {}", response.warnings.join("; ")));
-    }
-    parts.join(": ")
-}
-
 fn join_ports(ports: &[u32]) -> String {
     ports
         .iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn finish_bootstrap_result(
-    response: BootstrapRuntimeResponse,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if response.success {
-        Ok(())
-    } else {
-        Err(format_bootstrap_failure(&response).into())
-    }
 }
 
 fn finish_local_result(response: LocalRuntimeResponse) -> Result<(), Box<dyn std::error::Error>> {
@@ -2821,54 +2660,9 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
     }
 }
 
-fn finish_deploy_result(response: DeployResponse) -> Result<(), Box<dyn std::error::Error>> {
-    if response.success {
-        Ok(())
-    } else {
-        Err("deploy failed".into())
-    }
-}
-
-fn finish_destroy_result(response: DestroyResponse) -> Result<(), Box<dyn std::error::Error>> {
-    if response.success {
-        Ok(())
-    } else {
-        Err("destroy failed".into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn formats_known_bootstrap_label() {
-        assert_eq!(
-            bootstrap_mode_label(BootstrapMode::BootstrapTunnel as i32),
-            "tunnel"
-        );
-    }
-
-    #[test]
-    fn formats_unknown_bootstrap_label() {
-        assert_eq!(bootstrap_mode_label(99), "unknown");
-    }
-
-    #[test]
-    fn formats_bootstrap_failure_message() {
-        let message = format_bootstrap_failure(&BootstrapRuntimeResponse {
-            success: false,
-            mode: BootstrapMode::BootstrapBase as i32,
-            exit_code: 3,
-            stdout: String::new(),
-            stderr: "docker not reachable".to_owned(),
-            post_state: None,
-            warnings: vec!["gateway container missing".to_owned()],
-        });
-        assert!(message.contains("controller bootstrap base failed with exit code 3"));
-        assert!(message.contains("docker not reachable"));
-        assert!(message.contains("gateway container missing"));
-    }
 
     #[test]
     fn formats_operation_lifecycle_labels() {
