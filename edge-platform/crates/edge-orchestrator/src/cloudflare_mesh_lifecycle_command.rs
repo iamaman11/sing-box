@@ -660,6 +660,4 @@ mod tests {
         not_ready.status = "NOT_READY";
         assert!(compose_verified_vpc_route(mesh_base(), &vpc_desired(), not_ready).is_err());
     }
-
-
 }
