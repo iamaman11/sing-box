@@ -78,10 +78,7 @@ pub(crate) fn build_candidate_application_bundle(
     Ok(())
 }
 
-pub(crate) async fn run(
-    args: Vec<String>,
-    context: &OrchestrationContext,
-) -> Result<(), String> {
+pub(crate) async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<(), String> {
     if args.len() != 4 || args[0] != "materialize" {
         return Err(
             "usage: edge-orchestrator application-lifecycle materialize <spec-path> <artifact-manifest-path> <edge-agent-artifact-path>"
