@@ -314,7 +314,8 @@ async fn run_local_bundle_rollback(stack_dir: &Path) -> Result<(), AgentError> {
     let current = read_application_release(stack_dir).ok_or_else(|| {
         AgentError::Command("active application release marker is missing".to_owned())
     })?;
-    if current.bundle_id != expected_current_id || current.bundle_digest != expected_current_digest {
+    if current.bundle_id != expected_current_id || current.bundle_digest != expected_current_digest
+    {
         return Err(AgentError::Command(format!(
             "active application bundle changed since rollback authorization; expected_id={expected_current_id} expected_digest={expected_current_digest} observed_id={} observed_digest={}",
             current.bundle_id, current.bundle_digest
@@ -1747,7 +1748,9 @@ async fn transition_vm_credential(
         }
         CredentialTransitionAction::DropPrevious => {
             if state.candidate.is_some() {
-                return Err("previous credential cannot be dropped while a candidate is staged".to_owned());
+                return Err(
+                    "previous credential cannot be dropped while a candidate is staged".to_owned(),
+                );
             }
             let active = state
                 .active
