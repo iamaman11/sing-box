@@ -1,9 +1,10 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialProjectionKind,
-    ProxyCredentialGeneration, RealityPrivateIdentity, RealityPrivateIdentityGeneration,
-    RealityPublicIdentity, RealityPublicIdentityGeneration, TunnelAuthentication,
-    TunnelAuthenticationGeneration, VmCredentialProjection, WindowsCredentialProjection,
+    CredentialRotationClass, ProxyCredentialGeneration, RealityPrivateIdentity,
+    RealityPrivateIdentityGeneration, RealityPublicIdentity, RealityPublicIdentityGeneration,
+    TunnelAuthentication, TunnelAuthenticationGeneration, VmCredentialProjection,
+    VmCredentialRotationDelta, WindowsCredentialProjection, WindowsCredentialRotationDelta,
     credential_delivery_bundle, validate_credential_delivery_bundle,
 };
 use rand_core::{OsRng, RngCore};
@@ -49,17 +50,10 @@ pub struct FreshCredentialSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplicationCredentialClass {
-    TunnelAuth,
-    RealityIdentity,
-    Line2ProxyAuth,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RotateCredentialSnapshotRequest {
     pub delivery_generation: u64,
     pub slot: CredentialDeliverySlot,
-    pub class: ApplicationCredentialClass,
+    pub class: CredentialRotationClass,
 }
 
 pub fn generate_fresh_credential_snapshot(
@@ -130,8 +124,7 @@ pub fn generate_fresh_credential_snapshot(
     Ok(FreshCredentialSnapshot { windows, vm })
 }
 
-pub fn rotate_credential_snapshot(
-    active_vm_bundle: &CredentialDeliveryBundle,
+pub fn generate_rotation_credential_snapshot(
     request: RotateCredentialSnapshotRequest,
 ) -> Result<FreshCredentialSnapshot, String> {
     if request.delivery_generation == 0 {
@@ -143,92 +136,62 @@ pub fn rotate_credential_snapshot(
     ) {
         return Err("slot must be fixed credential slot A or B".to_owned());
     }
-    validate_credential_delivery_bundle(active_vm_bundle)?;
-    if active_vm_bundle.dummy_non_secret
-        || active_vm_bundle.projection != CredentialProjectionKind::Vm as i32
-    {
-        return Err("rotation source must be one real VM credential projection".to_owned());
+    if request.class == CredentialRotationClass::Unspecified {
+        return Err("credential rotation class is required".to_owned());
     }
-    let active_slot = CredentialDeliverySlot::try_from(active_vm_bundle.slot)
-        .map_err(|_| "active VM bundle has invalid fixed slot".to_owned())?;
-    if active_slot == request.slot {
-        return Err("rotation candidate must use the fixed slot opposite active".to_owned());
-    }
-    if active_vm_bundle.generation == request.delivery_generation {
-        return Err("rotation delivery generation must differ from active".to_owned());
-    }
-    let active_vm = match active_vm_bundle.payload.as_ref() {
-        Some(credential_delivery_bundle::Payload::Vm(value)) => value,
-        _ => return Err("rotation source must carry VM credential payload".to_owned()),
-    };
-    let active_tunnel = active_vm
-        .tunnel_auth
-        .clone()
-        .ok_or_else(|| "active VM tunnel-auth generation is absent".to_owned())?;
-    let active_reality = active_vm
-        .reality_identity
-        .clone()
-        .ok_or_else(|| "active VM Reality identity generation is absent".to_owned())?;
-    let active_line2 = active_vm
-        .line2_proxy
-        .clone()
-        .ok_or_else(|| "active VM Line 2 proxy generation is absent".to_owned())?;
 
-    let tunnel_auth = if request.class == ApplicationCredentialClass::TunnelAuth {
-        TunnelAuthenticationGeneration {
-            generation: request.delivery_generation,
-            direct: Some(generate_tunnel_authentication()),
-            warp: Some(generate_tunnel_authentication()),
-        }
-    } else {
-        active_tunnel
+    let mut windows = WindowsCredentialRotationDelta {
+        credential_class: request.class as i32,
+        tunnel_auth: None,
+        reality_identity: None,
+    };
+    let mut vm = VmCredentialRotationDelta {
+        credential_class: request.class as i32,
+        tunnel_auth: None,
+        reality_identity: None,
+        line2_proxy: None,
     };
 
-    let reality_private = if request.class == ApplicationCredentialClass::RealityIdentity {
-        let (direct_private, _) = generate_reality_pair();
-        let (warp_private, _) = generate_reality_pair();
-        RealityPrivateIdentityGeneration {
-            generation: request.delivery_generation,
-            direct: Some(RealityPrivateIdentity {
-                private_key: direct_private,
-            }),
-            warp: Some(RealityPrivateIdentity {
-                private_key: warp_private,
-            }),
+    match request.class {
+        CredentialRotationClass::TunnelAuth => {
+            let tunnel_auth = TunnelAuthenticationGeneration {
+                generation: request.delivery_generation,
+                direct: Some(generate_tunnel_authentication()),
+                warp: Some(generate_tunnel_authentication()),
+            };
+            windows.tunnel_auth = Some(tunnel_auth.clone());
+            vm.tunnel_auth = Some(tunnel_auth);
         }
-    } else {
-        active_reality
-    };
-    let reality_public = RealityPublicIdentityGeneration {
-        generation: reality_private.generation,
-        direct: Some(RealityPublicIdentity {
-            public_key: reality_public_from_private(
-                &reality_private
-                    .direct
-                    .as_ref()
-                    .ok_or_else(|| "Reality direct private identity is absent".to_owned())?
-                    .private_key,
-            )?,
-        }),
-        warp: Some(RealityPublicIdentity {
-            public_key: reality_public_from_private(
-                &reality_private
-                    .warp
-                    .as_ref()
-                    .ok_or_else(|| "Reality WARP private identity is absent".to_owned())?
-                    .private_key,
-            )?,
-        }),
-    };
-
-    let line2_proxy = if request.class == ApplicationCredentialClass::Line2ProxyAuth {
-        ProxyCredentialGeneration {
-            generation: request.delivery_generation,
-            password: random_hex(32),
+        CredentialRotationClass::RealityIdentity => {
+            let (direct_private, direct_public) = generate_reality_pair();
+            let (warp_private, warp_public) = generate_reality_pair();
+            windows.reality_identity = Some(RealityPublicIdentityGeneration {
+                generation: request.delivery_generation,
+                direct: Some(RealityPublicIdentity {
+                    public_key: direct_public,
+                }),
+                warp: Some(RealityPublicIdentity {
+                    public_key: warp_public,
+                }),
+            });
+            vm.reality_identity = Some(RealityPrivateIdentityGeneration {
+                generation: request.delivery_generation,
+                direct: Some(RealityPrivateIdentity {
+                    private_key: direct_private,
+                }),
+                warp: Some(RealityPrivateIdentity {
+                    private_key: warp_private,
+                }),
+            });
         }
-    } else {
-        active_line2
-    };
+        CredentialRotationClass::Line2ProxyAuth => {
+            vm.line2_proxy = Some(ProxyCredentialGeneration {
+                generation: request.delivery_generation,
+                password: random_hex(32),
+            });
+        }
+        CredentialRotationClass::Unspecified => unreachable!("validated above"),
+    }
 
     let windows = CredentialDeliveryBundle {
         schema_version: 1,
@@ -236,11 +199,8 @@ pub fn rotate_credential_snapshot(
         projection: CredentialProjectionKind::Windows as i32,
         dummy_non_secret: false,
         slot: request.slot as i32,
-        payload: Some(credential_delivery_bundle::Payload::Windows(
-            WindowsCredentialProjection {
-                tunnel_auth: Some(tunnel_auth.clone()),
-                reality_identity: Some(reality_public),
-            },
+        payload: Some(credential_delivery_bundle::Payload::WindowsRotation(
+            windows,
         )),
     };
     let vm = CredentialDeliveryBundle {
@@ -249,30 +209,12 @@ pub fn rotate_credential_snapshot(
         projection: CredentialProjectionKind::Vm as i32,
         dummy_non_secret: false,
         slot: request.slot as i32,
-        payload: Some(credential_delivery_bundle::Payload::Vm(
-            VmCredentialProjection {
-                tunnel_auth: Some(tunnel_auth),
-                reality_identity: Some(reality_private),
-                line2_proxy: Some(line2_proxy),
-            },
-        )),
+        payload: Some(credential_delivery_bundle::Payload::VmRotation(vm)),
     };
 
     validate_credential_delivery_bundle(&windows)?;
     validate_credential_delivery_bundle(&vm)?;
     Ok(FreshCredentialSnapshot { windows, vm })
-}
-
-fn reality_public_from_private(private_key: &str) -> Result<String, String> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(private_key)
-        .map_err(|_| "Reality private key is not canonical base64url".to_owned())?;
-    let bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| "Reality private key must decode to exactly 32 bytes".to_owned())?;
-    let secret = StaticSecret::from(bytes);
-    let public = PublicKey::from(&secret);
-    Ok(URL_SAFE_NO_PAD.encode(public.to_bytes()))
 }
 
 fn generate_tunnel_authentication() -> TunnelAuthentication {
