@@ -366,8 +366,14 @@ same fixed slot; independent per-projection A/B cursors are forbidden.
 
 Steady-state rotation is narrower: replace exactly the inactive fixed slot and leave the active slot
 untouched. The system must not require plaintext readback of the active Worker secret, re-upload both
-slots merely to rotate one candidate, or introduce a second plaintext secret database. Candidate
-publication is not activation; runtime owners promote only after both projections and functional
+slots merely to rotate one candidate, or introduce a second plaintext secret database. Therefore a
+steady-state inactive-slot publication is a typed class-scoped `CredentialDeliveryBundle` rotation delta: the GitHub-only owner generates and projects only the
+selected class. Each host-local owner merges that delta with its already validated active local full
+projection and persists the resulting full candidate bundle in its existing private A/B store. Unselected
+secret classes never leave the local owner merely to be copied forward. A Windows Line 2 delta carries
+no Windows secret material but still advances the paired outer delivery generation/slot.
+
+Candidate publication is not activation; runtime owners promote only after both projections and functional
 verification pass. An uncertain slot mutation is resolved by read-only exact-generation
 re-observation before any replay.
 
