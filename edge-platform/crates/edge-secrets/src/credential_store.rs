@@ -26,12 +26,10 @@ impl CredentialStore {
         projection: CredentialProjectionKind,
     ) -> Result<Self, String> {
         require_projection(projection)?;
-        let store = Self {
+        Ok(Self {
             root: root.into(),
             projection,
-        };
-        store.prepare_directories()?;
-        Ok(store)
+        })
     }
 
     pub fn open_existing(
@@ -142,6 +140,10 @@ impl CredentialStore {
 
         next.candidate = Some(candidate.clone());
         validate_local_credential_state(&next)?;
+
+        // Candidate validation/materialization must be side-effect free. Create the
+        // protected store only after the complete next state is known valid.
+        self.prepare_directories()?;
         self.persist_bundle(bundle, &candidate)?;
         self.write_state(&next)?;
         self.gc_unreferenced_bundles(&next)?;
@@ -677,6 +679,18 @@ mod tests {
                 },
             )),
         }
+    }
+
+    #[test]
+    fn invalid_candidate_validation_has_no_filesystem_side_effect() {
+        let root = unique_root("invalid-side-effect");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        assert!(!root.exists());
+
+        let mut invalid = vm_bundle(101, CredentialDeliverySlot::B);
+        invalid.dummy_non_secret = true;
+        assert!(store.stage_delivery_candidate(&invalid).is_err());
+        assert!(!root.exists());
     }
 
     #[test]
