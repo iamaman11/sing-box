@@ -482,6 +482,22 @@ def main() -> None:
         "application rotation must recover only observed uncommitted candidates and fail closed on half-promoted cross-host state",
     )
 
+    rotation_jobs = re.findall(r"^  rotate_[a-z0-9_]+:$", rotation_workflow, re.MULTILINE)
+    require(
+        len(rotation_jobs) <= 12
+        and "  rotate_vm_admit:\n" not in rotation_workflow
+        and "  rotate_windows_admit:\n" not in rotation_workflow
+        and "  rotate_vm_recover_uncommitted:\n" not in rotation_workflow
+        and "  rotate_windows_recover_uncommitted:\n" not in rotation_workflow
+        and "  rotate_vm_retire_previous:\n" not in rotation_workflow
+        and "  rotate_windows_retire_previous:\n" not in rotation_workflow
+        and "  rotate_windows_prepare:\n" in rotation_workflow
+        and "  rotate_vm_prepare:\n" in rotation_workflow
+        and "  rotate_windows_stage:\n" in rotation_workflow
+        and "  rotate_vm_candidate:\n" in rotation_workflow,
+        "steady-state credential rotation must keep cross-host barriers explicit without expanding into redundant admission/recovery micro-jobs",
+    )
+
     host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
     host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
