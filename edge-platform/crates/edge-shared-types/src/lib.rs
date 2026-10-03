@@ -2349,8 +2349,14 @@ mod tests {
             ("apply-legacy", CredentialTransitionAction::ApplyLegacy),
             ("apply-active", CredentialTransitionAction::ApplyActive),
             ("retire-legacy", CredentialTransitionAction::RetireLegacy),
-            ("discard-candidate", CredentialTransitionAction::DiscardCandidate),
-            ("rollback-previous", CredentialTransitionAction::RollbackPrevious),
+            (
+                "discard-candidate",
+                CredentialTransitionAction::DiscardCandidate,
+            ),
+            (
+                "rollback-previous",
+                CredentialTransitionAction::RollbackPrevious,
+            ),
             ("drop-previous", CredentialTransitionAction::DropPrevious),
         ] {
             assert_eq!(parse_credential_transition_action(name).unwrap(), action);
