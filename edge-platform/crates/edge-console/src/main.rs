@@ -1315,7 +1315,7 @@ async fn stage_windows_credential_candidate_from_worker(
         windows_credential_store_path(install_root),
         edge_shared_types::CredentialProjectionKind::Windows,
     )?;
-    let state = store.stage_candidate(&bundle)?;
+    let state = store.stage_delivery_candidate(&bundle)?;
     let candidate = state
         .candidate
         .ok_or_else(|| "credential candidate was not persisted".to_owned())?;
