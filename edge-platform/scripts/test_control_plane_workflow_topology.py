@@ -421,6 +421,9 @@ def main() -> None:
     require(
         '("/credentials", "verify"): "verify"' in credentials
         and '("/credentials", "host-bootstrap-converge"): "host-bootstrap-converge"' in credentials
+        and 'tokens[0:2] == ["/credentials", "rotate"]' in credentials
+        and '"tunnel-auth", "reality-identity", "line2-proxy-auth"' in credentials
+        and 'operation = "rotate-application"' in credentials
         and '"contract-plan"' not in credentials
         and '"contract-converge"' not in credentials
         and '"contract-prove"' not in credentials
@@ -428,11 +431,18 @@ def main() -> None:
         and '"fresh-v2-publication-prove"' not in credentials
         and '"fresh-v2-cleanup"' not in credentials
         and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
-        and "if: needs.authorize.outputs.operation == 'verify'" in credentials
+        and "credentials rotate-application" in credentials
+        and "credential-transition drop-previous" in credentials
+        and "credential-transition apply-candidate" in credentials
+        and "credential-transition apply-active" in credentials
+        and "credential-transition promote" in credentials
+        and "credential-transition rollback-previous" in credentials
         and "group: vultr-control-plane-production" in credentials
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
         and "cancel-in-progress: false" in credentials
-        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" not in credentials
+        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" in credentials
+        and "CLOUDFLARE_VM_ACCESS_CLIENT_ID" in credentials
+        and "CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
@@ -442,7 +452,7 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential operator workflow must expose only steady-state verify plus explicit host bootstrap; closed Stage-2 proof/cutover commands must be absent",
+        "credential operator workflow must expose class-scoped application rotation plus verify and explicit host bootstrap without reviving Stage-2 proof/cutover surfaces",
     )
 
     host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
