@@ -155,8 +155,9 @@ enum WindowsPrivilegedOperation {
   WINDOWS_PRIVILEGED_OPERATION_INSTALL_CREDENTIAL_ACCESS_BOOTSTRAP = 5;
   WINDOWS_PRIVILEGED_OPERATION_CREDENTIAL_TRANSITION = 6;
   WINDOWS_PRIVILEGED_OPERATION_RUNTIME_EVIDENCE = 7;
-  reserved 8;
-  reserved "WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL";
+  // Wire-compatible tombstone only. The executable admission command was retired after
+  // exact-generation staging became the sole local data-plane gate.
+  WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL = 8 [deprecated = true];
 }
 
 message WindowsPrivilegedRequest {
