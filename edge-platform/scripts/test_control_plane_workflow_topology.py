@@ -443,8 +443,9 @@ def main() -> None:
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
         and "cancel-in-progress: false" in credentials
         and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" in credentials
-        and "active_vm_snapshot_proof_session=BOUNDED_DISABLED_AT_REST" in credentials
-        and "candidate_data_plane_reobservation=DEFERRED_TO_LOCAL_OWNERS" in credentials
+        and "credential_rotation_delivery=CLASS_SCOPED_DELTA" in credentials
+        and "active_credential_plaintext_readback=false" in credentials
+        and "candidate_data_plane_reobservation=LOCAL_OWNERS" in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
         and "CLOUDFLARE_API_TOKEN" not in credentials
@@ -463,9 +464,11 @@ def main() -> None:
     require(
         "CLOUDFLARE_VM_ACCESS_CLIENT_ID" not in rotation_workflow
         and "CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" not in rotation_workflow
-        and "active_vm_snapshot_proof_session=BOUNDED_DISABLED_AT_REST" in rotation_workflow
-        and "rotation_active_snapshot_proof_token=DISABLED_AFTER_USE" in credential_command,
-        "application rotation must use the bounded disabled-at-rest proof identity, never a permanent host identity on the hosted runner",
+        and "fetch_active_vm_bundle_with_bounded_proof" not in credential_command
+        and "fetch_canonical_credential_bundle_with_identity" not in credential_command
+        and "credential_rotation_delivery=CLASS_SCOPED_DELTA" in rotation_workflow
+        and "active_credential_plaintext_readback=false" in rotation_workflow,
+        "application rotation must publish only the selected typed class delta and must never read back the active credential plaintext",
     )
 
     require(
