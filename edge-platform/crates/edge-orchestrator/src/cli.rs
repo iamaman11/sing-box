@@ -605,9 +605,9 @@ mod tests {
                 "edge-orchestrator",
                 "vultr-lifecycle",
                 "runner-bootstrap",
-                "infra/vultr/root-runner-dev.json",
-                "root-runner-dev-1",
-                "edge-platform/scripts/install-vultr-root-runner.sh",
+                "infra/vultr/disposable-acceptance.json",
+                "lifecycle-acceptance-1",
+                "edge-platform/scripts/install-vultr-production-runner.sh",
             ],
             vec![
                 "edge-orchestrator",

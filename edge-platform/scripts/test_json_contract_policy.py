@@ -16,11 +16,9 @@ PHYSICALLY_REQUIRED_JSON = {
 # Frozen first-party debt. New entries are forbidden. This set may only shrink
 # as the corresponding contracts move to protobuf/textproto.
 LEGACY_FIRST_PARTY_JSON_DEBT = {
-    "infra/application/disposable-acceptance-v2.json",
     "infra/application/disposable-acceptance.json",
     "infra/cloudflare/application-acceptance-dns.json",
     "infra/cloudflare/application-acceptance-mesh.json",
-    "infra/cloudflare/disposable-dns.json",
     "infra/cloudflare/zero-trust-guardrails.json",
     "infra/cloudflare/zero-trust-lifecycle.json",
     "infra/release/release-inputs.lock.json",
@@ -28,7 +26,6 @@ LEGACY_FIRST_PARTY_JSON_DEBT = {
     "infra/vultr/application-acceptance.json",
     "infra/vultr/disposable-acceptance.json",
     "infra/vultr/firewall-profiles.json",
-    "infra/vultr/root-runner-dev.json",
 }
 
 
