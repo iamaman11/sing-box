@@ -103,17 +103,19 @@ def main() -> None:
         "Stage-3 historical application-exclusive Cloudflare retirement are closed" in architecture
         and "remaining Stage-3 steady-state lifecycle closure" in architecture
         and "The project is in late Stage 3" in readme
-        and "legacy lease-based production rollback implementation is **not** in the public workflow grammar" in readme
-        and "/production rollback` is **not currently exposed by the production workflow**" in runbook
-        and "Current `main` does **not** expose `/credentials rotate`" in runbook
-        and "Routine production converge/verify/diagnose does not acquire a support lease" in server_architecture
+        and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
+        and "class-scoped application rotation" in readme
+        and "/production rollback" in runbook
+        and "/credentials rotate tunnel-auth" in runbook
+        and "explicit steady-state host-identity rotation remains a Stage-3 boundary" in runbook
+        and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
         and "Current execution is late Stage 3" in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
-        and "does not expose `/production rollback`" in application_readme
+        and "`/production rollback` uses the same" in application_readme
         and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
-        "operator documentation must match the late-Stage-3 public workflow surface and must not advertise historical #169, legacy rollback, or Stage-2 proof commands as current authority",
+        "operator documentation must match the current Stage-3 local rollback/application-rotation surface and must not advertise historical #169 or Stage-2 proof commands as current authority",
     )
     require(
         "AcceptanceServe" in vm_agent_cli
