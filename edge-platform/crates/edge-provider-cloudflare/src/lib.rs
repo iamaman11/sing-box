@@ -3491,7 +3491,6 @@ mod tests {
         assert!(value.get("exclude").is_none());
     }
 
-
     #[test]
     fn parses_zero_trust_device_profile_contract() {
         let profile = device_profile_from_value(serde_json::json!({
