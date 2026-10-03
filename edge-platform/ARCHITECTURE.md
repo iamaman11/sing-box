@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence, Stage-2 fresh-v2/proxy-only acceptance, and the Stage-3 historical application-exclusive Cloudflare retirement are closed; provider reality must still be freshly observed before any mutation. Issue #26 owns the remaining Stage-3 steady-state lifecycle closure (local-owner production rollback and class-scoped credential rotation) and the later Stage-4 physical shrink / managed-TUN cutover.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence, Stage-2 fresh-v2/proxy-only acceptance and Stage 3 are closed, including historical application-exclusive Cloudflare retirement, local-owner production rollback, class-scoped credential rotation and proof-token retirement/contraction. Provider reality must still be freshly observed before any mutation. Issue #26 owns current Stage 4A physical shrink, the explicit Stage 4A exit decision, the later Stage 4B managed-TUN cutover and Stage 4C post-cutover deletion/final acceptance.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 is historical Cloudflare convergence evidence and no longer owns current execution.
@@ -624,6 +624,29 @@ Deletion requires evidence, not intuition. For each candidate record:
 A DELETION_CANDIDATE is removed as one logical contraction with its obsolete tests, workflow glue,
 privilege entries, persistence projections and documentation. Do not leave compatibility shims with
 zero consumers.
+
+### Stage 4A exit decision
+
+Stage 4A is bounded consumer-driven contraction, not an open-ended cleanup program.
+
+After an active contraction is terminally accepted, perform one fresh repository-wide last-consumer
+audit. For every remaining transitional boundary, include production, acceptance, bootstrap,
+re-enrollment, recovery and rollback consumers.
+
+- If a complete transitional vertical slice has zero consumers, it may become the next single
+  deletion slice.
+- If every remaining transitional boundary has at least one real consumer, Stage 4A is complete.
+- Do not create a replacement owner, transport, state store, compatibility API or workflow merely to
+  make a live boundary removable.
+- Do not begin managed TUN until Issue #26 explicitly records `STAGE4A=CLOSED`.
+- Do not reopen accepted Stage 4A deletions merely for confidence.
+
+Known transitional examples remain live while these consumers exist: disposable
+`acceptance-serve`/TCP 50061/tonic/`edge-trust`; bounded bootstrap SSH/support access for
+`/production enroll-runtime`; read-only Zero Trust doctor/guardrails for disposable acceptance;
+Device Profile/Split Tunnel writes for production target-plane; `application-lifecycle materialize`
+for disposable acceptance; and typed DNS/Mesh/target-plane composition used by production or
+acceptance.
 
 Expected cleanup after convergence includes:
 - production-facing duplicate Cloudflare workflows/commands;

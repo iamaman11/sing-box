@@ -26,12 +26,17 @@ Use the architecture classifications:
 - `DELETION_CANDIDATE` — remove after exact consumer proof;
 - `HISTORICAL_EVIDENCE` — GitHub evidence only, never an execution path.
 
-The project is in late Stage 3 of final convergence. Stage 2 (fresh-v2 credentials plus the managed
-Windows proxy-only runtime), historical application-exclusive Cloudflare retirement, persistent
-local-owner production rollback and class-scoped application credential rotation are closed. Remaining
-Stage-3 work is deletion-first contraction of superseded migration/proof paths plus final verification.
-TUN remains deferred. The currently working external Windows sing-box stays untouched until the
-dedicated final managed-TUN cutover.
+Stage 3 is closed. The project is in Stage 4A physical shrink. Stage 2 (fresh-v2 credentials plus
+the managed Windows proxy-only runtime), historical application-exclusive Cloudflare retirement,
+persistent local-owner production rollback, class-scoped application credential rotation and the
+Stage-3 proof-token retirement/contraction are all accepted and must not be reopened for confidence.
+
+Stage 4A is consumer-driven deletion only: remove one complete transitional vertical slice when its
+exact production/acceptance/bootstrap/recovery/rollback consumer set is zero. After the current
+contraction is terminally accepted, perform one fresh repository-wide last-consumer audit. If all
+remaining transitional boundaries still have real consumers, record `STAGE4A=CLOSED` in #26 and
+advance to Stage 4B. TUN remains deferred until that explicit gate. The currently working external
+Windows sing-box stays untouched until the dedicated managed-TUN cutover passes.
 
 ## Steady-state owner map
 
@@ -99,7 +104,9 @@ The standalone `cloudflare-dns` and `line3-mesh` CLI namespaces are deleted; acc
 production composition use typed internal functions instead. The old executable Zero Trust
 inventory/plan/apply/verify lifecycle is deleted; the internal
 read-only `cloudflare-zero-trust doctor` remains only for acceptance guardrail observation.
-Other provider-internal and migration-only commands remain transitional unless #26 explicitly says otherwise.
+The standalone application mutation/recovery CLI is also deleted; `application-lifecycle` retains
+only the disposable-acceptance `materialize` boundary. Other provider-internal and migration-only
+commands remain transitional unless #26 explicitly says otherwise.
 
 ## Canonical production authority
 
@@ -211,9 +218,11 @@ store, workflow or generic privilege to work around incomplete wiring.
 ## Deletion-first finalization
 
 After a replacement path is live-proven, classify its old consumers and delete dead behavior before
-adding abstractions or splitting large files. Stage 3 removes transitional provider/operator
-surfaces after consumer proof. Stage 4 removes obsolete runtime/state/trust/glue and then performs the
-separate final managed Windows TUN cutover.
+adding abstractions or splitting large files. Stage 4A removes only complete zero-consumer
+transitional vertical slices. Its exit condition is not "no more code to simplify"; it is a fresh
+repository-wide audit showing that every remaining transitional boundary has a real
+production/acceptance/bootstrap/recovery/rollback consumer. At that point #26 closes Stage 4A and
+Stage 4B performs the separate managed Windows TUN cutover.
 
 A successful finalization should reduce:
 - lifecycle owners;
@@ -244,4 +253,4 @@ Never reintroduce:
 - a second desired-state or secret-history store;
 - blind retry after uncertain mutation;
 - a second Windows startup/runtime owner;
-- TUN/default-route/system-proxy ownership before its explicit final gate.
+- TUN/default-route/system-proxy ownership before #26 explicitly records `STAGE4A=CLOSED` and opens the Stage 4B cutover gate.
