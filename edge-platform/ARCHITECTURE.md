@@ -239,7 +239,9 @@ invoke their typed internal functions directly. The obsolete executable Zero Tru
 inventory/plan/apply/verify lifecycle is physically removed; only the internal read-only
 `cloudflare-zero-trust doctor` remains for acceptance guardrail observation. Provider-specific
 target-plane logic may remain as an internal typed implementation detail; it is not a second
-steady-state operator namespace.
+steady-state operator namespace. The transitional standalone application mutation/recovery CLI is
+also removed: `application-lifecycle` retains only the one acceptance-consumed `materialize`
+subcommand, while production and disposable acceptance invoke typed lifecycle functions directly.
 
 Historical application-exclusive account-scoped Cloudflare residuals have been retired.
 The historical/shared account remains only as an explicit shared-DNS/external dependency boundary;
