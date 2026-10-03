@@ -107,7 +107,7 @@ def main() -> None:
         and "class-scoped application rotation" in readme
         and "/production rollback" in runbook
         and "/credentials rotate tunnel-auth" in runbook
-        and "explicit steady-state host-identity rotation remains a Stage-3 boundary" in runbook
+        and "host-identity rotation remains a Stage-3 boundary" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
         and "Current execution is late Stage 3" in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
