@@ -155,11 +155,13 @@ The public credential workflow supports:
 /credentials host-bootstrap-converge
 ```
 
-Application rotation first proves paired active cursors, explicitly retires an older previous buffer
-when beginning the next requested rotation, publishes only the slot opposite active, performs read-only
-data-plane admission on both hosts, stages and functionally verifies both projections, and promotes with
-re-observation before any bounded retry. A failed uncommitted candidate is compensated back to the
-observed active generation. Do not reuse Stage-2 `fresh-v2-*` proof/cutover commands.
+Application rotation first proves the paired active cursor, recovers only an observed uncommitted
+candidate, retires an older previous buffer, and publishes only the slot opposite active. Each local
+owner then fetches the exact generation during staging, materializes the class-scoped delta inside its
+protected store and validates it; both hosts are staged before the first runtime activation. Functional
+verification precedes promotion, and promotion is re-observed before any bounded retry. A failed
+uncommitted candidate is compensated back to the observed active generation. Do not reuse Stage-2
+`fresh-v2-*` proof/cutover commands.
 
 Windows/VM Access host identities remain a separate lifecycle. `host-bootstrap-converge` is create-once
 bootstrap/recovery and never implicitly rotates an installed host identity; explicit steady-state
