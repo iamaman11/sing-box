@@ -298,7 +298,6 @@ impl CredentialDeliverySlotArg {
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
     HostBootstrapConverge,
-    RetireProofTokens,
     RotateApplication {
         #[arg(value_enum)]
         class: CredentialRotationClassArg,
