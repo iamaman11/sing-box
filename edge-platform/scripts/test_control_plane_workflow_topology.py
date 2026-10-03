@@ -443,7 +443,7 @@ def main() -> None:
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
         and "cancel-in-progress: false" in credentials
         and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" in credentials
-        and "active_vm_snapshot_proof_identity=BOUNDED_EPHEMERAL" in credentials
+        and "active_vm_snapshot_proof_session=BOUNDED_DISABLED_AT_REST" in credentials
         and "candidate_data_plane_reobservation=DEFERRED_TO_LOCAL_OWNERS" in credentials
         and "VULTR_API_KEY" not in credentials
         and "VULTR_SSH_PRIVATE_KEY" not in credentials
@@ -455,6 +455,17 @@ def main() -> None:
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
         "credential operator workflow must expose class-scoped application rotation plus verify and explicit host bootstrap without reviving Stage-2 proof/cutover surfaces",
+    )
+
+    rotation_workflow = credentials.split("  rotate_release:\n", 1)[1].split(
+        "  host_bootstrap_release:\n", 1
+    )[0]
+    require(
+        "CLOUDFLARE_VM_ACCESS_CLIENT_ID" not in rotation_workflow
+        and "CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" not in rotation_workflow
+        and "active_vm_snapshot_proof_session=BOUNDED_DISABLED_AT_REST" in rotation_workflow
+        and "rotation_active_snapshot_proof_token=DISABLED_AFTER_USE" in credential_command,
+        "application rotation must use the bounded disabled-at-rest proof identity, never a permanent host identity on the hosted runner",
     )
 
     host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
