@@ -439,6 +439,15 @@ def main() -> None:
         and '"contract-plan"' not in credentials
         and '"contract-converge"' not in credentials
         and '"contract-prove"' not in credentials
+        and "ContractPlan" not in credential_cli
+        and "ContractConverge" not in credential_cli
+        and "ContractProve" not in credential_cli
+        and "FreshV2Publish" not in credential_cli
+        and "FreshV2RestoreBaseline" not in credential_cli
+        and "async fn converge(" not in credential_command
+        and "async fn prove(" not in credential_command
+        and "fresh_v2_publish" not in credential_command
+        and "fresh_v2_restore_baseline" not in credential_command
         and '"fresh-v2-cutover"' not in credentials
         and '"fresh-v2-publication-prove"' not in credentials
         and '"fresh-v2-cleanup"' not in credentials
@@ -516,7 +525,7 @@ def main() -> None:
 
     host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
-    host_bootstrap_end = credential_command.index("async fn converge(", host_bootstrap_start)
+    host_bootstrap_end = credential_command.index("fn plan(", host_bootstrap_start)
     host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]
     require(
         '"host-bootstrap-converge"' in credentials
