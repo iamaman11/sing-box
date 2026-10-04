@@ -99,7 +99,7 @@ GitHub -> production VM self-hosted runner -> root-owned local runtime owner
 
 The runner is low privilege. It must not have generic root, Docker socket access, provider credentials or application credential plaintext authority.
 
-Use hosted-runner SSH only for bootstrap/migration/break-glass. Do not reopen routine /32 support access or TCP/gRPC local forwarding for ordinary status, verify, diagnostics or cleanup. Production release rollback is not yet a supported public operation on current `main`; its replacement must use the same persistent local-runner owner boundary rather than the internal legacy lease/remote path.
+Use hosted-runner SSH only for bootstrap/migration/break-glass. Do not reopen routine /32 support access or TCP/gRPC local forwarding for ordinary status, verify, diagnostics or cleanup. Production release rollback is the existing owner-gated `/production rollback` operation and must stay ReleaseSet-bound on the same persistent local-runner owner boundary; do not revive the internal legacy lease/remote path.
 
 ## 7. Diagnosis before repair
 
@@ -168,7 +168,52 @@ Windows/VM Access host identities remain a separate lifecycle. They are canonica
 bootstrap/recovery boundary and never implicitly rotates an installed host identity. Do not add a
 second steady-state host-token rotation transport or custom X25519/HKDF/AEAD handoff.
 
-## 10. Recovery
+## 10. Stage 4B managed Windows TUN cutover
+
+Stage 4B is split into code proof and one physical cutover. Do not combine the first TUN mutation with
+unfinished renderer/diagnostic/reboot work.
+
+### Code-proof gate — no live TUN mutation
+
+Before the external Windows sing-box is touched, protected code must already prove:
+
+- one typed `PROXY_ONLY` / `MANAGED_TUN` datapath mode in existing protobuf desired state;
+- one canonical renderer used by initial materialization and credential apply/rollback;
+- exact pinned sing-box `check` of the managed-TUN candidate in CI;
+- native read-only adapter/route/DNS/TUN diagnostics in the existing diagnostic binary;
+- SCM `EdgePlatformController` startup convergence so reboot can restore the managed runtime without a
+  Scheduled Task, watchdog or second controller;
+- the existing Windows workflow/router contains only one fixed owner-authorized cutover path rather than
+  a new generic execution namespace;
+- exact-head CI + no-rebuild promotion PASS.
+
+The old PowerShell DNS reset is recovery-only legacy behavior. Do not extend it into the new datapath.
+Managed-TUN DNS belongs to sing-box; if failed-runtime cleanup later proves an explicit reset is still
+needed, keep the mutation inside the existing local-runtime owner and implement it with an exact native
+Windows boundary.
+
+### Physical cutover gate
+
+Before any stop/start mutation:
+
+1. resolve the exact accepted ReleaseSet;
+2. run read-only managed diagnostics;
+3. identify the currently working external sing-box process/startup owner without reading or copying its
+   secrets;
+4. prove a bounded restore procedure for that exact external owner;
+5. STOP if the external owner is ambiguous, if rollback cannot be proven, or if managed-TUN authority is
+   not exact.
+
+Then one authorized cutover may stop only the pre-observed external owner and start the managed TUN.
+Acceptance must prove routes, endpoint/control-plane bypass, loop prevention, DNS/no-leak behavior,
+DIRECT and WARP egress, managed restart, failed-transition rollback, SCM restart and a real Windows
+reboot/recovery cycle. A failed acceptance restores connectivity through the bounded pre-observed
+cutover rollback path; it must not improvise a new legacy owner.
+
+Only after all checks PASS may the managed runtime be declared the sole Windows datapath owner. Legacy
+Windows startup/config/secret glue is deleted later in Stage 4C from fresh last-consumer proof.
+
+## 11. Recovery
 
 Target recovery must not need the legacy checkout.
 
@@ -185,7 +230,7 @@ exact ReleaseSet + one-time machine enrollment + active credential generation
 Generated env/JSON may be recreated. Loss of Cloudflare availability must not stop an already
 healthy runtime.
 
-## 11. Stop conditions
+## 12. Stop conditions
 
 Stop before mutation when:
 - ownership is ambiguous;
