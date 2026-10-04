@@ -229,6 +229,5 @@ jobs:
             '- Local Windows build: NO',
             '- External sing-box mutation: FORBIDDEN / equality-checked',
             '- TUN requested: NO',
-            '- DNS/route/system-proxy mutation requested: NO',
-            "- Managed proxy processes observed: $($values['managed_singbox_process_count'])"
+            '- DNS/route/system-proxy mutation requested: NO'
           ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
