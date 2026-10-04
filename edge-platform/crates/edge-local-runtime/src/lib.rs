@@ -13,7 +13,10 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use std::ptr::null_mut;
 
-use edge_shared_types::{LocalSingboxState, decode_windows_runtime_state};
+use edge_shared_types::{
+    LocalSingboxState, WindowsDatapathMode, canonical_production_desired_state,
+    decode_windows_runtime_state,
+};
 use edge_singbox::{render_windows_config, sync_local_config};
 use sysinfo::{Pid, Signal, System};
 
@@ -336,42 +339,88 @@ fn best_effort_terminate(child: &mut Child) {
 pub fn inspect_local_runtime(config_path: &Path) -> LocalSingboxState {
     let expected_config_path = config_path.display().to_string();
     let mut local = LocalSingboxState::placeholder(expected_config_path);
-    match classify_runtime_process(config_path) {
-        RuntimeProcessClassification::Managed(process) => {
-            local.process_running = true;
-            local.managed_config = true;
-            local.active_config_path = process.config_path;
-        }
-        RuntimeProcessClassification::Conflicting(processes) => {
+    let managed = exact_managed_runtime_processes(config_path);
+    if managed.len() == 1 {
+        local.process_running = true;
+        local.managed_config = true;
+        local.active_config_path = managed[0].config_path.clone();
+    } else if managed.len() > 1 {
+        local.process_running = true;
+        local.warnings.push(format!(
+            "multiple managed sing-box processes violate single-owner runtime: {}",
+            managed
+                .iter()
+                .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+
+    let managed_pids = managed
+        .iter()
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    if let RuntimeProcessClassification::Conflicting(processes) =
+        classify_runtime_process(config_path)
+    {
+        let external = processes
+            .iter()
+            .filter(|process| !managed_pids.contains(&process.pid))
+            .collect::<Vec<_>>();
+        if !external.is_empty() {
             local.process_running = true;
             local.warnings.push(format!(
-                "conflicting sing-box process ownership detected: {}",
-                processes
+                "external sing-box process ownership observed: {}",
+                external
                     .iter()
                     .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
                     .collect::<Vec<_>>()
                     .join(" | ")
             ));
         }
-        RuntimeProcessClassification::Absent => {
-            local
-                .warnings
-                .push("sing-box process is not running".to_owned());
-        }
+    }
+
+    if !local.process_running {
+        local
+            .warnings
+            .push("managed sing-box process is not running".to_owned());
     }
     local
+}
+
+#[cfg(any(windows, test))]
+fn proxy_only_external_coexistence_allowed(paths: &LocalRuntimePaths) -> Result<bool, String> {
+    if !is_typed_runtime_state(&paths.state_path) {
+        return Ok(false);
+    }
+    let desired = canonical_production_desired_state()?;
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
+    Ok(mode == WindowsDatapathMode::ProxyOnly)
 }
 
 pub fn start_local_runtime(
     paths: &LocalRuntimePaths,
     visible_window: bool,
 ) -> Result<RuntimeOperationResult, String> {
-    let runtime = match classify_runtime_process(&paths.config_path) {
-        RuntimeProcessClassification::Managed(process) => Some(process),
-        RuntimeProcessClassification::Absent => None,
-        RuntimeProcessClassification::Conflicting(processes) => {
+    let mut managed = exact_managed_runtime_processes(&paths.config_path);
+    if managed.len() > 1 {
+        return Err(format!(
+            "refusing managed runtime start with duplicate managed owners: {}",
+            managed
+                .iter()
+                .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+    let runtime = managed.pop();
+    let classification = classify_runtime_process(&paths.config_path);
+    if let RuntimeProcessClassification::Conflicting(processes) = &classification {
+        #[cfg(windows)]
+        if !proxy_only_external_coexistence_allowed(paths)? {
             return Err(format!(
-                "refusing managed runtime start while conflicting sing-box process ownership exists: {}",
+                "refusing managed runtime start while conflicting sing-box ownership exists outside PROXY_ONLY mode: {}",
                 processes
                     .iter()
                     .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
@@ -379,7 +428,17 @@ pub fn start_local_runtime(
                     .join(" | ")
             ));
         }
-    };
+
+        #[cfg(not(windows))]
+        return Err(format!(
+            "refusing managed runtime start while conflicting sing-box process ownership exists: {}",
+            processes
+                .iter()
+                .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
 
     if !paths.singbox_binary_path.is_file() {
         return Err(format!(
@@ -388,9 +447,8 @@ pub fn start_local_runtime(
         ));
     }
 
-    // Do all fallible configuration work before taking down the active TUN.
-    // This makes `restart-local` a guarded transition rather than a blind
-    // stop/start operation.
+    // Do all fallible configuration work before taking down the exact managed process.
+    // External sing-box processes are never stopped by this owner.
     let staged = stage_and_validate_config(paths)?;
 
     if let Some(process) = runtime.as_ref() {
@@ -455,27 +513,26 @@ pub fn stop_local_runtime(
     config_path: &Path,
     expected_config_only: bool,
 ) -> Result<RuntimeOperationResult, String> {
-    let runtime = match classify_runtime_process(config_path) {
-        RuntimeProcessClassification::Managed(process) => Some(process),
-        RuntimeProcessClassification::Absent => None,
-        RuntimeProcessClassification::Conflicting(processes) => {
-            return Err(format!(
-                "refusing to stop sing-box while process ownership is conflicting: {}",
-                processes
-                    .iter()
-                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            ));
-        }
-    };
+    let mut managed = exact_managed_runtime_processes(config_path);
+    if managed.len() > 1 {
+        return Err(format!(
+            "refusing managed runtime stop with duplicate managed owners: {}",
+            managed
+                .iter()
+                .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+    let runtime = managed.pop();
+
     let Some(process) = runtime else {
         let local_singbox = inspect_local_runtime(config_path);
         let mut warnings = local_singbox.warnings.clone();
         warnings.extend(restore_windows_dns_if_owned());
         return Ok(RuntimeOperationResult {
             pid: None,
-            note: "sing-box is not running".to_owned(),
+            note: "managed sing-box is not running".to_owned(),
             warnings,
             local_singbox,
         });
@@ -494,7 +551,8 @@ pub fn stop_local_runtime(
     warnings.extend(restore_windows_dns_if_owned());
     Ok(RuntimeOperationResult {
         pid: Some(process.pid),
-        note: "local sing-box stopped".to_owned(),
+        note: "exact managed sing-box stopped; external sing-box ownership was not mutated"
+            .to_owned(),
         warnings,
         local_singbox,
     })
@@ -666,6 +724,23 @@ fn discard_staged_config(staged: &StagedConfig) -> Result<(), String> {
             staged.candidate_path.display()
         )),
     }
+}
+
+pub fn exact_managed_runtime_processes(config_path: &Path) -> Vec<ProcessObservation> {
+    singbox_processes()
+        .into_iter()
+        .filter(|process| {
+            process
+                .config_path
+                .as_deref()
+                .is_some_and(|config| same_path_string(config, config_path))
+        })
+        .collect()
+}
+
+pub fn find_exact_managed_runtime_process(config_path: &Path) -> Option<ProcessObservation> {
+    let mut managed = exact_managed_runtime_processes(config_path);
+    (managed.len() == 1).then(|| managed.remove(0))
 }
 
 pub fn inspect_runtime_process(config_path: &Path) -> Option<ProcessObservation> {
@@ -1043,6 +1118,24 @@ mod tests {
             classify_processes(&expected, vec![managed.clone(), managed]),
             RuntimeProcessClassification::Conflicting(_)
         ));
+    }
+
+    #[test]
+    fn canonical_proxy_only_allows_external_coexistence_only_for_typed_windows_state() {
+        let root = std::env::temp_dir().join("edge-proxy-only-coexistence");
+        let paths = LocalRuntimePaths {
+            singbox_binary_path: root.join("sing-box.exe"),
+            config_path: root.join("sing-box.json"),
+            state_path: root.join("runtime-state.pb"),
+            runtime_root: root,
+        };
+        assert!(proxy_only_external_coexistence_allowed(&paths).unwrap());
+
+        let legacy = LocalRuntimePaths {
+            state_path: PathBuf::from("legacy-runtime.json"),
+            ..paths
+        };
+        assert!(!proxy_only_external_coexistence_allowed(&legacy).unwrap());
     }
 
     #[test]

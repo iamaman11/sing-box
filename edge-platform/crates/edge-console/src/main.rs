@@ -7,9 +7,7 @@ use clap::Parser;
 use edge_controller_core::{
     local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
 };
-use edge_local_runtime::{
-    RuntimeProcessClassification, classify_runtime_process, run_non_tun_loopback_smoke,
-};
+use edge_local_runtime::{run_non_tun_loopback_smoke, stop_local_runtime as stop_runtime_process};
 use edge_observability::init as init_observability;
 use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
@@ -33,8 +31,9 @@ use edge_shared_types::{
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsPrivilegedOperation,
-    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
+    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsDatapathMode,
+    WindowsPrivilegedOperation, WindowsPrivilegedRequest, WindowsPrivilegedResult,
+    WindowsRuntimeState, WindowsTunnelBinding, canonical_production_desired_state,
     decode_windows_activation_state, decode_windows_privileged_request,
     decode_windows_privileged_result, decode_windows_runtime_state,
     encode_windows_activation_state, encode_windows_privileged_request,
@@ -263,6 +262,24 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     operation: WindowsPrivilegedOperation::RollbackPreviousRelease as i32,
                     accepted_revision: None,
                     release_set_sha256: None,
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedReinstallAccepted(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::ReinstallAcceptedRelease as i32,
+                    accepted_revision: Some(args.accepted_revision),
+                    release_set_sha256: Some(args.release_set_sha256),
                     credential_generation: None,
                     credential_transition_action: None,
                 },
@@ -843,7 +860,8 @@ fn privileged_wait_secs(request: &WindowsPrivilegedRequest) -> u64 {
     match WindowsPrivilegedOperation::try_from(request.operation) {
         Ok(
             WindowsPrivilegedOperation::ActivateRelease
-            | WindowsPrivilegedOperation::RollbackPreviousRelease,
+            | WindowsPrivilegedOperation::RollbackPreviousRelease
+            | WindowsPrivilegedOperation::ReinstallAcceptedRelease,
         ) => PRIVILEGED_ACTIVATE_WAIT_SECS,
         _ => PRIVILEGED_SHORT_WAIT_SECS,
     }
@@ -871,9 +889,10 @@ fn activation_matches_request(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
 ) -> Option<WindowsActivationState> {
-    if WindowsPrivilegedOperation::try_from(request.operation).ok()
-        != Some(WindowsPrivilegedOperation::ActivateRelease)
-    {
+    if !matches!(
+        WindowsPrivilegedOperation::try_from(request.operation).ok(),
+        Some(WindowsPrivilegedOperation::ActivateRelease)
+    ) {
         return None;
     }
     let target_release = request.release_set_sha256.as_deref()?;
@@ -999,10 +1018,13 @@ async fn process_privileged_request(
             ))
         }
         Ok(WindowsPrivilegedOperation::ActivateRelease) => {
-            activate_privileged_release(install_root, request)
+            activate_privileged_release(install_root, request, false)
         }
         Ok(WindowsPrivilegedOperation::RollbackPreviousRelease) => {
             rollback_privileged_release(install_root)
+        }
+        Ok(WindowsPrivilegedOperation::ReinstallAcceptedRelease) => {
+            activate_privileged_release(install_root, request, true)
         }
         Ok(WindowsPrivilegedOperation::StageCredential) => {
             stage_windows_credential_candidate_from_worker(install_root, request).await
@@ -1285,9 +1307,23 @@ async fn stage_windows_credential_candidate_from_worker(
     ))
 }
 
+fn require_proxy_only_reinstall_authority() -> Result<(), String> {
+    let desired = canonical_production_desired_state()?;
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
+    if mode != WindowsDatapathMode::ProxyOnly {
+        return Err(
+            "accepted-release reinstall is permitted only while canonical production is PROXY_ONLY"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 fn activate_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
+    force_rematerialize: bool,
 ) -> Result<(String, String, Option<String>), String> {
     let accepted_revision = request
         .accepted_revision
@@ -1298,13 +1334,40 @@ fn activate_privileged_release(
         .as_deref()
         .ok_or_else(|| "release_set_sha256 is required".to_owned())?;
 
-    if let Ok(activation) = load_verified_activation(install_root)
+    let before_activation = load_verified_activation(install_root).ok();
+    let mut previous_bytes_before = None;
+    if force_rematerialize {
+        require_proxy_only_reinstall_authority()?;
+        let current = before_activation.as_ref().ok_or_else(|| {
+            "accepted-release reinstall requires a verified current activation".to_owned()
+        })?;
+        if current.release_set_sha256 != target_release {
+            return Err(
+                "accepted-release reinstall target must equal the exact current ReleaseSet"
+                    .to_owned(),
+            );
+        }
+        let (_, previous) = load_previous_release_rollback_pair(install_root)?;
+        if previous.release_set_sha256 == target_release {
+            return Err(
+                "accepted-release reinstall requires a distinct verified previous.pb rollback target"
+                    .to_owned(),
+            );
+        }
+        previous_bytes_before =
+            Some(fs::read(install_root.join("previous.pb")).map_err(|err| {
+                format!("failed to snapshot previous.pb before reinstall: {err}")
+            })?);
+
+        stop_runtime_process(&local_singbox_config_path(install_root), true)
+            .map_err(|err| format!("failed to stop exact managed proxy before reinstall: {err}"))?;
+    } else if let Some(activation) = before_activation.as_ref()
         && activation.release_set_sha256 == target_release
     {
         return Ok((
             "RELEASE_ALREADY_CONVERGED".to_owned(),
             "exact target ReleaseSet is already locally verified; installer not invoked".to_owned(),
-            Some(activation.release_set_sha256),
+            Some(activation.release_set_sha256.clone()),
         ));
     }
 
@@ -1320,7 +1383,8 @@ fn activate_privileged_release(
     let root = install_root
         .to_str()
         .ok_or_else(|| "Windows install root is not UTF-8".to_owned())?;
-    let output = Command::new("powershell.exe")
+    let mut command = Command::new("powershell.exe");
+    command
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1336,17 +1400,64 @@ fn activate_privileged_release(
             target_release,
             "-InstallRoot",
             root,
-        ])
+        ]);
+    if force_rematerialize {
+        command.arg("-ForceRematerialize");
+    }
+    let output = command
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("failed to start protected Windows installer: {err}"))?;
+
+    let reconcile_current_owner = |activation: &WindowsActivationState| -> Result<(), String> {
+        #[cfg(windows)]
+        converge_controller_service(install_root, Path::new(&activation.controller_path))?;
+        retarget_privileged_task(install_root, &activation.console_path)?;
+        Ok(())
+    };
+
     if !output.status.success() {
+        if force_rematerialize {
+            if let Ok(observed) = load_verified_activation(install_root)
+                && observed.release_set_sha256 == target_release
+                && before_activation
+                    .as_ref()
+                    .is_some_and(|before| before.release_dir != observed.release_dir)
+            {
+                if let Some(expected_previous) = previous_bytes_before.as_ref()
+                    && fs::read(install_root.join("previous.pb")).ok().as_ref()
+                        != Some(expected_previous)
+                {
+                    let _ = write_atomic(&install_root.join("previous.pb"), expected_previous);
+                    reconcile_current_owner(&observed)?;
+                    return Err(
+                        "accepted release rematerialized but previous.pb changed unexpectedly; rollback authority was restored"
+                            .to_owned(),
+                    );
+                }
+                reconcile_current_owner(&observed)?;
+                return Ok((
+                    "RELEASE_REINSTALLED_REOBSERVED".to_owned(),
+                    "alternate immutable release slot committed despite installer exit failure; exact authority was reobserved and owner handoff reconciled"
+                        .to_owned(),
+                    Some(observed.release_set_sha256),
+                ));
+            }
+
+            if let Some(before) = before_activation.as_ref() {
+                reconcile_current_owner(before)?;
+            }
+            return Err(format!(
+                "protected Windows reinstall failed with exit code {}; {}",
+                output.status.code().unwrap_or(-1),
+                bounded_privileged_child_evidence(&output.stdout, &output.stderr)
+            ));
+        }
+
         if let Ok(activation) = load_verified_activation(install_root)
             && activation.release_set_sha256 == target_release
         {
-            #[cfg(windows)]
-            converge_controller_service(install_root, Path::new(&activation.controller_path))?;
-            retarget_privileged_task(install_root, &activation.console_path)?;
+            reconcile_current_owner(&activation)?;
             return Ok((
                 "RELEASE_CONVERGED_REOBSERVED".to_owned(),
                 "exact target ReleaseSet committed despite installer failure; local owner handoff reconciled"
@@ -1367,12 +1478,47 @@ fn activate_privileged_release(
     if activation.release_set_sha256 != target_release {
         return Err("updated Windows activation does not match requested ReleaseSet".to_owned());
     }
-    #[cfg(windows)]
-    converge_controller_service(install_root, Path::new(&activation.controller_path))?;
-    retarget_privileged_task(install_root, &activation.console_path)?;
+
+    if force_rematerialize {
+        let before = before_activation
+            .as_ref()
+            .ok_or_else(|| "reinstall lost its pre-mutation activation snapshot".to_owned())?;
+        if activation.release_dir == before.release_dir {
+            reconcile_current_owner(&activation)?;
+            return Err(
+                "accepted-release reinstall did not switch to the alternate immutable release slot"
+                    .to_owned(),
+            );
+        }
+        if let Some(expected_previous) = previous_bytes_before.as_ref() {
+            let observed_previous = fs::read(install_root.join("previous.pb"))
+                .map_err(|err| format!("failed to verify previous.pb after reinstall: {err}"))?;
+            if &observed_previous != expected_previous {
+                write_atomic(&install_root.join("previous.pb"), expected_previous).map_err(
+                    |err| format!("failed to restore previous.pb after reinstall: {err}"),
+                )?;
+                reconcile_current_owner(&activation)?;
+                return Err(
+                    "accepted-release reinstall changed previous.pb; exact prior rollback authority was restored"
+                        .to_owned(),
+                );
+            }
+        }
+    }
+
+    reconcile_current_owner(&activation)?;
     Ok((
-        "RELEASE_CONVERGED".to_owned(),
-        "exact accepted ReleaseSet and controller service are active".to_owned(),
+        if force_rematerialize {
+            "RELEASE_REINSTALLED".to_owned()
+        } else {
+            "RELEASE_CONVERGED".to_owned()
+        },
+        if force_rematerialize {
+            "exact accepted ReleaseSet was downloaded again, verified, activated from the alternate immutable slot, and previous.pb was preserved"
+                .to_owned()
+        } else {
+            "exact accepted ReleaseSet and controller service are active".to_owned()
+        },
         Some(activation.release_set_sha256),
     ))
 }
@@ -1406,25 +1552,8 @@ fn rollback_privileged_release(
     let (current, previous) = load_previous_release_rollback_pair(install_root)?;
 
     let managed_config = local_singbox_config_path(install_root);
-    match classify_runtime_process(&managed_config) {
-        RuntimeProcessClassification::Absent => {}
-        RuntimeProcessClassification::Managed(process) => {
-            return Err(format!(
-                "previous-release rollback requires managed sing-box to be stopped first; pid={} remains active",
-                process.pid
-            ));
-        }
-        RuntimeProcessClassification::Conflicting(processes) => {
-            return Err(format!(
-                "previous-release rollback refuses conflicting sing-box ownership: {}",
-                processes
-                    .iter()
-                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            ));
-        }
-    }
+    stop_runtime_process(&managed_config, true)
+        .map_err(|err| format!("failed to stop exact managed runtime before rollback: {err}"))?;
 
     let current_bytes = fs::read(&current_path)
         .map_err(|err| format!("failed to snapshot current.pb before rollback: {err}"))?;

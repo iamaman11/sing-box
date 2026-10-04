@@ -986,19 +986,20 @@ pub fn validate_windows_privileged_request(
                 );
             }
         }
-        WindowsPrivilegedOperation::ActivateRelease => {
+        WindowsPrivilegedOperation::ActivateRelease
+        | WindowsPrivilegedOperation::ReinstallAcceptedRelease => {
             let revision = request
                 .accepted_revision
                 .as_deref()
-                .ok_or_else(|| "ACTIVATE_RELEASE requires accepted_revision".to_owned())?;
+                .ok_or_else(|| "release operation requires accepted_revision".to_owned())?;
             let release = request
                 .release_set_sha256
                 .as_deref()
-                .ok_or_else(|| "ACTIVATE_RELEASE requires release_set_sha256".to_owned())?;
+                .ok_or_else(|| "release operation requires release_set_sha256".to_owned())?;
             if request.credential_generation.is_some()
                 || request.credential_transition_action.is_some()
             {
-                return Err("ACTIVATE_RELEASE must not carry credential authority".to_owned());
+                return Err("release operation must not carry credential authority".to_owned());
             }
             validate_lower_hex("WindowsPrivilegedRequest.accepted_revision", revision, 40)?;
             validate_lower_hex("WindowsPrivilegedRequest.release_set_sha256", release, 64)?;
@@ -2740,6 +2741,26 @@ mod tests {
 
         let mut invalid = request;
         invalid.release_set_sha256 = Some("1".repeat(64));
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_reinstall_is_accepted_release_only() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-release-reinstall".to_owned(),
+            operation: WindowsPrivilegedOperation::ReinstallAcceptedRelease as i32,
+            accepted_revision: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            release_set_sha256: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            ),
+            credential_generation: None,
+            credential_transition_action: None,
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request;
+        invalid.release_set_sha256 = None;
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 

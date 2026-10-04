@@ -711,9 +711,11 @@ The Stage-4B preflight audit of protected main established these implementation 
    prove the exact managed TUN adapter, addresses, routes and per-interface DNS. Prefer Win32/IP Helper
    APIs; do not create WMI/PowerShell parsing or a resident observer merely for acceptance.
 7. Add one typed Windows process observation in the existing local-runtime boundary that distinguishes
-   the exact managed process, any conflicting external sing-box process and absence. Startup/cutover code
-   may act only on the exact managed process; a conflicting external process is evidence/STOP unless the
-   explicit physical cutover has pre-authorized that exact observed owner.
+   the exact managed process, any external sing-box process and absence. Mutations may act only on the
+   exact managed process. While canonical production is PROXY_ONLY, one managed mixed-proxy runtime may
+   coexist with the observed external sing-box because it owns no TUN/routes/DNS; duplicate managed owners
+   remain fail-closed. MANAGED_TUN always treats any external sing-box as evidence/STOP until the explicit
+   physical cutover has pre-authorized that exact observed owner.
 8. Add startup convergence inside the existing SCM `EdgePlatformController`: after reboot/service start,
    an installed, validated managed runtime is started when absent; an already-running exact managed runtime
    is a NOOP; an unexpected/external sing-box remains fail-closed and untouched. Do not add a Scheduled
@@ -743,6 +745,24 @@ The Stage-4B preflight audit of protected main established these implementation 
   cutover mutation command in 4B.1. The fixed operation is derived and added in 4B.2 only after read-only
   external-owner/restore proof;
 - exact-head CI and no-rebuild promotion must PASS.
+
+**Mandatory proxy-only operator lifecycle gate — before 4B.2**
+
+4B.1 is closed only after exact-head CI and no-rebuild promotion. Before any `MANAGED_TUN` mode flip
+or cutover work, the accepted PROXY_ONLY application must prove the real ChatGPT operator lifecycle
+through the existing single GitHub/Windows boundary:
+
+- `/windows diagnose`: read-only activation/SCM/process/network evidence plus a live managed proxy trace;
+- `/windows converge`: install/update the exact accepted protected-main ReleaseSet with no Windows build,
+  start only the exact managed PROXY_ONLY runtime, and prove DIRECT + WARP egress;
+- `/windows repair`: re-download the same accepted durable ReleaseSet into the bounded alternate immutable
+  slot, preserve `previous.pb`, retarget the one SCM/privileged owner, and re-prove DIRECT + WARP;
+- `/windows rollback`: stop only the exact managed process and restore exact verified `previous.pb`;
+- reconverge to the current accepted ReleaseSet and repeat read-only diagnosis.
+
+The external working sing-box must have the same observed process identity before and after every managed
+operation. TUN, route, DNS and system-proxy mutation remain forbidden throughout this gate. A failure in
+install, functional proxy verification, repair, rollback or reconvergence blocks 4B.2.
 
 **4B.2 — bounded physical cutover acceptance**
 

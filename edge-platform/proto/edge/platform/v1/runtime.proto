@@ -158,6 +158,7 @@ enum WindowsPrivilegedOperation {
   // exact-generation staging became the sole local data-plane gate.
   WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL = 8 [deprecated = true];
   WINDOWS_PRIVILEGED_OPERATION_ROLLBACK_PREVIOUS_RELEASE = 9;
+  WINDOWS_PRIVILEGED_OPERATION_REINSTALL_ACCEPTED_RELEASE = 10;
 }
 
 message WindowsPrivilegedRequest {

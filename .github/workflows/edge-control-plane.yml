@@ -63,7 +63,13 @@ jobs:
       !github.event.issue.pull_request &&
       github.actor_id == '44100369' &&
       github.run_attempt == 1 &&
-      github.event.comment.body == '/windows smoke'
+      (
+        github.event.comment.body == '/windows smoke' ||
+        github.event.comment.body == '/windows diagnose' ||
+        github.event.comment.body == '/windows converge' ||
+        github.event.comment.body == '/windows repair' ||
+        github.event.comment.body == '/windows rollback'
+      )
     uses: ./.github/workflows/windows-physical.yml
     with:
       command_body: ${{ github.event.comment.body }}

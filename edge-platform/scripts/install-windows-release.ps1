@@ -6,7 +6,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$AcceptedRevision,
     [string]$InstallRoot = "C:\sing-box",
-    [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN
+    [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
+    [switch]$ForceRematerialize
 )
 
 Set-StrictMode -Version Latest
@@ -259,7 +260,8 @@ function Activate-ReleaseAuthority {
         [Parameter(Mandatory)] [string]$Console,
         [Parameter(Mandatory)] [string]$Diagnostic,
         [Parameter(Mandatory)] [string]$SingBox,
-        [Parameter(Mandatory)] [string]$InstallRoot
+        [Parameter(Mandatory)] [string]$InstallRoot,
+        [switch]$PreservePrevious
     )
 
     $binDir = Join-Path $InstallRoot "bin"
@@ -281,7 +283,7 @@ function Activate-ReleaseAuthority {
     Copy-StableBinary -Source $Console -Target $stableConsole
     Copy-StableBinary -Source $Diagnostic -Target $stableDiagnostic
 
-    if (Test-Path -LiteralPath $currentPath) {
+    if ((Test-Path -LiteralPath $currentPath) -and -not $PreservePrevious) {
         Copy-Item -LiteralPath $currentPath -Destination "$previousPath.new" -Force
         Move-Item -LiteralPath "$previousPath.new" -Destination $previousPath -Force
     }
@@ -304,7 +306,42 @@ New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
 Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag
-$releaseDir = Join-Path $releasesDir $ReleaseSetSha256
+$canonicalReleaseDir = Join-Path $releasesDir $ReleaseSetSha256
+$repairReleaseDir = Join-Path $releasesDir ($ReleaseSetSha256 + ".repair")
+$releaseDir = $canonicalReleaseDir
+$preservePrevious = $false
+$currentReleaseDir = ""
+
+if ($ForceRematerialize) {
+    $stableDiagnostic = Join-Path $binDir "edge-diagnostic.exe"
+    if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
+        throw "ForceRematerialize requires a verified current activation"
+    }
+    if (-not (Test-Path -LiteralPath $stableDiagnostic -PathType Leaf)) {
+        throw "ForceRematerialize requires the stable diagnostic boundary"
+    }
+    $current = Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath
+    if ([string]$current["release_set_sha256"] -ne $ReleaseSetSha256) {
+        throw "ForceRematerialize target must equal the exact current ReleaseSet"
+    }
+    $currentReleaseDir = [IO.Path]::GetFullPath([string]$current["release_dir"]).TrimEnd('\')
+    $canonicalFull = [IO.Path]::GetFullPath($canonicalReleaseDir).TrimEnd('\')
+    $repairFull = [IO.Path]::GetFullPath($repairReleaseDir).TrimEnd('\')
+    if ($currentReleaseDir -ceq $canonicalFull) {
+        $releaseDir = $repairReleaseDir
+    } elseif ($currentReleaseDir -ceq $repairFull) {
+        $releaseDir = $canonicalReleaseDir
+    } else {
+        throw "ForceRematerialize current activation is outside the bounded canonical/repair slots"
+    }
+    if ([IO.Path]::GetFullPath($releaseDir).TrimEnd('\') -ceq $currentReleaseDir) {
+        throw "ForceRematerialize refuses to overwrite the active immutable release directory"
+    }
+    $preservePrevious = $true
+    Write-Output "rematerialize_from=$currentReleaseDir"
+    Write-Output "rematerialize_to=$([IO.Path]::GetFullPath($releaseDir))"
+}
+
 $releaseSetPath = Join-Path $releaseDir "release-set.pb"
 $releaseSetSidecar = Join-Path $releaseDir "release-set.pb.sha256"
 $packagePath = Join-Path $releaseDir "edge-platform-windows.zip"
@@ -316,7 +353,7 @@ $requiredInstalled = @(
     (Join-Path $releaseDir "bin\edge-diagnostic.exe"),
     (Join-Path $releaseDir "bootstrap\install-windows-release.ps1")
 )
-$needsInstall = @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
+$needsInstall = $ForceRematerialize -or @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
 
 if ($needsInstall) {
     $stage = Join-Path $env:TEMP ("edge-platform-release-" + [guid]::NewGuid().ToString("N"))
@@ -394,7 +431,7 @@ $verificationOutput | Write-Output
 
 if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
-    if ($current["release_set_sha256"] -eq $ReleaseSetSha256) {
+    if (-not $ForceRematerialize -and $current["release_set_sha256"] -eq $ReleaseSetSha256) {
         Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
         Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
         Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
@@ -418,9 +455,13 @@ $activation = Activate-ReleaseAuthority `
     -Console $console `
     -Diagnostic $diagnostic `
     -SingBox $singBox `
-    -InstallRoot $InstallRoot
+    -InstallRoot $InstallRoot `
+    -PreservePrevious:$preservePrevious
 
 Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
+if ($ForceRematerialize) {
+    Write-Output "rematerialization=PASS"
+}
 Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
 Write-Output "current_state=$($activation["current_state"])"
 Write-Output "console=$($activation["console"])"

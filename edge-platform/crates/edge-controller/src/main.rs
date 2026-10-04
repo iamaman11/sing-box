@@ -40,7 +40,8 @@ use edge_controller_core::{
 };
 use edge_local_runtime::{
     LocalRuntimePaths, RuntimeProcessClassification, classify_runtime_process,
-    inspect_local_runtime, restart_local_runtime as restart_runtime_process,
+    exact_managed_runtime_processes, inspect_local_runtime,
+    restart_local_runtime as restart_runtime_process,
     restart_local_runtime_visible as restart_runtime_process_visible, restore_windows_dns_if_owned,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
@@ -63,8 +64,8 @@ use edge_shared_types::{
     PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
     SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, VerifyRuntimeRequest, decode_windows_runtime_state,
-    timestamp_from_unix_seconds,
+    TraceObservation, VerifyRuntimeRequest, WindowsDatapathMode,
+    canonical_production_desired_state, decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -503,11 +504,31 @@ enum WindowsStartupDecision {
 #[cfg(any(windows, test))]
 fn windows_startup_decision(
     classification: &RuntimeProcessClassification,
+    managed_count: usize,
+    mode: WindowsDatapathMode,
 ) -> WindowsStartupDecision {
-    match classification {
-        RuntimeProcessClassification::Managed(_) => WindowsStartupDecision::NoopManaged,
-        RuntimeProcessClassification::Conflicting(_) => WindowsStartupDecision::BlockedConflict,
-        RuntimeProcessClassification::Absent => WindowsStartupDecision::StartAbsent,
+    if managed_count > 1 {
+        return WindowsStartupDecision::BlockedConflict;
+    }
+
+    match mode {
+        WindowsDatapathMode::ProxyOnly => {
+            if managed_count == 1 {
+                WindowsStartupDecision::NoopManaged
+            } else {
+                match classification {
+                    RuntimeProcessClassification::Managed(_) => WindowsStartupDecision::NoopManaged,
+                    RuntimeProcessClassification::Conflicting(_)
+                    | RuntimeProcessClassification::Absent => WindowsStartupDecision::StartAbsent,
+                }
+            }
+        }
+        WindowsDatapathMode::ManagedTun => match classification {
+            RuntimeProcessClassification::Managed(_) => WindowsStartupDecision::NoopManaged,
+            RuntimeProcessClassification::Conflicting(_) => WindowsStartupDecision::BlockedConflict,
+            RuntimeProcessClassification::Absent => WindowsStartupDecision::StartAbsent,
+        },
+        WindowsDatapathMode::Unspecified => WindowsStartupDecision::BlockedConflict,
     }
 }
 
@@ -534,8 +555,17 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
         .map_err(|err| format!("failed to read installed Windows runtime state: {err}"))?;
     decode_windows_runtime_state(&state_bytes)?;
 
+    let desired = canonical_production_desired_state()
+        .map_err(|err| format!("failed to load canonical production desired state: {err}"))?;
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
+    if mode == WindowsDatapathMode::Unspecified {
+        return Err("canonical production Windows datapath mode is unspecified".to_owned());
+    }
+
     let classification = classify_runtime_process(&config_path);
-    match windows_startup_decision(&classification) {
+    let managed_count = exact_managed_runtime_processes(&config_path).len();
+    match windows_startup_decision(&classification, managed_count, mode) {
         WindowsStartupDecision::NoopManaged => Ok("NOOP_MANAGED_RUNNING"),
         WindowsStartupDecision::BlockedConflict => {
             let RuntimeProcessClassification::Conflicting(processes) = &classification else {
@@ -4498,7 +4528,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn windows_service_startup_decision_matrix_is_fail_closed() {
+    fn windows_service_startup_decision_is_mode_scoped_and_fail_closed() {
         use edge_local_runtime::ProcessObservation;
 
         let managed = ProcessObservation {
@@ -4513,15 +4543,61 @@ mod tests {
         };
 
         assert_eq!(
-            windows_startup_decision(&RuntimeProcessClassification::Managed(managed)),
+            windows_startup_decision(
+                &RuntimeProcessClassification::Managed(managed.clone()),
+                1,
+                WindowsDatapathMode::ProxyOnly,
+            ),
             WindowsStartupDecision::NoopManaged
         );
         assert_eq!(
-            windows_startup_decision(&RuntimeProcessClassification::Absent),
+            windows_startup_decision(
+                &RuntimeProcessClassification::Absent,
+                0,
+                WindowsDatapathMode::ProxyOnly,
+            ),
             WindowsStartupDecision::StartAbsent
         );
         assert_eq!(
-            windows_startup_decision(&RuntimeProcessClassification::Conflicting(vec![external])),
+            windows_startup_decision(
+                &RuntimeProcessClassification::Conflicting(vec![external.clone()]),
+                0,
+                WindowsDatapathMode::ProxyOnly,
+            ),
+            WindowsStartupDecision::StartAbsent
+        );
+        assert_eq!(
+            windows_startup_decision(
+                &RuntimeProcessClassification::Conflicting(
+                    vec![managed.clone(), external.clone(),]
+                ),
+                1,
+                WindowsDatapathMode::ProxyOnly,
+            ),
+            WindowsStartupDecision::NoopManaged
+        );
+        assert_eq!(
+            windows_startup_decision(
+                &RuntimeProcessClassification::Conflicting(vec![external.clone()]),
+                0,
+                WindowsDatapathMode::ManagedTun,
+            ),
+            WindowsStartupDecision::BlockedConflict
+        );
+        assert_eq!(
+            windows_startup_decision(
+                &RuntimeProcessClassification::Conflicting(vec![managed.clone(), external]),
+                1,
+                WindowsDatapathMode::ManagedTun,
+            ),
+            WindowsStartupDecision::BlockedConflict
+        );
+        assert_eq!(
+            windows_startup_decision(
+                &RuntimeProcessClassification::Conflicting(vec![managed.clone(), managed]),
+                2,
+                WindowsDatapathMode::ProxyOnly,
+            ),
             WindowsStartupDecision::BlockedConflict
         );
     }
