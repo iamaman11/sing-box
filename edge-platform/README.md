@@ -40,7 +40,8 @@ is replaced. Stage 4A warning cleanup is not a prerequisite and must not become 
 
 Stage 4B has two bounded gates. First, **code proof with no live TUN mutation**: typed datapath mode in
 the existing protobuf desired-state boundary, one canonical Windows renderer, exact pinned
-`sing-box check`, native read-only network diagnostics, and SCM startup convergence after reboot.
+`sing-box check`, candidate identity that includes canonical production desired state, bounded local
+previous-ReleaseSet rollback, native read-only network diagnostics, and SCM startup convergence after reboot.
 Second, **one physical cutover acceptance** through the existing Windows workflow boundary, but only
 after the canonical `MANAGED_TUN` mode-flip revision itself passes exact-head CI and no-rebuild
 promotion. No hidden environment toggle, second Windows workflow, Scheduled Task/watchdog, parallel DNS manager or
