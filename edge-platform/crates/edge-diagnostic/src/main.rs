@@ -78,9 +78,9 @@ fn run() -> Result<(), String> {
     println!("exact_release_files=PASS");
 
     #[cfg(windows)]
-    observe_windows_service(&expected_controller)?;
+    let controller_pid = observe_windows_service(&expected_controller)?;
     #[cfg(windows)]
-    observe_singbox_processes(&state_path, datapath_mode)?;
+    observe_singbox_processes(&state_path, datapath_mode, controller_pid)?;
     #[cfg(windows)]
     observe_windows_network(&state_path, datapath_mode)?;
 
@@ -111,7 +111,18 @@ fn same_path(observed: &Path, expected: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn observe_windows_service(expected_controller: &Path) -> Result<(), String> {
+fn service_binary_path(command: &Path) -> PathBuf {
+    let text = command.to_string_lossy();
+    if let Some(rest) = text.strip_prefix('"')
+        && let Some(end) = rest.find('"')
+    {
+        return PathBuf::from(&rest[..end]);
+    }
+    PathBuf::from(text.split_whitespace().next().unwrap_or_default())
+}
+
+#[cfg(windows)]
+fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, String> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("failed to open Windows SCM: {err}"))?;
     let service = manager
@@ -129,7 +140,8 @@ fn observe_windows_service(expected_controller: &Path) -> Result<(), String> {
         .query_status()
         .map_err(|err| format!("failed to query controller service status: {err}"))?;
 
-    let configured_binary = config.executable_path.clone();
+    let configured_command = config.executable_path.clone();
+    let configured_binary = service_binary_path(&configured_command);
     let binary_matches = configured_binary == expected_controller
         || same_path(&configured_binary, expected_controller);
     println!("scm_service_name={WINDOWS_CONTROLLER_SERVICE_NAME}");
@@ -142,16 +154,25 @@ fn observe_windows_service(expected_controller: &Path) -> Result<(), String> {
             .map(|value| value.to_string_lossy().into_owned())
             .unwrap_or_else(|| "LocalSystem".to_owned())
     );
-    println!("scm_executable_path={}", configured_binary.display());
+    println!("scm_executable_path={}", configured_command.display());
+    println!("scm_binary_path={}", configured_binary.display());
     println!("scm_executable_matches_release={binary_matches}");
     println!("scm_state={:?}", status.current_state);
-    Ok(())
+    println!(
+        "scm_process_id={}",
+        status
+            .process_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned())
+    );
+    Ok(status.process_id)
 }
 
 #[cfg(windows)]
 fn observe_singbox_processes(
     state_path: &Path,
     datapath_mode: WindowsDatapathMode,
+    controller_pid: Option<u32>,
 ) -> Result<(), String> {
     let install_root = state_path
         .parent()
@@ -173,18 +194,24 @@ fn observe_singbox_processes(
             .map(|value| value.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         let config = extract_config_argument(&arguments);
-        let is_managed = config
+        let parent_pid = process.parent().map(|value| value.as_u32());
+        let config_matches = config
             .as_deref()
             .is_some_and(|value| same_path(Path::new(value), &expected_config));
+        let parent_matches = controller_pid.is_some() && parent_pid == controller_pid;
+        let is_managed = config_matches || parent_matches;
         if is_managed {
             managed += 1;
         } else {
             conflicting += 1;
         }
         println!(
-            "singbox_process=pid:{} managed:{} exe:{} config:{} cmd:{}",
+            "singbox_process=pid:{} managed:{} parent:{} exe:{} config:{} cmd:{}",
             pid.as_u32(),
             is_managed,
+            parent_pid
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "UNKNOWN".to_owned()),
             process
                 .exe()
                 .map(|value| value.display().to_string())
@@ -458,6 +485,23 @@ mod tests {
     fn observes_current_process_by_exact_executable_path() {
         let current = std::env::current_exe().unwrap();
         assert!(process_running_at(&current));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_binary_path_extracts_unquoted_and_quoted_commands() {
+        assert_eq!(
+            service_binary_path(Path::new(
+                r"C:\sing-box\releases\abc\bin\edge-controller.exe windows-service C:\sing-box 127.0.0.1:51051"
+            )),
+            PathBuf::from(r"C:\sing-box\releases\abc\bin\edge-controller.exe")
+        );
+        assert_eq!(
+            service_binary_path(Path::new(
+                r#""C:\Program Files\edge-controller.exe" windows-service C:\sing-box 127.0.0.1:51051"#
+            )),
+            PathBuf::from(r"C:\Program Files\edge-controller.exe")
+        );
     }
 
     #[cfg(windows)]
