@@ -643,6 +643,97 @@ re-enrollment, recovery and rollback consumers.
 - Managed TUN is now permitted only inside the explicit Stage 4B cutover owned by Issue #26.
 - Do not reopen accepted Stage 4A deletions merely for confidence or isolated warning cleanup.
 
+### Stage 4B entry contract — managed Windows TUN
+
+Stage 4B is one bounded ownership cutover, not another cleanup programme. The existing Windows ownership
+chain remains unchanged:
+
+```text
+Git desired state + exact ReleaseSet
+        -> EdgePlatformPrivilegedDispatch (activation/bootstrap only)
+        -> SCM EdgePlatformController (sole Windows runtime owner)
+        -> managed sing-box
+        -> Windows TUN
+```
+
+The Stage-4B preflight audit of protected main established these implementation facts:
+
+- the canonical Windows renderer is intentionally proxy-only and rejects a TUN inbound;
+- credential apply/rollback re-renders the managed config from typed canonical state, so TUN must not be
+  enabled by a hidden environment switch or by mutating generated JSON;
+- local runtime restart already stages the candidate, runs exact `sing-box check`, activates only after
+  validation, observes startup and restores the last-known-good managed config on failure;
+- SCM `EdgePlatformController` is delayed-auto-start with bounded service recovery, but service startup
+  currently does not converge/start the managed sing-box after reboot;
+- `edge-diagnostic` currently proves release identity and controller process identity only; Stage 4B
+  requires native read-only adapter/route/DNS/TUN observation before live cutover;
+- Windows DNS observation in `edge-local-runtime` is native IP Helper, while the old owned-DNS reset is
+  still a bounded PowerShell recovery path. It must not become the normal TUN DNS owner;
+- the physical Windows backend is the existing `windows-physical.yml`; Stage 4B must extend this one
+  bounded owner-only boundary rather than create a second Windows workflow or scheduler.
+
+#### Required implementation shape
+
+1. Add one typed Windows datapath mode to the existing protobuf desired-state boundary, with an explicit
+   `PROXY_ONLY` -> `MANAGED_TUN` transition. No environment flag, generated-JSON inference or second
+   desired-state file may select the mode.
+2. Keep one canonical Windows config renderer. The same renderer must be used by initial materialization,
+   credential apply, credential rollback and cutover. Generated sing-box JSON remains a consumer artifact.
+3. For the pinned sing-box line, Windows TUN routing/DNS is owned by sing-box itself: TUN + `auto_route`,
+   `strict_route`, native/hijack DNS, existing `route.auto_detect_interface`, exact endpoint route
+   exclusions and stable DIRECT loop-prevention rules. Linux-only `auto_redirect` is not a Windows
+   mechanism and must not be introduced here.
+4. Extend the existing `edge-diagnostic` with native read-only Windows network observation sufficient to
+   prove the exact managed TUN adapter, addresses, routes and per-interface DNS. Prefer Win32/IP Helper
+   APIs; do not create WMI/PowerShell parsing or a resident observer merely for acceptance.
+5. Add startup convergence inside the existing SCM `EdgePlatformController`: after reboot/service start,
+   an installed, validated managed runtime is started when absent; an already-running exact managed runtime
+   is a NOOP; an unexpected/external sing-box remains fail-closed and untouched. Do not add a Scheduled
+   Task, watchdog daemon or second startup owner.
+6. Do not widen the SCM service identity merely by assumption. The live cutover must first prove whether
+   the existing `NT SERVICE\\EdgePlatformController` authority can create/own the TUN. Any privilege change
+   requires concrete failure evidence and a least-privilege decision; switching the controller to
+   LocalSystem merely for convenience is not an accepted default.
+7. The old PowerShell DNS reset remains recovery-only while it has a real consumer. New managed-TUN DNS
+   must not depend on it. If failed-runtime cleanup proves a host DNS reset is still necessary, implement
+   that mutation inside the existing local-runtime boundary with native Windows APIs and exact-interface
+   ownership; otherwise delete the obsolete reset in Stage 4C.
+
+#### Stage 4B execution gates
+
+**4B.1 — code-proven candidate, no live TUN mutation**
+
+- introduce the typed datapath mode while canonical production remains `PROXY_ONLY`;
+- implement and unit-test the single renderer's `MANAGED_TUN` branch;
+- validate the exact pinned Windows sing-box config with `sing-box check` in CI;
+- implement native network diagnostics and SCM startup convergence;
+- extend the existing Windows workflow/router only with the fixed, owner-only cutover contract; do not
+  execute it yet;
+- exact-head CI and no-rebuild promotion must PASS.
+
+**4B.2 — bounded physical cutover acceptance**
+
+Before touching the currently working external Windows sing-box, read-only observation must prove the
+exact external process/startup owner and a bounded restore procedure. This is cutover rollback evidence,
+not adoption of legacy config/secrets as project authority. If the old owner or restore procedure cannot
+be proven, STOP rather than guess.
+
+Then perform one authorized cutover: switch canonical desired mode to `MANAGED_TUN`, materialize and
+validate the exact accepted ReleaseSet, stop only the pre-observed external owner, start the managed TUN,
+and prove all of the following before declaring ownership transferred:
+
+- exact TUN adapter/address and expected default routes;
+- endpoint/control-plane bypass and no self-routing loop;
+- native DNS ownership, resolution and no multihomed DNS leak;
+- DIRECT selector egress and WARP selector egress;
+- managed restart and failed-candidate last-known-good recovery;
+- SCM service restart and full Windows reboot recovery without a second startup mechanism;
+- bounded cutover rollback restores connectivity if acceptance fails;
+- repeated read-only verification is stable after success.
+
+Only after this PASS does the external Windows runtime lose its live consumer. Stage 4C then deletes its
+startup/config/secret glue and any recovery-only compatibility surface whose last consumer disappeared.
+
 Known transitional examples remain live while these consumers exist: disposable
 `acceptance-serve`/TCP 50061/tonic/`edge-trust`; bounded bootstrap SSH/support access for
 `/production enroll-runtime`; read-only Zero Trust doctor/guardrails for disposable acceptance;
