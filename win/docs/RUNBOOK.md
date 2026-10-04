@@ -204,8 +204,13 @@ Before any stop/start mutation:
 5. STOP if the external owner is ambiguous, if rollback cannot be proven, or if managed-TUN authority is
    not exact.
 
-Then one authorized cutover may stop only the pre-observed external owner and start the managed TUN.
-Acceptance must prove routes, endpoint/control-plane bypass, loop prevention, DNS/no-leak behavior,
+The `PROXY_ONLY` -> `MANAGED_TUN` desired-state flip must first be committed through the normal
+protected Git path, pass exact-head CI and no-rebuild promotion, and produce an exact accepted ReleaseSet.
+Do not mutate Windows from an unaccepted mode-flip revision.
+
+Then one authorized cutover using that exact accepted `MANAGED_TUN` ReleaseSet may stop only the
+pre-observed external owner and start the managed TUN. Acceptance must prove routes,
+endpoint/control-plane bypass, loop prevention, DNS/no-leak behavior,
 DIRECT and WARP egress, managed restart, failed-transition rollback, SCM restart and a real Windows
 reboot/recovery cycle. A failed acceptance restores connectivity through the bounded pre-observed
 cutover rollback path; it must not improvise a new legacy owner.
