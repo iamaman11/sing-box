@@ -120,7 +120,7 @@ def main() -> None:
         and "Stage 4B datapath convergence" in local_architecture
         and "hidden TUN switch" in local_architecture
         and "Stage 4B managed Windows TUN cutover" in runbook
-        and "A `PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover" in architecture
+        and "`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover" in architecture
         and "Do not mutate Windows from an unaccepted mode-flip revision" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
         and "Stage 3 and Stage 4A are closed" in readme
