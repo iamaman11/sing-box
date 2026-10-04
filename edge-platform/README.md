@@ -26,17 +26,17 @@ Use the architecture classifications:
 - `DELETION_CANDIDATE` — remove after exact consumer proof;
 - `HISTORICAL_EVIDENCE` — GitHub evidence only, never an execution path.
 
-Stage 3 is closed. The project is in Stage 4A physical shrink. Stage 2 (fresh-v2 credentials plus
-the managed Windows proxy-only runtime), historical application-exclusive Cloudflare retirement,
-persistent local-owner production rollback, class-scoped application credential rotation and the
-Stage-3 proof-token retirement/contraction are all accepted and must not be reopened for confidence.
+Stage 3 and Stage 4A are closed. Stage 2 (fresh-v2 credentials plus the managed Windows
+proxy-only runtime), historical application-exclusive Cloudflare retirement, persistent local-owner
+production rollback, class-scoped application credential rotation, Stage-3 proof-token
+retirement/contraction and Stage-4A zero-consumer physical shrink are accepted and must not be
+reopened for confidence.
 
-Stage 4A is consumer-driven deletion only: remove one complete transitional vertical slice when its
-exact production/acceptance/bootstrap/recovery/rollback consumer set is zero. After the current
-contraction is terminally accepted, perform one fresh repository-wide last-consumer audit. If all
-remaining transitional boundaries still have real consumers, record `STAGE4A=CLOSED` in #26 and
-advance to Stage 4B. TUN remains deferred until that explicit gate. The currently working external
-Windows sing-box stays untouched until the dedicated managed-TUN cutover passes.
+The project is now in Stage 4B: one managed Windows TUN cutover under the existing SCM
+`EdgePlatformController` owner. The accepted proxy-only runtime is the starting point. The cutover
+must prove routes, DNS, bypass/loop prevention, direct + WARP, controller/runtime restart, Windows
+reboot/recovery and rollback/failure behavior before the currently working external Windows sing-box
+is replaced. Stage 4A warning cleanup is not a prerequisite and must not become a new refactoring loop.
 
 ## Steady-state owner map
 

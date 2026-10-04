@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence, Stage-2 fresh-v2/proxy-only acceptance and Stage 3 are closed, including historical application-exclusive Cloudflare retirement, local-owner production rollback, class-scoped credential rotation and proof-token retirement/contraction. Provider reality must still be freshly observed before any mutation. Issue #26 owns current Stage 4A physical shrink, the explicit Stage 4A exit decision, the later Stage 4B managed-TUN cutover and Stage 4C post-cutover deletion/final acceptance.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Stage 3 and Stage 4A are closed. Cloudflare account convergence and Stage-2 fresh-v2/proxy-only acceptance are also closed. Provider reality must still be freshly observed before any mutation. Issue #26 now owns Stage 4B: one managed Windows TUN cutover under the existing SCM `EdgePlatformController` owner, followed by Stage 4C post-cutover deletion/final acceptance. Accepted Stage 4A deletions must not be reopened merely for confidence or compiler-warning cleanup.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 is historical Cloudflare convergence evidence and no longer owns current execution.
@@ -625,9 +625,11 @@ A DELETION_CANDIDATE is removed as one logical contraction with its obsolete tes
 privilege entries, persistence projections and documentation. Do not leave compatibility shims with
 zero consumers.
 
-### Stage 4A exit decision
+### Stage 4A exit decision — CLOSED
 
-Stage 4A is bounded consumer-driven contraction, not an open-ended cleanup program.
+Stage 4A was bounded consumer-driven contraction, not an open-ended cleanup program. The terminal
+repository-wide compiler/topology exit decision found no newly exposed complete zero-consumer
+transitional vertical slice, so Issue #26 records `STAGE4A=CLOSED`.
 
 After an active contraction is terminally accepted, perform one fresh repository-wide last-consumer
 audit. For every remaining transitional boundary, include production, acceptance, bootstrap,
@@ -638,8 +640,8 @@ re-enrollment, recovery and rollback consumers.
 - If every remaining transitional boundary has at least one real consumer, Stage 4A is complete.
 - Do not create a replacement owner, transport, state store, compatibility API or workflow merely to
   make a live boundary removable.
-- Do not begin managed TUN until Issue #26 explicitly records `STAGE4A=CLOSED`.
-- Do not reopen accepted Stage 4A deletions merely for confidence.
+- Managed TUN is now permitted only inside the explicit Stage 4B cutover owned by Issue #26.
+- Do not reopen accepted Stage 4A deletions merely for confidence or isolated warning cleanup.
 
 Known transitional examples remain live while these consumers exist: disposable
 `acceptance-serve`/TCP 50061/tonic/`edge-trust`; bounded bootstrap SSH/support access for
