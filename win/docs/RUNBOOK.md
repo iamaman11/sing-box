@@ -179,6 +179,10 @@ Before the external Windows sing-box is touched, protected code must already pro
 
 - one typed `PROXY_ONLY` / `MANAGED_TUN` datapath mode in existing protobuf desired state;
 - one canonical renderer used by initial materialization and credential apply/rollback;
+- Windows candidate identity changes when canonical `infra/production/production.textproto` changes,
+  while the Windows binary still embeds that desired-state file;
+- one bounded local Windows ReleaseSet rollback targets only exact verified `previous.pb`, needs no
+  Git/provider/network access, and restores both activation authority and previous-mode runtime/config;
 - exact pinned sing-box `check` of the managed-TUN candidate in CI;
 - native read-only adapter/route/DNS/TUN diagnostics in the existing diagnostic binary;
 - typed `managed / conflicting external / absent` sing-box process observation before any startup
@@ -200,11 +204,13 @@ Before any stop/start mutation:
 
 1. resolve the exact accepted ReleaseSet;
 2. run read-only managed diagnostics;
-3. identify the currently working external sing-box process/startup owner without reading or copying its
+3. verify the installed managed side has an exact locally verified `PROXY_ONLY` previous activation and
+   that the bounded local ReleaseSet rollback has already passed without touching the external TUN;
+4. identify the currently working external sing-box process/startup owner without reading or copying its
    secrets;
-4. prove a bounded restore procedure for that exact external owner;
-5. STOP if the external owner is ambiguous, if rollback cannot be proven, or if managed-TUN authority is
-   not exact.
+5. prove a bounded restore procedure for that exact external owner;
+6. STOP if either rollback path is unproven, if the external owner is ambiguous, or if managed-TUN
+   authority is not exact.
 
 The `PROXY_ONLY` -> `MANAGED_TUN` desired-state flip must first be committed through the normal
 protected Git path, pass exact-head CI and no-rebuild promotion, and produce an exact accepted ReleaseSet.
