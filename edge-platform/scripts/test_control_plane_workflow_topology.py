@@ -45,6 +45,7 @@ PRODUCTION_VM_RUNNER_INSTALLER = Path("edge-platform/scripts/install-vultr-produ
 ARCHITECTURE = Path("edge-platform/ARCHITECTURE.md")
 README = Path("edge-platform/README.md")
 RUNBOOK = Path("win/docs/RUNBOOK.md")
+LOCAL_ARCHITECTURE = Path("win/docs/LOCAL-ARCHITECTURE.md")
 SERVER_ARCHITECTURE = Path("win/docs/SERVER-ARCHITECTURE.md")
 ROOT_README = Path("README.md")
 LOCAL_AGENT_CONTRACT = Path("infra/LOCAL_AGENT_EXECUTION_CONTRACT.md")
@@ -97,6 +98,7 @@ def main() -> None:
     architecture = ARCHITECTURE.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
     runbook = RUNBOOK.read_text(encoding="utf-8")
+    local_architecture = LOCAL_ARCHITECTURE.read_text(encoding="utf-8")
     server_architecture = SERVER_ARCHITECTURE.read_text(encoding="utf-8")
     root_readme = ROOT_README.read_text(encoding="utf-8")
     local_agent_contract = LOCAL_AGENT_CONTRACT.read_text(encoding="utf-8")
@@ -112,6 +114,13 @@ def main() -> None:
         "Stage 3 and Stage 4A are closed" in architecture
         and "Stage 4A exit decision — CLOSED" in architecture
         and "Managed TUN is now permitted only inside the explicit Stage 4B cutover" in architecture
+        and "Stage 4B entry contract — managed Windows TUN" in architecture
+        and "Add one typed Windows datapath mode" in architecture
+        and "Do not widen the SCM service identity merely by assumption" in architecture
+        and "Stage 4B datapath convergence" in local_architecture
+        and "environment variable must not become a hidden TUN switch" in local_architecture
+        and "Stage 4B managed Windows TUN cutover" in runbook
+        and "Production release rollback is not yet a supported public operation" not in runbook
         and "Stage 3 and Stage 4A are closed" in readme
         and "The project is now in Stage 4B" in readme
         and "currently working external Windows sing-box" in readme
