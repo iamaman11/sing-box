@@ -38,12 +38,15 @@ must prove routes, DNS, bypass/loop prevention, direct + WARP, controller/runtim
 reboot/recovery and rollback/failure behavior before the currently working external Windows sing-box
 is replaced. Stage 4A warning cleanup is not a prerequisite and must not become a new refactoring loop.
 
-Stage 4B has two bounded gates. First, **code proof with no live TUN mutation**: one Git-owned typed
-datapath mode in `ProductionDesiredState` (not copied into runtime or ReleaseSet state), one canonical
-Windows renderer, exact pinned `sing-box check`, candidate identity that includes canonical production
-desired state, bounded local previous-ReleaseSet rollback, native read-only network diagnostics, and SCM
-startup convergence after reboot.
-Second, **one physical cutover acceptance** through that same Windows workflow boundary. Its fixed
+Stage 4B.1 code proof is closed: the typed Git-owned datapath authority, canonical renderer, exact
+`sing-box check`, desired-state provenance, bounded previous-ReleaseSet rollback, native diagnostics and
+SCM startup convergence are accepted while production remains `PROXY_ONLY`.
+
+Before any TUN work, a separate **PROXY_ONLY ChatGPT/operator lifecycle gate** must physically prove
+`/windows diagnose`, exact accepted `/windows converge`, same-release `/windows repair`, exact
+`/windows rollback`, reconvergence and live DIRECT/WARP proxy functionality while the existing external
+sing-box remains untouched. Only after that gate is terminal PASS may Stage 4B.2 begin with one physical
+cutover acceptance through that same Windows workflow boundary. Its fixed
 mutation operation is added only after 4B.2 read-only proof identifies the exact external startup owner
 and bounded restore procedure, and only after the canonical `MANAGED_TUN` mode-flip revision itself
 passes exact-head CI and no-rebuild promotion. No hidden environment toggle, second Windows workflow, Scheduled Task/watchdog, parallel DNS manager or

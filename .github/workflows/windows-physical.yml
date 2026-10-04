@@ -1,4 +1,4 @@
-name: Windows Physical Cycle
+name: Windows Physical Lifecycle
 
 on:
   workflow_call:
@@ -11,17 +11,17 @@ permissions: {}
 
 jobs:
   resolve:
-    name: Authorize exact Windows smoke
+    name: Authorize Windows lifecycle
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
-      accepted_revision: ${{ steps.authorize.outputs.accepted_revision }}
+      accepted_revision: ${{ steps.auth.outputs.accepted_revision }}
+      operation: ${{ steps.auth.outputs.operation }}
       release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
-      release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
-      - name: Authorize fixed command and current main
-        id: authorize
+      - name: Authorize fixed command on protected main
+        id: auth
         shell: bash
         env:
           COMMAND_BODY: ${{ inputs.command_body }}
@@ -30,18 +30,32 @@ jobs:
           CONTROL_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
-          test "$COMMAND_BODY" = "/windows smoke"
+          case "$COMMAND_BODY" in
+            "/windows diagnose") operation="diagnose" ;;
+            "/windows converge"|"/windows smoke") operation="converge" ;;
+            "/windows repair") operation="repair" ;;
+            "/windows rollback") operation="rollback" ;;
+            *) exit 2 ;;
+          esac
           test "$CONTROL_REF" = "refs/heads/main"
           test "$CONTROL_PROTECTED" = "true"
           [[ "$CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]
           printf 'accepted_revision=%s\n' "$CONTROL_SHA" >> "$GITHUB_OUTPUT"
+          printf 'operation=%s\n' "$operation" >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact accepted control
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.authorize.outputs.accepted_revision }}
+          ref: ${{ steps.auth.outputs.accepted_revision }}
           persist-credentials: false
           clean: true
+
+      - name: Enforce PROXY_ONLY gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fx 'windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY' infra/production/production.textproto
+          ! grep -Fq 'windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN' infra/production/production.textproto
 
       - name: Resolve exact durable ReleaseSet
         id: release
@@ -49,37 +63,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ steps.authorize.outputs.accepted_revision }}
+          ACCEPTED_REVISION: ${{ steps.auth.outputs.accepted_revision }}
           OUTPUT_DIR: ${{ runner.temp }}/windows-release-authority
         run: |
           set -euo pipefail
           edge-platform/scripts/resolve_durable_release.sh
           . "${OUTPUT_DIR}/resolved.env"
           printf 'release_set_sha256=%s\n' "$EDGE_RELEASE_SET_SHA256" >> "$GITHUB_OUTPUT"
-          printf 'release_tag=%s\n' "$EDGE_RELEASE_TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Publish authorization summary
-        shell: bash
-        run: |
-          {
-            echo '### Windows physical smoke authority'
-            echo '- Command: `/windows smoke`'
-            echo '- Accepted main: `${{ steps.authorize.outputs.accepted_revision }}`'
-            echo '- ReleaseSet: `${{ steps.release.outputs.release_set_sha256 }}`'
-            echo '- Physical mode: **SCM_CONTROLLER_AUTHORITY**'
-            echo '- Legacy Windows runtime mutation: **FORBIDDEN**'
-            echo '- Local build on Windows: **NO**'
-          } >> "$GITHUB_STEP_SUMMARY"
 
   physical:
-    name: Activate -> SCM controller -> authority boundary
+    name: Windows / ${{ needs.resolve.outputs.operation }}
     needs: resolve
     runs-on:
       - self-hosted
       - Windows
       - X64
       - sing-box-windows-lab
-    timeout-minutes: 15
+    timeout-minutes: 20
     concurrency:
       group: sing-box-windows-physical
       cancel-in-progress: false
@@ -89,200 +89,146 @@ jobs:
       EDGE_CONTROLLER_ENDPOINT: http://127.0.0.1:51051
       EDGE_ACCEPTED_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
       EDGE_RELEASE_SET_SHA256: ${{ needs.resolve.outputs.release_set_sha256 }}
+      EDGE_OPERATION: ${{ needs.resolve.outputs.operation }}
     steps:
-      - name: Assert isolated physical execution root
+      - name: Assert isolated root and observe pre-state
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:EDGE_INSTALL_ROOT -cne 'C:\sing-box') {
-            throw "Windows lab install root must be exactly C:\sing-box"
-          }
+          if ($env:EDGE_INSTALL_ROOT -cne 'C:\sing-box') { throw 'Unexpected install root' }
           $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
-          $installRoot = [IO.Path]::GetFullPath($env:EDGE_INSTALL_ROOT)
-          if ($workspace.StartsWith($installRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'GitHub runner workspace must stay outside C:\sing-box'
+          $root = [IO.Path]::GetFullPath($env:EDGE_INSTALL_ROOT)
+          if ($workspace.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Runner workspace overlaps managed install root'
           }
-          foreach ($legacy in @(
-            'C:\Users\Bose\temp\sing-box',
-            'C:\Users\Bose\AppData\Local\sing-box-vultr-dual',
-            'C:\Users\Bose\AppData\Local\edge-platform-win-target'
-          )) {
-            if ($installRoot.StartsWith([IO.Path]::GetFullPath($legacy), [StringComparison]::OrdinalIgnoreCase)) {
-              throw "New install root overlaps legacy runtime: $legacy"
+          $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          $current = Join-Path $root 'current.pb'
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Pre-state diagnostic failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') { throw 'Lifecycle requires ProxyOnly' }
+          if ([string]$values['managed_tun_present'] -cne 'false') { throw 'Managed TUN already present' }
+          $console = [string]$values['console_path']
+          if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'Immutable console path is unavailable'
+          }
+          $external = @($doctor | Where-Object { $_ -like 'singbox_process=* managed:false *' } | Sort-Object)
+          $signature = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($external -join [Environment]::NewLine)))
+          "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_BEFORE_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_EXTERNAL_BEFORE=$signature" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          $doctor | Write-Host
+
+      - name: Execute typed lifecycle mutation
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          switch ($env:EDGE_OPERATION) {
+            'converge' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
             }
+            'repair' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-reinstall-accepted $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+            }
+            'rollback' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
+            }
+            default { throw "Unsupported operation: $env:EDGE_OPERATION" }
           }
-          if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
-            throw 'C:\sing-box trust anchor is not bootstrapped'
-          }
-          Write-Host 'WINDOWS_ISOLATION_PRECONDITION=PASS'
+          if ($LASTEXITCODE -ne 0) { throw "Lifecycle mutation failed: $LASTEXITCODE" }
 
-      - name: Resolve current immutable console
+      - name: Verify exact authority and external owner preservation
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Initial activation doctor failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Post-state diagnostic failed: $LASTEXITCODE" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
+          if ([string]$values['exact_release_files'] -cne 'PASS') { throw 'Exact release files are not verified' }
+          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') { throw 'Datapath escaped ProxyOnly' }
+          if ([string]$values['managed_tun_present'] -cne 'false') { throw 'Managed TUN appeared' }
+          if ($env:EDGE_OPERATION -in @('converge','repair') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+            throw 'Accepted ReleaseSet is not active'
+          }
+          if ($env:EDGE_OPERATION -eq 'rollback' -and [string]$values['release_set_sha256'] -ceq $env:EDGE_BEFORE_RELEASE) {
+            throw 'Rollback did not change ReleaseSet authority'
+          }
+          $external = @($doctor | Where-Object { $_ -like 'singbox_process=* managed:false *' } | Sort-Object)
+          $signature = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($external -join [Environment]::NewLine)))
+          if ($signature -cne $env:EDGE_EXTERNAL_BEFORE) { throw 'External sing-box owner changed' }
           $console = [string]$values['console_path']
-          if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
-            throw 'Current activation did not provide an immutable console path'
-          }
+          $controller = [string]$values['controller_path']
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-          "EDGE_ACTIVATION_REQUEST_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-
-      - name: Converge exact accepted ReleaseSet through privileged dispatcher
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) { throw "Privileged exact-release activation failed: $LASTEXITCODE" }
-      - name: Verify exact activation independently
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
-          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
-          $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Independent activation doctor failed: $LASTEXITCODE" }
-          $values = @{}
-          foreach ($line in $doctor) {
-            $parts = ([string]$line).Split('=', 2)
-            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
-          }
-          if ([string]$values['release_set_sha256'] -ne $env:EDGE_RELEASE_SET_SHA256) {
-            throw 'Active Windows ReleaseSet does not match accepted authority'
-          }
-          if ([string]$values['exact_release_files'] -ne 'PASS') {
-            throw 'Independent diagnostic did not prove exact release files'
-          }
-          $console = [string]$values['console_path']
-          if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
-            throw 'Verified activation did not provide current immutable console path'
-          }
-          "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-
-      - name: Complete exact release-owner handoff
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $requestConsole = [IO.Path]::GetFullPath($env:EDGE_ACTIVATION_REQUEST_CONSOLE)
-          $currentConsole = [IO.Path]::GetFullPath($env:EDGE_CURRENT_CONSOLE)
-          if ($requestConsole -ceq $currentConsole) {
-            Write-Host 'ACTIVATION_HANDOFF=NOOP'
-            exit 0
-          }
-
-          & $currentConsole privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) {
-            throw "Exact release-owner handoff failed: $LASTEXITCODE"
-          }
-          Write-Host 'ACTIVATION_HANDOFF=PASS'
-
-      - name: Verify SCM-owned controller authority
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $console = $env:EDGE_CURRENT_CONSOLE
-          & $console ensure-controller $env:EDGE_CONTROLLER_ENDPOINT
-          if ($LASTEXITCODE -ne 0) { throw "SCM-owned controller verification failed: $LASTEXITCODE" }
-
+          "EDGE_AFTER_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           $service = Get-CimInstance Win32_Service -Filter "Name='EdgePlatformController'"
-          if (-not $service) { throw 'EdgePlatformController Windows service is missing' }
-          if ([string]$service.StartName -cne 'NT SERVICE\EdgePlatformController') {
-            throw "Unexpected controller service identity: $($service.StartName)"
-          }
-          if ([string]$service.State -cne 'Running') {
-            throw "Controller service is not Running: $($service.State)"
-          }
-          if ([string]$service.StartMode -cne 'Auto') {
-            throw "Controller service is not automatic: $($service.StartMode)"
-          }
+          if (-not $service) { throw 'SCM controller is missing' }
+          if ([string]$service.StartName -cne 'NT SERVICE\EdgePlatformController') { throw 'Unexpected SCM identity' }
+          if ([string]$service.State -cne 'Running') { throw 'SCM controller is not running' }
+          if ([string]$service.StartMode -cne 'Auto') { throw 'SCM controller is not automatic' }
+          $authority = ([Uri]$env:EDGE_CONTROLLER_ENDPOINT).Authority
+          $expected = "$controller windows-service $env:EDGE_INSTALL_ROOT $authority"
+          if ([string]$service.PathName -cne $expected) { throw 'SCM executable authority mismatch' }
+          $doctor | Write-Host
 
+      - name: Prove managed PROXY_ONLY DIRECT and WARP
+        if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:EDGE_CURRENT_CONSOLE restart-verify-runtime
+          if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
+
+      - name: Final diagnostics and transport-only boundary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
           $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Exact controller-path diagnostic failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Final diagnostic failed: $LASTEXITCODE" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          $controllerPath = [string]$values['controller_path']
-          if ([string]::IsNullOrWhiteSpace($controllerPath)) {
-            throw 'Exact activation diagnostic did not provide controller_path'
+          if ($env:EDGE_OPERATION -in @('converge','repair') -and [int]$values['managed_singbox_process_count'] -ne 1) {
+            throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $($values['managed_singbox_process_count'])"
           }
-          $controllerAuthority = ([Uri]$env:EDGE_CONTROLLER_ENDPOINT).Authority
-          $expectedServicePath = "$controllerPath windows-service $env:EDGE_INSTALL_ROOT $controllerAuthority"
-          if ([string]$service.PathName -cne $expectedServicePath) {
-            throw "Controller service executable authority mismatch: $($service.PathName)"
-          }
-
-          & $console status $env:EDGE_CONTROLLER_ENDPOINT
-          if ($LASTEXITCODE -ne 0) { throw "SCM-owned controller status failed: $LASTEXITCODE" }
-
-      - name: Verify transport-only runner boundary
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          foreach ($relative in @('state', 'runtime', 'logs')) {
+          if ([string]$values['managed_tun_present'] -cne 'false') { throw 'Managed TUN appeared' }
+          $external = @($doctor | Where-Object { $_ -like 'singbox_process=* managed:false *' } | Sort-Object)
+          $signature = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($external -join [Environment]::NewLine)))
+          if ($signature -cne $env:EDGE_EXTERNAL_BEFORE) { throw 'External sing-box owner changed after verification' }
+          foreach ($relative in @('state','runtime','logs')) {
             $path = Join-Path $env:EDGE_INSTALL_ROOT $relative
             $denied = $false
-            try {
-              [IO.Directory]::GetFileSystemEntries($path) | Out-Null
-            } catch [UnauthorizedAccessException] {
-              $denied = $true
-            }
-            if (-not $denied) {
-              throw "NetworkService runner unexpectedly has direct access to protected application directory: $relative"
-            }
+            try { [IO.Directory]::GetFileSystemEntries($path) | Out-Null } catch [UnauthorizedAccessException] { $denied = $true }
+            if (-not $denied) { throw "Runner unexpectedly has direct private-state access: $relative" }
           }
+          $doctor | Write-Host
 
-          & $env:EDGE_CURRENT_CONSOLE privileged-ping --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) {
-            throw "Typed privileged transport ping failed: $LASTEXITCODE"
-          }
-
-      - name: Read bounded managed runtime evidence through privileged boundary
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) {
-            throw "Bounded privileged runtime evidence failed: $LASTEXITCODE"
-          }
-          Write-Host 'WINDOWS_MANAGED_RUNTIME_EVIDENCE=PASS'
-
-      - name: Verify exact activation after authority checks
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
-          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
-          & $diagnostic doctor $current
-          if ($LASTEXITCODE -ne 0) { throw "Post-authority activation doctor failed: $LASTEXITCODE" }
-
-      - name: Publish bounded physical evidence
+      - name: Publish bounded lifecycle evidence
         if: ${{ always() }}
         shell: powershell
         run: |
           @(
-            '### Windows physical authority cycle',
-            '- Install root: `C:\sing-box`',
-            '- Accepted main: `${{ needs.resolve.outputs.accepted_revision }}`',
-            '- ReleaseSet: `${{ needs.resolve.outputs.release_set_sha256 }}`',
-            '- Local Windows build: **NO**',
-            '- Controller startup owner: **Windows SCM**',
-            '- Runner private state access: **DENIED**',
-            '- Typed privileged transport: **PASS**',
-            '- Managed runtime evidence: **BOUNDED_READ_ONLY**',
-            '- TUN requested: **NO**',
-            '- DNS/route/system-proxy mutation requested: **NO**',
-            '- Legacy runtime mutation requested: **NO**',
-            '- Next action: **STOP_FOR_ANALYSIS**'
+            '### Windows PROXY_ONLY lifecycle',
+            '- Operation: ${{ needs.resolve.outputs.operation }}',
+            "- Before ReleaseSet: $env:EDGE_BEFORE_RELEASE",
+            "- After ReleaseSet: $env:EDGE_AFTER_RELEASE",
+            '- Local Windows build: NO',
+            '- External sing-box mutation: FORBIDDEN / equality-checked',
+            '- TUN requested: NO',
+            '- DNS/route/system-proxy mutation requested: NO',
+            "- Managed proxy processes observed: $($values['managed_singbox_process_count'])"
           ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY

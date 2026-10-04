@@ -202,6 +202,23 @@ Managed-TUN DNS belongs to sing-box; if failed-runtime cleanup later proves an e
 needed, keep the mutation inside the existing local-runtime owner and implement it with an exact native
 Windows boundary.
 
+### Mandatory PROXY_ONLY operator lifecycle acceptance
+
+Stage 4B.1 is closed, but TUN remains forbidden until ChatGPT proves the complete Windows lifecycle from
+the canonical GitHub boundary on the real host:
+
+1. `/windows diagnose` — read-only exact activation, SCM, process/network evidence and live managed proxy trace;
+2. `/windows converge` — exact accepted protected-main ReleaseSet, no local build, then DIRECT+WARP verification;
+3. `/windows repair` — re-download/rematerialize the same accepted ReleaseSet into the bounded alternate
+   immutable slot, preserve exact `previous.pb`, then DIRECT+WARP verification;
+4. `/windows rollback` — exact verified local `previous.pb` only, stopping only the exact managed process;
+5. `/windows converge` — restore current accepted authority and proxy functionality;
+6. `/windows diagnose` — stable terminal verification.
+
+The working external sing-box must remain byte/process-owner independent and unchanged throughout. No
+operation in this gate may enable TUN or mutate Windows routes, DNS or system proxy. A failure is a STOP,
+not permission to proceed to 4B.2.
+
 ### Physical cutover gate
 
 Before any stop/start mutation:

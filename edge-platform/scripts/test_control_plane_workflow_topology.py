@@ -158,15 +158,39 @@ def main() -> None:
     require(
         "/windows cutover" not in router
         and "/windows cutover" not in windows_physical
-        and "github.event.comment.body == '/windows smoke'" in router
-        and 'test "$COMMAND_BODY" = "/windows smoke"' in windows_physical,
-        "Stage 4B.1 must lock the existing Windows physical boundary without adding a speculative cutover mutation command",
+        and "github.event.comment.body == '/windows diagnose'" in router
+        and "github.event.comment.body == '/windows converge'" in router
+        and "github.event.comment.body == '/windows repair'" in router
+        and "github.event.comment.body == '/windows rollback'" in router
+        and 'operation="diagnose"' in windows_physical
+        and 'operation="converge"' in windows_physical
+        and 'operation="repair"' in windows_physical
+        and 'operation="rollback"' in windows_physical
+        and "privileged-reinstall-accepted" in windows_physical
+        and windows_physical.count("restart-verify-runtime") == 1
+        and "managed_tun_present" in windows_physical
+        and "Read-only managed proxy trace" not in windows_physical
+        and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
+        and "needs.resolve.outputs.operation != 'diagnose'" in windows_physical,
+        "Stage 4B proxy-only operator lifecycle must stay one fixed typed Windows boundary with no cutover command",
+    )
+    require(
+        '".repair"' in windows_installer
+        and "PreservePrevious" in windows_installer
+        and "ForceRematerialize" in windows_installer
+        and "reinstall-old" not in windows_installer
+        and "refuses to overwrite the active immutable release directory" in windows_installer
+        and "privileged-reinstall-accepted" in windows_console_cli
+        and "ReinstallAcceptedRelease" in windows_console
+        and "ProxyOnlySmoke" not in runtime_proto
+        and "run_proxy_only_egress_smoke" not in edge_local_runtime,
+        "PROXY_ONLY repair must use bounded alternate immutable slots, preserve previous.pb and reuse the existing persistent proxy verification path",
     )
     require(
         "schema_version: 6" in production_desired
         and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" in production_desired
         and "WINDOWS_DATAPATH_MODE_MANAGED_TUN" not in production_desired,
-        "Stage 4B.1 code proof must keep canonical production Windows datapath explicitly PROXY_ONLY",
+        "Stage 4B proxy-only operator acceptance must keep canonical production Windows datapath explicitly PROXY_ONLY",
     )
     require(
         'repo_root / "infra" / "production" / "production.textproto"' in windows_input,
@@ -722,16 +746,13 @@ def main() -> None:
         "typed Windows runtime config must be validated/launched as already rendered; legacy semantic sync must not regain typed-config ownership",
     )
     require(
-        'test "$COMMAND_BODY" = "/windows smoke"' in windows_physical
-        and 'test "$CONTROL_PROTECTED" = "true"' in windows_physical
+        'test "$CONTROL_PROTECTED" = "true"' in windows_physical
         and "github.ref_protected" in windows_physical
         and "edge-platform/scripts/resolve_durable_release.sh" in windows_physical
         and "C:\\sing-box" in windows_physical
-        and windows_physical.count("privileged-activate") == 2
-        and "EDGE_ACTIVATION_REQUEST_CONSOLE" in windows_physical
-        and "Complete exact release-owner handoff" in windows_physical
-        and "ACTIVATION_HANDOFF=PASS" in windows_physical
-        and "privileged-ping" in windows_physical
+        and "privileged-activate" in windows_physical
+        and "privileged-reinstall-accepted" in windows_physical
+        and "privileged-rollback-previous" in windows_physical
         and "EDGE_CURRENT_CONSOLE" in windows_physical
         and "edge-diagnostic.exe" in windows_physical
         and "EdgePlatformController" in windows_physical
@@ -739,12 +760,14 @@ def main() -> None:
         and "service.PathName" in windows_physical
         and "controller_path" in windows_physical
         and "controller_running=true" not in windows_physical
-        and "NetworkService runner unexpectedly has direct access" in windows_physical
+        and "Runner unexpectedly has direct private-state access" in windows_physical
         and "smoke-runtime" not in windows_physical
         and "http://127.0.0.1:51051" in windows_physical
         and "install-windows-release.ps1" not in windows_physical
-        and "-ReleaseOnly" not in windows_physical,
-        "Windows physical cycle must prove exact SYSTEM activation, SCM controller ownership and transport-only runner isolation",
+        and "-ReleaseOnly" not in windows_physical
+        and "External sing-box owner changed" in windows_physical
+        and "managed_tun_present" in windows_physical,
+        "Windows lifecycle must preserve protected-main ReleaseSet authority, privileged SYSTEM mutation, exact SCM ownership and transport-only runner isolation",
     )
     require(
         "workflow_dispatch:" not in windows_physical

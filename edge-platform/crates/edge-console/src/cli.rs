@@ -33,6 +33,7 @@ pub(crate) enum Command {
     PrivilegedRuntimeEvidence(InstallRootArgs),
     PrivilegedActivate(PrivilegedActivateArgs),
     PrivilegedRollbackPrevious(InstallRootArgs),
+    PrivilegedReinstallAccepted(PrivilegedActivateArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
@@ -75,6 +76,7 @@ impl Command {
             Self::PrivilegedRuntimeEvidence(_) => "privileged-runtime-evidence",
             Self::PrivilegedActivate(_) => "privileged-activate",
             Self::PrivilegedRollbackPrevious(_) => "privileged-rollback-previous",
+            Self::PrivilegedReinstallAccepted(_) => "privileged-reinstall-accepted",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
@@ -224,6 +226,15 @@ mod tests {
             Cli::try_parse_from([
                 "edge-console",
                 "privileged-activate",
+                "0123456789abcdef0123456789abcdef01234567",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "privileged-reinstall-accepted",
                 "0123456789abcdef0123456789abcdef01234567",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             ])

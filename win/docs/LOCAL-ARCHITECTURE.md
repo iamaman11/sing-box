@@ -160,10 +160,11 @@ render exact candidate
  -> restore managed last-known-good on failed transition
 ```
 
-SCM startup must additionally converge the installed managed runtime after reboot. Before that is
-allowed, the current exact-config-only process detector must be widened into a typed observation that
-distinguishes `managed / conflicting external / absent`. A conflicting external process is fail-closed
-and is never stopped or adopted by ordinary startup/restart logic.
+SCM startup converges the installed managed runtime after reboot. Process ownership is exact-config
+scoped: ordinary mutation can stop/restart only the exact managed process and never the external one.
+In PROXY_ONLY mode the managed mixed-proxy runtime may coexist with an external sing-box because it owns
+no TUN/routes/DNS; duplicate managed owners remain fail-closed. In MANAGED_TUN mode any external sing-box
+remains fail-closed until the later explicit cutover authorizes that exact observed owner.
 
 ## Diagnostics
 
@@ -202,3 +203,16 @@ Do not:
 - use legacy secrets as new credential authority.
 
 After cutover, delete legacy paths and compatibility plumbing once no live consumer remains.
+
+
+### PROXY_ONLY ChatGPT/operator lifecycle gate
+
+Before Stage 4B.2, the real Windows host must prove the complete managed proxy lifecycle through the one
+GitHub control boundary: read-only diagnose, exact accepted converge/install, live DIRECT+WARP verification,
+same-release repair from durable assets into the alternate immutable release slot, exact `previous.pb`
+rollback, reconverge, and final diagnose. Repair uses only two bounded same-ReleaseSet slots
+(`releases/<sha>` and `releases/<sha>.repair`); it never overwrites the active executable directory and
+must preserve `previous.pb` byte-for-byte.
+
+The external sing-box is observation-only during this gate. Its process identity must remain unchanged
+before/after every operation. TUN/routes/DNS/system-proxy mutation is forbidden.
