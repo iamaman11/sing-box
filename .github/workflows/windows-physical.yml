@@ -116,11 +116,24 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable console path is unavailable'
           }
-          $external = @($doctor | Where-Object { $_ -like 'singbox_process=* managed:false *' } | Sort-Object)
-          $signature = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($external -join [Environment]::NewLine)))
+          if ($env:EDGE_OPERATION -ne 'diagnose') {
+            & $console stop-local $env:EDGE_CONTROLLER_ENDPOINT
+            if ($LASTEXITCODE -ne 0) { throw "Failed to stop exact managed proxy before lifecycle mutation: $LASTEXITCODE" }
+            $doctor = @(& $diagnostic doctor $current)
+            if ($LASTEXITCODE -ne 0) { throw "Post-stop diagnostic failed: $LASTEXITCODE" }
+          }
+          $externalPids = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          if ($env:EDGE_OPERATION -ne 'diagnose' -and $externalPids.Count -ne 1) {
+            throw "Expected exactly one preserved external sing-box owner after stopping the managed proxy; observed $($externalPids.Count)"
+          }
+          $signature = $externalPids -join ','
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_BEFORE_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-          "EDGE_EXTERNAL_BEFORE=$signature" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_EXTERNAL_PIDS_BEFORE=$signature" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           $doctor | Write-Host
 
       - name: Execute typed lifecycle mutation
@@ -142,7 +155,7 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "Lifecycle mutation failed: $LASTEXITCODE" }
 
-      - name: Verify exact authority and external owner preservation
+      - name: Verify exact authority and SCM handoff
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -164,9 +177,6 @@ jobs:
           if ($env:EDGE_OPERATION -eq 'rollback' -and [string]$values['release_set_sha256'] -ceq $env:EDGE_BEFORE_RELEASE) {
             throw 'Rollback did not change ReleaseSet authority'
           }
-          $external = @($doctor | Where-Object { $_ -like 'singbox_process=* managed:false *' } | Sort-Object)
-          $signature = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($external -join [Environment]::NewLine)))
-          if ($signature -cne $env:EDGE_EXTERNAL_BEFORE) { throw 'External sing-box owner changed' }
           $console = [string]$values['console_path']
           $controller = [string]$values['controller_path']
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -206,9 +216,13 @@ jobs:
             throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $($values['managed_singbox_process_count'])"
           }
           if ([string]$values['managed_tun_present'] -cne 'false') { throw 'Managed TUN appeared' }
-          $external = @($doctor | Where-Object { $_ -like 'singbox_process=* managed:false *' } | Sort-Object)
-          $signature = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($external -join [Environment]::NewLine)))
-          if ($signature -cne $env:EDGE_EXTERNAL_BEFORE) { throw 'External sing-box owner changed after verification' }
+          $externalPids = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          $signature = $externalPids -join ','
+          if ($signature -cne $env:EDGE_EXTERNAL_PIDS_BEFORE) { throw 'External sing-box owner changed after verification' }
           foreach ($relative in @('state','runtime','logs')) {
             $path = Join-Path $env:EDGE_INSTALL_ROOT $relative
             $denied = $false

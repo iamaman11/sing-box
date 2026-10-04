@@ -168,6 +168,12 @@ def main() -> None:
         and 'operation="rollback"' in windows_physical
         and "privileged-reinstall-accepted" in windows_physical
         and windows_physical.count("restart-verify-runtime") == 1
+        and "Verify exact authority and SCM handoff" in windows_physical
+        and windows_physical.count("External sing-box owner changed") == 1
+        and "EDGE_EXTERNAL_PIDS_BEFORE" in windows_physical
+        and "Expected exactly one preserved external sing-box owner" in windows_physical
+        and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
+        and "$env:EDGE_OPERATION -ne 'diagnose'" in windows_physical
         and "managed_tun_present" in windows_physical
         and "Read-only managed proxy trace" not in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
@@ -206,6 +212,10 @@ def main() -> None:
     )
     require(
         "canonical_production_desired_state" in windows_diagnostic
+        and "status.process_id" in windows_diagnostic
+        and "process.parent()" in windows_diagnostic
+        and "scm_process_id" in windows_diagnostic
+        and "service_binary_path" in windows_diagnostic
         and "powershell.exe" not in windows_diagnostic.lower()
         and "win32_" not in windows_diagnostic.lower(),
         "Stage 4B diagnostics must derive mode from embedded desired state and use native typed Windows APIs without PowerShell/WMI parsing",
