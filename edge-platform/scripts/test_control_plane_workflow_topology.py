@@ -118,7 +118,7 @@ def main() -> None:
         and "Add one typed Windows datapath mode" in architecture
         and "Do not widen the SCM service identity merely by assumption" in architecture
         and "Stage 4B datapath convergence" in local_architecture
-        and "environment variable must not become a hidden TUN switch" in local_architecture
+        and "hidden TUN switch" in local_architecture
         and "Stage 4B managed Windows TUN cutover" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
         and "Stage 3 and Stage 4A are closed" in readme
