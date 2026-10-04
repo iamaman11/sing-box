@@ -120,27 +120,77 @@ The controller owns:
 
 Provider lifecycle is intentionally absent.
 
+### Stage 4B datapath convergence
+
+The accepted Stage-2 runtime is still proxy-only. Stage 4B changes datapath ownership, not the owner
+process: SCM `EdgePlatformController` remains the only Windows runtime owner.
+
+The cutover must be represented by one typed datapath mode in the existing protobuf desired-state
+boundary and copied into the typed Windows runtime state consumed by the renderer. Generated
+`runtime\\sing-box.json` is never allowed to choose the mode, and an environment variable must not
+become a hidden TUN switch. Credential apply/rollback and initial materialization must all call the same
+canonical renderer so credential rotation cannot silently change datapath ownership.
+
+Current Windows binaries embed canonical production desired-state bytes at build time. Therefore the
+Windows candidate input digest must include `infra/production/production.textproto` for as long as that
+compile-time dependency exists; otherwise a mode flip can incorrectly reuse a binary compiled with the
+previous mode.
+
+The existing verified `previous.pb` activation is not currently an executable Windows release rollback.
+Stage 4B must add one narrow local rollback through the existing privileged bridge: exact previous
+activation only, no arbitrary digest, no Git/provider/network dependency, and active runtime/config
+rematerialization under the previous release's desired mode before reboot convergence is allowed.
+
+The managed-TUN target uses the pinned sing-box Windows implementation for TUN routing and DNS. The
+project supplies exact typed policy, endpoint exclusions and loop-prevention rules; it does not add a
+second DNS manager, route daemon, WFP mutator or startup scheduler.
+
+The existing guarded restart sequence remains the activation primitive:
+
+```text
+render exact candidate
+ -> sing-box check
+ -> preserve managed last-known-good
+ -> activate
+ -> observe startup
+ -> functional verify
+ -> restore managed last-known-good on failed transition
+```
+
+SCM startup must additionally converge the installed managed runtime after reboot. Before that is
+allowed, the current exact-config-only process detector must be widened into a typed observation that
+distinguishes `managed / conflicting external / absent`. A conflicting external process is fail-closed
+and is never stopped or adopted by ordinary startup/restart logic.
+
 ## Diagnostics
 
 `edge-diagnostic.exe` is independent and read-only.
 
-It should be able to observe:
-- release/activation identity;
+Today it proves release/activation identity and exact controller process identity. Stage 4B must extend
+this same binary before live cutover so one-shot native diagnostics can also observe:
 - SCM service path/identity/state;
-- controller/sing-box process identity;
-- listeners;
-- adapters/routes/DNS;
-- TUN/WFP state when later accepted;
-- bounded Event Log/application failures;
-- functional local/direct/WARP probes;
+- controller and managed sing-box process identity;
+- managed TUN adapter/index/address;
+- relevant IPv4/IPv6 routes and endpoint exclusions;
+- per-interface DNS state;
+- bounded runtime/Event Log failure evidence where useful;
+- functional local/DIRECT/WARP results;
 - active/candidate credential generation metadata without values.
 
-A resident Windows observer is deferred unless live evidence proves one-shot diagnostics
+Prefer native Windows APIs (IP Helper/SCM and equivalent typed Win32 boundaries). Do not add WMI or
+PowerShell text parsing merely to satisfy acceptance. Raw WFP enumeration is required only if route/DNS
+observation plus a bounded functional DNS-leak test cannot prove the `strict_route` contract.
+
+A resident Windows observer remains deferred unless live evidence proves one-shot diagnostics
 insufficient.
 
 ## Legacy boundary
 
 Historical checkout/runtime paths remain no-touch until controlled final cutover.
+
+Before the first Stage-4B mutation, read-only diagnostics must identify the exact currently running
+external sing-box/startup owner and a bounded restore procedure. That evidence exists only to make the
+cutover reversible; the project must not import its config, secrets or startup model into `C:\\sing-box`.
 
 Do not:
 - copy old config/state into `C:\sing-box`;
