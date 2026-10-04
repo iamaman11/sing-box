@@ -665,6 +665,9 @@ The Stage-4B preflight audit of protected main established these implementation 
   validation, observes startup and restores the last-known-good managed config on failure;
 - SCM `EdgePlatformController` is delayed-auto-start with bounded service recovery, but service startup
   currently does not converge/start the managed sing-box after reboot;
+- current local-runtime process detection returns only the exact managed-config sing-box, so it cannot
+  classify a concurrently running external sing-box; Stage 4B must add explicit
+  `managed / conflicting external / absent` observation before TUN ownership can converge;
 - `edge-diagnostic` currently proves release identity and controller process identity only; Stage 4B
   requires native read-only adapter/route/DNS/TUN observation before live cutover;
 - Windows DNS observation in `edge-local-runtime` is native IP Helper, while the old owned-DNS reset is
@@ -686,15 +689,19 @@ The Stage-4B preflight audit of protected main established these implementation 
 4. Extend the existing `edge-diagnostic` with native read-only Windows network observation sufficient to
    prove the exact managed TUN adapter, addresses, routes and per-interface DNS. Prefer Win32/IP Helper
    APIs; do not create WMI/PowerShell parsing or a resident observer merely for acceptance.
-5. Add startup convergence inside the existing SCM `EdgePlatformController`: after reboot/service start,
+5. Add one typed Windows process observation in the existing local-runtime boundary that distinguishes
+   the exact managed process, any conflicting external sing-box process and absence. Startup/cutover code
+   may act only on the exact managed process; a conflicting external process is evidence/STOP unless the
+   explicit physical cutover has pre-authorized that exact observed owner.
+6. Add startup convergence inside the existing SCM `EdgePlatformController`: after reboot/service start,
    an installed, validated managed runtime is started when absent; an already-running exact managed runtime
    is a NOOP; an unexpected/external sing-box remains fail-closed and untouched. Do not add a Scheduled
    Task, watchdog daemon or second startup owner.
-6. Do not widen the SCM service identity merely by assumption. The live cutover must first prove whether
+7. Do not widen the SCM service identity merely by assumption. The live cutover must first prove whether
    the existing `NT SERVICE\\EdgePlatformController` authority can create/own the TUN. Any privilege change
    requires concrete failure evidence and a least-privilege decision; switching the controller to
    LocalSystem merely for convenience is not an accepted default.
-7. The old PowerShell DNS reset remains recovery-only while it has a real consumer. New managed-TUN DNS
+8. The old PowerShell DNS reset remains recovery-only while it has a real consumer. New managed-TUN DNS
    must not depend on it. If failed-runtime cleanup proves a host DNS reset is still necessary, implement
    that mutation inside the existing local-runtime boundary with native Windows APIs and exact-interface
    ownership; otherwise delete the obsolete reset in Stage 4C.
@@ -706,7 +713,7 @@ The Stage-4B preflight audit of protected main established these implementation 
 - introduce the typed datapath mode while canonical production remains `PROXY_ONLY`;
 - implement and unit-test the single renderer's `MANAGED_TUN` branch;
 - validate the exact pinned Windows sing-box config with `sing-box check` in CI;
-- implement native network diagnostics and SCM startup convergence;
+- implement typed managed/conflicting/absent process observation, native network diagnostics and SCM startup convergence;
 - extend the existing Windows workflow/router only with the fixed, owner-only cutover contract; do not
   execute it yet;
 - exact-head CI and no-rebuild promotion must PASS.
