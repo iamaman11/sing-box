@@ -126,9 +126,20 @@ The accepted Stage-2 runtime is still proxy-only. Stage 4B changes datapath owne
 process: SCM `EdgePlatformController` remains the only Windows runtime owner.
 
 The cutover must be represented by one typed datapath mode in the existing protobuf desired-state
-boundary. Generated `runtime\\sing-box.json` is never allowed to choose the mode, and an environment
-variable must not become a hidden TUN switch. Credential apply/rollback and initial materialization must
-all call the same canonical renderer so credential rotation cannot silently change datapath ownership.
+boundary and copied into the typed Windows runtime state consumed by the renderer. Generated
+`runtime\\sing-box.json` is never allowed to choose the mode, and an environment variable must not
+become a hidden TUN switch. Credential apply/rollback and initial materialization must all call the same
+canonical renderer so credential rotation cannot silently change datapath ownership.
+
+Current Windows binaries embed canonical production desired-state bytes at build time. Therefore the
+Windows candidate input digest must include `infra/production/production.textproto` for as long as that
+compile-time dependency exists; otherwise a mode flip can incorrectly reuse a binary compiled with the
+previous mode.
+
+The existing verified `previous.pb` activation is not currently an executable Windows release rollback.
+Stage 4B must add one narrow local rollback through the existing privileged bridge: exact previous
+activation only, no arbitrary digest, no Git/provider/network dependency, and active runtime/config
+rematerialization under the previous release's desired mode before reboot convergence is allowed.
 
 The managed-TUN target uses the pinned sing-box Windows implementation for TUN routing and DNS. The
 project supplies exact typed policy, endpoint exclusions and loop-prevention rules; it does not add a
