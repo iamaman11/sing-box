@@ -38,6 +38,14 @@ must prove routes, DNS, bypass/loop prevention, direct + WARP, controller/runtim
 reboot/recovery and rollback/failure behavior before the currently working external Windows sing-box
 is replaced. Stage 4A warning cleanup is not a prerequisite and must not become a new refactoring loop.
 
+Stage 4B has two bounded gates. First, **code proof with no live TUN mutation**: typed datapath mode in
+the existing protobuf desired-state boundary, one canonical Windows renderer, exact pinned
+`sing-box check`, native read-only network diagnostics, and SCM startup convergence after reboot.
+Second, **one physical cutover acceptance** through the existing Windows workflow boundary. No hidden
+environment toggle, second Windows workflow, Scheduled Task/watchdog, parallel DNS manager or
+LocalSystem privilege widening is accepted by default. See `ARCHITECTURE.md` for the complete entry
+contract.
+
 ## Steady-state owner map
 
 ```text
