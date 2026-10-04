@@ -109,12 +109,12 @@ def main() -> None:
         if "issue_comment:" in path.read_text(encoding="utf-8")
     )
     require(
-        "Stage 3 are closed" in architecture
-        and "Stage 4A exit decision" in architecture
-        and "Do not begin managed TUN until Issue #26 explicitly records `STAGE4A=CLOSED`" in architecture
-        and "Stage 3 is closed" in readme
-        and "Stage 4A physical shrink" in readme
-        and "record `STAGE4A=CLOSED` in #26" in readme
+        "Stage 3 and Stage 4A are closed" in architecture
+        and "Stage 4A exit decision — CLOSED" in architecture
+        and "Managed TUN is now permitted only inside the explicit Stage 4B cutover" in architecture
+        and "Stage 3 and Stage 4A are closed" in readme
+        and "The project is now in Stage 4B" in readme
+        and "currently working external Windows sing-box" in readme
         and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
         and "class-scoped application rotation" in readme
         and "/production rollback" in runbook
@@ -122,14 +122,14 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "Current execution is Stage 4A deletion-first physical shrink" in root_readme
-        and "Stage-transition rule:" in root_readme
+        and "Current execution is Stage 4B" in root_readme
+        and "Stage-transition rule: Stage 4A is closed" in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
         and "`/production rollback` uses the same" in application_readme
         and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
-        "operator documentation must match closed Stage 3, the Stage 4A exit gate, and the deferred Stage 4B managed-TUN cutover without advertising historical authority",
+        "operator documentation must match closed Stage 3/4A and the active bounded Stage 4B managed-TUN cutover without advertising historical authority",
     )
     require(
         "AcceptanceServe" in vm_agent_cli
