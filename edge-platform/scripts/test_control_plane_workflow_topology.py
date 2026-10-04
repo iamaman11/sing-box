@@ -36,6 +36,9 @@ CREDENTIAL_SNAPSHOT = Path("edge-platform/crates/edge-orchestrator/src/credentia
 CREDENTIAL_STORE = Path("edge-platform/crates/edge-secrets/src/credential_store.rs")
 CREDENTIAL_PROTO = Path("edge-platform/proto/edge/platform/v1/credential_plane.proto")
 RUNTIME_PROTO = Path("edge-platform/proto/edge/platform/v1/runtime.proto")
+RELEASE_PROTO = Path("edge-platform/proto/edge/release/v1/release_set.proto")
+WINDOWS_SINGBOX = Path("edge-platform/crates/edge-singbox/src/lib.rs")
+WINDOWS_DIAGNOSTIC = Path("edge-platform/crates/edge-diagnostic/src/main.rs")
 AGENT_PROTO = Path("edge-platform/proto/edge/platform/v1/agent.proto")
 CONTROLLER_PROTO = Path("edge-platform/proto/edge/platform/v1/controller.proto")
 PRODUCTION_INVENTORY = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_production_inventory.rs")
@@ -51,6 +54,7 @@ ROOT_README = Path("README.md")
 LOCAL_AGENT_CONTRACT = Path("infra/LOCAL_AGENT_EXECUTION_CONTRACT.md")
 APPLICATION_README = Path("infra/application/README.md")
 VULTR_STACK_README = Path("win/vultr-waw/README.md")
+PRODUCTION_DESIRED = Path("infra/production/production.textproto")
 
 
 def require(condition: bool, message: str) -> None:
@@ -89,6 +93,9 @@ def main() -> None:
     credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     runtime_proto = RUNTIME_PROTO.read_text(encoding="utf-8")
+    release_proto = RELEASE_PROTO.read_text(encoding="utf-8")
+    windows_singbox = WINDOWS_SINGBOX.read_text(encoding="utf-8")
+    windows_diagnostic = WINDOWS_DIAGNOSTIC.read_text(encoding="utf-8")
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     controller_proto = CONTROLLER_PROTO.read_text(encoding="utf-8")
     production_inventory = PRODUCTION_INVENTORY.read_text(encoding="utf-8")
@@ -104,6 +111,7 @@ def main() -> None:
     local_agent_contract = LOCAL_AGENT_CONTRACT.read_text(encoding="utf-8")
     application_readme = APPLICATION_README.read_text(encoding="utf-8")
     vultr_stack_readme = VULTR_STACK_README.read_text(encoding="utf-8")
+    production_desired = PRODUCTION_DESIRED.read_text(encoding="utf-8")
 
     listeners = sorted(
         path.name
@@ -116,12 +124,14 @@ def main() -> None:
         and "Managed TUN is now permitted only inside the explicit Stage 4B cutover" in architecture
         and "Stage 4B entry contract — managed Windows TUN" in architecture
         and "Add one typed Windows datapath mode" in architecture
+        and "copied into `WindowsRuntimeState`, `WindowsRuntime`, or `WindowsActivationState`" in architecture
         and "Do not widen the SCM service identity merely by assumption" in architecture
         and "`managed / conflicting external / absent` observation" in architecture
         and "`infra/production/production.textproto` in Windows candidate input identity" in architecture
         and "exact locally verified `previous.pb`" in architecture
+        and "evidence-derived fixed cutover mutation is added there" in architecture
         and "Stage 4B datapath convergence" in local_architecture
-        and "hidden TUN switch" in local_architecture
+        and "Generated `runtime\\\\sing-box.json` never chooses the mode" in local_architecture
         and "Stage 4B managed Windows TUN cutover" in runbook
         and "`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover" in architecture
         and "Do not mutate Windows from an unaccepted mode-flip revision" in runbook
@@ -144,6 +154,42 @@ def main() -> None:
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
         "operator documentation must match closed Stage 3/4A and the active bounded Stage 4B managed-TUN cutover without advertising historical authority",
+    )
+    require(
+        "/windows cutover" not in router
+        and "/windows cutover" not in windows_physical
+        and "github.event.comment.body == '/windows smoke'" in router
+        and 'test "$COMMAND_BODY" = "/windows smoke"' in windows_physical,
+        "Stage 4B.1 must lock the existing Windows physical boundary without adding a speculative cutover mutation command",
+    )
+    require(
+        "schema_version: 6" in production_desired
+        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" in production_desired
+        and "WINDOWS_DATAPATH_MODE_MANAGED_TUN" not in production_desired,
+        "Stage 4B.1 code proof must keep canonical production Windows datapath explicitly PROXY_ONLY",
+    )
+    require(
+        'repo_root / "infra" / "production" / "production.textproto"' in windows_input,
+        "Windows candidate identity must include canonical production desired state while it is compiled into Windows binaries",
+    )
+    require(
+        "WindowsDatapathMode datapath_mode" not in runtime_proto
+        and "WindowsDatapathMode datapath_mode" not in release_proto
+        and "RELEASE_SET_SCHEMA_VERSION: u32 = 7" in shared_types
+        and "desired.windows_datapath_mode" in windows_singbox
+        and "state.datapath_mode" not in windows_singbox,
+        "Stage 4B datapath authority must remain Git-owned and embedded, never duplicated into runtime/ReleaseSet state",
+    )
+    require(
+        "canonical_production_desired_state" in windows_diagnostic
+        and "powershell.exe" not in windows_diagnostic.lower()
+        and "win32_" not in windows_diagnostic.lower(),
+        "Stage 4B diagnostics must derive mode from embedded desired state and use native typed Windows APIs without PowerShell/WMI parsing",
+    )
+    require(
+        "MANAGED_TUN" not in credential_command
+        and "datapath_mode" not in credential_command,
+        "credential Workers/control plane must remain credential delivery only and gain no Stage 4B datapath role",
     )
     require(
         "AcceptanceServe" in vm_agent_cli
@@ -1362,7 +1408,9 @@ def main() -> None:
     )
     require(
         edge_platform_ci.count("if: needs.dependencies.outputs.windows_reuse != 'true'") == 3
-        and "Validate Stage 2 proxy-only config with exact sing-box" in edge_platform_ci
+        and "Validate Stage 4B.1 Windows code proof with exact sing-box" in edge_platform_ci
+        and "cargo test --locked -p edge-singbox stage2_" in edge_platform_ci
+        and "cargo test --locked -p edge-singbox stage4b_" in edge_platform_ci
         and "EDGE_TEST_SING_BOX" in edge_platform_ci
         and "write-windows-manifest" in edge_platform_ci
         and "write-linux-manifest" in edge_platform_ci

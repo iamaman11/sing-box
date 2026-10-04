@@ -14,7 +14,7 @@ use std::os::windows::process::CommandExt;
 use std::ptr::null_mut;
 
 use edge_shared_types::{LocalSingboxState, decode_windows_runtime_state};
-use edge_singbox::sync_local_config;
+use edge_singbox::{render_windows_config, sync_local_config};
 use sysinfo::{Pid, Signal, System};
 
 #[cfg(windows)]
@@ -53,6 +53,13 @@ pub struct ProcessObservation {
     pub pid: u32,
     pub command_line: String,
     pub config_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeProcessClassification {
+    Managed(ProcessObservation),
+    Conflicting(Vec<ProcessObservation>),
+    Absent,
 }
 
 #[derive(Debug, Clone)]
@@ -329,26 +336,24 @@ fn best_effort_terminate(child: &mut Child) {
 pub fn inspect_local_runtime(config_path: &Path) -> LocalSingboxState {
     let expected_config_path = config_path.display().to_string();
     let mut local = LocalSingboxState::placeholder(expected_config_path);
-    match detect_process(config_path) {
-        Some(process) => {
+    match classify_runtime_process(config_path) {
+        RuntimeProcessClassification::Managed(process) => {
             local.process_running = true;
-            local.active_config_path = process.config_path.clone();
-            if let Some(active_config) = process.config_path {
-                if same_path_string(&active_config, config_path) {
-                    local.managed_config = true;
-                } else {
-                    local.warnings.push(format!(
-                        "sing-box is running with a different config: {active_config}"
-                    ));
-                }
-            } else {
-                local.warnings.push(
-                    "sing-box process detected but config path was not found in command line"
-                        .to_owned(),
-                );
-            }
+            local.managed_config = true;
+            local.active_config_path = process.config_path;
         }
-        None => {
+        RuntimeProcessClassification::Conflicting(processes) => {
+            local.process_running = true;
+            local.warnings.push(format!(
+                "conflicting sing-box process ownership detected: {}",
+                processes
+                    .iter()
+                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        }
+        RuntimeProcessClassification::Absent => {
             local
                 .warnings
                 .push("sing-box process is not running".to_owned());
@@ -361,16 +366,20 @@ pub fn start_local_runtime(
     paths: &LocalRuntimePaths,
     visible_window: bool,
 ) -> Result<RuntimeOperationResult, String> {
-    let runtime = inspect_runtime_process(&paths.config_path);
-    if let Some(process) = runtime.as_ref()
-        && let Some(config) = process.config_path.as_deref()
-        && !same_path_string(config, &paths.config_path)
-    {
-        return Err(format!(
-            "another sing-box config is already running (pid {}): {}",
-            process.pid, process.command_line
-        ));
-    }
+    let runtime = match classify_runtime_process(&paths.config_path) {
+        RuntimeProcessClassification::Managed(process) => Some(process),
+        RuntimeProcessClassification::Absent => None,
+        RuntimeProcessClassification::Conflicting(processes) => {
+            return Err(format!(
+                "refusing managed runtime start while conflicting sing-box process ownership exists: {}",
+                processes
+                    .iter()
+                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        }
+    };
 
     if !paths.singbox_binary_path.is_file() {
         return Err(format!(
@@ -446,7 +455,20 @@ pub fn stop_local_runtime(
     config_path: &Path,
     expected_config_only: bool,
 ) -> Result<RuntimeOperationResult, String> {
-    let runtime = detect_process(config_path);
+    let runtime = match classify_runtime_process(config_path) {
+        RuntimeProcessClassification::Managed(process) => Some(process),
+        RuntimeProcessClassification::Absent => None,
+        RuntimeProcessClassification::Conflicting(processes) => {
+            return Err(format!(
+                "refusing to stop sing-box while process ownership is conflicting: {}",
+                processes
+                    .iter()
+                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        }
+    };
     let Some(process) = runtime else {
         let local_singbox = inspect_local_runtime(config_path);
         let mut warnings = local_singbox.warnings.clone();
@@ -459,14 +481,11 @@ pub fn stop_local_runtime(
         });
     };
 
-    if expected_config_only
-        && let Some(config) = process.config_path.as_deref()
-        && !same_path_string(config, config_path)
-    {
-        return Err(format!(
-            "refusing to stop sing-box because the active process is not the managed config: {}",
-            process.command_line
-        ));
+    if !expected_config_only {
+        return Err(
+            "unbounded sing-box stop is retired; ordinary runtime ownership may stop only the exact managed process"
+                .to_owned(),
+        );
     }
 
     stop_process(process.pid);
@@ -523,7 +542,13 @@ fn stage_and_validate_config(paths: &LocalRuntimePaths) -> Result<StagedConfig, 
     let preparation = if is_typed_runtime_state(&paths.state_path) {
         fs::read(&paths.state_path)
             .map_err(|err| format!("unable to read typed Windows runtime state: {err}"))
-            .and_then(|bytes| decode_windows_runtime_state(&bytes).map(|_| ()))
+            .and_then(|bytes| decode_windows_runtime_state(&bytes))
+            .and_then(|state| render_windows_config(&state))
+            .and_then(|rendered| {
+                fs::write(&candidate_path, rendered).map_err(|err| {
+                    format!("failed to render typed Windows candidate config: {err}")
+                })
+            })
     } else {
         sync_local_config(&candidate_path, &paths.state_path, &paths.runtime_root).map(|_| ())
     };
@@ -644,7 +669,66 @@ fn discard_staged_config(staged: &StagedConfig) -> Result<(), String> {
 }
 
 pub fn inspect_runtime_process(config_path: &Path) -> Option<ProcessObservation> {
-    detect_process(config_path)
+    match classify_runtime_process(config_path) {
+        RuntimeProcessClassification::Managed(process) => Some(process),
+        RuntimeProcessClassification::Conflicting(_) | RuntimeProcessClassification::Absent => None,
+    }
+}
+
+pub fn classify_runtime_process(config_path: &Path) -> RuntimeProcessClassification {
+    classify_processes(config_path, singbox_processes())
+}
+
+fn singbox_processes() -> Vec<ProcessObservation> {
+    let mut system = System::new_all();
+    system.refresh_all();
+    system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let name = process.name().to_string_lossy().to_ascii_lowercase();
+            if !name.contains("sing-box") {
+                return None;
+            }
+            let arguments = process
+                .cmd()
+                .iter()
+                .map(|arg| arg.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            Some(ProcessObservation {
+                pid: pid.as_u32(),
+                command_line: arguments.join(" "),
+                config_path: extract_config_path(&arguments),
+            })
+        })
+        .collect()
+}
+
+fn classify_processes(
+    expected_config_path: &Path,
+    processes: Vec<ProcessObservation>,
+) -> RuntimeProcessClassification {
+    let mut managed = Vec::new();
+    let mut conflicting = Vec::new();
+    for process in processes {
+        if process
+            .config_path
+            .as_deref()
+            .is_some_and(|config| same_path_string(config, expected_config_path))
+        {
+            managed.push(process);
+        } else {
+            conflicting.push(process);
+        }
+    }
+    if !conflicting.is_empty() || managed.len() > 1 {
+        conflicting.extend(managed);
+        return RuntimeProcessClassification::Conflicting(conflicting);
+    }
+    managed
+        .pop()
+        .map(RuntimeProcessClassification::Managed)
+        .unwrap_or(RuntimeProcessClassification::Absent)
 }
 
 fn stop_process(pid: u32) {
@@ -849,35 +933,6 @@ fn observe_owned_windows_dns_adapter_indices() -> Result<Vec<u32>, String> {
     ))
 }
 
-fn detect_process(expected_config_path: &Path) -> Option<ProcessObservation> {
-    let mut system = System::new_all();
-    system.refresh_all();
-
-    for (pid, process) in system.processes() {
-        let name = process.name().to_string_lossy().to_ascii_lowercase();
-        if !name.contains("sing-box") {
-            continue;
-        }
-
-        let arguments = process
-            .cmd()
-            .iter()
-            .map(|arg| arg.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        let command_line = arguments.join(" ");
-        let config_path = exact_managed_config_argument(&arguments, expected_config_path);
-        if config_path.is_some() {
-            return Some(ProcessObservation {
-                pid: pid.as_u32(),
-                command_line,
-                config_path,
-            });
-        }
-    }
-
-    None
-}
-
 fn exact_managed_config_argument(
     arguments: &[String],
     expected_config_path: &Path,
@@ -952,6 +1007,42 @@ mod tests {
         );
         assert!(exact_managed_config_argument(&external, &expected).is_none());
         assert!(exact_managed_config_argument(&unnamed, &expected).is_none());
+    }
+
+    #[test]
+    fn process_classifier_is_fail_closed_for_external_or_duplicate_owners() {
+        let expected = PathBuf::from("/managed/runtime/sing-box.json");
+        let managed = ProcessObservation {
+            pid: 10,
+            command_line: "sing-box run -c /managed/runtime/sing-box.json".to_owned(),
+            config_path: Some("/managed/runtime/sing-box.json".to_owned()),
+        };
+        let external = ProcessObservation {
+            pid: 11,
+            command_line: "sing-box run -c /external/config.json".to_owned(),
+            config_path: Some("/external/config.json".to_owned()),
+        };
+
+        assert!(matches!(
+            classify_processes(&expected, vec![]),
+            RuntimeProcessClassification::Absent
+        ));
+        assert!(matches!(
+            classify_processes(&expected, vec![managed.clone()]),
+            RuntimeProcessClassification::Managed(_)
+        ));
+        assert!(matches!(
+            classify_processes(&expected, vec![external.clone()]),
+            RuntimeProcessClassification::Conflicting(_)
+        ));
+        assert!(matches!(
+            classify_processes(&expected, vec![managed.clone(), external]),
+            RuntimeProcessClassification::Conflicting(_)
+        ));
+        assert!(matches!(
+            classify_processes(&expected, vec![managed.clone(), managed]),
+            RuntimeProcessClassification::Conflicting(_)
+        ));
     }
 
     #[test]

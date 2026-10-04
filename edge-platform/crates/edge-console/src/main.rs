@@ -7,7 +7,9 @@ use clap::Parser;
 use edge_controller_core::{
     local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
 };
-use edge_local_runtime::run_non_tun_loopback_smoke;
+use edge_local_runtime::{
+    RuntimeProcessClassification, classify_runtime_process, run_non_tun_loopback_smoke,
+};
 use edge_observability::init as init_observability;
 use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
@@ -35,9 +37,9 @@ use edge_shared_types::{
     WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
     decode_windows_activation_state, decode_windows_privileged_request,
     decode_windows_privileged_result, decode_windows_runtime_state,
-    encode_windows_privileged_request, encode_windows_privileged_result,
-    encode_windows_runtime_state, parse_credential_transition_action,
-    verify_windows_activation_files,
+    encode_windows_activation_state, encode_windows_privileged_request,
+    encode_windows_privileged_result, encode_windows_runtime_state,
+    parse_credential_transition_action, verify_windows_activation_files,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -243,6 +245,24 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     operation: WindowsPrivilegedOperation::ActivateRelease as i32,
                     accepted_revision: Some(args.accepted_revision),
                     release_set_sha256: Some(args.release_set_sha256),
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedRollbackPrevious(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::RollbackPreviousRelease as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
                     credential_generation: None,
                     credential_transition_action: None,
                 },
@@ -821,7 +841,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Err
 
 fn privileged_wait_secs(request: &WindowsPrivilegedRequest) -> u64 {
     match WindowsPrivilegedOperation::try_from(request.operation) {
-        Ok(WindowsPrivilegedOperation::ActivateRelease) => PRIVILEGED_ACTIVATE_WAIT_SECS,
+        Ok(
+            WindowsPrivilegedOperation::ActivateRelease
+            | WindowsPrivilegedOperation::RollbackPreviousRelease,
+        ) => PRIVILEGED_ACTIVATE_WAIT_SECS,
         _ => PRIVILEGED_SHORT_WAIT_SECS,
     }
 }
@@ -977,6 +1000,9 @@ async fn process_privileged_request(
         }
         Ok(WindowsPrivilegedOperation::ActivateRelease) => {
             activate_privileged_release(install_root, request)
+        }
+        Ok(WindowsPrivilegedOperation::RollbackPreviousRelease) => {
+            rollback_privileged_release(install_root)
         }
         Ok(WindowsPrivilegedOperation::StageCredential) => {
             stage_windows_credential_candidate_from_worker(install_root, request).await
@@ -1351,6 +1377,105 @@ fn activate_privileged_release(
     ))
 }
 
+fn load_previous_release_rollback_pair(
+    install_root: &Path,
+) -> Result<(WindowsActivationState, WindowsActivationState), String> {
+    let current_path = install_root.join("current.pb");
+    let previous_path = install_root.join("previous.pb");
+    if !previous_path.is_file() {
+        return Err(
+            "previous.pb is absent; bounded Windows ReleaseSet rollback has no target".to_owned(),
+        );
+    }
+
+    let current = load_verified_activation_path(install_root, &current_path, "current.pb")
+        .map_err(|err| err.to_string())?;
+    let previous = load_verified_activation_path(install_root, &previous_path, "previous.pb")
+        .map_err(|err| err.to_string())?;
+    if current.release_set_sha256 == previous.release_set_sha256 {
+        return Err("current.pb and previous.pb identify the same ReleaseSet".to_owned());
+    }
+    Ok((current, previous))
+}
+
+fn rollback_privileged_release(
+    install_root: &Path,
+) -> Result<(String, String, Option<String>), String> {
+    let current_path = install_root.join("current.pb");
+    let previous_path = install_root.join("previous.pb");
+    let (current, previous) = load_previous_release_rollback_pair(install_root)?;
+
+    let managed_config = local_singbox_config_path(install_root);
+    match classify_runtime_process(&managed_config) {
+        RuntimeProcessClassification::Absent => {}
+        RuntimeProcessClassification::Managed(process) => {
+            return Err(format!(
+                "previous-release rollback requires managed sing-box to be stopped first; pid={} remains active",
+                process.pid
+            ));
+        }
+        RuntimeProcessClassification::Conflicting(processes) => {
+            return Err(format!(
+                "previous-release rollback refuses conflicting sing-box ownership: {}",
+                processes
+                    .iter()
+                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        }
+    }
+
+    let current_bytes = fs::read(&current_path)
+        .map_err(|err| format!("failed to snapshot current.pb before rollback: {err}"))?;
+    let previous_bytes = fs::read(&previous_path)
+        .map_err(|err| format!("failed to snapshot previous.pb before rollback: {err}"))?;
+
+    if let Err(err) = write_atomic(&previous_path, &current_bytes)
+        .and_then(|_| write_atomic(&current_path, &previous_bytes))
+    {
+        let _ = write_atomic(&current_path, &current_bytes);
+        let _ = write_atomic(&previous_path, &previous_bytes);
+        return Err(format!(
+            "failed to swap exact current/previous Windows activation authority; original activation restored: {err}"
+        ));
+    }
+
+    let handoff = (|| -> Result<(), String> {
+        #[cfg(windows)]
+        converge_controller_service(install_root, Path::new(&previous.controller_path))?;
+        retarget_privileged_task(install_root, &previous.console_path)?;
+        Ok(())
+    })();
+    if let Err(err) = handoff {
+        let pointer_restore = write_atomic(&current_path, &current_bytes)
+            .and_then(|_| write_atomic(&previous_path, &previous_bytes));
+        #[cfg(windows)]
+        let owner_restore =
+            converge_controller_service(install_root, Path::new(&current.controller_path))
+                .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
+        #[cfg(not(windows))]
+        let owner_restore = retarget_privileged_task(install_root, &current.console_path);
+        return Err(format!(
+            "previous ReleaseSet activation handoff failed: {err}; pointer_restore={pointer_restore:?}; owner_restore={owner_restore:?}"
+        ));
+    }
+
+    let verified = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    if verified.release_set_sha256 != previous.release_set_sha256 {
+        return Err(
+            "post-rollback activation verification did not match exact previous.pb".to_owned(),
+        );
+    }
+
+    Ok((
+        "PREVIOUS_RELEASE_ROLLED_BACK".to_owned(),
+        "exact previous ReleaseSet restored locally; its SCM controller rematerializes managed runtime from the previous binary's embedded canonical desired state"
+            .to_owned(),
+        Some(verified.release_set_sha256),
+    ))
+}
+
 fn retarget_privileged_task(install_root: &Path, console_path: &str) -> Result<(), String> {
     let action = format!(
         "\"{}\" privileged-dispatch --install-root \"{}\"",
@@ -1627,8 +1752,15 @@ fn installed_root_from_executable(
 fn load_verified_activation(
     install_root: &Path,
 ) -> Result<WindowsActivationState, Box<dyn std::error::Error>> {
-    let state_path = install_root.join("current.pb");
-    let bytes = std::fs::read(&state_path)?;
+    load_verified_activation_path(install_root, &install_root.join("current.pb"), "current.pb")
+}
+
+fn load_verified_activation_path(
+    install_root: &Path,
+    state_path: &Path,
+    label: &str,
+) -> Result<WindowsActivationState, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(state_path)?;
     let state = decode_windows_activation_state(&bytes)?;
     verify_windows_activation_files(&state)?;
 
@@ -1636,10 +1768,12 @@ fn load_verified_activation(
     let release_dir = PathBuf::from(&state.release_dir).canonicalize()?;
     let controller = PathBuf::from(&state.controller_path).canonicalize()?;
     if !release_dir.starts_with(&releases_root) {
-        return Err("current.pb release_dir is outside the immutable releases root".into());
+        return Err(format!("{label} release_dir is outside the immutable releases root").into());
     }
     if !controller.starts_with(&release_dir) {
-        return Err("current.pb controller_path is outside its immutable release directory".into());
+        return Err(
+            format!("{label} controller_path is outside its immutable release directory").into(),
+        );
     }
     Ok(state)
 }
@@ -2663,6 +2797,114 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rollback_test_activation(
+        install_root: &Path,
+        release_name: &str,
+        release_set_sha256: &str,
+    ) -> WindowsActivationState {
+        let release_dir = install_root.join("releases").join(release_name);
+        let bin_dir = release_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let controller = bin_dir.join("edge-controller.exe");
+        let console = bin_dir.join("edge-console.exe");
+        let sing_box = bin_dir.join("sing-box.exe");
+        let diagnostic = bin_dir.join("edge-diagnostic.exe");
+        std::fs::write(&controller, b"controller").unwrap();
+        std::fs::write(&console, b"console").unwrap();
+        std::fs::write(&sing_box, b"singbox").unwrap();
+        std::fs::write(&diagnostic, b"diagnostic").unwrap();
+
+        WindowsActivationState {
+            schema_version: 1,
+            release_set_sha256: release_set_sha256.to_owned(),
+            source_revision: "1".repeat(40),
+            release_dir: release_dir.to_string_lossy().into_owned(),
+            controller_path: controller.to_string_lossy().into_owned(),
+            console_path: console.to_string_lossy().into_owned(),
+            sing_box_path: sing_box.to_string_lossy().into_owned(),
+            diagnostic_path: diagnostic.to_string_lossy().into_owned(),
+            controller_sha256: vec![
+                193, 71, 33, 53, 177, 76, 119, 200, 190, 249, 142, 115, 247, 2, 8, 50, 95, 160,
+                220, 241, 230, 189, 102, 138, 233, 179, 26, 156, 234, 41, 95, 231,
+            ],
+            console_sha256: vec![
+                147, 216, 135, 76, 140, 134, 240, 252, 137, 61, 190, 21, 199, 101, 255, 160, 252,
+                211, 66, 247, 152, 219, 246, 105, 224, 143, 140, 190, 9, 93, 35, 12,
+            ],
+            sing_box_sha256: vec![
+                106, 175, 72, 98, 84, 64, 79, 91, 126, 34, 43, 199, 22, 96, 133, 30, 4, 200, 107,
+                148, 52, 206, 132, 38, 56, 207, 20, 34, 143, 61, 95, 113,
+            ],
+            diagnostic_sha256: vec![
+                90, 105, 94, 234, 91, 0, 163, 31, 138, 239, 125, 187, 137, 200, 247, 152, 250, 179,
+                113, 36, 106, 193, 84, 154, 254, 132, 177, 100, 32, 112, 123, 153,
+            ],
+        }
+    }
+
+    fn rollback_test_root() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("edge-console-release-rollback-{unique}"));
+        std::fs::create_dir_all(root.join("releases")).unwrap();
+        root
+    }
+
+    #[test]
+    fn previous_release_rollback_preflight_accepts_only_verified_previous_pb() {
+        let root = rollback_test_root();
+        let current = rollback_test_activation(&root, "current", &"a".repeat(64));
+        let previous = rollback_test_activation(&root, "previous", &"b".repeat(64));
+        std::fs::write(
+            root.join("current.pb"),
+            encode_windows_activation_state(&current).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("previous.pb"),
+            encode_windows_activation_state(&previous).unwrap(),
+        )
+        .unwrap();
+
+        let (observed_current, observed_previous) =
+            load_previous_release_rollback_pair(&root).unwrap();
+        assert_eq!(observed_current.release_set_sha256, "a".repeat(64));
+        assert_eq!(observed_previous.release_set_sha256, "b".repeat(64));
+
+        std::fs::write(root.join("previous.pb"), b"not-protobuf").unwrap();
+        assert!(load_previous_release_rollback_pair(&root).is_err());
+
+        std::fs::remove_file(root.join("previous.pb")).unwrap();
+        let error = load_previous_release_rollback_pair(&root).unwrap_err();
+        assert!(error.contains("previous.pb is absent"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn previous_release_rollback_preflight_rejects_same_release() {
+        let root = rollback_test_root();
+        let current = rollback_test_activation(&root, "current", &"c".repeat(64));
+        let previous = rollback_test_activation(&root, "previous", &"c".repeat(64));
+        std::fs::write(
+            root.join("current.pb"),
+            encode_windows_activation_state(&current).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("previous.pb"),
+            encode_windows_activation_state(&previous).unwrap(),
+        )
+        .unwrap();
+
+        let error = load_previous_release_rollback_pair(&root).unwrap_err();
+        assert!(error.contains("same ReleaseSet"));
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn formats_operation_lifecycle_labels() {

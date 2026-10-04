@@ -8,14 +8,15 @@ use crate::vultr_lifecycle::{DesiredState as DesiredMachineState, MachineSpec, P
 use crate::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::{
     ProductionBootstrapMode, ProductionDesiredState, ProductionIpFamily,
-    ProductionTransportProtocol, canonical_production_desired_state, production_machine,
+    ProductionTransportProtocol, WindowsDatapathMode, canonical_production_desired_state,
+    production_machine,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 5;
+pub const SUPPORTED_PRODUCTION_SCHEMA: u32 = 6;
 pub const CANONICAL_PRODUCTION_AUTHORITY_PATH: &str = "infra/production/production.textproto";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -584,6 +585,11 @@ fn validate_root_identity(root: &ProductionDesiredState) -> Result<(), Productio
     if root.environment != "production" {
         return Err(validation("environment must be exactly production"));
     }
+    let windows_datapath_mode = WindowsDatapathMode::try_from(root.windows_datapath_mode)
+        .map_err(|_| validation("windows_datapath_mode is invalid"))?;
+    if windows_datapath_mode == WindowsDatapathMode::Unspecified {
+        return Err(validation("windows_datapath_mode must be explicit"));
+    }
     validate_identifier("machine_id", &root.machine_id)?;
     validate_dns_name("public_hostname", &root.public_hostname)?;
     Ok(())
@@ -789,6 +795,18 @@ mod tests {
         );
         assert_eq!(composition.machines.machines.len(), 1);
         assert_eq!(composition.firewall_rules.len(), 11);
+    }
+
+    #[test]
+    fn production_authority_rejects_unspecified_windows_datapath_mode() {
+        let mut desired = canonical();
+        desired.windows_datapath_mode = WindowsDatapathMode::Unspecified as i32;
+        assert!(
+            ProductionComposition::from_proto(&desired)
+                .unwrap_err()
+                .to_string()
+                .contains("windows_datapath_mode must be explicit")
+        );
     }
 
     #[test]

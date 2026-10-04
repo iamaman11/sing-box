@@ -70,6 +70,10 @@ def materialize(root: Path) -> None:
     )
     (shared / "src/lib.rs").write_text("pub struct Shared;\n", encoding="utf-8")
 
+    production = root / "infra/production/production.textproto"
+    production.parent.mkdir(parents=True, exist_ok=True)
+    production.write_text("schema_version: 6\nwindows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\n", encoding="utf-8")
+
 
 def test_digest_scope() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -98,6 +102,14 @@ def test_digest_scope() -> None:
         materialize(root)
         installer = root / "edge-platform/scripts/install-windows-release.ps1"
         installer.write_text("installer-v2\n", encoding="utf-8")
+        assert subject.compute_digest(root, inputs()) != first
+
+        materialize(root)
+        production = root / "infra/production/production.textproto"
+        production.write_text(
+            "schema_version: 6\nwindows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN\n",
+            encoding="utf-8",
+        )
         assert subject.compute_digest(root, inputs()) != first
 
 

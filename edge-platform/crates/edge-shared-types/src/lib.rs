@@ -974,6 +974,18 @@ pub fn validate_windows_privileged_request(
                 return Err("RUNTIME_EVIDENCE request must carry no mutation authority".to_owned());
             }
         }
+        WindowsPrivilegedOperation::RollbackPreviousRelease => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_generation.is_some()
+                || request.credential_transition_action.is_some()
+            {
+                return Err(
+                    "ROLLBACK_PREVIOUS_RELEASE carries no caller-selected release authority"
+                        .to_owned(),
+                );
+            }
+        }
         WindowsPrivilegedOperation::ActivateRelease => {
             let revision = request
                 .accepted_revision
@@ -2641,10 +2653,14 @@ mod tests {
     #[test]
     fn canonical_production_desired_state_is_protobuf_and_canonical() {
         let desired = canonical_production_desired_state().unwrap();
-        assert_eq!(desired.schema_version, 5);
+        assert_eq!(desired.schema_version, 6);
         assert_eq!(desired.environment, "production");
         assert_eq!(desired.machine_id, "production-1");
         assert_eq!(desired.public_hostname, "miu.alegria.by");
+        assert_eq!(
+            WindowsDatapathMode::try_from(desired.windows_datapath_mode).unwrap(),
+            WindowsDatapathMode::ProxyOnly
+        );
         let cloudflare = desired.cloudflare.as_ref().unwrap();
         assert_eq!(
             cloudflare.active_account_id,
@@ -2706,6 +2722,24 @@ mod tests {
 
         let mut invalid = request;
         invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_previous_release_rollback_carries_no_selected_digest() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-release-rollback".to_owned(),
+            operation: WindowsPrivilegedOperation::RollbackPreviousRelease as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+            credential_transition_action: None,
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request;
+        invalid.release_set_sha256 = Some("1".repeat(64));
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 

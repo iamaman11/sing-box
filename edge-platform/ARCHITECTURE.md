@@ -678,28 +678,31 @@ The Stage-4B preflight audit of protected main established these implementation 
   requires native read-only adapter/route/DNS/TUN observation before live cutover;
 - Windows DNS observation in `edge-local-runtime` is native IP Helper, while the old owned-DNS reset is
   still a bounded PowerShell recovery path. It must not become the normal TUN DNS owner;
-- the physical Windows backend is the existing `windows-physical.yml`; Stage 4B must extend this one
-  bounded owner-only boundary rather than create a second Windows workflow or scheduler.
+- the physical Windows backend is the existing `windows-physical.yml`; 4B.1 locks this as the only
+  permitted Windows physical owner boundary. The evidence-derived fixed cutover mutation is added there
+  only in 4B.2 after the exact external startup owner and restore procedure are read-only proven.
 
 #### Required implementation shape
 
 1. Add one typed Windows datapath mode to the existing protobuf desired-state boundary, with an explicit
    `PROXY_ONLY` -> `MANAGED_TUN` transition. No environment flag, generated-JSON inference or second
    desired-state file may select the mode.
-2. Copy that Git-owned mode into the typed Windows runtime state consumed by the single renderer; do not
-   create an independent local TUN toggle. Keep one canonical Windows config renderer for initial
-   materialization, credential apply, credential rollback and cutover. Generated sing-box JSON remains a
-   consumer artifact.
+2. Keep that Git-owned mode only in the embedded canonical `ProductionDesiredState`. It must not be
+   copied into `WindowsRuntimeState`, `WindowsRuntime`, or `WindowsActivationState`: those are runtime
+   projection/release-file identities, not a second desired-state authority. The exact accepted Windows
+   binary reads its embedded desired mode through one canonical renderer used by initial materialization,
+   credential apply/rollback, reboot convergence and cutover. Generated sing-box JSON remains a consumer
+   artifact and never selects its own mode.
 3. While Windows binaries compile canonical production desired-state bytes, include
    `infra/production/production.textproto` in Windows candidate input identity and add a regression test
    proving any production desired-state byte change invalidates artifact reuse. Removing the compile-time
    dependency later is allowed only if the replacement ReleaseSet/activation contract carries the same
    immutable authority explicitly.
 4. Add one bounded local Windows ReleaseSet rollback to the existing privileged bridge. It may target only
-   the exact locally verified `previous.pb`, must require no Git/provider/network access, must atomically
-   restore activation authority and rematerialize the active credential/runtime config under the previous
-   release's canonical desired mode, and must re-verify before startup can converge. No arbitrary release
-   digest rollback API is allowed.
+   the exact locally verified `previous.pb`, must require no Git/provider/network access and must not accept
+   an arbitrary release digest. Rollback restores the previous exact binary/activation authority; that
+   previous SCM owner then rematerializes runtime JSON from the unchanged typed runtime projection and its
+   own embedded canonical desired state before startup. No duplicated mode marker participates in rollback.
 5. For the pinned sing-box line, Windows TUN routing/DNS is owned by sing-box itself: TUN + `auto_route`,
    `strict_route`, native/hijack DNS, existing `route.auto_detect_interface`, exact endpoint route
    exclusions and stable DIRECT loop-prevention rules. Linux-only `auto_redirect` is not a Windows
@@ -732,12 +735,13 @@ The Stage-4B preflight audit of protected main established these implementation 
 - implement and unit-test the single renderer's `MANAGED_TUN` branch;
 - make canonical production desired-state bytes part of Windows candidate identity and prove a mode change
   cannot reuse an artifact compiled with the previous mode;
-- implement and test bounded local rollback to exact verified `previous.pb`, including runtime/config
-  rematerialization under the previous desired mode;
+- implement and test bounded local rollback to exact verified `previous.pb`; the previous exact binary
+  must rematerialize runtime/config from its own embedded desired mode with no duplicated mode field;
 - validate the exact pinned Windows sing-box config with `sing-box check` in CI;
 - implement typed managed/conflicting/absent process observation, native network diagnostics and SCM startup convergence;
-- extend the existing Windows workflow/router only with the fixed, owner-only cutover contract; do not
-  execute it yet;
+- lock the existing Windows workflow/router as the sole physical owner boundary; do not add a speculative
+  cutover mutation command in 4B.1. The fixed operation is derived and added in 4B.2 only after read-only
+  external-owner/restore proof;
 - exact-head CI and no-rebuild promotion must PASS.
 
 **4B.2 — bounded physical cutover acceptance**
