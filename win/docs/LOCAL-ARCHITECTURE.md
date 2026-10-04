@@ -146,8 +146,10 @@ render exact candidate
  -> restore managed last-known-good on failed transition
 ```
 
-SCM startup must additionally converge the installed managed runtime after reboot. If an external or
-unexpected sing-box is observed, startup is fail-closed and does not stop or adopt it.
+SCM startup must additionally converge the installed managed runtime after reboot. Before that is
+allowed, the current exact-config-only process detector must be widened into a typed observation that
+distinguishes `managed / conflicting external / absent`. A conflicting external process is fail-closed
+and is never stopped or adopted by ordinary startup/restart logic.
 
 ## Diagnostics
 
