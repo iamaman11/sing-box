@@ -8,7 +8,7 @@ use edge_shared_types::{
     CredentialProjectionKind, CredentialTransitionAction, LocalCredentialState,
     WindowsActivationState, encode_windows_runtime_state, verify_windows_activation_files,
 };
-use edge_singbox::render_proxy_only_windows_config;
+use edge_singbox::render_windows_config;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -40,7 +40,7 @@ pub(crate) fn transition(
             Ok((
                 "CREDENTIAL_CANDIDATE_VALID".to_owned(),
                 format!(
-                    "candidate generation {} passed isolated proxy-only validation",
+                    "candidate generation {} passed isolated Windows datapath validation",
                     bundle.generation
                 ),
             ))
@@ -57,7 +57,7 @@ pub(crate) fn transition(
             Ok((
                 "CREDENTIAL_CANDIDATE_APPLIED".to_owned(),
                 format!(
-                    "candidate generation {} applied to managed proxy-only runtime without promotion",
+                    "candidate generation {} applied to managed Windows runtime without promotion",
                     bundle.generation
                 ),
             ))
@@ -110,7 +110,7 @@ pub(crate) fn transition(
             discard_candidate_and_managed_runtime(install_root, &store)?;
             Ok((
                 "CREDENTIAL_CANDIDATE_DISCARDED".to_owned(),
-                "unpromoted initial candidate and managed proxy-only runtime artifacts discarded"
+                "unpromoted initial candidate and managed Windows runtime artifacts discarded"
                     .to_owned(),
             ))
         }
@@ -252,7 +252,7 @@ fn validate_rendered_state(
     })?;
 
     let staged = config_path.with_extension("credential-stage.json");
-    let rendered = render_proxy_only_windows_config(state)?;
+    let rendered = render_windows_config(state)?;
     write_atomic_private(&staged, &rendered)?;
 
     let result = (|| {
@@ -266,7 +266,7 @@ fn validate_rendered_state(
             .map_err(|err| format!("failed to execute exact sing-box check: {err}"))?;
         if !status.success() {
             return Err(format!(
-                "exact sing-box check rejected proxy-only candidate config with exit_code={}",
+                "exact sing-box check rejected Windows candidate config with exit_code={}",
                 status.code().unwrap_or(-1)
             ));
         }

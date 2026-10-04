@@ -4,7 +4,6 @@ package edge.platform.v1;
 
 import "edge/platform/v1/common.proto";
 import "edge/platform/v1/operation.proto";
-
 message AgentState {
   bool healthy = 1;
   bool ready = 2;
@@ -158,6 +157,7 @@ enum WindowsPrivilegedOperation {
   // Wire-compatible tombstone only. The executable admission command was retired after
   // exact-generation staging became the sole local data-plane gate.
   WINDOWS_PRIVILEGED_OPERATION_ADMIT_CREDENTIAL = 8 [deprecated = true];
+  WINDOWS_PRIVILEGED_OPERATION_ROLLBACK_PREVIOUS_RELEASE = 9;
 }
 
 message WindowsPrivilegedRequest {

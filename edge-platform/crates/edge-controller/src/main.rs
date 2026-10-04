@@ -39,7 +39,8 @@ use edge_controller_core::{
     windows_runtime_state_path,
 };
 use edge_local_runtime::{
-    LocalRuntimePaths, inspect_local_runtime, restart_local_runtime as restart_runtime_process,
+    LocalRuntimePaths, RuntimeProcessClassification, classify_runtime_process,
+    inspect_local_runtime, restart_local_runtime as restart_runtime_process,
     restart_local_runtime_visible as restart_runtime_process_visible, restore_windows_dns_if_owned,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
@@ -454,6 +455,9 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     let status_handle =
         service_control_handler::register(WINDOWS_CONTROLLER_SERVICE_NAME, event_handler)?;
 
+    converge_windows_runtime_on_service_start(&config.repo_root)
+        .map_err(|err| format!("Windows managed runtime startup convergence failed: {err}"))?;
+
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Running,
@@ -486,6 +490,79 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     result
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsStartupDecision {
+    NoopManaged,
+    BlockedConflict,
+    StartAbsent,
+}
+
+#[cfg(any(windows, test))]
+fn windows_startup_decision(
+    classification: &RuntimeProcessClassification,
+) -> WindowsStartupDecision {
+    match classification {
+        RuntimeProcessClassification::Managed(_) => WindowsStartupDecision::NoopManaged,
+        RuntimeProcessClassification::Conflicting(_) => WindowsStartupDecision::BlockedConflict,
+        RuntimeProcessClassification::Absent => WindowsStartupDecision::StartAbsent,
+    }
+}
+
+#[cfg(windows)]
+fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'static str, String> {
+    if !is_installed_windows_root(repo_root) {
+        return Ok("NOT_INSTALLED");
+    }
+
+    let config_path = default_local_config_path(repo_root);
+    let state_path = windows_runtime_state_path(repo_root);
+    let state_present = state_path.is_file();
+    let config_present = config_path.is_file();
+    if !state_present && !config_present {
+        return Ok("NOT_CONFIGURED");
+    }
+    if state_present != config_present {
+        return Err(format!(
+            "managed Windows runtime is partially configured: runtime_state_present={state_present} config_present={config_present}"
+        ));
+    }
+
+    let state_bytes = fs::read(&state_path)
+        .map_err(|err| format!("failed to read installed Windows runtime state: {err}"))?;
+    decode_windows_runtime_state(&state_bytes)?;
+
+    let classification = classify_runtime_process(&config_path);
+    match windows_startup_decision(&classification) {
+        WindowsStartupDecision::NoopManaged => Ok("NOOP_MANAGED_RUNNING"),
+        WindowsStartupDecision::BlockedConflict => {
+            let RuntimeProcessClassification::Conflicting(processes) = &classification else {
+                unreachable!("blocked startup decision requires conflicting ownership")
+            };
+            eprintln!(
+                "managed Windows runtime startup is fail-closed because conflicting sing-box ownership exists: {}",
+                processes
+                    .iter()
+                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            Ok("BLOCKED_CONFLICT")
+        }
+        WindowsStartupDecision::StartAbsent => {
+            let paths = LocalRuntimePaths {
+                singbox_binary_path: default_singbox_binary_path(repo_root),
+                config_path,
+                state_path,
+                runtime_root: default_runtime_root(repo_root),
+            };
+            start_runtime_process(&paths, false)
+                .map_err(|err| format!("failed to start validated managed runtime: {err}"))?;
+            Ok("STARTED")
+        }
+    }
 }
 
 fn normalize_runtime_secret_refs(state: &Arc<Mutex<EdgeState>>) -> Result<(), String> {
@@ -4421,6 +4498,35 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn windows_service_startup_decision_matrix_is_fail_closed() {
+        use edge_local_runtime::ProcessObservation;
+
+        let managed = ProcessObservation {
+            pid: 10,
+            command_line: "sing-box run -c managed.json".to_owned(),
+            config_path: Some("managed.json".to_owned()),
+        };
+        let external = ProcessObservation {
+            pid: 11,
+            command_line: "sing-box run -c external.json".to_owned(),
+            config_path: Some("external.json".to_owned()),
+        };
+
+        assert_eq!(
+            windows_startup_decision(&RuntimeProcessClassification::Managed(managed)),
+            WindowsStartupDecision::NoopManaged
+        );
+        assert_eq!(
+            windows_startup_decision(&RuntimeProcessClassification::Absent),
+            WindowsStartupDecision::StartAbsent
+        );
+        assert_eq!(
+            windows_startup_decision(&RuntimeProcessClassification::Conflicting(vec![external])),
+            WindowsStartupDecision::BlockedConflict
+        );
+    }
+
+    #[test]
     fn resolves_repo_root_from_workspace() {
         let repo_root = resolve_repo_root(None).unwrap();
         assert!(repo_root.exists());
@@ -4539,6 +4645,7 @@ mod tests {
                     && !note.contains("server runtime observation"))
         );
 
+        drop(service);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5351,6 +5458,21 @@ mod tests {
         );
         assert!(validate_secret_name("bootstrap.vultr.ssh_key_id").is_err());
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_service_startup_leaves_unconfigured_install_root_untouched() {
+        let root = installed_windows_test_root();
+        let runtime_state = windows_runtime_state_path(&root);
+        let config = local_singbox_config_path(&root);
+        let _ = std::fs::remove_file(&runtime_state);
+        let _ = std::fs::remove_file(&config);
+        assert_eq!(
+            converge_windows_runtime_on_service_start(&root).unwrap(),
+            "NOT_CONFIGURED"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn installed_windows_test_root() -> PathBuf {

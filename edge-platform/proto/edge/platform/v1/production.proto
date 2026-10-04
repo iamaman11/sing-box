@@ -18,6 +18,13 @@ message ProductionDesiredState {
   ProductionFirewallPolicy firewall = 10;
   ProductionSupportAccess support_access = 11;
   ProductionCloudflare cloudflare = 12;
+  WindowsDatapathMode windows_datapath_mode = 13;
+}
+
+enum WindowsDatapathMode {
+  WINDOWS_DATAPATH_MODE_UNSPECIFIED = 0;
+  WINDOWS_DATAPATH_MODE_PROXY_ONLY = 1;
+  WINDOWS_DATAPATH_MODE_MANAGED_TUN = 2;
 }
 
 message ProductionSupportAccess {
@@ -78,7 +85,7 @@ message ProductionCloudflare {
   // account; Phase 5 is the only production authority flip.
   string active_account_id = 1;
 
-  // Transitional migration intent only. Canonical schema v5 leaves this empty
+  // Transitional migration intent only. Canonical schema v6 leaves this empty
   // after the Phase 5 authority flip. When present during migration it must
   // differ from active_account_id.
   string migration_target_account_id = 2;

@@ -14,3 +14,12 @@ sysinfo = "0.37.2"
 [[bin]]
 name = "edge-diagnostic"
 path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "=0.8.1"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }

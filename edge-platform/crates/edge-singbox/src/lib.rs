@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use edge_shared_types::{
-    LocalSingboxState, SelectorState, UbuntuProxyState, WindowsRuntimeState, WindowsTunnelBinding,
-    canonical_production_desired_state,
+    LocalSingboxState, SelectorState, UbuntuProxyState, WindowsDatapathMode, WindowsRuntimeState,
+    WindowsTunnelBinding, canonical_production_desired_state,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -303,7 +303,20 @@ pub fn sync_local_config(
     sync_local_config_from_bindings(config_path, &legacy, runtime_root)
 }
 
-pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<Vec<u8>, String> {
+pub fn render_windows_config(state: &WindowsRuntimeState) -> Result<Vec<u8>, String> {
+    let desired = canonical_production_desired_state()?;
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
+    if mode == WindowsDatapathMode::Unspecified {
+        return Err("canonical production Windows datapath mode is unspecified".to_owned());
+    }
+    render_windows_config_for_mode(state, mode)
+}
+
+fn render_windows_config_for_mode(
+    state: &WindowsRuntimeState,
+    mode: WindowsDatapathMode,
+) -> Result<Vec<u8>, String> {
     edge_shared_types::encode_windows_runtime_state(state)?;
     let desired = canonical_production_desired_state()?;
     let reality_server_name = desired
@@ -329,7 +342,7 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
         "hysteria2-warp",
         "vless-reality-warp"
     ]);
-    let config = json!({
+    let mut config = json!({
         "log": { "level": "info", "timestamp": true },
         "inbounds": [
             {
@@ -439,20 +452,66 @@ pub fn render_proxy_only_windows_config(state: &WindowsRuntimeState) -> Result<V
         }
     });
 
-    if config
+    if mode == WindowsDatapathMode::ManagedTun {
+        let inbounds = config
+            .get_mut("inbounds")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| "Windows config inbounds are not an array".to_owned())?;
+        inbounds.push(json!({
+            "type": "tun",
+            "tag": "managed-tun-in",
+            "interface_name": "sing-box-tun",
+            "address": ["172.19.0.1/30"],
+            "auto_route": true,
+            "strict_route": true,
+            "dns_mode": "hijack"
+        }));
+        config["dns"] = json!({
+            "servers": [
+                {
+                    "type": "tls",
+                    "tag": "managed-dns",
+                    "server": "1.1.1.1",
+                    "server_port": 853,
+                    "tls": {
+                        "enabled": true,
+                        "server_name": "cloudflare-dns.com"
+                    },
+                    "detour": MANAGED_SELECTOR_TAG
+                }
+            ],
+            "final": "managed-dns",
+            "strategy": "ipv4_only"
+        });
+        sync_tun_route_excludes(&mut config, Some(state.server_ip.as_str()));
+        sync_stable_bypass_rules(&mut config);
+    }
+
+    let has_tun = config
         .get("inbounds")
         .and_then(Value::as_array)
         .is_some_and(|inbounds| {
             inbounds
                 .iter()
                 .any(|inbound| inbound.get("type").and_then(Value::as_str) == Some("tun"))
-        })
-    {
-        return Err("proxy-only Windows renderer unexpectedly produced a TUN inbound".to_owned());
+        });
+    match mode {
+        WindowsDatapathMode::ProxyOnly if has_tun => {
+            return Err(
+                "PROXY_ONLY Windows renderer unexpectedly produced a TUN inbound".to_owned(),
+            );
+        }
+        WindowsDatapathMode::ManagedTun if !has_tun => {
+            return Err("MANAGED_TUN Windows renderer did not produce a TUN inbound".to_owned());
+        }
+        WindowsDatapathMode::Unspecified => {
+            return Err("Windows runtime datapath mode is unspecified".to_owned());
+        }
+        _ => {}
     }
 
     serde_json::to_vec_pretty(&config)
-        .map_err(|err| format!("failed to render proxy-only Windows config: {err}"))
+        .map_err(|err| format!("failed to render Windows config: {err}"))
 }
 
 pub fn sync_local_config_from_runtime_state(
@@ -1798,7 +1857,7 @@ mod tests {
 
     #[test]
     fn stage2_renderer_is_proxy_only_and_uses_dedicated_ports() {
-        let rendered = render_proxy_only_windows_config(&stage2_runtime_state()).unwrap();
+        let rendered = render_windows_config(&stage2_runtime_state()).unwrap();
         let config: Value = serde_json::from_slice(&rendered).unwrap();
         let inbounds = config.get("inbounds").and_then(Value::as_array).unwrap();
 
@@ -1854,6 +1913,101 @@ mod tests {
     }
 
     #[test]
+    fn stage4b_renderer_emits_managed_tun_without_changing_proxy_mode_default() {
+        let state = stage2_runtime_state();
+        let rendered =
+            render_windows_config_for_mode(&state, WindowsDatapathMode::ManagedTun).unwrap();
+        let config: Value = serde_json::from_slice(&rendered).unwrap();
+        let inbounds = config.get("inbounds").and_then(Value::as_array).unwrap();
+        assert_eq!(
+            inbounds
+                .iter()
+                .filter(|inbound| inbound.get("type").and_then(Value::as_str) == Some("tun"))
+                .count(),
+            1
+        );
+        let tun = inbounds
+            .iter()
+            .find(|inbound| inbound.get("type").and_then(Value::as_str) == Some("tun"))
+            .unwrap();
+        assert_eq!(
+            tun.get("interface_name").and_then(Value::as_str),
+            Some("sing-box-tun")
+        );
+        assert_eq!(tun.get("auto_route").and_then(Value::as_bool), Some(true));
+        assert_eq!(tun.get("strict_route").and_then(Value::as_bool), Some(true));
+        assert!(tun.get("auto_redirect").is_none());
+        assert_eq!(tun.get("dns_mode").and_then(Value::as_str), Some("hijack"));
+        let excludes = tun
+            .get("route_exclude_address")
+            .and_then(Value::as_array)
+            .unwrap();
+        for required in [
+            "203.0.113.10/32",
+            "162.159.197.2/32",
+            "162.159.197.3/32",
+            "162.159.197.4/32",
+            "162.159.137.105/32",
+            "162.159.138.105/32",
+        ] {
+            assert!(
+                excludes
+                    .iter()
+                    .any(|value| value.as_str() == Some(required)),
+                "managed TUN must exclude {required}"
+            );
+        }
+        assert_eq!(
+            config.pointer("/dns/final").and_then(Value::as_str),
+            Some("managed-dns")
+        );
+        assert!(
+            config
+                .pointer("/route/rules")
+                .and_then(Value::as_array)
+                .unwrap()
+                .iter()
+                .any(|rule| {
+                    rule.get("process_name")
+                        .and_then(Value::as_array)
+                        .is_some_and(|names| {
+                            names
+                                .iter()
+                                .any(|name| name.as_str() == Some(WARP_SERVICE_PROCESS))
+                        })
+                        && rule.get("outbound").and_then(Value::as_str) == Some("direct")
+                })
+        );
+    }
+
+    #[test]
+    fn exact_sing_box_accepts_stage4b_managed_tun_config_when_supplied() {
+        let Some(binary) = std::env::var_os("EDGE_TEST_SING_BOX") else {
+            return;
+        };
+        let repo_root = unique_test_dir();
+        fs::create_dir_all(&repo_root).unwrap();
+        let config_path = repo_root.join("stage4b-managed-tun.json");
+        let state = stage2_runtime_state();
+        fs::write(
+            &config_path,
+            render_windows_config_for_mode(&state, WindowsDatapathMode::ManagedTun).unwrap(),
+        )
+        .unwrap();
+
+        let status = Command::new(binary)
+            .args(["check", "-c"])
+            .arg(&config_path)
+            .status()
+            .unwrap();
+        let _ = fs::remove_dir_all(repo_root);
+        assert!(
+            status.success(),
+            "exact sing-box rejected Stage 4B managed TUN config"
+        );
+    }
+
+    #[test]
     fn exact_sing_box_accepts_stage2_proxy_only_config_when_supplied() {
         let Some(binary) = std::env::var_os("EDGE_TEST_SING_BOX") else {
             return;
@@ -1863,7 +2017,7 @@ mod tests {
         let config_path = repo_root.join("stage2-proxy-only.json");
         fs::write(
             &config_path,
-            render_proxy_only_windows_config(&stage2_runtime_state()).unwrap(),
+            render_windows_config(&stage2_runtime_state()).unwrap(),
         )
         .unwrap();
 

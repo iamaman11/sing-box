@@ -177,20 +177,24 @@ unfinished renderer/diagnostic/reboot work.
 
 Before the external Windows sing-box is touched, protected code must already prove:
 
-- one typed `PROXY_ONLY` / `MANAGED_TUN` datapath mode in existing protobuf desired state;
-- one canonical renderer used by initial materialization and credential apply/rollback;
+- one typed `PROXY_ONLY` / `MANAGED_TUN` datapath mode in Git-owned `ProductionDesiredState`;
+- no copy of datapath mode in `WindowsRuntimeState`, ReleaseSet Windows fields, activation state or a
+  local/environment marker;
+- one canonical renderer used by initial materialization, credential apply/rollback and SCM startup;
 - Windows candidate identity changes when canonical `infra/production/production.textproto` changes,
   while the Windows binary still embeds that desired-state file;
 - one bounded local Windows ReleaseSet rollback targets only exact verified `previous.pb`, needs no
-  Git/provider/network access, and restores both activation authority and previous-mode runtime/config;
+  Git/provider/network access, and restores the previous exact binary/activation; its SCM owner re-renders
+  runtime/config from that binary's embedded desired state;
 - exact pinned sing-box `check` of the managed-TUN candidate in CI;
 - native read-only adapter/route/DNS/TUN diagnostics in the existing diagnostic binary;
 - typed `managed / conflicting external / absent` sing-box process observation before any startup
   convergence or cutover mutation;
 - SCM `EdgePlatformController` startup convergence so reboot can restore the managed runtime without a
   Scheduled Task, watchdog or second controller;
-- the existing Windows workflow/router contains only one fixed owner-authorized cutover path rather than
-  a new generic execution namespace;
+- the existing Windows workflow/router remains the sole permitted physical owner boundary; 4B.1 adds no
+  speculative cutover mutation command. The fixed operation is added in 4B.2 only after read-only proof
+  of the exact external startup owner and bounded restore procedure;
 - exact-head CI + no-rebuild promotion PASS.
 
 The old PowerShell DNS reset is recovery-only legacy behavior. Do not extend it into the new datapath.

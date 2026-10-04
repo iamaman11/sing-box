@@ -919,7 +919,7 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
 
-      - name: Validate Stage 2 proxy-only config with exact sing-box
+      - name: Validate Stage 4B.1 Windows code proof with exact sing-box
         if: needs.dependencies.outputs.windows_reuse != 'true'
         working-directory: edge-platform
         shell: pwsh
@@ -928,8 +928,15 @@ jobs:
           $resolvedSingBox = Get-ChildItem (Join-Path $env:RUNNER_TEMP "sing-box-windows") -Recurse -File -Filter sing-box.exe | Select-Object -First 1
           if (-not $resolvedSingBox) { throw "verified sing-box.exe candidate is missing" }
           $env:EDGE_TEST_SING_BOX = $resolvedSingBox.FullName
+
           cargo test --locked -p edge-singbox stage2_ -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "Stage 2 proxy-only config validation failed" }
+
+          cargo test --locked -p edge-singbox stage4b_ -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Stage 4B managed-TUN config validation failed" }
+
+          cargo test --locked -p edge-local-runtime -p edge-controller -p edge-console -p edge-diagnostic
+          if ($LASTEXITCODE -ne 0) { throw "Stage 4B Windows-only ownership/rollback/diagnostic tests failed" }
 
       # WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN
       - name: Build exact Windows control binaries
