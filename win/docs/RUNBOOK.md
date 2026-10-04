@@ -181,6 +181,8 @@ Before the external Windows sing-box is touched, protected code must already pro
 - one canonical renderer used by initial materialization and credential apply/rollback;
 - exact pinned sing-box `check` of the managed-TUN candidate in CI;
 - native read-only adapter/route/DNS/TUN diagnostics in the existing diagnostic binary;
+- typed `managed / conflicting external / absent` sing-box process observation before any startup
+  convergence or cutover mutation;
 - SCM `EdgePlatformController` startup convergence so reboot can restore the managed runtime without a
   Scheduled Task, watchdog or second controller;
 - the existing Windows workflow/router contains only one fixed owner-authorized cutover path rather than
