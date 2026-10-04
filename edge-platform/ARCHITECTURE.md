@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the accepted stable ownership/invariant model and target steady state for the current project. Cloudflare account convergence, Stage-2 fresh-v2/proxy-only acceptance, Stage 3 and Stage 4A deletion-first physical shrink are closed. Provider reality must still be freshly observed before any mutation. Issue #26 now owns Stage 4B: one managed Windows TUN cutover under the existing SCM `EdgePlatformController` owner, followed by Stage 4C post-cutover deletion/final acceptance. Accepted Stage 4A deletions must not be reopened merely for confidence or compiler-warning cleanup.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Stage 3 and Stage 4A are closed. Cloudflare account convergence and Stage-2 fresh-v2/proxy-only acceptance are also closed. Provider reality must still be freshly observed before any mutation. Issue #26 now owns Stage 4B: one managed Windows TUN cutover under the existing SCM `EdgePlatformController` owner, followed by Stage 4C post-cutover deletion/final acceptance. Accepted Stage 4A deletions must not be reopened merely for confidence or compiler-warning cleanup.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 is historical Cloudflare convergence evidence and no longer owns current execution.
