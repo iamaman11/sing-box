@@ -650,7 +650,7 @@ chain remains unchanged:
 
 ```text
 Git desired state + exact ReleaseSet
-        -> EdgePlatformPrivilegedDispatch (activation/bootstrap only)
+        -> EdgePlatformPrivilegedDispatch (bounded privileged bridge; never runtime owner)
         -> SCM EdgePlatformController (sole Windows runtime owner)
         -> managed sing-box
         -> Windows TUN
