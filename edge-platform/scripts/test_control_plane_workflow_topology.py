@@ -118,6 +118,8 @@ def main() -> None:
         and "Add one typed Windows datapath mode" in architecture
         and "Do not widen the SCM service identity merely by assumption" in architecture
         and "`managed / conflicting external / absent` observation" in architecture
+        and "`infra/production/production.textproto` in Windows candidate input identity" in architecture
+        and "exact locally verified `previous.pb`" in architecture
         and "Stage 4B datapath convergence" in local_architecture
         and "hidden TUN switch" in local_architecture
         and "Stage 4B managed Windows TUN cutover" in runbook
