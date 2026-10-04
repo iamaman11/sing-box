@@ -718,9 +718,14 @@ exact external process/startup owner and a bounded restore procedure. This is cu
 not adoption of legacy config/secrets as project authority. If the old owner or restore procedure cannot
 be proven, STOP rather than guess.
 
-Then perform one authorized cutover: switch canonical desired mode to `MANAGED_TUN`, materialize and
-validate the exact accepted ReleaseSet, stop only the pre-observed external owner, start the managed TUN,
-and prove all of the following before declaring ownership transferred:
+The production mode flip is itself a separate Git-authorized candidate transition: change canonical
+desired mode to `MANAGED_TUN`, require exact-head CI and no-rebuild promotion for that exact revision,
+and resolve the resulting exact accepted ReleaseSet before the first Windows datapath mutation. A
+`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover.
+
+Then perform one authorized cutover with that exact accepted `MANAGED_TUN` ReleaseSet: stop only the
+pre-observed external owner, start the managed TUN, and prove all of the following before declaring
+ownership transferred:
 
 - exact TUN adapter/address and expected default routes;
 - endpoint/control-plane bypass and no self-routing loop;
