@@ -1114,9 +1114,7 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
         read_bounded_runtime_log_tail(&runtime_root.join("sing-box.stderr.log"), "stderr")?;
     let stdout =
         read_bounded_runtime_log_tail(&runtime_root.join("sing-box.stdout.log"), "stdout")?;
-    let detail = format!(
-        "runtime_evidence=BOUNDED_READ_ONLY;{external_owner};{stderr};{stdout}"
-    );
+    let detail = format!("runtime_evidence=BOUNDED_READ_ONLY;{external_owner};{stderr};{stdout}");
     Ok(truncate_runtime_evidence(
         &detail,
         RUNTIME_EVIDENCE_RESULT_MAX_BYTES,
