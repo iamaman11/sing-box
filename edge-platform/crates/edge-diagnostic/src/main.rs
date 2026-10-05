@@ -23,7 +23,7 @@ use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_INSUFFICIENT_B
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     ConvertInterfaceLuidToIndex, FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
     GetAdaptersAddresses, GetIpForwardTable, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH,
-    MIB_IPFORWARDTABLE, MIB_IPFORWARD_TABLE2,
+    MIB_IPFORWARD_TABLE2, MIB_IPFORWARDTABLE,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN};
