@@ -191,6 +191,13 @@ jobs:
           if ([string]$service.PathName -cne $expected) { throw 'SCM executable authority mismatch' }
           $doctor | Write-Host
 
+      - name: Read-only privileged external-owner evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Privileged read-only runtime evidence failed: $LASTEXITCODE" }
+
       - name: Prove managed PROXY_ONLY DIRECT and WARP
         if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' }}
         shell: powershell

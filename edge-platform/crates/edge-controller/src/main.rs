@@ -4533,11 +4533,17 @@ mod tests {
 
         let managed = ProcessObservation {
             pid: 10,
+            name: "sing-box".to_owned(),
+            executable_path: Some("sing-box".to_owned()),
+            parent_pid: Some(1),
             command_line: "sing-box run -c managed.json".to_owned(),
             config_path: Some("managed.json".to_owned()),
         };
         let external = ProcessObservation {
             pid: 11,
+            name: "sing-box".to_owned(),
+            executable_path: Some("sing-box".to_owned()),
+            parent_pid: Some(2),
             command_line: "sing-box run -c external.json".to_owned(),
             config_path: Some("external.json".to_owned()),
         };
