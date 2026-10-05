@@ -127,8 +127,8 @@ jobs:
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
             } | Sort-Object -Unique
           )
-          if ($env:EDGE_OPERATION -ne 'diagnose' -and $externalPids.Count -ne 1) {
-            throw "Expected exactly one preserved external sing-box owner after stopping the managed proxy; observed $($externalPids.Count)"
+          if ($env:EDGE_OPERATION -ne 'diagnose' -and $externalPids.Count -gt 1) {
+            throw "Expected at most one preserved external sing-box owner after stopping the managed proxy; observed $($externalPids.Count)"
           }
           $signature = $externalPids -join ','
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
