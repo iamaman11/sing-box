@@ -51,7 +51,10 @@ const HANDOFF_TASKS: [(&str, &str); 4] = [
     ("legacy_controller", "EdgePlatformController"),
     ("legacy_reconcile", "EdgePlatformReconcile"),
     ("legacy_shutdown", "EdgePlatformShutdown"),
-    ("canonical_privileged_dispatch", "EdgePlatformPrivilegedDispatch"),
+    (
+        "canonical_privileged_dispatch",
+        "EdgePlatformPrivilegedDispatch",
+    ),
 ];
 
 fn main() {
@@ -160,8 +163,7 @@ fn observe_known_scheduled_tasks() -> Result<(), String> {
     }
     let _guard = ComGuard;
 
-    let task_scheduler_clsid =
-        GUID::from_u128(0x0f87369f_a4e5_4cfc_bd3e_73e6154572dd);
+    let task_scheduler_clsid = GUID::from_u128(0x0f87369f_a4e5_4cfc_bd3e_73e6154572dd);
     let service: ITaskService = unsafe {
         CoCreateInstance(
             &task_scheduler_clsid,
