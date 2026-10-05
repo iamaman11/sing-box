@@ -861,15 +861,26 @@ configuration/route owners. Durable defaults are typed Git desired state; bounde
 only the closed allowlist of rendered transports through the existing selector boundary and restore the
 previous selection afterward.
 
-**4B.4 — bounded quality acceptance**
+**4B.4 — bounded Line 1/Line 2 quality acceptance**
 
 Add quality testing only as a typed bounded operation in the existing controller/operator contract.
-It must compare candidate transports under the same policy and return evidence, not create a durable
-scheduler, benchmark service or second status database.
+It compares the four Line 1 transports and the six Line 2 proxy endpoints under stable per-group policy
+and returns evidence, not durable state. It must not create a benchmark daemon, scheduler, second status
+database or another sing-box process. Transient Line 1 selection must restore the previous live selector
+on every terminal path.
 
-Only after the managed-TUN and operator/quality acceptance passes does the legacy Windows runtime lose
-its live consumer. Stage 4C then deletes its startup/config/secret glue and any migration-only or
-recovery-only compatibility surface whose last consumer disappeared.
+**4B.5 — Line 3 Android Mesh functional closure**
+
+Line 3 reuses the existing Cloudflare Mesh provider lifecycle, VM local Mesh runtime owner and
+`vultr-cloudflare-mesh` container. A healthy connector or private/VPC CIDR route is not by itself evidence
+of Android Internet egress. Public CIDR/hostname routing and any broader exit-node contract require
+explicit current Cloudflare support, fresh provider plan/authority and real Android Traffic-and-DNS E2E
+evidence. Do not infer a default route from generic CIDR support, do not add another connector/container,
+and do not reuse or mutate MISH as an Android test surface.
+
+Only after managed-TUN, Line 1/2 operator-quality acceptance and Line 3 functional acceptance pass does
+the project enter Stage 4C final deletion/convergence. Stage 4C deletes legacy startup/config/secret glue
+and any migration-only or recovery-only compatibility surface whose last consumer disappeared.
 
 Known transitional examples remain live while these consumers exist: disposable
 `acceptance-serve`/TCP 50061/tonic/`edge-trust`; bounded bootstrap SSH/support access for
