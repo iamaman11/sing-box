@@ -249,6 +249,34 @@ statistics, jitter, request failure rate, egress/trace identity and bounded thro
 failure rate must not be labeled packet loss. Upload throughput requires an explicitly controlled upload
 sink before it becomes an acceptance metric.
 
+### Product traffic planes
+
+The canonical VM exposes two independent client-facing traffic planes. Their acceptance and configuration
+must remain independently testable even though both WARP variants share one VM-side WARP egress service.
+
+**Line 1 — tunnel transport plane.** The VM `line1-gateway` exposes Hysteria2 and VLESS Reality in
+direct and WARP variants. Windows canonical sing-box consumes these four endpoints. A direct endpoint
+leaves through the VM public uplink; a WARP endpoint is forwarded on the VM through the shared
+`warp-egress` service. Windows `PROXY_ONLY` versus `MANAGED_TUN` changes only the local Windows
+datapath around this Line 1 transport plane.
+
+**Line 2 — authenticated application proxy plane.** One VM `line2-proxy` sing-box process owns six
+public inbounds on the canonical production hostname: direct HTTP/SOCKS5/HTTPS-proxy and WARP
+HTTP/SOCKS5/HTTPS-proxy. The three WARP inbounds use the same VM `warp-egress` service; the three direct
+inbounds use the VM direct outbound. Line 2 requires no Windows TUN. Its authentication is the independent
+`line2-proxy-auth` credential class and must remain rotatable/testable without changing Line 1 or the
+Windows datapath.
+
+The Windows Cloudflare WARP client/service/adapter is not either product plane. It is a foreign shared-host
+network owner. The sing-box project may observe it when needed to prove non-interference and may render
+an explicit bypass for its process/control endpoints to avoid a managed-TUN loop, but it must not adopt,
+configure, stop, clean up or depend on that Windows WARP client.
+
+Legacy local resolver/interface-DNS ownership is also distinct from authoritative Cloudflare DNS. A stale
+legacy resolver address on a surviving interface is a Windows handoff failure, not a reason to mutate the
+shared `alegria.by` zone or the dedicated Cloudflare application account.
+
+
 ## 2. Edge Control Plane
 
 The repository-level Edge Control Plane is a thin owner-gated router, not a business-logic engine.
