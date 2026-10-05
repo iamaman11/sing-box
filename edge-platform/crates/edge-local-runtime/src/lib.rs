@@ -54,6 +54,9 @@ pub struct LocalRuntimePaths {
 #[derive(Debug, Clone)]
 pub struct ProcessObservation {
     pub pid: u32,
+    pub name: String,
+    pub executable_path: Option<String>,
+    pub parent_pid: Option<u32>,
     pub command_line: String,
     pub config_path: Option<String>,
 }
@@ -754,6 +757,30 @@ pub fn classify_runtime_process(config_path: &Path) -> RuntimeProcessClassificat
     classify_processes(config_path, singbox_processes())
 }
 
+fn process_observation(pid: Pid, process: &sysinfo::Process) -> ProcessObservation {
+    let arguments = process
+        .cmd()
+        .iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    ProcessObservation {
+        pid: pid.as_u32(),
+        name: process.name().to_string_lossy().into_owned(),
+        executable_path: process.exe().map(|path| path.display().to_string()),
+        parent_pid: process.parent().map(|value| value.as_u32()),
+        command_line: arguments.join(" "),
+        config_path: extract_config_path(&arguments),
+    }
+}
+
+pub fn observe_process(pid: u32) -> Option<ProcessObservation> {
+    let mut system = System::new_all();
+    system.refresh_all();
+    system
+        .process(Pid::from_u32(pid))
+        .map(|process| process_observation(Pid::from_u32(pid), process))
+}
+
 fn singbox_processes() -> Vec<ProcessObservation> {
     let mut system = System::new_all();
     system.refresh_all();
@@ -761,20 +788,11 @@ fn singbox_processes() -> Vec<ProcessObservation> {
         .processes()
         .iter()
         .filter_map(|(pid, process)| {
-            let name = process.name().to_string_lossy().to_ascii_lowercase();
-            if !name.contains("sing-box") {
+            let observation = process_observation(*pid, process);
+            if !observation.name.to_ascii_lowercase().contains("sing-box") {
                 return None;
             }
-            let arguments = process
-                .cmd()
-                .iter()
-                .map(|arg| arg.to_string_lossy().to_string())
-                .collect::<Vec<_>>();
-            Some(ProcessObservation {
-                pid: pid.as_u32(),
-                command_line: arguments.join(" "),
-                config_path: extract_config_path(&arguments),
-            })
+            Some(observation)
         })
         .collect()
 }
@@ -1089,11 +1107,17 @@ mod tests {
         let expected = PathBuf::from("/managed/runtime/sing-box.json");
         let managed = ProcessObservation {
             pid: 10,
+            name: "sing-box".to_owned(),
+            executable_path: Some("/managed/sing-box".to_owned()),
+            parent_pid: Some(1),
             command_line: "sing-box run -c /managed/runtime/sing-box.json".to_owned(),
             config_path: Some("/managed/runtime/sing-box.json".to_owned()),
         };
         let external = ProcessObservation {
             pid: 11,
+            name: "sing-box".to_owned(),
+            executable_path: Some("/external/sing-box".to_owned()),
+            parent_pid: Some(2),
             command_line: "sing-box run -c /external/config.json".to_owned(),
             config_path: Some("/external/config.json".to_owned()),
         };
