@@ -174,7 +174,7 @@ fn observe_known_scheduled_tasks() -> Result<(), String> {
     let empty = VARIANT::default();
     unsafe { service.Connect(&empty, &empty, &empty, &empty) }
         .map_err(|err| format!("failed to connect Task Scheduler service: {err}"))?;
-    let root = unsafe { service.GetFolder(&BSTR::from("\")) }
+    let root = unsafe { service.GetFolder(&BSTR::from("\\")) }
         .map_err(|err| format!("failed to open Task Scheduler root folder: {err}"))?;
 
     for (role, name) in HANDOFF_TASKS {
