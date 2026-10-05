@@ -1079,7 +1079,8 @@ mod tests {
 
     #[test]
     fn process_observer_reports_current_process_identity() {
-        let process = observe_process(std::process::id()).expect("current process must be observable");
+        let process =
+            observe_process(std::process::id()).expect("current process must be observable");
         assert_eq!(process.pid, std::process::id());
         assert!(!process.name.is_empty());
     }
