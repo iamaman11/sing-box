@@ -1078,6 +1078,13 @@ mod tests {
     }
 
     #[test]
+    fn process_observer_reports_current_process_identity() {
+        let process = observe_process(std::process::id()).expect("current process must be observable");
+        assert_eq!(process.pid, std::process::id());
+        assert!(!process.name.is_empty());
+    }
+
+    #[test]
     fn process_ownership_requires_exact_managed_config_argument() {
         let expected = PathBuf::from("/managed/runtime/sing-box.json");
         let managed = vec![
