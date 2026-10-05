@@ -1,6 +1,6 @@
 # Edge platform architecture authority
 
-This file defines the accepted stable ownership/invariant model and target steady state for the current project. Stage 3 and Stage 4A are closed. Cloudflare account convergence and Stage-2 fresh-v2/proxy-only acceptance are also closed. Provider reality must still be freshly observed before any mutation. Issue #26 now owns Stage 4B: one managed Windows TUN cutover under the existing SCM `EdgePlatformController` owner, followed by Stage 4C post-cutover deletion/final acceptance. Accepted Stage 4A deletions must not be reopened merely for confidence or compiler-warning cleanup.
+This file defines the accepted stable ownership/invariant model and target steady state for the current project. Stage 3 and Stage 4A are closed. Cloudflare account convergence and Stage-2 fresh-v2/proxy-only acceptance are also closed. Provider reality must still be freshly observed before any mutation. Issue #26 now owns Stage 4B: native Windows ownership diagnostics, one explicit legacy-to-managed handoff, the managed Windows TUN cutover, and completion of the existing typed sing-box protocol/quality operator surface under the SCM `EdgePlatformController` owner; Stage 4C then deletes post-cutover legacy/transitional ownership. Accepted Stage 4A deletions must not be reopened merely for confidence or compiler-warning cleanup.
 
 **Execution order is not defined here.** GitHub Issue #26 is the sole living execution cursor.
 Issue #169 is historical Cloudflare convergence evidence and no longer owns current execution.
@@ -210,6 +210,44 @@ Default growth is bounded one-shot native observation. A resident observer is al
 evidence proves a continuous-observation requirement that one-shot diagnostics cannot satisfy.
 
 Diagnostics are read-only by default. Repair is always a separate explicit typed action.
+
+For Windows network ownership, diagnostics must report enough native evidence to distinguish the
+canonical runtime from legacy, foreign and unknown host owners without inferring ownership from an
+interface name. The bounded observation set may include process/listener identity, adapter identity,
+per-interface addresses/DNS, IPv4/IPv6 route counts and deterministic route-set fingerprints. Unknown
+ownership fails closed at a mutation gate; diagnostics must not mutate an object merely to classify it.
+
+### Shared-host foreign-project isolation
+
+The Windows host may run unrelated projects and network software. Co-location is not ownership.
+
+A sing-box lifecycle operation must not stop, restart, reconfigure, delete, clean up, reuse or repurpose
+a foreign project's runner, service, task, process, firewall rule, file tree, credential state or network
+object. This explicitly includes co-located MISH/mobile-proxy-mish and OKX surfaces. Their existence may
+be observed only when necessary to prove non-interference.
+
+The sing-box self-hosted runner is transport for this repository only. A different repository runner
+remains foreign even when it uses the same GitHub runner binaries, Windows service account or physical
+host. Unknown host objects remain `UNKNOWN`; matching names, drivers or parent directories are not enough
+to adopt them.
+
+### Sing-box configuration, protocol selection and quality authority
+
+There is one canonical Windows sing-box renderer. Generated JSON is a consumer artifact, not an operator
+API and not a desired-state store.
+
+The supported Windows transport set is closed and typed around the existing direct/WARP Hysteria2 and
+VLESS Reality outbounds plus their bounded automatic selectors. A durable default protocol/route policy
+belongs to Git-owned typed desired state. A transient live test may use the existing typed selector
+boundary, but it must preserve/restore the previous selection on every terminal path and must not turn
+an observation database into competing desired state.
+
+Network-quality measurement is bounded observation under the existing controller/operator vertical
+contract, not a benchmark daemon or a second scheduler. Comparative tests should use the same target and
+policy for every candidate transport and may report availability, repeated request latency, distribution
+statistics, jitter, request failure rate, egress/trace identity and bounded throughput. HTTP request
+failure rate must not be labeled packet loss. Upload throughput requires an explicitly controlled upload
+sink before it becomes an acceptance metric.
 
 ## 2. Edge Control Plane
 
@@ -764,35 +802,54 @@ The external working sing-box must have the same observed process identity befor
 operation. TUN, route, DNS and system-proxy mutation remain forbidden throughout this gate. A failure in
 install, functional proxy verification, repair, rollback or reconvergence blocks 4B.2.
 
-**4B.2 — bounded physical cutover acceptance**
+**4B.2 — bounded physical handoff and cutover acceptance**
 
-Before touching the currently working external Windows sing-box, read-only observation must prove the
-exact external process/startup owner and a bounded restore procedure. The installed managed side must
-also have an exact locally verified `PROXY_ONLY` previous activation and the bounded local ReleaseSet
-rollback must already have passed a physical no-TUN proof. These are cutover rollback evidence, not
-adoption of legacy config/secrets as project authority. If either rollback path cannot be proven, STOP
-rather than guess.
+Before the handoff, read-only observation must prove the exact legacy process/startup owners, legacy
+network ownership and a bounded restore procedure. The installed managed side must also have an exact
+locally verified `PROXY_ONLY` previous activation and the bounded local ReleaseSet rollback must already
+have passed a physical no-TUN proof. These are cutover rollback evidence, not adoption of legacy
+config/secrets as project authority. If either rollback path cannot be proven, STOP rather than guess.
+
+The canonical application must not gain a generic legacy Scheduled-Task/process manager merely for this
+one migration. Once issue #26 records `READY_FOR_LEGACY_HANDOFF`, the one-time operator handoff may
+freeze/stop the exact pre-proven legacy launch owners outside the steady-state application. The next
+canonical action is read-only diagnosis: it must prove that legacy controller/runtime/listeners cannot
+resurrect, legacy TUN route/DNS ownership has been released, canonical `PROXY_ONLY` remains healthy,
+and foreign shared-host projects were unchanged. Any mismatch blocks MANAGED_TUN.
 
 The production mode flip is itself a separate Git-authorized candidate transition: change canonical
 desired mode to `MANAGED_TUN`, require exact-head CI and no-rebuild promotion for that exact revision,
-and resolve the resulting exact accepted ReleaseSet before the first Windows datapath mutation. A
-`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover.
+and resolve the resulting exact accepted ReleaseSet before the first managed Windows datapath mutation.
+A `PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover.
 
-Then perform one authorized cutover with that exact accepted `MANAGED_TUN` ReleaseSet: stop only the
-pre-observed external owner, start the managed TUN, and prove all of the following before declaring
-ownership transferred:
+Then activate that exact accepted `MANAGED_TUN` ReleaseSet through the existing Windows privileged
+boundary and prove all of the following before declaring ownership transferred:
 
-- exact TUN adapter/address and expected default routes;
+- exact TUN adapter/address and expected IPv4/IPv6 route ownership;
 - endpoint/control-plane bypass and no self-routing loop;
-- native DNS ownership, resolution and no multihomed DNS leak;
+- native DNS ownership, resolution and no stale dependency on the retired legacy resolver;
 - DIRECT selector egress and WARP selector egress;
 - managed restart and failed-candidate last-known-good recovery;
 - SCM service restart and full Windows reboot recovery without a second startup mechanism;
 - bounded cutover rollback restores connectivity if acceptance fails;
 - repeated read-only verification is stable after success.
 
-Only after this PASS does the external Windows runtime lose its live consumer. Stage 4C then deletes its
-startup/config/secret glue and any recovery-only compatibility surface whose last consumer disappeared.
+**4B.3 — protocol/config operator completion**
+
+Do not add a generic JSON editor. The existing renderer and selector model remain the only sing-box
+configuration/route owners. Durable defaults are typed Git desired state; bounded experiments may select
+only the closed allowlist of rendered transports through the existing selector boundary and restore the
+previous selection afterward.
+
+**4B.4 — bounded quality acceptance**
+
+Add quality testing only as a typed bounded operation in the existing controller/operator contract.
+It must compare candidate transports under the same policy and return evidence, not create a durable
+scheduler, benchmark service or second status database.
+
+Only after the managed-TUN and operator/quality acceptance passes does the legacy Windows runtime lose
+its live consumer. Stage 4C then deletes its startup/config/secret glue and any migration-only or
+recovery-only compatibility surface whose last consumer disappeared.
 
 Known transitional examples remain live while these consumers exist: disposable
 `acceptance-serve`/TCP 50061/tonic/`edge-trust`; bounded bootstrap SSH/support access for
@@ -824,4 +881,4 @@ Delete dead behavior before splitting large Rust composition roots.
 - mutations are re-observed and verified;
 - generated external config is never first-party authority;
 - no TUN/DNS/default-route/system-proxy ownership before its explicit gate;
-- old legacy runtime remains no-touch until controlled cutover.
+- foreign projects remain no-touch at all times; legacy sing-box ownership changes only inside the explicit issue-#26 handoff gate.
