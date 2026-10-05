@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[cfg(windows)]
+use std::collections::BTreeMap;
+#[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
 use std::net::Ipv4Addr;
@@ -307,7 +309,11 @@ fn observe_windows_network(
     } else {
         None
     };
-    observe_ipv4_routes(managed.map(|adapter| adapter.index), server_ip.as_deref())?;
+    observe_ipv4_routes(
+        &adapters,
+        managed.map(|adapter| adapter.index),
+        server_ip.as_deref(),
+    )?;
     Ok(())
 }
 
@@ -416,6 +422,7 @@ fn wide_ptr_to_string(value: *mut u16) -> String {
 
 #[cfg(windows)]
 fn observe_ipv4_routes(
+    adapters: &[AdapterObservation],
     managed_tun_index: Option<u32>,
     server_ip: Option<&str>,
 ) -> Result<(), String> {
@@ -440,6 +447,7 @@ fn observe_ipv4_routes(
     let count = unsafe { (*table).dwNumEntries as usize };
     let rows = unsafe { (*table).table.as_ptr() };
     let mut relevant = 0usize;
+    let mut by_interface = BTreeMap::<u32, (usize, usize, usize)>::new();
     for offset in 0..count {
         let row = unsafe { &*rows.add(offset) };
         let destination = Ipv4Addr::from(row.dwForwardDest.to_ne_bytes());
@@ -448,6 +456,10 @@ fn observe_ipv4_routes(
         let is_default = row.dwForwardDest == 0 && row.dwForwardMask == 0;
         let is_tun = managed_tun_index == Some(row.dwForwardIfIndex);
         let is_server = server_ip.is_some_and(|server| destination == server && prefix == 32);
+        let summary = by_interface.entry(row.dwForwardIfIndex).or_default();
+        summary.0 += 1;
+        summary.1 += usize::from(is_default);
+        summary.2 += usize::from(is_server);
         if is_default || is_tun || is_server {
             relevant += 1;
             println!(
@@ -457,6 +469,18 @@ fn observe_ipv4_routes(
         }
     }
     println!("relevant_ipv4_route_count={relevant}");
+    println!("routed_interface_count={}", by_interface.len());
+    for (index, (routes, defaults, server_bypasses)) in by_interface {
+        let name = adapters
+            .iter()
+            .find(|adapter| adapter.index == index)
+            .map(|adapter| adapter.name.replace('\n', " "))
+            .unwrap_or_else(|| "UNKNOWN".to_owned());
+        println!(
+            "route_interface=if:{index} name:{name} routes:{routes} defaults:{defaults} managed_tun:{} server_bypasses:{server_bypasses}",
+            managed_tun_index == Some(index)
+        );
+    }
     Ok(())
 }
 
