@@ -46,6 +46,16 @@ use edge_shared_types::{
 use tonic::Request;
 use tonic::transport::Channel;
 #[cfg(windows)]
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+};
+#[cfg(windows)]
+use windows::Win32::System::TaskScheduler::ITaskService;
+#[cfg(windows)]
+use windows::Win32::System::Variant::VARIANT;
+#[cfg(windows)]
+use windows::core::{BSTR, GUID, IUnknown};
+#[cfg(windows)]
 use windows_service::service::{
     Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl,
     ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceSidType,
@@ -64,6 +74,13 @@ const WINDOWS_CONTROLLER_SERVICE_ACCOUNT: &str = r"NT SERVICE\EdgePlatformContro
 const PRIVILEGED_REQUEST_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_RESULT_SCHEMA_VERSION: u32 = 1;
 const PRIVILEGED_TASK_NAME: &str = "EdgePlatformPrivilegedDispatch";
+#[cfg(windows)]
+const HANDOFF_TASK_NAMES: [&str; 4] = [
+    "EdgePlatformController",
+    "EdgePlatformReconcile",
+    "EdgePlatformShutdown",
+    "EdgePlatformPrivilegedDispatch",
+];
 const PRIVILEGED_SHORT_WAIT_SECS: u64 = 180;
 const PRIVILEGED_ACTIVATE_WAIT_SECS: u64 = 12 * 60;
 const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
@@ -1107,18 +1124,104 @@ fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
 fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
     let runtime_root = install_root.join("runtime");
     #[cfg(windows)]
+    let scheduled_tasks = read_handoff_task_evidence()?;
+    #[cfg(not(windows))]
+    let scheduled_tasks = "scheduled_tasks=WINDOWS_ONLY".to_owned();
+    #[cfg(windows)]
     let external_owner = read_external_owner_restore_evidence(install_root)?;
     #[cfg(not(windows))]
     let external_owner = "external_owner_evidence=WINDOWS_ONLY".to_owned();
+    let critical = format!("runtime_evidence=BOUNDED_READ_ONLY;{scheduled_tasks};{external_owner}");
+    if critical.len() > RUNTIME_EVIDENCE_RESULT_MAX_BYTES {
+        return Err(format!(
+            "critical runtime evidence exceeds bounded result contract: {} > {}",
+            critical.len(),
+            RUNTIME_EVIDENCE_RESULT_MAX_BYTES
+        ));
+    }
+
     let stderr =
         read_bounded_runtime_log_tail(&runtime_root.join("sing-box.stderr.log"), "stderr")?;
     let stdout =
         read_bounded_runtime_log_tail(&runtime_root.join("sing-box.stdout.log"), "stdout")?;
-    let detail = format!("runtime_evidence=BOUNDED_READ_ONLY;{external_owner};{stderr};{stdout}");
-    Ok(truncate_runtime_evidence(
-        &detail,
-        RUNTIME_EVIDENCE_RESULT_MAX_BYTES,
+    let optional = format!(";{stderr};{stdout}");
+    let remaining = RUNTIME_EVIDENCE_RESULT_MAX_BYTES - critical.len();
+    if optional.len() <= remaining {
+        return Ok(format!("{critical}{optional}"));
+    }
+    if remaining <= 32 {
+        return Ok(critical);
+    }
+    Ok(format!(
+        "{critical}{}",
+        truncate_runtime_evidence(&optional, remaining)
     ))
+}
+
+#[cfg(windows)]
+struct TaskSchedulerComGuard;
+
+#[cfg(windows)]
+impl Drop for TaskSchedulerComGuard {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
+}
+
+#[cfg(windows)]
+fn sha256_evidence(value: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, value.as_bytes());
+    digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(windows)]
+fn read_handoff_task_evidence() -> Result<String, String> {
+    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    if hr.is_err() {
+        return Err(format!(
+            "failed to initialize COM for privileged Task Scheduler evidence: {hr:?}"
+        ));
+    }
+    let _guard = TaskSchedulerComGuard;
+
+    let task_scheduler_clsid = GUID::from_u128(0x0f87369f_a4e5_4cfc_bd3e_73e6154572dd);
+    let service: ITaskService = unsafe {
+        CoCreateInstance(
+            &task_scheduler_clsid,
+            None::<&IUnknown>,
+            CLSCTX_INPROC_SERVER,
+        )
+    }
+    .map_err(|err| format!("failed to create Task Scheduler service: {err}"))?;
+
+    let empty = VARIANT::default();
+    unsafe { service.Connect(&empty, &empty, &empty, &empty) }
+        .map_err(|err| format!("failed to connect Task Scheduler service: {err}"))?;
+    let root = unsafe { service.GetFolder(&BSTR::from("\\")) }
+        .map_err(|err| format!("failed to open Task Scheduler root folder: {err}"))?;
+
+    let mut observed = Vec::with_capacity(HANDOFF_TASK_NAMES.len());
+    for name in HANDOFF_TASK_NAMES {
+        let task = unsafe { root.GetTask(&BSTR::from(name)) }
+            .map_err(|err| format!("failed to query scheduled task {name}: {err}"))?;
+        let enabled = unsafe { task.Enabled() }
+            .map_err(|err| format!("failed to query scheduled task {name} enabled state: {err}"))?;
+        let state = unsafe { task.State() }
+            .map_err(|err| format!("failed to query scheduled task {name} state: {err}"))?;
+        let xml = unsafe { task.Xml() }
+            .map_err(|err| format!("failed to query scheduled task {name} definition: {err}"))?;
+        observed.push(format!(
+            "{name}|{}|{}|{}",
+            if enabled.0 != 0 { "1" } else { "0" },
+            state.0,
+            sha256_evidence(&xml.to_string())
+        ));
+    }
+    Ok(format!("tasks={}", observed.join(",")))
 }
 
 #[cfg(windows)]
@@ -3330,18 +3433,20 @@ mod tests {
     }
 
     #[test]
-    fn runtime_evidence_detail_fits_privileged_result_contract() {
-        let raw = format!(
-            "runtime_evidence=BOUNDED_READ_ONLY;stderr={};stdout={}",
-            "dial tcp failed ".repeat(100),
-            "tls handshake failed ".repeat(100)
+    fn critical_runtime_evidence_fits_without_truncating_owner_or_tasks() {
+        let tasks = format!(
+            "tasks=EdgePlatformController|1|3|{},EdgePlatformReconcile|1|3|{},EdgePlatformShutdown|1|3|{},EdgePlatformPrivilegedDispatch|1|4|{}",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64),
+            "d".repeat(64)
         );
-        let detail = truncate_runtime_evidence(
-            &compact_runtime_evidence_line(&raw),
-            RUNTIME_EVIDENCE_RESULT_MAX_BYTES,
-        );
+        let external_owner = "external_owner_evidence=BOUNDED_READ_ONLY;external_pid=7464;external_exe=C:\\Users\\Bose\\AppData\\Local\\sing-box-vultr-dual\\runtime\\sing-box.exe;external_config=C:\\Users\\Bose\\temp\\sing-box\\win\\windows\\edge-dns-clean-vultr-dual.json;external_run_shape=true;external_exe_exists=true;external_config_exists=true;external_check=PASS;parent_pid=3792;parent_name=edge-controller.exe;parent_exe=C:\\Users\\Bose\\AppData\\Local\\edge-platform-win-target\\x86_64-pc-windows-msvc\\debug\\edge-controller.exe;startup_owner=OTHER_LIVE_PARENT;restore_preflight=PASS";
+        let detail = format!("runtime_evidence=BOUNDED_READ_ONLY;{tasks};{external_owner}");
         assert!(detail.len() <= RUNTIME_EVIDENCE_RESULT_MAX_BYTES);
-        assert!(!detail.chars().any(|ch| ch.is_control()));
+        assert!(detail.contains("EdgePlatformPrivilegedDispatch"));
+        assert!(detail.contains("restore_preflight=PASS"));
+        assert!(!detail.contains("[truncated]"));
 
         let result = WindowsPrivilegedResult {
             schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
