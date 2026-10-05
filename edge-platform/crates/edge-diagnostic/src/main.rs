@@ -21,11 +21,12 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_INSUFFICIENT_BUFFER};
 #[cfg(windows)]
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    ConvertInterfaceLuidToIndex, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
-    GetAdaptersAddresses, GetIpForwardTable, IP_ADAPTER_ADDRESSES_LH, MIB_IPFORWARDTABLE,
+    ConvertInterfaceLuidToIndex, FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
+    GetAdaptersAddresses, GetIpForwardTable, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH,
+    MIB_IPFORWARDTABLE, MIB_IPFORWARD_TABLE2,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
+use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN};
 
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 const MANAGED_TUN_INTERFACE_NAME: &str = "sing-box-tun";
@@ -309,11 +310,9 @@ fn observe_windows_network(
     } else {
         None
     };
-    observe_ipv4_routes(
-        &adapters,
-        managed.map(|adapter| adapter.index),
-        server_ip.as_deref(),
-    )?;
+    let managed_tun_index = managed.map(|adapter| adapter.index);
+    observe_ipv4_routes(&adapters, managed_tun_index, server_ip.as_deref())?;
+    observe_ipv6_route_interfaces(&adapters, managed_tun_index)?;
     Ok(())
 }
 
@@ -478,6 +477,48 @@ fn observe_ipv4_routes(
             .unwrap_or_else(|| "UNKNOWN".to_owned());
         println!(
             "route_interface=if:{index} name:{name} routes:{routes} defaults:{defaults} managed_tun:{} server_bypasses:{server_bypasses}",
+            managed_tun_index == Some(index)
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn observe_ipv6_route_interfaces(
+    adapters: &[AdapterObservation],
+    managed_tun_index: Option<u32>,
+) -> Result<(), String> {
+    let mut table: *mut MIB_IPFORWARD_TABLE2 = null_mut();
+    let result = unsafe { GetIpForwardTable2(AF_INET6 as u16, &mut table) };
+    if result != 0 {
+        return Err(format!(
+            "GetIpForwardTable2(AF_INET6) failed with Win32 error {result}"
+        ));
+    }
+    if table.is_null() {
+        return Err("GetIpForwardTable2(AF_INET6) returned a null table".to_owned());
+    }
+
+    let count = unsafe { (*table).NumEntries as usize };
+    let rows = unsafe { (*table).Table.as_ptr() };
+    let mut by_interface = BTreeMap::<u32, (usize, usize)>::new();
+    for offset in 0..count {
+        let row = unsafe { &*rows.add(offset) };
+        let summary = by_interface.entry(row.InterfaceIndex).or_default();
+        summary.0 += 1;
+        summary.1 += usize::from(row.DestinationPrefix.PrefixLength == 0);
+    }
+    unsafe { FreeMibTable(table.cast()) };
+
+    println!("routed_interface_ipv6_count={}", by_interface.len());
+    for (index, (routes, defaults)) in by_interface {
+        let name = adapters
+            .iter()
+            .find(|adapter| adapter.index == index)
+            .map(|adapter| adapter.name.replace('\n', " "))
+            .unwrap_or_else(|| "UNKNOWN".to_owned());
+        println!(
+            "route_interface_ipv6=if:{index} name:{name} routes:{routes} defaults:{defaults} managed_tun:{}",
             managed_tun_index == Some(index)
         );
     }
