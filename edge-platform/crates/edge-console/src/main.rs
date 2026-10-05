@@ -7,7 +7,10 @@ use clap::Parser;
 use edge_controller_core::{
     local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
 };
-use edge_local_runtime::{run_non_tun_loopback_smoke, stop_local_runtime as stop_runtime_process};
+use edge_local_runtime::{
+    RuntimeProcessClassification, classify_runtime_process, observe_process,
+    run_non_tun_loopback_smoke, stop_local_runtime as stop_runtime_process,
+};
 use edge_observability::init as init_observability;
 use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
@@ -1103,14 +1106,137 @@ fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
 
 fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
     let runtime_root = install_root.join("runtime");
+    #[cfg(windows)]
+    let external_owner = read_external_owner_restore_evidence(install_root)?;
+    #[cfg(not(windows))]
+    let external_owner = "external_owner_evidence=WINDOWS_ONLY".to_owned();
     let stderr =
         read_bounded_runtime_log_tail(&runtime_root.join("sing-box.stderr.log"), "stderr")?;
     let stdout =
         read_bounded_runtime_log_tail(&runtime_root.join("sing-box.stdout.log"), "stdout")?;
-    let detail = format!("runtime_evidence=BOUNDED_READ_ONLY;{stderr};{stdout}");
+    let detail = format!(
+        "runtime_evidence=BOUNDED_READ_ONLY;{external_owner};{stderr};{stdout}"
+    );
     Ok(truncate_runtime_evidence(
         &detail,
         RUNTIME_EVIDENCE_RESULT_MAX_BYTES,
+    ))
+}
+
+#[cfg(windows)]
+fn evidence_path_matches(observed: &str, expected: &Path) -> bool {
+    let observed = Path::new(observed);
+    if observed == expected {
+        return true;
+    }
+    match (observed.canonicalize(), expected.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+fn evidence_field(value: &str) -> String {
+    compact_runtime_evidence_line(value).replace(';', "%3B")
+}
+
+#[cfg(windows)]
+fn external_startup_owner_kind(
+    parent: Option<&edge_local_runtime::ProcessObservation>,
+) -> &'static str {
+    let Some(parent) = parent else {
+        return "PARENT_ABSENT";
+    };
+    let name = parent.name.to_ascii_lowercase();
+    let command = parent.command_line.to_ascii_lowercase();
+    if name.contains("powershell") || name == "pwsh.exe" || name == "pwsh" {
+        if command.contains("singbox-dual-menu.ps1") {
+            "POWERSHELL_MENU"
+        } else if command.contains("start-vultr-edge-session.ps1") {
+            "POWERSHELL_SESSION"
+        } else if command.contains("sing-box") {
+            "POWERSHELL_DIRECT"
+        } else {
+            "POWERSHELL_PARENT"
+        }
+    } else if name == "cmd.exe" || name == "cmd" {
+        "CMD_PARENT"
+    } else {
+        "OTHER_LIVE_PARENT"
+    }
+}
+
+#[cfg(windows)]
+fn read_external_owner_restore_evidence(install_root: &Path) -> Result<String, String> {
+    let managed_config = local_singbox_config_path(install_root);
+    let observed = match classify_runtime_process(&managed_config) {
+        RuntimeProcessClassification::Managed(process) => vec![process],
+        RuntimeProcessClassification::Conflicting(processes) => processes,
+        RuntimeProcessClassification::Absent => Vec::new(),
+    };
+    let external = observed
+        .into_iter()
+        .filter(|process| {
+            !process
+                .config_path
+                .as_deref()
+                .is_some_and(|path| evidence_path_matches(path, &managed_config))
+        })
+        .collect::<Vec<_>>();
+    if external.len() != 1 {
+        return Ok(format!(
+            "external_owner_evidence=INCOMPLETE;external_count={}",
+            external.len()
+        ));
+    }
+
+    let process = &external[0];
+    let parent = process.parent_pid.and_then(observe_process);
+    let executable = process.executable_path.as_deref().unwrap_or("UNKNOWN");
+    let config = process.config_path.as_deref().unwrap_or("UNKNOWN");
+    let executable_exists = executable != "UNKNOWN" && Path::new(executable).is_file();
+    let config_exists = config != "UNKNOWN" && Path::new(config).is_file();
+    let command_shape = process.command_line.to_ascii_lowercase().contains(" run ")
+        && process.config_path.is_some();
+
+    let check_pass = if executable_exists && config_exists {
+        Command::new(executable)
+            .args(["check", "-c", config])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let owner_kind = external_startup_owner_kind(parent.as_ref());
+    let parent_alive = parent.is_some();
+    let restore_preflight =
+        executable_exists && config_exists && command_shape && check_pass && parent_alive;
+
+    Ok(format!(
+        "external_owner_evidence=BOUNDED_READ_ONLY;external_pid={};external_exe={};external_config={};external_run_shape={};external_exe_exists={};external_config_exists={};external_check={};parent_pid={};parent_name={};parent_exe={};startup_owner={};restore_preflight={}",
+        process.pid,
+        evidence_field(executable),
+        evidence_field(config),
+        command_shape,
+        executable_exists,
+        config_exists,
+        if check_pass { "PASS" } else { "FAIL" },
+        process
+            .parent_pid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        parent
+            .as_ref()
+            .map(|value| evidence_field(&value.name))
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        parent
+            .as_ref()
+            .and_then(|value| value.executable_path.as_deref())
+            .map(evidence_field)
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        owner_kind,
+        if restore_preflight { "PASS" } else { "FAIL" },
     ))
 }
 
