@@ -16,6 +16,16 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 #[cfg(windows)]
 use std::ptr::null_mut;
 #[cfg(windows)]
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+};
+#[cfg(windows)]
+use windows::Win32::System::TaskScheduler::{CLSID_TaskScheduler, ITaskService};
+#[cfg(windows)]
+use windows::Win32::System::Variant::VARIANT;
+#[cfg(windows)]
+use windows::core::{BSTR, IUnknown};
+#[cfg(windows)]
 use windows_service::service::ServiceAccess;
 #[cfg(windows)]
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -36,6 +46,13 @@ use windows_sys::Win32::Networking::WinSock::{
 
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 const MANAGED_TUN_INTERFACE_NAME: &str = "sing-box-tun";
+#[cfg(windows)]
+const HANDOFF_TASKS: [(&str, &str); 4] = [
+    ("legacy_controller", "EdgePlatformController"),
+    ("legacy_reconcile", "EdgePlatformReconcile"),
+    ("legacy_shutdown", "EdgePlatformShutdown"),
+    ("canonical_privileged_dispatch", "EdgePlatformPrivilegedDispatch"),
+];
 
 fn main() {
     if let Err(err) = run() {
@@ -93,6 +110,8 @@ fn run() -> Result<(), String> {
     #[cfg(windows)]
     observe_project_listeners()?;
     #[cfg(windows)]
+    observe_known_scheduled_tasks()?;
+    #[cfg(windows)]
     observe_windows_network(&state_path, datapath_mode)?;
 
     Ok(())
@@ -119,6 +138,65 @@ fn same_path(observed: &Path, expected: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
+}
+
+#[cfg(windows)]
+struct ComGuard;
+
+#[cfg(windows)]
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
+}
+
+#[cfg(windows)]
+fn observe_known_scheduled_tasks() -> Result<(), String> {
+    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    if hr.is_err() {
+        return Err(format!(
+            "failed to initialize COM for Task Scheduler diagnostics: {hr:?}"
+        ));
+    }
+    let _guard = ComGuard;
+
+    let service: ITaskService = unsafe {
+        CoCreateInstance(
+            &CLSID_TaskScheduler,
+            None::<&IUnknown>,
+            CLSCTX_INPROC_SERVER,
+        )
+    }
+    .map_err(|err| format!("failed to create Task Scheduler service: {err}"))?;
+
+    let empty = VARIANT::default();
+    unsafe { service.Connect(&empty, &empty, &empty, &empty) }
+        .map_err(|err| format!("failed to connect Task Scheduler service: {err}"))?;
+    let root = unsafe { service.GetFolder(&BSTR::from(r"\")) }
+        .map_err(|err| format!("failed to open Task Scheduler root folder: {err}"))?;
+
+    for (role, name) in HANDOFF_TASKS {
+        let task = unsafe { root.GetTask(&BSTR::from(name)) }
+            .map_err(|err| format!("failed to query scheduled task {name}: {err}"))?;
+        let enabled = unsafe { task.Enabled() }
+            .map_err(|err| format!("failed to query scheduled task {name} enabled state: {err}"))?;
+        let state = unsafe { task.State() }
+            .map_err(|err| format!("failed to query scheduled task {name} state: {err}"))?;
+        let path = unsafe { task.Path() }
+            .map_err(|err| format!("failed to query scheduled task {name} path: {err}"))?;
+        let xml = unsafe { task.Xml() }
+            .map_err(|err| format!("failed to query scheduled task {name} definition: {err}"))?;
+        let fingerprint = sha256_bytes(xml.to_string().as_bytes());
+        println!(
+            "scheduled_task=role:{role} name:{} path:{} enabled:{} state:{} xml_sha256:{fingerprint}",
+            name,
+            path.to_string().replace('\n', " "),
+            enabled.0 != 0,
+            state.0
+        );
+    }
+    println!("scheduled_task_observation_count={}", HANDOFF_TASKS.len());
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -610,8 +688,12 @@ fn join_values<T: ToString>(values: &[T]) -> String {
 
 #[cfg(windows)]
 fn sha256_lines(lines: &[String]) -> String {
-    let normalized = lines.join("\n");
-    let digest = ring::digest::digest(&ring::digest::SHA256, normalized.as_bytes());
+    sha256_bytes(lines.join("\n").as_bytes())
+}
+
+#[cfg(windows)]
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
     digest
         .as_ref()
         .iter()
