@@ -126,14 +126,16 @@ def main() -> None:
         and "Add one typed Windows datapath mode" in architecture
         and "copied into `WindowsRuntimeState`, `WindowsRuntime`, or `WindowsActivationState`" in architecture
         and "Do not widen the SCM service identity merely by assumption" in architecture
-        and "`managed / conflicting external / absent` observation" in architecture
+        and "typed Windows process observation distinguishes managed / conflicting external / absent ownership" in architecture
         and "`infra/production/production.textproto` in Windows candidate input identity" in architecture
         and "exact locally verified `previous.pb`" in architecture
-        and "evidence-derived fixed cutover mutation is added there" in architecture
+        and "one explicit legacy-to-managed handoff" in architecture
         and "Stage 4B datapath convergence" in local_architecture
         and "Generated `runtime\\\\sing-box.json` never chooses the mode" in local_architecture
         and "Stage 4B managed Windows TUN cutover" in runbook
         and "`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover" in architecture
+        and "Shared-host foreign-project isolation" in architecture
+        and "Sing-box configuration, protocol selection and quality authority" in architecture
         and "Do not mutate Windows from an unaccepted mode-flip revision" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
         and "Stage 3 and Stage 4A are closed" in readme

@@ -249,6 +249,30 @@ statistics, jitter, request failure rate, egress/trace identity and bounded thro
 failure rate must not be labeled packet loss. Upload throughput requires an explicitly controlled upload
 sink before it becomes an acceptance metric.
 
+### Product traffic planes
+
+The canonical VM has three independent product traffic lines composed from four project-owned container identities.
+Co-location and shared primitives do not merge their functional ownership.
+
+1. `vultr-warp-egress` — shared VM-side Cloudflare WARP egress for WARP variants of Lines 1 and 2 only.
+2. `vultr-line1-gateway` — Line 1 Hysteria2/VLESS Reality direct/WARP tunnel ingress.
+3. `vultr-line2-proxy` — Line 2 six authenticated HTTP/SOCKS5/HTTPS direct/WARP proxy inbounds.
+4. `vultr-cloudflare-mesh` — Line 3 Cloudflare Mesh connector/egress for external Android Cloudflare One Client.
+
+Acceptance identifies these exact project-owned containers/images; it must not require that the entire Docker host contain only four containers. Additional Docker objects remain foreign/unknown until separately proven.
+
+**Line 1 — tunnel transport plane.** The VM `line1-gateway` exposes Hysteria2 and VLESS Reality in direct and WARP variants. Windows canonical sing-box consumes these four endpoints. Direct leaves via the VM public uplink; WARP variants use `warp-egress`. Windows `PROXY_ONLY` versus `MANAGED_TUN` changes only the local Windows datapath around this Line 1 plane.
+
+**Line 2 — authenticated application proxy plane.** One VM `line2-proxy` process owns six public inbounds on the canonical production hostname: direct HTTP/SOCKS5/HTTPS-proxy and WARP HTTP/SOCKS5/HTTPS-proxy. The three WARP inbounds use `warp-egress`; the three direct inbounds use the VM direct outbound. Line 2 requires no Windows TUN. Its authentication is the independent `line2-proxy-auth` credential class and remains rotatable/testable without changing Line 1 or Windows datapath.
+
+**Line 3 — Android Cloudflare Mesh plane.** The VM `cloudflare-mesh` container is a separate Cloudflare Mesh/WARP-Connector runtime with its own `/dev/net/tun`, identity-scoped Mesh state/token and MASQUE/WARP connection. Android uses Cloudflare One Client in Traffic and DNS mode through Cloudflare Zero Trust/Mesh to destinations explicitly routed through this VM connector. Connector health alone does not prove arbitrary/full-Internet Android egress: public CIDR/hostname routing and any broader exit-node contract require explicit provider routing/policy plus Android E2E proof. Line 3 exposes no public proxy listener merely for Android and does not use Windows TUN, Line 1/2 gateways or the shared `warp-egress`. Its provider node/route/token/runtime lifecycle remains independently verifiable and removable.
+
+`BootstrapFull` owns `warp-egress + line1-gateway + line2-proxy`; the existing typed Mesh lifecycle independently converges `cloudflare-mesh` because Mesh provider identity/token/recovery is a different resource class. This remains one local VM owner and one Docker Compose file, not a second host control plane.
+
+The Windows Cloudflare WARP client/service/adapter is not any of these VM traffic mechanisms. It is a foreign shared-host network owner. The sing-box project may observe it when needed to prove non-interference and may render an explicit bypass for its process/control endpoints to avoid a managed-TUN loop, but it must not adopt, configure, stop, clean up or depend on that Windows WARP client.
+
+Legacy local resolver/interface-DNS ownership is also distinct from authoritative Cloudflare DNS and from Line 3 Mesh DNS. A stale legacy resolver address on a surviving interface is a Windows handoff failure, not a reason to mutate the shared `alegria.by` zone, Line 3 Mesh, or the dedicated Cloudflare application account.
+
 ## 2. Edge Control Plane
 
 The repository-level Edge Control Plane is a thin owner-gated router, not a business-logic engine.
@@ -694,31 +718,27 @@ Git desired state + exact ReleaseSet
         -> Windows TUN
 ```
 
-The Stage-4B preflight audit of protected main established these implementation facts:
+Current Stage-4B implementation state after the closed 4B.1 code/proxy-only lifecycle proof:
 
-- the canonical Windows renderer is intentionally proxy-only and rejects a TUN inbound;
-- credential apply/rollback re-renders the managed config from typed canonical state, so TUN must not be
-  enabled by a hidden environment switch or by mutating generated JSON;
-- local runtime restart already stages the candidate, runs exact `sing-box check`, activates only after
-  validation, observes startup and restores the last-known-good managed config on failure;
-- SCM `EdgePlatformController` is delayed-auto-start with bounded service recovery, but service startup
-  currently does not converge/start the managed sing-box after reboot;
-- current local-runtime process detection returns only the exact managed-config sing-box, so it cannot
-  classify a concurrently running external sing-box; Stage 4B must add explicit
-  `managed / conflicting external / absent` observation before TUN ownership can converge;
-- Windows binaries embed canonical `infra/production/production.textproto` through
-  `edge-shared-types/build.rs`, but the current Windows candidate input digest does not include that
-  external file; a production desired-state change can therefore be misclassified as artifact `REUSE`;
-- Windows activation persists a verified `previous.pb`, but there is no executable local Windows
-  ReleaseSet rollback operation and normal activation requires the target revision to be current
-  protected `main`; relying on a new Git revert + CI during a failed cutover is not bounded rollback;
-- `edge-diagnostic` currently proves release identity and controller process identity only; Stage 4B
-  requires native read-only adapter/route/DNS/TUN observation before live cutover;
-- Windows DNS observation in `edge-local-runtime` is native IP Helper, while the old owned-DNS reset is
-  still a bounded PowerShell recovery path. It must not become the normal TUN DNS owner;
-- the physical Windows backend is the existing `windows-physical.yml`; 4B.1 locks this as the only
-  permitted Windows physical owner boundary. The evidence-derived fixed cutover mutation is added there
-  only in 4B.2 after the exact external startup owner and restore procedure are read-only proven.
+- canonical production remains `PROXY_ONLY`, while the single canonical Windows renderer already has a
+  typed `MANAGED_TUN` branch validated with the exact pinned sing-box;
+- the Git-owned `windows_datapath_mode` remains embedded canonical desired state and participates in
+  Windows candidate identity, so a mode change cannot silently reuse the old Windows input;
+- bounded local rollback to exact verified `previous.pb` exists and the PROXY_ONLY operator lifecycle has
+  physically accepted rollback -> reconverge -> diagnose;
+- typed Windows process observation distinguishes managed / conflicting external / absent ownership;
+- SCM `EdgePlatformController` performs bounded startup convergence on service start; it is not a watchdog
+  or polling restart loop;
+- `edge-diagnostic` already has native Windows adapter/route/DNS/TUN observation, and Stage 4B.2 is now
+  closing the remaining handoff parity gap: exact per-interface IPv4/IPv6 address/DNS evidence, bounded
+  route-set fingerprints, listener->PID ownership and exact read-only legacy task-state proof;
+- the existing `windows-physical.yml` remains the sole Windows physical owner boundary and is still
+  intentionally PROXY_ONLY-gated until the explicit 4B.2-C mode-aware cutover slice;
+- read-only physical evidence has identified one canonical controller/runtime and one separate legacy
+  controller/runtime with legacy Scheduled-Task/console resurrection authority plus legacy `utun0`
+  route/DNS ownership;
+- no canonical MANAGED_TUN mutation has been accepted yet. Issue #26 owns the exact manual handoff gate,
+  mode flip, physical cutover and rollback acceptance.
 
 #### Required implementation shape
 
@@ -841,15 +861,26 @@ configuration/route owners. Durable defaults are typed Git desired state; bounde
 only the closed allowlist of rendered transports through the existing selector boundary and restore the
 previous selection afterward.
 
-**4B.4 — bounded quality acceptance**
+**4B.4 — bounded Line 1/Line 2 quality acceptance**
 
 Add quality testing only as a typed bounded operation in the existing controller/operator contract.
-It must compare candidate transports under the same policy and return evidence, not create a durable
-scheduler, benchmark service or second status database.
+It compares the four Line 1 transports and the six Line 2 proxy endpoints under stable per-group policy
+and returns evidence, not durable state. It must not create a benchmark daemon, scheduler, second status
+database or another sing-box process. Transient Line 1 selection must restore the previous live selector
+on every terminal path.
 
-Only after the managed-TUN and operator/quality acceptance passes does the legacy Windows runtime lose
-its live consumer. Stage 4C then deletes its startup/config/secret glue and any migration-only or
-recovery-only compatibility surface whose last consumer disappeared.
+**4B.5 — Line 3 Android Mesh functional closure**
+
+Line 3 reuses the existing Cloudflare Mesh provider lifecycle, VM local Mesh runtime owner and
+`vultr-cloudflare-mesh` container. A healthy connector or private/VPC CIDR route is not by itself evidence
+of Android Internet egress. Public CIDR/hostname routing and any broader exit-node contract require
+explicit current Cloudflare support, fresh provider plan/authority and real Android Traffic-and-DNS E2E
+evidence. Do not infer a default route from generic CIDR support, do not add another connector/container,
+and do not reuse or mutate MISH as an Android test surface.
+
+Only after managed-TUN, Line 1/2 operator-quality acceptance and Line 3 functional acceptance pass does
+the project enter Stage 4C final deletion/convergence. Stage 4C deletes legacy startup/config/secret glue
+and any migration-only or recovery-only compatibility surface whose last consumer disappeared.
 
 Known transitional examples remain live while these consumers exist: disposable
 `acceptance-serve`/TCP 50061/tonic/`edge-trust`; bounded bootstrap SSH/support access for

@@ -436,6 +436,7 @@ dependencies = [
  "prost",
  "ring",
  "sysinfo",
+ "windows 0.61.3",
  "windows-service",
  "windows-sys 0.61.2",
 ]

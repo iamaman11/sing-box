@@ -6,11 +6,25 @@ use std::path::{Path, PathBuf};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[cfg(windows)]
+use std::collections::BTreeMap;
+#[cfg(windows)]
+use std::ffi::c_void;
+#[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 #[cfg(windows)]
 use std::ptr::null_mut;
+#[cfg(windows)]
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+};
+#[cfg(windows)]
+use windows::Win32::System::TaskScheduler::ITaskService;
+#[cfg(windows)]
+use windows::Win32::System::Variant::VARIANT;
+#[cfg(windows)]
+use windows::core::{BSTR, GUID, IUnknown};
 #[cfg(windows)]
 use windows_service::service::ServiceAccess;
 #[cfg(windows)]
@@ -19,14 +33,29 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_INSUFFICIENT_BUFFER};
 #[cfg(windows)]
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    ConvertInterfaceLuidToIndex, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
-    GetAdaptersAddresses, GetIpForwardTable, IP_ADAPTER_ADDRESSES_LH, MIB_IPFORWARDTABLE,
+    ConvertInterfaceLuidToIndex, FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
+    GetAdaptersAddresses, GetExtendedTcpTable, GetExtendedUdpTable, GetIpForwardTable,
+    GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IPFORWARD_TABLE2, MIB_IPFORWARDTABLE,
+    MIB_TCP6TABLE_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_UDP6TABLE_OWNER_PID,
+    MIB_UDPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER, UDP_TABLE_OWNER_PID,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
+use windows_sys::Win32::Networking::WinSock::{
+    AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6,
+};
 
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 const MANAGED_TUN_INTERFACE_NAME: &str = "sing-box-tun";
+#[cfg(windows)]
+const HANDOFF_TASKS: [(&str, &str); 4] = [
+    ("legacy_controller", "EdgePlatformController"),
+    ("legacy_reconcile", "EdgePlatformReconcile"),
+    ("legacy_shutdown", "EdgePlatformShutdown"),
+    (
+        "canonical_privileged_dispatch",
+        "EdgePlatformPrivilegedDispatch",
+    ),
+];
 
 fn main() {
     if let Err(err) = run() {
@@ -82,6 +111,10 @@ fn run() -> Result<(), String> {
     #[cfg(windows)]
     observe_singbox_processes(&state_path, datapath_mode, controller_pid)?;
     #[cfg(windows)]
+    observe_project_listeners()?;
+    #[cfg(windows)]
+    observe_known_scheduled_tasks()?;
+    #[cfg(windows)]
     observe_windows_network(&state_path, datapath_mode)?;
 
     Ok(())
@@ -108,6 +141,66 @@ fn same_path(observed: &Path, expected: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
     }
+}
+
+#[cfg(windows)]
+struct ComGuard;
+
+#[cfg(windows)]
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
+}
+
+#[cfg(windows)]
+fn observe_known_scheduled_tasks() -> Result<(), String> {
+    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    if hr.is_err() {
+        return Err(format!(
+            "failed to initialize COM for Task Scheduler diagnostics: {hr:?}"
+        ));
+    }
+    let _guard = ComGuard;
+
+    let task_scheduler_clsid = GUID::from_u128(0x0f87369f_a4e5_4cfc_bd3e_73e6154572dd);
+    let service: ITaskService = unsafe {
+        CoCreateInstance(
+            &task_scheduler_clsid,
+            None::<&IUnknown>,
+            CLSCTX_INPROC_SERVER,
+        )
+    }
+    .map_err(|err| format!("failed to create Task Scheduler service: {err}"))?;
+
+    let empty = VARIANT::default();
+    unsafe { service.Connect(&empty, &empty, &empty, &empty) }
+        .map_err(|err| format!("failed to connect Task Scheduler service: {err}"))?;
+    let root = unsafe { service.GetFolder(&BSTR::from("\\")) }
+        .map_err(|err| format!("failed to open Task Scheduler root folder: {err}"))?;
+
+    for (role, name) in HANDOFF_TASKS {
+        let task = unsafe { root.GetTask(&BSTR::from(name)) }
+            .map_err(|err| format!("failed to query scheduled task {name}: {err}"))?;
+        let enabled = unsafe { task.Enabled() }
+            .map_err(|err| format!("failed to query scheduled task {name} enabled state: {err}"))?;
+        let state = unsafe { task.State() }
+            .map_err(|err| format!("failed to query scheduled task {name} state: {err}"))?;
+        let path = unsafe { task.Path() }
+            .map_err(|err| format!("failed to query scheduled task {name} path: {err}"))?;
+        let xml = unsafe { task.Xml() }
+            .map_err(|err| format!("failed to query scheduled task {name} definition: {err}"))?;
+        let fingerprint = sha256_bytes(xml.to_string().as_bytes());
+        println!(
+            "scheduled_task=role:{role} name:{} path:{} enabled:{} state:{} xml_sha256:{fingerprint}",
+            name,
+            path.to_string().replace('\n', " "),
+            enabled.0 != 0,
+            state.0
+        );
+    }
+    println!("scheduled_task_observation_count={}", HANDOFF_TASKS.len());
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -251,7 +344,9 @@ struct AdapterObservation {
     index: u32,
     name: String,
     ipv4: Vec<Ipv4Addr>,
+    ipv6: Vec<Ipv6Addr>,
     dns_ipv4: Vec<Ipv4Addr>,
+    dns_ipv6: Vec<Ipv6Addr>,
 }
 
 #[cfg(windows)]
@@ -268,12 +363,16 @@ fn observe_windows_network(
     println!("managed_tun_present={}", managed.is_some());
     if let Some(adapter) = managed {
         println!("managed_tun_interface_index={}", adapter.index);
-        println!("managed_tun_ipv4={}", join_ipv4(&adapter.ipv4));
-        println!("managed_tun_dns_ipv4={}", join_ipv4(&adapter.dns_ipv4));
+        println!("managed_tun_ipv4={}", join_values(&adapter.ipv4));
+        println!("managed_tun_ipv6={}", join_values(&adapter.ipv6));
+        println!("managed_tun_dns_ipv4={}", join_values(&adapter.dns_ipv4));
+        println!("managed_tun_dns_ipv6={}", join_values(&adapter.dns_ipv6));
     } else {
         println!("managed_tun_interface_index=ABSENT");
         println!("managed_tun_ipv4=ABSENT");
+        println!("managed_tun_ipv6=ABSENT");
         println!("managed_tun_dns_ipv4=ABSENT");
+        println!("managed_tun_dns_ipv6=ABSENT");
     }
 
     if datapath_mode == WindowsDatapathMode::ProxyOnly && managed.is_some() {
@@ -281,13 +380,19 @@ fn observe_windows_network(
     }
 
     for adapter in &adapters {
-        if !adapter.ipv4.is_empty() || !adapter.dns_ipv4.is_empty() {
+        if !adapter.ipv4.is_empty()
+            || !adapter.ipv6.is_empty()
+            || !adapter.dns_ipv4.is_empty()
+            || !adapter.dns_ipv6.is_empty()
+        {
             println!(
-                "adapter=index:{} name:{} ipv4:{} dns:{}",
+                "adapter=index:{} name:{} ipv4:{} ipv6:{} dns_ipv4:{} dns_ipv6:{}",
                 adapter.index,
                 adapter.name.replace('\n', " "),
-                join_ipv4(&adapter.ipv4),
-                join_ipv4(&adapter.dns_ipv4)
+                join_values(&adapter.ipv4),
+                join_values(&adapter.ipv6),
+                join_values(&adapter.dns_ipv4),
+                join_values(&adapter.dns_ipv6)
             );
         }
     }
@@ -307,7 +412,9 @@ fn observe_windows_network(
     } else {
         None
     };
-    observe_ipv4_routes(managed.map(|adapter| adapter.index), server_ip.as_deref())?;
+    let managed_tun_index = managed.map(|adapter| adapter.index);
+    observe_ipv4_routes(&adapters, managed_tun_index, server_ip.as_deref())?;
+    observe_ipv6_route_interfaces(&adapters, managed_tun_index)?;
     Ok(())
 }
 
@@ -354,30 +461,46 @@ fn windows_adapters() -> Result<Vec<AdapterObservation>, String> {
             }
             let name = wide_ptr_to_string(unsafe { (*adapter).FriendlyName });
             let mut ipv4 = Vec::new();
+            let mut ipv6 = Vec::new();
             let mut unicast = unsafe { (*adapter).FirstUnicastAddress };
             while !unicast.is_null() {
-                if let Some(value) = sockaddr_ipv4(unsafe { (*unicast).Address.lpSockaddr }) {
+                let socket = unsafe { (*unicast).Address.lpSockaddr };
+                if let Some(value) = sockaddr_ipv4(socket) {
                     ipv4.push(value);
+                }
+                if let Some(value) = sockaddr_ipv6(socket) {
+                    ipv6.push(value);
                 }
                 unicast = unsafe { (*unicast).Next };
             }
             let mut dns_ipv4 = Vec::new();
+            let mut dns_ipv6 = Vec::new();
             let mut dns = unsafe { (*adapter).FirstDnsServerAddress };
             while !dns.is_null() {
-                if let Some(value) = sockaddr_ipv4(unsafe { (*dns).Address.lpSockaddr }) {
+                let socket = unsafe { (*dns).Address.lpSockaddr };
+                if let Some(value) = sockaddr_ipv4(socket) {
                     dns_ipv4.push(value);
+                }
+                if let Some(value) = sockaddr_ipv6(socket) {
+                    dns_ipv6.push(value);
                 }
                 dns = unsafe { (*dns).Next };
             }
             ipv4.sort_unstable();
             ipv4.dedup();
+            ipv6.sort_unstable();
+            ipv6.dedup();
             dns_ipv4.sort_unstable();
             dns_ipv4.dedup();
+            dns_ipv6.sort_unstable();
+            dns_ipv6.dedup();
             out.push(AdapterObservation {
                 index,
                 name,
                 ipv4,
+                ipv6,
                 dns_ipv4,
+                dns_ipv6,
             });
             adapter = unsafe { (*adapter).Next };
         }
@@ -403,6 +526,23 @@ fn sockaddr_ipv4(
 }
 
 #[cfg(windows)]
+fn sockaddr_ipv6(socket: *mut SOCKADDR) -> Option<Ipv6Addr> {
+    if socket.is_null() || unsafe { (*socket).sa_family } != AF_INET6 {
+        return None;
+    }
+    let value = unsafe { &*socket.cast::<SOCKADDR_IN6>() };
+    let bytes = unsafe { *(&value.sin6_addr as *const _ as *const [u8; 16]) };
+    Some(Ipv6Addr::from(bytes))
+}
+
+#[cfg(windows)]
+fn sockaddr_inet_ipv6(socket: &windows_sys::Win32::Networking::WinSock::SOCKADDR_INET) -> Ipv6Addr {
+    let value = unsafe { &*(socket as *const _ as *const SOCKADDR_IN6) };
+    let bytes = unsafe { *(&value.sin6_addr as *const _ as *const [u8; 16]) };
+    Ipv6Addr::from(bytes)
+}
+
+#[cfg(windows)]
 fn wide_ptr_to_string(value: *mut u16) -> String {
     if value.is_null() {
         return String::new();
@@ -416,6 +556,7 @@ fn wide_ptr_to_string(value: *mut u16) -> String {
 
 #[cfg(windows)]
 fn observe_ipv4_routes(
+    adapters: &[AdapterObservation],
     managed_tun_index: Option<u32>,
     server_ip: Option<&str>,
 ) -> Result<(), String> {
@@ -440,6 +581,7 @@ fn observe_ipv4_routes(
     let count = unsafe { (*table).dwNumEntries as usize };
     let rows = unsafe { (*table).table.as_ptr() };
     let mut relevant = 0usize;
+    let mut by_interface = BTreeMap::<u32, (usize, usize, usize, Vec<String>)>::new();
     for offset in 0..count {
         let row = unsafe { &*rows.add(offset) };
         let destination = Ipv4Addr::from(row.dwForwardDest.to_ne_bytes());
@@ -448,6 +590,14 @@ fn observe_ipv4_routes(
         let is_default = row.dwForwardDest == 0 && row.dwForwardMask == 0;
         let is_tun = managed_tun_index == Some(row.dwForwardIfIndex);
         let is_server = server_ip.is_some_and(|server| destination == server && prefix == 32);
+        let summary = by_interface.entry(row.dwForwardIfIndex).or_default();
+        summary.0 += 1;
+        summary.1 += usize::from(is_default);
+        summary.2 += usize::from(is_server);
+        summary.3.push(format!(
+            "{destination}/{prefix}|{next_hop}|{}|{}",
+            row.dwForwardMetric1, row.dwForwardIfIndex
+        ));
         if is_default || is_tun || is_server {
             relevant += 1;
             println!(
@@ -457,11 +607,76 @@ fn observe_ipv4_routes(
         }
     }
     println!("relevant_ipv4_route_count={relevant}");
+    println!("routed_interface_count={}", by_interface.len());
+    for (index, (routes, defaults, server_bypasses, mut normalized_routes)) in by_interface {
+        normalized_routes.sort_unstable();
+        let fingerprint = sha256_lines(&normalized_routes);
+        let name = adapters
+            .iter()
+            .find(|adapter| adapter.index == index)
+            .map(|adapter| adapter.name.replace('\n', " "))
+            .unwrap_or_else(|| "UNKNOWN".to_owned());
+        println!(
+            "route_interface=if:{index} name:{name} routes:{routes} defaults:{defaults} managed_tun:{} server_bypasses:{server_bypasses} sha256:{fingerprint}",
+            managed_tun_index == Some(index)
+        );
+    }
     Ok(())
 }
 
 #[cfg(windows)]
-fn join_ipv4(values: &[Ipv4Addr]) -> String {
+fn observe_ipv6_route_interfaces(
+    adapters: &[AdapterObservation],
+    managed_tun_index: Option<u32>,
+) -> Result<(), String> {
+    let mut table: *mut MIB_IPFORWARD_TABLE2 = null_mut();
+    let result = unsafe { GetIpForwardTable2(AF_INET6 as u16, &mut table) };
+    if result != 0 {
+        return Err(format!(
+            "GetIpForwardTable2(AF_INET6) failed with Win32 error {result}"
+        ));
+    }
+    if table.is_null() {
+        return Err("GetIpForwardTable2(AF_INET6) returned a null table".to_owned());
+    }
+
+    let count = unsafe { (*table).NumEntries as usize };
+    let rows = unsafe { (*table).Table.as_ptr() };
+    let mut by_interface = BTreeMap::<u32, (usize, usize, Vec<String>)>::new();
+    for offset in 0..count {
+        let row = unsafe { &*rows.add(offset) };
+        let destination = sockaddr_inet_ipv6(&row.DestinationPrefix.Prefix);
+        let next_hop = sockaddr_inet_ipv6(&row.NextHop);
+        let prefix = row.DestinationPrefix.PrefixLength;
+        let summary = by_interface.entry(row.InterfaceIndex).or_default();
+        summary.0 += 1;
+        summary.1 += usize::from(prefix == 0);
+        summary.2.push(format!(
+            "{destination}/{prefix}|{next_hop}|{}|{}",
+            row.Metric, row.InterfaceIndex
+        ));
+    }
+    unsafe { FreeMibTable(table.cast()) };
+
+    println!("routed_interface_ipv6_count={}", by_interface.len());
+    for (index, (routes, defaults, mut normalized_routes)) in by_interface {
+        normalized_routes.sort_unstable();
+        let fingerprint = sha256_lines(&normalized_routes);
+        let name = adapters
+            .iter()
+            .find(|adapter| adapter.index == index)
+            .map(|adapter| adapter.name.replace('\n', " "))
+            .unwrap_or_else(|| "UNKNOWN".to_owned());
+        println!(
+            "route_interface_ipv6=if:{index} name:{name} routes:{routes} defaults:{defaults} managed_tun:{} sha256:{fingerprint}",
+            managed_tun_index == Some(index)
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn join_values<T: ToString>(values: &[T]) -> String {
     if values.is_empty() {
         "NONE".to_owned()
     } else {
@@ -471,6 +686,210 @@ fn join_ipv4(values: &[Ipv4Addr]) -> String {
             .collect::<Vec<_>>()
             .join(",")
     }
+}
+
+#[cfg(windows)]
+fn sha256_lines(lines: &[String]) -> String {
+    sha256_bytes(lines.join("\n").as_bytes())
+}
+
+#[cfg(windows)]
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+    digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(windows)]
+fn project_processes() -> BTreeMap<u32, String> {
+    let mut system = System::new_all();
+    system.refresh_all();
+    system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let name = process.name().to_string_lossy().to_ascii_lowercase();
+            if name.contains("sing-box")
+                || name.contains("edge-controller")
+                || name.contains("edge-console")
+            {
+                Some((
+                    pid.as_u32(),
+                    format!(
+                        "{}|{}",
+                        process.name().to_string_lossy().replace('\n', " "),
+                        process
+                            .exe()
+                            .map(|value| value.display().to_string())
+                            .unwrap_or_else(|| "UNKNOWN".to_owned())
+                            .replace('\n', " ")
+                    ),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn observe_project_listeners() -> Result<(), String> {
+    let projects = project_processes();
+    let mut observed = 0usize;
+    observed += observe_tcp4_listeners(&projects)?;
+    observed += observe_tcp6_listeners(&projects)?;
+    observed += observe_udp4_listeners(&projects)?;
+    observed += observe_udp6_listeners(&projects)?;
+    println!("project_listener_count={observed}");
+    Ok(())
+}
+
+#[cfg(windows)]
+fn query_extended_table(tcp: bool, family: u32, table_class: u32) -> Result<Vec<usize>, String> {
+    let mut bytes = 0u32;
+    let first = unsafe {
+        if tcp {
+            GetExtendedTcpTable(null_mut(), &mut bytes, 0, family, table_class as _, 0)
+        } else {
+            GetExtendedUdpTable(null_mut(), &mut bytes, 0, family, table_class as _, 0)
+        }
+    };
+    if first != ERROR_INSUFFICIENT_BUFFER || bytes == 0 {
+        return Err(format!(
+            "extended {} table size query failed with Win32 error {first}",
+            if tcp { "TCP" } else { "UDP" }
+        ));
+    }
+    let words = (bytes as usize).div_ceil(size_of::<usize>()).max(1);
+    let mut buffer = vec![0usize; words];
+    let result = unsafe {
+        if tcp {
+            GetExtendedTcpTable(
+                buffer.as_mut_ptr().cast::<c_void>(),
+                &mut bytes,
+                0,
+                family,
+                table_class as _,
+                0,
+            )
+        } else {
+            GetExtendedUdpTable(
+                buffer.as_mut_ptr().cast::<c_void>(),
+                &mut bytes,
+                0,
+                family,
+                table_class as _,
+                0,
+            )
+        }
+    };
+    if result != 0 {
+        return Err(format!(
+            "GetExtended{}Table failed with Win32 error {result}",
+            if tcp { "Tcp" } else { "Udp" }
+        ));
+    }
+    Ok(buffer)
+}
+
+#[cfg(windows)]
+fn windows_port(value: u32) -> u16 {
+    u16::from_be(value as u16)
+}
+
+#[cfg(windows)]
+fn observe_tcp4_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, String> {
+    let buffer = query_extended_table(true, AF_INET as u32, TCP_TABLE_OWNER_PID_LISTENER as u32)?;
+    let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
+    let count = unsafe { (*table).dwNumEntries as usize };
+    let rows = unsafe { (*table).table.as_ptr() };
+    let mut observed = 0usize;
+    for offset in 0..count {
+        let row = unsafe { &*rows.add(offset) };
+        if let Some(identity) = projects.get(&row.dwOwningPid) {
+            observed += 1;
+            println!(
+                "project_listener=proto:tcp4 local:{}:{} pid:{} process:{}",
+                Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes()),
+                windows_port(row.dwLocalPort),
+                row.dwOwningPid,
+                identity
+            );
+        }
+    }
+    Ok(observed)
+}
+
+#[cfg(windows)]
+fn observe_tcp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, String> {
+    let buffer = query_extended_table(true, AF_INET6 as u32, TCP_TABLE_OWNER_PID_LISTENER as u32)?;
+    let table = buffer.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
+    let count = unsafe { (*table).dwNumEntries as usize };
+    let rows = unsafe { (*table).table.as_ptr() };
+    let mut observed = 0usize;
+    for offset in 0..count {
+        let row = unsafe { &*rows.add(offset) };
+        if let Some(identity) = projects.get(&row.dwOwningPid) {
+            observed += 1;
+            println!(
+                "project_listener=proto:tcp6 local:[{}]:{} pid:{} process:{}",
+                Ipv6Addr::from(row.ucLocalAddr),
+                windows_port(row.dwLocalPort),
+                row.dwOwningPid,
+                identity
+            );
+        }
+    }
+    Ok(observed)
+}
+
+#[cfg(windows)]
+fn observe_udp4_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, String> {
+    let buffer = query_extended_table(false, AF_INET as u32, UDP_TABLE_OWNER_PID as u32)?;
+    let table = buffer.as_ptr().cast::<MIB_UDPTABLE_OWNER_PID>();
+    let count = unsafe { (*table).dwNumEntries as usize };
+    let rows = unsafe { (*table).table.as_ptr() };
+    let mut observed = 0usize;
+    for offset in 0..count {
+        let row = unsafe { &*rows.add(offset) };
+        if let Some(identity) = projects.get(&row.dwOwningPid) {
+            observed += 1;
+            println!(
+                "project_listener=proto:udp4 local:{}:{} pid:{} process:{}",
+                Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes()),
+                windows_port(row.dwLocalPort),
+                row.dwOwningPid,
+                identity
+            );
+        }
+    }
+    Ok(observed)
+}
+
+#[cfg(windows)]
+fn observe_udp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, String> {
+    let buffer = query_extended_table(false, AF_INET6 as u32, UDP_TABLE_OWNER_PID as u32)?;
+    let table = buffer.as_ptr().cast::<MIB_UDP6TABLE_OWNER_PID>();
+    let count = unsafe { (*table).dwNumEntries as usize };
+    let rows = unsafe { (*table).table.as_ptr() };
+    let mut observed = 0usize;
+    for offset in 0..count {
+        let row = unsafe { &*rows.add(offset) };
+        if let Some(identity) = projects.get(&row.dwOwningPid) {
+            observed += 1;
+            println!(
+                "project_listener=proto:udp6 local:[{}]:{} pid:{} process:{}",
+                Ipv6Addr::from(row.ucLocalAddr),
+                windows_port(row.dwLocalPort),
+                row.dwOwningPid,
+                identity
+            );
+        }
+    }
+    Ok(observed)
 }
 
 fn usage() -> String {

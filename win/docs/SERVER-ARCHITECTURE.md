@@ -15,7 +15,7 @@ GitHub self-hosted production-VM runner
       +-- fixed Docker Compose mutation
       +-- Bollard Docker observation/diagnostics
       '-- bounded host/network probes
-  -> Docker Engine / four-container dataplane
+  -> Docker Engine / four project-owned container identities
 ```
 
 The self-hosted runner is outbound transport only. It has no provider credentials, generic root, Docker socket or plaintext application-secret authority.
@@ -43,14 +43,16 @@ deployment or a durable secret store.
 
 ## Current dataplane services
 
-Canonical `win/vultr-waw/stack/docker-compose.yml` currently defines:
+Canonical `win/vultr-waw/stack/docker-compose.yml` currently defines four **project-owned** container identities:
 
-1. `warp-egress` — Cloudflare WARP egress;
-2. `line1-gateway` — profile `tunnel`, direct/WARP VLESS + Hysteria gateway;
-3. `line2-proxy` — authenticated remote proxy services;
-4. `cloudflare-mesh` — profile `mesh`, Cloudflare Mesh connector/egress.
+1. `warp-egress` — shared VM-side Cloudflare WARP egress for the WARP variants of Lines 1 and 2;
+2. `line1-gateway` — profile `tunnel`, direct/WARP VLESS + Hysteria gateway for Windows Line 1;
+3. `line2-proxy` — one sing-box process exposing all six authenticated HTTP/SOCKS5/HTTPS direct/WARP Line 2 inbounds;
+4. `cloudflare-mesh` — profile `mesh`, independent Cloudflare Mesh connector/egress for external Android Line 3, with its own `/dev/net/tun` and Mesh state.
 
-Profiles allow bounded composition without creating separate host control planes.
+`BootstrapFull` starts the first three application containers; the existing typed Mesh lifecycle converges the fourth because its node/token/provider identity is independent. `cloudflare-mesh` does not use the shared `warp-egress` container. Windows MANAGED_TUN is a Windows process/datapath and does not add another VM container.
+
+Profiles allow bounded composition without creating separate host control planes. Do not require that the entire Docker host contain exactly four containers: unrelated containers are foreign/unknown and must not be mutated merely to make a host-wide count match.
 
 Project-owned OCI images are pulled by exact digest from the accepted ReleaseSet. No normal
 production image build occurs on the VM.
