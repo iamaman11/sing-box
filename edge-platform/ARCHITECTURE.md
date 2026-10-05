@@ -251,31 +251,27 @@ sink before it becomes an acceptance metric.
 
 ### Product traffic planes
 
-The canonical VM exposes two independent client-facing traffic planes. Their acceptance and configuration
-must remain independently testable even though both WARP variants share one VM-side WARP egress service.
+The canonical VM has three independent product traffic lines composed from four project-owned container identities.
+Co-location and shared primitives do not merge their functional ownership.
 
-**Line 1 — tunnel transport plane.** The VM `line1-gateway` exposes Hysteria2 and VLESS Reality in
-direct and WARP variants. Windows canonical sing-box consumes these four endpoints. A direct endpoint
-leaves through the VM public uplink; a WARP endpoint is forwarded on the VM through the shared
-`warp-egress` service. Windows `PROXY_ONLY` versus `MANAGED_TUN` changes only the local Windows
-datapath around this Line 1 transport plane.
+1. `vultr-warp-egress` — shared VM-side Cloudflare WARP egress for WARP variants of Lines 1 and 2 only.
+2. `vultr-line1-gateway` — Line 1 Hysteria2/VLESS Reality direct/WARP tunnel ingress.
+3. `vultr-line2-proxy` — Line 2 six authenticated HTTP/SOCKS5/HTTPS direct/WARP proxy inbounds.
+4. `vultr-cloudflare-mesh` — Line 3 Cloudflare Mesh connector/egress for external Android Cloudflare One Client.
 
-**Line 2 — authenticated application proxy plane.** One VM `line2-proxy` sing-box process owns six
-public inbounds on the canonical production hostname: direct HTTP/SOCKS5/HTTPS-proxy and WARP
-HTTP/SOCKS5/HTTPS-proxy. The three WARP inbounds use the same VM `warp-egress` service; the three direct
-inbounds use the VM direct outbound. Line 2 requires no Windows TUN. Its authentication is the independent
-`line2-proxy-auth` credential class and must remain rotatable/testable without changing Line 1 or the
-Windows datapath.
+Acceptance identifies these exact project-owned containers/images; it must not require that the entire Docker host contain only four containers. Additional Docker objects remain foreign/unknown until separately proven.
 
-The Windows Cloudflare WARP client/service/adapter is not either product plane. It is a foreign shared-host
-network owner. The sing-box project may observe it when needed to prove non-interference and may render
-an explicit bypass for its process/control endpoints to avoid a managed-TUN loop, but it must not adopt,
-configure, stop, clean up or depend on that Windows WARP client.
+**Line 1 — tunnel transport plane.** The VM `line1-gateway` exposes Hysteria2 and VLESS Reality in direct and WARP variants. Windows canonical sing-box consumes these four endpoints. Direct leaves via the VM public uplink; WARP variants use `warp-egress`. Windows `PROXY_ONLY` versus `MANAGED_TUN` changes only the local Windows datapath around this Line 1 plane.
 
-Legacy local resolver/interface-DNS ownership is also distinct from authoritative Cloudflare DNS. A stale
-legacy resolver address on a surviving interface is a Windows handoff failure, not a reason to mutate the
-shared `alegria.by` zone or the dedicated Cloudflare application account.
+**Line 2 — authenticated application proxy plane.** One VM `line2-proxy` process owns six public inbounds on the canonical production hostname: direct HTTP/SOCKS5/HTTPS-proxy and WARP HTTP/SOCKS5/HTTPS-proxy. The three WARP inbounds use `warp-egress`; the three direct inbounds use the VM direct outbound. Line 2 requires no Windows TUN. Its authentication is the independent `line2-proxy-auth` credential class and remains rotatable/testable without changing Line 1 or Windows datapath.
 
+**Line 3 — Android Cloudflare Mesh plane.** The VM `cloudflare-mesh` container is a separate Cloudflare Mesh/WARP-Connector runtime with its own `/dev/net/tun`, identity-scoped Mesh state/token and MASQUE/WARP connection. Android uses Cloudflare One Client in Traffic and DNS mode through Cloudflare Zero Trust/Mesh to this VM connector. Line 3 exposes no public proxy listener merely for Android and does not use Windows TUN, Line 1/2 gateways or the shared `warp-egress`. Its provider node/route/token/runtime lifecycle remains independently verifiable and removable.
+
+`BootstrapFull` owns `warp-egress + line1-gateway + line2-proxy`; the existing typed Mesh lifecycle independently converges `cloudflare-mesh` because Mesh provider identity/token/recovery is a different resource class. This remains one local VM owner and one Docker Compose file, not a second host control plane.
+
+The Windows Cloudflare WARP client/service/adapter is not any of these VM traffic mechanisms. It is a foreign shared-host network owner. The sing-box project may observe it when needed to prove non-interference and may render an explicit bypass for its process/control endpoints to avoid a managed-TUN loop, but it must not adopt, configure, stop, clean up or depend on that Windows WARP client.
+
+Legacy local resolver/interface-DNS ownership is also distinct from authoritative Cloudflare DNS and from Line 3 Mesh DNS. A stale legacy resolver address on a surviving interface is a Windows handoff failure, not a reason to mutate the shared `alegria.by` zone, Line 3 Mesh, or the dedicated Cloudflare application account.
 
 ## 2. Edge Control Plane
 
