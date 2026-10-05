@@ -27,6 +27,9 @@ const WARP_CONTROL_ENDPOINTS: &[&str] = &[
     "162.159.137.105/32",
     "162.159.138.105/32",
 ];
+// Foreign Cloudflare One Client owns this Mesh/device route on the shared Windows host.
+// MANAGED_TUN must route around it; sing-box never adopts or mutates CloudflareWARP.
+const FOREIGN_CLOUDFLARE_MESH_CIDRS: &[&str] = &["100.96.0.0/12"];
 const LOOPBACK_CIDRS: &[&str] = &["127.0.0.0/8", "::1/128"];
 const EXPECTED_OUTBOUND_TAGS: &[&str] = &[
     "auto-direct-tunnel",
@@ -626,6 +629,7 @@ fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
 
     let mut required = WARP_CONTROL_ENDPOINTS
         .iter()
+        .chain(FOREIGN_CLOUDFLARE_MESH_CIDRS.iter())
         .map(|value| (*value).to_owned())
         .collect::<Vec<_>>();
     if let Some(server_ip) = server_ip.filter(|value| !value.trim().is_empty()) {
@@ -1944,6 +1948,7 @@ mod tests {
             .unwrap();
         for required in [
             "203.0.113.10/32",
+            "100.96.0.0/12",
             "162.159.197.2/32",
             "162.159.197.3/32",
             "162.159.197.4/32",
