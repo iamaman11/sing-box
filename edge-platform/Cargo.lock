@@ -357,9 +357,11 @@ dependencies = [
  "clap",
  "edge-shared-types",
  "edge-singbox",
+ "ring",
  "rusqlite",
  "tokio",
  "tonic",
+ "windows 0.61.3",
  "windows-service",
 ]
 
@@ -436,7 +438,6 @@ dependencies = [
  "prost",
  "ring",
  "sysinfo",
- "windows 0.61.3",
  "windows-service",
  "windows-sys 0.61.2",
 ]
