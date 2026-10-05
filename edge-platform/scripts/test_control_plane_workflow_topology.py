@@ -173,7 +173,7 @@ def main() -> None:
         and windows_physical.count("privileged-runtime-evidence") == 1
         and windows_physical.count("External sing-box owner changed") == 1
         and "EDGE_EXTERNAL_PIDS_BEFORE" in windows_physical
-        and "Expected exactly one preserved external sing-box owner" in windows_physical
+        and "Expected at most one preserved external sing-box owner" in windows_physical
         and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "$env:EDGE_OPERATION -ne 'diagnose'" in windows_physical
         and "managed_tun_present" in windows_physical
