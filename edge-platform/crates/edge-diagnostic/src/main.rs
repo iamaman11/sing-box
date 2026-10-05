@@ -20,11 +20,11 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 #[cfg(windows)]
-use windows::Win32::System::TaskScheduler::{CLSID_TaskScheduler, ITaskService};
+use windows::Win32::System::TaskScheduler::ITaskService;
 #[cfg(windows)]
 use windows::Win32::System::Variant::VARIANT;
 #[cfg(windows)]
-use windows::core::{BSTR, IUnknown};
+use windows::core::{BSTR, GUID, IUnknown};
 #[cfg(windows)]
 use windows_service::service::ServiceAccess;
 #[cfg(windows)]
@@ -160,9 +160,11 @@ fn observe_known_scheduled_tasks() -> Result<(), String> {
     }
     let _guard = ComGuard;
 
+    let task_scheduler_clsid =
+        GUID::from_u128(0x0f87369f_a4e5_4cfc_bd3e_73e6154572dd);
     let service: ITaskService = unsafe {
         CoCreateInstance(
-            &CLSID_TaskScheduler,
+            &task_scheduler_clsid,
             None::<&IUnknown>,
             CLSCTX_INPROC_SERVER,
         )
@@ -172,7 +174,7 @@ fn observe_known_scheduled_tasks() -> Result<(), String> {
     let empty = VARIANT::default();
     unsafe { service.Connect(&empty, &empty, &empty, &empty) }
         .map_err(|err| format!("failed to connect Task Scheduler service: {err}"))?;
-    let root = unsafe { service.GetFolder(&BSTR::from(r"\")) }
+    let root = unsafe { service.GetFolder(&BSTR::from("\")) }
         .map_err(|err| format!("failed to open Task Scheduler root folder: {err}"))?;
 
     for (role, name) in HANDOFF_TASKS {
