@@ -8,9 +8,9 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 #[cfg(windows)]
 use std::collections::BTreeMap;
 #[cfg(windows)]
-use std::mem::size_of;
-#[cfg(windows)]
 use std::ffi::c_void;
+#[cfg(windows)]
+use std::mem::size_of;
 #[cfg(windows)]
 use std::net::{Ipv4Addr, Ipv6Addr};
 #[cfg(windows)]
@@ -532,9 +532,7 @@ fn sockaddr_ipv6(socket: *mut SOCKADDR) -> Option<Ipv6Addr> {
 }
 
 #[cfg(windows)]
-fn sockaddr_inet_ipv6(
-    socket: &windows_sys::Win32::Networking::WinSock::SOCKADDR_INET,
-) -> Ipv6Addr {
+fn sockaddr_inet_ipv6(socket: &windows_sys::Win32::Networking::WinSock::SOCKADDR_INET) -> Ipv6Addr {
     let value = unsafe { &*(socket as *const _ as *const SOCKADDR_IN6) };
     let bytes = unsafe { *(&value.sin6_addr as *const _ as *const [u8; 16]) };
     Ipv6Addr::from(bytes)
@@ -746,31 +744,13 @@ fn observe_project_listeners() -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn query_extended_table(
-    tcp: bool,
-    family: u32,
-    table_class: u32,
-) -> Result<Vec<usize>, String> {
+fn query_extended_table(tcp: bool, family: u32, table_class: u32) -> Result<Vec<usize>, String> {
     let mut bytes = 0u32;
     let first = unsafe {
         if tcp {
-            GetExtendedTcpTable(
-                null_mut(),
-                &mut bytes,
-                0,
-                family,
-                table_class as _,
-                0,
-            )
+            GetExtendedTcpTable(null_mut(), &mut bytes, 0, family, table_class as _, 0)
         } else {
-            GetExtendedUdpTable(
-                null_mut(),
-                &mut bytes,
-                0,
-                family,
-                table_class as _,
-                0,
-            )
+            GetExtendedUdpTable(null_mut(), &mut bytes, 0, family, table_class as _, 0)
         }
     };
     if first != ERROR_INSUFFICIENT_BUFFER || bytes == 0 {
@@ -818,11 +798,7 @@ fn windows_port(value: u32) -> u16 {
 
 #[cfg(windows)]
 fn observe_tcp4_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, String> {
-    let buffer = query_extended_table(
-        true,
-        AF_INET as u32,
-        TCP_TABLE_OWNER_PID_LISTENER as u32,
-    )?;
+    let buffer = query_extended_table(true, AF_INET as u32, TCP_TABLE_OWNER_PID_LISTENER as u32)?;
     let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
     let count = unsafe { (*table).dwNumEntries as usize };
     let rows = unsafe { (*table).table.as_ptr() };
@@ -845,11 +821,7 @@ fn observe_tcp4_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, Str
 
 #[cfg(windows)]
 fn observe_tcp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, String> {
-    let buffer = query_extended_table(
-        true,
-        AF_INET6 as u32,
-        TCP_TABLE_OWNER_PID_LISTENER as u32,
-    )?;
+    let buffer = query_extended_table(true, AF_INET6 as u32, TCP_TABLE_OWNER_PID_LISTENER as u32)?;
     let table = buffer.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
     let count = unsafe { (*table).dwNumEntries as usize };
     let rows = unsafe { (*table).table.as_ptr() };
