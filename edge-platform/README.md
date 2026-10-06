@@ -160,9 +160,11 @@ C:\sing-box-runner
 Accepted ownership:
 - SCM service: `EdgePlatformController`;
 - service identity: `NT SERVICE\EdgePlatformController`; in `MANAGED_TUN` this exact principal has local Administrators membership for Wintun/TUN ownership while remaining distinct from LocalSystem;
+- the controller enables its existing `SeDebugPrivilege` only while spawning the MANAGED_TUN sing-box child, immediately restores the controller token, and relies on the child token for process-name loop prevention;
 - GitHub runner: NetworkService transport only;
 - SYSTEM privileged bridge: `EdgePlatformPrivilegedDispatch`;
-- runner has no plaintext/decrypted application-secret authority.
+- runner has no plaintext/decrypted application-secret authority;
+- Windows Cloudflare One Client remains foreign/no-touch even when it mirrors the active sing-box TUN resolver onto its own adapter.
 
 The console is not a fallback startup owner. The external pre-existing Windows sing-box is not
 adopted as LKG, rollback authority or managed state before the final managed-TUN cutover.

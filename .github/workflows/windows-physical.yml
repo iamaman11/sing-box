@@ -347,19 +347,34 @@ jobs:
             throw 'Managed TUN captured the foreign Mesh/device route'
           }
 
+          $warpAdapter = Get-NetAdapter -Name 'CloudflareWARP' -ErrorAction Stop
+          if ([string]$warpAdapter.Status -cne 'Up') {
+            throw "Foreign CloudflareWARP adapter is not Up: $($warpAdapter.Status)"
+          }
           $warpDns = @(
             Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop |
               ForEach-Object ServerAddresses
           )
-          if ($warpDns -contains '172.31.255.2' -or $warpDns -contains '172.19.0.2') {
-            throw "Foreign CloudflareWARP carries a sing-box TUN-local DNS address: $($warpDns -join ',')"
+          if ($warpDns -contains '172.31.255.2') {
+            throw "Foreign CloudflareWARP still carries retired legacy TUN DNS 172.31.255.2: $($warpDns -join ',')"
+          }
+
+          $runtimeStderr = Join-Path $env:EDGE_INSTALL_ROOT 'runtime\sing-box.stderr.log'
+          if (-not (Test-Path -LiteralPath $runtimeStderr -PathType Leaf)) {
+            throw 'Managed sing-box stderr log is missing after runtime restart'
+          }
+          $freshRuntimeErrors = Get-Content -Raw -LiteralPath $runtimeStderr
+          if ($freshRuntimeErrors -match 'failed to search process:\s*Access is denied') {
+            throw 'Managed sing-box process lookup still reports Access is denied after fresh restart'
           }
 
           Write-Host 'managed_tun_ordinary_dns=PASS'
           Write-Host 'managed_tun_ordinary_https=PASS'
           Write-Host 'managed_tun_local_proxy=PASS'
+          Write-Host 'managed_tun_process_search_access_denied=ABSENT'
           Write-Host 'foreign_mesh_route_owner=CloudflareWARP'
           Write-Host "foreign_cloudflarewarp_dns=$($warpDns -join ',')"
+          Write-Host "foreign_cloudflarewarp_tun_dns_repin=$($warpDns -contains '172.19.0.2')"
 
       - name: Fail closed to exact previous release after MANAGED_TUN verification failure
         if: ${{ failure() && (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
@@ -433,6 +448,17 @@ jobs:
           if ($finalMode -ceq 'ProxyOnly' -and $finalTun -cne 'false') { throw 'Final ProxyOnly state owns managed TUN' }
           if ($finalMode -ceq 'ManagedTun' -and $finalTun -cne 'true') { throw 'Final ManagedTun state is missing managed TUN' }
           if ($finalMode -notin @('ProxyOnly','ManagedTun')) { throw "Unsupported final datapath mode: $finalMode" }
+          if ($env:EDGE_OPERATION -eq 'rollback' -and $finalMode -ceq 'ProxyOnly') {
+            $warpDnsAfterTunRemoval = @(
+              Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop |
+                ForEach-Object ServerAddresses
+            )
+            if ($warpDnsAfterTunRemoval -contains '172.19.0.2') {
+              throw "Foreign CloudflareWARP still depends on removed managed TUN DNS after ProxyOnly rollback: $($warpDnsAfterTunRemoval -join ',')"
+            }
+            Write-Host "foreign_cloudflarewarp_dns_after_tun_removal=$($warpDnsAfterTunRemoval -join ',')"
+            Write-Host 'foreign_cloudflarewarp_tun_dns_cleanup=PASS'
+          }
           $externalPids = @(
             $doctor | ForEach-Object {
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }

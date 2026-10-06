@@ -766,8 +766,11 @@ Current Stage-4B implementation state after the closed 4B.1 code/proxy-only life
    own embedded canonical desired state before startup. No duplicated mode marker participates in rollback.
 5. For the pinned sing-box line, Windows TUN routing/DNS is owned by sing-box itself: TUN + `auto_route`,
    `strict_route`, native/hijack DNS, existing `route.auto_detect_interface`, exact endpoint route
-   exclusions and stable DIRECT loop-prevention rules. Linux-only `auto_redirect` is not a Windows
-   mechanism and must not be introduced here.
+   exclusions and stable DIRECT loop-prevention rules. The `warp-svc.exe -> direct` process rule remains
+   a loop-prevention boundary, not ownership of CloudflareWARP. For MANAGED_TUN child creation the controller
+   may enable its already-present `SeDebugPrivilege` only for the sing-box spawn, then must restore the
+   controller token immediately; the child inherits the enabled privilege needed for Windows process-name
+   lookup. Linux-only `auto_redirect` is not a Windows mechanism and must not be introduced here.
 6. Extend the existing `edge-diagnostic` with native read-only Windows network observation sufficient to
    prove the exact managed TUN adapter, addresses, routes and per-interface DNS. Prefer Win32/IP Helper
    APIs; do not create WMI/PowerShell parsing or a resident observer merely for acceptance.
@@ -788,9 +791,13 @@ Current Stage-4B implementation state after the closed 4B.1 code/proxy-only life
    in the local built-in Administrators group required by the Windows TUN/Wintun path. Do not switch the
    controller identity to LocalSystem and do not create a second privileged TUN owner.
 10. The old PowerShell DNS reset remains recovery-only while it has a real consumer. New managed-TUN DNS
-   must not depend on it. If failed-runtime cleanup proves a host DNS reset is still necessary, implement
-   that mutation inside the existing local-runtime boundary with native Windows APIs and exact-interface
-   ownership; otherwise delete the obsolete reset in Stage 4C.
+   must not depend on it. Cloudflare One Client remains a foreign owner: if `warp-svc` observes the managed
+   TUN resolver and re-pins that address onto its own `CloudflareWARP` adapter, the sing-box project records
+   that foreign state but does not reset or rewrite it. Exact rollback/removal of `sing-box-tun` must prove
+   that the foreign adapter no longer depends on the removed TUN resolver. If failed-runtime cleanup proves a
+   project-owned host DNS reset is still necessary, implement that mutation inside the existing local-runtime
+   boundary with native Windows APIs and exact-interface ownership; otherwise delete the obsolete reset in
+   Stage 4C.
 
 #### Stage 4B execution gates
 
