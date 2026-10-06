@@ -21,7 +21,15 @@ use edge_singbox::{render_windows_config, sync_local_config};
 use sysinfo::{Pid, Signal, System};
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_BUFFER_OVERFLOW, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, GetLastError,
+    SetLastError,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Security::{
+    AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+};
 #[cfg(windows)]
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     ConvertInterfaceLuidToIndex, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
@@ -30,7 +38,9 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW};
+use windows_sys::Win32::System::Threading::{
+    CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, GetCurrentProcess, OpenProcessToken,
+};
 
 const STARTUP_OBSERVATION_SECS: u64 = 10;
 const STARTUP_OBSERVATION_INTERVAL_MS: u64 = 500;
@@ -487,6 +497,110 @@ pub fn start_local_runtime(
     })
 }
 
+#[cfg(windows)]
+fn managed_tun_debug_privilege_required() -> Result<bool, String> {
+    let desired = canonical_production_desired_state()?;
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
+    Ok(mode == WindowsDatapathMode::ManagedTun)
+}
+
+#[cfg(windows)]
+fn spawn_with_temporary_debug_privilege(command: &mut Command) -> Result<Child, String> {
+    unsafe {
+        let mut token = null_mut();
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        ) == 0
+        {
+            return Err(format!(
+                "failed to open controller token for sing-box process lookup privilege: {}",
+                GetLastError()
+            ));
+        }
+
+        let result = (|| -> Result<Child, String> {
+            let privilege_name = "SeDebugPrivilege"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            let mut luid = std::mem::zeroed();
+            if LookupPrivilegeValueW(null_mut(), privilege_name.as_ptr(), &mut luid) == 0 {
+                return Err(format!(
+                    "failed to resolve SeDebugPrivilege for managed sing-box child: {}",
+                    GetLastError()
+                ));
+            }
+
+            let requested = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+            let mut previous: TOKEN_PRIVILEGES = std::mem::zeroed();
+            let mut previous_size = 0u32;
+            SetLastError(ERROR_SUCCESS);
+            if AdjustTokenPrivileges(
+                token,
+                0,
+                &requested,
+                size_of::<TOKEN_PRIVILEGES>() as u32,
+                &mut previous,
+                &mut previous_size,
+            ) == 0
+            {
+                return Err(format!(
+                    "failed to enable SeDebugPrivilege for managed sing-box child: {}",
+                    GetLastError()
+                ));
+            }
+            let enable_error = GetLastError();
+            if enable_error == ERROR_NOT_ALL_ASSIGNED {
+                return Err(
+                    "controller token does not contain SeDebugPrivilege required by managed sing-box process routing"
+                        .to_owned(),
+                );
+            }
+            if enable_error != ERROR_SUCCESS {
+                return Err(format!(
+                    "unexpected SeDebugPrivilege enable result for managed sing-box child: {enable_error}"
+                ));
+            }
+
+            let mut child = command
+                .spawn()
+                .map_err(|err| format!("failed to start sing-box: {err}"))?;
+
+            SetLastError(ERROR_SUCCESS);
+            let restored = AdjustTokenPrivileges(
+                token,
+                0,
+                &previous,
+                0,
+                null_mut(),
+                null_mut(),
+            );
+            let restore_error = GetLastError();
+            if restored == 0 || restore_error != ERROR_SUCCESS {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "managed sing-box child was terminated because controller SeDebugPrivilege restoration failed: result={restored} error={restore_error}"
+                ));
+            }
+
+            Ok(child)
+        })();
+
+        CloseHandle(token);
+        result
+    }
+}
+
 fn launch_singbox(
     paths: &LocalRuntimePaths,
     visible_window: bool,
@@ -506,6 +620,14 @@ fn launch_singbox(
 
     #[cfg(not(windows))]
     attach_runtime_logs(&mut command, &paths.runtime_root);
+
+    #[cfg(windows)]
+    {
+        if managed_tun_debug_privilege_required()? {
+            return spawn_with_temporary_debug_privilege(&mut command)
+                .map_err(with_dns_guard_on_failure);
+        }
+    }
 
     command
         .spawn()
