@@ -19,9 +19,6 @@ jobs:
       accepted_revision: ${{ steps.auth.outputs.accepted_revision }}
       operation: ${{ steps.auth.outputs.operation }}
       release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
-      release_tag: ${{ steps.release.outputs.release_tag }}
-      windows_artifact_sha256: ${{ steps.release.outputs.windows_artifact_sha256 }}
-      windows_diagnostic_sha256: ${{ steps.release.outputs.windows_diagnostic_sha256 }}
       expected_mode: ${{ steps.mode.outputs.expected_mode }}
     steps:
       - name: Authorize fixed command on protected main
@@ -84,9 +81,6 @@ jobs:
           edge-platform/scripts/resolve_durable_release.sh
           . "${OUTPUT_DIR}/resolved.env"
           printf 'release_set_sha256=%s\n' "$EDGE_RELEASE_SET_SHA256" >> "$GITHUB_OUTPUT"
-          printf 'release_tag=%s\n' "$EDGE_RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          printf 'windows_artifact_sha256=%s\n' "$EDGE_WINDOWS_ARTIFACT_SHA256" >> "$GITHUB_OUTPUT"
-          printf 'windows_diagnostic_sha256=%s\n' "$EDGE_WINDOWS_DIAGNOSTIC_SHA256" >> "$GITHUB_OUTPUT"
 
   physical:
     name: Windows / ${{ needs.resolve.outputs.operation }}
@@ -106,10 +100,6 @@ jobs:
       EDGE_CONTROLLER_ENDPOINT: http://127.0.0.1:51051
       EDGE_ACCEPTED_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
       EDGE_RELEASE_SET_SHA256: ${{ needs.resolve.outputs.release_set_sha256 }}
-      EDGE_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
-      EDGE_WINDOWS_ARTIFACT_SHA256: ${{ needs.resolve.outputs.windows_artifact_sha256 }}
-      EDGE_WINDOWS_DIAGNOSTIC_SHA256: ${{ needs.resolve.outputs.windows_diagnostic_sha256 }}
-      EDGE_REPOSITORY: ${{ github.repository }}
       EDGE_OPERATION: ${{ needs.resolve.outputs.operation }}
       EDGE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
     steps:
