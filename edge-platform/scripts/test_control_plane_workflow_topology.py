@@ -180,7 +180,11 @@ def main() -> None:
         and "Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence" in windows_physical
         and "Fail closed to exact previous release after MANAGED_TUN verification failure" in windows_physical
         and "Recovering a partial ManagedTun activation with no managed TUN present" in windows_physical
-        and "Stable rollback console is missing" in windows_physical
+        and "Exact immutable rollback console is unavailable" in windows_physical
+        and "Stable rollback console is missing" not in windows_physical
+        and "runtime_server_ip" in windows_diagnostic
+        and "managed_tun_server_bypass=PASS" in windows_physical
+        and "Find-NetRoute -RemoteIPAddress $serverIp" in windows_physical
         and "managed_tun_process_search_access_denied=ABSENT" in windows_physical
         and "foreign_cloudflarewarp_tun_dns_cleanup=PASS" in windows_physical
         and "Set-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP'" not in windows_physical
