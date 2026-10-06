@@ -807,12 +807,13 @@ def main() -> None:
         and "privileged-rollback-previous" in windows_physical
         and "EDGE_CURRENT_CONSOLE" in windows_physical
         and "edge-diagnostic.exe" in windows_physical
-        and "EDGE_RELEASE_TAG" in windows_physical
-        and "EDGE_WINDOWS_ARTIFACT_SHA256" in windows_physical
-        and "EDGE_WINDOWS_DIAGNOSTIC_SHA256" in windows_physical
-        and "edge-target-diagnostic-" in windows_physical
-        and "Target Windows artifact digest mismatch" in windows_physical
-        and "Target Windows diagnostic digest mismatch" in windows_physical
+        and "EDGE_RELEASE_TAG" not in windows_physical
+        and "EDGE_WINDOWS_ARTIFACT_SHA256" not in windows_physical
+        and "EDGE_WINDOWS_DIAGNOSTIC_SHA256" not in windows_physical
+        and "EDGE_REPOSITORY" not in windows_physical
+        and "edge-target-diagnostic-" not in windows_physical
+        and "Target Windows artifact digest mismatch" not in windows_physical
+        and "Target Windows diagnostic digest mismatch" not in windows_physical
         and "EdgePlatformController" in windows_physical
         and "NT SERVICE\\EdgePlatformController" in windows_physical
         and "service.PathName" in windows_physical
