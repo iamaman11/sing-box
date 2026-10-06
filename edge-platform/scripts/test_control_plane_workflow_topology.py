@@ -181,6 +181,9 @@ def main() -> None:
         and "Fail closed to exact previous release after MANAGED_TUN verification failure" in windows_physical
         and "Recovering a partial ManagedTun activation with no managed TUN present" in windows_physical
         and "Stable rollback console is missing" in windows_physical
+        and "managed_tun_process_search_access_denied=ABSENT" in windows_physical
+        and "foreign_cloudflarewarp_tun_dns_cleanup=PASS" in windows_physical
+        and "Set-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP'" not in windows_physical
         and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "$env:EDGE_OPERATION -ne 'diagnose'" in windows_physical
         and "managed_tun_present" in windows_physical
@@ -200,6 +203,8 @@ def main() -> None:
         and "require_supported_reinstall_authority" in windows_console
         and "require_proxy_only_reinstall_authority" not in windows_console
         and "sync_stable_windows_release_tools" in windows_console
+        and "spawn_with_temporary_debug_privilege" in edge_local_runtime
+        and "SeDebugPrivilege" in edge_local_runtime
         and "ProxyOnlySmoke" not in runtime_proto
         and "run_proxy_only_egress_smoke" not in edge_local_runtime,
         "Windows repair/rollback must use bounded immutable slots, preserve previous.pb, support both accepted datapath modes and keep stable operator tools aligned with exact activation",
