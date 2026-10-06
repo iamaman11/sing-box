@@ -1641,6 +1641,10 @@ fn activate_privileged_release(
         retarget_privileged_task(install_root, &activation.console_path)?;
         Ok(())
     };
+    let restore_verified_owner = |activation: &WindowsActivationState| -> Result<(), String> {
+        sync_stable_windows_release_tools(install_root, activation)?;
+        reconcile_current_owner(activation)
+    };
 
     if !output.status.success() {
         if force_rematerialize {
@@ -1671,7 +1675,7 @@ fn activate_privileged_release(
             }
 
             if let Some(before) = before_activation.as_ref() {
-                reconcile_current_owner(before)?;
+                restore_verified_owner(before)?;
             }
             return Err(format!(
                 "protected Windows reinstall failed with exit code {}; {}",
@@ -1692,6 +1696,9 @@ fn activate_privileged_release(
             ));
         }
 
+        if let Some(before) = before_activation.as_ref() {
+            restore_verified_owner(before)?;
+        }
         return Err(format!(
             "protected Windows installer failed with exit code {}; {}",
             output.status.code().unwrap_or(-1),
