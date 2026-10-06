@@ -112,7 +112,6 @@ jobs:
       EDGE_REPOSITORY: ${{ github.repository }}
       EDGE_OPERATION: ${{ needs.resolve.outputs.operation }}
       EDGE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
-      EDGE_MUTATION_COMPLETED: NO
     steps:
       - name: Assert isolated root and observe pre-state
         shell: powershell
@@ -209,7 +208,6 @@ jobs:
             default { throw "Unsupported operation: $env:EDGE_OPERATION" }
           }
           if ($LASTEXITCODE -ne 0) { throw "Lifecycle mutation failed: $LASTEXITCODE" }
-          "EDGE_MUTATION_COMPLETED=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
 
       - name: Verify exact authority and SCM handoff
         shell: powershell
