@@ -571,9 +571,7 @@ fn spawn_with_temporary_debug_privilege(command: &mut Command) -> Result<Child, 
                 ));
             }
 
-            let mut child = command
-                .spawn()
-                .map_err(|err| format!("failed to start sing-box: {err}"))?;
+            let child_result = command.spawn();
 
             SetLastError(ERROR_SUCCESS);
             let restored = AdjustTokenPrivileges(
@@ -586,14 +584,16 @@ fn spawn_with_temporary_debug_privilege(command: &mut Command) -> Result<Child, 
             );
             let restore_error = GetLastError();
             if restored == 0 || restore_error != ERROR_SUCCESS {
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Ok(mut child) = child_result {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
                 return Err(format!(
-                    "managed sing-box child was terminated because controller SeDebugPrivilege restoration failed: result={restored} error={restore_error}"
+                    "controller SeDebugPrivilege restoration failed after sing-box spawn attempt: result={restored} error={restore_error}"
                 ));
             }
 
-            Ok(child)
+            child_result.map_err(|err| format!("failed to start sing-box: {err}"))
         })();
 
         CloseHandle(token);
