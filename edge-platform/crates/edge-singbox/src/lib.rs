@@ -1861,7 +1861,9 @@ mod tests {
 
     #[test]
     fn stage2_renderer_is_proxy_only_and_uses_dedicated_ports() {
-        let rendered = render_windows_config(&stage2_runtime_state()).unwrap();
+        let rendered =
+            render_windows_config_for_mode(&stage2_runtime_state(), WindowsDatapathMode::ProxyOnly)
+                .unwrap();
         let config: Value = serde_json::from_slice(&rendered).unwrap();
         let inbounds = config.get("inbounds").and_then(Value::as_array).unwrap();
 
