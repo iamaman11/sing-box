@@ -183,6 +183,7 @@ def main() -> None:
         and "Exact immutable rollback console is unavailable" in windows_physical
         and "Stable rollback console is missing" not in windows_physical
         and "runtime_server_ip" not in windows_diagnostic
+        and "server_bypass" not in windows_diagnostic
         and "state\\secrets\\runtime-state.pb" not in windows_diagnostic
         and "Typed controller status failed" in windows_physical
         and "^Server IP\\s+:\\s+" in windows_physical
