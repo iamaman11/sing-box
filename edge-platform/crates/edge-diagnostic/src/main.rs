@@ -1,6 +1,6 @@
 use edge_shared_types::{
     WindowsDatapathMode, canonical_production_desired_state, decode_windows_activation_state,
-    decode_windows_runtime_state, verify_windows_activation_files,
+    verify_windows_activation_files,
 };
 use std::path::{Path, PathBuf};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -315,28 +315,8 @@ fn observe_windows_network(
         }
     }
 
-    let install_root = state_path
-        .parent()
-        .ok_or_else(|| "activation state has no install-root parent".to_owned())?;
-    let runtime_state_path = install_root
-        .join("state")
-        .join("secrets")
-        .join("runtime-state.pb");
-    let server_ip = if runtime_state_path.is_file() {
-        let bytes = std::fs::read(&runtime_state_path).map_err(|err| {
-            format!("failed to read Windows runtime state for route diagnostics: {err}")
-        })?;
-        Some(decode_windows_runtime_state(&bytes)?.server_ip)
-    } else {
-        None
-    };
-    if let Some(server_ip) = server_ip.as_deref() {
-        println!("runtime_server_ip={server_ip}");
-    } else {
-        println!("runtime_server_ip=ABSENT");
-    }
     let managed_tun_index = managed.map(|adapter| adapter.index);
-    observe_ipv4_routes(&adapters, managed_tun_index, server_ip.as_deref())?;
+    observe_ipv4_routes(&adapters, managed_tun_index, None)?;
     observe_ipv6_route_interfaces(&adapters, managed_tun_index)?;
     Ok(())
 }
