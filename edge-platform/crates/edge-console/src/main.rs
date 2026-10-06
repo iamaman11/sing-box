@@ -1827,13 +1827,10 @@ fn rollback_privileged_release(
     let previous_bytes = fs::read(&previous_path)
         .map_err(|err| format!("failed to snapshot previous.pb before rollback: {err}"))?;
 
-    if let Err(err) = write_atomic(&previous_path, &current_bytes)
-        .and_then(|_| write_atomic(&current_path, &previous_bytes))
-    {
+    if let Err(err) = write_atomic(&current_path, &previous_bytes) {
         let _ = write_atomic(&current_path, &current_bytes);
-        let _ = write_atomic(&previous_path, &previous_bytes);
         return Err(format!(
-            "failed to swap exact current/previous Windows activation authority; original activation restored: {err}"
+            "failed to activate exact previous Windows authority; original current activation restored: {err}"
         ));
     }
 
@@ -1845,8 +1842,7 @@ fn rollback_privileged_release(
         Ok(())
     })();
     if let Err(err) = handoff {
-        let pointer_restore = write_atomic(&current_path, &current_bytes)
-            .and_then(|_| write_atomic(&previous_path, &previous_bytes));
+        let pointer_restore = write_atomic(&current_path, &current_bytes);
         #[cfg(windows)]
         let owner_restore = sync_stable_windows_release_tools(install_root, &current)
             .and_then(|_| {
@@ -1870,7 +1866,7 @@ fn rollback_privileged_release(
 
     Ok((
         "PREVIOUS_RELEASE_ROLLED_BACK".to_owned(),
-        "exact previous ReleaseSet restored locally; its SCM controller rematerializes managed runtime from the previous binary's embedded canonical desired state"
+        "exact previous ReleaseSet restored locally without swapping rollback authority; repeated rollback is fail-closed because current.pb now equals previous.pb"
             .to_owned(),
         Some(verified.release_set_sha256),
     ))
