@@ -1789,8 +1789,9 @@ fn sync_stable_windows_release_tools(
         (&activation.console_path, "edge-console.exe", "console"),
         (&activation.diagnostic_path, "edge-diagnostic.exe", "diagnostic"),
     ] {
-        let bytes = fs::read(source)
-            .map_err(|err| format!("failed to read exact {label} for stable rollback boundary: {err}"))?;
+        let bytes = fs::read(source).map_err(|err| {
+            format!("failed to read exact {label} for stable rollback boundary: {err}")
+        })?;
         let target = bin_dir.join(target_name);
         write_atomic(&target, &bytes)
             .map_err(|err| format!("failed to refresh stable Windows {label}: {err}"))?;
