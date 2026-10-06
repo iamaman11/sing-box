@@ -307,13 +307,6 @@ jobs:
           if ([string]$service.PathName -cne $expected) { throw 'SCM executable authority mismatch' }
           $doctor | Write-Host
 
-      - name: Read-only privileged external-owner evidence
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) { throw "Privileged read-only runtime evidence failed: $LASTEXITCODE" }
-
       - name: Prove managed DIRECT and WARP
         if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' }}
         shell: powershell
@@ -321,6 +314,36 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & $env:EDGE_CURRENT_CONSOLE restart-verify-runtime
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
+
+      - name: Read-only privileged runtime evidence after restart
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidenceLines = @(& $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
+          $evidenceExit = $LASTEXITCODE
+          $evidenceLines | Write-Host
+          if ($evidenceExit -ne 0) { throw "Privileged read-only runtime evidence failed: $evidenceExit" }
+
+          $detailLine = [string]($evidenceLines |
+            Where-Object { [string]$_ -like 'detail=*' } |
+            Select-Object -Last 1)
+          if ([string]::IsNullOrWhiteSpace($detailLine) -or
+              $detailLine -notmatch '^detail=runtime_evidence=BOUNDED_READ_ONLY') {
+            throw 'Privileged runtime evidence did not return the bounded typed detail contract'
+          }
+
+          if ($env:EDGE_OPERATION -in @('converge','repair') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
+            if ($detailLine -match '(?:^|;)stderr=MISSING(?:;|$)') {
+              throw 'Managed sing-box stderr evidence is missing after runtime restart'
+            }
+            if ($detailLine -notmatch '(?:^|;)stderr=') {
+              throw 'Managed sing-box stderr evidence was omitted from the bounded privileged result'
+            }
+            if ($detailLine -match 'failed to search process:\s*Access is denied') {
+              throw 'Managed sing-box process lookup still reports Access is denied after fresh restart'
+            }
+            Write-Host 'managed_tun_process_search_access_denied=ABSENT'
+          }
 
       - name: Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence
         if: ${{ (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
@@ -414,22 +437,12 @@ jobs:
             throw "Foreign CloudflareWARP still carries retired legacy TUN DNS 172.31.255.2: $($warpDns -join ',')"
           }
 
-          $runtimeStderr = Join-Path $env:EDGE_INSTALL_ROOT 'runtime\sing-box.stderr.log'
-          if (-not (Test-Path -LiteralPath $runtimeStderr -PathType Leaf)) {
-            throw 'Managed sing-box stderr log is missing after runtime restart'
-          }
-          $freshRuntimeErrors = Get-Content -Raw -LiteralPath $runtimeStderr
-          if ($freshRuntimeErrors -match 'failed to search process:\s*Access is denied') {
-            throw 'Managed sing-box process lookup still reports Access is denied after fresh restart'
-          }
-
           Write-Host "managed_tun_server_bypass_ip=$serverIp"
           Write-Host "managed_tun_server_bypass_owner=$($serverAdapter.Name)"
           Write-Host 'managed_tun_server_bypass=PASS'
           Write-Host 'managed_tun_ordinary_dns=PASS'
           Write-Host 'managed_tun_ordinary_https=PASS'
           Write-Host 'managed_tun_local_proxy=PASS'
-          Write-Host 'managed_tun_process_search_access_denied=ABSENT'
           Write-Host 'foreign_mesh_route_owner=CloudflareWARP'
           Write-Host "foreign_cloudflarewarp_dns=$($warpDns -join ',')"
           Write-Host "foreign_cloudflarewarp_tun_dns_repin=$($warpDns -contains '172.19.0.2')"
