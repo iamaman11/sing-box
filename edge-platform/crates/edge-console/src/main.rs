@@ -2369,7 +2369,9 @@ if ($verified.Count -ne 1) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|err| format!("failed to start bounded Windows TUN authority convergence: {err}"))?;
+        .map_err(|err| {
+            format!("failed to start bounded Windows TUN authority convergence: {err}")
+        })?;
     if status.success() {
         Ok(())
     } else {
