@@ -193,7 +193,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable console path is unavailable'
           }
-          if ($env:EDGE_OPERATION -ne 'diagnose' -and [int]$values['managed_singbox_process_count'] -gt 0) {
+          if ($env:EDGE_OPERATION -in @('converge','repair') -and [int]$values['managed_singbox_process_count'] -gt 0) {
             & $console stop-local $env:EDGE_CONTROLLER_ENDPOINT
             if ($LASTEXITCODE -ne 0) { throw "Failed to stop exact managed proxy before lifecycle mutation: $LASTEXITCODE" }
             $doctor = @(& $diagnostic doctor $current)
