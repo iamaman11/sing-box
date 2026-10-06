@@ -182,7 +182,11 @@ def main() -> None:
         and "Recovering a partial ManagedTun activation with no managed TUN present" in windows_physical
         and "Exact immutable rollback console is unavailable" in windows_physical
         and "Stable rollback console is missing" not in windows_physical
-        and "runtime_server_ip" in windows_diagnostic
+        and "runtime_server_ip" not in windows_diagnostic
+        and "state\\secrets\\runtime-state.pb" not in windows_diagnostic
+        and "Typed controller status failed" in windows_physical
+        and "^Server IP\\s+:\\s+" in windows_physical
+        and "Repair target must equal the exact current ReleaseSet before runtime stop" in windows_physical
         and "managed_tun_server_bypass=PASS" in windows_physical
         and "Find-NetRoute -RemoteIPAddress $serverIp" in windows_physical
         and "managed_tun_process_search_access_denied=ABSENT" in windows_physical
