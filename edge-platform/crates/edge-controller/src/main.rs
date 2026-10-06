@@ -456,8 +456,18 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     let status_handle =
         service_control_handler::register(WINDOWS_CONTROLLER_SERVICE_NAME, event_handler)?;
 
-    converge_windows_runtime_on_service_start(&config.repo_root)
-        .map_err(|err| format!("Windows managed runtime startup convergence failed: {err}"))?;
+    if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(1),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        });
+        return Err(format!("Windows managed runtime startup convergence failed: {err}").into());
+    }
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
