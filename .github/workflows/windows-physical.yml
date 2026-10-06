@@ -123,8 +123,8 @@ jobs:
           if ($workspace.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'Runner workspace overlaps managed install root'
           }
-          $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
-          if (-not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) { throw 'Installed diagnostic is missing' }
+          $stableDiagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          if (-not (Test-Path -LiteralPath $stableDiagnostic -PathType Leaf)) { throw 'Installed stable diagnostic is missing' }
           if ($env:EDGE_OPERATION -in @('converge','repair')) {
             if ($env:EDGE_RELEASE_TAG -notmatch '^edge-release-[0-9a-f]{64}$') { throw 'Target durable release tag is invalid' }
             if ($env:EDGE_WINDOWS_ARTIFACT_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Target Windows artifact digest is invalid' }
@@ -144,12 +144,29 @@ jobs:
             if ($diagnosticSha -cne $env:EDGE_WINDOWS_DIAGNOSTIC_SHA256) { throw 'Target Windows diagnostic digest mismatch' }
           }
           $current = Join-Path $root 'current.pb'
+          $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Stable pre-state diagnostic failed: $LASTEXITCODE" }
+          $bootstrapValues = @{}
+          foreach ($line in $bootstrapDoctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $bootstrapValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$bootstrapValues['exact_release_files'] -cne 'PASS') {
+            throw 'Stable diagnostic could not verify exact active release files'
+          }
+          $diagnostic = [string]$bootstrapValues['diagnostic_path']
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact immutable diagnostic path is unavailable'
+          }
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Pre-state diagnostic failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Exact pre-state diagnostic failed: $LASTEXITCODE" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['exact_release_files'] -cne 'PASS') {
+            throw 'Exact active diagnostic could not verify its ReleaseSet files'
           }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = [string]$values['managed_tun_present']
@@ -192,6 +209,7 @@ jobs:
           }
           $signature = $externalPids -join ','
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_BEFORE_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_EXTERNAL_PIDS_BEFORE=$signature" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           $doctor | Write-Host
@@ -219,10 +237,24 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $stableDiagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Stable post-state diagnostic failed: $LASTEXITCODE" }
+          $bootstrapValues = @{}
+          foreach ($line in $bootstrapDoctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $bootstrapValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$bootstrapValues['exact_release_files'] -cne 'PASS') {
+            throw 'Stable diagnostic could not verify exact post-state release files'
+          }
+          $diagnostic = [string]$bootstrapValues['diagnostic_path']
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact immutable post-state diagnostic path is unavailable'
+          }
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Post-state diagnostic failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Exact post-state diagnostic failed: $LASTEXITCODE" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -258,6 +290,7 @@ jobs:
           $console = [string]$values['console_path']
           $controller = [string]$values['controller_path']
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_AFTER_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_AFTER_MODE=$afterMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           $service = Get-CimInstance Win32_Service -Filter "Name='EdgePlatformController'"
@@ -290,7 +323,10 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact active diagnostic is unavailable for managed TUN proof'
+          }
           $doctor = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'))
           if ($LASTEXITCODE -ne 0) { throw "Managed TUN diagnostic failed: $LASTEXITCODE" }
           $values = @{}
@@ -381,8 +417,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact active diagnostic is unavailable before fail-closed rollback'
+          }
           $beforeRollback = @(& $diagnostic doctor $current)
           if ($LASTEXITCODE -ne 0) { throw "Failed to classify active release before fail-closed rollback: $LASTEXITCODE" }
           $beforeValues = @{}
@@ -400,14 +439,29 @@ jobs:
           }
           & $rollbackConsole privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw "Fail-closed exact previous rollback failed: $LASTEXITCODE" }
-          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $stableDiagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Stable post-rollback diagnostic failed: $LASTEXITCODE" }
+          $bootstrapValues = @{}
+          foreach ($line in $bootstrapDoctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $bootstrapValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$bootstrapValues['exact_release_files'] -cne 'PASS') {
+            throw 'Stable diagnostic could not verify exact rollback release files'
+          }
+          $diagnostic = [string]$bootstrapValues['diagnostic_path']
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact immutable rollback diagnostic path is unavailable'
+          }
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Post-rollback diagnostic failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Exact post-rollback diagnostic failed: $LASTEXITCODE" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
+          "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           if ([string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
             throw 'Fail-closed rollback did not restore exact pre-cutover ReleaseSet'
           }
@@ -428,8 +482,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact active diagnostic is unavailable for final verification'
+          }
           $doctor = @(& $diagnostic doctor $current)
           if ($LASTEXITCODE -ne 0) { throw "Final diagnostic failed: $LASTEXITCODE" }
           $values = @{}
