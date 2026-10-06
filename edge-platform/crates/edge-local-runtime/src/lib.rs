@@ -26,17 +26,17 @@ use windows_sys::Win32::Foundation::{
     SetLastError,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Security::{
-    AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
-    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
-};
-#[cfg(windows)]
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     ConvertInterfaceLuidToIndex, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
     GAA_FLAG_SKIP_UNICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
+#[cfg(windows)]
+use windows_sys::Win32::Security::{
+    AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+};
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, GetCurrentProcess, OpenProcessToken,
@@ -574,14 +574,7 @@ fn spawn_with_temporary_debug_privilege(command: &mut Command) -> Result<Child, 
             let child_result = command.spawn();
 
             SetLastError(ERROR_SUCCESS);
-            let restored = AdjustTokenPrivileges(
-                token,
-                0,
-                &previous,
-                0,
-                null_mut(),
-                null_mut(),
-            );
+            let restored = AdjustTokenPrivileges(token, 0, &previous, 0, null_mut(), null_mut());
             let restore_error = GetLastError();
             if restored == 0 || restore_error != ERROR_SUCCESS {
                 if let Ok(mut child) = child_result {
