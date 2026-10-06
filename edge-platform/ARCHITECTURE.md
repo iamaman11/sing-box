@@ -186,7 +186,10 @@ It may not own Vultr/Cloudflare provider lifecycle or return credential plaintex
 ### Windows EdgePlatformController
 
 The only Windows application/runtime owner is the SCM service
-`EdgePlatformController`, running as `NT SERVICE\EdgePlatformController`.
+`EdgePlatformController`, running as the dedicated virtual account `NT SERVICE\EdgePlatformController`.
+For canonical `MANAGED_TUN`, that exact service principal is a member of the local built-in
+Administrators group because the Windows TUN/Wintun datapath requires administrator-class local
+authority. The identity remains distinct from LocalSystem and retains the per-service SID boundary.
 
 It owns only Windows-local concerns:
 - active/candidate/previous credential state;
@@ -778,10 +781,12 @@ Current Stage-4B implementation state after the closed 4B.1 code/proxy-only life
    an installed, validated managed runtime is started when absent; an already-running exact managed runtime
    is a NOOP; an unexpected/external sing-box remains fail-closed and untouched. Do not add a Scheduled
    Task, watchdog daemon or second startup owner.
-9. Do not widen the SCM service identity merely by assumption. The live cutover must first prove whether
-   the existing `NT SERVICE\\EdgePlatformController` authority can create/own the TUN. Any privilege change
-   requires concrete failure evidence and a least-privilege decision; switching the controller to
-   LocalSystem merely for convenience is not an accepted default.
+9. Do not widen the SCM service identity merely by assumption. The live cutover first proved that the
+   existing `NT SERVICE\\EdgePlatformController` token could not create/configure the managed TUN:
+   pinned sing-box failed with `configure tun interface: Access is denied.` The accepted least-privilege
+   decision is to keep that dedicated virtual service identity and grant only that principal membership
+   in the local built-in Administrators group required by the Windows TUN/Wintun path. Do not switch the
+   controller identity to LocalSystem and do not create a second privileged TUN owner.
 10. The old PowerShell DNS reset remains recovery-only while it has a real consumer. New managed-TUN DNS
    must not depend on it. If failed-runtime cleanup proves a host DNS reset is still necessary, implement
    that mutation inside the existing local-runtime boundary with native Windows APIs and exact-interface

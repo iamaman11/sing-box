@@ -158,7 +158,13 @@ jobs:
               if ($currentTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
             }
             'ManagedTun' {
-              if ($currentTun -cne 'true') { throw 'ManagedTun state is missing managed TUN' }
+              if ($currentTun -cne 'true') {
+                if ($env:EDGE_OPERATION -eq 'diagnose') {
+                  throw 'ManagedTun state is missing managed TUN'
+                }
+                Write-Warning 'Recovering a partial ManagedTun activation with no managed TUN present'
+                "EDGE_BEFORE_PARTIAL_MANAGED_TUN=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+              }
             }
             default { throw "Unsupported installed Windows datapath mode: $currentMode" }
           }
@@ -170,7 +176,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable console path is unavailable'
           }
-          if ($env:EDGE_OPERATION -ne 'diagnose') {
+          if ($env:EDGE_OPERATION -ne 'diagnose' -and [int]$values['managed_singbox_process_count'] -gt 0) {
             & $console stop-local $env:EDGE_CONTROLLER_ENDPOINT
             if ($LASTEXITCODE -ne 0) { throw "Failed to stop exact managed proxy before lifecycle mutation: $LASTEXITCODE" }
             $doctor = @(& $diagnostic doctor $current)
@@ -373,7 +379,11 @@ jobs:
             Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_TARGET_NOT_ACTIVE'
             exit 0
           }
-          & $env:EDGE_CURRENT_CONSOLE privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
+          $rollbackConsole = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          if (-not (Test-Path -LiteralPath $rollbackConsole -PathType Leaf)) {
+            throw 'Stable rollback console is missing'
+          }
+          & $rollbackConsole privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw "Fail-closed exact previous rollback failed: $LASTEXITCODE" }
           $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $doctor = @(& $diagnostic doctor $current)

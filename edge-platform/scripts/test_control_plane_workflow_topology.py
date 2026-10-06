@@ -179,6 +179,8 @@ def main() -> None:
         and "Resolve expected Windows datapath mode" in windows_physical
         and "Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence" in windows_physical
         and "Fail closed to exact previous release after MANAGED_TUN verification failure" in windows_physical
+        and "Recovering a partial ManagedTun activation with no managed TUN present" in windows_physical
+        and "Stable rollback console is missing" in windows_physical
         and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "$env:EDGE_OPERATION -ne 'diagnose'" in windows_physical
         and "managed_tun_present" in windows_physical
@@ -1396,6 +1398,10 @@ def main() -> None:
         and "verify_windows_activation_files" in windows_console
         and "WINDOWS_CONTROLLER_SERVICE_NAME" in windows_console
         and "WINDOWS_CONTROLLER_SERVICE_ACCOUNT" in windows_console
+        and "converge_controller_tun_authority" in windows_console
+        and "S-1-5-32-544" in windows_console
+        and "Add-LocalGroupMember" in windows_console
+        and "set_failure_actions_on_non_crash_failures(false)" in windows_console
         and "converge_controller_service" in windows_console
         and "windows_scm" in windows_console
         and "edge-console does not own controller startup" in windows_console

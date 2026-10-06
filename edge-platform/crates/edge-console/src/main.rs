@@ -2340,6 +2340,49 @@ fn converge_application_acl(install_root: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn converge_controller_tun_authority() -> Result<(), String> {
+    let desired = canonical_production_desired_state()?;
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
+    if mode != WindowsDatapathMode::ManagedTun {
+        return Ok(());
+    }
+
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$administrators = [System.Security.Principal.SecurityIdentifier]'S-1-5-32-544'
+$account = New-Object System.Security.Principal.NTAccount('NT SERVICE', 'EdgePlatformController')
+$serviceSid = $account.Translate([System.Security.Principal.SecurityIdentifier])
+$members = @(Get-LocalGroupMember -SID $administrators)
+if (-not ($members | Where-Object { $_.SID -eq $serviceSid })) {
+    Add-LocalGroupMember -SID $administrators -Member $serviceSid.Value
+}
+$verified = @(Get-LocalGroupMember -SID $administrators | Where-Object { $_.SID -eq $serviceSid })
+if ($verified.Count -ne 1) {
+    throw 'EdgePlatformController service SID is not a member of the local Administrators group'
+}
+"#;
+
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| {
+            format!("failed to start bounded Windows TUN authority convergence: {err}")
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to converge EdgePlatformController administrator-class TUN authority: exit={}",
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+#[cfg(windows)]
 fn converge_controller_service(install_root: &Path, controller_path: &Path) -> Result<(), String> {
     if !controller_path.is_file() {
         return Err(format!(
@@ -2380,6 +2423,8 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
         .or_else(|_| manager.open_service(WINDOWS_CONTROLLER_SERVICE_NAME, access))
         .map_err(|err| format!("failed to create or open controller service: {err}"))?;
 
+    converge_controller_tun_authority()?;
+
     let status = service
         .query_status()
         .map_err(|err| format!("failed to query controller service before convergence: {err}"))?;
@@ -2419,8 +2464,8 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
         })
         .map_err(|err| format!("failed to configure controller service recovery: {err}"))?;
     service
-        .set_failure_actions_on_non_crash_failures(true)
-        .map_err(|err| format!("failed to enable controller recovery on failures: {err}"))?;
+        .set_failure_actions_on_non_crash_failures(false)
+        .map_err(|err| format!("failed to limit controller recovery to crash failures: {err}"))?;
 
     converge_application_acl(install_root)?;
 

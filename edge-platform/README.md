@@ -49,9 +49,11 @@ sing-box remains untouched. Only after that gate is terminal PASS may Stage 4B.2
 cutover acceptance through that same Windows workflow boundary. Its fixed
 mutation operation is added only after 4B.2 read-only proof identifies the exact external startup owner
 and bounded restore procedure, and only after the canonical `MANAGED_TUN` mode-flip revision itself
-passes exact-head CI and no-rebuild promotion. No hidden environment toggle, second Windows workflow, Scheduled Task/watchdog, parallel DNS manager or
-LocalSystem privilege widening is accepted by default. See `ARCHITECTURE.md` for the complete entry
-contract.
+passes exact-head CI and no-rebuild promotion. No hidden environment toggle, second Windows workflow, Scheduled Task/watchdog or parallel DNS manager
+is accepted. Stage 4B.2-C physical evidence proved that Windows TUN needs administrator-class authority;
+the accepted boundary keeps the dedicated `NT SERVICE\EdgePlatformController` identity and grants only
+that principal local Administrators membership instead of switching the service identity to LocalSystem.
+See `ARCHITECTURE.md` for the complete entry contract.
 
 ## Steady-state owner map
 
@@ -157,7 +159,7 @@ C:\sing-box-runner
 
 Accepted ownership:
 - SCM service: `EdgePlatformController`;
-- service identity: `NT SERVICE\EdgePlatformController`;
+- service identity: `NT SERVICE\EdgePlatformController`; in `MANAGED_TUN` this exact principal has local Administrators membership for Wintun/TUN ownership while remaining distinct from LocalSystem;
 - GitHub runner: NetworkService transport only;
 - SYSTEM privileged bridge: `EdgePlatformPrivilegedDispatch`;
 - runner has no plaintext/decrypted application-secret authority.
