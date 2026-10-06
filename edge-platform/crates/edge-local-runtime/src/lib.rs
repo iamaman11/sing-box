@@ -1153,15 +1153,15 @@ mod tests {
     }
 
     #[test]
-    fn canonical_proxy_only_allows_external_coexistence_only_for_typed_windows_state() {
-        let root = std::env::temp_dir().join("edge-proxy-only-coexistence");
+    fn canonical_managed_tun_disallows_external_coexistence() {
+        let root = std::env::temp_dir().join("edge-managed-tun-no-coexistence");
         let paths = LocalRuntimePaths {
             singbox_binary_path: root.join("sing-box.exe"),
             config_path: root.join("sing-box.json"),
             state_path: root.join("runtime-state.pb"),
             runtime_root: root,
         };
-        assert!(proxy_only_external_coexistence_allowed(&paths).unwrap());
+        assert!(!proxy_only_external_coexistence_allowed(&paths).unwrap());
 
         let legacy = LocalRuntimePaths {
             state_path: PathBuf::from("legacy-runtime.json"),
