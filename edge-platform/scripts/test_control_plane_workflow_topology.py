@@ -162,10 +162,14 @@ def main() -> None:
         and "/windows cutover" not in windows_physical
         and "github.event.comment.body == '/windows diagnose'" in router
         and "github.event.comment.body == '/windows converge'" in router
+        and "github.event.comment.body == '/windows start'" in router
+        and "github.event.comment.body == '/windows stop'" in router
         and "github.event.comment.body == '/windows repair'" in router
         and "github.event.comment.body == '/windows rollback'" in router
         and 'operation="diagnose"' in windows_physical
         and 'operation="converge"' in windows_physical
+        and 'operation="start"' in windows_physical
+        and 'operation="stop"' in windows_physical
         and 'operation="repair"' in windows_physical
         and 'operation="rollback"' in windows_physical
         and "privileged-reinstall-accepted" in windows_physical
@@ -209,6 +213,10 @@ def main() -> None:
         and "Exact immutable post-state diagnostic path is unavailable" in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "managed_tun_present" in windows_physical
+        and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
+        and "Transient runtime control changed ReleaseSet authority" in windows_physical
+        and "Expected zero managed proxy processes after stop" in windows_physical
+        and "Final explicit runtime stop left managed TUN present" in windows_physical
         and "Read-only managed proxy trace" not in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "needs.resolve.outputs.operation != 'diagnose'" in windows_physical,

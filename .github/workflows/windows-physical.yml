@@ -34,6 +34,8 @@ jobs:
           case "$COMMAND_BODY" in
             "/windows diagnose") operation="diagnose" ;;
             "/windows converge"|"/windows smoke") operation="converge" ;;
+            "/windows start") operation="start" ;;
+            "/windows stop") operation="stop" ;;
             "/windows repair") operation="repair" ;;
             "/windows rollback") operation="rollback" ;;
             *) exit 2 ;;
@@ -200,6 +202,12 @@ jobs:
             'converge' {
               & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
             }
+            'start' {
+              & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
+            }
+            'stop' {
+              & $env:EDGE_CURRENT_CONSOLE stop-local $env:EDGE_CONTROLLER_ENDPOINT
+            }
             'repair' {
               & $env:EDGE_CURRENT_CONSOLE privileged-reinstall-accepted $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
             }
@@ -248,18 +256,25 @@ jobs:
               if ($afterTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
             }
             'ManagedTun' {
-              if ($afterTun -cne 'true') { throw 'ManagedTun state is missing managed TUN' }
-              if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') {
-                throw "Unexpected managed TUN IPv4: $($values['managed_tun_ipv4'])"
-              }
-              if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') {
-                throw "Unexpected managed TUN DNS IPv4: $($values['managed_tun_dns_ipv4'])"
+              if ($env:EDGE_OPERATION -eq 'stop') {
+                if ($afterTun -cne 'false') { throw 'Managed TUN remained present after explicit runtime stop' }
+              } else {
+                if ($afterTun -cne 'true') { throw 'ManagedTun state is missing managed TUN' }
+                if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') {
+                  throw "Unexpected managed TUN IPv4: $($values['managed_tun_ipv4'])"
+                }
+                if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') {
+                  throw "Unexpected managed TUN DNS IPv4: $($values['managed_tun_dns_ipv4'])"
+                }
               }
             }
             default { throw "Unsupported active Windows datapath mode: $afterMode" }
           }
           if ($env:EDGE_OPERATION -in @('converge','repair') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Accepted ReleaseSet is not active'
+          }
+          if ($env:EDGE_OPERATION -in @('start','stop') -and [string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
+            throw 'Transient runtime control changed ReleaseSet authority'
           }
           if ($env:EDGE_OPERATION -eq 'rollback' -and [string]$values['release_set_sha256'] -ceq $env:EDGE_BEFORE_RELEASE) {
             throw 'Rollback did not change ReleaseSet authority'
@@ -502,8 +517,11 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          if ($env:EDGE_OPERATION -in @('converge','repair') -and [int]$values['managed_singbox_process_count'] -ne 1) {
+          if ($env:EDGE_OPERATION -in @('converge','repair','start') -and [int]$values['managed_singbox_process_count'] -ne 1) {
             throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $($values['managed_singbox_process_count'])"
+          }
+          if ($env:EDGE_OPERATION -eq 'stop' -and [int]$values['managed_singbox_process_count'] -ne 0) {
+            throw "Expected zero managed proxy processes after stop, observed $($values['managed_singbox_process_count'])"
           }
           $finalMode = [string]$values['windows_datapath_mode']
           $finalTun = [string]$values['managed_tun_present']
@@ -511,7 +529,12 @@ jobs:
             throw "Final datapath mode $finalMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
           }
           if ($finalMode -ceq 'ProxyOnly' -and $finalTun -cne 'false') { throw 'Final ProxyOnly state owns managed TUN' }
-          if ($finalMode -ceq 'ManagedTun' -and $finalTun -cne 'true') { throw 'Final ManagedTun state is missing managed TUN' }
+          if ($finalMode -ceq 'ManagedTun' -and $env:EDGE_OPERATION -eq 'stop' -and $finalTun -cne 'false') {
+            throw 'Final explicit runtime stop left managed TUN present'
+          }
+          if ($finalMode -ceq 'ManagedTun' -and $env:EDGE_OPERATION -ne 'stop' -and $finalTun -cne 'true') {
+            throw 'Final ManagedTun state is missing managed TUN'
+          }
           if ($finalMode -notin @('ProxyOnly','ManagedTun')) { throw "Unsupported final datapath mode: $finalMode" }
           if ($env:EDGE_OPERATION -eq 'rollback' -and $finalMode -ceq 'ProxyOnly') {
             $warpDnsAfterTunRemoval = @(

@@ -851,6 +851,11 @@ through the existing single GitHub/Windows boundary:
 - `/windows repair`: re-download the same accepted durable ReleaseSet into the bounded alternate immutable
   slot, preserve `previous.pb`, retarget the one SCM/privileged owner, and re-prove DIRECT + WARP;
 - `/windows rollback`: stop only the exact managed process and restore exact verified `previous.pb`;
+- `/windows stop` / `/windows start`: transient runtime controls only. They may stop/start only the exact
+  managed sing-box through the existing controller RPC, must not change ReleaseSet authority or durable
+  datapath desired state, and leave the SCM controller running. A service restart or Windows reboot
+  intentionally re-applies startup convergence, so `stop` is a temporary pause rather than a second
+  persistent desired-state mechanism;
 - reconverge to the current accepted ReleaseSet and repeat read-only diagnosis.
 
 The external working sing-box must have the same observed process identity before and after every managed
