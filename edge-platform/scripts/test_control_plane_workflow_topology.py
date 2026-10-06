@@ -193,6 +193,12 @@ def main() -> None:
         and "Typed controller status failed" in windows_physical
         and "^Server IP\\s+:\\s+" in windows_physical
         and "Repair target must equal the exact current ReleaseSet before runtime stop" in windows_physical
+        and "Invoke-WebRequest" not in windows_physical
+        and "edge-platform-windows.zip" not in windows_physical
+        and "$env:EDGE_OPERATION -eq 'converge' -and [int]$values['managed_singbox_process_count'] -gt 0" in windows_physical
+        and "$env:EDGE_OPERATION -in @('converge','repair') -and [int]$values['managed_singbox_process_count'] -gt 0" not in windows_physical
+        and "id: lifecycle_mutation" in windows_physical
+        and "steps.lifecycle_mutation.outcome == 'success'" in windows_physical
         and "managed_tun_server_bypass=PASS" in windows_physical
         and "Find-NetRoute -RemoteIPAddress $serverIp" in windows_physical
         and "managed_tun_process_search_access_denied=ABSENT" in windows_physical
@@ -801,12 +807,13 @@ def main() -> None:
         and "privileged-rollback-previous" in windows_physical
         and "EDGE_CURRENT_CONSOLE" in windows_physical
         and "edge-diagnostic.exe" in windows_physical
-        and "EDGE_RELEASE_TAG" in windows_physical
-        and "EDGE_WINDOWS_ARTIFACT_SHA256" in windows_physical
-        and "EDGE_WINDOWS_DIAGNOSTIC_SHA256" in windows_physical
-        and "edge-target-diagnostic-" in windows_physical
-        and "Target Windows artifact digest mismatch" in windows_physical
-        and "Target Windows diagnostic digest mismatch" in windows_physical
+        and "EDGE_RELEASE_TAG" not in windows_physical
+        and "EDGE_WINDOWS_ARTIFACT_SHA256" not in windows_physical
+        and "EDGE_WINDOWS_DIAGNOSTIC_SHA256" not in windows_physical
+        and "EDGE_REPOSITORY" not in windows_physical
+        and "edge-target-diagnostic-" not in windows_physical
+        and "Target Windows artifact digest mismatch" not in windows_physical
+        and "Target Windows diagnostic digest mismatch" not in windows_physical
         and "EdgePlatformController" in windows_physical
         and "NT SERVICE\\EdgePlatformController" in windows_physical
         and "service.PathName" in windows_physical

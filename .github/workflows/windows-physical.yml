@@ -19,9 +19,6 @@ jobs:
       accepted_revision: ${{ steps.auth.outputs.accepted_revision }}
       operation: ${{ steps.auth.outputs.operation }}
       release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
-      release_tag: ${{ steps.release.outputs.release_tag }}
-      windows_artifact_sha256: ${{ steps.release.outputs.windows_artifact_sha256 }}
-      windows_diagnostic_sha256: ${{ steps.release.outputs.windows_diagnostic_sha256 }}
       expected_mode: ${{ steps.mode.outputs.expected_mode }}
     steps:
       - name: Authorize fixed command on protected main
@@ -84,9 +81,6 @@ jobs:
           edge-platform/scripts/resolve_durable_release.sh
           . "${OUTPUT_DIR}/resolved.env"
           printf 'release_set_sha256=%s\n' "$EDGE_RELEASE_SET_SHA256" >> "$GITHUB_OUTPUT"
-          printf 'release_tag=%s\n' "$EDGE_RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          printf 'windows_artifact_sha256=%s\n' "$EDGE_WINDOWS_ARTIFACT_SHA256" >> "$GITHUB_OUTPUT"
-          printf 'windows_diagnostic_sha256=%s\n' "$EDGE_WINDOWS_DIAGNOSTIC_SHA256" >> "$GITHUB_OUTPUT"
 
   physical:
     name: Windows / ${{ needs.resolve.outputs.operation }}
@@ -106,10 +100,6 @@ jobs:
       EDGE_CONTROLLER_ENDPOINT: http://127.0.0.1:51051
       EDGE_ACCEPTED_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
       EDGE_RELEASE_SET_SHA256: ${{ needs.resolve.outputs.release_set_sha256 }}
-      EDGE_RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
-      EDGE_WINDOWS_ARTIFACT_SHA256: ${{ needs.resolve.outputs.windows_artifact_sha256 }}
-      EDGE_WINDOWS_DIAGNOSTIC_SHA256: ${{ needs.resolve.outputs.windows_diagnostic_sha256 }}
-      EDGE_REPOSITORY: ${{ github.repository }}
       EDGE_OPERATION: ${{ needs.resolve.outputs.operation }}
       EDGE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
     steps:
@@ -125,24 +115,6 @@ jobs:
           }
           $stableDiagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
           if (-not (Test-Path -LiteralPath $stableDiagnostic -PathType Leaf)) { throw 'Installed stable diagnostic is missing' }
-          if ($env:EDGE_OPERATION -in @('converge','repair')) {
-            if ($env:EDGE_RELEASE_TAG -notmatch '^edge-release-[0-9a-f]{64}$') { throw 'Target durable release tag is invalid' }
-            if ($env:EDGE_WINDOWS_ARTIFACT_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Target Windows artifact digest is invalid' }
-            if ($env:EDGE_WINDOWS_DIAGNOSTIC_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Target Windows diagnostic digest is invalid' }
-            $targetRoot = Join-Path $env:RUNNER_TEMP ('edge-target-diagnostic-' + $env:EDGE_RELEASE_SET_SHA256)
-            $archive = Join-Path $targetRoot 'edge-platform-windows.zip'
-            if (Test-Path -LiteralPath $targetRoot) { Remove-Item -LiteralPath $targetRoot -Recurse -Force }
-            New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
-            $url = 'https://github.com/' + $env:EDGE_REPOSITORY + '/releases/download/' + $env:EDGE_RELEASE_TAG + '/edge-platform-windows.zip'
-            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
-            $artifactSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-            if ($artifactSha -cne $env:EDGE_WINDOWS_ARTIFACT_SHA256) { throw 'Target Windows artifact digest mismatch' }
-            Expand-Archive -LiteralPath $archive -DestinationPath $targetRoot -Force
-            $targetDiagnostic = Join-Path $targetRoot 'bin\edge-diagnostic.exe'
-            if (-not (Test-Path -LiteralPath $targetDiagnostic -PathType Leaf)) { throw 'Target diagnostic is missing from exact Windows artifact' }
-            $diagnosticSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetDiagnostic).Hash.ToLowerInvariant()
-            if ($diagnosticSha -cne $env:EDGE_WINDOWS_DIAGNOSTIC_SHA256) { throw 'Target Windows diagnostic digest mismatch' }
-          }
           $current = Join-Path $root 'current.pb'
           $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
           if ($LASTEXITCODE -ne 0) { throw "Stable pre-state diagnostic failed: $LASTEXITCODE" }
@@ -197,9 +169,9 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable console path is unavailable'
           }
-          if ($env:EDGE_OPERATION -in @('converge','repair') -and [int]$values['managed_singbox_process_count'] -gt 0) {
+          if ($env:EDGE_OPERATION -eq 'converge' -and [int]$values['managed_singbox_process_count'] -gt 0) {
             & $console stop-local $env:EDGE_CONTROLLER_ENDPOINT
-            if ($LASTEXITCODE -ne 0) { throw "Failed to stop exact managed proxy before lifecycle mutation: $LASTEXITCODE" }
+            if ($LASTEXITCODE -ne 0) { throw "Failed to stop exact managed proxy before release converge: $LASTEXITCODE" }
             $doctor = @(& $diagnostic doctor $current)
             if ($LASTEXITCODE -ne 0) { throw "Post-stop diagnostic failed: $LASTEXITCODE" }
           }
@@ -219,6 +191,7 @@ jobs:
           $doctor | Write-Host
 
       - name: Execute typed lifecycle mutation
+        id: lifecycle_mutation
         if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
@@ -448,7 +421,7 @@ jobs:
           Write-Host "foreign_cloudflarewarp_tun_dns_repin=$($warpDns -contains '172.19.0.2')"
 
       - name: Fail closed to exact previous release after MANAGED_TUN verification failure
-        if: ${{ failure() && (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
+        if: ${{ failure() && steps.lifecycle_mutation.outcome == 'success' && (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'

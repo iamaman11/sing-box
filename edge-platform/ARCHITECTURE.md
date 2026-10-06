@@ -205,6 +205,14 @@ must never become plaintext/decrypted application-secret authority.
 `EdgePlatformPrivilegedDispatch` remains the bounded SYSTEM bridge for explicitly allowlisted
 privileged operations. It is not an arbitrary remote shell.
 
+Windows release bytes are materialized and verified only by the protected privileged installer; the
+NetworkService workflow must not pre-download a second copy merely to duplicate release validation.
+For `repair`, exact runtime stop, accepted-release rematerialization and failure recovery are one
+privileged reinstall transaction. Workflow fail-closed rollback to `previous.pb` is reserved for a
+post-activation verification failure after the typed lifecycle mutation itself succeeded; a preflight
+or mutation failure is re-observed and recovered by its owning boundary instead of triggering a second
+competing recovery path.
+
 ### edge-diagnostic
 
 `edge-diagnostic.exe` is independent from the Windows controller.
