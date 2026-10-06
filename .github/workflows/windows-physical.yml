@@ -125,6 +125,7 @@ jobs:
             throw 'Runner workspace overlaps managed install root'
           }
           $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          if (-not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) { throw 'Installed diagnostic is missing' }
           if ($env:EDGE_OPERATION -in @('converge','repair')) {
             if ($env:EDGE_RELEASE_TAG -notmatch '^edge-release-[0-9a-f]{64}$') { throw 'Target durable release tag is invalid' }
             if ($env:EDGE_WINDOWS_ARTIFACT_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Target Windows artifact digest is invalid' }
@@ -138,9 +139,9 @@ jobs:
             $artifactSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
             if ($artifactSha -cne $env:EDGE_WINDOWS_ARTIFACT_SHA256) { throw 'Target Windows artifact digest mismatch' }
             Expand-Archive -LiteralPath $archive -DestinationPath $targetRoot -Force
-            $diagnostic = Join-Path $targetRoot 'bin\edge-diagnostic.exe'
-            if (-not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) { throw 'Target diagnostic is missing from exact Windows artifact' }
-            $diagnosticSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $diagnostic).Hash.ToLowerInvariant()
+            $targetDiagnostic = Join-Path $targetRoot 'bin\edge-diagnostic.exe'
+            if (-not (Test-Path -LiteralPath $targetDiagnostic -PathType Leaf)) { throw 'Target diagnostic is missing from exact Windows artifact' }
+            $diagnosticSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetDiagnostic).Hash.ToLowerInvariant()
             if ($diagnosticSha -cne $env:EDGE_WINDOWS_DIAGNOSTIC_SHA256) { throw 'Target Windows diagnostic digest mismatch' }
           }
           $current = Join-Path $root 'current.pb'
