@@ -2660,7 +2660,7 @@ mod tests {
         assert_eq!(desired.public_hostname, "miu.alegria.by");
         assert_eq!(
             WindowsDatapathMode::try_from(desired.windows_datapath_mode).unwrap(),
-            WindowsDatapathMode::ProxyOnly
+            WindowsDatapathMode::ManagedTun
         );
         let cloudflare = desired.cloudflare.as_ref().unwrap();
         assert_eq!(

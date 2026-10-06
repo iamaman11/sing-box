@@ -22,6 +22,7 @@ jobs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       windows_artifact_sha256: ${{ steps.release.outputs.windows_artifact_sha256 }}
       windows_diagnostic_sha256: ${{ steps.release.outputs.windows_diagnostic_sha256 }}
+      expected_mode: ${{ steps.mode.outputs.expected_mode }}
     steps:
       - name: Authorize fixed command on protected main
         id: auth
@@ -53,12 +54,22 @@ jobs:
           persist-credentials: false
           clean: true
 
-      - name: Enforce PROXY_ONLY gate
+      - name: Resolve expected Windows datapath mode
+        id: mode
         shell: bash
         run: |
           set -euo pipefail
-          grep -Fx 'windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY' infra/production/production.textproto
-          ! grep -Fq 'windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN' infra/production/production.textproto
+          count="$(grep -Ec '^windows_datapath_mode: WINDOWS_DATAPATH_MODE_(PROXY_ONLY|MANAGED_TUN)$' infra/production/production.textproto)"
+          test "$count" -eq 1
+          if grep -Fxq 'windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY' infra/production/production.textproto; then
+            expected_mode='ProxyOnly'
+          elif grep -Fxq 'windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN' infra/production/production.textproto; then
+            expected_mode='ManagedTun'
+          else
+            echo 'Unsupported Windows datapath mode' >&2
+            exit 1
+          fi
+          printf 'expected_mode=%s\n' "$expected_mode" >> "$GITHUB_OUTPUT"
 
       - name: Resolve exact durable ReleaseSet
         id: release
@@ -100,6 +111,7 @@ jobs:
       EDGE_WINDOWS_DIAGNOSTIC_SHA256: ${{ needs.resolve.outputs.windows_diagnostic_sha256 }}
       EDGE_REPOSITORY: ${{ github.repository }}
       EDGE_OPERATION: ${{ needs.resolve.outputs.operation }}
+      EDGE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
     steps:
       - name: Assert isolated root and observe pre-state
         shell: powershell
@@ -112,6 +124,7 @@ jobs:
             throw 'Runner workspace overlaps managed install root'
           }
           $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          if (-not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) { throw 'Installed diagnostic is missing' }
           if ($env:EDGE_OPERATION -in @('converge','repair')) {
             if ($env:EDGE_RELEASE_TAG -notmatch '^edge-release-[0-9a-f]{64}$') { throw 'Target durable release tag is invalid' }
             if ($env:EDGE_WINDOWS_ARTIFACT_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Target Windows artifact digest is invalid' }
@@ -125,9 +138,9 @@ jobs:
             $artifactSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
             if ($artifactSha -cne $env:EDGE_WINDOWS_ARTIFACT_SHA256) { throw 'Target Windows artifact digest mismatch' }
             Expand-Archive -LiteralPath $archive -DestinationPath $targetRoot -Force
-            $diagnostic = Join-Path $targetRoot 'bin\edge-diagnostic.exe'
-            if (-not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) { throw 'Target diagnostic is missing from exact Windows artifact' }
-            $diagnosticSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $diagnostic).Hash.ToLowerInvariant()
+            $targetDiagnostic = Join-Path $targetRoot 'bin\edge-diagnostic.exe'
+            if (-not (Test-Path -LiteralPath $targetDiagnostic -PathType Leaf)) { throw 'Target diagnostic is missing from exact Windows artifact' }
+            $diagnosticSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetDiagnostic).Hash.ToLowerInvariant()
             if ($diagnosticSha -cne $env:EDGE_WINDOWS_DIAGNOSTIC_SHA256) { throw 'Target Windows diagnostic digest mismatch' }
           }
           $current = Join-Path $root 'current.pb'
@@ -138,8 +151,21 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') { throw 'Lifecycle requires ProxyOnly' }
-          if ([string]$values['managed_tun_present'] -cne 'false') { throw 'Managed TUN already present' }
+          $currentMode = [string]$values['windows_datapath_mode']
+          $currentTun = [string]$values['managed_tun_present']
+          switch ($currentMode) {
+            'ProxyOnly' {
+              if ($currentTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
+            }
+            'ManagedTun' {
+              if ($currentTun -cne 'true') { throw 'ManagedTun state is missing managed TUN' }
+            }
+            default { throw "Unsupported installed Windows datapath mode: $currentMode" }
+          }
+          if ($env:EDGE_OPERATION -eq 'diagnose' -and $currentMode -cne $env:EDGE_EXPECTED_MODE) {
+            throw "Installed datapath mode $currentMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
+          }
+          "EDGE_BEFORE_MODE=$currentMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           $console = [string]$values['console_path']
           if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable console path is unavailable'
@@ -155,8 +181,8 @@ jobs:
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
             } | Sort-Object -Unique
           )
-          if ($env:EDGE_OPERATION -ne 'diagnose' -and $externalPids.Count -gt 1) {
-            throw "Expected at most one preserved external sing-box owner after stopping the managed proxy; observed $($externalPids.Count)"
+          if ($externalPids.Count -ne 0) {
+            throw "Stage 4B.2-C requires zero external sing-box owners; observed $($externalPids.Count)"
           }
           $signature = $externalPids -join ','
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -197,8 +223,26 @@ jobs:
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
           if ([string]$values['exact_release_files'] -cne 'PASS') { throw 'Exact release files are not verified' }
-          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') { throw 'Datapath escaped ProxyOnly' }
-          if ([string]$values['managed_tun_present'] -cne 'false') { throw 'Managed TUN appeared' }
+          $afterMode = [string]$values['windows_datapath_mode']
+          $afterTun = [string]$values['managed_tun_present']
+          if ($env:EDGE_OPERATION -ne 'rollback' -and $afterMode -cne $env:EDGE_EXPECTED_MODE) {
+            throw "Active datapath mode $afterMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
+          }
+          switch ($afterMode) {
+            'ProxyOnly' {
+              if ($afterTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
+            }
+            'ManagedTun' {
+              if ($afterTun -cne 'true') { throw 'ManagedTun state is missing managed TUN' }
+              if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') {
+                throw "Unexpected managed TUN IPv4: $($values['managed_tun_ipv4'])"
+              }
+              if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') {
+                throw "Unexpected managed TUN DNS IPv4: $($values['managed_tun_dns_ipv4'])"
+              }
+            }
+            default { throw "Unsupported active Windows datapath mode: $afterMode" }
+          }
           if ($env:EDGE_OPERATION -in @('converge','repair') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Accepted ReleaseSet is not active'
           }
@@ -209,6 +253,7 @@ jobs:
           $controller = [string]$values['controller_path']
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_AFTER_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_AFTER_MODE=$afterMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           $service = Get-CimInstance Win32_Service -Filter "Name='EdgePlatformController'"
           if (-not $service) { throw 'SCM controller is missing' }
           if ([string]$service.StartName -cne 'NT SERVICE\EdgePlatformController') { throw 'Unexpected SCM identity' }
@@ -226,13 +271,133 @@ jobs:
           & $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw "Privileged read-only runtime evidence failed: $LASTEXITCODE" }
 
-      - name: Prove managed PROXY_ONLY DIRECT and WARP
+      - name: Prove managed DIRECT and WARP
         if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           & $env:EDGE_CURRENT_CONSOLE restart-verify-runtime
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
+
+      - name: Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence
+        if: ${{ (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'))
+          if ($LASTEXITCODE -ne 0) { throw "Managed TUN diagnostic failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['managed_tun_present'] -cne 'true') { throw 'Managed TUN is absent' }
+          $tunIndex = [uint32]$values['managed_tun_interface_index']
+          if ($tunIndex -eq 0) { throw 'Managed TUN interface index is invalid' }
+          if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') { throw 'Managed TUN IPv4 mismatch' }
+          if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') { throw 'Managed TUN DNS mismatch' }
+          $serverBypass = @(
+            $doctor | Where-Object {
+              ([string]$_ -match '^route_ipv4=') -and
+              ([string]$_ -match 'managed_tun:false') -and
+              ([string]$_ -match 'server_bypass:true')
+            }
+          )
+          if ($serverBypass.Count -lt 1) { throw 'Production server bypass route is absent outside managed TUN' }
+
+          $dns = Resolve-DnsName 'www.gstatic.com' -Type A -DnsOnly -ErrorAction Stop |
+            Where-Object { $_.IPAddress } |
+            Select-Object -First 1
+          if (-not $dns -or [string]::IsNullOrWhiteSpace([string]$dns.IPAddress)) {
+            throw 'Ordinary Windows DNS did not return an IPv4 address'
+          }
+          $route = Find-NetRoute -RemoteIPAddress ([string]$dns.IPAddress) |
+            Sort-Object RouteMetric |
+            Select-Object -First 1
+          if (-not $route -or [uint32]$route.InterfaceIndex -ne $tunIndex) {
+            throw 'Ordinary Internet destination does not select managed TUN'
+          }
+
+          $http = (& curl.exe --noproxy '*' --silent --show-error --fail --connect-timeout 15 --max-time 30 --output NUL --write-out '%{http_code}' 'https://www.gstatic.com/generate_204').Trim()
+          if ($LASTEXITCODE -ne 0 -or $http -cne '204') {
+            throw "Ordinary no-proxy Windows HTTPS failed through managed TUN: exit=$LASTEXITCODE http=$http"
+          }
+
+          $localHttp = (& curl.exe --proxy 'http://127.0.0.1:17891' --silent --show-error --fail --connect-timeout 15 --max-time 30 --output NUL --write-out '%{http_code}' 'https://www.gstatic.com/generate_204').Trim()
+          if ($LASTEXITCODE -ne 0 -or $localHttp -cne '204') {
+            throw "Canonical local proxy failed with managed TUN: exit=$LASTEXITCODE http=$localHttp"
+          }
+
+          $meshRoute = Find-NetRoute -RemoteIPAddress '100.96.0.2' |
+            Sort-Object RouteMetric |
+            Select-Object -First 1
+          if (-not $meshRoute) { throw 'Foreign Mesh/device route is absent' }
+          $meshAdapter = Get-NetAdapter -InterfaceIndex ([uint32]$meshRoute.InterfaceIndex) -ErrorAction Stop
+          if ([string]$meshAdapter.Name -cne 'CloudflareWARP') {
+            throw "Foreign Mesh/device route escaped CloudflareWARP: $($meshAdapter.Name)"
+          }
+          if ([uint32]$meshRoute.InterfaceIndex -eq $tunIndex) {
+            throw 'Managed TUN captured the foreign Mesh/device route'
+          }
+
+          $warpDns = @(
+            Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop |
+              ForEach-Object ServerAddresses
+          )
+          if ($warpDns -contains '172.31.255.2' -or $warpDns -contains '172.19.0.2') {
+            throw "Foreign CloudflareWARP carries a sing-box TUN-local DNS address: $($warpDns -join ',')"
+          }
+
+          Write-Host 'managed_tun_ordinary_dns=PASS'
+          Write-Host 'managed_tun_ordinary_https=PASS'
+          Write-Host 'managed_tun_local_proxy=PASS'
+          Write-Host 'foreign_mesh_route_owner=CloudflareWARP'
+          Write-Host "foreign_cloudflarewarp_dns=$($warpDns -join ',')"
+
+      - name: Fail closed to exact previous release after MANAGED_TUN verification failure
+        if: ${{ failure() && (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $beforeRollback = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Failed to classify active release before fail-closed rollback: $LASTEXITCODE" }
+          $beforeValues = @{}
+          foreach ($line in $beforeRollback) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $beforeValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$beforeValues['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+            Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_TARGET_NOT_ACTIVE'
+            exit 0
+          }
+          & $env:EDGE_CURRENT_CONSOLE privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Fail-closed exact previous rollback failed: $LASTEXITCODE" }
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Post-rollback diagnostic failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
+            throw 'Fail-closed rollback did not restore exact pre-cutover ReleaseSet'
+          }
+          if ([string]$values['windows_datapath_mode'] -cne $env:EDGE_BEFORE_MODE) {
+            throw 'Fail-closed rollback did not restore pre-cutover datapath mode'
+          }
+          if ($env:EDGE_BEFORE_MODE -ceq 'ProxyOnly' -and [string]$values['managed_tun_present'] -cne 'false') {
+            throw 'Fail-closed rollback left managed TUN behind'
+          }
+          if ($env:EDGE_BEFORE_MODE -ceq 'ManagedTun' -and [string]$values['managed_tun_present'] -cne 'true') {
+            throw 'Fail-closed rollback did not restore managed TUN'
+          }
+          Write-Host 'managed_tun_fail_closed_rollback=PASS'
+          Write-Host "rollback_release_set=$($values['release_set_sha256'])"
+          Write-Host "rollback_windows_datapath_mode=$($values['windows_datapath_mode'])"
 
       - name: Final diagnostics and transport-only boundary
         shell: powershell
@@ -250,7 +415,14 @@ jobs:
           if ($env:EDGE_OPERATION -in @('converge','repair') -and [int]$values['managed_singbox_process_count'] -ne 1) {
             throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $($values['managed_singbox_process_count'])"
           }
-          if ([string]$values['managed_tun_present'] -cne 'false') { throw 'Managed TUN appeared' }
+          $finalMode = [string]$values['windows_datapath_mode']
+          $finalTun = [string]$values['managed_tun_present']
+          if ($env:EDGE_OPERATION -ne 'rollback' -and $finalMode -cne $env:EDGE_EXPECTED_MODE) {
+            throw "Final datapath mode $finalMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
+          }
+          if ($finalMode -ceq 'ProxyOnly' -and $finalTun -cne 'false') { throw 'Final ProxyOnly state owns managed TUN' }
+          if ($finalMode -ceq 'ManagedTun' -and $finalTun -cne 'true') { throw 'Final ManagedTun state is missing managed TUN' }
+          if ($finalMode -notin @('ProxyOnly','ManagedTun')) { throw "Unsupported final datapath mode: $finalMode" }
           $externalPids = @(
             $doctor | ForEach-Object {
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
@@ -271,12 +443,16 @@ jobs:
         shell: powershell
         run: |
           @(
-            '### Windows PROXY_ONLY lifecycle',
+            "### Windows $env:EDGE_AFTER_MODE lifecycle",
             '- Operation: ${{ needs.resolve.outputs.operation }}',
             "- Before ReleaseSet: $env:EDGE_BEFORE_RELEASE",
             "- After ReleaseSet: $env:EDGE_AFTER_RELEASE",
             '- Local Windows build: NO',
             '- External sing-box mutation: FORBIDDEN / equality-checked',
-            '- TUN requested: NO',
-            '- DNS/route/system-proxy mutation requested: NO'
+            "- Expected mode: $env:EDGE_EXPECTED_MODE",
+            "- Before mode: $env:EDGE_BEFORE_MODE",
+            "- After mode: $env:EDGE_AFTER_MODE",
+            "- TUN requested by desired state: $($env:EDGE_EXPECTED_MODE -ceq 'ManagedTun')",
+            '- Foreign CloudflareWARP mutation: FORBIDDEN',
+            '- External sing-box owner: FORBIDDEN / equality-checked'
           ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY

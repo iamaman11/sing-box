@@ -175,14 +175,17 @@ def main() -> None:
         and windows_physical.count("privileged-runtime-evidence") == 1
         and windows_physical.count("External sing-box owner changed") == 1
         and "EDGE_EXTERNAL_PIDS_BEFORE" in windows_physical
-        and "Expected at most one preserved external sing-box owner" in windows_physical
+        and "Stage 4B.2-C requires zero external sing-box owners" in windows_physical
+        and "Resolve expected Windows datapath mode" in windows_physical
+        and "Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence" in windows_physical
+        and "Fail closed to exact previous release after MANAGED_TUN verification failure" in windows_physical
         and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "$env:EDGE_OPERATION -ne 'diagnose'" in windows_physical
         and "managed_tun_present" in windows_physical
         and "Read-only managed proxy trace" not in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "needs.resolve.outputs.operation != 'diagnose'" in windows_physical,
-        "Stage 4B proxy-only operator lifecycle must stay one fixed typed Windows boundary with no cutover command",
+        "Stage 4B Windows lifecycle must stay one fixed typed boundary across ProxyOnly/ManagedTun with no second cutover command",
     )
     require(
         '".repair"' in windows_installer
@@ -192,15 +195,18 @@ def main() -> None:
         and "refuses to overwrite the active immutable release directory" in windows_installer
         and "privileged-reinstall-accepted" in windows_console_cli
         and "ReinstallAcceptedRelease" in windows_console
+        and "require_supported_reinstall_authority" in windows_console
+        and "require_proxy_only_reinstall_authority" not in windows_console
+        and "sync_stable_windows_release_tools" in windows_console
         and "ProxyOnlySmoke" not in runtime_proto
         and "run_proxy_only_egress_smoke" not in edge_local_runtime,
-        "PROXY_ONLY repair must use bounded alternate immutable slots, preserve previous.pb and reuse the existing persistent proxy verification path",
+        "Windows repair/rollback must use bounded immutable slots, preserve previous.pb, support both accepted datapath modes and keep stable operator tools aligned with exact activation",
     )
     require(
         "schema_version: 6" in production_desired
-        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" in production_desired
-        and "WINDOWS_DATAPATH_MODE_MANAGED_TUN" not in production_desired,
-        "Stage 4B proxy-only operator acceptance must keep canonical production Windows datapath explicitly PROXY_ONLY",
+        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN" in production_desired
+        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" not in production_desired,
+        "Stage 4B.2-C operator acceptance must keep canonical production Windows datapath explicitly MANAGED_TUN",
     )
     require(
         'repo_root / "infra" / "production" / "production.textproto"' in windows_input,
