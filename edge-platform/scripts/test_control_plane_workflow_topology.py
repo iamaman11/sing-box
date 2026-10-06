@@ -195,9 +195,12 @@ def main() -> None:
         and "refuses to overwrite the active immutable release directory" in windows_installer
         and "privileged-reinstall-accepted" in windows_console_cli
         and "ReinstallAcceptedRelease" in windows_console
+        and "require_supported_reinstall_authority" in windows_console
+        and "require_proxy_only_reinstall_authority" not in windows_console
+        and "sync_stable_windows_release_tools" in windows_console
         and "ProxyOnlySmoke" not in runtime_proto
         and "run_proxy_only_egress_smoke" not in edge_local_runtime,
-        "PROXY_ONLY repair must use bounded alternate immutable slots, preserve previous.pb and reuse the existing persistent proxy verification path",
+        "Windows repair/rollback must use bounded immutable slots, preserve previous.pb, support both accepted datapath modes and keep stable operator tools aligned with exact activation",
     )
     require(
         "schema_version: 6" in production_desired
