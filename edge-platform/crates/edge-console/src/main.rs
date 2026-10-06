@@ -1534,17 +1534,16 @@ async fn stage_windows_credential_candidate_from_worker(
     ))
 }
 
-fn require_proxy_only_reinstall_authority() -> Result<(), String> {
+fn require_supported_reinstall_authority() -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
     let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
         .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
-    if mode != WindowsDatapathMode::ProxyOnly {
-        return Err(
-            "accepted-release reinstall is permitted only while canonical production is PROXY_ONLY"
-                .to_owned(),
-        );
+    match mode {
+        WindowsDatapathMode::ProxyOnly | WindowsDatapathMode::ManagedTun => Ok(()),
+        WindowsDatapathMode::Unspecified => {
+            Err("accepted-release reinstall requires an explicit supported Windows datapath mode".to_owned())
+        }
     }
-    Ok(())
 }
 
 fn activate_privileged_release(
@@ -1564,7 +1563,7 @@ fn activate_privileged_release(
     let before_activation = load_verified_activation(install_root).ok();
     let mut previous_bytes_before = None;
     if force_rematerialize {
-        require_proxy_only_reinstall_authority()?;
+        require_supported_reinstall_authority()?;
         let current = before_activation.as_ref().ok_or_else(|| {
             "accepted-release reinstall requires a verified current activation".to_owned()
         })?;
@@ -1771,6 +1770,34 @@ fn load_previous_release_rollback_pair(
     Ok((current, previous))
 }
 
+fn sync_stable_windows_release_tools(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+) -> Result<(), String> {
+    let bin_dir = install_root.join("bin");
+    fs::create_dir_all(&bin_dir)
+        .map_err(|err| format!("failed to prepare stable Windows binary directory: {err}"))?;
+
+    for (source, target_name, label) in [
+        (&activation.console_path, "edge-console.exe", "console"),
+        (&activation.diagnostic_path, "edge-diagnostic.exe", "diagnostic"),
+    ] {
+        let bytes = fs::read(source)
+            .map_err(|err| format!("failed to read exact {label} for stable rollback boundary: {err}"))?;
+        let target = bin_dir.join(target_name);
+        write_atomic(&target, &bytes)
+            .map_err(|err| format!("failed to refresh stable Windows {label}: {err}"))?;
+        let observed = fs::read(&target)
+            .map_err(|err| format!("failed to verify stable Windows {label}: {err}"))?;
+        if observed != bytes {
+            return Err(format!(
+                "stable Windows {label} does not match the exact activation after refresh"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn rollback_privileged_release(
     install_root: &Path,
 ) -> Result<(String, String, Option<String>), String> {
@@ -1798,6 +1825,7 @@ fn rollback_privileged_release(
     }
 
     let handoff = (|| -> Result<(), String> {
+        sync_stable_windows_release_tools(install_root, &previous)?;
         #[cfg(windows)]
         converge_controller_service(install_root, Path::new(&previous.controller_path))?;
         retarget_privileged_task(install_root, &previous.console_path)?;
@@ -1807,11 +1835,12 @@ fn rollback_privileged_release(
         let pointer_restore = write_atomic(&current_path, &current_bytes)
             .and_then(|_| write_atomic(&previous_path, &previous_bytes));
         #[cfg(windows)]
-        let owner_restore =
-            converge_controller_service(install_root, Path::new(&current.controller_path))
-                .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
+        let owner_restore = sync_stable_windows_release_tools(install_root, &current)
+            .and_then(|_| converge_controller_service(install_root, Path::new(&current.controller_path)))
+            .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
         #[cfg(not(windows))]
-        let owner_restore = retarget_privileged_task(install_root, &current.console_path);
+        let owner_restore = sync_stable_windows_release_tools(install_root, &current)
+            .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
         return Err(format!(
             "previous ReleaseSet activation handoff failed: {err}; pointer_restore={pointer_restore:?}; owner_restore={owner_restore:?}"
         ));
@@ -3208,6 +3237,33 @@ mod tests {
         let root = std::env::temp_dir().join(format!("edge-console-release-rollback-{unique}"));
         std::fs::create_dir_all(root.join("releases")).unwrap();
         root
+    }
+
+    #[test]
+    fn canonical_reinstall_authority_accepts_managed_tun() {
+        require_supported_reinstall_authority().unwrap();
+    }
+
+    #[test]
+    fn stable_release_tools_follow_exact_activation() {
+        let root = rollback_test_root();
+        let activation = rollback_test_activation(&root, "previous", &"b".repeat(64));
+        let stable_bin = root.join("bin");
+        std::fs::create_dir_all(&stable_bin).unwrap();
+        std::fs::write(stable_bin.join("edge-console.exe"), b"stale-console").unwrap();
+        std::fs::write(stable_bin.join("edge-diagnostic.exe"), b"stale-diagnostic").unwrap();
+
+        sync_stable_windows_release_tools(&root, &activation).unwrap();
+
+        assert_eq!(
+            std::fs::read(stable_bin.join("edge-console.exe")).unwrap(),
+            std::fs::read(&activation.console_path).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(stable_bin.join("edge-diagnostic.exe")).unwrap(),
+            std::fs::read(&activation.diagnostic_path).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
