@@ -171,8 +171,13 @@ def main() -> None:
         and "privileged-reinstall-accepted" in windows_physical
         and windows_physical.count("restart-verify-runtime") == 1
         and "Verify exact authority and SCM handoff" in windows_physical
-        and "Read-only privileged external-owner evidence" in windows_physical
+        and "Read-only privileged runtime evidence after restart" in windows_physical
         and windows_physical.count("privileged-runtime-evidence") == 1
+        and windows_physical.index("restart-verify-runtime") < windows_physical.index("privileged-runtime-evidence")
+        and "runtime\\sing-box.stderr.log" not in windows_physical
+        and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
+        and "Managed sing-box stderr evidence is missing after runtime restart" in windows_physical
+        and "Managed sing-box stderr evidence was omitted from the bounded privileged result" in windows_physical
         and windows_physical.count("External sing-box owner changed") == 1
         and "EDGE_EXTERNAL_PIDS_BEFORE" in windows_physical
         and "Stage 4B.2-C requires zero external sing-box owners" in windows_physical
