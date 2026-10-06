@@ -765,7 +765,9 @@ Current Stage-4B implementation state after the closed 4B.1 code/proxy-only life
    swapping the abandoned current release back into `previous.pb`; after success `current.pb == previous.pb`,
    so a repeated rollback fails closed before runtime stop instead of toggling between releases. That
    previous SCM owner then rematerializes runtime JSON from the unchanged typed runtime projection and its
-   own embedded canonical desired state before startup. Lifecycle verification must execute the immutable
+   own embedded canonical desired state before startup. Repair is rematerialization, not upgrade: the physical
+   workflow must reject a repair target that differs from the exact current ReleaseSet before stopping runtime.
+   Lifecycle verification must execute the immutable
    diagnostic named by the verified active activation rather than infer datapath mode from a stable copy
    built for a different release. Fail-closed rollback must likewise execute from the immutable current
    console, never from the stable console path that rollback itself must refresh. No duplicated mode marker
@@ -780,10 +782,13 @@ Current Stage-4B implementation state after the closed 4B.1 code/proxy-only life
 6. Extend the existing `edge-diagnostic` with native read-only Windows network observation sufficient to
    prove the exact managed TUN adapter, addresses, routes and per-interface DNS. Route exclusions are
    acceptance-tested by Windows best-route selection to the exact runtime server IP: the selected interface
-   must not be the managed TUN. Do not require an artificial explicit /32 route merely because the excluded
-   destination is absent from sing-box's auto-route prefixes. Prefer Win32/IP Helper APIs for persistent
-   diagnostics; bounded PowerShell `Find-NetRoute` is acceptable only inside the existing physical workflow.
-   Do not create WMI/PowerShell parsing or a resident observer merely for acceptance.
+   must not be the managed TUN. The NetworkService runner must obtain that non-secret server IP through the
+   existing typed `ControllerStatus.deployment.server_ip` localhost RPC/console path; it must not read
+   controller-private `state/secrets/runtime-state.pb` or widen that ACL. Do not require an artificial
+   explicit /32 route merely because the excluded destination is absent from sing-box's auto-route prefixes.
+   Prefer Win32/IP Helper APIs for persistent diagnostics; bounded PowerShell `Find-NetRoute` is acceptable
+   only inside the existing physical workflow. Do not create WMI/PowerShell parsing, a duplicate projection
+   or a resident observer merely for acceptance.
 7. Add one typed Windows process observation in the existing local-runtime boundary that distinguishes
    the exact managed process, any external sing-box process and absence. Mutations may act only on the
    exact managed process. While canonical production is PROXY_ONLY, one managed mixed-proxy runtime may

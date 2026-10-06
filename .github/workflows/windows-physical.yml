@@ -168,6 +168,10 @@ jobs:
           if ([string]$values['exact_release_files'] -cne 'PASS') {
             throw 'Exact active diagnostic could not verify its ReleaseSet files'
           }
+          $currentRelease = [string]$values['release_set_sha256']
+          if ($env:EDGE_OPERATION -eq 'repair' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
+            throw 'Repair target must equal the exact current ReleaseSet before runtime stop'
+          }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = [string]$values['managed_tun_present']
           switch ($currentMode) {
@@ -339,11 +343,20 @@ jobs:
           if ($tunIndex -eq 0) { throw 'Managed TUN interface index is invalid' }
           if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') { throw 'Managed TUN IPv4 mismatch' }
           if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') { throw 'Managed TUN DNS mismatch' }
-          $serverIp = [string]$values['runtime_server_ip']
+          $statusLines = @(& $env:EDGE_CURRENT_CONSOLE status $env:EDGE_CONTROLLER_ENDPOINT)
+          if ($LASTEXITCODE -ne 0) { throw "Typed controller status failed: $LASTEXITCODE" }
+          $serverIp = $null
+          foreach ($line in $statusLines) {
+            if ([string]$line -match '^Server IP\s+:\s+((?:\d{1,3}\.){3}\d{1,3})\s*$') {
+              $serverIp = $Matches[1]
+              break
+            }
+          }
           $parsedServerIp = [System.Net.IPAddress]::None
-          if (-not [System.Net.IPAddress]::TryParse($serverIp, [ref]$parsedServerIp) -or
+          if ([string]::IsNullOrWhiteSpace($serverIp) -or
+              -not [System.Net.IPAddress]::TryParse($serverIp, [ref]$parsedServerIp) -or
               $parsedServerIp.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
-            throw "Runtime server IPv4 is unavailable for bypass proof: $serverIp"
+            throw "Typed controller status did not expose a valid production server IPv4: $serverIp"
           }
           $serverRoute = Find-NetRoute -RemoteIPAddress $serverIp |
             Sort-Object RouteMetric |

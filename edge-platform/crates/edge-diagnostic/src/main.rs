@@ -1,6 +1,6 @@
 use edge_shared_types::{
     WindowsDatapathMode, canonical_production_desired_state, decode_windows_activation_state,
-    decode_windows_runtime_state, verify_windows_activation_files,
+    verify_windows_activation_files,
 };
 use std::path::{Path, PathBuf};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -315,28 +315,8 @@ fn observe_windows_network(
         }
     }
 
-    let install_root = state_path
-        .parent()
-        .ok_or_else(|| "activation state has no install-root parent".to_owned())?;
-    let runtime_state_path = install_root
-        .join("state")
-        .join("secrets")
-        .join("runtime-state.pb");
-    let server_ip = if runtime_state_path.is_file() {
-        let bytes = std::fs::read(&runtime_state_path).map_err(|err| {
-            format!("failed to read Windows runtime state for route diagnostics: {err}")
-        })?;
-        Some(decode_windows_runtime_state(&bytes)?.server_ip)
-    } else {
-        None
-    };
-    if let Some(server_ip) = server_ip.as_deref() {
-        println!("runtime_server_ip={server_ip}");
-    } else {
-        println!("runtime_server_ip=ABSENT");
-    }
     let managed_tun_index = managed.map(|adapter| adapter.index);
-    observe_ipv4_routes(&adapters, managed_tun_index, server_ip.as_deref())?;
+    observe_ipv4_routes(&adapters, managed_tun_index)?;
     observe_ipv6_route_interfaces(&adapters, managed_tun_index)?;
     Ok(())
 }
@@ -481,9 +461,7 @@ fn wide_ptr_to_string(value: *mut u16) -> String {
 fn observe_ipv4_routes(
     adapters: &[AdapterObservation],
     managed_tun_index: Option<u32>,
-    server_ip: Option<&str>,
 ) -> Result<(), String> {
-    let server_ip = server_ip.and_then(|value| value.parse::<Ipv4Addr>().ok());
     let mut bytes = 0u32;
     let first = unsafe { GetIpForwardTable(null_mut(), &mut bytes, 0) };
     if first != ERROR_INSUFFICIENT_BUFFER || bytes == 0 {
@@ -504,7 +482,7 @@ fn observe_ipv4_routes(
     let count = unsafe { (*table).dwNumEntries as usize };
     let rows = unsafe { (*table).table.as_ptr() };
     let mut relevant = 0usize;
-    let mut by_interface = BTreeMap::<u32, (usize, usize, usize, Vec<String>)>::new();
+    let mut by_interface = BTreeMap::<u32, (usize, usize, Vec<String>)>::new();
     for offset in 0..count {
         let row = unsafe { &*rows.add(offset) };
         let destination = Ipv4Addr::from(row.dwForwardDest.to_ne_bytes());
@@ -512,26 +490,24 @@ fn observe_ipv4_routes(
         let prefix = row.dwForwardMask.count_ones();
         let is_default = row.dwForwardDest == 0 && row.dwForwardMask == 0;
         let is_tun = managed_tun_index == Some(row.dwForwardIfIndex);
-        let is_server = server_ip.is_some_and(|server| destination == server && prefix == 32);
         let summary = by_interface.entry(row.dwForwardIfIndex).or_default();
         summary.0 += 1;
         summary.1 += usize::from(is_default);
-        summary.2 += usize::from(is_server);
-        summary.3.push(format!(
+        summary.2.push(format!(
             "{destination}/{prefix}|{next_hop}|{}|{}",
             row.dwForwardMetric1, row.dwForwardIfIndex
         ));
-        if is_default || is_tun || is_server {
+        if is_default || is_tun {
             relevant += 1;
             println!(
-                "route_ipv4={destination}/{prefix} if:{} next_hop:{} metric:{} default:{} managed_tun:{} server_bypass:{}",
-                row.dwForwardIfIndex, next_hop, row.dwForwardMetric1, is_default, is_tun, is_server
+                "route_ipv4={destination}/{prefix} if:{} next_hop:{} metric:{} default:{} managed_tun:{}",
+                row.dwForwardIfIndex, next_hop, row.dwForwardMetric1, is_default, is_tun
             );
         }
     }
     println!("relevant_ipv4_route_count={relevant}");
     println!("routed_interface_count={}", by_interface.len());
-    for (index, (routes, defaults, server_bypasses, mut normalized_routes)) in by_interface {
+    for (index, (routes, defaults, mut normalized_routes)) in by_interface {
         normalized_routes.sort_unstable();
         let fingerprint = sha256_lines(&normalized_routes);
         let name = adapters
@@ -540,7 +516,7 @@ fn observe_ipv4_routes(
             .map(|adapter| adapter.name.replace('\n', " "))
             .unwrap_or_else(|| "UNKNOWN".to_owned());
         println!(
-            "route_interface=if:{index} name:{name} routes:{routes} defaults:{defaults} managed_tun:{} server_bypasses:{server_bypasses} sha256:{fingerprint}",
+            "route_interface=if:{index} name:{name} routes:{routes} defaults:{defaults} managed_tun:{} sha256:{fingerprint}",
             managed_tun_index == Some(index)
         );
     }
