@@ -1540,9 +1540,10 @@ fn require_supported_reinstall_authority() -> Result<(), String> {
         .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
     match mode {
         WindowsDatapathMode::ProxyOnly | WindowsDatapathMode::ManagedTun => Ok(()),
-        WindowsDatapathMode::Unspecified => {
-            Err("accepted-release reinstall requires an explicit supported Windows datapath mode".to_owned())
-        }
+        WindowsDatapathMode::Unspecified => Err(
+            "accepted-release reinstall requires an explicit supported Windows datapath mode"
+                .to_owned(),
+        ),
     }
 }
 
@@ -1787,7 +1788,11 @@ fn sync_stable_windows_release_tools(
 
     for (source, target_name, label) in [
         (&activation.console_path, "edge-console.exe", "console"),
-        (&activation.diagnostic_path, "edge-diagnostic.exe", "diagnostic"),
+        (
+            &activation.diagnostic_path,
+            "edge-diagnostic.exe",
+            "diagnostic",
+        ),
     ] {
         let bytes = fs::read(source).map_err(|err| {
             format!("failed to read exact {label} for stable rollback boundary: {err}")
@@ -1844,7 +1849,9 @@ fn rollback_privileged_release(
             .and_then(|_| write_atomic(&previous_path, &previous_bytes));
         #[cfg(windows)]
         let owner_restore = sync_stable_windows_release_tools(install_root, &current)
-            .and_then(|_| converge_controller_service(install_root, Path::new(&current.controller_path)))
+            .and_then(|_| {
+                converge_controller_service(install_root, Path::new(&current.controller_path))
+            })
             .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
         #[cfg(not(windows))]
         let owner_restore = sync_stable_windows_release_tools(install_root, &current)
