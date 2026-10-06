@@ -67,6 +67,8 @@ jobs:
         github.event.comment.body == '/windows smoke' ||
         github.event.comment.body == '/windows diagnose' ||
         github.event.comment.body == '/windows converge' ||
+        github.event.comment.body == '/windows start' ||
+        github.event.comment.body == '/windows stop' ||
         github.event.comment.body == '/windows repair' ||
         github.event.comment.body == '/windows rollback'
       )
