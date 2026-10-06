@@ -339,14 +339,20 @@ jobs:
           if ($tunIndex -eq 0) { throw 'Managed TUN interface index is invalid' }
           if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') { throw 'Managed TUN IPv4 mismatch' }
           if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') { throw 'Managed TUN DNS mismatch' }
-          $serverBypass = @(
-            $doctor | Where-Object {
-              ([string]$_ -match '^route_ipv4=') -and
-              ([string]$_ -match 'managed_tun:false') -and
-              ([string]$_ -match 'server_bypass:true')
-            }
-          )
-          if ($serverBypass.Count -lt 1) { throw 'Production server bypass route is absent outside managed TUN' }
+          $serverIp = [string]$values['runtime_server_ip']
+          $parsedServerIp = [System.Net.IPAddress]::None
+          if (-not [System.Net.IPAddress]::TryParse($serverIp, [ref]$parsedServerIp) -or
+              $parsedServerIp.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            throw "Runtime server IPv4 is unavailable for bypass proof: $serverIp"
+          }
+          $serverRoute = Find-NetRoute -RemoteIPAddress $serverIp |
+            Sort-Object RouteMetric |
+            Select-Object -First 1
+          if (-not $serverRoute) { throw "No Windows best route exists for production server $serverIp" }
+          if ([uint32]$serverRoute.InterfaceIndex -eq $tunIndex) {
+            throw "Production server $serverIp is captured by managed TUN"
+          }
+          $serverAdapter = Get-NetAdapter -InterfaceIndex ([uint32]$serverRoute.InterfaceIndex) -ErrorAction Stop
 
           $dns = Resolve-DnsName 'www.gstatic.com' -Type A -DnsOnly -ErrorAction Stop |
             Where-Object { $_.IPAddress } |
@@ -404,6 +410,9 @@ jobs:
             throw 'Managed sing-box process lookup still reports Access is denied after fresh restart'
           }
 
+          Write-Host "managed_tun_server_bypass_ip=$serverIp"
+          Write-Host "managed_tun_server_bypass_owner=$($serverAdapter.Name)"
+          Write-Host 'managed_tun_server_bypass=PASS'
           Write-Host 'managed_tun_ordinary_dns=PASS'
           Write-Host 'managed_tun_ordinary_https=PASS'
           Write-Host 'managed_tun_local_proxy=PASS'
@@ -433,9 +442,9 @@ jobs:
             Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_TARGET_NOT_ACTIVE'
             exit 0
           }
-          $rollbackConsole = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
-          if (-not (Test-Path -LiteralPath $rollbackConsole -PathType Leaf)) {
-            throw 'Stable rollback console is missing'
+          $rollbackConsole = $env:EDGE_CURRENT_CONSOLE
+          if ([string]::IsNullOrWhiteSpace($rollbackConsole) -or -not (Test-Path -LiteralPath $rollbackConsole -PathType Leaf)) {
+            throw 'Exact immutable rollback console is unavailable'
           }
           & $rollbackConsole privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw "Fail-closed exact previous rollback failed: $LASTEXITCODE" }
