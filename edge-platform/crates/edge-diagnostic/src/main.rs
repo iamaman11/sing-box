@@ -330,6 +330,11 @@ fn observe_windows_network(
     } else {
         None
     };
+    if let Some(server_ip) = server_ip.as_deref() {
+        println!("runtime_server_ip={server_ip}");
+    } else {
+        println!("runtime_server_ip=ABSENT");
+    }
     let managed_tun_index = managed.map(|adapter| adapter.index);
     observe_ipv4_routes(&adapters, managed_tun_index, server_ip.as_deref())?;
     observe_ipv6_route_interfaces(&adapters, managed_tun_index)?;
