@@ -299,6 +299,14 @@ jobs:
           if ($tunIndex -eq 0) { throw 'Managed TUN interface index is invalid' }
           if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') { throw 'Managed TUN IPv4 mismatch' }
           if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') { throw 'Managed TUN DNS mismatch' }
+          $serverBypass = @(
+            $doctor | Where-Object {
+              ([string]$_ -match '^route_ipv4=') -and
+              ([string]$_ -match 'managed_tun:false') -and
+              ([string]$_ -match 'server_bypass:true')
+            }
+          )
+          if ($serverBypass.Count -lt 1) { throw 'Production server bypass route is absent outside managed TUN' }
 
           $dns = Resolve-DnsName 'www.gstatic.com' -Type A -DnsOnly -ErrorAction Stop |
             Where-Object { $_.IPAddress } |
@@ -354,14 +362,23 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:EDGE_MUTATION_COMPLETED -cne 'YES') {
-            Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_NO_SUCCESSFUL_MUTATION'
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $beforeRollback = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Failed to classify active release before fail-closed rollback: $LASTEXITCODE" }
+          $beforeValues = @{}
+          foreach ($line in $beforeRollback) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $beforeValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$beforeValues['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+            Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_TARGET_NOT_ACTIVE'
             exit 0
           }
           & $env:EDGE_CURRENT_CONSOLE privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw "Fail-closed exact previous rollback failed: $LASTEXITCODE" }
           $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
-          $doctor = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'))
+          $doctor = @(& $diagnostic doctor $current)
           if ($LASTEXITCODE -ne 0) { throw "Post-rollback diagnostic failed: $LASTEXITCODE" }
           $values = @{}
           foreach ($line in $doctor) {
