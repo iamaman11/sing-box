@@ -185,7 +185,9 @@ def main() -> None:
         and "foreign_cloudflarewarp_tun_dns_cleanup=PASS" in windows_physical
         and "Set-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP'" not in windows_physical
         and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
-        and "$env:EDGE_OPERATION -ne 'diagnose'" in windows_physical
+        and "EDGE_CURRENT_EXACT_DIAGNOSTIC" in windows_physical
+        and "Exact immutable post-state diagnostic path is unavailable" in windows_physical
+        and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "managed_tun_present" in windows_physical
         and "Read-only managed proxy trace" not in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
@@ -203,6 +205,9 @@ def main() -> None:
         and "require_supported_reinstall_authority" in windows_console
         and "require_proxy_only_reinstall_authority" not in windows_console
         and "sync_stable_windows_release_tools" in windows_console
+        and "current.pb and previous.pb identify the same ReleaseSet" in windows_console
+        and "repeated rollback is fail-closed because current.pb now equals previous.pb" in windows_console
+        and "failed to swap exact current/previous Windows activation authority" not in windows_console
         and "spawn_with_temporary_debug_privilege" in edge_local_runtime
         and "SeDebugPrivilege" in edge_local_runtime
         and "ProxyOnlySmoke" not in runtime_proto
