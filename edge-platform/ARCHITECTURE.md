@@ -761,9 +761,13 @@ Current Stage-4B implementation state after the closed 4B.1 code/proxy-only life
    immutable authority explicitly.
 4. Add one bounded local Windows ReleaseSet rollback to the existing privileged bridge. It may target only
    the exact locally verified `previous.pb`, must require no Git/provider/network access and must not accept
-   an arbitrary release digest. Rollback restores the previous exact binary/activation authority; that
+   an arbitrary release digest. Rollback restores the previous exact binary/activation authority without
+   swapping the abandoned current release back into `previous.pb`; after success `current.pb == previous.pb`,
+   so a repeated rollback fails closed before runtime stop instead of toggling between releases. That
    previous SCM owner then rematerializes runtime JSON from the unchanged typed runtime projection and its
-   own embedded canonical desired state before startup. No duplicated mode marker participates in rollback.
+   own embedded canonical desired state before startup. Lifecycle verification must execute the immutable
+   diagnostic named by the verified active activation rather than infer datapath mode from a stable copy
+   built for a different release. No duplicated mode marker participates in rollback.
 5. For the pinned sing-box line, Windows TUN routing/DNS is owned by sing-box itself: TUN + `auto_route`,
    `strict_route`, native/hijack DNS, existing `route.auto_detect_interface`, exact endpoint route
    exclusions and stable DIRECT loop-prevention rules. The `warp-svc.exe -> direct` process rule remains
