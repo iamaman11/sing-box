@@ -1709,15 +1709,9 @@ fn activate_privileged_release(
     let before_activation = load_verified_activation(install_root).ok();
     let mut previous_bytes_before = None;
 
-    let reconcile_current_owner = |activation: &WindowsActivationState| -> Result<(), String> {
-        retarget_privileged_task(install_root, &activation.console_path)?;
-        #[cfg(windows)]
-        converge_controller_service_with_activation_console(install_root, activation)?;
-        Ok(())
-    };
     let restore_verified_owner = |activation: &WindowsActivationState| -> Result<(), String> {
         sync_stable_windows_release_tools(install_root, activation)?;
-        reconcile_current_owner(activation)
+        reconcile_activation_owner(install_root, activation)
     };
 
     if force_rematerialize {
@@ -1745,7 +1739,7 @@ fn activate_privileged_release(
     } else if let Some(activation) = before_activation.as_ref()
         && activation.release_set_sha256 == target_release
     {
-        reconcile_current_owner(activation)?;
+        reconcile_activation_owner(install_root, activation)?;
         return Ok((
             "RELEASE_ALREADY_CONVERGED".to_owned(),
             "exact target ReleaseSet is already locally verified; installer not invoked; exact owner handoff reconciled".to_owned(),
@@ -1809,13 +1803,13 @@ fn activate_privileged_release(
                         != Some(expected_previous)
                 {
                     let _ = write_atomic(&install_root.join("previous.pb"), expected_previous);
-                    reconcile_current_owner(&observed)?;
+                    reconcile_activation_owner(install_root, &observed)?;
                     return Err(
                         "accepted release rematerialized but previous.pb changed unexpectedly; rollback authority was restored"
                             .to_owned(),
                     );
                 }
-                reconcile_current_owner(&observed)?;
+                reconcile_activation_owner(install_root, &observed)?;
                 return Ok((
                     "RELEASE_REINSTALLED_REOBSERVED".to_owned(),
                     "alternate immutable release slot committed despite installer exit failure; exact authority was reobserved and owner handoff reconciled"
@@ -1985,22 +1979,12 @@ fn rollback_privileged_release(
 
     let handoff = (|| -> Result<(), String> {
         sync_stable_windows_release_tools(install_root, &previous)?;
-        #[cfg(windows)]
-        converge_controller_service_with_activation_console(install_root, &previous)?;
-        retarget_privileged_task(install_root, &previous.console_path)?;
-        Ok(())
+        reconcile_activation_owner(install_root, &previous)
     })();
     if let Err(err) = handoff {
         let pointer_restore = write_atomic(&current_path, &current_bytes);
-        #[cfg(windows)]
         let owner_restore = sync_stable_windows_release_tools(install_root, &current)
-            .and_then(|_| {
-                converge_controller_service_with_activation_console(install_root, &current)
-            })
-            .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
-        #[cfg(not(windows))]
-        let owner_restore = sync_stable_windows_release_tools(install_root, &current)
-            .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
+            .and_then(|_| reconcile_activation_owner(install_root, &current));
         return Err(format!(
             "previous ReleaseSet activation handoff failed: {err}; pointer_restore={pointer_restore:?}; owner_restore={owner_restore:?}"
         ));
@@ -2019,6 +2003,16 @@ fn rollback_privileged_release(
             .to_owned(),
         Some(verified.release_set_sha256),
     ))
+}
+
+fn reconcile_activation_owner(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+) -> Result<(), String> {
+    retarget_privileged_task(install_root, &activation.console_path)?;
+    #[cfg(windows)]
+    converge_controller_service_with_activation_console(install_root, activation)?;
+    Ok(())
 }
 
 fn retarget_privileged_task(install_root: &Path, console_path: &str) -> Result<(), String> {
