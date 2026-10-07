@@ -738,6 +738,7 @@ Current Stage-4B implementation state:
 - `windows-physical.yml` remains the sole physical Windows operator boundary. Release transitions are
   single-owner: the existing privileged activation owns stopping the exact managed child, immutable release
   activation and SCM reconciliation; the workflow does not duplicate that stop;
+- typed Windows process observation distinguishes managed / conflicting external / absent ownership;
 - SCM `EdgePlatformController` is the sole steady-state runtime owner. It performs bounded startup
   convergence, is not a watchdog/polling loop, and a managed sing-box child is valid only while owned by the
   current controller process;
