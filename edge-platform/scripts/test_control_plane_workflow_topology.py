@@ -218,6 +218,7 @@ def main() -> None:
         and windows_physical.count("privileged-runtime-evidence") == 2
         and "EDGE_STOPPED_OWNER_RECOVERY=YES" in windows_physical
         and "Stopped-owner recovery still observes privileged external sing-box ownership" in windows_physical
+        and "stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT" in windows_physical
         and "Recovering stopped SCM owner only after privileged evidence proved zero external sing-box owners" in windows_physical
         and "RESTARTED_ORPHAN_MANAGED" in windows_controller_runtime
         and "failed to stop exact managed runtime on controller exit" in windows_controller_runtime
