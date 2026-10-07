@@ -1585,9 +1585,6 @@ fn activate_privileged_release(
             Some(fs::read(install_root.join("previous.pb")).map_err(|err| {
                 format!("failed to snapshot previous.pb before reinstall: {err}")
             })?);
-
-        stop_runtime_process(&local_singbox_config_path(install_root), true)
-            .map_err(|err| format!("failed to stop exact managed proxy before reinstall: {err}"))?;
     } else if let Some(activation) = before_activation.as_ref()
         && activation.release_set_sha256 == target_release
     {
@@ -1597,6 +1594,9 @@ fn activate_privileged_release(
             Some(activation.release_set_sha256.clone()),
         ));
     }
+
+    stop_runtime_process(&local_singbox_config_path(install_root), true)
+        .map_err(|err| format!("failed to stop exact managed proxy before release transition: {err}"))?;
 
     let installer = install_root
         .join("bootstrap")
