@@ -18,7 +18,7 @@ use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
 #[cfg(windows)]
-use std::ffi::OsString;
+use std::ffi::{c_void, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -51,7 +51,16 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
 #[cfg(windows)]
+use windows::Win32::Foundation::WAIT_IO_COMPLETION;
+#[cfg(windows)]
+use windows::Win32::System::Services::{
+    NotifyServiceStatusChangeW, SC_HANDLE, SERVICE_NOTIFY_2W, SERVICE_NOTIFY_RUNNING,
+    SERVICE_NOTIFY_STATUS_CHANGE, SERVICE_NOTIFY_STOPPED,
+};
+#[cfg(windows)]
 use windows::Win32::System::TaskScheduler::ITaskService;
+#[cfg(windows)]
+use windows::Win32::System::Threading::SleepEx;
 #[cfg(windows)]
 use windows::Win32::System::Variant::VARIANT;
 #[cfg(windows)]
@@ -2364,24 +2373,106 @@ fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::E
 }
 
 #[cfg(windows)]
+unsafe extern "system" fn service_status_notification_callback(_parameter: *const c_void) {}
+
+#[cfg(windows)]
 fn wait_for_service_state(
     service: &Service,
     expected: ServiceState,
     timeout: Duration,
 ) -> Result<(), String> {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        let status = service
+    let notify_mask = match expected {
+        ServiceState::Running => SERVICE_NOTIFY_RUNNING,
+        ServiceState::Stopped => SERVICE_NOTIFY_STOPPED,
+        _ => {
+            return Err(format!(
+                "unsupported controller service notification target: {expected:?}"
+            ));
+        }
+    };
+
+    let initial = service
+        .query_status()
+        .map_err(|err| format!("failed to query controller service state: {err}"))?;
+    if initial.current_state == expected {
+        return Ok(());
+    }
+
+    let monitor_manager =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|err| format!("failed to open SCM for status notification: {err}"))?;
+    let monitor = monitor_manager
+        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+        .map_err(|err| format!("failed to open controller service notification handle: {err}"))?;
+    let mut notification = SERVICE_NOTIFY_2W {
+        dwVersion: SERVICE_NOTIFY_STATUS_CHANGE,
+        pfnNotifyCallback: Some(service_status_notification_callback),
+        ..Default::default()
+    };
+    let registration = unsafe {
+        NotifyServiceStatusChangeW(
+            SC_HANDLE(monitor.raw_handle()),
+            notify_mask,
+            &mut notification,
+        )
+    };
+    if registration != 0 {
+        return Err(format!(
+            "failed to register controller service status notification: win32={registration}"
+        ));
+    }
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let wait_ms = u32::try_from(remaining.as_millis())
+            .unwrap_or(u32::MAX)
+            .max(1);
+        let wait_result = unsafe { SleepEx(wait_ms, true) };
+        if wait_result == 0 {
+            break;
+        }
+        if wait_result != WAIT_IO_COMPLETION.0 {
+            drop(monitor);
+            return Err(format!(
+                "unexpected alertable SCM wait result: {wait_result}"
+            ));
+        }
+        if notification.dwNotificationTriggered & notify_mask.0 == 0 {
+            continue;
+        }
+        if notification.dwNotificationStatus != 0 {
+            drop(monitor);
+            return Err(format!(
+                "controller service status notification failed: win32={}",
+                notification.dwNotificationStatus
+            ));
+        }
+
+        let observed = monitor
             .query_status()
-            .map_err(|err| format!("failed to query controller service state: {err}"))?;
-        if status.current_state == expected {
+            .map_err(|err| format!("failed to query notified controller service state: {err}"))?;
+        if observed.current_state == expected {
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(250));
+        drop(monitor);
+        return Err(format!(
+            "controller service notification targeted {expected:?} but observed {:?}",
+            observed.current_state
+        ));
     }
+
+    drop(monitor);
+    let observed = service
+        .query_status()
+        .map_err(|err| format!("failed to query controller service after notification timeout: {err}"))?;
     Err(format!(
-        "controller service did not reach {expected:?} within {} seconds",
-        timeout.as_secs()
+        "controller service did not reach {expected:?} within {} seconds; observed {:?}",
+        timeout.as_secs(),
+        observed.current_state
     ))
 }
 
