@@ -853,9 +853,12 @@ through the existing single GitHub/Windows boundary:
 - `/windows rollback`: stop only the exact managed process and restore exact verified `previous.pb`;
 - `/windows stop` / `/windows start`: transient runtime controls only. They may stop/start only the exact
   managed sing-box through the existing controller RPC, must not change ReleaseSet authority or durable
-  datapath desired state, and leave the SCM controller running. A service restart or Windows reboot
-  intentionally re-applies startup convergence, so `stop` is a temporary pause rather than a second
-  persistent desired-state mechanism;
+  datapath desired state, and leave the SCM controller running. `start` is idempotent: an already healthy
+  managed runtime is NOOP, not a restart. If a read-only pre-state diagnostic fails because an external
+  sing-box conflicts with MANAGED_TUN, the workflow may collect only the existing bounded SYSTEM
+  `privileged-runtime-evidence` before failing; it must not stop or adopt that external owner. A service
+  restart or Windows reboot intentionally re-applies startup convergence, so `stop` is a temporary pause
+  rather than a second persistent desired-state mechanism;
 - reconverge to the current accepted ReleaseSet and repeat read-only diagnosis.
 
 The external working sing-box must have the same observed process identity before and after every managed

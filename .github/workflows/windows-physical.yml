@@ -190,6 +190,9 @@ jobs:
             throw "Stage 4B.2-C requires zero external sing-box owners; observed $($externalPids.Count)"
           }
           $signature = $externalPids -join ','
+          if ($env:EDGE_OPERATION -eq 'start' -and [int]$values['managed_singbox_process_count'] -eq 1) {
+            "EDGE_START_NOOP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          }
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_BEFORE_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -207,7 +210,12 @@ jobs:
               & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
             }
             'start' {
-              & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
+              if ($env:EDGE_START_NOOP -ceq 'YES') {
+                Write-Host 'runtime_start=NOOP_ALREADY_RUNNING'
+                $LASTEXITCODE = 0
+              } else {
+                & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
+              }
             }
             'stop' {
               & $env:EDGE_CURRENT_CONSOLE stop-local $env:EDGE_CONTROLLER_ENDPOINT
@@ -311,23 +319,42 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
 
       - name: Read-only privileged runtime evidence after restart
+        if: ${{ always() }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $evidenceLines = @(& $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
+          $evidenceStrict = $true
+          $evidenceConsole = $env:EDGE_CURRENT_CONSOLE
+          if ([string]::IsNullOrWhiteSpace($evidenceConsole) -or
+              -not (Test-Path -LiteralPath $evidenceConsole -PathType Leaf)) {
+            $evidenceStrict = $false
+            $evidenceConsole = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          }
+          if (-not (Test-Path -LiteralPath $evidenceConsole -PathType Leaf)) {
+            Write-Warning 'Privileged runtime evidence console is unavailable after an earlier lifecycle failure'
+            exit 0
+          }
+
+          $evidenceLines = @(& $evidenceConsole privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
           $evidenceExit = $LASTEXITCODE
           $evidenceLines | Write-Host
-          if ($evidenceExit -ne 0) { throw "Privileged read-only runtime evidence failed: $evidenceExit" }
+          if ($evidenceExit -ne 0) {
+            if ($evidenceStrict) { throw "Privileged read-only runtime evidence failed: $evidenceExit" }
+            Write-Warning "Privileged conflict evidence failed read-only: $evidenceExit"
+            exit 0
+          }
 
           $detailLine = [string]($evidenceLines |
             Where-Object { [string]$_ -like 'detail=*' } |
             Select-Object -Last 1)
           if ([string]::IsNullOrWhiteSpace($detailLine) -or
               $detailLine -notmatch '^detail=runtime_evidence=BOUNDED_READ_ONLY') {
-            throw 'Privileged runtime evidence did not return the bounded typed detail contract'
+            if ($evidenceStrict) { throw 'Privileged runtime evidence did not return the bounded typed detail contract' }
+            Write-Warning 'Privileged conflict evidence did not return the bounded typed detail contract'
+            exit 0
           }
 
-          if ($env:EDGE_OPERATION -in @('converge','repair') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
+          if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
             if ($detailLine -match '(?:^|;)stderr=MISSING(?:;|$)') {
               throw 'Managed sing-box stderr evidence is missing after runtime restart'
             }

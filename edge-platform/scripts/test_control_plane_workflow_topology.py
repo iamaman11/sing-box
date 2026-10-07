@@ -214,6 +214,11 @@ def main() -> None:
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "managed_tun_present" in windows_physical
         and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
+        and "runtime_start=NOOP_ALREADY_RUNNING" in windows_physical
+        and windows_physical.count("privileged-runtime-evidence") == 1
+        and "if: ${{ always() }}" in windows_physical
+        and "bin\\edge-console.exe" in windows_physical
+        and "Privileged conflict evidence failed read-only" in windows_physical
         and "Transient runtime control changed ReleaseSet authority" in windows_physical
         and "Expected zero managed proxy processes after stop" in windows_physical
         and "Final explicit runtime stop left managed TUN present" in windows_physical
