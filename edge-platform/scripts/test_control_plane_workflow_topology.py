@@ -183,7 +183,7 @@ def main() -> None:
         and windows_physical.rindex("verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
-        and "Managed sing-box stderr evidence is missing after runtime restart" in windows_physical
+        and "Managed sing-box stderr evidence is missing after lifecycle verification" in windows_physical
         and "Managed sing-box stderr evidence was omitted from the bounded privileged result" in windows_physical
         and windows_physical.count("External sing-box owner changed") == 1
         and "EDGE_EXTERNAL_PIDS_BEFORE" in windows_physical
@@ -220,7 +220,7 @@ def main() -> None:
         and "runtime_start=NOOP_ALREADY_RUNNING" in windows_physical
         and windows_physical.count("privileged-runtime-evidence") == 2
         and "EDGE_STOPPED_OWNER_RECOVERY=YES" in windows_physical
-        and "Stopped-owner recovery still observes privileged external sing-box ownership" in windows_physical
+        and "Bounded recovery still observes privileged external sing-box ownership" in windows_physical
         and "stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT" in windows_physical
         and "Recovering stopped SCM owner only after privileged evidence proved zero external sing-box owners" in windows_physical
         and "RESTARTED_ORPHAN_MANAGED" in windows_controller_runtime
