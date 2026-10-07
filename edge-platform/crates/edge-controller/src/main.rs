@@ -497,10 +497,9 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
         (Ok(()), Ok(())) => Ok(()),
         (Err(err), Ok(())) => Err(err),
         (Ok(()), Err(cleanup_err)) => Err(io::Error::other(cleanup_err).into()),
-        (Err(err), Err(cleanup_err)) => Err(io::Error::other(format!(
-            "controller runtime failed: {err}; {cleanup_err}"
-        ))
-        .into()),
+        (Err(err), Err(cleanup_err)) => {
+            Err(io::Error::other(format!("controller runtime failed: {err}; {cleanup_err}")).into())
+        }
     };
 
     status_handle.set_service_status(ServiceStatus {
@@ -627,8 +626,9 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
                 state_path,
                 runtime_root: default_runtime_root(repo_root),
             };
-            start_runtime_process(&paths, false)
-                .map_err(|err| format!("failed to restart orphaned exact managed runtime: {err}"))?;
+            start_runtime_process(&paths, false).map_err(|err| {
+                format!("failed to restart orphaned exact managed runtime: {err}")
+            })?;
             Ok("RESTARTED_ORPHAN_MANAGED")
         }
         WindowsStartupDecision::BlockedConflict => {
