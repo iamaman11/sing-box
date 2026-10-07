@@ -515,6 +515,28 @@ def main() -> None:
         "fn run_icacls(", service_wait_start
     )
     service_wait = windows_console[service_wait_start:service_wait_end]
+    service_entry_start = windows_controller_runtime.index(
+        "fn edge_controller_service_main("
+    )
+    service_entry_end = windows_controller_runtime.index(
+        "fn run_edge_controller_service()", service_entry_start
+    )
+    service_entry = windows_controller_runtime[service_entry_start:service_entry_end]
+    runtime_start_start = windows_controller_runtime.index(
+        "fn converge_windows_runtime_on_service_start("
+    )
+    runtime_start_end = windows_controller_runtime.index(
+        "fn normalize_runtime_secret_refs(", runtime_start_start
+    )
+    runtime_start = windows_controller_runtime[runtime_start_start:runtime_start_end]
+    require(
+        "catch_unwind(AssertUnwindSafe(run_edge_controller_service))" in service_entry
+        and 'write_controller_service_boundary_error("panic"' in service_entry
+        and 'write_controller_service_boundary_error("service_entry"' in service_entry
+        and "unreachable!(" not in runtime_start,
+        "Windows service entry must contain Rust panics before the extern-system boundary and startup ownership conflicts must remain fail-closed without panicking",
+    )
+
     require(
         "WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS" in shared_types
         and "Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS)"

@@ -3,8 +3,12 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+#[cfg(windows)]
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::sync::{OnceLock, mpsc};
@@ -131,6 +135,8 @@ struct WindowsServiceConfig {
 
 #[cfg(windows)]
 static WINDOWS_SERVICE_CONFIG: OnceLock<WindowsServiceConfig> = OnceLock::new();
+#[cfg(windows)]
+static CONTROLLER_SERVICE_ERROR_WRITTEN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 windows_service::define_windows_service!(
@@ -468,18 +474,48 @@ fn write_controller_service_error(
         sanitize_controller_service_error(message)
     );
     fs::write(controller_service_error_path(repo_root), body.as_bytes())
-        .map_err(|err| format!("failed to persist controller service error: {err}"))
+        .map_err(|err| format!("failed to persist controller service error: {err}"))?;
+    CONTROLLER_SERVICE_ERROR_WRITTEN.store(true, Ordering::Release);
+    Ok(())
 }
 
 #[cfg(windows)]
 fn clear_controller_service_error(repo_root: &Path) -> Result<(), String> {
     match fs::remove_file(controller_service_error_path(repo_root)) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(()) => {
+            CONTROLLER_SERVICE_ERROR_WRITTEN.store(false, Ordering::Release);
+            Ok(())
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            CONTROLLER_SERVICE_ERROR_WRITTEN.store(false, Ordering::Release);
+            Ok(())
+        }
         Err(err) => Err(format!(
             "failed to clear stale controller service error: {err}"
         )),
     }
+}
+
+#[cfg(any(windows, test))]
+fn controller_service_panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string Rust panic payload".to_owned()
+    }
+}
+
+#[cfg(windows)]
+fn write_controller_service_boundary_error(stage: &str, message: &str, overwrite: bool) {
+    let Some(config) = WINDOWS_SERVICE_CONFIG.get() else {
+        return;
+    };
+    if !overwrite && CONTROLLER_SERVICE_ERROR_WRITTEN.load(Ordering::Acquire) {
+        return;
+    }
+    let _ = write_controller_service_error(&config.repo_root, stage, message);
 }
 
 #[cfg(windows)]
@@ -506,8 +542,19 @@ fn run_windows_service(args: cli::ServeArgs) -> Result<(), Box<dyn std::error::E
 
 #[cfg(windows)]
 fn edge_controller_service_main(_arguments: Vec<OsString>) {
-    if let Err(err) = run_edge_controller_service() {
-        eprintln!("EdgePlatformController service failed: {err}");
+    CONTROLLER_SERVICE_ERROR_WRITTEN.store(false, Ordering::Release);
+    match catch_unwind(AssertUnwindSafe(run_edge_controller_service)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            let message = err.to_string();
+            write_controller_service_boundary_error("service_entry", &message, false);
+            eprintln!("EdgePlatformController service failed: {message}");
+        }
+        Err(payload) => {
+            let message = controller_service_panic_message(payload.as_ref());
+            write_controller_service_boundary_error("panic", &message, true);
+            eprintln!("EdgePlatformController service panicked: {message}");
+        }
     }
 }
 
@@ -787,17 +834,32 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
             Ok("RESTARTED_ORPHAN_MANAGED")
         }
         WindowsStartupDecision::BlockedConflict => {
-            let RuntimeProcessClassification::Conflicting(processes) = &classification else {
-                unreachable!("blocked startup decision requires conflicting ownership")
-            };
-            eprintln!(
-                "managed Windows runtime startup is fail-closed because conflicting sing-box ownership exists: {}",
-                processes
-                    .iter()
-                    .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            );
+            match &classification {
+                RuntimeProcessClassification::Conflicting(processes) => {
+                    eprintln!(
+                        "managed Windows runtime startup is fail-closed because conflicting sing-box ownership exists: {}",
+                        processes
+                            .iter()
+                            .map(|process| format!(
+                                "pid={} cmd={}",
+                                process.pid, process.command_line
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    );
+                }
+                RuntimeProcessClassification::Managed(process) => {
+                    eprintln!(
+                        "managed Windows runtime startup is fail-closed because ownership evidence is inconsistent: managed_count={managed_count} pid={} cmd={}",
+                        process.pid, process.command_line
+                    );
+                }
+                RuntimeProcessClassification::Absent => {
+                    eprintln!(
+                        "managed Windows runtime startup is fail-closed because ownership evidence is inconsistent: managed_count={managed_count} classification=ABSENT"
+                    );
+                }
+            }
             Ok("BLOCKED_CONFLICT")
         }
         WindowsStartupDecision::StartAbsent => {
@@ -4840,6 +4902,27 @@ mod tests {
                 WindowsDatapathMode::ProxyOnly,
             ),
             WindowsStartupDecision::BlockedConflict
+        );
+    }
+
+    #[test]
+    fn controller_service_panic_payload_is_bounded_to_safe_text_input() {
+        let string_payload: Box<dyn std::any::Any + Send> = Box::new("service panic".to_owned());
+        assert_eq!(
+            controller_service_panic_message(string_payload.as_ref()),
+            "service panic"
+        );
+
+        let static_payload: Box<dyn std::any::Any + Send> = Box::new("static panic");
+        assert_eq!(
+            controller_service_panic_message(static_payload.as_ref()),
+            "static panic"
+        );
+
+        let opaque_payload: Box<dyn std::any::Any + Send> = Box::new(7_u32);
+        assert_eq!(
+            controller_service_panic_message(opaque_payload.as_ref()),
+            "non-string Rust panic payload"
         );
     }
 
