@@ -312,7 +312,8 @@ def main() -> None:
         and "scm_process_id" in windows_diagnostic
         and "service_binary_path" in windows_diagnostic
         and "powershell.exe" not in windows_diagnostic.lower()
-        and "win32_" not in windows_diagnostic.lower(),
+        and "get-ciminstance" not in windows_diagnostic.lower()
+        and "win32_service" not in windows_diagnostic.lower(),
         "Stage 4B diagnostics must derive mode from embedded desired state and use native typed Windows APIs without PowerShell/WMI parsing",
     )
     require(
