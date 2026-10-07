@@ -64,7 +64,7 @@ use edge_shared_types::{
     PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
     SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, VerifyRuntimeRequest, WindowsDatapathMode, WINDOWS_CONTROLLER_ADDR,
+    TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode,
     canonical_production_desired_state, decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
@@ -474,7 +474,9 @@ fn clear_controller_service_error(repo_root: &Path) -> Result<(), String> {
     match fs::remove_file(controller_service_error_path(repo_root)) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!("failed to clear stale controller service error: {err}")),
+        Err(err) => Err(format!(
+            "failed to clear stale controller service error: {err}"
+        )),
     }
 }
 

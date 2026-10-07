@@ -1,5 +1,5 @@
 use edge_shared_types::{
-    WindowsDatapathMode, WINDOWS_CONTROLLER_ADDR, canonical_production_desired_state,
+    WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode, canonical_production_desired_state,
     decode_windows_activation_state, verify_windows_activation_files,
 };
 use std::path::{Path, PathBuf};
@@ -252,7 +252,9 @@ fn observe_controller_listener(controller_pid: Option<u32>) -> Result<(), String
     );
 
     if exact.len() > 1 {
-        return Err("multiple exact controller listeners violate single-owner readiness".to_owned());
+        return Err(
+            "multiple exact controller listeners violate single-owner readiness".to_owned(),
+        );
     }
     if let Some(pid) = exact.first().copied() {
         if controller_pid != Some(pid) {

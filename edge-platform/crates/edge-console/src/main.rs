@@ -34,15 +34,15 @@ use edge_shared_types::{
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsDatapathMode,
-    WindowsPrivilegedOperation, WindowsPrivilegedRequest, WindowsPrivilegedResult,
-    WindowsRuntimeState, WindowsTunnelBinding, WINDOWS_CONTROLLER_ADDR,
-    WINDOWS_CONTROLLER_ENDPOINT, canonical_production_desired_state,
-    decode_windows_activation_state, decode_windows_privileged_request,
-    decode_windows_privileged_result, decode_windows_runtime_state,
-    encode_windows_activation_state, encode_windows_privileged_request,
-    encode_windows_privileged_result, encode_windows_runtime_state,
-    parse_credential_transition_action, verify_windows_activation_files,
+    TraceObservation, UbuntuProxyState, WINDOWS_CONTROLLER_ADDR, WINDOWS_CONTROLLER_ENDPOINT,
+    WindowsActivationState, WindowsDatapathMode, WindowsPrivilegedOperation,
+    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
+    canonical_production_desired_state, decode_windows_activation_state,
+    decode_windows_privileged_request, decode_windows_privileged_result,
+    decode_windows_runtime_state, encode_windows_activation_state,
+    encode_windows_privileged_request, encode_windows_privileged_result,
+    encode_windows_runtime_state, parse_credential_transition_action,
+    verify_windows_activation_files,
 };
 use tonic::Request;
 use tonic::transport::Channel;
@@ -1220,13 +1220,19 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
 
 #[cfg(windows)]
 fn read_controller_service_error_evidence(install_root: &Path) -> Result<String, String> {
-    let path = install_root.join("logs").join("controller-service-error.txt");
+    let path = install_root
+        .join("logs")
+        .join("controller-service-error.txt");
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             return Ok("controller_service_error=ABSENT".to_owned());
         }
-        Err(err) => return Err(format!("failed to read controller service error evidence: {err}")),
+        Err(err) => {
+            return Err(format!(
+                "failed to read controller service error evidence: {err}"
+            ));
+        }
     };
     if bytes.len() > 512 {
         return Ok("controller_service_error=INVALID_OVERSIZE".to_owned());
@@ -1260,12 +1266,17 @@ fn read_runtime_process_classification_evidence(install_root: &Path) -> Result<S
         match classify_runtime_process(&managed_config) {
             RuntimeProcessClassification::Absent => ("ABSENT", true, 0usize, None, None),
             RuntimeProcessClassification::Managed(process) => {
-                let is_current_child = controller_pid.is_some() && process.parent_pid == controller_pid;
+                let is_current_child =
+                    controller_pid.is_some() && process.parent_pid == controller_pid;
                 let complete = process.executable_path.is_some()
                     && !process.command_line.is_empty()
                     && process.config_path.is_some();
                 (
-                    if is_current_child { "MANAGED" } else { "ORPHAN" },
+                    if is_current_child {
+                        "MANAGED"
+                    } else {
+                        "ORPHAN"
+                    },
                     complete,
                     1,
                     Some(process.pid),
@@ -1273,15 +1284,16 @@ fn read_runtime_process_classification_evidence(install_root: &Path) -> Result<S
                 )
             }
             RuntimeProcessClassification::Conflicting(processes) => {
-                let complete = processes
-                    .iter()
-                    .all(|process| process.executable_path.is_some() && !process.command_line.is_empty());
+                let complete = processes.iter().all(|process| {
+                    process.executable_path.is_some() && !process.command_line.is_empty()
+                });
                 ("CONFLICTING", complete, processes.len(), None, None)
             }
         };
     Ok(format!(
         "process_classification={classification};process_evidence_complete={complete};process_count={count};managed_pid={};managed_parent_pid={};controller_pid={}",
-        pid.map(|value| value.to_string()).unwrap_or_else(|| "ABSENT".to_owned()),
+        pid.map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
         parent_pid
             .map(|value| value.to_string())
             .unwrap_or_else(|| "ABSENT".to_owned()),
