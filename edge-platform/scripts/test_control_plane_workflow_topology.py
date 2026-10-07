@@ -487,10 +487,16 @@ def main() -> None:
     )
     require(
         "RELEASE_ALREADY_CONVERGED" in windows_console
-        and "installer not invoked" in windows_console
+        and "installer not invoked; exact owner handoff reconciled" in windows_console
         and "RELEASE_CONVERGED_REOBSERVED" in windows_console
-        and "local owner handoff reconciled" in windows_console,
-        "Windows release activation must reconcile exact local authority before replay and after uncertain child failure",
+        and "local owner handoff reconciled" in windows_console
+        and windows_console.index(
+            "retarget_privileged_task(install_root, &activation.console_path)?;"
+        )
+        < windows_console.index(
+            "converge_controller_service_with_activation_console(install_root, activation)?;"
+        ),
+        "Windows release activation must keep exact current owner recovery reachable before controller handoff and on same-target replay",
     )
     require(
         "CredentialAdmit" not in vm_agent_cli
