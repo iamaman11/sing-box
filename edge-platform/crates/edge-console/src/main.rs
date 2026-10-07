@@ -1831,7 +1831,7 @@ fn activate_privileged_release(
         if let Ok(activation) = load_verified_activation(install_root)
             && activation.release_set_sha256 == target_release
         {
-            reconcile_current_owner(&activation)?;
+            reconcile_activation_owner(install_root, &activation)?;
             return Ok((
                 "RELEASE_CONVERGED_REOBSERVED".to_owned(),
                 "exact target ReleaseSet committed despite installer failure; local owner handoff reconciled"
@@ -1861,7 +1861,7 @@ fn activate_privileged_release(
             .as_ref()
             .ok_or_else(|| "reinstall lost its pre-mutation activation snapshot".to_owned())?;
         if activation.release_dir == before.release_dir {
-            reconcile_current_owner(&activation)?;
+            reconcile_activation_owner(install_root, &activation)?;
             return Err(
                 "accepted-release reinstall did not switch to the alternate immutable release slot"
                     .to_owned(),
@@ -1874,7 +1874,7 @@ fn activate_privileged_release(
                 write_atomic(&install_root.join("previous.pb"), expected_previous).map_err(
                     |err| format!("failed to restore previous.pb after reinstall: {err}"),
                 )?;
-                reconcile_current_owner(&activation)?;
+                reconcile_activation_owner(install_root, &activation)?;
                 return Err(
                     "accepted-release reinstall changed previous.pb; exact prior rollback authority was restored"
                         .to_owned(),
@@ -1883,7 +1883,7 @@ fn activate_privileged_release(
         }
     }
 
-    reconcile_current_owner(&activation)?;
+    reconcile_activation_owner(install_root, &activation)?;
     Ok((
         if force_rematerialize {
             "RELEASE_REINSTALLED".to_owned()
