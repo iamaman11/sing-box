@@ -729,29 +729,38 @@ Git desired state + exact ReleaseSet
         -> Windows TUN
 ```
 
-Current Stage-4B implementation state after the closed 4B.1 code/proxy-only lifecycle proof:
+Current Stage-4B implementation state:
 
-- canonical production remains `PROXY_ONLY`, while the single canonical Windows renderer already has a
-  typed `MANAGED_TUN` branch validated with the exact pinned sing-box;
-- the Git-owned `windows_datapath_mode` remains embedded canonical desired state and participates in
-  Windows candidate identity, so a mode change cannot silently reuse the old Windows input;
-- bounded local rollback to exact verified `previous.pb` exists and the PROXY_ONLY operator lifecycle has
-  physically accepted rollback -> reconverge -> diagnose;
-- typed Windows process observation distinguishes managed / conflicting external / absent ownership;
-- SCM `EdgePlatformController` performs bounded startup convergence on service start; it is not a watchdog
-  or polling restart loop;
-- `edge-diagnostic` already has native Windows adapter/route/DNS/TUN observation, and Stage 4B.2 is now
-  closing the remaining handoff parity gap: exact per-interface IPv4/IPv6 address/DNS evidence, bounded
-  route-set fingerprints, listener->PID ownership and exact read-only legacy task-state proof;
-- the existing `windows-physical.yml` remains the sole Windows physical owner boundary and is still
-  intentionally PROXY_ONLY-gated until the explicit 4B.2-C mode-aware cutover slice;
-- read-only physical evidence has identified one canonical controller/runtime and one separate legacy
-  controller/runtime with legacy Scheduled-Task/console resurrection authority plus legacy `utun0`
-  route/DNS ownership;
-- no canonical MANAGED_TUN mutation has been accepted yet. Issue #26 owns the exact manual handoff gate,
-  mode flip, physical cutover and rollback acceptance.
+- canonical production is `MANAGED_TUN`; the mode flip, exact-head candidate, no-rebuild promotion and
+  physical managed-TUN converge/diagnose datapath proof have already been accepted;
+- the Git-owned `windows_datapath_mode` remains the only durable datapath desired-state authority and is
+  part of Windows candidate identity;
+- `windows-physical.yml` remains the sole physical Windows operator boundary. Release transitions are
+  single-owner: the existing privileged activation owns stopping the exact managed child, immutable release
+  activation and SCM reconciliation; the workflow does not duplicate that stop;
+- SCM `EdgePlatformController` is the sole steady-state runtime owner. It performs bounded startup
+  convergence, is not a watchdog/polling loop, and a managed sing-box child is valid only while owned by the
+  current controller process;
+- controller Stop/Shutdown/normal exit stops only the exact managed sing-box before the service reports
+  Stopped. If startup finds one exact managed-config child whose parent is not the current controller, that
+  child is treated as an orphan: stop only that exact managed child and start a new child under the current
+  controller. Any true external sing-box remains fail-closed and untouched;
+- `/windows stop` and `/windows start` are transient runtime controls only. They do not change ReleaseSet
+  authority or durable mode; ordinary stop deliberately leaves SCM running, and start is idempotent when the
+  exact managed runtime is already healthy;
+- if NetworkService cannot classify a sing-box while SCM is Stopped, recovery may continue only for
+  `/windows converge` after the existing SYSTEM `privileged-runtime-evidence` proves zero external owners.
+  That read-only proof authorizes the existing privileged release transition; it does not create a second
+  process manager or allow arbitrary process mutation;
+- `edge-diagnostic` uses native Windows SCM/process/IP Helper observation for persistent diagnostics;
+  bounded PowerShell remains workflow glue/recovery only and must not become a resident observer;
+- legacy launch owners are disabled and zero external sing-box owners are required in canonical
+  `MANAGED_TUN` steady state. Stage 4B.2-C now concerns resilience/repair/reboot acceptance, not another
+  mode flip or another cutover mechanism.
 
 #### Required implementation shape
+
+The numbered requirements below are the accepted design constraints that produced the current implementation; references to the earlier `PROXY_ONLY` phase describe historical acceptance gates, not current production mode.
 
 1. Add one typed Windows datapath mode to the existing protobuf desired-state boundary, with an explicit
    `PROXY_ONLY` -> `MANAGED_TUN` transition. No environment flag, generated-JSON inference or second
