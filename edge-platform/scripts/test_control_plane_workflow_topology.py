@@ -515,6 +515,21 @@ def main() -> None:
         "fn run_icacls(", service_wait_start
     )
     service_wait = windows_console[service_wait_start:service_wait_end]
+    service_runtime_start = windows_controller_runtime.index(
+        "fn run_edge_controller_service()"
+    )
+    service_runtime_end = windows_controller_runtime.index(
+        "enum WindowsStartupDecision", service_runtime_start
+    )
+    service_runtime = windows_controller_runtime[service_runtime_start:service_runtime_end]
+    require(
+        "runtime.block_on(async {" in service_runtime
+        and "timeout(" in service_runtime
+        and "runtime.block_on(timeout(" not in service_runtime
+        and "tokio::net::TcpListener::bind(config.addr).await" in service_runtime,
+        "Windows service Tokio timers and sockets must be constructed inside the entered runtime context",
+    )
+
     service_entry_start = windows_controller_runtime.index(
         "fn edge_controller_service_main("
     )

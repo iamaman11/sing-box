@@ -616,10 +616,13 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
         Err(err) => return Err(startup_failure("runtime_init", err.to_string())),
     };
 
-    let service = match runtime.block_on(timeout(
-        WINDOWS_CONTROLLER_INIT_TIMEOUT,
-        controller_server(config.repo_root.clone()),
-    )) {
+    let service = match runtime.block_on(async {
+        timeout(
+            WINDOWS_CONTROLLER_INIT_TIMEOUT,
+            controller_server(config.repo_root.clone()),
+        )
+        .await
+    }) {
         Ok(Ok(service)) => service,
         Ok(Err(err)) => return Err(startup_failure("controller_init", err.to_string())),
         Err(_) => {
@@ -633,10 +636,11 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let listener = match runtime.block_on(tokio::net::TcpListener::bind(config.addr)) {
-        Ok(listener) => listener,
-        Err(err) => return Err(startup_failure("controller_bind", err.to_string())),
-    };
+    let listener =
+        match runtime.block_on(async { tokio::net::TcpListener::bind(config.addr).await }) {
+            Ok(listener) => listener,
+            Err(err) => return Err(startup_failure("controller_bind", err.to_string())),
+        };
 
     if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
         let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
