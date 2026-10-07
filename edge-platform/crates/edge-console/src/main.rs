@@ -1708,6 +1708,12 @@ fn activate_privileged_release(
 
     let before_activation = load_verified_activation(install_root).ok();
     let mut previous_bytes_before = None;
+
+    let restore_verified_owner = |activation: &WindowsActivationState| -> Result<(), String> {
+        sync_stable_windows_release_tools(install_root, activation)?;
+        reconcile_activation_owner(install_root, activation)
+    };
+
     if force_rematerialize {
         require_supported_reinstall_authority()?;
         let current = before_activation.as_ref().ok_or_else(|| {
@@ -1733,9 +1739,10 @@ fn activate_privileged_release(
     } else if let Some(activation) = before_activation.as_ref()
         && activation.release_set_sha256 == target_release
     {
+        reconcile_activation_owner(install_root, activation)?;
         return Ok((
             "RELEASE_ALREADY_CONVERGED".to_owned(),
-            "exact target ReleaseSet is already locally verified; installer not invoked".to_owned(),
+            "exact target ReleaseSet is already locally verified; installer not invoked; exact owner handoff reconciled".to_owned(),
             Some(activation.release_set_sha256.clone()),
         ));
     }
@@ -1783,17 +1790,6 @@ fn activate_privileged_release(
         .output()
         .map_err(|err| format!("failed to start protected Windows installer: {err}"))?;
 
-    let reconcile_current_owner = |activation: &WindowsActivationState| -> Result<(), String> {
-        #[cfg(windows)]
-        converge_controller_service_with_activation_console(install_root, activation)?;
-        retarget_privileged_task(install_root, &activation.console_path)?;
-        Ok(())
-    };
-    let restore_verified_owner = |activation: &WindowsActivationState| -> Result<(), String> {
-        sync_stable_windows_release_tools(install_root, activation)?;
-        reconcile_current_owner(activation)
-    };
-
     if !output.status.success() {
         if force_rematerialize {
             if let Ok(observed) = load_verified_activation(install_root)
@@ -1807,13 +1803,13 @@ fn activate_privileged_release(
                         != Some(expected_previous)
                 {
                     let _ = write_atomic(&install_root.join("previous.pb"), expected_previous);
-                    reconcile_current_owner(&observed)?;
+                    reconcile_activation_owner(install_root, &observed)?;
                     return Err(
                         "accepted release rematerialized but previous.pb changed unexpectedly; rollback authority was restored"
                             .to_owned(),
                     );
                 }
-                reconcile_current_owner(&observed)?;
+                reconcile_activation_owner(install_root, &observed)?;
                 return Ok((
                     "RELEASE_REINSTALLED_REOBSERVED".to_owned(),
                     "alternate immutable release slot committed despite installer exit failure; exact authority was reobserved and owner handoff reconciled"
@@ -1835,7 +1831,7 @@ fn activate_privileged_release(
         if let Ok(activation) = load_verified_activation(install_root)
             && activation.release_set_sha256 == target_release
         {
-            reconcile_current_owner(&activation)?;
+            reconcile_activation_owner(install_root, &activation)?;
             return Ok((
                 "RELEASE_CONVERGED_REOBSERVED".to_owned(),
                 "exact target ReleaseSet committed despite installer failure; local owner handoff reconciled"
@@ -1865,7 +1861,7 @@ fn activate_privileged_release(
             .as_ref()
             .ok_or_else(|| "reinstall lost its pre-mutation activation snapshot".to_owned())?;
         if activation.release_dir == before.release_dir {
-            reconcile_current_owner(&activation)?;
+            reconcile_activation_owner(install_root, &activation)?;
             return Err(
                 "accepted-release reinstall did not switch to the alternate immutable release slot"
                     .to_owned(),
@@ -1878,7 +1874,7 @@ fn activate_privileged_release(
                 write_atomic(&install_root.join("previous.pb"), expected_previous).map_err(
                     |err| format!("failed to restore previous.pb after reinstall: {err}"),
                 )?;
-                reconcile_current_owner(&activation)?;
+                reconcile_activation_owner(install_root, &activation)?;
                 return Err(
                     "accepted-release reinstall changed previous.pb; exact prior rollback authority was restored"
                         .to_owned(),
@@ -1887,7 +1883,7 @@ fn activate_privileged_release(
         }
     }
 
-    reconcile_current_owner(&activation)?;
+    reconcile_activation_owner(install_root, &activation)?;
     Ok((
         if force_rematerialize {
             "RELEASE_REINSTALLED".to_owned()
@@ -1983,22 +1979,12 @@ fn rollback_privileged_release(
 
     let handoff = (|| -> Result<(), String> {
         sync_stable_windows_release_tools(install_root, &previous)?;
-        #[cfg(windows)]
-        converge_controller_service_with_activation_console(install_root, &previous)?;
-        retarget_privileged_task(install_root, &previous.console_path)?;
-        Ok(())
+        reconcile_activation_owner(install_root, &previous)
     })();
     if let Err(err) = handoff {
         let pointer_restore = write_atomic(&current_path, &current_bytes);
-        #[cfg(windows)]
         let owner_restore = sync_stable_windows_release_tools(install_root, &current)
-            .and_then(|_| {
-                converge_controller_service_with_activation_console(install_root, &current)
-            })
-            .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
-        #[cfg(not(windows))]
-        let owner_restore = sync_stable_windows_release_tools(install_root, &current)
-            .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
+            .and_then(|_| reconcile_activation_owner(install_root, &current));
         return Err(format!(
             "previous ReleaseSet activation handoff failed: {err}; pointer_restore={pointer_restore:?}; owner_restore={owner_restore:?}"
         ));
@@ -2017,6 +2003,16 @@ fn rollback_privileged_release(
             .to_owned(),
         Some(verified.release_set_sha256),
     ))
+}
+
+fn reconcile_activation_owner(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+) -> Result<(), String> {
+    retarget_privileged_task(install_root, &activation.console_path)?;
+    #[cfg(windows)]
+    converge_controller_service_with_activation_console(install_root, activation)?;
+    Ok(())
 }
 
 fn retarget_privileged_task(install_root: &Path, console_path: &str) -> Result<(), String> {
@@ -2705,6 +2701,35 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
         .create_service(&service_info, access)
         .or_else(|_| manager.open_service(WINDOWS_CONTROLLER_SERVICE_NAME, access))
         .map_err(|err| format!("failed to create or open controller service: {err}"))?;
+
+    let current_config = service.query_config().map_err(|err| {
+        format!("failed to query controller service config before convergence: {err}")
+    })?;
+    let current_account = current_config
+        .account_name
+        .as_deref()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "LocalSystem".to_owned());
+    let expected_command = format!(
+        "{} windows-service {} {}",
+        controller_path.display(),
+        install_root.display(),
+        INSTALLED_CONTROLLER_ADDR
+    );
+    let current_status = service
+        .query_status()
+        .map_err(|err| format!("failed to query controller service before convergence: {err}"))?;
+    let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
+        .parse()
+        .map_err(|err| format!("invalid installed controller address: {err}"))?;
+    if current_config.executable_path.to_string_lossy() == expected_command
+        && current_account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
+        && current_config.start_type == ServiceStartType::AutoStart
+        && current_status.current_state == ServiceState::Running
+        && wait_for_controller(addr, Duration::from_millis(250))
+    {
+        return Ok(());
+    }
 
     converge_controller_tun_authority()?;
 
