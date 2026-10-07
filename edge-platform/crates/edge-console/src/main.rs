@@ -1595,9 +1595,6 @@ fn activate_privileged_release(
         ));
     }
 
-    stop_runtime_process(&local_singbox_config_path(install_root), true)
-        .map_err(|err| format!("failed to stop exact managed proxy before release transition: {err}"))?;
-
     let installer = install_root
         .join("bootstrap")
         .join("install-windows-release.ps1");
@@ -1610,6 +1607,10 @@ fn activate_privileged_release(
     let root = install_root
         .to_str()
         .ok_or_else(|| "Windows install root is not UTF-8".to_owned())?;
+
+    stop_runtime_process(&local_singbox_config_path(install_root), true)
+        .map_err(|err| format!("failed to stop exact managed proxy before release transition: {err}"))?;
+
     let mut command = Command::new("powershell.exe");
     command
         .args([
