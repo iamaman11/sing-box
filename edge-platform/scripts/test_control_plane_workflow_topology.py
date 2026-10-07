@@ -879,7 +879,7 @@ def main() -> None:
         and "controller_running=true" not in windows_physical
         and "Runner unexpectedly has direct private-state access" in windows_physical
         and "smoke-runtime" not in windows_physical
-        and "http://127.0.0.1:51051" in windows_physical
+        and "http://127.0.0.1:45151" in windows_physical
         and "install-windows-release.ps1" not in windows_physical
         and "-ReleaseOnly" not in windows_physical
         and "External sing-box owner changed" in windows_physical
