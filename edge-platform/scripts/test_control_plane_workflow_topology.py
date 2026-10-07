@@ -506,7 +506,8 @@ def main() -> None:
         and "current_config.executable_path.to_string_lossy() == expected_command"
             in windows_console
         and "current_status.current_state == ServiceState::Running" in windows_console
-        and "wait_for_controller(addr, Duration::from_millis(250))" in windows_console,
+        and "controller_is_listening(addr)" in windows_console
+        and "fn wait_for_controller(" not in windows_console,
         "Windows release activation and rollback must share one recoverable owner handoff while healthy same-target convergence remains idempotent",
     )
     service_wait_start = windows_console.index("fn wait_for_service_state(")

@@ -2341,35 +2341,24 @@ fn parse_loopback_addr(endpoint: &str) -> Option<SocketAddr> {
     }
 }
 
-fn wait_for_controller(addr: SocketAddr, timeout: Duration) -> bool {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    false
+fn controller_is_listening(addr: SocketAddr) -> bool {
+    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
 fn ensure_controller_running(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
     let Some(addr) = parse_loopback_addr(endpoint) else {
         return Ok(());
     };
-    if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+    if controller_is_listening(addr) {
         return Ok(());
     }
 
     let install_root = installed_root_from_console()?;
     let _activation = load_verified_activation(&install_root)?;
-    if wait_for_controller(addr, Duration::from_secs(10)) {
-        Ok(())
-    } else {
-        Err(format!(
-            "SCM-owned EdgePlatformController is not listening on {addr}; edge-console does not own controller startup"
-        )
-        .into())
-    }
+    Err(format!(
+        "SCM-owned EdgePlatformController is not listening on {addr}; edge-console does not own controller startup"
+    )
+    .into())
 }
 
 #[cfg(windows)]
@@ -2731,7 +2720,7 @@ fn restart_controller_service(
     let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
         .parse()
         .map_err(|err| format!("invalid installed controller address: {err}"))?;
-    if !wait_for_controller(addr, Duration::from_secs(10)) {
+    if !controller_is_listening(addr) {
         return Err(format!(
             "restarted controller service is not listening on {INSTALLED_CONTROLLER_ADDR}"
         ));
@@ -2821,7 +2810,7 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
         && current_account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
         && current_config.start_type == ServiceStartType::AutoStart
         && current_status.current_state == ServiceState::Running
-        && wait_for_controller(addr, Duration::from_millis(250))
+        && controller_is_listening(addr)
     {
         return Ok(());
     }
@@ -2884,7 +2873,7 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
     let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
         .parse()
         .map_err(|err| format!("invalid installed controller address: {err}"))?;
-    if !wait_for_controller(addr, Duration::from_secs(10)) {
+    if !controller_is_listening(addr) {
         return Err(format!(
             "controller service is Running but is not listening on {INSTALLED_CONTROLLER_ADDR}"
         ));
