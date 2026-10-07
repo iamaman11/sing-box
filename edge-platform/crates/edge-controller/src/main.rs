@@ -636,12 +636,11 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let listener = match runtime.block_on(async {
-        tokio::net::TcpListener::bind(config.addr).await
-    }) {
-        Ok(listener) => listener,
-        Err(err) => return Err(startup_failure("controller_bind", err.to_string())),
-    };
+    let listener =
+        match runtime.block_on(async { tokio::net::TcpListener::bind(config.addr).await }) {
+            Ok(listener) => listener,
+            Err(err) => return Err(startup_failure("controller_bind", err.to_string())),
+        };
 
     if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
         let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
