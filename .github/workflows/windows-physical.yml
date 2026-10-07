@@ -119,7 +119,9 @@ jobs:
           if (-not (Test-Path -LiteralPath $stableDiagnostic -PathType Leaf)) { throw 'Installed stable diagnostic is missing' }
           $current = Join-Path $root 'current.pb'
           $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Stable pre-state diagnostic failed: $LASTEXITCODE" }
+          $bootstrapExit = $LASTEXITCODE
+          $bootstrapDoctor | Write-Host
+          if ($bootstrapExit -ne 0) { throw "Stable pre-state diagnostic failed: $bootstrapExit" }
           $bootstrapValues = @{}
           foreach ($line in $bootstrapDoctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -133,7 +135,9 @@ jobs:
             throw 'Exact immutable diagnostic path is unavailable'
           }
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Exact pre-state diagnostic failed: $LASTEXITCODE" }
+          $doctorExit = $LASTEXITCODE
+          $doctor | Write-Host
+          if ($doctorExit -ne 0) { throw "Exact pre-state diagnostic failed: $doctorExit" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -225,7 +229,9 @@ jobs:
           $stableDiagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
           $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Stable post-state diagnostic failed: $LASTEXITCODE" }
+          $bootstrapExit = $LASTEXITCODE
+          $bootstrapDoctor | Write-Host
+          if ($bootstrapExit -ne 0) { throw "Stable post-state diagnostic failed: $bootstrapExit" }
           $bootstrapValues = @{}
           foreach ($line in $bootstrapDoctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -239,7 +245,9 @@ jobs:
             throw 'Exact immutable post-state diagnostic path is unavailable'
           }
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Exact post-state diagnostic failed: $LASTEXITCODE" }
+          $doctorExit = $LASTEXITCODE
+          $doctor | Write-Host
+          if ($doctorExit -ne 0) { throw "Exact post-state diagnostic failed: $doctorExit" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -285,15 +293,14 @@ jobs:
           "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_AFTER_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_AFTER_MODE=$afterMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-          $service = Get-CimInstance Win32_Service -Filter "Name='EdgePlatformController'"
-          if (-not $service) { throw 'SCM controller is missing' }
-          if ([string]$service.StartName -cne 'NT SERVICE\EdgePlatformController') { throw 'Unexpected SCM identity' }
-          if ([string]$service.State -cne 'Running') { throw 'SCM controller is not running' }
-          if ([string]$service.StartMode -cne 'Auto') { throw 'SCM controller is not automatic' }
+          if ([string]$values['scm_service_name'] -cne 'EdgePlatformController') { throw 'SCM controller is missing' }
+          if ([string]$values['scm_account'] -cne 'NT SERVICE\EdgePlatformController') { throw 'Unexpected SCM identity' }
+          if ([string]$values['scm_state'] -cne 'Running') { throw 'SCM controller is not running' }
+          if ([string]$values['scm_start_type'] -cne 'AutoStart') { throw 'SCM controller is not automatic' }
+          if ([string]$values['scm_executable_matches_release'] -cne 'true') { throw 'SCM binary does not match the active release' }
           $authority = ([Uri]$env:EDGE_CONTROLLER_ENDPOINT).Authority
           $expected = "$controller windows-service $env:EDGE_INSTALL_ROOT $authority"
-          if ([string]$service.PathName -cne $expected) { throw 'SCM executable authority mismatch' }
-          $doctor | Write-Host
+          if ([string]$values['scm_executable_path'] -cne $expected) { throw 'SCM executable authority mismatch' }
 
       - name: Prove managed DIRECT and WARP
         if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' }}
