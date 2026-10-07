@@ -2708,9 +2708,9 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
         .or_else(|_| manager.open_service(WINDOWS_CONTROLLER_SERVICE_NAME, access))
         .map_err(|err| format!("failed to create or open controller service: {err}"))?;
 
-    let current_config = service
-        .query_config()
-        .map_err(|err| format!("failed to query controller service config before convergence: {err}"))?;
+    let current_config = service.query_config().map_err(|err| {
+        format!("failed to query controller service config before convergence: {err}")
+    })?;
     let current_account = current_config
         .account_name
         .as_deref()
