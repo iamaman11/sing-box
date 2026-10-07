@@ -176,8 +176,11 @@ def main() -> None:
         and windows_physical.count("restart-verify-runtime") == 1
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 1
-        and windows_physical.index("restart-verify-runtime") < windows_physical.index("privileged-runtime-evidence")
+        and windows_physical.count("privileged-runtime-evidence") == 2
+        and "Stopped SCM owner recovery was not proven to contain zero privileged external sing-box owners" in windows_physical
+        and "EDGE_ORPHAN_MANAGED_RECOVERY=YES" in windows_physical
+        and "external_owner_evidence=INCOMPLETE;external_count=0" in windows_physical
+        and windows_physical.rindex("restart-verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
         and "Managed sing-box stderr evidence is missing after runtime restart" in windows_physical
@@ -215,6 +218,9 @@ def main() -> None:
         and "managed_tun_present" in windows_physical
         and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "Transient runtime control changed ReleaseSet authority" in windows_physical
+        and "RESTARTED_ORPHAN_MANAGED" in windows_controller_runtime
+        and "failed to stop exact managed runtime on controller exit" in windows_controller_runtime
+        and "managed_parent_is_current_controller" in windows_controller_runtime
         and "Expected zero managed proxy processes after stop" in windows_physical
         and "Final explicit runtime stop left managed TUN present" in windows_physical
         and "Read-only managed proxy trace" not in windows_physical
