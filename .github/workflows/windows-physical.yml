@@ -187,6 +187,10 @@ jobs:
                 [int]$values['conflicting_singbox_process_count'] -ne 1) {
               throw 'Stopped-owner recovery evidence changed between stable and immutable diagnostics'
             }
+            if ($doctorExit -ne 0) {
+              $LASTEXITCODE = 0
+              Write-Host 'stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT'
+            }
           }
           if ([string]$values['exact_release_files'] -cne 'PASS') {
             throw 'Exact active diagnostic could not verify its ReleaseSet files'
