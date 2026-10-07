@@ -177,7 +177,7 @@ def main() -> None:
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
         and windows_physical.count("privileged-runtime-evidence") == 2
-        and windows_physical.index("restart-verify-runtime") < windows_physical.index("privileged-runtime-evidence")
+        and windows_physical.rindex("restart-verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
         and "Managed sing-box stderr evidence is missing after runtime restart" in windows_physical
