@@ -495,8 +495,12 @@ def main() -> None:
         )
         < windows_console.index(
             "converge_controller_service_with_activation_console(install_root, activation)?;"
-        ),
-        "Windows release activation must keep exact current owner recovery reachable before controller handoff and on same-target replay",
+        )
+        and "current_config.executable_path.to_string_lossy() == expected_command"
+            in windows_console
+        and "current_status.current_state == ServiceState::Running" in windows_console
+        and "wait_for_controller(addr, Duration::from_millis(250))" in windows_console,
+        "Windows release activation must keep exact current owner recovery reachable before controller handoff while healthy same-target convergence remains idempotent",
     )
     require(
         "CredentialAdmit" not in vm_agent_cli
