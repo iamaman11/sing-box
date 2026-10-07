@@ -3,13 +3,13 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, Stdio};
-use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitCode, Stdio};
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
@@ -840,7 +840,10 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
                         "managed Windows runtime startup is fail-closed because conflicting sing-box ownership exists: {}",
                         processes
                             .iter()
-                            .map(|process| format!("pid={} cmd={}", process.pid, process.command_line))
+                            .map(|process| format!(
+                                "pid={} cmd={}",
+                                process.pid, process.command_line
+                            ))
                             .collect::<Vec<_>>()
                             .join(" | ")
                     );
