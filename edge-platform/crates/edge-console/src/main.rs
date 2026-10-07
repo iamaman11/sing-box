@@ -2708,6 +2708,35 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
         .or_else(|_| manager.open_service(WINDOWS_CONTROLLER_SERVICE_NAME, access))
         .map_err(|err| format!("failed to create or open controller service: {err}"))?;
 
+    let current_config = service
+        .query_config()
+        .map_err(|err| format!("failed to query controller service config before convergence: {err}"))?;
+    let current_account = current_config
+        .account_name
+        .as_deref()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "LocalSystem".to_owned());
+    let expected_command = format!(
+        "{} windows-service {} {}",
+        controller_path.display(),
+        install_root.display(),
+        INSTALLED_CONTROLLER_ADDR
+    );
+    let current_status = service
+        .query_status()
+        .map_err(|err| format!("failed to query controller service before convergence: {err}"))?;
+    let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
+        .parse()
+        .map_err(|err| format!("invalid installed controller address: {err}"))?;
+    if current_config.executable_path.to_string_lossy() == expected_command
+        && current_account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
+        && current_config.start_type == ServiceStartType::AutoStart
+        && current_status.current_state == ServiceState::Running
+        && wait_for_controller(addr, Duration::from_millis(250))
+    {
+        return Ok(());
+    }
+
     converge_controller_tun_authority()?;
 
     let status = service
