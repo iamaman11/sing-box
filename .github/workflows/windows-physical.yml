@@ -121,7 +121,6 @@ jobs:
           $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
           $bootstrapExit = $LASTEXITCODE
           $bootstrapDoctor | Write-Host
-          if ($bootstrapExit -ne 0) { throw "Stable pre-state diagnostic failed: $bootstrapExit" }
           $bootstrapValues = @{}
           foreach ($line in $bootstrapDoctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -130,6 +129,43 @@ jobs:
           if ([string]$bootstrapValues['exact_release_files'] -cne 'PASS') {
             throw 'Stable diagnostic could not verify exact active release files'
           }
+
+          $stoppedOwnerRecovery = $false
+          if ($bootstrapExit -ne 0) {
+            $boundedStoppedOwner = (
+              $env:EDGE_OPERATION -eq 'converge' -and
+              [string]$bootstrapValues['scm_state'] -ceq 'Stopped' -and
+              [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
+              [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 1
+            )
+            if (-not $boundedStoppedOwner) {
+              throw "Stable pre-state diagnostic failed: $bootstrapExit"
+            }
+
+            $stableConsole = Join-Path $root 'bin\edge-console.exe'
+            if (-not (Test-Path -LiteralPath $stableConsole -PathType Leaf)) {
+              throw 'Installed stable console is missing for stopped-owner recovery evidence'
+            }
+            $recoveryEvidence = @(& $stableConsole privileged-runtime-evidence --install-root $root)
+            $recoveryEvidenceExit = $LASTEXITCODE
+            $recoveryEvidence | Write-Host
+            if ($recoveryEvidenceExit -ne 0) {
+              throw "Stopped-owner privileged evidence failed: $recoveryEvidenceExit"
+            }
+            $recoveryDetail = [string]($recoveryEvidence |
+              Where-Object { [string]$_ -like 'detail=*' } |
+              Select-Object -Last 1)
+            if ([string]::IsNullOrWhiteSpace($recoveryDetail) -or
+                $recoveryDetail -notmatch '^detail=runtime_evidence=BOUNDED_READ_ONLY') {
+              throw 'Stopped-owner recovery did not return the bounded privileged evidence contract'
+            }
+            if ($recoveryDetail -notmatch 'external_owner_evidence=INCOMPLETE;external_count=0(?:;|$)') {
+              throw 'Stopped-owner recovery still observes privileged external sing-box ownership'
+            }
+            $stoppedOwnerRecovery = $true
+            "EDGE_STOPPED_OWNER_RECOVERY=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+            Write-Warning 'Recovering stopped SCM owner only after privileged evidence proved zero external sing-box owners'
+          }
           $diagnostic = [string]$bootstrapValues['diagnostic_path']
           if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
             throw 'Exact immutable diagnostic path is unavailable'
@@ -137,11 +173,20 @@ jobs:
           $doctor = @(& $diagnostic doctor $current)
           $doctorExit = $LASTEXITCODE
           $doctor | Write-Host
-          if ($doctorExit -ne 0) { throw "Exact pre-state diagnostic failed: $doctorExit" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ($doctorExit -ne 0 -and -not $stoppedOwnerRecovery) {
+            throw "Exact pre-state diagnostic failed: $doctorExit"
+          }
+          if ($stoppedOwnerRecovery) {
+            if ([string]$values['scm_state'] -cne 'Stopped' -or
+                [int]$values['managed_singbox_process_count'] -ne 0 -or
+                [int]$values['conflicting_singbox_process_count'] -ne 1) {
+              throw 'Stopped-owner recovery evidence changed between stable and immutable diagnostics'
+            }
           }
           if ([string]$values['exact_release_files'] -cne 'PASS') {
             throw 'Exact active diagnostic could not verify its ReleaseSet files'
@@ -175,21 +220,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable console path is unavailable'
           }
-          if ($env:EDGE_OPERATION -eq 'converge' -and [int]$values['managed_singbox_process_count'] -gt 0) {
-            & $console stop-local $env:EDGE_CONTROLLER_ENDPOINT
-            if ($LASTEXITCODE -ne 0) { throw "Failed to stop exact managed proxy before release converge: $LASTEXITCODE" }
-            $doctor = @(& $diagnostic doctor $current)
-            if ($LASTEXITCODE -ne 0) { throw "Post-stop diagnostic failed: $LASTEXITCODE" }
-          }
           $externalPids = @(
             $doctor | ForEach-Object {
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
             } | Sort-Object -Unique
           )
-          if ($externalPids.Count -ne 0) {
-            throw "Stage 4B.2-C requires zero external sing-box owners; observed $($externalPids.Count)"
+          if ($stoppedOwnerRecovery) {
+            if ($externalPids.Count -ne 1) {
+              throw "Stopped-owner recovery expected one unprivileged ambiguous sing-box, observed $($externalPids.Count)"
+            }
+            $signature = ''
+          } else {
+            if ($externalPids.Count -ne 0) {
+              throw "Stage 4B.2-C requires zero external sing-box owners; observed $($externalPids.Count)"
+            }
+            $signature = $externalPids -join ','
           }
-          $signature = $externalPids -join ','
           if ($env:EDGE_OPERATION -eq 'start' -and [int]$values['managed_singbox_process_count'] -eq 1) {
             "EDGE_START_NOOP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           }
