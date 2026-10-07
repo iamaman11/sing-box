@@ -64,7 +64,7 @@ use edge_shared_types::{
     PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
     SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, VerifyRuntimeRequest, WindowsDatapathMode,
+    TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode,
     canonical_production_desired_state, decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
@@ -82,12 +82,22 @@ use error::ControllerError;
 use prost::Message;
 use serde_json::Value;
 use tokio::time::{sleep, timeout};
+#[cfg(windows)]
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Request, Response, Status};
 
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
 #[cfg(windows)]
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
+#[cfg(windows)]
+const WINDOWS_SERVICE_START_WAIT_HINT: Duration = Duration::from_secs(45);
+#[cfg(windows)]
+const WINDOWS_CONTROLLER_INIT_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(windows)]
+const CONTROLLER_SERVICE_ERROR_FILE: &str = "controller-service-error.txt";
+#[cfg(windows)]
+const CONTROLLER_SERVICE_ERROR_MESSAGE_MAX_CHARS: usize = 384;
 const DEFAULT_STATE_DB: &str = "edge-platform/.runtime/controller-state.sqlite";
 const DEFAULT_AGENT_ENDPOINT: &str = "http://127.0.0.1:50061";
 const DEFAULT_LOCAL_CONFIG_PATH: &str = "win/windows/edge-dns-clean-vultr-dual.json";
@@ -400,25 +410,88 @@ async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::
 }
 
 #[cfg(windows)]
-async fn serve_with_shutdown<F>(
-    repo_root: PathBuf,
-    addr: SocketAddr,
+async fn serve_prebound_with_shutdown<F>(
+    service: ControllerServerImpl,
+    listener: tokio::net::TcpListener,
     shutdown: F,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let service = controller_server(repo_root).await?;
+    let incoming = TcpListenerStream::new(listener);
     Server::builder()
         .add_service(ControllerServiceServer::new(service))
-        .serve_with_shutdown(addr, shutdown)
+        .serve_with_incoming_shutdown(incoming, shutdown)
         .await?;
     Ok(())
 }
 
 #[cfg(windows)]
+fn controller_service_error_path(repo_root: &Path) -> PathBuf {
+    repo_root.join("logs").join(CONTROLLER_SERVICE_ERROR_FILE)
+}
+
+#[cfg(windows)]
+fn sanitize_controller_service_error(message: &str) -> String {
+    message
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_graphic() || ch == ' ' {
+                if ch == ';' { ',' } else { ch }
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(CONTROLLER_SERVICE_ERROR_MESSAGE_MAX_CHARS)
+        .collect()
+}
+
+#[cfg(windows)]
+fn write_controller_service_error(
+    repo_root: &Path,
+    stage: &str,
+    message: &str,
+) -> Result<(), String> {
+    let logs = repo_root.join("logs");
+    fs::create_dir_all(&logs)
+        .map_err(|err| format!("failed to create controller log directory: {err}"))?;
+    let body = format!(
+        "stage={};message={}",
+        stage,
+        sanitize_controller_service_error(message)
+    );
+    fs::write(controller_service_error_path(repo_root), body.as_bytes())
+        .map_err(|err| format!("failed to persist controller service error: {err}"))
+}
+
+#[cfg(windows)]
+fn clear_controller_service_error(repo_root: &Path) -> Result<(), String> {
+    match fs::remove_file(controller_service_error_path(repo_root)) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "failed to clear stale controller service error: {err}"
+        )),
+    }
+}
+
+#[cfg(windows)]
 fn run_windows_service(args: cli::ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     let (repo_root, addr) = resolve_serve_config(args)?;
+    if is_installed_windows_root(&repo_root) {
+        let canonical = WINDOWS_CONTROLLER_ADDR.parse::<SocketAddr>()?;
+        if addr != canonical {
+            return Err(format!(
+                "installed Windows controller must bind canonical endpoint {WINDOWS_CONTROLLER_ADDR}, observed {addr}"
+            )
+            .into());
+        }
+    }
     WINDOWS_SERVICE_CONFIG
         .set(WindowsServiceConfig { repo_root, addr })
         .map_err(|_| "Windows controller service configuration is already initialized")?;
@@ -456,20 +529,80 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     let status_handle =
         service_control_handler::register(WINDOWS_CONTROLLER_SERVICE_NAME, event_handler)?;
 
-    if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
+    status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::StartPending,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 1,
+        wait_hint: WINDOWS_SERVICE_START_WAIT_HINT,
+        process_id: None,
+    })?;
+
+    let set_stopped = |failed: bool| {
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Stopped,
             controls_accepted: ServiceControlAccept::empty(),
-            exit_code: ServiceExitCode::Win32(1),
+            exit_code: ServiceExitCode::Win32(if failed { 1 } else { 0 }),
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
         });
-        return Err(format!("Windows managed runtime startup convergence failed: {err}").into());
+    };
+    let startup_failure = |stage: &str, message: String| -> Box<dyn std::error::Error> {
+        let detail = match write_controller_service_error(&config.repo_root, stage, &message) {
+            Ok(()) => message,
+            Err(evidence_err) => format!("{message}; {evidence_err}"),
+        };
+        set_stopped(true);
+        io::Error::other(detail).into()
+    };
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => return Err(startup_failure("runtime_init", err.to_string())),
+    };
+
+    let service = match runtime.block_on(timeout(
+        WINDOWS_CONTROLLER_INIT_TIMEOUT,
+        controller_server(config.repo_root.clone()),
+    )) {
+        Ok(Ok(service)) => service,
+        Ok(Err(err)) => return Err(startup_failure("controller_init", err.to_string())),
+        Err(_) => {
+            return Err(startup_failure(
+                "controller_init",
+                format!(
+                    "controller initialization exceeded {} seconds",
+                    WINDOWS_CONTROLLER_INIT_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+    };
+
+    let listener = match runtime.block_on(tokio::net::TcpListener::bind(config.addr)) {
+        Ok(listener) => listener,
+        Err(err) => return Err(startup_failure("controller_bind", err.to_string())),
+    };
+
+    if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
+        let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+        return Err(startup_failure(
+            "runtime_converge",
+            format!("Windows managed runtime startup convergence failed: {err}"),
+        ));
     }
 
-    status_handle.set_service_status(ServiceStatus {
+    if let Err(err) = clear_controller_service_error(&config.repo_root) {
+        let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+        return Err(startup_failure("error_evidence_clear", err));
+    }
+
+    if let Err(err) = status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Running,
         controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
@@ -477,15 +610,15 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
         checkpoint: 0,
         wait_hint: Duration::default(),
         process_id: None,
-    })?;
+    }) {
+        let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+        return Err(startup_failure("scm_running", err.to_string()));
+    }
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
     let repo_root = config.repo_root.clone();
-    let serve_result = runtime.block_on(serve_with_shutdown(
-        config.repo_root,
-        config.addr,
+    let serve_result = runtime.block_on(serve_prebound_with_shutdown(
+        service,
+        listener,
         async move {
             let _ = tokio::task::spawn_blocking(move || shutdown_rx.recv()).await;
         },
@@ -493,14 +626,34 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     let cleanup_result = stop_runtime_process(&default_local_config_path(&repo_root), true)
         .map(|_| ())
         .map_err(|err| format!("failed to stop exact managed runtime on controller exit: {err}"));
-    let result = match (serve_result, cleanup_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(err), Ok(())) => Err(err),
-        (Ok(()), Err(cleanup_err)) => Err(io::Error::other(cleanup_err).into()),
+
+    let (result, failure) = match (serve_result, cleanup_result) {
+        (Ok(()), Ok(())) => (Ok(()), None),
+        (Err(err), Ok(())) => {
+            let message = err.to_string();
+            (
+                Err(io::Error::other(message.clone()).into()),
+                Some(("serve", message)),
+            )
+        }
+        (Ok(()), Err(cleanup_err)) => (
+            Err(io::Error::other(cleanup_err.clone()).into()),
+            Some(("cleanup", cleanup_err)),
+        ),
         (Err(err), Err(cleanup_err)) => {
-            Err(io::Error::other(format!("controller runtime failed: {err}; {cleanup_err}")).into())
+            let message = format!("controller runtime failed: {err}; {cleanup_err}");
+            (
+                Err(io::Error::other(message.clone()).into()),
+                Some(("serve_cleanup", message)),
+            )
         }
     };
+
+    if let Some((stage, message)) = failure {
+        let _ = write_controller_service_error(&repo_root, stage, &message);
+    } else {
+        let _ = clear_controller_service_error(&repo_root);
+    }
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,

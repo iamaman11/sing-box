@@ -26,6 +26,8 @@ pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
 pub const RELEASE_SET_SCHEMA_VERSION: u32 = 7;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
+pub const WINDOWS_CONTROLLER_ADDR: &str = "127.0.0.1:45151";
+pub const WINDOWS_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:45151";
 
 pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
@@ -972,6 +974,18 @@ pub fn validate_windows_privileged_request(
                 || request.credential_transition_action.is_some()
             {
                 return Err("RUNTIME_EVIDENCE request must carry no mutation authority".to_owned());
+            }
+        }
+        WindowsPrivilegedOperation::RestartControllerService => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_generation.is_some()
+                || request.credential_transition_action.is_some()
+            {
+                return Err(
+                    "RESTART_CONTROLLER_SERVICE request must carry no caller-selected authority"
+                        .to_owned(),
+                );
             }
         }
         WindowsPrivilegedOperation::RollbackPreviousRelease => {
@@ -2779,6 +2793,36 @@ mod tests {
 
         let mut invalid = request;
         invalid.credential_generation = Some(101);
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+    }
+
+    #[test]
+    fn windows_privileged_restart_controller_carries_no_caller_authority() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-restart-controller".to_owned(),
+            operation: WindowsPrivilegedOperation::RestartControllerService as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+            credential_transition_action: None,
+        };
+        assert!(encode_windows_privileged_request(&request).is_ok());
+
+        let mut invalid = request.clone();
+        invalid.accepted_revision = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+
+        let mut invalid = request.clone();
+        invalid.release_set_sha256 = Some("1".repeat(64));
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+
+        let mut invalid = request.clone();
+        invalid.credential_generation = Some(1);
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+
+        let mut invalid = request;
+        invalid.credential_transition_action = Some(CredentialTransitionAction::Promote as i32);
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 

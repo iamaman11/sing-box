@@ -36,6 +36,7 @@ jobs:
             "/windows converge"|"/windows smoke") operation="converge" ;;
             "/windows start") operation="start" ;;
             "/windows stop") operation="stop" ;;
+            "/windows restart-controller") operation="restart-controller" ;;
             "/windows repair") operation="repair" ;;
             "/windows rollback") operation="rollback" ;;
             *) exit 2 ;;
@@ -99,7 +100,7 @@ jobs:
     permissions: {}
     env:
       EDGE_INSTALL_ROOT: C:\sing-box
-      EDGE_CONTROLLER_ENDPOINT: http://127.0.0.1:51051
+      EDGE_CONTROLLER_ENDPOINT: http://127.0.0.1:45151
       EDGE_ACCEPTED_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
       EDGE_RELEASE_SET_SHA256: ${{ needs.resolve.outputs.release_set_sha256 }}
       EDGE_OPERATION: ${{ needs.resolve.outputs.operation }}
@@ -131,6 +132,7 @@ jobs:
           }
 
           $stoppedOwnerRecovery = $false
+          $cleanStoppedBootstrap = $false
           if ($bootstrapExit -ne 0) {
             $boundedStoppedOwner = (
               $env:EDGE_OPERATION -eq 'converge' -and
@@ -138,33 +140,48 @@ jobs:
               [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
               [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 1
             )
-            if (-not $boundedStoppedOwner) {
+            $boundedCleanStopped = (
+              $env:EDGE_OPERATION -eq 'converge' -and
+              [string]$bootstrapValues['exact_release_files'] -ceq 'PASS' -and
+              [string]$bootstrapValues['scm_state'] -ceq 'Stopped' -and
+              [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
+              [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 0 -and
+              [string]$bootstrapValues['managed_tun_present'] -ceq 'false'
+            )
+            if (-not $boundedStoppedOwner -and -not $boundedCleanStopped) {
               throw "Stable pre-state diagnostic failed: $bootstrapExit"
             }
 
             $stableConsole = Join-Path $root 'bin\edge-console.exe'
             if (-not (Test-Path -LiteralPath $stableConsole -PathType Leaf)) {
-              throw 'Installed stable console is missing for stopped-owner recovery evidence'
+              throw 'Installed stable console is missing for bounded recovery evidence'
             }
             $recoveryEvidence = @(& $stableConsole privileged-runtime-evidence --install-root $root)
             $recoveryEvidenceExit = $LASTEXITCODE
             $recoveryEvidence | Write-Host
             if ($recoveryEvidenceExit -ne 0) {
-              throw "Stopped-owner privileged evidence failed: $recoveryEvidenceExit"
+              throw "Bounded privileged evidence failed: $recoveryEvidenceExit"
             }
             $recoveryDetail = [string]($recoveryEvidence |
               Where-Object { [string]$_ -like 'detail=*' } |
               Select-Object -Last 1)
             if ([string]::IsNullOrWhiteSpace($recoveryDetail) -or
                 $recoveryDetail -notmatch '^detail=runtime_evidence=BOUNDED_READ_ONLY') {
-              throw 'Stopped-owner recovery did not return the bounded privileged evidence contract'
+              throw 'Bounded recovery did not return the privileged evidence contract'
             }
             if ($recoveryDetail -notmatch 'external_owner_evidence=INCOMPLETE;external_count=0(?:;|$)') {
-              throw 'Stopped-owner recovery still observes privileged external sing-box ownership'
+              throw 'Bounded recovery still observes privileged external sing-box ownership'
             }
-            $stoppedOwnerRecovery = $true
-            "EDGE_STOPPED_OWNER_RECOVERY=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-            Write-Warning 'Recovering stopped SCM owner only after privileged evidence proved zero external sing-box owners'
+
+            if ($boundedStoppedOwner) {
+              $stoppedOwnerRecovery = $true
+              "EDGE_STOPPED_OWNER_RECOVERY=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+              Write-Warning 'Recovering stopped SCM owner only after privileged evidence proved zero external sing-box owners'
+            } else {
+              $cleanStoppedBootstrap = $true
+              "EDGE_CLEAN_STOPPED_BOOTSTRAP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+              Write-Warning 'Bootstrapping Release A from the already-proven clean stopped ManagedTun state'
+            }
           }
           $diagnostic = [string]$bootstrapValues['diagnostic_path']
           if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
@@ -178,7 +195,7 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          if ($doctorExit -ne 0 -and -not $stoppedOwnerRecovery) {
+          if ($doctorExit -ne 0 -and -not $stoppedOwnerRecovery -and -not $cleanStoppedBootstrap) {
             throw "Exact pre-state diagnostic failed: $doctorExit"
           }
           if ($stoppedOwnerRecovery) {
@@ -190,6 +207,18 @@ jobs:
             if ($doctorExit -ne 0) {
               $LASTEXITCODE = 0
               Write-Host 'stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT'
+            }
+          }
+          if ($cleanStoppedBootstrap) {
+            if ([string]$values['scm_state'] -cne 'Stopped' -or
+                [int]$values['managed_singbox_process_count'] -ne 0 -or
+                [int]$values['conflicting_singbox_process_count'] -ne 0 -or
+                [string]$values['managed_tun_present'] -cne 'false') {
+              throw 'Clean stopped bootstrap evidence changed between stable and immutable diagnostics'
+            }
+            if ($doctorExit -ne 0) {
+              $LASTEXITCODE = 0
+              Write-Host 'clean_stopped_bootstrap_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CLEAN_STATE'
             }
           }
           if ([string]$values['exact_release_files'] -cne 'PASS') {
@@ -240,8 +269,36 @@ jobs:
             }
             $signature = $externalPids -join ','
           }
+          $managedBefore = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          "EDGE_BEFORE_CONTROLLER_PID=$([string]$values['scm_process_id'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_BEFORE_MANAGED_PID=$($managedBefore -join ',')" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           if ($env:EDGE_OPERATION -eq 'start' -and [int]$values['managed_singbox_process_count'] -eq 1) {
             "EDGE_START_NOOP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          }
+          if ($env:EDGE_OPERATION -eq 'restart-controller') {
+            if ([string]$values['scm_state'] -cne 'Running' -or
+                [int]$values['managed_singbox_process_count'] -ne 1 -or
+                [string]$values['managed_tun_present'] -cne 'true') {
+              throw 'restart-controller requires healthy Running ManagedTun pre-state'
+            }
+          }
+          if ($env:EDGE_OPERATION -in @('repair','rollback')) {
+            $previous = Join-Path $root 'previous.pb'
+            $previousDoctor = @(& $diagnostic doctor $previous)
+            if ($LASTEXITCODE -ne 0) { throw "Previous authority diagnostic failed: $LASTEXITCODE" }
+            $previousValues = @{}
+            foreach ($line in $previousDoctor) {
+              $parts = ([string]$line).Split('=', 2)
+              if ($parts.Count -eq 2) { $previousValues[$parts[0]] = $parts[1] }
+            }
+            if ([string]$previousValues['exact_release_files'] -cne 'PASS') {
+              throw 'Previous ReleaseSet exact files are not verified'
+            }
+            "EDGE_BEFORE_PREVIOUS_RELEASE=$([string]$previousValues['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           }
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -269,6 +326,9 @@ jobs:
             }
             'stop' {
               & $env:EDGE_CURRENT_CONSOLE stop-local $env:EDGE_CONTROLLER_ENDPOINT
+            }
+            'restart-controller' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-restart-controller-service --install-root $env:EDGE_INSTALL_ROOT
             }
             'repair' {
               & $env:EDGE_CURRENT_CONSOLE privileged-reinstall-accepted $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
@@ -339,11 +399,53 @@ jobs:
           if ($env:EDGE_OPERATION -in @('converge','repair') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Accepted ReleaseSet is not active'
           }
-          if ($env:EDGE_OPERATION -in @('start','stop') -and [string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
+          if ($env:EDGE_OPERATION -in @('start','stop','restart-controller') -and [string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
             throw 'Transient runtime control changed ReleaseSet authority'
           }
-          if ($env:EDGE_OPERATION -eq 'rollback' -and [string]$values['release_set_sha256'] -ceq $env:EDGE_BEFORE_RELEASE) {
-            throw 'Rollback did not change ReleaseSet authority'
+          if ($env:EDGE_OPERATION -eq 'rollback') {
+            if ([string]$values['release_set_sha256'] -ceq $env:EDGE_BEFORE_RELEASE) {
+              throw 'Rollback did not change ReleaseSet authority'
+            }
+            if ([string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_PREVIOUS_RELEASE) {
+              throw 'Rollback did not activate the exact previous ReleaseSet observed before mutation'
+            }
+          }
+          if ($env:EDGE_OPERATION -eq 'repair') {
+            $previousAfter = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'previous.pb'))
+            if ($LASTEXITCODE -ne 0) { throw "Previous authority diagnostic failed after repair: $LASTEXITCODE" }
+            $previousAfterValues = @{}
+            foreach ($line in $previousAfter) {
+              $parts = ([string]$line).Split('=', 2)
+              if ($parts.Count -eq 2) { $previousAfterValues[$parts[0]] = $parts[1] }
+            }
+            if ([string]$previousAfterValues['release_set_sha256'] -cne $env:EDGE_BEFORE_PREVIOUS_RELEASE) {
+              throw 'Repair changed previous ReleaseSet authority'
+            }
+          }
+          $managedAfter = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          $afterControllerPid = [string]$values['scm_process_id']
+          $afterManagedPid = $managedAfter -join ','
+          if ($env:EDGE_OPERATION -eq 'restart-controller') {
+            if ([string]::IsNullOrWhiteSpace($env:EDGE_BEFORE_CONTROLLER_PID) -or
+                $env:EDGE_BEFORE_CONTROLLER_PID -ceq 'ABSENT' -or
+                $afterControllerPid -ceq $env:EDGE_BEFORE_CONTROLLER_PID) {
+              throw 'SCM restart did not replace controller PID'
+            }
+            if ([string]::IsNullOrWhiteSpace($env:EDGE_BEFORE_MANAGED_PID) -or
+                $afterManagedPid -ceq $env:EDGE_BEFORE_MANAGED_PID) {
+              throw 'SCM restart did not replace the exact managed child'
+            }
+          }
+          if ($env:EDGE_OPERATION -eq 'start' -and $env:EDGE_START_NOOP -ceq 'YES') {
+            if ($afterControllerPid -cne $env:EDGE_BEFORE_CONTROLLER_PID -or
+                $afterManagedPid -cne $env:EDGE_BEFORE_MANAGED_PID) {
+              throw 'Idempotent start caused controller or managed-child PID churn'
+            }
+            Write-Host 'runtime_start_noop_identity=PASS'
           }
           $console = [string]$values['console_path']
           $controller = [string]$values['controller_path']
@@ -360,12 +462,12 @@ jobs:
           $expected = "$controller windows-service $env:EDGE_INSTALL_ROOT $authority"
           if ([string]$values['scm_executable_path'] -cne $expected) { throw 'SCM executable authority mismatch' }
 
-      - name: Prove managed DIRECT and WARP
-        if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' }}
+      - name: Prove managed DIRECT and WARP without runtime restart
+        if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' || needs.resolve.outputs.operation == 'start' || needs.resolve.outputs.operation == 'restart-controller' || needs.resolve.outputs.operation == 'rollback' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & $env:EDGE_CURRENT_CONSOLE restart-verify-runtime
+          & $env:EDGE_CURRENT_CONSOLE verify-runtime
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
 
       - name: Read-only privileged runtime evidence after restart
@@ -404,9 +506,12 @@ jobs:
             exit 0
           }
 
-          if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
+          if ($evidenceStrict -and $detailLine -notmatch '(?:^|;)controller_service_error=ABSENT(?:;|$)') {
+            throw 'Controller service retains current startup-failure evidence after successful lifecycle verification'
+          }
+          if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
             if ($detailLine -match '(?:^|;)stderr=MISSING(?:;|$)') {
-              throw 'Managed sing-box stderr evidence is missing after runtime restart'
+              throw 'Managed sing-box stderr evidence is missing after lifecycle verification'
             }
             if ($detailLine -notmatch '(?:^|;)stderr=') {
               throw 'Managed sing-box stderr evidence was omitted from the bounded privileged result'
@@ -418,7 +523,7 @@ jobs:
           }
 
       - name: Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence
-        if: ${{ (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
+        if: ${{ (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' || needs.resolve.outputs.operation == 'start' || needs.resolve.outputs.operation == 'restart-controller' || needs.resolve.outputs.operation == 'rollback') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -601,7 +706,7 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          if ($env:EDGE_OPERATION -in @('converge','repair','start') -and [int]$values['managed_singbox_process_count'] -ne 1) {
+          if ($env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and [int]$values['managed_singbox_process_count'] -ne 1) {
             throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $($values['managed_singbox_process_count'])"
           }
           if ($env:EDGE_OPERATION -eq 'stop' -and [int]$values['managed_singbox_process_count'] -ne 0) {

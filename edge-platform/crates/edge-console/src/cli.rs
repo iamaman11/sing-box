@@ -34,9 +34,11 @@ pub(crate) enum Command {
     PrivilegedActivate(PrivilegedActivateArgs),
     PrivilegedRollbackPrevious(InstallRootArgs),
     PrivilegedReinstallAccepted(PrivilegedActivateArgs),
+    PrivilegedRestartControllerService(InstallRootArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
+    VerifyRuntime,
     PrivilegedPrepareCredentialAccess(InstallRootArgs),
     PrivilegedInstallCredentialAccess(InstallRootArgs),
     #[cfg(windows)]
@@ -77,9 +79,11 @@ impl Command {
             Self::PrivilegedActivate(_) => "privileged-activate",
             Self::PrivilegedRollbackPrevious(_) => "privileged-rollback-previous",
             Self::PrivilegedReinstallAccepted(_) => "privileged-reinstall-accepted",
+            Self::PrivilegedRestartControllerService(_) => "privileged-restart-controller-service",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
+            Self::VerifyRuntime => "verify-runtime",
             Self::PrivilegedPrepareCredentialAccess(_) => "privileged-prepare-credential-access",
             Self::PrivilegedInstallCredentialAccess(_) => "privileged-install-credential-access",
             #[cfg(windows)]
@@ -173,7 +177,7 @@ pub(crate) fn controller_endpoint(value: Option<String>) -> String {
                 .ok()
                 .and_then(non_blank)
         })
-        .unwrap_or_else(|| crate::DEFAULT_CONTROLLER_ENDPOINT.to_owned())
+        .unwrap_or_else(|| crate::default_controller_endpoint().to_owned())
 }
 
 fn non_blank(value: String) -> Option<String> {
@@ -206,6 +210,10 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["edge-console", "privileged-ping"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "privileged-runtime-evidence"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-restart-controller-service"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["edge-console", "verify-runtime"]).is_ok());
         assert!(
             Cli::try_parse_from(["edge-console", "privileged-prepare-credential-access"]).is_ok()
         );
