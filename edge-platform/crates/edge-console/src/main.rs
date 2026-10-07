@@ -36,7 +36,8 @@ use edge_shared_types::{
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, UbuntuProxyState, WindowsActivationState, WindowsDatapathMode,
     WindowsPrivilegedOperation, WindowsPrivilegedRequest, WindowsPrivilegedResult,
-    WindowsRuntimeState, WindowsTunnelBinding, canonical_production_desired_state,
+    WindowsRuntimeState, WindowsTunnelBinding, WINDOWS_CONTROLLER_ADDR,
+    WINDOWS_CONTROLLER_ENDPOINT, canonical_production_desired_state,
     decode_windows_activation_state, decode_windows_privileged_request,
     decode_windows_privileged_result, decode_windows_runtime_state,
     encode_windows_activation_state, encode_windows_privileged_request,
@@ -66,7 +67,7 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 const DEFAULT_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:50051";
 #[cfg(windows)]
-const INSTALLED_CONTROLLER_ADDR: &str = "127.0.0.1:51051";
+const INSTALLED_CONTROLLER_ADDR: &str = WINDOWS_CONTROLLER_ADDR;
 #[cfg(windows)]
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 #[cfg(windows)]
@@ -91,6 +92,16 @@ const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
 const DESKTOP_SELECTOR_GROUP: &str = "proxy-selector";
 const UBUNTU_SELECTOR_GROUP: &str = "wsl-selector";
+
+pub(crate) fn default_controller_endpoint() -> &'static str {
+    #[cfg(windows)]
+    {
+        if installed_root_from_console().is_ok() {
+            return WINDOWS_CONTROLLER_ENDPOINT;
+        }
+    }
+    DEFAULT_CONTROLLER_ENDPOINT
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -308,6 +319,24 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             finish_privileged_result(&result)?;
             Ok(())
         }
+        Command::PrivilegedRestartControllerService(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::RestartControllerService as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
         Command::PrivilegedStageCredential(args) => {
             let install_root = PathBuf::from(args.install_root);
             let result = submit_privileged_request(
@@ -342,6 +371,17 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("runtime_restart_functional=PASS");
             println!("runtime_restart_direct=PASS");
             println!("runtime_restart_warp=PASS");
+            Ok(())
+        }
+        Command::VerifyRuntime => {
+            let endpoint = cli::controller_endpoint(None);
+            verify_windows_tunnels(&endpoint)
+                .await
+                .map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("runtime_functional=PASS");
+            println!("runtime_direct=PASS");
+            println!("runtime_warp=PASS");
             Ok(())
         }
         Command::PrivilegedPrepareCredentialAccess(args) => {
@@ -1081,6 +1121,16 @@ async fn process_privileged_request(
             read_bounded_windows_runtime_evidence(install_root)
                 .map(|detail| ("RUNTIME_EVIDENCE_READ".to_owned(), detail, active))
         }
+        Ok(WindowsPrivilegedOperation::RestartControllerService) => {
+            #[cfg(windows)]
+            {
+                restart_controller_service(install_root)
+            }
+            #[cfg(not(windows))]
+            {
+                Err("RESTART_CONTROLLER_SERVICE is Windows-only".to_owned())
+            }
+        }
         Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
             Err("unsupported privileged Windows operation".to_owned())
         }
@@ -1124,6 +1174,14 @@ fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
 fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
     let runtime_root = install_root.join("runtime");
     #[cfg(windows)]
+    let controller_error = read_controller_service_error_evidence(install_root)?;
+    #[cfg(not(windows))]
+    let controller_error = "controller_service_error=WINDOWS_ONLY".to_owned();
+    #[cfg(windows)]
+    let process_classification = read_runtime_process_classification_evidence(install_root)?;
+    #[cfg(not(windows))]
+    let process_classification = "process_classification=WINDOWS_ONLY".to_owned();
+    #[cfg(windows)]
     let scheduled_tasks = read_handoff_task_evidence()?;
     #[cfg(not(windows))]
     let scheduled_tasks = "scheduled_tasks=WINDOWS_ONLY".to_owned();
@@ -1131,7 +1189,9 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
     let external_owner = read_external_owner_restore_evidence(install_root)?;
     #[cfg(not(windows))]
     let external_owner = "external_owner_evidence=WINDOWS_ONLY".to_owned();
-    let critical = format!("runtime_evidence=BOUNDED_READ_ONLY;{scheduled_tasks};{external_owner}");
+    let critical = format!(
+        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner}"
+    );
     if critical.len() > RUNTIME_EVIDENCE_RESULT_MAX_BYTES {
         return Err(format!(
             "critical runtime evidence exceeds bounded result contract: {} > {}",
@@ -1155,6 +1215,79 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
     Ok(format!(
         "{critical}{}",
         truncate_runtime_evidence(&optional, remaining)
+    ))
+}
+
+#[cfg(windows)]
+fn read_controller_service_error_evidence(install_root: &Path) -> Result<String, String> {
+    let path = install_root.join("logs").join("controller-service-error.txt");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok("controller_service_error=ABSENT".to_owned());
+        }
+        Err(err) => return Err(format!("failed to read controller service error evidence: {err}")),
+    };
+    if bytes.len() > 512 {
+        return Ok("controller_service_error=INVALID_OVERSIZE".to_owned());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let compact = compact_runtime_evidence_line(&redact_runtime_evidence(&text));
+    Ok(format!(
+        "controller_service_error={}",
+        evidence_field(&truncate_runtime_evidence(&compact, 192))
+    ))
+}
+
+#[cfg(windows)]
+fn current_controller_service_pid() -> Result<Option<u32>, String> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| format!("failed to open Windows SCM for process evidence: {err}"))?;
+    let service = manager
+        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+        .map_err(|err| format!("failed to open controller service for process evidence: {err}"))?;
+    service
+        .query_status()
+        .map(|status| status.process_id)
+        .map_err(|err| format!("failed to query controller service process evidence: {err}"))
+}
+
+#[cfg(windows)]
+fn read_runtime_process_classification_evidence(install_root: &Path) -> Result<String, String> {
+    let managed_config = local_singbox_config_path(install_root);
+    let controller_pid = current_controller_service_pid()?;
+    let (classification, complete, count, pid, parent_pid) =
+        match classify_runtime_process(&managed_config) {
+            RuntimeProcessClassification::Absent => ("ABSENT", true, 0usize, None, None),
+            RuntimeProcessClassification::Managed(process) => {
+                let is_current_child = controller_pid.is_some() && process.parent_pid == controller_pid;
+                let complete = process.executable_path.is_some()
+                    && !process.command_line.is_empty()
+                    && process.config_path.is_some();
+                (
+                    if is_current_child { "MANAGED" } else { "ORPHAN" },
+                    complete,
+                    1,
+                    Some(process.pid),
+                    process.parent_pid,
+                )
+            }
+            RuntimeProcessClassification::Conflicting(processes) => {
+                let complete = processes
+                    .iter()
+                    .all(|process| process.executable_path.is_some() && !process.command_line.is_empty());
+                ("CONFLICTING", complete, processes.len(), None, None)
+            }
+        };
+    Ok(format!(
+        "process_classification={classification};process_evidence_complete={complete};process_count={count};managed_pid={};managed_parent_pid={};controller_pid={}",
+        pid.map(|value| value.to_string()).unwrap_or_else(|| "ABSENT".to_owned()),
+        parent_pid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
+        controller_pid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned()),
     ))
 }
 
@@ -1969,6 +2102,51 @@ async fn verify_windows_tunnel_route(
     ))
 }
 
+async fn verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
+    let verification = async {
+        let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
+            .await
+            .map_err(|err| err.to_string())?;
+        let original = selector
+            .observed_main_route
+            .or(selector.desired_main_route)
+            .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
+
+        verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await?;
+        verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await?;
+
+        let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
+            .await
+            .map_err(|err| err.to_string())?;
+        if !restore.success {
+            return Err("failed to restore original Windows selector".to_owned());
+        }
+        let observed = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
+            .await
+            .map_err(|err| err.to_string())?;
+        if observed.observed_main_route.as_deref() != Some(original.as_str()) {
+            return Err(format!(
+                "Windows selector restore read-back mismatch: expected {original}, observed {:?}",
+                observed.observed_main_route
+            ));
+        }
+        Ok(())
+    }
+    .await;
+
+    match verification {
+        Ok(()) => Ok(()),
+        Err(error) => match stop_managed_windows_runtime_after_failure(endpoint).await {
+            Ok(()) => Err(format!(
+                "Windows managed runtime failed functional verification and was stopped without touching external sing-box: {error}"
+            )),
+            Err(cleanup_err) => Err(format!(
+                "Windows managed runtime failed functional verification: {error}; managed-runtime cleanup also failed: {cleanup_err}"
+            )),
+        },
+    }
+}
+
 async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
     let restart = restart_local(endpoint.to_owned())
         .await
@@ -1984,50 +2162,7 @@ async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String
             )),
         };
     }
-
-    let verification = async {
-        let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
-            .await
-            .map_err(|err| err.to_string())?;
-        let original = selector
-            .observed_main_route
-            .or(selector.desired_main_route)
-            .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
-
-        let direct = verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await;
-        let warp = if direct.is_ok() {
-            verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await
-        } else {
-            Ok(())
-        };
-        let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
-            .await
-            .map_err(|err| err.to_string())
-            .and_then(|response| {
-                if response.success {
-                    Ok(())
-                } else {
-                    Err("failed to restore original Windows selector".to_owned())
-                }
-            });
-
-        direct?;
-        warp?;
-        restore
-    }
-    .await;
-
-    match verification {
-        Ok(()) => Ok(()),
-        Err(error) => match stop_managed_windows_runtime_after_failure(endpoint).await {
-            Ok(()) => Err(format!(
-                "Windows managed runtime failed functional verification and was stopped without touching external sing-box: {error}"
-            )),
-            Err(cleanup_err) => Err(format!(
-                "Windows managed runtime failed functional verification: {error}; managed-runtime cleanup also failed: {cleanup_err}"
-            )),
-        },
-    }
+    verify_windows_tunnels(endpoint).await
 }
 
 fn verify_stage2_isolated_prerequisites(install_root: &Path) -> Result<(), String> {
@@ -2378,6 +2513,109 @@ if ($verified.Count -ne 1) {
             status.code().unwrap_or(-1)
         ))
     }
+}
+
+#[cfg(windows)]
+fn controller_service_binary_path(command: &Path) -> PathBuf {
+    let text = command.to_string_lossy();
+    if let Some(rest) = text.strip_prefix('"')
+        && let Some(end) = rest.find('"')
+    {
+        return PathBuf::from(&rest[..end]);
+    }
+    PathBuf::from(text.split_whitespace().next().unwrap_or_default())
+}
+
+#[cfg(windows)]
+fn restart_controller_service(
+    install_root: &Path,
+) -> Result<(String, String, Option<String>), String> {
+    let activation = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    let expected_controller = Path::new(&activation.controller_path);
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| format!("failed to open Windows Service Control Manager: {err}"))?;
+    let service = manager
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::QUERY_CONFIG
+                | ServiceAccess::QUERY_STATUS
+                | ServiceAccess::START
+                | ServiceAccess::STOP,
+        )
+        .map_err(|err| format!("failed to open exact controller service: {err}"))?;
+    let config = service
+        .query_config()
+        .map_err(|err| format!("failed to query exact controller service config: {err}"))?;
+    let configured_binary = controller_service_binary_path(&config.executable_path);
+    if !evidence_path_matches(&configured_binary.to_string_lossy(), expected_controller) {
+        return Err("controller service binary does not match current ReleaseSet".to_owned());
+    }
+    let account = config
+        .account_name
+        .as_deref()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "LocalSystem".to_owned());
+    if !account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT) {
+        return Err(format!("unexpected controller service account: {account}"));
+    }
+    let expected_command = format!(
+        "{} windows-service {} {}",
+        activation.controller_path,
+        install_root.display(),
+        INSTALLED_CONTROLLER_ADDR
+    );
+    if config.executable_path.to_string_lossy() != expected_command {
+        return Err("controller service command does not match exact current authority".to_owned());
+    }
+
+    let before = service
+        .query_status()
+        .map_err(|err| format!("failed to query controller service before restart: {err}"))?;
+    if before.current_state != ServiceState::Running {
+        return Err(format!(
+            "controller restart requires Running pre-state, observed {:?}",
+            before.current_state
+        ));
+    }
+    let before_pid = before
+        .process_id
+        .ok_or_else(|| "Running controller service has no PID".to_owned())?;
+
+    service
+        .stop()
+        .map_err(|err| format!("failed to stop exact controller service: {err}"))?;
+    wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
+    service
+        .start::<&str>(&[])
+        .map_err(|err| format!("failed to start exact controller service: {err}"))?;
+    wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(45))?;
+
+    let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
+        .parse()
+        .map_err(|err| format!("invalid installed controller address: {err}"))?;
+    if !wait_for_controller(addr, Duration::from_secs(10)) {
+        return Err(format!(
+            "restarted controller service is not listening on {INSTALLED_CONTROLLER_ADDR}"
+        ));
+    }
+
+    let after = service
+        .query_status()
+        .map_err(|err| format!("failed to query controller service after restart: {err}"))?;
+    let after_pid = after
+        .process_id
+        .ok_or_else(|| "restarted controller service has no PID".to_owned())?;
+    if after_pid == before_pid {
+        return Err("controller service restart did not change controller PID".to_owned());
+    }
+
+    Ok((
+        "CONTROLLER_SERVICE_RESTARTED".to_owned(),
+        format!(
+            "controller_restart=PASS;before_pid={before_pid};after_pid={after_pid};endpoint={INSTALLED_CONTROLLER_ADDR}"
+        ),
+        Some(activation.release_set_sha256),
+    ))
 }
 
 #[cfg(windows)]

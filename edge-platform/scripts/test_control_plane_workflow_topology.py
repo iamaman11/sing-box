@@ -164,20 +164,23 @@ def main() -> None:
         and "github.event.comment.body == '/windows converge'" in router
         and "github.event.comment.body == '/windows start'" in router
         and "github.event.comment.body == '/windows stop'" in router
+        and "github.event.comment.body == '/windows restart-controller'" in router
         and "github.event.comment.body == '/windows repair'" in router
         and "github.event.comment.body == '/windows rollback'" in router
         and 'operation="diagnose"' in windows_physical
         and 'operation="converge"' in windows_physical
         and 'operation="start"' in windows_physical
         and 'operation="stop"' in windows_physical
+        and 'operation="restart-controller"' in windows_physical
         and 'operation="repair"' in windows_physical
         and 'operation="rollback"' in windows_physical
         and "privileged-reinstall-accepted" in windows_physical
-        and windows_physical.count("restart-verify-runtime") == 1
+        and "verify-runtime" in windows_physical
+        and "restart-verify-runtime" not in windows_physical
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
         and windows_physical.count("privileged-runtime-evidence") == 2
-        and windows_physical.rindex("restart-verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
+        and windows_physical.rindex("verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
         and "Managed sing-box stderr evidence is missing after runtime restart" in windows_physical
@@ -233,6 +236,36 @@ def main() -> None:
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "needs.resolve.outputs.operation != 'diagnose'" in windows_physical,
         "Stage 4B Windows lifecycle must stay one fixed typed boundary across ProxyOnly/ManagedTun with no second cutover command",
+    )
+    require(
+        "127.0.0.1:45151" in windows_physical
+        and "127.0.0.1:51051" not in windows_physical
+        and "WINDOWS_PRIVILEGED_OPERATION_RESTART_CONTROLLER_SERVICE = 11" in runtime_proto
+        and "RestartControllerService" in shared_types
+        and "privileged-restart-controller-service" in windows_console_cli
+        and "CONTROLLER_SERVICE_RESTARTED" in windows_console
+        and "controller_service_error=ABSENT" in windows_console
+        and "process_classification=" in windows_console
+        and "ServiceState::StartPending" in windows_controller_runtime
+        and "TcpListener::bind(config.addr)" in windows_controller_runtime
+        and "serve_with_incoming_shutdown" in windows_controller_runtime
+        and "WINDOWS_CONTROLLER_INIT_TIMEOUT" in windows_controller_runtime
+        and windows_controller_runtime.index("ServiceState::StartPending")
+            < windows_controller_runtime.index("controller_server(config.repo_root.clone())")
+        and windows_controller_runtime.index("controller_server(config.repo_root.clone())")
+            < windows_controller_runtime.index("TcpListener::bind(config.addr)")
+        and windows_controller_runtime.index("TcpListener::bind(config.addr)")
+            < windows_controller_runtime.index("converge_windows_runtime_on_service_start")
+        and windows_controller_runtime.index("converge_windows_runtime_on_service_start")
+            < windows_controller_runtime.index("ServiceState::Running")
+        and "windows_boot_time_unix_seconds" in windows_diagnostic
+        and "controller_listener_present" in windows_diagnostic
+        and "controller_process_start_unix_seconds" in windows_diagnostic
+        and "orphan_singbox_process_count" in windows_diagnostic
+        and "clean_stopped_bootstrap_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CLEAN_STATE" in windows_physical
+        and "EDGE_CLEAN_STOPPED_BOOTSTRAP=YES" in windows_physical
+        and "runtime_start_noop_identity=PASS" in windows_physical,
+        "Release A must make SCM readiness deterministic, use the fixed non-dynamic controller endpoint and expose only bounded GitHub-visible lifecycle evidence",
     )
     require(
         '".repair"' in windows_installer

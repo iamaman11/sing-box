@@ -1,9 +1,10 @@
 use edge_shared_types::{
-    WindowsDatapathMode, canonical_production_desired_state, decode_windows_activation_state,
-    verify_windows_activation_files,
+    WindowsDatapathMode, WINDOWS_CONTROLLER_ADDR, canonical_production_desired_state,
+    decode_windows_activation_state, verify_windows_activation_files,
 };
 use std::path::{Path, PathBuf};
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use std::time::{SystemTime, UNIX_EPOCH};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[cfg(windows)]
 use std::collections::BTreeMap;
@@ -12,11 +13,11 @@ use std::ffi::c_void;
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(windows)]
 use std::ptr::null_mut;
 #[cfg(windows)]
-use windows_service::service::ServiceAccess;
+use windows_service::service::{ServiceAccess, ServiceExitCode};
 #[cfg(windows)]
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 #[cfg(windows)]
@@ -73,7 +74,13 @@ fn run() -> Result<(), String> {
     let expected_controller = PathBuf::from(&state.controller_path);
     let controller_running = process_running_at(&expected_controller);
 
+    let observation_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("system clock is before Unix epoch: {err}"))?
+        .as_secs();
     println!("status=PASS");
+    println!("observation_time_unix_seconds={observation_time}");
+    println!("windows_boot_time_unix_seconds={}", System::boot_time());
     println!("release_set_sha256={}", state.release_set_sha256);
     println!("source_revision={}", state.source_revision);
     println!("windows_datapath_mode={datapath_mode:?}");
@@ -88,6 +95,8 @@ fn run() -> Result<(), String> {
 
     #[cfg(windows)]
     let controller_pid = observe_windows_service(&expected_controller)?;
+    #[cfg(windows)]
+    observe_controller_listener(controller_pid)?;
     #[cfg(windows)]
     observe_singbox_processes(&state_path, datapath_mode, controller_pid)?;
     #[cfg(windows)]
@@ -176,7 +185,95 @@ fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, St
             .map(|value| value.to_string())
             .unwrap_or_else(|| "ABSENT".to_owned())
     );
+    match status.exit_code {
+        ServiceExitCode::Win32(code) => {
+            println!("scm_win32_exit_code={code}");
+            println!("scm_service_specific_exit_code=0");
+        }
+        ServiceExitCode::ServiceSpecific(code) => {
+            println!("scm_win32_exit_code=1066");
+            println!("scm_service_specific_exit_code={code}");
+        }
+    }
+    println!(
+        "controller_process_start_unix_seconds={}",
+        status
+            .process_id
+            .and_then(process_start_time)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned())
+    );
     Ok(status.process_id)
+}
+
+#[cfg(windows)]
+fn process_start_time(pid: u32) -> Option<u64> {
+    let mut system = System::new_all();
+    system.refresh_all();
+    system
+        .process(Pid::from_u32(pid))
+        .map(|process| process.start_time())
+}
+
+#[cfg(windows)]
+fn observe_controller_listener(controller_pid: Option<u32>) -> Result<(), String> {
+    let expected = WINDOWS_CONTROLLER_ADDR
+        .parse::<SocketAddr>()
+        .map_err(|err| format!("invalid canonical Windows controller address: {err}"))?;
+    let SocketAddr::V4(expected) = expected else {
+        return Err("canonical Windows controller address must be IPv4 loopback".to_owned());
+    };
+
+    let buffer = query_extended_table(true, AF_INET as u32, TCP_TABLE_OWNER_PID_LISTENER as u32)?;
+    let table = buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
+    let count = unsafe { (*table).dwNumEntries as usize };
+    let rows = unsafe { (*table).table.as_ptr() };
+    let mut exact = Vec::new();
+    let mut same_port = Vec::new();
+    for offset in 0..count {
+        let row = unsafe { &*rows.add(offset) };
+        if windows_port(row.dwLocalPort) != expected.port() {
+            continue;
+        }
+        same_port.push(row.dwOwningPid);
+        if Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes()) == *expected.ip() {
+            exact.push(row.dwOwningPid);
+        }
+    }
+
+    println!("controller_listener_address={WINDOWS_CONTROLLER_ADDR}");
+    println!("controller_listener_present={}", exact.len() == 1);
+    println!(
+        "controller_listener_pid={}",
+        exact
+            .first()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ABSENT".to_owned())
+    );
+
+    if exact.len() > 1 {
+        return Err("multiple exact controller listeners violate single-owner readiness".to_owned());
+    }
+    if let Some(pid) = exact.first().copied() {
+        if controller_pid != Some(pid) {
+            return Err(format!(
+                "canonical controller listener PID {pid} does not match SCM PID {:?}",
+                controller_pid
+            ));
+        }
+        return Ok(());
+    }
+    if !same_port.is_empty() {
+        return Err(format!(
+            "canonical controller port {} is occupied by non-canonical listener PID(s) {:?}",
+            expected.port(),
+            same_port
+        ));
+    }
+    if controller_pid.is_some() {
+        return Err("SCM controller is present but canonical listener is absent".to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -193,6 +290,7 @@ fn observe_singbox_processes(
     let mut system = System::new_all();
     system.refresh_all();
     let mut managed = 0usize;
+    let mut orphan = 0usize;
     let mut conflicting = 0usize;
     for (pid, process) in system.processes() {
         let name = process.name().to_string_lossy().to_ascii_lowercase();
@@ -210,19 +308,27 @@ fn observe_singbox_processes(
             .as_deref()
             .is_some_and(|value| same_path(Path::new(value), &expected_config));
         let parent_matches = controller_pid.is_some() && parent_pid == controller_pid;
-        let is_managed = config_matches || parent_matches;
+        let is_managed = config_matches && parent_matches;
+        let is_orphan = config_matches && !parent_matches;
         if is_managed {
             managed += 1;
         } else {
+            if is_orphan {
+                orphan += 1;
+            }
             conflicting += 1;
         }
         println!(
-            "singbox_process=pid:{} managed:{} parent:{} exe:{} config:{} cmd:{}",
+            "singbox_process=pid:{} managed:{} orphan:{} config_matches:{} parent_matches:{} parent:{} start_unix_seconds:{} exe:{} config:{} cmd:{}",
             pid.as_u32(),
             is_managed,
+            is_orphan,
+            config_matches,
+            parent_matches,
             parent_pid
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "UNKNOWN".to_owned()),
+            process.start_time(),
             process
                 .exe()
                 .map(|value| value.display().to_string())
@@ -232,6 +338,7 @@ fn observe_singbox_processes(
         );
     }
     println!("managed_singbox_process_count={managed}");
+    println!("orphan_singbox_process_count={orphan}");
     println!("conflicting_singbox_process_count={conflicting}");
     if managed > 1 {
         return Err("multiple managed sing-box processes violate single-owner runtime".to_owned());
@@ -810,13 +917,13 @@ mod tests {
     fn service_binary_path_extracts_unquoted_and_quoted_commands() {
         assert_eq!(
             service_binary_path(Path::new(
-                r"C:\sing-box\releases\abc\bin\edge-controller.exe windows-service C:\sing-box 127.0.0.1:51051"
+                r"C:\sing-box\releases\abc\bin\edge-controller.exe windows-service C:\sing-box 127.0.0.1:45151"
             )),
             PathBuf::from(r"C:\sing-box\releases\abc\bin\edge-controller.exe")
         );
         assert_eq!(
             service_binary_path(Path::new(
-                r#""C:\Program Files\edge-controller.exe" windows-service C:\sing-box 127.0.0.1:51051"#
+                r#""C:\Program Files\edge-controller.exe" windows-service C:\sing-box 127.0.0.1:45151"#
             )),
             PathBuf::from(r"C:\Program Files\edge-controller.exe")
         );

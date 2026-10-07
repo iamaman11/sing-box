@@ -69,6 +69,7 @@ jobs:
         github.event.comment.body == '/windows converge' ||
         github.event.comment.body == '/windows start' ||
         github.event.comment.body == '/windows stop' ||
+        github.event.comment.body == '/windows restart-controller' ||
         github.event.comment.body == '/windows repair' ||
         github.event.comment.body == '/windows rollback'
       )
