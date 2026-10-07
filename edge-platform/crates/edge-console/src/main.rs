@@ -18,7 +18,7 @@ use error::ConsoleError;
 use rusqlite::Connection;
 use std::env;
 #[cfg(windows)]
-use std::ffi::{c_void, OsString};
+use std::ffi::{OsString, c_void};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -47,11 +47,11 @@ use edge_shared_types::{
 use tonic::Request;
 use tonic::transport::Channel;
 #[cfg(windows)]
+use windows::Win32::Foundation::WAIT_IO_COMPLETION;
+#[cfg(windows)]
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
-#[cfg(windows)]
-use windows::Win32::Foundation::WAIT_IO_COMPLETION;
 #[cfg(windows)]
 use windows::Win32::System::Services::{
     NotifyServiceStatusChangeW, SC_HANDLE, SERVICE_NOTIFY_2W, SERVICE_NOTIFY_RUNNING,
@@ -2466,9 +2466,9 @@ fn wait_for_service_state(
     }
 
     drop(monitor);
-    let observed = service
-        .query_status()
-        .map_err(|err| format!("failed to query controller service after notification timeout: {err}"))?;
+    let observed = service.query_status().map_err(|err| {
+        format!("failed to query controller service after notification timeout: {err}")
+    })?;
     Err(format!(
         "controller service did not reach {expected:?} within {} seconds; observed {:?}",
         timeout.as_secs(),
