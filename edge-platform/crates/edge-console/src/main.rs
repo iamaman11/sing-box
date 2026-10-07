@@ -36,14 +36,13 @@ use edge_shared_types::{
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, UbuntuProxyState, WINDOWS_CONTROLLER_ADDR, WINDOWS_CONTROLLER_ENDPOINT,
     WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsActivationState, WindowsDatapathMode,
-    WindowsPrivilegedOperation,
-    WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
-    canonical_production_desired_state, decode_windows_activation_state,
-    decode_windows_privileged_request, decode_windows_privileged_result,
-    decode_windows_runtime_state, encode_windows_activation_state,
-    encode_windows_privileged_request, encode_windows_privileged_result,
-    encode_windows_runtime_state, parse_credential_transition_action,
-    verify_windows_activation_files,
+    WindowsPrivilegedOperation, WindowsPrivilegedRequest, WindowsPrivilegedResult,
+    WindowsRuntimeState, WindowsTunnelBinding, canonical_production_desired_state,
+    decode_windows_activation_state, decode_windows_privileged_request,
+    decode_windows_privileged_result, decode_windows_runtime_state,
+    encode_windows_activation_state, encode_windows_privileged_request,
+    encode_windows_privileged_result, encode_windows_runtime_state,
+    parse_credential_transition_action, verify_windows_activation_files,
 };
 use tonic::Request;
 use tonic::transport::Channel;
