@@ -482,13 +482,25 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let result = runtime.block_on(serve_with_shutdown(
+    let repo_root = config.repo_root.clone();
+    let serve_result = runtime.block_on(serve_with_shutdown(
         config.repo_root,
         config.addr,
         async move {
             let _ = tokio::task::spawn_blocking(move || shutdown_rx.recv()).await;
         },
     ));
+    let cleanup_result = stop_runtime_process(&default_local_config_path(&repo_root), true)
+        .map(|_| ())
+        .map_err(|err| format!("failed to stop exact managed runtime on controller exit: {err}"));
+    let result = match (serve_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(cleanup_err)) => Err(io::Error::other(cleanup_err).into()),
+        (Err(err), Err(cleanup_err)) => {
+            Err(io::Error::other(format!("controller runtime failed: {err}; {cleanup_err}")).into())
+        }
+    };
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
@@ -507,6 +519,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowsStartupDecision {
     NoopManaged,
+    RestartOrphanManaged,
     BlockedConflict,
     StartAbsent,
 }
@@ -515,6 +528,7 @@ enum WindowsStartupDecision {
 fn windows_startup_decision(
     classification: &RuntimeProcessClassification,
     managed_count: usize,
+    managed_parent_is_current_controller: bool,
     mode: WindowsDatapathMode,
 ) -> WindowsStartupDecision {
     if managed_count > 1 {
@@ -524,17 +538,33 @@ fn windows_startup_decision(
     match mode {
         WindowsDatapathMode::ProxyOnly => {
             if managed_count == 1 {
-                WindowsStartupDecision::NoopManaged
+                if managed_parent_is_current_controller {
+                    WindowsStartupDecision::NoopManaged
+                } else {
+                    WindowsStartupDecision::RestartOrphanManaged
+                }
             } else {
                 match classification {
-                    RuntimeProcessClassification::Managed(_) => WindowsStartupDecision::NoopManaged,
+                    RuntimeProcessClassification::Managed(_) => {
+                        if managed_parent_is_current_controller {
+                            WindowsStartupDecision::NoopManaged
+                        } else {
+                            WindowsStartupDecision::RestartOrphanManaged
+                        }
+                    }
                     RuntimeProcessClassification::Conflicting(_)
                     | RuntimeProcessClassification::Absent => WindowsStartupDecision::StartAbsent,
                 }
             }
         }
         WindowsDatapathMode::ManagedTun => match classification {
-            RuntimeProcessClassification::Managed(_) => WindowsStartupDecision::NoopManaged,
+            RuntimeProcessClassification::Managed(_) => {
+                if managed_parent_is_current_controller {
+                    WindowsStartupDecision::NoopManaged
+                } else {
+                    WindowsStartupDecision::RestartOrphanManaged
+                }
+            }
             RuntimeProcessClassification::Conflicting(_) => WindowsStartupDecision::BlockedConflict,
             RuntimeProcessClassification::Absent => WindowsStartupDecision::StartAbsent,
         },
@@ -574,9 +604,33 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
     }
 
     let classification = classify_runtime_process(&config_path);
-    let managed_count = exact_managed_runtime_processes(&config_path).len();
-    match windows_startup_decision(&classification, managed_count, mode) {
+    let managed_processes = exact_managed_runtime_processes(&config_path);
+    let managed_count = managed_processes.len();
+    let managed_parent_is_current_controller = managed_processes
+        .first()
+        .and_then(|process| process.parent_pid)
+        == Some(std::process::id());
+    match windows_startup_decision(
+        &classification,
+        managed_count,
+        managed_parent_is_current_controller,
+        mode,
+    ) {
         WindowsStartupDecision::NoopManaged => Ok("NOOP_MANAGED_RUNNING"),
+        WindowsStartupDecision::RestartOrphanManaged => {
+            stop_runtime_process(&config_path, true)
+                .map_err(|err| format!("failed to stop orphaned exact managed runtime: {err}"))?;
+            let paths = LocalRuntimePaths {
+                singbox_binary_path: default_singbox_binary_path(repo_root),
+                config_path,
+                state_path,
+                runtime_root: default_runtime_root(repo_root),
+            };
+            start_runtime_process(&paths, false).map_err(|err| {
+                format!("failed to restart orphaned exact managed runtime: {err}")
+            })?;
+            Ok("RESTARTED_ORPHAN_MANAGED")
+        }
         WindowsStartupDecision::BlockedConflict => {
             let RuntimeProcessClassification::Conflicting(processes) = &classification else {
                 unreachable!("blocked startup decision requires conflicting ownership")
@@ -4562,14 +4616,25 @@ mod tests {
             windows_startup_decision(
                 &RuntimeProcessClassification::Managed(managed.clone()),
                 1,
+                true,
                 WindowsDatapathMode::ProxyOnly,
             ),
             WindowsStartupDecision::NoopManaged
         );
         assert_eq!(
             windows_startup_decision(
+                &RuntimeProcessClassification::Managed(managed.clone()),
+                1,
+                false,
+                WindowsDatapathMode::ManagedTun,
+            ),
+            WindowsStartupDecision::RestartOrphanManaged
+        );
+        assert_eq!(
+            windows_startup_decision(
                 &RuntimeProcessClassification::Absent,
                 0,
+                false,
                 WindowsDatapathMode::ProxyOnly,
             ),
             WindowsStartupDecision::StartAbsent
@@ -4578,6 +4643,7 @@ mod tests {
             windows_startup_decision(
                 &RuntimeProcessClassification::Conflicting(vec![external.clone()]),
                 0,
+                false,
                 WindowsDatapathMode::ProxyOnly,
             ),
             WindowsStartupDecision::StartAbsent
@@ -4588,6 +4654,7 @@ mod tests {
                     vec![managed.clone(), external.clone(),]
                 ),
                 1,
+                true,
                 WindowsDatapathMode::ProxyOnly,
             ),
             WindowsStartupDecision::NoopManaged
@@ -4596,6 +4663,7 @@ mod tests {
             windows_startup_decision(
                 &RuntimeProcessClassification::Conflicting(vec![external.clone()]),
                 0,
+                false,
                 WindowsDatapathMode::ManagedTun,
             ),
             WindowsStartupDecision::BlockedConflict
@@ -4604,6 +4672,7 @@ mod tests {
             windows_startup_decision(
                 &RuntimeProcessClassification::Conflicting(vec![managed.clone(), external]),
                 1,
+                false,
                 WindowsDatapathMode::ManagedTun,
             ),
             WindowsStartupDecision::BlockedConflict
@@ -4612,6 +4681,7 @@ mod tests {
             windows_startup_decision(
                 &RuntimeProcessClassification::Conflicting(vec![managed.clone(), managed]),
                 2,
+                true,
                 WindowsDatapathMode::ProxyOnly,
             ),
             WindowsStartupDecision::BlockedConflict

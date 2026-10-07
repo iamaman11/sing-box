@@ -176,8 +176,8 @@ def main() -> None:
         and windows_physical.count("restart-verify-runtime") == 1
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 1
-        and windows_physical.index("restart-verify-runtime") < windows_physical.index("privileged-runtime-evidence")
+        and windows_physical.count("privileged-runtime-evidence") == 2
+        and windows_physical.rindex("restart-verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
         and "Managed sing-box stderr evidence is missing after runtime restart" in windows_physical
@@ -199,8 +199,8 @@ def main() -> None:
         and "Repair target must equal the exact current ReleaseSet before runtime stop" in windows_physical
         and "Invoke-WebRequest" not in windows_physical
         and "edge-platform-windows.zip" not in windows_physical
-        and "$env:EDGE_OPERATION -eq 'converge' -and [int]$values['managed_singbox_process_count'] -gt 0" in windows_physical
-        and "$env:EDGE_OPERATION -in @('converge','repair') -and [int]$values['managed_singbox_process_count'] -gt 0" not in windows_physical
+        and "Failed to stop exact managed proxy before release converge" not in windows_physical
+        and "failed to stop exact managed proxy before release transition" in windows_console
         and "id: lifecycle_mutation" in windows_physical
         and "steps.lifecycle_mutation.outcome == 'success'" in windows_physical
         and "managed_tun_server_bypass=PASS" in windows_physical
@@ -215,7 +215,13 @@ def main() -> None:
         and "managed_tun_present" in windows_physical
         and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "runtime_start=NOOP_ALREADY_RUNNING" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 1
+        and windows_physical.count("privileged-runtime-evidence") == 2
+        and "EDGE_STOPPED_OWNER_RECOVERY=YES" in windows_physical
+        and "Stopped-owner recovery still observes privileged external sing-box ownership" in windows_physical
+        and "Recovering stopped SCM owner only after privileged evidence proved zero external sing-box owners" in windows_physical
+        and "RESTARTED_ORPHAN_MANAGED" in windows_controller_runtime
+        and "failed to stop exact managed runtime on controller exit" in windows_controller_runtime
+        and "managed_parent_is_current_controller" in windows_controller_runtime
         and "if: ${{ always() }}" in windows_physical
         and "bin\\edge-console.exe" in windows_physical
         and "Privileged conflict evidence failed read-only" in windows_physical
