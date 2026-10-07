@@ -121,23 +121,7 @@ jobs:
           $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
           $bootstrapExit = $LASTEXITCODE
           $bootstrapDoctor | Write-Host
-          if ($bootstrapExit -ne 0) {
-            $bootstrapText = $bootstrapDoctor -join [Environment]::NewLine
-            if ($bootstrapText -match 'conflicting external sing-box process ownership') {
-              $stableConsole = Join-Path $root 'bin\edge-console.exe'
-              if (Test-Path -LiteralPath $stableConsole -PathType Leaf) {
-                $privilegedEvidence = @(& $stableConsole privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
-                $privilegedEvidenceExit = $LASTEXITCODE
-                $privilegedEvidence | Write-Host
-                if ($privilegedEvidenceExit -ne 0) {
-                  Write-Warning "Privileged conflict evidence failed read-only: $privilegedEvidenceExit"
-                }
-              } else {
-                Write-Warning 'Stable console is unavailable for privileged conflict evidence'
-              }
-            }
-            throw "Stable pre-state diagnostic failed: $bootstrapExit"
-          }
+          if ($bootstrapExit -ne 0) { throw "Stable pre-state diagnostic failed: $bootstrapExit" }
           $bootstrapValues = @{}
           foreach ($line in $bootstrapDoctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -335,23 +319,42 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
 
       - name: Read-only privileged runtime evidence after restart
+        if: ${{ always() }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $evidenceLines = @(& $env:EDGE_CURRENT_CONSOLE privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
+          $evidenceStrict = $true
+          $evidenceConsole = $env:EDGE_CURRENT_CONSOLE
+          if ([string]::IsNullOrWhiteSpace($evidenceConsole) -or
+              -not (Test-Path -LiteralPath $evidenceConsole -PathType Leaf)) {
+            $evidenceStrict = $false
+            $evidenceConsole = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          }
+          if (-not (Test-Path -LiteralPath $evidenceConsole -PathType Leaf)) {
+            Write-Warning 'Privileged runtime evidence console is unavailable after an earlier lifecycle failure'
+            exit 0
+          }
+
+          $evidenceLines = @(& $evidenceConsole privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
           $evidenceExit = $LASTEXITCODE
           $evidenceLines | Write-Host
-          if ($evidenceExit -ne 0) { throw "Privileged read-only runtime evidence failed: $evidenceExit" }
+          if ($evidenceExit -ne 0) {
+            if ($evidenceStrict) { throw "Privileged read-only runtime evidence failed: $evidenceExit" }
+            Write-Warning "Privileged conflict evidence failed read-only: $evidenceExit"
+            exit 0
+          }
 
           $detailLine = [string]($evidenceLines |
             Where-Object { [string]$_ -like 'detail=*' } |
             Select-Object -Last 1)
           if ([string]::IsNullOrWhiteSpace($detailLine) -or
               $detailLine -notmatch '^detail=runtime_evidence=BOUNDED_READ_ONLY') {
-            throw 'Privileged runtime evidence did not return the bounded typed detail contract'
+            if ($evidenceStrict) { throw 'Privileged runtime evidence did not return the bounded typed detail contract' }
+            Write-Warning 'Privileged conflict evidence did not return the bounded typed detail contract'
+            exit 0
           }
 
-          if ($env:EDGE_OPERATION -in @('converge','repair') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
+          if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
             if ($detailLine -match '(?:^|;)stderr=MISSING(?:;|$)') {
               throw 'Managed sing-box stderr evidence is missing after runtime restart'
             }
