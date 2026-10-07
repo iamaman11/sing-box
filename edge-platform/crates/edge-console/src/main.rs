@@ -1708,6 +1708,18 @@ fn activate_privileged_release(
 
     let before_activation = load_verified_activation(install_root).ok();
     let mut previous_bytes_before = None;
+
+    let reconcile_current_owner = |activation: &WindowsActivationState| -> Result<(), String> {
+        retarget_privileged_task(install_root, &activation.console_path)?;
+        #[cfg(windows)]
+        converge_controller_service_with_activation_console(install_root, activation)?;
+        Ok(())
+    };
+    let restore_verified_owner = |activation: &WindowsActivationState| -> Result<(), String> {
+        sync_stable_windows_release_tools(install_root, activation)?;
+        reconcile_current_owner(activation)
+    };
+
     if force_rematerialize {
         require_supported_reinstall_authority()?;
         let current = before_activation.as_ref().ok_or_else(|| {
@@ -1733,9 +1745,10 @@ fn activate_privileged_release(
     } else if let Some(activation) = before_activation.as_ref()
         && activation.release_set_sha256 == target_release
     {
+        reconcile_current_owner(activation)?;
         return Ok((
             "RELEASE_ALREADY_CONVERGED".to_owned(),
-            "exact target ReleaseSet is already locally verified; installer not invoked".to_owned(),
+            "exact target ReleaseSet is already locally verified; installer not invoked; exact owner handoff reconciled".to_owned(),
             Some(activation.release_set_sha256.clone()),
         ));
     }
@@ -1782,17 +1795,6 @@ fn activate_privileged_release(
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("failed to start protected Windows installer: {err}"))?;
-
-    let reconcile_current_owner = |activation: &WindowsActivationState| -> Result<(), String> {
-        #[cfg(windows)]
-        converge_controller_service_with_activation_console(install_root, activation)?;
-        retarget_privileged_task(install_root, &activation.console_path)?;
-        Ok(())
-    };
-    let restore_verified_owner = |activation: &WindowsActivationState| -> Result<(), String> {
-        sync_stable_windows_release_tools(install_root, activation)?;
-        reconcile_current_owner(activation)
-    };
 
     if !output.status.success() {
         if force_rematerialize {
