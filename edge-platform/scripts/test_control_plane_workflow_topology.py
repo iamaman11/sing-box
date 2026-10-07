@@ -824,7 +824,11 @@ def main() -> None:
         and "Target Windows diagnostic digest mismatch" not in windows_physical
         and "EdgePlatformController" in windows_physical
         and "NT SERVICE\\EdgePlatformController" in windows_physical
-        and "service.PathName" in windows_physical
+        and "Get-CimInstance Win32_Service" not in windows_physical
+        and "scm_executable_path" in windows_physical
+        and "scm_executable_matches_release" in windows_physical
+        and "$bootstrapDoctor | Write-Host" in windows_physical
+        and "$doctor | Write-Host" in windows_physical
         and "controller_path" in windows_physical
         and "controller_running=true" not in windows_physical
         and "Runner unexpectedly has direct private-state access" in windows_physical
