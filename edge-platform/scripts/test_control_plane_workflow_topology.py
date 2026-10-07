@@ -490,17 +490,24 @@ def main() -> None:
         and "installer not invoked; exact owner handoff reconciled" in windows_console
         and "RELEASE_CONVERGED_REOBSERVED" in windows_console
         and "local owner handoff reconciled" in windows_console
+        and "fn reconcile_activation_owner(" in windows_console
         and windows_console.index(
             "retarget_privileged_task(install_root, &activation.console_path)?;"
         )
         < windows_console.index(
             "converge_controller_service_with_activation_console(install_root, activation)?;"
         )
+        and windows_console.count(
+            "reconcile_activation_owner(install_root, &previous)"
+        ) == 1
+        and windows_console.count(
+            "reconcile_activation_owner(install_root, &current)"
+        ) == 1
         and "current_config.executable_path.to_string_lossy() == expected_command"
             in windows_console
         and "current_status.current_state == ServiceState::Running" in windows_console
         and "wait_for_controller(addr, Duration::from_millis(250))" in windows_console,
-        "Windows release activation must keep exact current owner recovery reachable before controller handoff while healthy same-target convergence remains idempotent",
+        "Windows release activation and rollback must share one recoverable owner handoff while healthy same-target convergence remains idempotent",
     )
     require(
         "CredentialAdmit" not in vm_agent_cli
