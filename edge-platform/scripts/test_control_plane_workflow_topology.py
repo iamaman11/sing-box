@@ -506,8 +506,33 @@ def main() -> None:
         and "current_config.executable_path.to_string_lossy() == expected_command"
             in windows_console
         and "current_status.current_state == ServiceState::Running" in windows_console
-        and "wait_for_controller(addr, Duration::from_millis(250))" in windows_console,
+        and "controller_is_listening(addr)" in windows_console
+        and "fn wait_for_controller(" not in windows_console,
         "Windows release activation and rollback must share one recoverable owner handoff while healthy same-target convergence remains idempotent",
+    )
+    service_wait_start = windows_console.index("fn wait_for_service_state(")
+    service_wait_end = windows_console.index(
+        "fn run_icacls(", service_wait_start
+    )
+    service_wait = windows_console[service_wait_start:service_wait_end]
+    require(
+        "WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS" in shared_types
+        and "Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS)"
+            in windows_controller_runtime
+        and windows_console.count(
+            "Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS)"
+        ) >= 2
+        and "wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(15))?;"
+            not in windows_console
+        and "wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(45))?;"
+            not in windows_console
+        and "NotifyServiceStatusChangeW" in service_wait
+        and "SleepEx" in service_wait
+        and "SERVICE_NOTIFY_RUNNING" in service_wait
+        and "SERVICE_NOTIFY_STOPPED" in service_wait
+        and "thread::sleep" not in service_wait
+        and "query_status()" in service_wait,
+        "Windows SCM readiness must use native status notifications with one bounded safety deadline and no polling sleep",
     )
     require(
         "CredentialAdmit" not in vm_agent_cli

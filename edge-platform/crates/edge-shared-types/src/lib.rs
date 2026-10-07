@@ -28,6 +28,7 @@ pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 pub const WINDOWS_CONTROLLER_ADDR: &str = "127.0.0.1:45151";
 pub const WINDOWS_CONTROLLER_ENDPOINT: &str = "http://127.0.0.1:45151";
+pub const WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS: u64 = 45;
 
 pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
