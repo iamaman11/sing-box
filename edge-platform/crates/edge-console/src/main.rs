@@ -2550,7 +2550,9 @@ fn converge_controller_service_with_activation_console(
         ])
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| format!("failed to start exact activation console for controller handoff: {err}"))?;
+        .map_err(|err| {
+            format!("failed to start exact activation console for controller handoff: {err}")
+        })?;
     if !output.status.success() {
         return Err(format!(
             "exact activation console controller handoff failed: {}",
