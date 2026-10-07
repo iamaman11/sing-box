@@ -1785,7 +1785,7 @@ fn activate_privileged_release(
 
     let reconcile_current_owner = |activation: &WindowsActivationState| -> Result<(), String> {
         #[cfg(windows)]
-        converge_controller_service(install_root, Path::new(&activation.controller_path))?;
+        converge_controller_service_with_activation_console(install_root, activation)?;
         retarget_privileged_task(install_root, &activation.console_path)?;
         Ok(())
     };
@@ -1984,7 +1984,7 @@ fn rollback_privileged_release(
     let handoff = (|| -> Result<(), String> {
         sync_stable_windows_release_tools(install_root, &previous)?;
         #[cfg(windows)]
-        converge_controller_service(install_root, Path::new(&previous.controller_path))?;
+        converge_controller_service_with_activation_console(install_root, &previous)?;
         retarget_privileged_task(install_root, &previous.console_path)?;
         Ok(())
     })();
@@ -1993,7 +1993,7 @@ fn rollback_privileged_release(
         #[cfg(windows)]
         let owner_restore = sync_stable_windows_release_tools(install_root, &current)
             .and_then(|_| {
-                converge_controller_service(install_root, Path::new(&current.controller_path))
+                converge_controller_service_with_activation_console(install_root, &current)
             })
             .and_then(|_| retarget_privileged_task(install_root, &current.console_path));
         #[cfg(not(windows))]
@@ -2525,6 +2525,39 @@ if ($verified.Count -ne 1) {
             status.code().unwrap_or(-1)
         ))
     }
+}
+
+#[cfg(windows)]
+fn converge_controller_service_with_activation_console(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+) -> Result<(), String> {
+    let console = Path::new(&activation.console_path);
+    if !console.is_file() {
+        return Err(format!(
+            "exact activation console is missing for controller handoff: {}",
+            console.display()
+        ));
+    }
+    let root = install_root
+        .to_str()
+        .ok_or_else(|| "Windows install root is not UTF-8".to_owned())?;
+    let output = Command::new(console)
+        .args([
+            "privileged-converge-controller-service",
+            "--install-root",
+            root,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("failed to start exact activation console for controller handoff: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "exact activation console controller handoff failed: {}",
+            bounded_privileged_child_evidence(&output.stdout, &output.stderr)
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
