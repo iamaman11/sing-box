@@ -121,7 +121,23 @@ jobs:
           $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
           $bootstrapExit = $LASTEXITCODE
           $bootstrapDoctor | Write-Host
-          if ($bootstrapExit -ne 0) { throw "Stable pre-state diagnostic failed: $bootstrapExit" }
+          if ($bootstrapExit -ne 0) {
+            $bootstrapText = $bootstrapDoctor -join [Environment]::NewLine
+            if ($bootstrapText -match 'conflicting external sing-box process ownership') {
+              $stableConsole = Join-Path $root 'bin\edge-console.exe'
+              if (Test-Path -LiteralPath $stableConsole -PathType Leaf) {
+                $privilegedEvidence = @(& $stableConsole privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
+                $privilegedEvidenceExit = $LASTEXITCODE
+                $privilegedEvidence | Write-Host
+                if ($privilegedEvidenceExit -ne 0) {
+                  Write-Warning "Privileged conflict evidence failed read-only: $privilegedEvidenceExit"
+                }
+              } else {
+                Write-Warning 'Stable console is unavailable for privileged conflict evidence'
+              }
+            }
+            throw "Stable pre-state diagnostic failed: $bootstrapExit"
+          }
           $bootstrapValues = @{}
           foreach ($line in $bootstrapDoctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -190,6 +206,9 @@ jobs:
             throw "Stage 4B.2-C requires zero external sing-box owners; observed $($externalPids.Count)"
           }
           $signature = $externalPids -join ','
+          if ($env:EDGE_OPERATION -eq 'start' -and [int]$values['managed_singbox_process_count'] -eq 1) {
+            "EDGE_START_NOOP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          }
           "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_BEFORE_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -207,7 +226,12 @@ jobs:
               & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
             }
             'start' {
-              & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
+              if ($env:EDGE_START_NOOP -ceq 'YES') {
+                Write-Host 'runtime_start=NOOP_ALREADY_RUNNING'
+                $LASTEXITCODE = 0
+              } else {
+                & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
+              }
             }
             'stop' {
               & $env:EDGE_CURRENT_CONSOLE stop-local $env:EDGE_CONTROLLER_ENDPOINT
