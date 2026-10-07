@@ -35,7 +35,8 @@ use edge_shared_types::{
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, UbuntuProxyState, WINDOWS_CONTROLLER_ADDR, WINDOWS_CONTROLLER_ENDPOINT,
-    WindowsActivationState, WindowsDatapathMode, WindowsPrivilegedOperation,
+    WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsActivationState, WindowsDatapathMode,
+    WindowsPrivilegedOperation,
     WindowsPrivilegedRequest, WindowsPrivilegedResult, WindowsRuntimeState, WindowsTunnelBinding,
     canonical_production_desired_state, decode_windows_activation_state,
     decode_windows_privileged_request, decode_windows_privileged_result,
@@ -2631,7 +2632,11 @@ fn restart_controller_service(
     service
         .start::<&str>(&[])
         .map_err(|err| format!("failed to start exact controller service: {err}"))?;
-    wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(45))?;
+    wait_for_service_state(
+        &service,
+        ServiceState::Running,
+        Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
+    )?;
 
     let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
         .parse()
@@ -2780,7 +2785,11 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
     service
         .start::<&str>(&[])
         .map_err(|err| format!("failed to start controller service: {err}"))?;
-    wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(15))?;
+    wait_for_service_state(
+        &service,
+        ServiceState::Running,
+        Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
+    )?;
 
     let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
         .parse()

@@ -510,6 +510,19 @@ def main() -> None:
         "Windows release activation and rollback must share one recoverable owner handoff while healthy same-target convergence remains idempotent",
     )
     require(
+        "WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS" in shared_types
+        and "Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS)"
+            in windows_controller_runtime
+        and windows_console.count(
+            "Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS)"
+        ) >= 2
+        and "wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(15))?;"
+            not in windows_console
+        and "wait_for_service_state(&service, ServiceState::Running, Duration::from_secs(45))?;"
+            not in windows_console,
+        "Windows SCM readiness must use one shared start budget and must not time out before the service startup contract",
+    )
+    require(
         "CredentialAdmit" not in vm_agent_cli
         and "local-credential-admit" not in vm_agent_cli
         and "PrivilegedAdmitCredential" not in windows_console_cli

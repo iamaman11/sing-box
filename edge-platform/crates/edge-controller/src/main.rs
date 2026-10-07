@@ -64,7 +64,8 @@ use edge_shared_types::{
     PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
     SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode,
+    TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR,
+    WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsDatapathMode,
     canonical_production_desired_state, decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
@@ -91,7 +92,8 @@ const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:50051";
 #[cfg(windows)]
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 #[cfg(windows)]
-const WINDOWS_SERVICE_START_WAIT_HINT: Duration = Duration::from_secs(45);
+const WINDOWS_SERVICE_START_WAIT_HINT: Duration =
+    Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS);
 #[cfg(windows)]
 const WINDOWS_CONTROLLER_INIT_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(windows)]
