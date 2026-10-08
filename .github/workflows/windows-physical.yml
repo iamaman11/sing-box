@@ -508,7 +508,7 @@ jobs:
             }
             default { throw "Unsupported active Windows datapath mode: $afterMode" }
           }
-          if ($env:EDGE_OPERATION -in @('converge','repair','quality-line1') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+          if (($env:EDGE_OPERATION -in @('converge','repair') -or $env:EDGE_OPERATION -eq 'quality-line1') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Accepted ReleaseSet is not active'
           }
           if ($env:EDGE_OPERATION -in @('start','stop','restart-controller') -and [string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
