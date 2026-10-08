@@ -36,7 +36,8 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Services::{
-    QueryServiceStatusEx, SC_STATUS_PROCESS_INFO, SERVICE_STATUS_PROCESS,
+    QueryServiceStatusEx, SC_STATUS_PROCESS_INFO, SERVICE_CONTINUE_PENDING, SERVICE_PAUSED,
+    SERVICE_PAUSE_PENDING, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
 };
 
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
@@ -151,7 +152,9 @@ fn native_nonzero_service_pid(pid: u32) -> Option<u32> {
 }
 
 #[cfg(windows)]
-fn scm_native_process_id(service: &windows_service::service::Service) -> Result<Option<u32>, String> {
+fn scm_native_process_id(
+    service: &windows_service::service::Service,
+) -> Result<(Option<u32>, bool), String> {
     // windows-service 0.8.1 discards dwProcessId for every non-Running state.
     // Query native SERVICE_STATUS_PROCESS to preserve live StartPending owners.
     let mut native: SERVICE_STATUS_PROCESS = unsafe { std::mem::zeroed() };
@@ -171,7 +174,14 @@ fn scm_native_process_id(service: &windows_service::service::Service) -> Result<
             std::io::Error::last_os_error()
         ));
     }
-    Ok(native_nonzero_service_pid(native.dwProcessId))
+    // Microsoft documents that PID may not be valid in START_PENDING/STOP_PENDING.
+    // The observable PID is a candidate until its process path and creation
+    // identity have been independently checked.
+    let pid_valid_for_state = matches!(
+        native.dwCurrentState,
+        SERVICE_RUNNING | SERVICE_PAUSE_PENDING | SERVICE_PAUSED | SERVICE_CONTINUE_PENDING
+    );
+    Ok((native_nonzero_service_pid(native.dwProcessId), pid_valid_for_state))
 }
 
 #[cfg(windows)]
@@ -192,7 +202,7 @@ fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, St
     let status = service
         .query_status()
         .map_err(|err| format!("failed to query controller service status: {err}"))?;
-    let native_process_id = scm_native_process_id(&service)?;
+    let (native_process_id, pid_valid_for_state) = scm_native_process_id(&service)?;
 
     let configured_command = config.executable_path.clone();
     let configured_binary = service_binary_path(&configured_command);
@@ -218,6 +228,7 @@ fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, St
             .map(|value| value.to_string())
             .unwrap_or_else(|| "ABSENT".to_owned())
     );
+    println!("scm_process_id_valid_for_state={pid_valid_for_state}");
     match status.exit_code {
         ServiceExitCode::Win32(code) => {
             println!("scm_win32_exit_code={code}");
@@ -951,6 +962,7 @@ mod tests {
     fn native_scm_pid_preserves_start_pending_owner() {
         assert_eq!(native_nonzero_service_pid(15124), Some(15124));
         assert_eq!(native_nonzero_service_pid(0), None);
+        assert_eq!(SERVICE_RUNNING, 4);
     }
 
     #[cfg(windows)]
