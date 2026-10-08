@@ -150,11 +150,36 @@ jobs:
               [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 0 -and
               [string]$bootstrapValues['managed_tun_present'] -ceq 'false'
             )
-            # Fixed one-ReleaseSet migration: older NetworkService diagnostic cannot
-            # read the new managed elevated TUN child. Never trust parent PID alone.
+            # Only the installed known broken diagnostic may use this one-time
+            # upgrade path. SCM parent match is not sufficient as authority.
             $legacyCandidates = @(
               $bootstrapDoctor | ForEach-Object {
-                if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false config_matches:false parent_matches:true parent:(\d+) start_unix_seconds:0 exe:UNKNOWN config:UNKNOWN cmd:\s*
+                if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false config_matches:false parent_matches:true parent:(\d+) start_unix_seconds:0 exe:UNKNOWN config:UNKNOWN cmd:\s*$') {
+                  "$($Matches[1]):$($Matches[2])"
+                }
+              } | Sort-Object -Unique
+            )
+            $boundedRunningLegacy = (
+              $env:EDGE_OPERATION -eq 'converge' -and
+              $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun' -and
+              [string]$bootstrapValues['release_set_sha256'] -ceq '123669b2503b08eec21fdd551d5a2803bb252f37e4c0ba021fe5b4d67a416c76' -and
+              [string]$env:EDGE_RELEASE_SET_SHA256 -cne [string]$bootstrapValues['release_set_sha256'] -and
+              [string]$bootstrapValues['windows_datapath_mode'] -ceq 'ManagedTun' -and
+              [string]$bootstrapValues['scm_state'] -ceq 'Running' -and
+              [string]$bootstrapValues['scm_process_id'] -match '^\d+$' -and
+              [string]$bootstrapValues['scm_executable_matches_release'] -ceq 'true' -and
+              [string]$bootstrapValues['controller_listener_present'] -ceq 'true' -and
+              [string]$bootstrapValues['controller_listener_pid'] -ceq [string]$bootstrapValues['scm_process_id'] -and
+              [string]$bootstrapValues['managed_tun_present'] -ceq 'true' -and
+              [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
+              [int]$bootstrapValues['orphan_singbox_process_count'] -eq 0 -and
+              [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 1 -and
+              $legacyCandidates.Count -eq 1 -and
+              ($legacyCandidates[0].Split(':')[1]) -ceq [string]$bootstrapValues['scm_process_id']
+            )
+            if (-not $boundedStoppedOwner -and -not $boundedCleanStopped -and -not $boundedRunningLegacy) {
+              throw "Stable pre-state diagnostic failed: $bootstrapExit"
+            }
 
             $stableConsole = Join-Path $root 'bin\edge-console.exe'
             if (-not (Test-Path -LiteralPath $stableConsole -PathType Leaf)) {
