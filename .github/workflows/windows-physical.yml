@@ -303,12 +303,12 @@ jobs:
           }
           "EDGE_BEFORE_CONTROLLER_PID=$([string]$values['scm_process_id'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_BEFORE_MANAGED_PID=$($managedBefore -join ',')" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-          if ($env:EDGE_OPERATION -eq 'start' -and [int]$values['managed_singbox_process_count'] -eq 1) {
+          if ($env:EDGE_OPERATION -eq 'start' -and $managedBefore.Count -eq 1) {
             "EDGE_START_NOOP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           }
           if ($env:EDGE_OPERATION -eq 'restart-controller') {
             if ([string]$values['scm_state'] -cne 'Running' -or
-                [int]$values['managed_singbox_process_count'] -ne 1 -or
+                $managedBefore.Count -ne 1 -or
                 [string]$values['managed_tun_present'] -cne 'true') {
               throw 'restart-controller requires healthy Running ManagedTun pre-state'
             }
