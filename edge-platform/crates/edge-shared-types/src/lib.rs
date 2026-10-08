@@ -50,6 +50,22 @@ pub fn canonical_production_desired_state() -> Result<ProductionDesiredState, St
     decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
 }
 
+// One closed mapping shared by production validation and the exact sing-box renderer.
+// Unknown/unspecified enum values must never silently become an implicit default.
+pub fn production_windows_route_tag(value: i32) -> Result<&'static str, String> {
+    match WindowsDefaultRoute::try_from(value)
+        .map_err(|_| format!("unknown Windows default route enum value {value}"))?
+    {
+        WindowsDefaultRoute::Unspecified => Err("Windows default route must be explicit".to_owned()),
+        WindowsDefaultRoute::AutoDirect => Ok("auto-direct-tunnel"),
+        WindowsDefaultRoute::Hysteria2Direct => Ok("hysteria2-direct"),
+        WindowsDefaultRoute::VlessRealityDirect => Ok("vless-reality-direct"),
+        WindowsDefaultRoute::AutoWarp => Ok("auto-warp-tunnel"),
+        WindowsDefaultRoute::Hysteria2Warp => Ok("hysteria2-warp"),
+        WindowsDefaultRoute::VlessRealityWarp => Ok("vless-reality-warp"),
+    }
+}
+
 pub fn encode_credential_delivery_bundle(
     bundle: &CredentialDeliveryBundle,
 ) -> Result<Vec<u8>, String> {
