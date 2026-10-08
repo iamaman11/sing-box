@@ -702,6 +702,17 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $beforeValues[$parts[0]] = $parts[1] }
           }
+          $unverified = @(
+            $beforeRollback | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          if ($unverified.Count -gt 0 -and (
+              $unverified.Count -ne 1 -or [int]$beforeValues['unknown_singbox_process_count'] -ne 1 -or
+              [string]$env:EDGE_PRIVILEGED_MANAGED_PID -cne [string]$unverified[0] -or
+              [string]$env:EDGE_PRIVILEGED_CONTROLLER_PID -cne [string]$beforeValues['scm_process_id'])) {
+            throw 'Fail-closed rollback requires independently proven exact active owner before mutation'
+          }
           if ([string]$beforeValues['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
             Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_TARGET_NOT_ACTIVE'
             exit 0
@@ -733,6 +744,31 @@ jobs:
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          $unknownRollback = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          if ($unknownRollback.Count -gt 0) {
+            if ($unknownRollback.Count -ne 1 -or [int]$values['unknown_singbox_process_count'] -ne 1 -or
+                [int]$values['managed_singbox_process_count'] -ne 0 -or
+                [int]$values['conflicting_singbox_process_count'] -ne 0 -or
+                [string]$values['scm_process_id'] -notmatch '^\d+$') {
+              throw 'Rolled back child has ambiguous owner; stop without additional mutation'
+            }
+            $rollbackEvidence = @(& ([string]$values['console_path']) privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
+            if ($LASTEXITCODE -ne 0) { throw 'Rolled back privileged process evidence unavailable' }
+            $detail = [string]($rollbackEvidence | Where-Object { [string]$_ -like 'detail=*' } | Select-Object -Last 1)
+            $child = [regex]::Escape([string]$unknownRollback[0])
+            $owner = [regex]::Escape([string]$values['scm_process_id'])
+            if ($detail -notmatch ";process_classification=MANAGED;process_evidence_complete=true;process_count=1;managed_pid=$child;managed_parent_pid=$owner;controller_pid=$owner(?:;|$)" -or
+                $detail -notmatch ';external_count=0(?:;|$)' -or
+                $detail -notmatch ';controller_service_error=ABSENT(?:;|$)') {
+              throw 'Rolled back process cannot be independently confirmed as exact managed owner'
+            }
+            "EDGE_PRIVILEGED_MANAGED_PID=$($unknownRollback[0])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+            "EDGE_PRIVILEGED_CONTROLLER_PID=$($values['scm_process_id'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           }
           "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           if ([string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
@@ -767,10 +803,25 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          if ($env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and [int]$values['managed_singbox_process_count'] -ne 1) {
-            throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $($values['managed_singbox_process_count'])"
+          $unknownFinal = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          $finalManagedCount = [int]$values['managed_singbox_process_count']
+          if ($unknownFinal.Count -gt 0) {
+            if ($unknownFinal.Count -ne 1 -or [int]$values['unknown_singbox_process_count'] -ne 1 -or
+                $finalManagedCount -ne 0 -or [int]$values['conflicting_singbox_process_count'] -ne 0 -or
+                [string]$env:EDGE_PRIVILEGED_MANAGED_PID -cne [string]$unknownFinal[0] -or
+                [string]$env:EDGE_PRIVILEGED_CONTROLLER_PID -cne [string]$values['scm_process_id']) {
+              throw 'Final process identity is UNKNOWN without exact matching privileged evidence'
+            }
+            $finalManagedCount = 1
           }
-          if ($env:EDGE_OPERATION -eq 'stop' -and [int]$values['managed_singbox_process_count'] -ne 0) {
+          if ($env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and $finalManagedCount -ne 1) {
+            throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $finalManagedCount"
+          }
+          if ($env:EDGE_OPERATION -eq 'stop' -and ($finalManagedCount -ne 0 -or $unknownFinal.Count -ne 0)) {
             throw "Expected zero managed proxy processes after stop, observed $($values['managed_singbox_process_count'])"
           }
           $finalMode = [string]$values['windows_datapath_mode']
