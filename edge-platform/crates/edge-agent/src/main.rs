@@ -2,6 +2,7 @@ mod cli;
 mod docker_observation;
 mod error;
 mod host_diagnostics;
+mod line2_quality;
 mod mesh_network_diagnostics;
 mod network_observation;
 mod runtime_probe;
@@ -157,6 +158,10 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                     "local runtime verification did not reach READY".to_owned(),
                 ))
             }
+        }
+        cli::LocalCommand::QualityLine2 => {
+            line2_quality::measure(&stack_dir, read_typed_runtime_environment)
+                .map_err(AgentError::Command)
         }
         cli::LocalCommand::Diagnose => {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
