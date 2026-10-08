@@ -3726,7 +3726,11 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(
             events,
-            ["verify:auto-direct-tunnel", "verify:auto-warp-tunnel", "restore:hysteria2-direct"]
+            [
+                "verify:auto-direct-tunnel",
+                "verify:auto-warp-tunnel",
+                "restore:hysteria2-direct"
+            ]
         );
     }
 
@@ -3734,7 +3738,10 @@ mod tests {
     async fn stage4b3_route_checks_restore_after_first_route_error() {
         let (result, events) = test_route_restore(Some("auto-direct-tunnel"), false).await;
         assert!(result.unwrap_err().contains("original selector restored"));
-        assert_eq!(events, ["verify:auto-direct-tunnel", "restore:hysteria2-direct"]);
+        assert_eq!(
+            events,
+            ["verify:auto-direct-tunnel", "restore:hysteria2-direct"]
+        );
     }
 
     #[tokio::test]
@@ -3743,7 +3750,11 @@ mod tests {
         assert!(result.unwrap_err().contains("original selector restored"));
         assert_eq!(
             events,
-            ["verify:auto-direct-tunnel", "verify:auto-warp-tunnel", "restore:hysteria2-direct"]
+            [
+                "verify:auto-direct-tunnel",
+                "verify:auto-warp-tunnel",
+                "restore:hysteria2-direct"
+            ]
         );
     }
 
@@ -3763,7 +3774,11 @@ mod tests {
     fn stage4b3_unknown_live_selector_never_guesses_git_default() {
         let mut selector = SelectorState::placeholder();
         selector.desired_main_route = Some("auto-direct-tunnel".to_owned());
-        assert!(observed_restore_route(selector).unwrap_err().contains("no mutation made"));
+        assert!(
+            observed_restore_route(selector)
+                .unwrap_err()
+                .contains("no mutation made")
+        );
     }
 
     fn rollback_test_activation(
