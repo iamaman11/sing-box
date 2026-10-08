@@ -170,13 +170,30 @@ jobs:
               [string]$bootstrapValues['scm_executable_matches_release'] -ceq 'true' -and
               [string]$bootstrapValues['controller_listener_present'] -ceq 'true' -and
               [string]$bootstrapValues['controller_listener_pid'] -ceq [string]$bootstrapValues['scm_process_id'] -and
-              [string]$bootstrapValues['managed_tun_present'] -ceq 'true' -and
               [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
               [int]$bootstrapValues['orphan_singbox_process_count'] -eq 0 -and
               [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 1 -and
               $legacyCandidates.Count -eq 1 -and
               ($legacyCandidates[0].Split(':')[1]) -ceq [string]$bootstrapValues['scm_process_id']
             )
+            if ($boundedRunningLegacy) {
+              # The installed old doctor returns before network observations.
+              # Prove TUN from read-only OS state, not a missing doctor field.
+              $adapters = @(Get-NetAdapter -Name 'sing-box-tun' -ErrorAction Stop)
+              if ($adapters.Count -ne 1 -or [string]$adapters[0].Status -cne 'Up') {
+                throw 'Legacy managed TUN adapter is not uniquely Up'
+              }
+              $tunIf = [int]$adapters[0].ifIndex
+              $ips = @(Get-NetIPAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ErrorAction Stop |
+                Where-Object { $_.IPAddress -ceq '172.19.0.1' -and $_.PrefixLength -eq 30 })
+              if ($ips.Count -ne 1) { throw 'Legacy managed TUN exact IPv4 address is absent' }
+              $tunDns = @(Get-DnsClientServerAddress -InterfaceIndex $tunIf -AddressFamily IPv4 -ErrorAction Stop |
+                ForEach-Object ServerAddresses)
+              if ($tunDns -notcontains '172.19.0.2') {
+                throw 'Legacy managed TUN DNS is not on the canonical interface'
+              }
+              Write-Host 'legacy_managed_tun_os_readonly=PASS'
+            }
             if (-not $boundedStoppedOwner -and -not $boundedCleanStopped -and -not $boundedRunningLegacy) {
               throw "Stable pre-state diagnostic failed: $bootstrapExit"
             }
@@ -292,7 +309,7 @@ jobs:
             throw 'Repair target must equal the exact current ReleaseSet before runtime stop'
           }
           $currentMode = [string]$values['windows_datapath_mode']
-          $currentTun = [string]$values['managed_tun_present']
+          $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
           switch ($currentMode) {
             'ProxyOnly' {
               if ($currentTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
