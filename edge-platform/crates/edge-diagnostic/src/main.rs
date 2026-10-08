@@ -36,8 +36,8 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Services::{
-    QueryServiceStatusEx, SC_STATUS_PROCESS_INFO, SERVICE_CONTINUE_PENDING, SERVICE_PAUSED,
-    SERVICE_PAUSE_PENDING, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS_PROCESS,
+    QueryServiceStatusEx, SC_STATUS_PROCESS_INFO, SERVICE_CONTINUE_PENDING, SERVICE_PAUSE_PENDING,
+    SERVICE_PAUSED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS_PROCESS,
 };
 
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
@@ -186,7 +186,10 @@ fn scm_native_process_id(
     // The observable PID is a candidate until its process path and creation
     // identity have been independently checked.
     let pid_valid_for_state = native_service_pid_valid_for_state(native.dwCurrentState);
-    Ok((native_nonzero_service_pid(native.dwProcessId), pid_valid_for_state))
+    Ok((
+        native_nonzero_service_pid(native.dwProcessId),
+        pid_valid_for_state,
+    ))
 }
 
 #[cfg(windows)]
