@@ -2370,12 +2370,25 @@ fn wait_for_service_state(
     expected: ServiceState,
     timeout: Duration,
 ) -> Result<(), String> {
+    wait_for_service_state_any(service, &[expected], timeout).map(|_| ())
+}
+
+#[cfg(windows)]
+fn wait_for_service_state_any(
+    service: &Service,
+    expected: &[ServiceState],
+    timeout: Duration,
+) -> Result<ServiceState, String> {
     let notify_mask = match expected {
-        ServiceState::Running => SERVICE_NOTIFY_RUNNING,
-        ServiceState::Stopped => SERVICE_NOTIFY_STOPPED,
+        [ServiceState::Running] => SERVICE_NOTIFY_RUNNING,
+        [ServiceState::Stopped] => SERVICE_NOTIFY_STOPPED,
+        [ServiceState::Running, ServiceState::Stopped]
+        | [ServiceState::Stopped, ServiceState::Running] => {
+            SERVICE_NOTIFY_RUNNING | SERVICE_NOTIFY_STOPPED
+        }
         _ => {
             return Err(format!(
-                "unsupported controller service notification target: {expected:?}"
+                "unsupported controller service notification targets: {expected:?}"
             ));
         }
     };
@@ -2383,8 +2396,8 @@ fn wait_for_service_state(
     let initial = service
         .query_status()
         .map_err(|err| format!("failed to query controller service state: {err}"))?;
-    if initial.current_state == expected {
-        return Ok(());
+    if expected.contains(&initial.current_state) {
+        return Ok(initial.current_state);
     }
 
     let monitor_manager =
@@ -2444,8 +2457,8 @@ fn wait_for_service_state(
         let observed = monitor
             .query_status()
             .map_err(|err| format!("failed to query notified controller service state: {err}"))?;
-        if observed.current_state == expected {
-            return Ok(());
+        if expected.contains(&observed.current_state) {
+            return Ok(observed.current_state);
         }
         drop(monitor);
         return Err(format!(
@@ -2820,13 +2833,31 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
     let status = service
         .query_status()
         .map_err(|err| format!("failed to query controller service before convergence: {err}"))?;
-    if status.current_state != ServiceState::Stopped {
-        if status.current_state != ServiceState::StopPending {
-            service
-                .stop()
-                .map_err(|err| format!("failed to stop controller service: {err}"))?;
+    let observed = if status.current_state == ServiceState::StartPending {
+        wait_for_service_state_any(
+            &service,
+            &[ServiceState::Running, ServiceState::Stopped],
+            Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
+        )?
+    } else {
+        status.current_state
+    };
+    match observed {
+        ServiceState::Stopped => {}
+        ServiceState::StopPending => {
+            wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
         }
-        wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
+        ServiceState::Running | ServiceState::Paused => {
+            service.stop().map_err(|err| {
+                format!("failed to stop controller service from {observed:?}: {err:?}")
+            })?;
+            wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
+        }
+        other => {
+            return Err(format!(
+                "controller service is not safely stoppable for owner handoff: {other:?}"
+            ));
+        }
     }
 
     service
