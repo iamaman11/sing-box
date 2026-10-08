@@ -170,7 +170,7 @@ jobs:
               [string]$bootstrapValues['scm_executable_matches_release'] -ceq 'true' -and
               [string]$bootstrapValues['controller_listener_present'] -ceq 'true' -and
               [string]$bootstrapValues['controller_listener_pid'] -ceq [string]$bootstrapValues['scm_process_id'] -and
-               [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
+              [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
               [int]$bootstrapValues['orphan_singbox_process_count'] -eq 0 -and
               [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 1 -and
               $legacyCandidates.Count -eq 1 -and
