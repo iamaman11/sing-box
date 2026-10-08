@@ -31,11 +31,11 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     ControllerStatus, CredentialTransitionAction, DoctorRequest, DoctorResponse, Empty,
     GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
-    QualityEvidence, QualityPath, QualityReport, QualityRequest,
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
-    RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
-    SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
-    TraceObservation, UbuntuProxyState, WINDOWS_CONTROLLER_ADDR, WINDOWS_CONTROLLER_ENDPOINT,
+    QualityEvidence, QualityPath, QualityReport, QualityRequest, RestartLocalRuntimeRequest,
+    SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    StartLocalRuntimeRequest, StopLocalRuntimeRequest, TraceObservation, UbuntuProxyState,
+    WINDOWS_CONTROLLER_ADDR, WINDOWS_CONTROLLER_ENDPOINT,
     WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsActivationState, WindowsDatapathMode,
     WindowsPrivilegedOperation, WindowsPrivilegedRequest, WindowsPrivilegedResult,
     WindowsRuntimeState, WindowsTunnelBinding, canonical_production_desired_state,
@@ -537,10 +537,14 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::Quality(args) => {
             let quality = fetch_quality(args.resolve()).await?;
-            println!("quality_full_matrix_accepted={}", quality.full_matrix_accepted);
+            println!(
+                "quality_full_matrix_accepted={}",
+                quality.full_matrix_accepted
+            );
             println!("quality_candidate_count={}", quality.candidates.len());
             for candidate in &quality.candidates {
-                let path = QualityPath::try_from(candidate.path).unwrap_or(QualityPath::Unspecified);
+                let path =
+                    QualityPath::try_from(candidate.path).unwrap_or(QualityPath::Unspecified);
                 let evidence = QualityEvidence::try_from(candidate.evidence)
                     .unwrap_or(QualityEvidence::Unspecified);
                 println!(
@@ -566,7 +570,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 op.status == edge_shared_types::OperationLifecycleStatus::Failed as i32
             }) {
                 return Err(ConsoleError::Command(
-                    "quality selector parity is unverified; no selector mutation was requested".to_owned()
+                    "quality selector parity is unverified; no selector mutation was requested"
+                        .to_owned(),
                 ));
             }
             Ok(())
@@ -3184,7 +3189,10 @@ async fn set_selector(
 
 async fn fetch_quality(endpoint: String) -> Result<QualityReport, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
-    Ok(client.run_quality(Request::new(QualityRequest {})).await?.into_inner())
+    Ok(client
+        .run_quality(Request::new(QualityRequest {}))
+        .await?
+        .into_inner())
 }
 
 async fn fetch_trace(endpoint: String) -> Result<TraceObservation, Box<dyn std::error::Error>> {
