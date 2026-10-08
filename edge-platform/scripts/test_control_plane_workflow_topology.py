@@ -158,6 +158,18 @@ def main() -> None:
         "operator documentation must match closed Stage 3/4A and the active bounded Stage 4B managed-TUN cutover without advertising historical authority",
     )
     require(
+        "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
+        and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical.split("Execute typed lifecycle mutation", 1)[0]
+        and "$env:EDGE_OPERATION -in @('stop','rollback')" in windows_physical
+        and "$currentMode -ceq 'ManagedTun'" in windows_physical
+        and "$env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly'" in windows_physical
+        and 'reject_unproven_windows_tun_teardown("stop-local")' in windows_controller_runtime
+        and 'reject_unproven_windows_tun_teardown("rollback-previous")' in windows_console
+        and '"managed-tun-to-proxy-only"' in windows_console
+        and "failed to stop exact managed proxy before release transition" in windows_console,
+        "Windows TUN teardown must be rejected before the operator or native owner mutates runtime, without affecting ManagedTun-to-ManagedTun activation",
+    )
+    require(
         "/windows cutover" not in router
         and "/windows cutover" not in windows_physical
         and "github.event.comment.body == '/windows diagnose'" in router
