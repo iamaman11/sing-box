@@ -237,7 +237,9 @@ async fn line1_selector_snapshot(
 pub async fn measure_line1_quality(controller_url: &str) -> Result<Line1QualityReport, String> {
     // Do not permit user-info, DNS aliases or remote hosts at this boundary.
     if controller_url != "http://127.0.0.1:19091" {
-        return Err("Line1 quality requires the exact installed loopback Clash endpoint".to_owned());
+        return Err(
+            "Line1 quality requires the exact installed loopback Clash endpoint".to_owned(),
+        );
     }
     let client = Client::builder()
         .no_proxy()
