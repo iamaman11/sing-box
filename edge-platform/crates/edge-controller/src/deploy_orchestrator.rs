@@ -610,13 +610,6 @@ pub(crate) async fn execute(
         }
     };
     append_operation_event(&server.state, operation.id, &local_runtime.note)?;
-    let local_reconcile_warnings = reconcile_selector_intents_for_running_local(
-        &server.repo_root,
-        &server.state,
-        &local_runtime.local_singbox,
-    )
-    .await
-    .unwrap_or_else(|err| vec![err]);
     let _ = upsert_controller_phases_with_journal(
         &server.state,
         DeployPhase::LocalRuntimeReadyVerified,
@@ -656,7 +649,7 @@ pub(crate) async fn execute(
             DeployPhase::Completed,
             AppReadinessPhase::AppReadinessFailed,
             Some("selector_reconcile_failed"),
-            Some("one or more selector groups did not converge to persisted intent"),
+            Some("selector groups do not match Git-owned rendered defaults"),
             Some(phase_journal(
                 operation.id,
                 Some("SUCCEEDED"),
@@ -666,9 +659,9 @@ pub(crate) async fn execute(
         let _ = append_operation_event(
             &server.state,
             operation.id,
-            "selector verification failed after local runtime start; deployment completed in degraded state",
+            "Git-owned selector default verification failed after local runtime start; deployment completed in degraded state",
         );
-        let mut warnings = local_reconcile_warnings;
+        let mut warnings = Vec::new();
         append_local_runtime_dns_guard(&server.repo_root, &mut warnings);
         warnings.push(format!(
             "desktop desired={:?} observed={:?}; ubuntu desired={:?} observed={:?}",
@@ -750,7 +743,7 @@ pub(crate) async fn execute(
             operation.id,
             "egress trace verification failed; deployment completed in degraded state",
         );
-        let mut warnings = local_reconcile_warnings;
+        let mut warnings = Vec::new();
         append_local_runtime_dns_guard(&server.repo_root, &mut warnings);
         warnings.push(
             desktop_trace
@@ -812,7 +805,7 @@ pub(crate) async fn execute(
             &target.target_ip,
         )),
         runtime: Some(runtime),
-        warnings: merge_warnings(apply_response.warnings, local_reconcile_warnings),
+        warnings: apply_response.warnings,
         operation: Some(operation_with_status(operation, "SUCCEEDED")),
     };
     store_local_response(&server.state, "deploy_response", &response.encode_to_vec())?;
