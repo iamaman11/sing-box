@@ -2757,14 +2757,14 @@ fn build_doctor_checks(
             evidence: Vec::new(),
         },
         DoctorCheck {
-            name: "state.selector_intents_present".to_owned(),
+            name: "state.git_selector_defaults_observed".to_owned(),
             ok: selector
                 .and_then(|value| value.desired_main_route.as_ref())
                 .is_some()
                 && ubuntu_selector
                     .and_then(|value| value.desired_main_route.as_ref())
                     .is_some(),
-            detail: "desktop and ubuntu desired routes must be persisted".to_owned(),
+            detail: "Git-owned desktop and WSL route defaults must be present in the rendered config".to_owned(),
 
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
