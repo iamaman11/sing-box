@@ -1904,7 +1904,10 @@ mod tests {
     fn windows_vless_outbounds_match_canonical_vm_vision_flow() {
         // VM line1-gateway requires users[].flow=xtls-rprx-vision on both
         // Reality inbounds; the outbound must send that exact flow too.
-        for mode in [WindowsDatapathMode::ProxyOnly, WindowsDatapathMode::ManagedTun] {
+        for mode in [
+            WindowsDatapathMode::ProxyOnly,
+            WindowsDatapathMode::ManagedTun,
+        ] {
             let rendered = render_windows_config_for_mode(&stage2_runtime_state(), mode).unwrap();
             let config: Value = serde_json::from_slice(&rendered).unwrap();
             let outbounds = config.get("outbounds").and_then(Value::as_array).unwrap();
