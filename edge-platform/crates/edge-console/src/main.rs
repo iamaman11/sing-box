@@ -2172,15 +2172,18 @@ async fn restore_windows_tunnel_selector(endpoint: &str, original: &str) -> Resu
     Ok(())
 }
 
+fn observed_restore_route(selector: SelectorState) -> Result<String, String> {
+    // Policy is NOT a safe fallback if the live current selector is unknown.
+    selector.observed_main_route.ok_or_else(|| {
+        "Windows selector has no observed restorable route; no mutation made".to_owned()
+    })
+}
+
 async fn verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
     let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
         .await
         .map_err(|err| err.to_string())?;
-    // Do not guess a restoration target from Git policy if the live selector
-    // could not be observed: no mutation is permitted in this case.
-    let original = selector
-        .observed_main_route
-        .ok_or_else(|| "Windows selector has no observed restorable route; no mutation made".to_owned())?;
+    let original = observed_restore_route(selector)?;
     verify_routes_with_restore(
         original,
         |route, expected_warp| verify_windows_tunnel_route(endpoint, route, expected_warp),
@@ -3677,6 +3680,91 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn test_route_restore(
+        failed_route: Option<&'static str>,
+        failed_restore: bool,
+    ) -> (Result<(), String>, Vec<String>) {
+        use std::sync::{Arc, Mutex};
+
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let check_events = Arc::clone(&events);
+        let restore_events = Arc::clone(&events);
+        let result = verify_routes_with_restore(
+            "hysteria2-direct".to_owned(),
+            move |route, _warp| {
+                let events = Arc::clone(&check_events);
+                async move {
+                    events.lock().unwrap().push(format!("verify:{route}"));
+                    if failed_route == Some(route) {
+                        Err(format!("trace failed for {route}"))
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+            move |original| async move {
+                restore_events
+                    .lock()
+                    .unwrap()
+                    .push(format!("restore:{original}"));
+                if failed_restore {
+                    Err("restore read-back mismatch".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        let observations = events.lock().unwrap().clone();
+        (result, observations)
+    }
+
+    #[tokio::test]
+    async fn stage4b3_route_checks_restore_original_after_success() {
+        let (result, events) = test_route_restore(None, false).await;
+        assert!(result.is_ok());
+        assert_eq!(
+            events,
+            ["verify:auto-direct-tunnel", "verify:auto-warp-tunnel", "restore:hysteria2-direct"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stage4b3_route_checks_restore_after_first_route_error() {
+        let (result, events) = test_route_restore(Some("auto-direct-tunnel"), false).await;
+        assert!(result.unwrap_err().contains("original selector restored"));
+        assert_eq!(events, ["verify:auto-direct-tunnel", "restore:hysteria2-direct"]);
+    }
+
+    #[tokio::test]
+    async fn stage4b3_route_checks_restore_after_second_route_error() {
+        let (result, events) = test_route_restore(Some("auto-warp-tunnel"), false).await;
+        assert!(result.unwrap_err().contains("original selector restored"));
+        assert_eq!(
+            events,
+            ["verify:auto-direct-tunnel", "verify:auto-warp-tunnel", "restore:hysteria2-direct"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stage4b3_restore_failure_keeps_error_without_stopping_runtime() {
+        let (result, events) = test_route_restore(None, true).await;
+        assert!(result.unwrap_err().contains("restoration is unverified"));
+        assert_eq!(events.last().unwrap(), "restore:hysteria2-direct");
+        let (result, events) = test_route_restore(Some("auto-direct-tunnel"), true).await;
+        let error = result.unwrap_err();
+        assert!(error.contains("trace failed"));
+        assert!(error.contains("restoration is unverified"));
+        assert_eq!(events.last().unwrap(), "restore:hysteria2-direct");
+    }
+
+    #[test]
+    fn stage4b3_unknown_live_selector_never_guesses_git_default() {
+        let mut selector = SelectorState::placeholder();
+        selector.desired_main_route = Some("auto-direct-tunnel".to_owned());
+        assert!(observed_restore_route(selector).unwrap_err().contains("no mutation made"));
+    }
 
     fn rollback_test_activation(
         install_root: &Path,
