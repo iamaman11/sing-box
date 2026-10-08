@@ -455,7 +455,23 @@ jobs:
             } | Sort-Object -Unique
           )
           $afterControllerPid = [string]$values['scm_process_id']
+          $unknownAfter = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          if ($unknownAfter.Count -gt 0) {
+            if ($unknownAfter.Count -ne 1 -or [int]$values['unknown_singbox_process_count'] -ne 1 -or
+                [int]$values['managed_singbox_process_count'] -ne 0 -or
+                [int]$values['conflicting_singbox_process_count'] -ne 0) {
+              throw 'Post-state uninspectable sing-box ownership is not uniquely bounded'
+            }
+            $managedAfter = @($unknownAfter[0])
+            Write-Host 'poststate_process_identity=UNKNOWN_AWAIT_PRIVILEGED_EVIDENCE'
+          }
           $afterManagedPid = $managedAfter -join ','
+          "EDGE_AFTER_CONTROLLER_PID=$afterControllerPid" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_AFTER_MANAGED_PID=$afterManagedPid" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           if ($env:EDGE_OPERATION -eq 'restart-controller') {
             if ([string]::IsNullOrWhiteSpace($env:EDGE_BEFORE_CONTROLLER_PID) -or
                 $env:EDGE_BEFORE_CONTROLLER_PID -ceq 'ABSENT' -or
@@ -535,6 +551,24 @@ jobs:
 
           if ($evidenceStrict -and $detailLine -notmatch '(?:^|;)controller_service_error=ABSENT(?:;|$)') {
             throw 'Controller service retains current startup-failure evidence after successful lifecycle verification'
+          }
+          $modeAtEvidence = if ([string]::IsNullOrEmpty($env:EDGE_AFTER_MODE)) { $env:EDGE_BEFORE_MODE } else { $env:EDGE_AFTER_MODE }
+          if ($evidenceStrict -and $modeAtEvidence -ceq 'ManagedTun' -and $env:EDGE_OPERATION -ne 'stop') {
+            $expectedChild = if ([string]::IsNullOrEmpty($env:EDGE_AFTER_MANAGED_PID)) { $env:EDGE_BEFORE_MANAGED_PID } else { $env:EDGE_AFTER_MANAGED_PID }
+            $expectedController = if ([string]::IsNullOrEmpty($env:EDGE_AFTER_CONTROLLER_PID)) { $env:EDGE_BEFORE_CONTROLLER_PID } else { $env:EDGE_AFTER_CONTROLLER_PID }
+            if ([string]::IsNullOrWhiteSpace($expectedChild) -or $expectedChild -notmatch '^\d+$' -or
+                [string]::IsNullOrWhiteSpace($expectedController) -or $expectedController -notmatch '^\d+$') {
+              throw 'Privileged managed process identity lacks an exact diagnostic PID candidate'
+            }
+            $child = [regex]::Escape($expectedChild)
+            $owner = [regex]::Escape($expectedController)
+            if ($detailLine -notmatch ";process_classification=MANAGED;process_evidence_complete=true;process_count=1;managed_pid=$child;managed_parent_pid=$owner;controller_pid=$owner(?:;|$)" -or
+                $detailLine -notmatch ';external_count=0(?:;|$)') {
+              throw 'Privileged managed identity differs from the exact runner process observation'
+            }
+            "EDGE_PRIVILEGED_MANAGED_PID=$expectedChild" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+            "EDGE_PRIVILEGED_CONTROLLER_PID=$expectedController" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+            Write-Host 'managed_process_identity=PRIVILEGED_EXACT_PROOF'
           }
           if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
             if ($detailLine -match '(?:^|;)stderr=MISSING(?:;|$)') {
