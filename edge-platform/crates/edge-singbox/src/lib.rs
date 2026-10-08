@@ -408,6 +408,7 @@ fn render_windows_config_for_mode(
                 "server": state.server_ip,
                 "server_port": direct.vless_port,
                 "uuid": direct.vless_uuid,
+                "flow": "xtls-rprx-vision",
                 "tls": {
                     "enabled": true,
                     "server_name": reality_server_name,
@@ -433,6 +434,7 @@ fn render_windows_config_for_mode(
                 "server": state.server_ip,
                 "server_port": warp.vless_port,
                 "uuid": warp.vless_uuid,
+                "flow": "xtls-rprx-vision",
                 "tls": {
                     "enabled": true,
                     "server_name": reality_server_name,
@@ -1896,6 +1898,31 @@ mod tests {
             production_windows_route_tag(6).unwrap(),
             "vless-reality-warp"
         );
+    }
+
+    #[test]
+    fn windows_vless_outbounds_match_canonical_vm_vision_flow() {
+        // VM line1-gateway requires users[].flow=xtls-rprx-vision on both
+        // Reality inbounds; the outbound must send that exact flow too.
+        for mode in [
+            WindowsDatapathMode::ProxyOnly,
+            WindowsDatapathMode::ManagedTun,
+        ] {
+            let rendered = render_windows_config_for_mode(&stage2_runtime_state(), mode).unwrap();
+            let config: Value = serde_json::from_slice(&rendered).unwrap();
+            let outbounds = config.get("outbounds").and_then(Value::as_array).unwrap();
+            for tag in ["vless-reality-direct", "vless-reality-warp"] {
+                let outbound = outbounds
+                    .iter()
+                    .find(|outbound| outbound.get("tag").and_then(Value::as_str) == Some(tag))
+                    .unwrap();
+                assert_eq!(
+                    outbound.get("flow").and_then(Value::as_str),
+                    Some("xtls-rprx-vision"),
+                    "{tag} requires the VM inbound's Reality flow"
+                );
+            }
+        }
     }
 
     #[test]
