@@ -571,6 +571,26 @@ def main() -> None:
         and "query_status()" in service_wait,
         "Windows SCM readiness must use native status notifications with one bounded safety deadline and no polling sleep",
     )
+    controller_handoff_start = windows_console.index("fn converge_controller_service(")
+    controller_handoff_end = windows_console.index(
+        "async fn reconcile_installed_runtime(", controller_handoff_start
+    )
+    controller_handoff = windows_console[
+        controller_handoff_start:controller_handoff_end
+    ]
+    require(
+        "fn wait_for_service_state_any(" in service_wait
+        and "SERVICE_NOTIFY_RUNNING | SERVICE_NOTIFY_STOPPED" in service_wait
+        and "thread::sleep" not in service_wait
+        and "status.current_state == ServiceState::StartPending" in controller_handoff
+        and "wait_for_service_state_any(" in controller_handoff
+        and "ServiceState::Running | ServiceState::Paused =>" in controller_handoff
+        and "ServiceState::Stopped => {}" in controller_handoff
+        and "ServiceState::StopPending =>" in controller_handoff
+        and 'controller service is not safely stoppable for owner handoff' in controller_handoff
+        and "if status.current_state != ServiceState::StopPending" not in controller_handoff,
+        "Windows owner handoff must settle SCM StartPending natively before issuing STOP; unknown states fail closed",
+    )
     require(
         "CredentialAdmit" not in vm_agent_cli
         and "local-credential-admit" not in vm_agent_cli
