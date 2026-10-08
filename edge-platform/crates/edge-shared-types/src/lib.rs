@@ -56,7 +56,9 @@ pub fn production_windows_route_tag(value: i32) -> Result<&'static str, String> 
     match WindowsDefaultRoute::try_from(value)
         .map_err(|_| format!("unknown Windows default route enum value {value}"))?
     {
-        WindowsDefaultRoute::Unspecified => Err("Windows default route must be explicit".to_owned()),
+        WindowsDefaultRoute::Unspecified => {
+            Err("Windows default route must be explicit".to_owned())
+        }
         WindowsDefaultRoute::AutoDirect => Ok("auto-direct-tunnel"),
         WindowsDefaultRoute::Hysteria2Direct => Ok("hysteria2-direct"),
         WindowsDefaultRoute::VlessRealityDirect => Ok("vless-reality-direct"),
