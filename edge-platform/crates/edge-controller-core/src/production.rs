@@ -9,7 +9,7 @@ use crate::vultr_vpc_lifecycle::DesiredVpcState;
 use edge_shared_types::{
     ProductionBootstrapMode, ProductionDesiredState, ProductionIpFamily,
     ProductionTransportProtocol, WindowsDatapathMode, canonical_production_desired_state,
-    production_machine,
+    production_machine, production_windows_route_tag,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -590,6 +590,12 @@ fn validate_root_identity(root: &ProductionDesiredState) -> Result<(), Productio
     if windows_datapath_mode == WindowsDatapathMode::Unspecified {
         return Err(validation("windows_datapath_mode must be explicit"));
     }
+    let routes = root.windows_route_policy.as_ref()
+        .ok_or_else(|| validation("windows_route_policy must be explicit"))?;
+    production_windows_route_tag(routes.desktop)
+        .map_err(|err| validation(format!("windows_route_policy.desktop: {err}")))?;
+    production_windows_route_tag(routes.wsl)
+        .map_err(|err| validation(format!("windows_route_policy.wsl: {err}")))?;
     validate_identifier("machine_id", &root.machine_id)?;
     validate_dns_name("public_hostname", &root.public_hostname)?;
     Ok(())
@@ -754,6 +760,19 @@ mod tests {
 
     fn canonical() -> ProductionDesiredState {
         canonical_production_desired_state().unwrap()
+    }
+
+    #[test]
+    fn windows_route_policy_requires_both_explicit_closed_enum_choices() {
+        let mut desired = canonical();
+        desired.windows_route_policy = None;
+        assert!(ProductionComposition::from_proto(&desired).is_err());
+        let mut desired = canonical();
+        desired.windows_route_policy.as_mut().unwrap().desktop = 0;
+        assert!(ProductionComposition::from_proto(&desired).is_err());
+        let mut desired = canonical();
+        desired.windows_route_policy.as_mut().unwrap().wsl = 777;
+        assert!(ProductionComposition::from_proto(&desired).is_err());
     }
 
     #[test]
