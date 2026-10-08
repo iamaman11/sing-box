@@ -34,6 +34,10 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 use windows_sys::Win32::Networking::WinSock::{
     AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6,
 };
+#[cfg(windows)]
+use windows_sys::Win32::System::Services::{
+    QueryServiceStatusEx, SC_STATUS_PROCESS_INFO, SERVICE_STATUS_PROCESS,
+};
 
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 const MANAGED_TUN_INTERFACE_NAME: &str = "sing-box-tun";
@@ -142,6 +146,35 @@ fn service_binary_path(command: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
+fn native_nonzero_service_pid(pid: u32) -> Option<u32> {
+    (pid != 0).then_some(pid)
+}
+
+#[cfg(windows)]
+fn scm_native_process_id(service: &windows_service::service::Service) -> Result<Option<u32>, String> {
+    // windows-service 0.8.1 discards dwProcessId for every non-Running state.
+    // Query native SERVICE_STATUS_PROCESS to preserve live StartPending owners.
+    let mut native: SERVICE_STATUS_PROCESS = unsafe { std::mem::zeroed() };
+    let mut required = 0_u32;
+    let ok = unsafe {
+        QueryServiceStatusEx(
+            service.raw_handle(),
+            SC_STATUS_PROCESS_INFO,
+            (&mut native as *mut SERVICE_STATUS_PROCESS).cast::<u8>(),
+            size_of::<SERVICE_STATUS_PROCESS>() as u32,
+            &mut required,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "failed to query native SCM process status: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(native_nonzero_service_pid(native.dwProcessId))
+}
+
+#[cfg(windows)]
 fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, String> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("failed to open Windows SCM: {err}"))?;
@@ -159,6 +192,7 @@ fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, St
     let status = service
         .query_status()
         .map_err(|err| format!("failed to query controller service status: {err}"))?;
+    let native_process_id = scm_native_process_id(&service)?;
 
     let configured_command = config.executable_path.clone();
     let configured_binary = service_binary_path(&configured_command);
@@ -180,8 +214,7 @@ fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, St
     println!("scm_state={:?}", status.current_state);
     println!(
         "scm_process_id={}",
-        status
-            .process_id
+        native_process_id
             .map(|value| value.to_string())
             .unwrap_or_else(|| "ABSENT".to_owned())
     );
@@ -197,13 +230,12 @@ fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, St
     }
     println!(
         "controller_process_start_unix_seconds={}",
-        status
-            .process_id
+        native_process_id
             .and_then(process_start_time)
             .map(|value| value.to_string())
             .unwrap_or_else(|| "ABSENT".to_owned())
     );
-    Ok(status.process_id)
+    Ok(native_process_id)
 }
 
 #[cfg(windows)]
@@ -912,6 +944,13 @@ mod tests {
     fn observes_current_process_by_exact_executable_path() {
         let current = std::env::current_exe().unwrap();
         assert!(process_running_at(&current));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_scm_pid_preserves_start_pending_owner() {
+        assert_eq!(native_nonzero_service_pid(15124), Some(15124));
+        assert_eq!(native_nonzero_service_pid(0), None);
     }
 
     #[cfg(windows)]

@@ -307,7 +307,11 @@ def main() -> None:
     )
     require(
         "canonical_production_desired_state" in windows_diagnostic
-        and "status.process_id" in windows_diagnostic
+        and "QueryServiceStatusEx" in windows_diagnostic
+        and "SC_STATUS_PROCESS_INFO" in windows_diagnostic
+        and "SERVICE_STATUS_PROCESS" in windows_diagnostic
+        and "scm_native_process_id(&service)" in windows_diagnostic
+        and "status.process_id" not in windows_diagnostic
         and "process.parent()" in windows_diagnostic
         and "scm_process_id" in windows_diagnostic
         and "service_binary_path" in windows_diagnostic
