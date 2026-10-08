@@ -1876,10 +1876,14 @@ mod tests {
         .unwrap();
         let config: Value = serde_json::from_slice(&rendered).unwrap();
         let outbounds = config.get("outbounds").and_then(Value::as_array).unwrap();
-        for (tag, value) in [("proxy-selector", routes.desktop), ("wsl-selector", routes.wsl)] {
-            let selector = outbounds.iter().find(|item| {
-                item.get("tag").and_then(Value::as_str) == Some(tag)
-            }).unwrap();
+        for (tag, value) in [
+            ("proxy-selector", routes.desktop),
+            ("wsl-selector", routes.wsl),
+        ] {
+            let selector = outbounds
+                .iter()
+                .find(|item| item.get("tag").and_then(Value::as_str) == Some(tag))
+                .unwrap();
             assert_eq!(
                 selector.get("default").and_then(Value::as_str),
                 Some(production_windows_route_tag(value).unwrap())
@@ -1888,7 +1892,10 @@ mod tests {
         assert_eq!(production_windows_route_tag(0).is_err(), true);
         assert_eq!(production_windows_route_tag(12345).is_err(), true);
         assert_eq!(production_windows_route_tag(2).unwrap(), "hysteria2-direct");
-        assert_eq!(production_windows_route_tag(6).unwrap(), "vless-reality-warp");
+        assert_eq!(
+            production_windows_route_tag(6).unwrap(),
+            "vless-reality-warp"
+        );
     }
 
     #[test]
