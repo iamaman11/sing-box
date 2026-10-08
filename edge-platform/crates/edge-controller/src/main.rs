@@ -593,17 +593,21 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     let stopped_attempted = std::cell::Cell::new(false);
     let set_stopped = |failed: bool| -> Result<(), io::Error> {
         if stopped_attempted.replace(true) {
-            return Err(io::Error::other("SCM terminal status was already attempted"));
+            return Err(io::Error::other(
+                "SCM terminal status was already attempted",
+            ));
         }
-        status_handle.set_service_status(ServiceStatus {
-            service_type: ServiceType::OWN_PROCESS,
-            current_state: ServiceState::Stopped,
-            controls_accepted: ServiceControlAccept::empty(),
-            exit_code: ServiceExitCode::Win32(if failed { 1 } else { 0 }),
-            checkpoint: 0,
-            wait_hint: Duration::default(),
-            process_id: None,
-        }).map_err(|err| io::Error::other(err.to_string()))
+        status_handle
+            .set_service_status(ServiceStatus {
+                service_type: ServiceType::OWN_PROCESS,
+                current_state: ServiceState::Stopped,
+                controls_accepted: ServiceControlAccept::empty(),
+                exit_code: ServiceExitCode::Win32(if failed { 1 } else { 0 }),
+                checkpoint: 0,
+                wait_hint: Duration::default(),
+                process_id: None,
+            })
+            .map_err(|err| io::Error::other(err.to_string()))
     };
     let startup_failure = |stage: &str, message: String| -> Box<dyn std::error::Error> {
         let detail = match write_controller_service_error(&config.repo_root, stage, &message) {
@@ -621,116 +625,120 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     // escape this scope without publishing a terminal service state.
     let service_result = catch_unwind(AssertUnwindSafe(
         || -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(err) => return Err(startup_failure("runtime_init", err.to_string())),
-    };
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => return Err(startup_failure("runtime_init", err.to_string())),
+            };
 
-    let service = match runtime.block_on(async {
-        timeout(
-            WINDOWS_CONTROLLER_INIT_TIMEOUT,
-            controller_server(config.repo_root.clone()),
-        )
-        .await
-    }) {
-        Ok(Ok(service)) => service,
-        Ok(Err(err)) => return Err(startup_failure("controller_init", err.to_string())),
-        Err(_) => {
-            return Err(startup_failure(
-                "controller_init",
-                format!(
-                    "controller initialization exceeded {} seconds",
-                    WINDOWS_CONTROLLER_INIT_TIMEOUT.as_secs()
-                ),
+            let service = match runtime.block_on(async {
+                timeout(
+                    WINDOWS_CONTROLLER_INIT_TIMEOUT,
+                    controller_server(config.repo_root.clone()),
+                )
+                .await
+            }) {
+                Ok(Ok(service)) => service,
+                Ok(Err(err)) => return Err(startup_failure("controller_init", err.to_string())),
+                Err(_) => {
+                    return Err(startup_failure(
+                        "controller_init",
+                        format!(
+                            "controller initialization exceeded {} seconds",
+                            WINDOWS_CONTROLLER_INIT_TIMEOUT.as_secs()
+                        ),
+                    ));
+                }
+            };
+
+            let listener = match runtime
+                .block_on(async { tokio::net::TcpListener::bind(config.addr).await })
+            {
+                Ok(listener) => listener,
+                Err(err) => return Err(startup_failure("controller_bind", err.to_string())),
+            };
+
+            if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
+                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                return Err(startup_failure(
+                    "runtime_converge",
+                    format!("Windows managed runtime startup convergence failed: {err}"),
+                ));
+            }
+
+            if let Err(err) = clear_controller_service_error(&config.repo_root) {
+                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                return Err(startup_failure("error_evidence_clear", err));
+            }
+
+            if let Err(err) = status_handle.set_service_status(ServiceStatus {
+                service_type: ServiceType::OWN_PROCESS,
+                current_state: ServiceState::Running,
+                controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+                exit_code: ServiceExitCode::Win32(0),
+                checkpoint: 0,
+                wait_hint: Duration::default(),
+                process_id: None,
+            }) {
+                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                return Err(startup_failure("scm_running", err.to_string()));
+            }
+
+            let repo_root = config.repo_root.clone();
+            let serve_result = runtime.block_on(serve_prebound_with_shutdown(
+                service,
+                listener,
+                async move {
+                    let _ = tokio::task::spawn_blocking(move || shutdown_rx.recv()).await;
+                },
             ));
-        }
-    };
+            let cleanup_result = stop_runtime_process(&default_local_config_path(&repo_root), true)
+                .map(|_| ())
+                .map_err(|err| {
+                    format!("failed to stop exact managed runtime on controller exit: {err}")
+                });
 
-    let listener =
-        match runtime.block_on(async { tokio::net::TcpListener::bind(config.addr).await }) {
-            Ok(listener) => listener,
-            Err(err) => return Err(startup_failure("controller_bind", err.to_string())),
-        };
+            let (result, failure) = match (serve_result, cleanup_result) {
+                (Ok(()), Ok(())) => (Ok(()), None),
+                (Err(err), Ok(())) => {
+                    let message = err.to_string();
+                    (
+                        Err(io::Error::other(message.clone()).into()),
+                        Some(("serve", message)),
+                    )
+                }
+                (Ok(()), Err(cleanup_err)) => (
+                    Err(io::Error::other(cleanup_err.clone()).into()),
+                    Some(("cleanup", cleanup_err)),
+                ),
+                (Err(err), Err(cleanup_err)) => {
+                    let message = format!("controller runtime failed: {err}; {cleanup_err}");
+                    (
+                        Err(io::Error::other(message.clone()).into()),
+                        Some(("serve_cleanup", message)),
+                    )
+                }
+            };
 
-    if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
-        let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
-        return Err(startup_failure(
-            "runtime_converge",
-            format!("Windows managed runtime startup convergence failed: {err}"),
-        ));
-    }
+            if let Some((stage, message)) = failure {
+                let _ = write_controller_service_error(&repo_root, stage, &message);
+            } else {
+                let _ = clear_controller_service_error(&repo_root);
+            }
 
-    if let Err(err) = clear_controller_service_error(&config.repo_root) {
-        let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
-        return Err(startup_failure("error_evidence_clear", err));
-    }
-
-    if let Err(err) = status_handle.set_service_status(ServiceStatus {
-        service_type: ServiceType::OWN_PROCESS,
-        current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
-        process_id: None,
-    }) {
-        let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
-        return Err(startup_failure("scm_running", err.to_string()));
-    }
-
-    let repo_root = config.repo_root.clone();
-    let serve_result = runtime.block_on(serve_prebound_with_shutdown(
-        service,
-        listener,
-        async move {
-            let _ = tokio::task::spawn_blocking(move || shutdown_rx.recv()).await;
-        },
-    ));
-    let cleanup_result = stop_runtime_process(&default_local_config_path(&repo_root), true)
-        .map(|_| ())
-        .map_err(|err| format!("failed to stop exact managed runtime on controller exit: {err}"));
-
-    let (result, failure) = match (serve_result, cleanup_result) {
-        (Ok(()), Ok(())) => (Ok(()), None),
-        (Err(err), Ok(())) => {
-            let message = err.to_string();
-            (
-                Err(io::Error::other(message.clone()).into()),
-                Some(("serve", message)),
-            )
-        }
-        (Ok(()), Err(cleanup_err)) => (
-            Err(io::Error::other(cleanup_err.clone()).into()),
-            Some(("cleanup", cleanup_err)),
-        ),
-        (Err(err), Err(cleanup_err)) => {
-            let message = format!("controller runtime failed: {err}; {cleanup_err}");
-            (
-                Err(io::Error::other(message.clone()).into()),
-                Some(("serve_cleanup", message)),
-            )
-        }
-    };
-
-    if let Some((stage, message)) = failure {
-        let _ = write_controller_service_error(&repo_root, stage, &message);
-    } else {
-        let _ = clear_controller_service_error(&repo_root);
-    }
-
-    // Report SERVICE_STOPPED exactly once, as the last SCM operation.
-    set_stopped(result.is_err())?;
-    result
+            // Report SERVICE_STOPPED exactly once, as the last SCM operation.
+            set_stopped(result.is_err())?;
+            result
         },
     ));
     match service_result {
         Ok(result) => result,
         Err(payload) => {
             let message = controller_service_panic_message(payload.as_ref());
-            let detail = match write_controller_service_error(&config.repo_root, "panic", &message) {
+            let detail = match write_controller_service_error(&config.repo_root, "panic", &message)
+            {
                 Ok(()) => message,
                 Err(evidence_err) => format!("{message}; {evidence_err}"),
             };
