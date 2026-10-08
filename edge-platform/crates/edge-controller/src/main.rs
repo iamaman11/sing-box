@@ -588,7 +588,13 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
         process_id: None,
     })?;
 
-    let set_stopped = |failed: bool| {
+    // SetServiceStatus(SERVICE_STOPPED) closes the RPC context even when
+    // subsequent application cleanup fails. Never attempt a second call.
+    let stopped_attempted = std::cell::Cell::new(false);
+    let set_stopped = |failed: bool| -> Result<(), io::Error> {
+        if stopped_attempted.replace(true) {
+            return Err(io::Error::other("SCM terminal status was already attempted"));
+        }
         status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Stopped,
@@ -597,7 +603,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-        })
+        }).map_err(|err| io::Error::other(err.to_string()))
     };
     let startup_failure = |stage: &str, message: String| -> Box<dyn std::error::Error> {
         let detail = match write_controller_service_error(&config.repo_root, stage, &message) {
