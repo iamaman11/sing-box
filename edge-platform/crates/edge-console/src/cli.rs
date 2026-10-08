@@ -39,6 +39,7 @@ pub(crate) enum Command {
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
     VerifyRuntime,
+    QualityLine1,
     PrivilegedPrepareCredentialAccess(InstallRootArgs),
     PrivilegedInstallCredentialAccess(InstallRootArgs),
     #[cfg(windows)]
@@ -84,6 +85,7 @@ impl Command {
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
             Self::VerifyRuntime => "verify-runtime",
+            Self::QualityLine1 => "quality-line1",
             Self::PrivilegedPrepareCredentialAccess(_) => "privileged-prepare-credential-access",
             Self::PrivilegedInstallCredentialAccess(_) => "privileged-install-credential-access",
             #[cfg(windows)]
@@ -214,6 +216,7 @@ mod tests {
             Cli::try_parse_from(["edge-console", "privileged-restart-controller-service"]).is_ok()
         );
         assert!(Cli::try_parse_from(["edge-console", "verify-runtime"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "quality-line1"]).is_ok());
         assert!(
             Cli::try_parse_from(["edge-console", "privileged-prepare-credential-access"]).is_ok()
         );
