@@ -396,7 +396,13 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         Command::QualityLine1 => {
             let install_root = installed_root_from_console()?;
             let active = load_verified_activation(&install_root)?;
-            if Path::new(&active.console_path).canonicalize()? != env::current_exe()?.canonicalize()? {
+            let installed_console = Path::new(&active.console_path)
+                .canonicalize()
+                .map_err(|err| format!("Line1 quality cannot verify active console path: {err}"))?;
+            let invoked_console = env::current_exe()
+                .and_then(|path| path.canonicalize())
+                .map_err(|err| format!("Line1 quality cannot verify invoked console path: {err}"))?;
+            if installed_console != invoked_console {
                 return Err("Line1 quality requires the exact active installed console".into());
             }
             let desired = canonical_production_desired_state()?;
@@ -405,7 +411,10 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             }
             let clash = format!("http://127.0.0.1:{STAGE2_CLASH_API_PORT}");
             let report = edge_clash::measure_line1_quality(&clash).await?;
-            let observed_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let observed_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|err| format!("Line1 quality cannot timestamp observation: {err}"))?
+                .as_secs();
             println!("quality_schema=line1-native-delay/v1");
             println!("vantage=WINDOWS");
             println!("observed_at_unix_seconds={observed_at}");
