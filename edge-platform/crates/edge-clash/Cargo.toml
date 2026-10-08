@@ -12,3 +12,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread"] }
