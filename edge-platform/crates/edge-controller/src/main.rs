@@ -1622,6 +1622,9 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<StopLocalRuntimeRequest>,
     ) -> Result<Response<LocalRuntimeResponse>, Status> {
+        #[cfg(windows)]
+        edge_local_runtime::reject_unproven_windows_tun_teardown("stop-local")
+            .map_err(Status::failed_precondition)?;
         let request = request.into_inner();
         let operation = self
             .state
