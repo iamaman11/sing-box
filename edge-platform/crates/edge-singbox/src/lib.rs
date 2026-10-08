@@ -5,7 +5,7 @@ use std::process::Command;
 
 use edge_shared_types::{
     LocalSingboxState, SelectorState, UbuntuProxyState, WindowsDatapathMode, WindowsRuntimeState,
-    WindowsTunnelBinding, canonical_production_desired_state,
+    WindowsTunnelBinding, canonical_production_desired_state, production_windows_route_tag,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -322,6 +322,12 @@ fn render_windows_config_for_mode(
 ) -> Result<Vec<u8>, String> {
     edge_shared_types::encode_windows_runtime_state(state)?;
     let desired = canonical_production_desired_state()?;
+    let routes = desired
+        .windows_route_policy
+        .as_ref()
+        .ok_or_else(|| "canonical Windows route policy is missing".to_owned())?;
+    let desktop_route = production_windows_route_tag(routes.desktop)?;
+    let wsl_route = production_windows_route_tag(routes.wsl)?;
     let reality_server_name = desired
         .application
         .as_ref()
@@ -366,13 +372,13 @@ fn render_windows_config_for_mode(
                 "type": "selector",
                 "tag": MANAGED_SELECTOR_TAG,
                 "outbounds": selector_entries.clone(),
-                "default": "auto-direct-tunnel"
+                "default": desktop_route
             },
             {
                 "type": "selector",
                 "tag": WSL_SELECTOR_TAG,
                 "outbounds": selector_entries,
-                "default": "auto-direct-tunnel"
+                "default": wsl_route
             },
             {
                 "type": "urltest",
@@ -1857,6 +1863,39 @@ mod tests {
                 reality_short_id: "8899aabbccddeeff".to_owned(),
             }),
         }
+    }
+
+    #[test]
+    fn git_route_policy_defaults_are_rendered_for_both_selectors() {
+        let desired = canonical_production_desired_state().unwrap();
+        let routes = desired.windows_route_policy.unwrap();
+        let rendered = render_windows_config_for_mode(
+            &stage2_runtime_state(),
+            WindowsDatapathMode::ManagedTun,
+        )
+        .unwrap();
+        let config: Value = serde_json::from_slice(&rendered).unwrap();
+        let outbounds = config.get("outbounds").and_then(Value::as_array).unwrap();
+        for (tag, value) in [
+            ("proxy-selector", routes.desktop),
+            ("wsl-selector", routes.wsl),
+        ] {
+            let selector = outbounds
+                .iter()
+                .find(|item| item.get("tag").and_then(Value::as_str) == Some(tag))
+                .unwrap();
+            assert_eq!(
+                selector.get("default").and_then(Value::as_str),
+                Some(production_windows_route_tag(value).unwrap())
+            );
+        }
+        assert_eq!(production_windows_route_tag(0).is_err(), true);
+        assert_eq!(production_windows_route_tag(12345).is_err(), true);
+        assert_eq!(production_windows_route_tag(2).unwrap(), "hysteria2-direct");
+        assert_eq!(
+            production_windows_route_tag(6).unwrap(),
+            "vless-reality-warp"
+        );
     }
 
     #[test]

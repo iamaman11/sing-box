@@ -400,7 +400,6 @@ async fn controller_server(
     if !is_installed_windows_root(&repo_root) {
         reconcile_active_deployment_state(&repo_root, &state)?;
     }
-    ensure_selector_intents_seeded(&repo_root, &state).await?;
     Ok(ControllerServerImpl {
         repo_root,
         state,
@@ -1271,9 +1270,6 @@ impl ControllerService for ControllerServerImpl {
                 .err()
                 .map(|err| format!("local deployment-state reconciliation unavailable: {err}"))
         };
-        ensure_selector_intents_seeded(&self.repo_root, &self.state)
-            .await
-            .map_err(Status::internal)?;
         let mut status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
         let backend_ready_from_state = status
@@ -1556,13 +1552,6 @@ impl ControllerService for ControllerServerImpl {
         let paths = local_runtime_paths_from_start(&self.repo_root, &request);
         let response = match start_runtime_process(&paths, request.visible_window) {
             Ok(mut result) => {
-                let _ = reconcile_selector_intents_for_running_local(
-                    &self.repo_root,
-                    &self.state,
-                    &result.local_singbox,
-                )
-                .await
-                .map(|warnings| result.warnings.extend(warnings));
                 let _ = refresh_app_readiness_phase(
                     &self.repo_root,
                     &self.state,
@@ -1721,13 +1710,6 @@ impl ControllerService for ControllerServerImpl {
             restart_runtime_process(&paths)
         } {
             Ok(mut result) => {
-                let _ = reconcile_selector_intents_for_running_local(
-                    &self.repo_root,
-                    &self.state,
-                    &result.local_singbox,
-                )
-                .await
-                .map(|warnings| result.warnings.extend(warnings));
                 let _ = refresh_app_readiness_phase(
                     &self.repo_root,
                     &self.state,
@@ -1801,9 +1783,6 @@ impl ControllerService for ControllerServerImpl {
     ) -> Result<Response<SelectorState>, Status> {
         let request = request.into_inner();
         let group = normalize_selector_group(request.group.as_deref())?;
-        ensure_selector_intents_seeded(&self.repo_root, &self.state)
-            .await
-            .map_err(Status::internal)?;
         let base_status =
             collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
         let local_singbox = merge_local_runtime(
@@ -1883,25 +1862,14 @@ impl ControllerService for ControllerServerImpl {
                 .await
             {
                 Ok((previous, mut selector)) => {
-                    if let Err(err) = upsert_selector_intent(&self.state, &group, &request.name) {
-                        append_operation_event(&self.state, operation.id, &err)?;
-                        update_operation_status(&self.state, operation.id, "FAILED")?;
-                        selector.degraded = true;
-                        selector.warnings.push(err.clone());
-                        return Ok(Response::new(SetSelectorResponse {
-                            success: false,
-                            previous,
-                            current: selector.observed_main_route.clone(),
-                            warnings: selector.warnings.clone(),
-                            operation: Some(operation_with_status(operation, "FAILED")),
-                            selector: Some(selector),
-                        }));
-                    }
-                    selector.desired_main_route = Some(request.name.clone());
+                    // SetSelector is a transient live switch. The durable default is
+                    // rendered from the protected Git route policy, never SQLite.
+                    selector.desired_main_route = selector_state_for_group(&base_status, &group)
+                        .and_then(|state| state.desired_main_route.clone());
                     append_operation_event(
                         &self.state,
                         operation.id,
-                        "selector updated successfully",
+                        "transient live selector updated; no durable intent recorded",
                     )?;
                     update_operation_status(&self.state, operation.id, "SUCCEEDED")?;
                     SetSelectorResponse {
@@ -2618,18 +2586,6 @@ fn reconcile_active_deployment_state(
     Ok(())
 }
 
-fn upsert_selector_intent(
-    state: &Arc<Mutex<EdgeState>>,
-    group: &str,
-    route: &str,
-) -> Result<(), String> {
-    state
-        .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?
-        .upsert_selector_intent(group, route)
-        .map_err(|err| format!("failed to store selector intent: {err}"))
-}
-
 fn is_allowed_selector_route(route: &str) -> bool {
     matches!(
         route,
@@ -2640,81 +2596,6 @@ fn is_allowed_selector_route(route: &str) -> bool {
             | "hysteria2-warp"
             | "vless-reality-warp"
     )
-}
-
-async fn ensure_selector_intents_seeded(
-    repo_root: &Path,
-    state: &Arc<Mutex<EdgeState>>,
-) -> Result<(), String> {
-    let missing_groups = {
-        let guard = state
-            .lock()
-            .map_err(|_| "controller state mutex poisoned".to_owned())?;
-        [DESKTOP_SELECTOR_GROUP, UBUNTU_SELECTOR_GROUP]
-            .into_iter()
-            .filter(|group| guard.get_selector_intent(group).ok().flatten().is_none())
-            .collect::<Vec<_>>()
-    };
-    if missing_groups.is_empty() {
-        return Ok(());
-    }
-
-    let local = inspect_local_runtime(&default_local_config_path(repo_root));
-    let controller_url = clash_controller_url(&local);
-    for group in missing_groups {
-        let desired = if let Some(url) = controller_url.as_ref() {
-            get_live_selector_state(url, group, default_aux_groups())
-                .await
-                .ok()
-                .and_then(|selector| selector.observed_main_route)
-        } else {
-            None
-        }
-        .or_else(|| {
-            let status = collect_controller_status(repo_root).ok()?;
-            selector_state_for_group(&status, group)?
-                .desired_main_route
-                .clone()
-        })
-        .unwrap_or_else(|| "auto-direct-tunnel".to_owned());
-        upsert_selector_intent(state, group, &desired)?;
-    }
-    Ok(())
-}
-
-async fn reconcile_selector_intents_for_running_local(
-    repo_root: &Path,
-    state: &Arc<Mutex<EdgeState>>,
-    local_singbox: &edge_shared_types::LocalSingboxState,
-) -> Result<Vec<String>, String> {
-    ensure_selector_intents_seeded(repo_root, state).await?;
-    let Some(controller_url) = clash_controller_url(local_singbox) else {
-        return Ok(vec!["clash API endpoint is not configured".to_owned()]);
-    };
-
-    let intents = state
-        .lock()
-        .map_err(|_| "controller state mutex poisoned".to_owned())?
-        .list_selector_intents()
-        .map_err(|err| format!("failed to list selector intents: {err}"))?;
-    let mut warnings = Vec::new();
-    for intent in intents {
-        match set_live_selector(
-            &controller_url,
-            &intent.group_name,
-            &intent.desired_route,
-            default_aux_groups(),
-        )
-        .await
-        {
-            Ok(_) => {}
-            Err(err) => warnings.push(format!(
-                "{} -> {} reconciliation failed: {}",
-                intent.group_name, intent.desired_route, err
-            )),
-        }
-    }
-    Ok(warnings)
 }
 
 async fn refresh_app_readiness_phase(
@@ -2876,14 +2757,16 @@ fn build_doctor_checks(
             evidence: Vec::new(),
         },
         DoctorCheck {
-            name: "state.selector_intents_present".to_owned(),
+            name: "state.git_selector_defaults_observed".to_owned(),
             ok: selector
                 .and_then(|value| value.desired_main_route.as_ref())
                 .is_some()
                 && ubuntu_selector
                     .and_then(|value| value.desired_main_route.as_ref())
                     .is_some(),
-            detail: "desktop and ubuntu desired routes must be persisted".to_owned(),
+            detail:
+                "Git-owned desktop and WSL route defaults must be present in the rendered config"
+                    .to_owned(),
 
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
