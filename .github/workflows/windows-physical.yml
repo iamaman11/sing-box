@@ -202,7 +202,19 @@ jobs:
               throw 'Bounded recovery still observes privileged external sing-box ownership'
             }
 
-            if ($boundedStoppedOwner) {
+            if ($boundedRunningLegacy) {
+              $parts = $legacyCandidates[0].Split(':')
+              $owner = [regex]::Escape([string]$bootstrapValues['scm_process_id'])
+              $child = [regex]::Escape([string]$parts[0])
+              if ($recoveryDetail -notmatch ";process_classification=MANAGED;process_evidence_complete=true;process_count=1;managed_pid=$child;managed_parent_pid=$owner;controller_pid=$owner(?:;|$)" -or
+                  $recoveryDetail -notmatch ';external_count=0(?:;|$)' -or
+                  $recoveryDetail -notmatch ';controller_service_error=ABSENT(?:;|$)') {
+                throw 'Old diagnostic disagreement lacks exact SYSTEM managed-owner proof'
+              }
+              $legacyManagedPid = [string]$parts[0]
+              $runningLegacyDiagnosticRecovery = $true
+              Write-Host 'running_legacy_diagnostic=PRIVILEGED_EXACT_PROOF'
+            } elseif ($boundedStoppedOwner) {
               $stoppedOwnerRecovery = $true
               "EDGE_STOPPED_OWNER_RECOVERY=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
               Write-Warning 'Recovering stopped SCM owner only after privileged evidence proved zero external sing-box owners'
@@ -224,7 +236,7 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          if ($doctorExit -ne 0 -and -not $stoppedOwnerRecovery -and -not $cleanStoppedBootstrap) {
+          if ($doctorExit -ne 0 -and -not $stoppedOwnerRecovery -and -not $cleanStoppedBootstrap -and -not $runningLegacyDiagnosticRecovery) {
             throw "Exact pre-state diagnostic failed: $doctorExit"
           }
           if ($stoppedOwnerRecovery) {
@@ -249,6 +261,28 @@ jobs:
               $LASTEXITCODE = 0
               Write-Host 'clean_stopped_bootstrap_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CLEAN_STATE'
             }
+          }
+          if ($runningLegacyDiagnosticRecovery) {
+            $exactCandidates = @(
+              $doctor | ForEach-Object {
+                if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false config_matches:false parent_matches:true parent:(\d+) start_unix_seconds:0 exe:UNKNOWN config:UNKNOWN cmd:\s*$') {
+                  "$($Matches[1]):$($Matches[2])"
+                }
+              } | Sort-Object -Unique
+            )
+            $expectedPair = ([string]$legacyManagedPid) + ':' + ([string]$values['scm_process_id'])
+            if ([string]$values['release_set_sha256'] -cne '123669b2503b08eec21fdd551d5a2803bb252f37e4c0ba021fe5b4d67a416c76' -or
+                [string]$values['scm_state'] -cne 'Running' -or
+                [string]$values['scm_executable_matches_release'] -cne 'true' -or
+                [int]$values['managed_singbox_process_count'] -ne 0 -or
+                [int]$values['conflicting_singbox_process_count'] -ne 1 -or
+                $exactCandidates.Count -ne 1 -or
+                $exactCandidates[0] -cne $expectedPair -or
+                [string]$values['scm_process_id'] -cne [string]$bootstrapValues['scm_process_id']) {
+              throw 'Legacy active runtime changed after bounded SYSTEM owner proof'
+            }
+            $LASTEXITCODE = 0
+            Write-Host 'running_legacy_diagnostic_exit=NORMALIZED_AFTER_PRIVILEGED_EXACT_PROOF'
           }
           if ([string]$values['exact_release_files'] -cne 'PASS') {
             throw 'Exact active diagnostic could not verify its ReleaseSet files'
@@ -303,6 +337,7 @@ jobs:
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:true(?:\s|$)') { $Matches[1] }
             } | Sort-Object -Unique
           )
+          if ($runningLegacyDiagnosticRecovery) { $managedBefore = @($legacyManagedPid) }
           $unknownBefore = @(
             $doctor | ForEach-Object {
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
