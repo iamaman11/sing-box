@@ -159,7 +159,7 @@ def main() -> None:
     )
     require(
         "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
-        and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical.split("Execute typed lifecycle mutation", 1)[0]
+        and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical.split("      - name: Execute typed lifecycle mutation", 1)[0]
         and "$env:EDGE_OPERATION -in @('stop','rollback')" in windows_physical
         and "$currentMode -ceq 'ManagedTun'" in windows_physical
         and "$env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly'" in windows_physical
