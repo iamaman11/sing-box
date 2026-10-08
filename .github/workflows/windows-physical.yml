@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
           case "$COMMAND_BODY" in
             "/windows diagnose") operation="diagnose" ;;
+            "/windows quality-line1") operation="quality-line1" ;;
             "/windows converge"|"/windows smoke") operation="converge" ;;
             "/windows start") operation="start" ;;
             "/windows stop") operation="stop" ;;
@@ -308,6 +309,9 @@ jobs:
           if ($env:EDGE_OPERATION -eq 'repair' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Repair target must equal the exact current ReleaseSet before runtime stop'
           }
+          if ($env:EDGE_OPERATION -eq 'quality-line1' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
+            throw 'Line1 quality requires the exact accepted installed ReleaseSet; never probe an older binary'
+          }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
           switch ($currentMode) {
@@ -316,7 +320,7 @@ jobs:
             }
             'ManagedTun' {
               if ($currentTun -cne 'true') {
-                if ($env:EDGE_OPERATION -eq 'diagnose') {
+                if ($env:EDGE_OPERATION -in @('diagnose','quality-line1')) {
                   throw 'ManagedTun state is missing managed TUN'
                 }
                 Write-Warning 'Recovering a partial ManagedTun activation with no managed TUN present'
@@ -325,7 +329,7 @@ jobs:
             }
             default { throw "Unsupported installed Windows datapath mode: $currentMode" }
           }
-          if ($env:EDGE_OPERATION -eq 'diagnose' -and $currentMode -cne $env:EDGE_EXPECTED_MODE) {
+          if ($env:EDGE_OPERATION -in @('diagnose','quality-line1') -and $currentMode -cne $env:EDGE_EXPECTED_MODE) {
             throw "Installed datapath mode $currentMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
           }
           "EDGE_BEFORE_MODE=$currentMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -416,7 +420,7 @@ jobs:
 
       - name: Execute typed lifecycle mutation
         id: lifecycle_mutation
-        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' && needs.resolve.outputs.operation != 'quality-line1' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -504,7 +508,7 @@ jobs:
             }
             default { throw "Unsupported active Windows datapath mode: $afterMode" }
           }
-          if ($env:EDGE_OPERATION -in @('converge','repair') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+          if ($env:EDGE_OPERATION -in @('converge','repair','quality-line1') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Accepted ReleaseSet is not active'
           }
           if ($env:EDGE_OPERATION -in @('start','stop','restart-controller') -and [string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
@@ -586,6 +590,44 @@ jobs:
           $expected = "$controller windows-service $env:EDGE_INSTALL_ROOT $authority"
           if ([string]$values['scm_executable_path'] -cne $expected) { throw 'SCM executable authority mismatch' }
 
+      - name: Measure native Line1 named-outbound quality without changing routing
+        if: ${{ needs.resolve.outputs.operation == 'quality-line1' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EDGE_EXPECTED_MODE -cne 'ManagedTun' -or $env:EDGE_BEFORE_MODE -cne 'ManagedTun') {
+            throw 'Line1 quality requires healthy accepted ManagedTun'
+          }
+          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $before = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw 'Native quality pre-measurement owner evidence unavailable' }
+          $routeBefore = @($before | Where-Object { $_ -match '^route_interface(_ipv6)?=' } | Sort-Object)
+          if ($routeBefore.Count -eq 0) { throw 'Native quality route evidence is missing' }
+          $warpDnsBefore = @(Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object ServerAddresses)
+          $managedBefore = @($before | Where-Object { $_ -match '^singbox_process=pid:' } | Sort-Object)
+          $scmBefore = @($before | Where-Object { $_ -match '^scm_process_id=' })
+          if ($managedBefore.Count -ne 1 -or $scmBefore.Count -ne 1) {
+            throw 'Native quality requires exactly one independently observed SCM and sing-box process'
+          }
+          $result = @(& $env:EDGE_CURRENT_CONSOLE quality-line1)
+          $qualityExit = $LASTEXITCODE
+          $result | Write-Host
+          $after = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw 'Native quality post-measurement owner evidence unavailable' }
+          $routeAfter = @($after | Where-Object { $_ -match '^route_interface(_ipv6)?=' } | Sort-Object)
+          $warpDnsAfter = @(Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object ServerAddresses)
+          $managedAfter = @($after | Where-Object { $_ -match '^singbox_process=pid:' } | Sort-Object)
+          $scmAfter = @($after | Where-Object { $_ -match '^scm_process_id=' })
+          if (($routeAfter -join "`n") -cne ($routeBefore -join "`n") -or
+              ($managedAfter -join "`n") -cne ($managedBefore -join "`n") -or
+              ($scmAfter -join "`n") -cne ($scmBefore -join "`n") -or
+              ($warpDnsAfter -join ',') -cne ($warpDnsBefore -join ',')) {
+            throw 'Line1 quality changed (or observed drift in) route, process owner or foreign WARP DNS evidence'
+          }
+          Write-Host 'native_line1_owner_route_dns_parity=PASS'
+          if ($qualityExit -ne 0) { throw "Native Line1 quality reported unavailable HTTP samples: exit=$qualityExit" }
+
       - name: Prove managed DIRECT and WARP without runtime restart
         if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' || needs.resolve.outputs.operation == 'start' || needs.resolve.outputs.operation == 'restart-controller' || needs.resolve.outputs.operation == 'rollback' }}
         shell: powershell
@@ -651,7 +693,7 @@ jobs:
             "EDGE_PRIVILEGED_CONTROLLER_PID=$expectedController" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
             Write-Host 'managed_process_identity=PRIVILEGED_EXACT_PROOF'
           }
-          if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
+          if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback','quality-line1') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
             if ($detailLine -match '(?:^|;)stderr=MISSING(?:;|$)') {
               throw 'Managed sing-box stderr evidence is missing after lifecycle verification'
             }
@@ -899,7 +941,7 @@ jobs:
             }
             $finalManagedCount = 1
           }
-          if ($env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and $finalManagedCount -ne 1) {
+          if ($env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback','quality-line1') -and $finalManagedCount -ne 1) {
             throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $finalManagedCount"
           }
           if ($env:EDGE_OPERATION -eq 'stop' -and ($finalManagedCount -ne 0 -or $unknownFinal.Count -ne 0)) {
