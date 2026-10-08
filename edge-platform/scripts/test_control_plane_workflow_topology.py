@@ -158,6 +158,20 @@ def main() -> None:
         "operator documentation must match closed Stage 3/4A and the active bounded Stage 4B managed-TUN cutover without advertising historical authority",
     )
     require(
+        "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
+        and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical.split("      - name: Execute typed lifecycle mutation", 1)[0]
+        and "managed_tun_automatic_rollback=BLOCKED_NO_INDEPENDENT_DNS_RESTORE" in windows_physical
+        and "privileged-rollback-previous" not in windows_physical.split("      - name: Refuse unproven automatic rollback after MANAGED_TUN verification failure", 1)[1].split("      - name: Final diagnostics and transport-only boundary", 1)[0]
+        and "$env:EDGE_OPERATION -in @('stop','rollback')" in windows_physical
+        and "$currentMode -ceq 'ManagedTun'" in windows_physical
+        and "$env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly'" in windows_physical
+        and 'reject_unproven_windows_tun_teardown("stop-local")' in windows_controller_runtime
+        and 'reject_unproven_windows_tun_teardown("rollback-previous")' in windows_console
+        and '"managed-tun-to-proxy-only"' in windows_console
+        and "failed to stop exact managed proxy before release transition" in windows_console,
+        "Windows TUN teardown must be rejected before the operator or native owner mutates runtime, without affecting ManagedTun-to-ManagedTun activation",
+    )
+    require(
         "/windows cutover" not in router
         and "/windows cutover" not in windows_physical
         and "github.event.comment.body == '/windows diagnose'" in router
@@ -179,7 +193,7 @@ def main() -> None:
         and "restart-verify-runtime" not in windows_physical
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 4
+        and windows_physical.count("privileged-runtime-evidence") == 3
         and windows_physical.rindex("verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
@@ -190,9 +204,9 @@ def main() -> None:
         and "Stage 4B.2-C requires zero external sing-box owners" in windows_physical
         and "Resolve expected Windows datapath mode" in windows_physical
         and "Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence" in windows_physical
-        and "Fail closed to exact previous release after MANAGED_TUN verification failure" in windows_physical
+        and "Refuse unproven automatic rollback after MANAGED_TUN verification failure" in windows_physical
         and "Recovering a partial ManagedTun activation with no managed TUN present" in windows_physical
-        and "Exact immutable rollback console is unavailable" in windows_physical
+        and "Exact immutable rollback console is unavailable" not in windows_physical
         and "Stable rollback console is missing" not in windows_physical
         and "runtime_server_ip" not in windows_diagnostic
         and "server_bypass" not in windows_diagnostic
@@ -220,13 +234,13 @@ def main() -> None:
         and "prestate_managed_owner=PRIVILEGED_EXACT_PROOF" in windows_physical
         and "managed_process_identity=PRIVILEGED_EXACT_PROOF" in windows_physical
         and "Final process identity is UNKNOWN without exact matching privileged evidence" in windows_physical
-        and "Fail-closed rollback requires independently proven exact active owner before mutation" in windows_physical
-        and "Rolled back process cannot be independently confirmed as exact managed owner" in windows_physical
+        and "Fail-closed rollback requires independently proven exact active owner before mutation" not in windows_physical
+        and "Rolled back process cannot be independently confirmed as exact managed owner" not in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "managed_tun_present" in windows_physical
         and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "runtime_start=NOOP_ALREADY_RUNNING" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 4
+        and windows_physical.count("privileged-runtime-evidence") == 3
         and "EDGE_STOPPED_OWNER_RECOVERY=YES" in windows_physical
         and "Bounded recovery still observes privileged external sing-box ownership" in windows_physical
         and "stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT" in windows_physical

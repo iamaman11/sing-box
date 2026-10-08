@@ -53,6 +53,19 @@ fn is_owned_windows_dns_ipv4(address: [u8; 4]) -> bool {
     WINDOWS_OWNED_DNS_IPV4.contains(&address)
 }
 
+/*
+ * Stage 4B.2-C: no independent recovery owner currently guarantees DNS continuity
+ * for foreign CloudflareWARP when managed TUN 172.19.0.1/172.19.0.2 is removed.
+ * Deliberately no override flag, optimistic DNS check, or silent fallback:
+ * any destructive public entrypoint must refuse before the first mutation.
+ * This does NOT guard ordinary ManagedTun -> ManagedTun accepted convergence.
+ */
+pub fn reject_unproven_windows_tun_teardown(operation: &str) -> Result<(), String> {
+    Err(format!(
+        "{operation} refused before mutation: independent CloudflareWARP DNS restoration and control-channel recovery are not proven for Windows managed TUN teardown"
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalRuntimePaths {
     pub singbox_binary_path: PathBuf,
@@ -1283,6 +1296,20 @@ mod tests {
             ..paths
         };
         assert!(!proxy_only_external_coexistence_allowed(&legacy).unwrap());
+    }
+
+    #[test]
+    fn destructive_windows_tun_teardown_requires_independent_recovery_proof() {
+        for operation in [
+            "stop-local",
+            "rollback-previous",
+            "managed-tun-to-proxy-only",
+        ] {
+            let failure = reject_unproven_windows_tun_teardown(operation).unwrap_err();
+            assert!(failure.contains("refused before mutation"));
+            assert!(failure.contains("CloudflareWARP DNS restoration"));
+            assert!(failure.contains(operation));
+        }
     }
 
     #[test]

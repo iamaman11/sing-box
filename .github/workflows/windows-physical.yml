@@ -314,6 +314,17 @@ jobs:
           }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
+          # Stage 4B.2-C: NO teardown before independent foreign CloudflareWARP DNS
+          # recovery and an independent control-channel restore have been proven.
+          # This is deliberately before 'Execute typed lifecycle mutation'.
+          if ($env:EDGE_OPERATION -in @('stop','rollback')) {
+            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: stop/rollback requires independently proven CloudflareWARP DNS and control-channel restoration'
+          }
+          if ($currentMode -ceq 'ManagedTun' -and
+              $env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly' -and
+              $env:EDGE_OPERATION -in @('converge','repair')) {
+            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: ManagedTun to ProxyOnly requires independent DNS/control-channel recovery'
+          }
           switch ($currentMode) {
             'ProxyOnly' {
               if ($currentTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
@@ -808,107 +819,13 @@ jobs:
           Write-Host "foreign_cloudflarewarp_dns=$($warpDns -join ',')"
           Write-Host "foreign_cloudflarewarp_tun_dns_repin=$($warpDns -contains '172.19.0.2')"
 
-      - name: Fail closed to exact previous release after MANAGED_TUN verification failure
+      - name: Refuse unproven automatic rollback after MANAGED_TUN verification failure
         if: ${{ failure() && steps.lifecycle_mutation.outcome == 'success' && (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
-          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
-          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
-            throw 'Exact active diagnostic is unavailable before fail-closed rollback'
-          }
-          $beforeRollback = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Failed to classify active release before fail-closed rollback: $LASTEXITCODE" }
-          $beforeValues = @{}
-          foreach ($line in $beforeRollback) {
-            $parts = ([string]$line).Split('=', 2)
-            if ($parts.Count -eq 2) { $beforeValues[$parts[0]] = $parts[1] }
-          }
-          $unverified = @(
-            $beforeRollback | ForEach-Object {
-              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
-            } | Sort-Object -Unique
-          )
-          if ($unverified.Count -gt 0 -and (
-              $unverified.Count -ne 1 -or [int]$beforeValues['unknown_singbox_process_count'] -ne 1 -or
-              [string]$env:EDGE_PRIVILEGED_MANAGED_PID -cne [string]$unverified[0] -or
-              [string]$env:EDGE_PRIVILEGED_CONTROLLER_PID -cne [string]$beforeValues['scm_process_id'])) {
-            throw 'Fail-closed rollback requires independently proven exact active owner before mutation'
-          }
-          if ([string]$beforeValues['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
-            Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_TARGET_NOT_ACTIVE'
-            exit 0
-          }
-          $rollbackConsole = $env:EDGE_CURRENT_CONSOLE
-          if ([string]::IsNullOrWhiteSpace($rollbackConsole) -or -not (Test-Path -LiteralPath $rollbackConsole -PathType Leaf)) {
-            throw 'Exact immutable rollback console is unavailable'
-          }
-          & $rollbackConsole privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) { throw "Fail-closed exact previous rollback failed: $LASTEXITCODE" }
-          $stableDiagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
-          $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Stable post-rollback diagnostic failed: $LASTEXITCODE" }
-          $bootstrapValues = @{}
-          foreach ($line in $bootstrapDoctor) {
-            $parts = ([string]$line).Split('=', 2)
-            if ($parts.Count -eq 2) { $bootstrapValues[$parts[0]] = $parts[1] }
-          }
-          if ([string]$bootstrapValues['exact_release_files'] -cne 'PASS') {
-            throw 'Stable diagnostic could not verify exact rollback release files'
-          }
-          $diagnostic = [string]$bootstrapValues['diagnostic_path']
-          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
-            throw 'Exact immutable rollback diagnostic path is unavailable'
-          }
-          $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Exact post-rollback diagnostic failed: $LASTEXITCODE" }
-          $values = @{}
-          foreach ($line in $doctor) {
-            $parts = ([string]$line).Split('=', 2)
-            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
-          }
-          $unknownRollback = @(
-            $doctor | ForEach-Object {
-              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
-            } | Sort-Object -Unique
-          )
-          if ($unknownRollback.Count -gt 0) {
-            if ($unknownRollback.Count -ne 1 -or [int]$values['unknown_singbox_process_count'] -ne 1 -or
-                [int]$values['managed_singbox_process_count'] -ne 0 -or
-                [int]$values['conflicting_singbox_process_count'] -ne 0 -or
-                [string]$values['scm_process_id'] -notmatch '^\d+$') {
-              throw 'Rolled back child has ambiguous owner; stop without additional mutation'
-            }
-            $rollbackEvidence = @(& ([string]$values['console_path']) privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
-            if ($LASTEXITCODE -ne 0) { throw 'Rolled back privileged process evidence unavailable' }
-            $detail = [string]($rollbackEvidence | Where-Object { [string]$_ -like 'detail=*' } | Select-Object -Last 1)
-            $child = [regex]::Escape([string]$unknownRollback[0])
-            $owner = [regex]::Escape([string]$values['scm_process_id'])
-            if ($detail -notmatch ";process_classification=MANAGED;process_evidence_complete=true;process_count=1;managed_pid=$child;managed_parent_pid=$owner;controller_pid=$owner(?:;|$)" -or
-                $detail -notmatch ';external_count=0(?:;|$)' -or
-                $detail -notmatch ';controller_service_error=ABSENT(?:;|$)') {
-              throw 'Rolled back process cannot be independently confirmed as exact managed owner'
-            }
-            "EDGE_PRIVILEGED_MANAGED_PID=$($unknownRollback[0])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-            "EDGE_PRIVILEGED_CONTROLLER_PID=$($values['scm_process_id'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-          }
-          "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-          if ([string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
-            throw 'Fail-closed rollback did not restore exact pre-cutover ReleaseSet'
-          }
-          if ([string]$values['windows_datapath_mode'] -cne $env:EDGE_BEFORE_MODE) {
-            throw 'Fail-closed rollback did not restore pre-cutover datapath mode'
-          }
-          if ($env:EDGE_BEFORE_MODE -ceq 'ProxyOnly' -and [string]$values['managed_tun_present'] -cne 'false') {
-            throw 'Fail-closed rollback left managed TUN behind'
-          }
-          if ($env:EDGE_BEFORE_MODE -ceq 'ManagedTun' -and [string]$values['managed_tun_present'] -cne 'true') {
-            throw 'Fail-closed rollback did not restore managed TUN'
-          }
-          Write-Host 'managed_tun_fail_closed_rollback=PASS'
-          Write-Host "rollback_release_set=$($values['release_set_sha256'])"
-          Write-Host "rollback_windows_datapath_mode=$($values['windows_datapath_mode'])"
+          Write-Host 'managed_tun_automatic_rollback=BLOCKED_NO_INDEPENDENT_DNS_RESTORE'
+          throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: automatic rollback cannot prove CloudflareWARP DNS/control-channel recovery; preserve current runtime for independent diagnostics'
 
       - name: Final diagnostics and transport-only boundary
         shell: powershell

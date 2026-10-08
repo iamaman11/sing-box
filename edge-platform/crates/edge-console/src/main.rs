@@ -1786,6 +1786,13 @@ fn activate_privileged_release(
         .as_deref()
         .ok_or_else(|| "release_set_sha256 is required".to_owned())?;
 
+    // An accepted ProxyOnly target cannot silently retire the current managed TUN.
+    // Do not infer independent foreign WARP DNS/control recovery from a release pointer.
+    let desired = canonical_production_desired_state()?;
+    if desired.windows_datapath_mode == WindowsDatapathMode::ProxyOnly as i32 {
+        edge_local_runtime::reject_unproven_windows_tun_teardown("managed-tun-to-proxy-only")?;
+    }
+
     let before_activation = load_verified_activation(install_root).ok();
     let mut previous_bytes_before = None;
 
@@ -2037,6 +2044,8 @@ fn sync_stable_windows_release_tools(
 fn rollback_privileged_release(
     install_root: &Path,
 ) -> Result<(String, String, Option<String>), String> {
+    // Direct privileged dispatcher calls must not bypass the GitHub operator gate.
+    edge_local_runtime::reject_unproven_windows_tun_teardown("rollback-previous")?;
     let current_path = install_root.join("current.pb");
     let previous_path = install_root.join("previous.pb");
     let (current, previous) = load_previous_release_rollback_pair(install_root)?;
