@@ -1300,7 +1300,11 @@ mod tests {
 
     #[test]
     fn destructive_windows_tun_teardown_requires_independent_recovery_proof() {
-        for operation in ["stop-local", "rollback-previous", "managed-tun-to-proxy-only"] {
+        for operation in [
+            "stop-local",
+            "rollback-previous",
+            "managed-tun-to-proxy-only",
+        ] {
             let failure = reject_unproven_windows_tun_teardown(operation).unwrap_err();
             assert!(failure.contains("refused before mutation"));
             assert!(failure.contains("CloudflareWARP DNS restoration"));
