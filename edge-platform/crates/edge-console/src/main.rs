@@ -401,7 +401,9 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 .map_err(|err| format!("Line1 quality cannot verify active console path: {err}"))?;
             let invoked_console = env::current_exe()
                 .and_then(|path| path.canonicalize())
-                .map_err(|err| format!("Line1 quality cannot verify invoked console path: {err}"))?;
+                .map_err(|err| {
+                    format!("Line1 quality cannot verify invoked console path: {err}")
+                })?;
             if installed_console != invoked_console {
                 return Err("Line1 quality requires the exact active installed console".into());
             }
@@ -421,7 +423,10 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("release_set_sha256={}", active.release_set_sha256);
             println!("probe=sing-box-native-clash-named-outbound-delay");
             println!("metric=HTTPS_URL_TEST_DELAY_ONLY");
-            println!("sample_budget_per_outbound={}", edge_clash::LINE1_QUALITY_SAMPLES);
+            println!(
+                "sample_budget_per_outbound={}",
+                edge_clash::LINE1_QUALITY_SAMPLES
+            );
             println!("selector_mutations=0");
             println!("tunnel_mutations=0");
             println!("selector_before_after=IDENTICAL");
@@ -433,14 +438,28 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     .map(|(min, median, max)| {
                         (min.to_string(), median.to_string(), max.to_string())
                     })
-                    .unwrap_or_else(|| ("UNAVAILABLE".to_owned(), "UNAVAILABLE".to_owned(), "UNAVAILABLE".to_owned()));
+                    .unwrap_or_else(|| {
+                        (
+                            "UNAVAILABLE".to_owned(),
+                            "UNAVAILABLE".to_owned(),
+                            "UNAVAILABLE".to_owned(),
+                        )
+                    });
                 println!(
                     "candidate={} successes={} failures={} min_ms={} median_ms={} max_ms={}",
-                    row.tag, row.success_ms.len(), row.failures, min, median, max
+                    row.tag,
+                    row.success_ms.len(),
+                    row.failures,
+                    min,
+                    median,
+                    max
                 );
             }
             if failures > 0 {
-                return Err(format!("Line1 native delay quality had {failures} failed HTTP probes").into());
+                return Err(format!(
+                    "Line1 native delay quality had {failures} failed HTTP probes"
+                )
+                .into());
             }
             println!("quality_status=PASS");
             Ok(())
