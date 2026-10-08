@@ -17,7 +17,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(windows)]
 use std::ptr::null_mut;
 #[cfg(windows)]
-use windows_service::service::{ServiceAccess, ServiceExitCode};
+use windows_service::service::{ServiceAccess, ServiceExitCode, ServiceState};
 #[cfg(windows)]
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 #[cfg(windows)]
@@ -152,6 +152,15 @@ fn native_nonzero_service_pid(pid: u32) -> Option<u32> {
 }
 
 #[cfg(windows)]
+fn native_service_pid_label(pid: Option<u32>, state: ServiceState) -> String {
+    match pid {
+        Some(value) => value.to_string(),
+        None if state == ServiceState::Stopped => "ABSENT".to_owned(),
+        None => "UNKNOWN".to_owned(),
+    }
+}
+
+#[cfg(windows)]
 fn native_service_pid_valid_for_state(state: u32) -> bool {
     matches!(
         state,
@@ -232,9 +241,7 @@ fn observe_windows_service(expected_controller: &Path) -> Result<Option<u32>, St
     println!("scm_state={:?}", status.current_state);
     println!(
         "scm_process_id={}",
-        native_process_id
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "ABSENT".to_owned())
+        native_service_pid_label(native_process_id, status.current_state)
     );
     println!("scm_process_id_valid_for_state={pid_valid_for_state}");
     match status.exit_code {
@@ -972,6 +979,18 @@ mod tests {
         assert_eq!(native_nonzero_service_pid(0), None);
         assert!(native_service_pid_valid_for_state(SERVICE_RUNNING));
         assert!(!native_service_pid_valid_for_state(SERVICE_START_PENDING));
+        assert_eq!(
+            native_service_pid_label(Some(15124), ServiceState::StartPending),
+            "15124"
+        );
+        assert_eq!(
+            native_service_pid_label(None, ServiceState::StartPending),
+            "UNKNOWN"
+        );
+        assert_eq!(
+            native_service_pid_label(None, ServiceState::Stopped),
+            "ABSENT"
+        );
     }
 
     #[cfg(windows)]
