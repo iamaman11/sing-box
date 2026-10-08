@@ -352,6 +352,7 @@ fn observe_singbox_processes(
     let mut managed = 0usize;
     let mut orphan = 0usize;
     let mut conflicting = 0usize;
+    let mut unknown = 0usize;
     for (pid, process) in system.processes() {
         let name = process.name().to_string_lossy().to_ascii_lowercase();
         if !name.contains("sing-box") {
@@ -368,9 +369,16 @@ fn observe_singbox_processes(
             .as_deref()
             .is_some_and(|value| same_path(Path::new(value), &expected_config));
         let parent_matches = controller_pid.is_some() && parent_pid == controller_pid;
-        let is_managed = config_matches && parent_matches;
-        let is_orphan = config_matches && !parent_matches;
-        if is_managed {
+        // A low-privilege GitHub runner cannot inspect the elevated TUN child
+        // command line. Missing metadata is UNKNOWN, never evidence of a foreign owner.
+        // Windows workflow acceptance must independently establish exact identity
+        // through the existing bounded privileged-runtime-evidence operation.
+        let identity_unknown = arguments.is_empty();
+        let is_managed = !identity_unknown && config_matches && parent_matches;
+        let is_orphan = !identity_unknown && config_matches && !parent_matches;
+        if identity_unknown {
+            unknown += 1;
+        } else if is_managed {
             managed += 1;
         } else {
             if is_orphan {
@@ -379,10 +387,11 @@ fn observe_singbox_processes(
             conflicting += 1;
         }
         println!(
-            "singbox_process=pid:{} managed:{} orphan:{} config_matches:{} parent_matches:{} parent:{} start_unix_seconds:{} exe:{} config:{} cmd:{}",
+            "singbox_process=pid:{} managed:{} orphan:{} identity_unknown:{} config_matches:{} parent_matches:{} parent:{} start_unix_seconds:{} exe:{} config:{} cmd:{}",
             pid.as_u32(),
             is_managed,
             is_orphan,
+            identity_unknown,
             config_matches,
             parent_matches,
             parent_pid
@@ -400,6 +409,8 @@ fn observe_singbox_processes(
     println!("managed_singbox_process_count={managed}");
     println!("orphan_singbox_process_count={orphan}");
     println!("conflicting_singbox_process_count={conflicting}");
+    println!("unknown_singbox_process_count={unknown}");
+    println!("process_inspection_complete={}", unknown == 0);
     if managed > 1 {
         return Err("multiple managed sing-box processes violate single-owner runtime".to_owned());
     }
