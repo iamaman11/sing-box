@@ -1790,9 +1790,7 @@ fn activate_privileged_release(
     // Do not infer independent foreign WARP DNS/control recovery from a release pointer.
     let desired = canonical_production_desired_state()?;
     if desired.windows_datapath_mode == WindowsDatapathMode::ProxyOnly as i32 {
-        edge_local_runtime::reject_unproven_windows_tun_teardown(
-            "managed-tun-to-proxy-only",
-        )?;
+        edge_local_runtime::reject_unproven_windows_tun_teardown("managed-tun-to-proxy-only")?;
     }
 
     let before_activation = load_verified_activation(install_root).ok();
