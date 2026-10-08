@@ -56,3 +56,42 @@ message DoctorResponse {
   optional TraceObservation ubuntu_trace = 5;
   optional Operation operation = 6;
 }
+
+// Bounded, read-only quality observations. No selector, DNS or route mutation.
+// A latency-only result is NOT a full quality acceptance.
+enum QualityPath {
+  QUALITY_PATH_UNSPECIFIED = 0;
+  QUALITY_PATH_LINE1 = 1;
+  QUALITY_PATH_LINE2 = 2;
+}
+enum QualityEvidence {
+  QUALITY_EVIDENCE_UNSPECIFIED = 0;
+  QUALITY_EVIDENCE_LATENCY_ONLY = 1;
+  QUALITY_EVIDENCE_AUTH_UNAVAILABLE = 2;
+  QUALITY_EVIDENCE_UNAVAILABLE = 3;
+}
+message QualityRequest {}
+message QualityCandidate {
+  string name = 1;
+  QualityPath path = 2;
+  QualityEvidence evidence = 3;
+  uint32 attempted = 4;
+  uint32 succeeded = 5;
+  optional uint32 min_latency_ms = 6;
+  optional uint32 median_latency_ms = 7;
+  optional uint32 p95_latency_ms = 8;
+  optional uint32 jitter_ms = 9;
+  optional string egress_ip = 10;
+  optional string colo = 11;
+  optional string warp = 12;
+  optional uint64 download_bytes_per_second = 13;
+  string note = 14;
+}
+message QualityReport {
+  // Always false until all 10 candidates have independently confirmed
+  // request/egress/throughput evidence. Never equate delay with full quality.
+  bool full_matrix_accepted = 1;
+  repeated QualityCandidate candidates = 2;
+  string note = 3;
+}
+
