@@ -255,7 +255,7 @@ jobs:
           }
           $externalPids = @(
             $doctor | ForEach-Object {
-              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:\w+ identity_unknown:false(?:\s|$)') { $Matches[1] }
             } | Sort-Object -Unique
           )
           if ($stoppedOwnerRecovery) {
@@ -274,6 +274,528 @@ jobs:
               if ([string]$_ -match '^singbox_process=pid:(\d+) managed:true(?:\s|$)') { $Matches[1] }
             } | Sort-Object -Unique
           )
+          $unknownBefore = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:false identity_unknown:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          if ($unknownBefore.Count -gt 0) {
+            if ($unknownBefore.Count -ne 1 -or [int]$values['unknown_singbox_process_count'] -ne 1 -or
+                [int]$values['managed_singbox_process_count'] -ne 0 -or
+                [int]$values['conflicting_singbox_process_count'] -ne 0 -or
+                [string]$values['scm_state'] -cne 'Running' -or
+                [string]$values['scm_process_id'] -notmatch '^\d+$([string]$values['scm_process_id'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_BEFORE_MANAGED_PID=$($managedBefore -join ',')" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          if ($env:EDGE_OPERATION -eq 'start' -and [int]$values['managed_singbox_process_count'] -eq 1) {
+            "EDGE_START_NOOP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          }
+          if ($env:EDGE_OPERATION -eq 'restart-controller') {
+            if ([string]$values['scm_state'] -cne 'Running' -or
+                [int]$values['managed_singbox_process_count'] -ne 1 -or
+                [string]$values['managed_tun_present'] -cne 'true') {
+              throw 'restart-controller requires healthy Running ManagedTun pre-state'
+            }
+          }
+          if ($env:EDGE_OPERATION -in @('repair','rollback')) {
+            $previous = Join-Path $root 'previous.pb'
+            $previousDoctor = @(& $diagnostic doctor $previous)
+            if ($LASTEXITCODE -ne 0) { throw "Previous authority diagnostic failed: $LASTEXITCODE" }
+            $previousValues = @{}
+            foreach ($line in $previousDoctor) {
+              $parts = ([string]$line).Split('=', 2)
+              if ($parts.Count -eq 2) { $previousValues[$parts[0]] = $parts[1] }
+            }
+            if ([string]$previousValues['exact_release_files'] -cne 'PASS') {
+              throw 'Previous ReleaseSet exact files are not verified'
+            }
+            "EDGE_BEFORE_PREVIOUS_RELEASE=$([string]$previousValues['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          }
+          "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_BEFORE_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_EXTERNAL_PIDS_BEFORE=$signature" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          $doctor | Write-Host
+
+      - name: Execute typed lifecycle mutation
+        id: lifecycle_mutation
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          switch ($env:EDGE_OPERATION) {
+            'converge' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+            }
+            'start' {
+              if ($env:EDGE_START_NOOP -ceq 'YES') {
+                Write-Host 'runtime_start=NOOP_ALREADY_RUNNING'
+                $LASTEXITCODE = 0
+              } else {
+                & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
+              }
+            }
+            'stop' {
+              & $env:EDGE_CURRENT_CONSOLE stop-local $env:EDGE_CONTROLLER_ENDPOINT
+            }
+            'restart-controller' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-restart-controller-service --install-root $env:EDGE_INSTALL_ROOT
+            }
+            'repair' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-reinstall-accepted $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+            }
+            'rollback' {
+              & $env:EDGE_CURRENT_CONSOLE privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
+            }
+            default { throw "Unsupported operation: $env:EDGE_OPERATION" }
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Lifecycle mutation failed: $LASTEXITCODE" }
+
+      - name: Verify exact authority and SCM handoff
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stableDiagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
+          $bootstrapExit = $LASTEXITCODE
+          $bootstrapDoctor | Write-Host
+          if ($bootstrapExit -ne 0) { throw "Stable post-state diagnostic failed: $bootstrapExit" }
+          $bootstrapValues = @{}
+          foreach ($line in $bootstrapDoctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $bootstrapValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$bootstrapValues['exact_release_files'] -cne 'PASS') {
+            throw 'Stable diagnostic could not verify exact post-state release files'
+          }
+          $diagnostic = [string]$bootstrapValues['diagnostic_path']
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact immutable post-state diagnostic path is unavailable'
+          }
+          $doctor = @(& $diagnostic doctor $current)
+          $doctorExit = $LASTEXITCODE
+          $doctor | Write-Host
+          if ($doctorExit -ne 0) { throw "Exact post-state diagnostic failed: $doctorExit" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['exact_release_files'] -cne 'PASS') { throw 'Exact release files are not verified' }
+          $afterMode = [string]$values['windows_datapath_mode']
+          $afterTun = [string]$values['managed_tun_present']
+          if ($env:EDGE_OPERATION -ne 'rollback' -and $afterMode -cne $env:EDGE_EXPECTED_MODE) {
+            throw "Active datapath mode $afterMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
+          }
+          switch ($afterMode) {
+            'ProxyOnly' {
+              if ($afterTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
+            }
+            'ManagedTun' {
+              if ($env:EDGE_OPERATION -eq 'stop') {
+                if ($afterTun -cne 'false') { throw 'Managed TUN remained present after explicit runtime stop' }
+              } else {
+                if ($afterTun -cne 'true') { throw 'ManagedTun state is missing managed TUN' }
+                if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') {
+                  throw "Unexpected managed TUN IPv4: $($values['managed_tun_ipv4'])"
+                }
+                if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') {
+                  throw "Unexpected managed TUN DNS IPv4: $($values['managed_tun_dns_ipv4'])"
+                }
+              }
+            }
+            default { throw "Unsupported active Windows datapath mode: $afterMode" }
+          }
+          if ($env:EDGE_OPERATION -in @('converge','repair') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+            throw 'Accepted ReleaseSet is not active'
+          }
+          if ($env:EDGE_OPERATION -in @('start','stop','restart-controller') -and [string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
+            throw 'Transient runtime control changed ReleaseSet authority'
+          }
+          if ($env:EDGE_OPERATION -eq 'rollback') {
+            if ([string]$values['release_set_sha256'] -ceq $env:EDGE_BEFORE_RELEASE) {
+              throw 'Rollback did not change ReleaseSet authority'
+            }
+            if ([string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_PREVIOUS_RELEASE) {
+              throw 'Rollback did not activate the exact previous ReleaseSet observed before mutation'
+            }
+          }
+          if ($env:EDGE_OPERATION -eq 'repair') {
+            $previousAfter = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'previous.pb'))
+            if ($LASTEXITCODE -ne 0) { throw "Previous authority diagnostic failed after repair: $LASTEXITCODE" }
+            $previousAfterValues = @{}
+            foreach ($line in $previousAfter) {
+              $parts = ([string]$line).Split('=', 2)
+              if ($parts.Count -eq 2) { $previousAfterValues[$parts[0]] = $parts[1] }
+            }
+            if ([string]$previousAfterValues['release_set_sha256'] -cne $env:EDGE_BEFORE_PREVIOUS_RELEASE) {
+              throw 'Repair changed previous ReleaseSet authority'
+            }
+          }
+          $managedAfter = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:true(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          $afterControllerPid = [string]$values['scm_process_id']
+          $afterManagedPid = $managedAfter -join ','
+          if ($env:EDGE_OPERATION -eq 'restart-controller') {
+            if ([string]::IsNullOrWhiteSpace($env:EDGE_BEFORE_CONTROLLER_PID) -or
+                $env:EDGE_BEFORE_CONTROLLER_PID -ceq 'ABSENT' -or
+                $afterControllerPid -ceq $env:EDGE_BEFORE_CONTROLLER_PID) {
+              throw 'SCM restart did not replace controller PID'
+            }
+            if ([string]::IsNullOrWhiteSpace($env:EDGE_BEFORE_MANAGED_PID) -or
+                $afterManagedPid -ceq $env:EDGE_BEFORE_MANAGED_PID) {
+              throw 'SCM restart did not replace the exact managed child'
+            }
+          }
+          if ($env:EDGE_OPERATION -eq 'start' -and $env:EDGE_START_NOOP -ceq 'YES') {
+            if ($afterControllerPid -cne $env:EDGE_BEFORE_CONTROLLER_PID -or
+                $afterManagedPid -cne $env:EDGE_BEFORE_MANAGED_PID) {
+              throw 'Idempotent start caused controller or managed-child PID churn'
+            }
+            Write-Host 'runtime_start_noop_identity=PASS'
+          }
+          $console = [string]$values['console_path']
+          $controller = [string]$values['controller_path']
+          "EDGE_CURRENT_CONSOLE=$console" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_AFTER_RELEASE=$([string]$values['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          "EDGE_AFTER_MODE=$afterMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          if ([string]$values['scm_service_name'] -cne 'EdgePlatformController') { throw 'SCM controller is missing' }
+          if ([string]$values['scm_account'] -cne 'NT SERVICE\EdgePlatformController') { throw 'Unexpected SCM identity' }
+          if ([string]$values['scm_state'] -cne 'Running') { throw 'SCM controller is not running' }
+          if ([string]$values['scm_start_type'] -cne 'AutoStart') { throw 'SCM controller is not automatic' }
+          if ([string]$values['scm_executable_matches_release'] -cne 'true') { throw 'SCM binary does not match the active release' }
+          $authority = ([Uri]$env:EDGE_CONTROLLER_ENDPOINT).Authority
+          $expected = "$controller windows-service $env:EDGE_INSTALL_ROOT $authority"
+          if ([string]$values['scm_executable_path'] -cne $expected) { throw 'SCM executable authority mismatch' }
+
+      - name: Prove managed DIRECT and WARP without runtime restart
+        if: ${{ needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' || needs.resolve.outputs.operation == 'start' || needs.resolve.outputs.operation == 'restart-controller' || needs.resolve.outputs.operation == 'rollback' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:EDGE_CURRENT_CONSOLE verify-runtime
+          if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
+
+      - name: Read-only privileged runtime evidence after restart
+        if: ${{ always() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidenceStrict = $true
+          $evidenceConsole = $env:EDGE_CURRENT_CONSOLE
+          if ([string]::IsNullOrWhiteSpace($evidenceConsole) -or
+              -not (Test-Path -LiteralPath $evidenceConsole -PathType Leaf)) {
+            $evidenceStrict = $false
+            $evidenceConsole = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-console.exe'
+          }
+          if (-not (Test-Path -LiteralPath $evidenceConsole -PathType Leaf)) {
+            Write-Warning 'Privileged runtime evidence console is unavailable after an earlier lifecycle failure'
+            exit 0
+          }
+
+          $evidenceLines = @(& $evidenceConsole privileged-runtime-evidence --install-root $env:EDGE_INSTALL_ROOT)
+          $evidenceExit = $LASTEXITCODE
+          $evidenceLines | Write-Host
+          if ($evidenceExit -ne 0) {
+            if ($evidenceStrict) { throw "Privileged read-only runtime evidence failed: $evidenceExit" }
+            Write-Warning "Privileged conflict evidence failed read-only: $evidenceExit"
+            exit 0
+          }
+
+          $detailLine = [string]($evidenceLines |
+            Where-Object { [string]$_ -like 'detail=*' } |
+            Select-Object -Last 1)
+          if ([string]::IsNullOrWhiteSpace($detailLine) -or
+              $detailLine -notmatch '^detail=runtime_evidence=BOUNDED_READ_ONLY') {
+            if ($evidenceStrict) { throw 'Privileged runtime evidence did not return the bounded typed detail contract' }
+            Write-Warning 'Privileged conflict evidence did not return the bounded typed detail contract'
+            exit 0
+          }
+
+          if ($evidenceStrict -and $detailLine -notmatch '(?:^|;)controller_service_error=ABSENT(?:;|$)') {
+            throw 'Controller service retains current startup-failure evidence after successful lifecycle verification'
+          }
+          if ($evidenceStrict -and $env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') {
+            if ($detailLine -match '(?:^|;)stderr=MISSING(?:;|$)') {
+              throw 'Managed sing-box stderr evidence is missing after lifecycle verification'
+            }
+            if ($detailLine -notmatch '(?:^|;)stderr=') {
+              throw 'Managed sing-box stderr evidence was omitted from the bounded privileged result'
+            }
+            if ($detailLine -match 'failed to search process:\s*Access is denied') {
+              throw 'Managed sing-box process lookup still reports Access is denied after fresh restart'
+            }
+            Write-Host 'managed_tun_process_search_access_denied=ABSENT'
+          }
+
+      - name: Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence
+        if: ${{ (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair' || needs.resolve.outputs.operation == 'start' || needs.resolve.outputs.operation == 'restart-controller' || needs.resolve.outputs.operation == 'rollback') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact active diagnostic is unavailable for managed TUN proof'
+          }
+          $doctor = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'))
+          if ($LASTEXITCODE -ne 0) { throw "Managed TUN diagnostic failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['managed_tun_present'] -cne 'true') { throw 'Managed TUN is absent' }
+          $tunIndex = [uint32]$values['managed_tun_interface_index']
+          if ($tunIndex -eq 0) { throw 'Managed TUN interface index is invalid' }
+          if ([string]$values['managed_tun_ipv4'] -cne '172.19.0.1') { throw 'Managed TUN IPv4 mismatch' }
+          if ([string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') { throw 'Managed TUN DNS mismatch' }
+          $statusLines = @(& $env:EDGE_CURRENT_CONSOLE status $env:EDGE_CONTROLLER_ENDPOINT)
+          if ($LASTEXITCODE -ne 0) { throw "Typed controller status failed: $LASTEXITCODE" }
+          $serverIp = $null
+          foreach ($line in $statusLines) {
+            if ([string]$line -match '^Server IP\s+:\s+((?:\d{1,3}\.){3}\d{1,3})\s*$') {
+              $serverIp = $Matches[1]
+              break
+            }
+          }
+          $parsedServerIp = [System.Net.IPAddress]::None
+          if ([string]::IsNullOrWhiteSpace($serverIp) -or
+              -not [System.Net.IPAddress]::TryParse($serverIp, [ref]$parsedServerIp) -or
+              $parsedServerIp.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            throw "Typed controller status did not expose a valid production server IPv4: $serverIp"
+          }
+          $serverRoute = Find-NetRoute -RemoteIPAddress $serverIp |
+            Sort-Object RouteMetric |
+            Select-Object -First 1
+          if (-not $serverRoute) { throw "No Windows best route exists for production server $serverIp" }
+          if ([uint32]$serverRoute.InterfaceIndex -eq $tunIndex) {
+            throw "Production server $serverIp is captured by managed TUN"
+          }
+          $serverAdapter = Get-NetAdapter -InterfaceIndex ([uint32]$serverRoute.InterfaceIndex) -ErrorAction Stop
+
+          $dns = Resolve-DnsName 'www.gstatic.com' -Type A -DnsOnly -ErrorAction Stop |
+            Where-Object { $_.IPAddress } |
+            Select-Object -First 1
+          if (-not $dns -or [string]::IsNullOrWhiteSpace([string]$dns.IPAddress)) {
+            throw 'Ordinary Windows DNS did not return an IPv4 address'
+          }
+          $route = Find-NetRoute -RemoteIPAddress ([string]$dns.IPAddress) |
+            Sort-Object RouteMetric |
+            Select-Object -First 1
+          if (-not $route -or [uint32]$route.InterfaceIndex -ne $tunIndex) {
+            throw 'Ordinary Internet destination does not select managed TUN'
+          }
+
+          $http = (& curl.exe --noproxy '*' --silent --show-error --fail --connect-timeout 15 --max-time 30 --output NUL --write-out '%{http_code}' 'https://www.gstatic.com/generate_204').Trim()
+          if ($LASTEXITCODE -ne 0 -or $http -cne '204') {
+            throw "Ordinary no-proxy Windows HTTPS failed through managed TUN: exit=$LASTEXITCODE http=$http"
+          }
+
+          $localHttp = (& curl.exe --proxy 'http://127.0.0.1:17891' --silent --show-error --fail --connect-timeout 15 --max-time 30 --output NUL --write-out '%{http_code}' 'https://www.gstatic.com/generate_204').Trim()
+          if ($LASTEXITCODE -ne 0 -or $localHttp -cne '204') {
+            throw "Canonical local proxy failed with managed TUN: exit=$LASTEXITCODE http=$localHttp"
+          }
+
+          $meshRoute = Find-NetRoute -RemoteIPAddress '100.96.0.2' |
+            Sort-Object RouteMetric |
+            Select-Object -First 1
+          if (-not $meshRoute) { throw 'Foreign Mesh/device route is absent' }
+          $meshAdapter = Get-NetAdapter -InterfaceIndex ([uint32]$meshRoute.InterfaceIndex) -ErrorAction Stop
+          if ([string]$meshAdapter.Name -cne 'CloudflareWARP') {
+            throw "Foreign Mesh/device route escaped CloudflareWARP: $($meshAdapter.Name)"
+          }
+          if ([uint32]$meshRoute.InterfaceIndex -eq $tunIndex) {
+            throw 'Managed TUN captured the foreign Mesh/device route'
+          }
+
+          $warpAdapter = Get-NetAdapter -Name 'CloudflareWARP' -ErrorAction Stop
+          if ([string]$warpAdapter.Status -cne 'Up') {
+            throw "Foreign CloudflareWARP adapter is not Up: $($warpAdapter.Status)"
+          }
+          $warpDns = @(
+            Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop |
+              ForEach-Object ServerAddresses
+          )
+          if ($warpDns -contains '172.31.255.2') {
+            throw "Foreign CloudflareWARP still carries retired legacy TUN DNS 172.31.255.2: $($warpDns -join ',')"
+          }
+
+          Write-Host "managed_tun_server_bypass_ip=$serverIp"
+          Write-Host "managed_tun_server_bypass_owner=$($serverAdapter.Name)"
+          Write-Host 'managed_tun_server_bypass=PASS'
+          Write-Host 'managed_tun_ordinary_dns=PASS'
+          Write-Host 'managed_tun_ordinary_https=PASS'
+          Write-Host 'managed_tun_local_proxy=PASS'
+          Write-Host 'foreign_mesh_route_owner=CloudflareWARP'
+          Write-Host "foreign_cloudflarewarp_dns=$($warpDns -join ',')"
+          Write-Host "foreign_cloudflarewarp_tun_dns_repin=$($warpDns -contains '172.19.0.2')"
+
+      - name: Fail closed to exact previous release after MANAGED_TUN verification failure
+        if: ${{ failure() && steps.lifecycle_mutation.outcome == 'success' && (needs.resolve.outputs.operation == 'converge' || needs.resolve.outputs.operation == 'repair') && needs.resolve.outputs.expected_mode == 'ManagedTun' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact active diagnostic is unavailable before fail-closed rollback'
+          }
+          $beforeRollback = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Failed to classify active release before fail-closed rollback: $LASTEXITCODE" }
+          $beforeValues = @{}
+          foreach ($line in $beforeRollback) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $beforeValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$beforeValues['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+            Write-Host 'managed_tun_fail_closed_rollback=SKIPPED_TARGET_NOT_ACTIVE'
+            exit 0
+          }
+          $rollbackConsole = $env:EDGE_CURRENT_CONSOLE
+          if ([string]::IsNullOrWhiteSpace($rollbackConsole) -or -not (Test-Path -LiteralPath $rollbackConsole -PathType Leaf)) {
+            throw 'Exact immutable rollback console is unavailable'
+          }
+          & $rollbackConsole privileged-rollback-previous --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Fail-closed exact previous rollback failed: $LASTEXITCODE" }
+          $stableDiagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Stable post-rollback diagnostic failed: $LASTEXITCODE" }
+          $bootstrapValues = @{}
+          foreach ($line in $bootstrapDoctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $bootstrapValues[$parts[0]] = $parts[1] }
+          }
+          if ([string]$bootstrapValues['exact_release_files'] -cne 'PASS') {
+            throw 'Stable diagnostic could not verify exact rollback release files'
+          }
+          $diagnostic = [string]$bootstrapValues['diagnostic_path']
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact immutable rollback diagnostic path is unavailable'
+          }
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Exact post-rollback diagnostic failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          "EDGE_CURRENT_EXACT_DIAGNOSTIC=$diagnostic" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+          if ([string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
+            throw 'Fail-closed rollback did not restore exact pre-cutover ReleaseSet'
+          }
+          if ([string]$values['windows_datapath_mode'] -cne $env:EDGE_BEFORE_MODE) {
+            throw 'Fail-closed rollback did not restore pre-cutover datapath mode'
+          }
+          if ($env:EDGE_BEFORE_MODE -ceq 'ProxyOnly' -and [string]$values['managed_tun_present'] -cne 'false') {
+            throw 'Fail-closed rollback left managed TUN behind'
+          }
+          if ($env:EDGE_BEFORE_MODE -ceq 'ManagedTun' -and [string]$values['managed_tun_present'] -cne 'true') {
+            throw 'Fail-closed rollback did not restore managed TUN'
+          }
+          Write-Host 'managed_tun_fail_closed_rollback=PASS'
+          Write-Host "rollback_release_set=$($values['release_set_sha256'])"
+          Write-Host "rollback_windows_datapath_mode=$($values['windows_datapath_mode'])"
+
+      - name: Final diagnostics and transport-only boundary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          if ([string]::IsNullOrWhiteSpace($diagnostic) -or -not (Test-Path -LiteralPath $diagnostic -PathType Leaf)) {
+            throw 'Exact active diagnostic is unavailable for final verification'
+          }
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw "Final diagnostic failed: $LASTEXITCODE" }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ($env:EDGE_OPERATION -in @('converge','repair','start','restart-controller','rollback') -and [int]$values['managed_singbox_process_count'] -ne 1) {
+            throw "Expected one managed proxy process after $env:EDGE_OPERATION, observed $($values['managed_singbox_process_count'])"
+          }
+          if ($env:EDGE_OPERATION -eq 'stop' -and [int]$values['managed_singbox_process_count'] -ne 0) {
+            throw "Expected zero managed proxy processes after stop, observed $($values['managed_singbox_process_count'])"
+          }
+          $finalMode = [string]$values['windows_datapath_mode']
+          $finalTun = [string]$values['managed_tun_present']
+          if ($env:EDGE_OPERATION -ne 'rollback' -and $finalMode -cne $env:EDGE_EXPECTED_MODE) {
+            throw "Final datapath mode $finalMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
+          }
+          if ($finalMode -ceq 'ProxyOnly' -and $finalTun -cne 'false') { throw 'Final ProxyOnly state owns managed TUN' }
+          if ($finalMode -ceq 'ManagedTun' -and $env:EDGE_OPERATION -eq 'stop' -and $finalTun -cne 'false') {
+            throw 'Final explicit runtime stop left managed TUN present'
+          }
+          if ($finalMode -ceq 'ManagedTun' -and $env:EDGE_OPERATION -ne 'stop' -and $finalTun -cne 'true') {
+            throw 'Final ManagedTun state is missing managed TUN'
+          }
+          if ($finalMode -notin @('ProxyOnly','ManagedTun')) { throw "Unsupported final datapath mode: $finalMode" }
+          if ($env:EDGE_OPERATION -eq 'rollback' -and $finalMode -ceq 'ProxyOnly') {
+            $warpDnsAfterTunRemoval = @(
+              Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop |
+                ForEach-Object ServerAddresses
+            )
+            if ($warpDnsAfterTunRemoval -contains '172.19.0.2') {
+              throw "Foreign CloudflareWARP still depends on removed managed TUN DNS after ProxyOnly rollback: $($warpDnsAfterTunRemoval -join ',')"
+            }
+            Write-Host "foreign_cloudflarewarp_dns_after_tun_removal=$($warpDnsAfterTunRemoval -join ',')"
+            Write-Host 'foreign_cloudflarewarp_tun_dns_cleanup=PASS'
+          }
+          $externalPids = @(
+            $doctor | ForEach-Object {
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:\w+ identity_unknown:false(?:\s|$)') { $Matches[1] }
+            } | Sort-Object -Unique
+          )
+          $signature = $externalPids -join ','
+          if ($signature -cne $env:EDGE_EXTERNAL_PIDS_BEFORE) { throw 'External sing-box owner changed after verification' }
+          foreach ($relative in @('state','runtime','logs')) {
+            $path = Join-Path $env:EDGE_INSTALL_ROOT $relative
+            $denied = $false
+            try { [IO.Directory]::GetFileSystemEntries($path) | Out-Null } catch [UnauthorizedAccessException] { $denied = $true }
+            if (-not $denied) { throw "Runner unexpectedly has direct private-state access: $relative" }
+          }
+          $doctor | Write-Host
+
+      - name: Publish bounded lifecycle evidence
+        if: ${{ always() }}
+        shell: powershell
+        run: |
+          @(
+            "### Windows $env:EDGE_AFTER_MODE lifecycle",
+            '- Operation: ${{ needs.resolve.outputs.operation }}',
+            "- Before ReleaseSet: $env:EDGE_BEFORE_RELEASE",
+            "- After ReleaseSet: $env:EDGE_AFTER_RELEASE",
+            '- Local Windows build: NO',
+            '- External sing-box mutation: FORBIDDEN / equality-checked',
+            "- Expected mode: $env:EDGE_EXPECTED_MODE",
+            "- Before mode: $env:EDGE_BEFORE_MODE",
+            "- After mode: $env:EDGE_AFTER_MODE",
+            "- TUN requested by desired state: $($env:EDGE_EXPECTED_MODE -ceq 'ManagedTun')",
+            '- Foreign CloudflareWARP mutation: FORBIDDEN',
+            '- External sing-box owner: FORBIDDEN / equality-checked'
+          ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+) {
+              throw 'Pre-state uninspectable sing-box ownership is not uniquely bounded'
+            }
+            $privileged = @(& $console privileged-runtime-evidence --install-root $root)
+            if ($LASTEXITCODE -ne 0) { throw 'Pre-state privileged runtime identity evidence unavailable' }
+            $detail = [string]($privileged | Where-Object { [string]$_ -like 'detail=*' } | Select-Object -Last 1)
+            $owner = [regex]::Escape([string]$values['scm_process_id'])
+            $child = [regex]::Escape([string]$unknownBefore[0])
+            if ($detail -notmatch '^detail=runtime_evidence=BOUNDED_READ_ONLY;' -or
+                $detail -notmatch ";process_classification=MANAGED;process_evidence_complete=true;process_count=1;managed_pid=$child;managed_parent_pid=$owner;controller_pid=$owner(?:;|$)" -or
+                $detail -notmatch ';external_count=0(?:;|$)' -or
+                $detail -notmatch ';controller_service_error=ABSENT(?:;|$)') {
+              throw 'Pre-state UNKNOWN sing-box is not confirmed by exact privileged owner evidence'
+            }
+            $managedBefore = @($unknownBefore[0])
+            Write-Host 'prestate_managed_owner=PRIVILEGED_EXACT_PROOF'
+          }
           "EDGE_BEFORE_CONTROLLER_PID=$([string]$values['scm_process_id'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_BEFORE_MANAGED_PID=$($managedBefore -join ',')" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           if ($env:EDGE_OPERATION -eq 'start' -and [int]$values['managed_singbox_process_count'] -eq 1) {
@@ -738,7 +1260,7 @@ jobs:
           }
           $externalPids = @(
             $doctor | ForEach-Object {
-              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false(?:\s|$)') { $Matches[1] }
+              if ([string]$_ -match '^singbox_process=pid:(\d+) managed:false orphan:\w+ identity_unknown:false(?:\s|$)') { $Matches[1] }
             } | Sort-Object -Unique
           )
           $signature = $externalPids -join ','
