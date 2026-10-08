@@ -2119,49 +2119,74 @@ async fn verify_windows_tunnel_route(
     ))
 }
 
-async fn verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
-    let verification = async {
-        let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
-            .await
-            .map_err(|err| err.to_string())?;
-        let original = selector
-            .observed_main_route
-            .or(selector.desired_main_route)
-            .ok_or_else(|| "Windows selector has no restorable route".to_owned())?;
-
-        verify_windows_tunnel_route(endpoint, "auto-direct-tunnel", "off").await?;
-        verify_windows_tunnel_route(endpoint, "auto-warp-tunnel", "on").await?;
-
-        let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, &original)
-            .await
-            .map_err(|err| err.to_string())?;
-        if !restore.success {
-            return Err("failed to restore original Windows selector".to_owned());
-        }
-        let observed = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
-            .await
-            .map_err(|err| err.to_string())?;
-        if observed.observed_main_route.as_deref() != Some(original.as_str()) {
-            return Err(format!(
-                "Windows selector restore read-back mismatch: expected {original}, observed {:?}",
-                observed.observed_main_route
-            ));
-        }
-        Ok(())
+// Always run the restore after a bounded route check, even if either trace fails.
+// This is in-process compensation, not a durable promise across forced termination.
+async fn verify_routes_with_restore<F, Fut, R, RestoreFut>(
+    original: String,
+    mut verify: F,
+    restore: R,
+) -> Result<(), String>
+where
+    F: FnMut(&'static str, &'static str) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+    R: FnOnce(String) -> RestoreFut,
+    RestoreFut: std::future::Future<Output = Result<(), String>>,
+{
+    let result = async {
+        verify("auto-direct-tunnel", "off").await?;
+        verify("auto-warp-tunnel", "on").await
     }
     .await;
-
-    match verification {
-        Ok(()) => Ok(()),
-        Err(error) => match stop_managed_windows_runtime_after_failure(endpoint).await {
-            Ok(()) => Err(format!(
-                "Windows managed runtime failed functional verification and was stopped without touching external sing-box: {error}"
-            )),
-            Err(cleanup_err) => Err(format!(
-                "Windows managed runtime failed functional verification: {error}; managed-runtime cleanup also failed: {cleanup_err}"
-            )),
-        },
+    // Explicitly compensate after either success or failure of the checks.
+    let restored = restore(original).await;
+    match (result, restored) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(verification_error), Ok(())) => Err(format!(
+            "Windows tunnel verification failed; original selector restored: {verification_error}"
+        )),
+        (Ok(()), Err(restore_error)) => Err(format!(
+            "Windows tunnel checks passed but original selector restoration is unverified: {restore_error}"
+        )),
+        (Err(verification_error), Err(restore_error)) => Err(format!(
+            "Windows tunnel verification failed: {verification_error}; original selector restoration is unverified: {restore_error}"
+        )),
     }
+}
+
+async fn restore_windows_tunnel_selector(endpoint: &str, original: &str) -> Result<(), String> {
+    let restore = set_selector(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP, original)
+        .await
+        .map_err(|err| err.to_string())?;
+    if !restore.success {
+        return Err(format!("selector restore RPC rejected route {original}"));
+    }
+    let observed = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
+        .await
+        .map_err(|err| err.to_string())?;
+    if observed.observed_main_route.as_deref() != Some(original) {
+        return Err(format!(
+            "selector restore read-back mismatch: expected {original}, observed {:?}",
+            observed.observed_main_route
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
+    let selector = fetch_selector_state(endpoint.to_owned(), DESKTOP_SELECTOR_GROUP)
+        .await
+        .map_err(|err| err.to_string())?;
+    // Do not guess a restoration target from Git policy if the live selector
+    // could not be observed: no mutation is permitted in this case.
+    let original = selector
+        .observed_main_route
+        .ok_or_else(|| "Windows selector has no observed restorable route; no mutation made".to_owned())?;
+    verify_routes_with_restore(
+        original,
+        |route, expected_warp| verify_windows_tunnel_route(endpoint, route, expected_warp),
+        |original| async move { restore_windows_tunnel_selector(endpoint, &original).await },
+    )
+    .await
 }
 
 async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String> {
@@ -2169,15 +2194,12 @@ async fn restart_and_verify_windows_tunnels(endpoint: &str) -> Result<(), String
         .await
         .map_err(|err| err.to_string())?;
     if !restart.success {
-        let error = format!("Windows local runtime restart failed: {}", restart.note);
-        return match stop_managed_windows_runtime_after_failure(endpoint).await {
-            Ok(()) => Err(format!(
-                "{error}; exact managed runtime was stopped without touching external sing-box"
-            )),
-            Err(cleanup_err) => Err(format!(
-                "{error}; managed-runtime cleanup also failed: {cleanup_err}"
-            )),
-        };
+        // A failed restart is already an uncertain runtime state. Do not issue
+        // an unrelated stop as "cleanup" on a shared Windows network host.
+        return Err(format!(
+            "Windows local runtime restart failed; no automatic stop attempted: {}",
+            restart.note
+        ));
     }
     verify_windows_tunnels(endpoint).await
 }
@@ -2214,20 +2236,6 @@ fn verify_stage2_isolated_prerequisites(install_root: &Path) -> Result<(), Strin
     }
     drop(listeners);
     Ok(())
-}
-
-async fn stop_managed_windows_runtime_after_failure(endpoint: &str) -> Result<(), String> {
-    let response = stop_local(endpoint.to_owned())
-        .await
-        .map_err(|err| err.to_string())?;
-    if response.success {
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to stop managed Windows runtime after functional failure: {}",
-            response.note
-        ))
-    }
 }
 
 async fn run_windows_credential_transition(
