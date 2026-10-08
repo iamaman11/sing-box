@@ -62,12 +62,12 @@ use edge_shared_types::{
     CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse, DestroyRequest,
     DestroyResponse, DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest,
     DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest,
-    GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse, QualityCandidate,
-    QualityEvidence, QualityPath, QualityReport, QualityRequest,
+    GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse,
     ListSecretRefsRequest, ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent,
     OperationEventKind, OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus,
-    PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
-    SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
+    PlatformError, ProviderObservation, QualityCandidate, QualityEvidence, QualityPath,
+    QualityReport, QualityRequest, RestartLocalRuntimeRequest, RuntimeObservation, SecretRefEntry,
+    SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR,
     WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsDatapathMode,
@@ -1924,8 +1924,11 @@ impl ControllerService for ControllerServerImpl {
             .lock()
             .map_err(|_| Status::internal("controller state mutex poisoned"))?
             .start_operation("quality", "RUNNING")
-            .map_err(|err| Status::internal(format!("quality operation journal unavailable: {err}")))?;
-        let before_desktop = observe_quality_selector(clash.as_deref(), DESKTOP_SELECTOR_GROUP).await;
+            .map_err(|err| {
+                Status::internal(format!("quality operation journal unavailable: {err}"))
+            })?;
+        let before_desktop =
+            observe_quality_selector(clash.as_deref(), DESKTOP_SELECTOR_GROUP).await;
         let before_wsl = observe_quality_selector(clash.as_deref(), UBUNTU_SELECTOR_GROUP).await;
         let mut candidates = Vec::with_capacity(10);
         for name in QUALITY_LINE1_TAGS {
@@ -1964,14 +1967,16 @@ impl ControllerService for ControllerServerImpl {
                     "read-only Clash named-outbound URL delay; not an egress or throughput test"
                 } else {
                     "zero or partial delay sample success; no selector modification"
-                }.to_owned(),
+                }
+                .to_owned(),
             });
         }
         // Line2 secret is owned by the VM credential plane; the managed Windows
         // controller has no such projection. Do not import legacy DPAPI mirrors,
         // print secrets, bypass auth, or falsely equate TCP-open with quality.
         candidates.extend(line2_quality_auth_boundary().map_err(Status::failed_precondition)?);
-        let after_desktop = observe_quality_selector(clash.as_deref(), DESKTOP_SELECTOR_GROUP).await;
+        let after_desktop =
+            observe_quality_selector(clash.as_deref(), DESKTOP_SELECTOR_GROUP).await;
         let after_wsl = observe_quality_selector(clash.as_deref(), UBUNTU_SELECTOR_GROUP).await;
         let selectors_unchanged = before_desktop.is_some()
             && before_wsl.is_some()
@@ -1982,7 +1987,11 @@ impl ControllerService for ControllerServerImpl {
         } else {
             "INCOMPLETE: Line1 delay-only; Line2 auth unavailable; selector read-back parity could not be proved; no selection was mutated by quality"
         };
-        let final_status = if selectors_unchanged { "SUCCEEDED" } else { "FAILED" };
+        let final_status = if selectors_unchanged {
+            "SUCCEEDED"
+        } else {
+            "FAILED"
+        };
         update_operation_status(&self.state, operation.id, final_status)?;
         Ok(Response::new(QualityReport {
             full_matrix_accepted: false,
@@ -5987,8 +5996,15 @@ mod tests {
         assert_eq!(candidates.len(), 6);
         assert!(candidates.iter().all(|v| v.attempted == 0));
         assert!(candidates.iter().all(|v| v.egress_ip.is_none()));
-        assert!(candidates.iter().all(|v| v.evidence == QualityEvidence::AuthUnavailable as i32));
-        let ports = candidates.iter().map(|v| v.note.clone()).collect::<Vec<_>>();
+        assert!(
+            candidates
+                .iter()
+                .all(|v| v.evidence == QualityEvidence::AuthUnavailable as i32)
+        );
+        let ports = candidates
+            .iter()
+            .map(|v| v.note.clone())
+            .collect::<Vec<_>>();
         for port in ["4128", "4080", "4443", "3128", "1080", "9443"] {
             assert!(ports.iter().any(|note| note.contains(port)));
         }
