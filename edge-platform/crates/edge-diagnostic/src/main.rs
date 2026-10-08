@@ -337,6 +337,21 @@ fn observe_controller_listener(controller_pid: Option<u32>) -> Result<(), String
 }
 
 #[cfg(windows)]
+fn inspected_singbox_identity(
+    arguments: &[String],
+    config_matches: bool,
+    parent_matches: bool,
+) -> (bool, bool, bool) {
+    // Unknown is neither a managed identity nor proof of a foreign owner.
+    let unknown = arguments.is_empty();
+    (
+        unknown,
+        !unknown && config_matches && parent_matches,
+        !unknown && config_matches && !parent_matches,
+    )
+}
+
+#[cfg(windows)]
 fn observe_singbox_processes(
     state_path: &Path,
     datapath_mode: WindowsDatapathMode,
@@ -373,9 +388,8 @@ fn observe_singbox_processes(
         // command line. Missing metadata is UNKNOWN, never evidence of a foreign owner.
         // Windows workflow acceptance must independently establish exact identity
         // through the existing bounded privileged-runtime-evidence operation.
-        let identity_unknown = arguments.is_empty();
-        let is_managed = !identity_unknown && config_matches && parent_matches;
-        let is_orphan = !identity_unknown && config_matches && !parent_matches;
+        let (identity_unknown, is_managed, is_orphan) =
+            inspected_singbox_identity(&arguments, config_matches, parent_matches);
         if identity_unknown {
             unknown += 1;
         } else if is_managed {
@@ -1001,6 +1015,29 @@ mod tests {
         assert_eq!(
             native_service_pid_label(None, ServiceState::Stopped),
             "ABSENT"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_process_command_line_is_unknown_not_foreign() {
+        let unreadable = Vec::<String>::new();
+        assert_eq!(
+            inspected_singbox_identity(&unreadable, false, true),
+            (true, false, false)
+        );
+        let readable = vec!["sing-box.exe".to_owned(), "run".to_owned()];
+        assert_eq!(
+            inspected_singbox_identity(&readable, false, true),
+            (false, false, false)
+        );
+        assert_eq!(
+            inspected_singbox_identity(&readable, true, true),
+            (false, true, false)
+        );
+        assert_eq!(
+            inspected_singbox_identity(&readable, true, false),
+            (false, false, true)
         );
     }
 
