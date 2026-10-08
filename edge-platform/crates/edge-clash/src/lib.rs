@@ -150,7 +150,6 @@ struct SelectorMutationBody {
     name: String,
 }
 
-
 // One-shot native sing-box quality observation. Delay queries update sing-box's
 // own URL-test history but never select an outbound or change its routing policy.
 const LINE1_QUALITY_TAGS: [&str; 4] = [
@@ -184,7 +183,9 @@ struct Line1DelayResponse {
 fn line1_selector_routes(payload: &ProxiesResponse) -> Result<[String; 2], String> {
     for tag in LINE1_QUALITY_TAGS {
         if !payload.proxies.contains_key(tag) {
-            return Err(format!("native Clash API is missing canonical outbound {tag}"));
+            return Err(format!(
+                "native Clash API is missing canonical outbound {tag}"
+            ));
         }
     }
     let mut routes = Vec::with_capacity(2);
@@ -201,7 +202,9 @@ fn line1_selector_routes(payload: &ProxiesResponse) -> Result<[String; 2], Strin
             .iter()
             .any(|tag| !members.iter().any(|member| member == tag))
         {
-            return Err(format!("native Clash API selector {group} lacks a canonical outbound"));
+            return Err(format!(
+                "native Clash API selector {group} lacks a canonical outbound"
+            ));
         }
         let selected = state
             .now
@@ -213,7 +216,10 @@ fn line1_selector_routes(payload: &ProxiesResponse) -> Result<[String; 2], Strin
     Ok([routes[0].clone(), routes[1].clone()])
 }
 
-async fn line1_selector_snapshot(client: &Client, controller_url: &str) -> Result<[String; 2], String> {
+async fn line1_selector_snapshot(
+    client: &Client,
+    controller_url: &str,
+) -> Result<[String; 2], String> {
     let response = client
         .get(format!("{controller_url}/proxies"))
         .send()
@@ -252,16 +258,15 @@ pub async fn measure_line1_quality(controller_url: &str) -> Result<Line1QualityR
         for _ in 0..LINE1_QUALITY_SAMPLES {
             let result = client
                 .get(format!("{controller_url}/proxies/{tag}/delay"))
-                .query(&[
-                    ("url", LINE1_PROBE_TARGET),
-                    ("timeout", "3500"),
-                ])
+                .query(&[("url", LINE1_PROBE_TARGET), ("timeout", "3500")])
                 .send()
                 .await;
             let delay = match result {
-                Ok(response) if response.status().is_success() => {
-                    response.json::<Line1DelayResponse>().await.ok().map(|data| data.delay)
-                }
+                Ok(response) if response.status().is_success() => response
+                    .json::<Line1DelayResponse>()
+                    .await
+                    .ok()
+                    .map(|data| data.delay),
                 _ => None,
             };
             match delay {
@@ -356,7 +361,10 @@ mod tests {
         for tag in LINE1_QUALITY_TAGS {
             payload.proxies.insert(
                 tag.to_owned(),
-                ProxyGroupResponse { now: None, all: None },
+                ProxyGroupResponse {
+                    now: None,
+                    all: None,
+                },
             );
         }
         for group in ["proxy-selector", "wsl-selector"] {
@@ -376,7 +384,10 @@ mod tests {
         }
         assert_eq!(
             line1_selector_routes(&payload).unwrap(),
-            ["auto-direct-tunnel".to_owned(), "auto-direct-tunnel".to_owned()]
+            [
+                "auto-direct-tunnel".to_owned(),
+                "auto-direct-tunnel".to_owned()
+            ]
         );
         payload.proxies.remove("vless-reality-warp");
         assert!(line1_selector_routes(&payload).is_err());
@@ -385,9 +396,10 @@ mod tests {
     #[test]
     fn quality_reports_true_median_without_claiming_p95_or_packet_loss() {
         assert_eq!(line1_latency_summary(&[]), None);
-        assert_eq!(line1_latency_summary(&[90, 20, 40, 30, 50]), Some((20, 40, 90)));
+        assert_eq!(
+            line1_latency_summary(&[90, 20, 40, 30, 50]),
+            Some((20, 40, 90))
+        );
         assert_eq!(line1_latency_summary(&[20, 30]), Some((20, 25, 30)));
     }
-
-
 }
