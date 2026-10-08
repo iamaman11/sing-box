@@ -62,24 +62,28 @@ fn summarize(samples: &[u64]) -> Option<(u64, u64, u64)> {
     Some((values[0], median, values[values.len() - 1]))
 }
 
-fn one_sample(
-    proxy: &str,
-    local_resolution: Option<&str>,
-    credentials: &str,
-) -> Option<u64> {
+fn one_sample(proxy: &str, local_resolution: Option<&str>, credentials: &str) -> Option<u64> {
     let mut command = Command::new(CURL_PATH);
     command.args([
         "-q",
-        "--config", "-",
+        "--config",
+        "-",
         "--silent",
         "--fail",
-        "--proto", "=https",
-        "--connect-timeout", "3",
-        "--max-time", "7",
-        "--noproxy", "",
-        "--output", "/dev/null",
-        "--write-out", "%{http_code};%{time_total}",
-        "--proxy", proxy,
+        "--proto",
+        "=https",
+        "--connect-timeout",
+        "3",
+        "--max-time",
+        "7",
+        "--noproxy",
+        "",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_code};%{time_total}",
+        "--proxy",
+        proxy,
     ]);
     if let Some(resolve) = local_resolution {
         command.args(["--resolve", resolve]);
@@ -109,7 +113,9 @@ pub(crate) fn measure(
     read_environment: impl FnOnce(&Path) -> Result<BTreeMap<String, String>, String>,
 ) -> Result<(), String> {
     let values = read_environment(stack_dir)?;
-    let user = values.get("PROXY_USERNAME").ok_or("Line2 VM policy is missing proxy user")?;
+    let user = values
+        .get("PROXY_USERNAME")
+        .ok_or("Line2 VM policy is missing proxy user")?;
     let password = values
         .get("PROXY_PASSWORD")
         .ok_or("Line2 VM credential projection is missing proxy password")?;
@@ -119,7 +125,9 @@ pub(crate) fn measure(
         .ok_or("Line2 VM policy is missing TLS proxy certificate hostname")?;
     // Hostname is validated by the existing runtime policy, not taken from the caller.
     if domain.is_empty()
-        || !domain.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        || !domain
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
         || domain.parse::<Ipv4Addr>().is_ok()
     {
         return Err("Line2 certificate hostname is invalid".to_owned());
@@ -154,7 +162,13 @@ pub(crate) fn measure(
         failures += errors;
         let (min, median, max) = summarize(&samples)
             .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
-            .unwrap_or_else(|| ("UNAVAILABLE".to_owned(), "UNAVAILABLE".to_owned(), "UNAVAILABLE".to_owned()));
+            .unwrap_or_else(|| {
+                (
+                    "UNAVAILABLE".to_owned(),
+                    "UNAVAILABLE".to_owned(),
+                    "UNAVAILABLE".to_owned(),
+                )
+            });
         println!(
             "proxy={tag} protocol={protocol} port={port} successes={} failures={errors} min_ms={min} median_ms={median} max_ms={max}",
             samples.len()
@@ -162,7 +176,10 @@ pub(crate) fn measure(
     }
     if failures > 0 {
         println!("quality_status=FAIL");
-        return Err(format!("Line2 VM authenticated proxy checks failed: {failures} of {}", PROXY_PORTS.len() * SAMPLES));
+        return Err(format!(
+            "Line2 VM authenticated proxy checks failed: {failures} of {}",
+            PROXY_PORTS.len() * SAMPLES
+        ));
     }
     println!("quality_status=PASS");
     Ok(())
@@ -179,14 +196,26 @@ mod tests {
         for (_, _, port) in PROXY_PORTS {
             assert!(ports.insert(port));
         }
-        assert_eq!(proxy_target("http", 4128, "edge.example.com"), "http://127.0.0.1:4128");
-        assert_eq!(proxy_target("socks5h", 1080, "edge.example.com"), "socks5h://127.0.0.1:1080");
-        assert_eq!(proxy_target("https", 9443, "edge.example.com"), "https://edge.example.com:9443");
+        assert_eq!(
+            proxy_target("http", 4128, "edge.example.com"),
+            "http://127.0.0.1:4128"
+        );
+        assert_eq!(
+            proxy_target("socks5h", 1080, "edge.example.com"),
+            "socks5h://127.0.0.1:1080"
+        );
+        assert_eq!(
+            proxy_target("https", 9443, "edge.example.com"),
+            "https://edge.example.com:9443"
+        );
     }
 
     #[test]
     fn secret_in_stdin_config_is_quoted_and_never_on_command_line() {
-        assert_eq!(curl_config_quote("u:abc\\\"def").unwrap(), "u:abc\\\\\\\"def");
+        assert_eq!(
+            curl_config_quote("u:abc\\\"def").unwrap(),
+            "u:abc\\\\\\\"def"
+        );
         assert!(curl_config_quote("u:with\nline").is_err());
     }
 
