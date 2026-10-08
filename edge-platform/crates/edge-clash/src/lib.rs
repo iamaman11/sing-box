@@ -181,7 +181,9 @@ pub async fn observe_outbound_delays(
     }
     let client = Client::builder()
         .no_proxy()
-        .timeout(Duration::from_millis(u64::from(QUALITY_DELAY_TIMEOUT_MS) + 500))
+        .timeout(Duration::from_millis(
+            u64::from(QUALITY_DELAY_TIMEOUT_MS) + 500,
+        ))
         .build()
         .map_err(|_| "quality probe HTTP client unavailable".to_owned())?;
     let mut readings_ms = Vec::new();
@@ -223,14 +225,21 @@ pub struct QualityLatencyStats {
 }
 
 pub fn summarise_delay_samples(readings: &[u32]) -> Option<QualityLatencyStats> {
-    if readings.is_empty() { return None; }
+    if readings.is_empty() {
+        return None;
+    }
     let mut sorted = readings.to_vec();
     sorted.sort_unstable();
     let n = sorted.len();
-    let jitter_sum: u64 = readings.windows(2).map(|pair| {
-        u64::from(pair[0].abs_diff(pair[1]))
-    }).sum();
-    let jitter_ms = if n == 1 { 0 } else { (jitter_sum / (n as u64 - 1)) as u32 };
+    let jitter_sum: u64 = readings
+        .windows(2)
+        .map(|pair| u64::from(pair[0].abs_diff(pair[1])))
+        .sum();
+    let jitter_ms = if n == 1 {
+        0
+    } else {
+        (jitter_sum / (n as u64 - 1)) as u32
+    };
     Some(QualityLatencyStats {
         min_ms: sorted[0],
         median_ms: sorted[(n - 1) / 2],
@@ -302,10 +311,16 @@ mod tests {
 
     #[tokio::test]
     async fn quality_refuses_unknown_or_non_loopback_clash_api() {
-        assert!(observe_outbound_delays("http://127.0.0.1:19091", "proxy-selector")
-            .await.is_err());
-        assert!(observe_outbound_delays("https://external.example", "hysteria2-direct")
-            .await.is_err());
+        assert!(
+            observe_outbound_delays("http://127.0.0.1:19091", "proxy-selector")
+                .await
+                .is_err()
+        );
+        assert!(
+            observe_outbound_delays("https://external.example", "hysteria2-direct")
+                .await
+                .is_err()
+        );
     }
 
     #[test]
