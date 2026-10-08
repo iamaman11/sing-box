@@ -25,6 +25,7 @@ enum OperationKind {
   PRODUCTION_PLAN = 9;
   PRODUCTION_APPLY = 10;
   PRODUCTION_VERIFY = 11;
+  QUALITY = 12;
 }
 
 enum OperationPhase {
