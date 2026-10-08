@@ -530,6 +530,27 @@ def main() -> None:
         "Windows service Tokio timers and sockets must be constructed inside the entered runtime context",
     )
 
+    service_start = windows_controller_runtime.index(
+        "fn run_edge_controller_service()"
+    )
+    service_end = windows_controller_runtime.index(
+        "enum WindowsStartupDecision", service_start
+    )
+    registered_service = windows_controller_runtime[service_start:service_end]
+    require(
+        registered_service.index("service_control_handler::register(")
+        < registered_service.index("let service_result = catch_unwind(")
+        and 'write_controller_service_error(&config.repo_root, "panic", &message)' in registered_service
+        and registered_service.index(
+            'write_controller_service_error(&config.repo_root, "panic", &message)'
+        )
+        < registered_service.rindex("set_stopped(true).map_err(")
+        and "set_stopped(result.is_err())?;" in registered_service
+        and "let _ = status_handle.set_service_status" not in registered_service
+        and registered_service.count("current_state: ServiceState::Stopped") == 1,
+        "The registered Windows service must persist caught panic evidence before exactly one SCM Stopped transition; startup errors must not silently discard status failures",
+    )
+
     service_entry_start = windows_controller_runtime.index(
         "fn edge_controller_service_main("
     )

@@ -589,7 +589,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     let set_stopped = |failed: bool| {
-        let _ = status_handle.set_service_status(ServiceStatus {
+        status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: ServiceState::Stopped,
             controls_accepted: ServiceControlAccept::empty(),
@@ -597,17 +597,24 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-        });
+        })
     };
     let startup_failure = |stage: &str, message: String| -> Box<dyn std::error::Error> {
         let detail = match write_controller_service_error(&config.repo_root, stage, &message) {
             Ok(()) => message,
             Err(evidence_err) => format!("{message}; {evidence_err}"),
         };
-        set_stopped(true);
+        let detail = match set_stopped(true) {
+            Ok(()) => detail,
+            Err(status_err) => format!("{detail}; failed to report SCM Stopped: {status_err}"),
+        };
         io::Error::other(detail).into()
     };
 
+    // The service has registered its SCM status handle. A Rust panic must not
+    // escape this scope without publishing a terminal service state.
+    let service_result = catch_unwind(AssertUnwindSafe(
+        || -> Result<(), Box<dyn std::error::Error>> {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -708,17 +715,30 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
         let _ = clear_controller_service_error(&repo_root);
     }
 
-    status_handle.set_service_status(ServiceStatus {
-        service_type: ServiceType::OWN_PROCESS,
-        current_state: ServiceState::Stopped,
-        controls_accepted: ServiceControlAccept::empty(),
-        exit_code: ServiceExitCode::Win32(if result.is_ok() { 0 } else { 1 }),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
-        process_id: None,
-    })?;
-
+    // Report SERVICE_STOPPED exactly once, as the last SCM operation.
+    set_stopped(result.is_err())?;
     result
+        },
+    ));
+    match service_result {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = controller_service_panic_message(payload.as_ref());
+            let detail = match write_controller_service_error(&config.repo_root, "panic", &message) {
+                Ok(()) => message,
+                Err(evidence_err) => format!("{message}; {evidence_err}"),
+            };
+            // SetServiceStatus(SERVICE_STOPPED) closes the SCM RPC context.
+            // Persist bounded failure evidence before calling it, and never
+            // issue a second terminal status update.
+            set_stopped(true).map_err(|err| {
+                io::Error::other(format!(
+                    "Windows controller service panic; failed to report SCM Stopped: {err}"
+                ))
+            })?;
+            Err(io::Error::other(detail).into())
+        }
+    }
 }
 
 #[cfg(any(windows, test))]
