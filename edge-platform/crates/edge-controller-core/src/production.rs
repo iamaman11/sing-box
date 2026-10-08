@@ -590,7 +590,9 @@ fn validate_root_identity(root: &ProductionDesiredState) -> Result<(), Productio
     if windows_datapath_mode == WindowsDatapathMode::Unspecified {
         return Err(validation("windows_datapath_mode must be explicit"));
     }
-    let routes = root.windows_route_policy.as_ref()
+    let routes = root
+        .windows_route_policy
+        .as_ref()
         .ok_or_else(|| validation("windows_route_policy must be explicit"))?;
     production_windows_route_tag(routes.desktop)
         .map_err(|err| validation(format!("windows_route_policy.desktop: {err}")))?;
