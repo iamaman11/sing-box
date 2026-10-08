@@ -66,6 +66,7 @@ jobs:
       (
         github.event.comment.body == '/windows smoke' ||
         github.event.comment.body == '/windows diagnose' ||
+        github.event.comment.body == '/windows quality' ||
         github.event.comment.body == '/windows converge' ||
         github.event.comment.body == '/windows start' ||
         github.event.comment.body == '/windows stop' ||
