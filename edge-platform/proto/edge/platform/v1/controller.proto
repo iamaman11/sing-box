@@ -62,6 +62,7 @@ service ControllerService {
   rpc GetSelectorState(GetSelectorStateRequest) returns (SelectorState);
   rpc SetSelector(SetSelectorRequest) returns (SetSelectorResponse);
   rpc GetTrace(GetTraceRequest) returns (TraceObservation);
+  rpc RunQuality(QualityRequest) returns (QualityReport);
   rpc Deploy(DeployRequest) returns (DeployResponse);
   rpc Destroy(DestroyRequest) returns (DestroyResponse);
   rpc GetOperation(GetOperationRequest) returns (OperationStatus);
