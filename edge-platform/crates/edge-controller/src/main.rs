@@ -34,8 +34,8 @@ use edge_bundle::{
     BuildBundleRequest, PreparedDeploymentBundle, build_bundle, generate_deployment_label,
 };
 use edge_clash::{
-    default_aux_groups, get_selector_state as get_live_selector_state,
-    set_selector as set_live_selector,
+    QUALITY_LINE1_TAGS, default_aux_groups, get_selector_state as get_live_selector_state,
+    observe_outbound_delays, set_selector as set_live_selector, summarise_delay_samples,
 };
 use edge_controller_core::{
     collect_controller_status, controller_state_db_path, is_installed_windows_root,
@@ -62,7 +62,8 @@ use edge_shared_types::{
     CredentialStateObservation, DeployPhase, DeployRequest, DeployResponse, DestroyRequest,
     DestroyResponse, DiagnosticEvidence, DiagnosticSubsystem, DoctorCheck, DoctorRequest,
     DoctorResponse, Empty, GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest,
-    GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse,
+    GetTraceRequest, ListOperationEventsRequest, ListOperationEventsResponse, QualityCandidate,
+    QualityEvidence, QualityPath, QualityReport, QualityRequest,
     ListSecretRefsRequest, ListSecretRefsResponse, LocalRuntimeResponse, Operation, OperationEvent,
     OperationEventKind, OperationKind, OperationLifecycleStatus, OperationPhase, OperationStatus,
     PlatformError, ProviderObservation, RestartLocalRuntimeRequest, RuntimeObservation,
@@ -1903,6 +1904,94 @@ impl ControllerService for ControllerServerImpl {
         Ok(Response::new(response))
     }
 
+    async fn run_quality(
+        &self,
+        _request: Request<QualityRequest>,
+    ) -> Result<Response<QualityReport>, Status> {
+        if !is_installed_windows_root(&self.repo_root) {
+            return Err(Status::failed_precondition(
+                "quality is a read-only operation of the exact managed Windows installation",
+            ));
+        }
+        let base = collect_controller_status(&self.repo_root).map_err(platform_error_to_status)?;
+        let local = merge_local_runtime(
+            base.local_singbox.clone(),
+            inspect_local_runtime(&default_local_config_path(&self.repo_root)),
+        );
+        let clash = clash_controller_url(&local);
+        let operation = self
+            .state
+            .lock()
+            .map_err(|_| Status::internal("controller state mutex poisoned"))?
+            .start_operation("quality", "RUNNING")
+            .map_err(|err| Status::internal(format!("quality operation journal unavailable: {err}")))?;
+        let before_desktop = observe_quality_selector(clash.as_deref(), DESKTOP_SELECTOR_GROUP).await;
+        let before_wsl = observe_quality_selector(clash.as_deref(), UBUNTU_SELECTOR_GROUP).await;
+        let mut candidates = Vec::with_capacity(10);
+        for name in QUALITY_LINE1_TAGS {
+            let result = if clash.as_deref() == Some("http://127.0.0.1:19091") {
+                observe_outbound_delays("http://127.0.0.1:19091", name).await
+            } else {
+                Err("canonical local Clash API is absent".to_owned())
+            };
+            let (attempted, succeeded, stats) = match result {
+                Ok(samples) => {
+                    let stats = summarise_delay_samples(&samples.readings_ms);
+                    (samples.attempts, samples.readings_ms.len() as u32, stats)
+                }
+                Err(_) => (0, 0, None),
+            };
+            let evidence = if stats.is_some() {
+                QualityEvidence::LatencyOnly
+            } else {
+                QualityEvidence::Unavailable
+            };
+            candidates.push(QualityCandidate {
+                name: name.to_owned(),
+                path: QualityPath::Line1 as i32,
+                evidence: evidence as i32,
+                attempted,
+                succeeded,
+                min_latency_ms: stats.as_ref().map(|v| v.min_ms),
+                median_latency_ms: stats.as_ref().map(|v| v.median_ms),
+                p95_latency_ms: stats.as_ref().map(|v| v.p95_ms),
+                jitter_ms: stats.as_ref().map(|v| v.jitter_ms),
+                egress_ip: None,
+                colo: None,
+                warp: None,
+                download_bytes_per_second: None,
+                note: if succeeded == attempted && succeeded > 0 {
+                    "read-only Clash named-outbound URL delay; not an egress or throughput test"
+                } else {
+                    "zero or partial delay sample success; no selector modification"
+                }.to_owned(),
+            });
+        }
+        // Line2 secret is owned by the VM credential plane; the managed Windows
+        // controller has no such projection. Do not import legacy DPAPI mirrors,
+        // print secrets, bypass auth, or falsely equate TCP-open with quality.
+        candidates.extend(line2_quality_auth_boundary().map_err(Status::failed_precondition)?);
+        let after_desktop = observe_quality_selector(clash.as_deref(), DESKTOP_SELECTOR_GROUP).await;
+        let after_wsl = observe_quality_selector(clash.as_deref(), UBUNTU_SELECTOR_GROUP).await;
+        let selectors_unchanged = before_desktop.is_some()
+            && before_wsl.is_some()
+            && before_desktop == after_desktop
+            && before_wsl == after_wsl;
+        let note = if selectors_unchanged {
+            "PARTIAL: Line1 delay-only; six Line2 endpoints have no Windows auth authority; selector parity verified; no traffic route was mutated"
+        } else {
+            "INCOMPLETE: Line1 delay-only; Line2 auth unavailable; selector read-back parity could not be proved; no selection was mutated by quality"
+        };
+        let final_status = if selectors_unchanged { "SUCCEEDED" } else { "FAILED" };
+        update_operation_status(&self.state, operation.id, final_status)?;
+        Ok(Response::new(QualityReport {
+            full_matrix_accepted: false,
+            candidates,
+            note: note.to_owned(),
+            operation: Some(operation_with_status(operation, final_status)),
+        }))
+    }
+
     async fn get_trace(
         &self,
         request: Request<GetTraceRequest>,
@@ -2351,6 +2440,54 @@ async fn observe_selector_state(
     }
 }
 
+async fn observe_quality_selector(clash_url: Option<&str>, group: &str) -> Option<String> {
+    let url = clash_url.filter(|value| *value == "http://127.0.0.1:19091")?;
+    get_live_selector_state(url, group, default_aux_groups())
+        .await
+        .ok()?
+        .observed_main_route
+}
+
+// Closed Line2 names/ports are derived from the same canonical Git firewall
+// policy that deploys the VM. No separate editable port list or credentials.
+fn line2_quality_auth_boundary() -> Result<Vec<QualityCandidate>, String> {
+    let desired = canonical_production_desired_state()?;
+    let firewall = desired.firewall.ok_or("canonical firewall policy absent")?;
+    let expected = [
+        ("http-direct", "Line 2 authenticated direct HTTP proxy"),
+        ("socks5-direct", "Line 2 authenticated direct SOCKS proxy"),
+        ("https-direct", "Line 2 authenticated direct HTTPS proxy"),
+        ("http-warp", "Line 2 authenticated HTTP proxy"),
+        ("socks5-warp", "Line 2 authenticated SOCKS proxy"),
+        ("https-warp", "Line 2 authenticated HTTPS proxy"),
+    ];
+    expected
+        .iter()
+        .map(|(name, purpose)| {
+            let rules = firewall.rules.iter().filter(|value| value.purpose == *purpose).collect::<Vec<_>>();
+            if rules.len() != 1 || rules[0].port.parse::<u16>().is_err() {
+                return Err(format!("canonical Line2 firewall entry for {name} is missing or ambiguous"));
+            }
+            Ok(QualityCandidate {
+                name: (*name).to_owned(),
+                path: QualityPath::Line2 as i32,
+                evidence: QualityEvidence::AuthUnavailable as i32,
+                attempted: 0,
+                succeeded: 0,
+                min_latency_ms: None,
+                median_latency_ms: None,
+                p95_latency_ms: None,
+                jitter_ms: None,
+                egress_ip: None,
+                colo: None,
+                warp: None,
+                download_bytes_per_second: None,
+                note: format!("canonical port {}; authenticated proxy datapath not probed: VM-owned credentials unavailable to Windows", rules[0].port),
+            })
+        })
+        .collect()
+}
+
 fn normalize_selector_group(group: Option<&str>) -> Result<&'static str, Status> {
     match group {
         Some(value) if value == UBUNTU_SELECTOR_GROUP => Ok(UBUNTU_SELECTOR_GROUP),
@@ -2424,6 +2561,7 @@ fn operation_kind(value: &str) -> OperationKind {
         "production_plan" => OperationKind::ProductionPlan,
         "production_apply" => OperationKind::ProductionApply,
         "production_verify" => OperationKind::ProductionVerify,
+        "quality" => OperationKind::Quality,
         _ => OperationKind::Unspecified,
     }
 }
@@ -5840,6 +5978,19 @@ mod tests {
                     }),
                 },
             )),
+        }
+    }
+
+    #[test]
+    fn quality_line2_has_six_canonical_auth_blocked_endpoints() {
+        let candidates = line2_quality_auth_boundary().unwrap();
+        assert_eq!(candidates.len(), 6);
+        assert!(candidates.iter().all(|v| v.attempted == 0));
+        assert!(candidates.iter().all(|v| v.egress_ip.is_none()));
+        assert!(candidates.iter().all(|v| v.evidence == QualityEvidence::AuthUnavailable as i32));
+        let ports = candidates.iter().map(|v| v.note.clone()).collect::<Vec<_>>();
+        for port in ["4128", "4080", "4443", "3128", "1080", "9443"] {
+            assert!(ports.iter().any(|note| note.contains(port)));
         }
     }
 
