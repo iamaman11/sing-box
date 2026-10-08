@@ -200,7 +200,7 @@ fn line1_selector_routes(payload: &ProxiesResponse) -> Result<[String; 2], Strin
             .ok_or_else(|| format!("native Clash API selector {group} has no members"))?;
         if LINE1_QUALITY_TAGS
             .iter()
-            .any(|tag| !members.iter().any(|member| member == tag))
+            .any(|tag| !members.iter().any(|member| member.as_str() == *tag))
         {
             return Err(format!(
                 "native Clash API selector {group} lacks a canonical outbound"
@@ -209,7 +209,7 @@ fn line1_selector_routes(payload: &ProxiesResponse) -> Result<[String; 2], Strin
         let selected = state
             .now
             .as_deref()
-            .filter(|value| members.iter().any(|member| member == value))
+            .filter(|value| members.iter().any(|member| member.as_str() == *value))
             .ok_or_else(|| format!("native Clash API selector {group} lacks a valid live route"))?;
         routes.push(selected.to_owned());
     }
@@ -235,12 +235,9 @@ async fn line1_selector_snapshot(
 }
 
 pub async fn measure_line1_quality(controller_url: &str) -> Result<Line1QualityReport, String> {
-    // The caller passes only the installed fixed loopback Clash address.
-    if !controller_url.starts_with("http://127.0.0.1:")
-        || controller_url.contains('/')
-            && controller_url.trim_start_matches("http://").contains('/')
-    {
-        return Err("Line1 quality requires a fixed loopback Clash endpoint".to_owned());
+    // Do not permit user-info, DNS aliases or remote hosts at this boundary.
+    if controller_url != "http://127.0.0.1:19091" {
+        return Err("Line1 quality requires the exact installed loopback Clash endpoint".to_owned());
     }
     let client = Client::builder()
         .no_proxy()
