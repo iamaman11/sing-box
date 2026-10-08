@@ -179,7 +179,7 @@ def main() -> None:
         and "restart-verify-runtime" not in windows_physical
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 2
+        and windows_physical.count("privileged-runtime-evidence") == 4
         and windows_physical.rindex("verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
@@ -214,11 +214,19 @@ def main() -> None:
         and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "EDGE_CURRENT_EXACT_DIAGNOSTIC" in windows_physical
         and "Exact immutable post-state diagnostic path is unavailable" in windows_physical
+        and "unknown_singbox_process_count" in windows_diagnostic
+        and "identity_unknown" in windows_diagnostic
+        and "process_inspection_complete=" in windows_diagnostic
+        and "prestate_managed_owner=PRIVILEGED_EXACT_PROOF" in windows_physical
+        and "managed_process_identity=PRIVILEGED_EXACT_PROOF" in windows_physical
+        and "Final process identity is UNKNOWN without exact matching privileged evidence" in windows_physical
+        and "Fail-closed rollback requires independently proven exact active owner before mutation" in windows_physical
+        and "Rolled back process cannot be independently confirmed as exact managed owner" in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair')" in windows_physical
         and "managed_tun_present" in windows_physical
         and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "runtime_start=NOOP_ALREADY_RUNNING" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 2
+        and windows_physical.count("privileged-runtime-evidence") == 4
         and "EDGE_STOPPED_OWNER_RECOVERY=YES" in windows_physical
         and "Bounded recovery still observes privileged external sing-box ownership" in windows_physical
         and "stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT" in windows_physical
