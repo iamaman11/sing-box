@@ -19,6 +19,24 @@ message ProductionDesiredState {
   ProductionSupportAccess support_access = 11;
   ProductionCloudflare cloudflare = 12;
   WindowsDatapathMode windows_datapath_mode = 13;
+  ProductionWindowsRoutePolicy windows_route_policy = 14;
+}
+
+// Durable selector defaults belong only to protected Git production desired state.
+// Live selector RPCs are transient observations/operations, never policy writes.
+message ProductionWindowsRoutePolicy {
+  WindowsDefaultRoute desktop = 1;
+  WindowsDefaultRoute wsl = 2;
+}
+
+enum WindowsDefaultRoute {
+  WINDOWS_DEFAULT_ROUTE_UNSPECIFIED = 0;
+  WINDOWS_DEFAULT_ROUTE_AUTO_DIRECT = 1;
+  WINDOWS_DEFAULT_ROUTE_HYSTERIA2_DIRECT = 2;
+  WINDOWS_DEFAULT_ROUTE_VLESS_REALITY_DIRECT = 3;
+  WINDOWS_DEFAULT_ROUTE_AUTO_WARP = 4;
+  WINDOWS_DEFAULT_ROUTE_HYSTERIA2_WARP = 5;
+  WINDOWS_DEFAULT_ROUTE_VLESS_REALITY_WARP = 6;
 }
 
 enum WindowsDatapathMode {
