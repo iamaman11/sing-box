@@ -31,6 +31,7 @@ use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     ControllerStatus, CredentialTransitionAction, DoctorRequest, DoctorResponse, Empty,
     GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
+    QualityEvidence, QualityPath, QualityReport, QualityRequest,
     ListOperationEventsRequest, ListSecretRefsRequest, LocalRuntimeResponse, OperationStatus,
     RestartLocalRuntimeRequest, SecretRefEntry, SelectorState, SetSecretRefRequest,
     SetSelectorRequest, SetSelectorResponse, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
@@ -532,6 +533,42 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         Command::Trace(args) => {
             let trace = fetch_trace(args.resolve()).await?;
             print_trace(&trace);
+            Ok(())
+        }
+        Command::Quality(args) => {
+            let quality = fetch_quality(args.resolve()).await?;
+            println!("quality_full_matrix_accepted={}", quality.full_matrix_accepted);
+            println!("quality_candidate_count={}", quality.candidates.len());
+            for candidate in &quality.candidates {
+                let path = QualityPath::try_from(candidate.path).unwrap_or(QualityPath::Unspecified);
+                let evidence = QualityEvidence::try_from(candidate.evidence)
+                    .unwrap_or(QualityEvidence::Unspecified);
+                println!(
+                    "quality_candidate={} path={:?} evidence={:?} samples={}/{} min_ms={:?} median_ms={:?} p95_ms={:?} jitter_ms={:?} ip={:?} colo={:?} warp={:?} throughput_bytes_per_second={:?} note={}",
+                    candidate.name,
+                    path,
+                    evidence,
+                    candidate.succeeded,
+                    candidate.attempted,
+                    candidate.min_latency_ms,
+                    candidate.median_latency_ms,
+                    candidate.p95_latency_ms,
+                    candidate.jitter_ms,
+                    candidate.egress_ip,
+                    candidate.colo,
+                    candidate.warp,
+                    candidate.download_bytes_per_second,
+                    candidate.note
+                );
+            }
+            println!("quality_note={}", quality.note);
+            if quality.operation.as_ref().is_some_and(|op| {
+                op.status == edge_shared_types::OperationLifecycleStatus::Failed as i32
+            }) {
+                return Err(ConsoleError::Command(
+                    "quality selector parity is unverified; no selector mutation was requested".to_owned()
+                ));
+            }
             Ok(())
         }
         Command::TraceUbuntu(args) => {
@@ -3143,6 +3180,11 @@ async fn set_selector(
         }))
         .await?;
     Ok(response.into_inner())
+}
+
+async fn fetch_quality(endpoint: String) -> Result<QualityReport, Box<dyn std::error::Error>> {
+    let mut client = connect_controller(endpoint).await?;
+    Ok(client.run_quality(Request::new(QualityRequest {})).await?.into_inner())
 }
 
 async fn fetch_trace(endpoint: String) -> Result<TraceObservation, Box<dyn std::error::Error>> {
