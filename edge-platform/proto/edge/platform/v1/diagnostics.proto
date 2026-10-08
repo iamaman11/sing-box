@@ -93,5 +93,6 @@ message QualityReport {
   bool full_matrix_accepted = 1;
   repeated QualityCandidate candidates = 2;
   string note = 3;
+  Operation operation = 4;
 }
 
