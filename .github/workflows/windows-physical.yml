@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
           case "$COMMAND_BODY" in
             "/windows diagnose") operation="diagnose" ;;
+            "/windows quality") operation="quality" ;;
             "/windows converge"|"/windows smoke") operation="converge" ;;
             "/windows start") operation="start" ;;
             "/windows stop") operation="stop" ;;
@@ -305,6 +306,9 @@ jobs:
             throw 'Exact active diagnostic could not verify its ReleaseSet files'
           }
           $currentRelease = [string]$values['release_set_sha256']
+          if ($env:EDGE_OPERATION -eq 'quality' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
+            throw 'Read-only quality requires the exact accepted ReleaseSet already installed'
+          }
           if ($env:EDGE_OPERATION -eq 'repair' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Repair target must equal the exact current ReleaseSet before runtime stop'
           }
@@ -316,7 +320,7 @@ jobs:
             }
             'ManagedTun' {
               if ($currentTun -cne 'true') {
-                if ($env:EDGE_OPERATION -eq 'diagnose') {
+                if ($env:EDGE_OPERATION -in @('diagnose','quality')) {
                   throw 'ManagedTun state is missing managed TUN'
                 }
                 Write-Warning 'Recovering a partial ManagedTun activation with no managed TUN present'
@@ -325,7 +329,7 @@ jobs:
             }
             default { throw "Unsupported installed Windows datapath mode: $currentMode" }
           }
-          if ($env:EDGE_OPERATION -eq 'diagnose' -and $currentMode -cne $env:EDGE_EXPECTED_MODE) {
+          if ($env:EDGE_OPERATION -in @('diagnose','quality') -and $currentMode -cne $env:EDGE_EXPECTED_MODE) {
             throw "Installed datapath mode $currentMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
           }
           "EDGE_BEFORE_MODE=$currentMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -416,7 +420,7 @@ jobs:
 
       - name: Execute typed lifecycle mutation
         id: lifecycle_mutation
-        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' && needs.resolve.outputs.operation != 'quality' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -593,6 +597,19 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & $env:EDGE_CURRENT_CONSOLE verify-runtime
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
+
+      - name: Observe bounded read-only Line1 and Line2 quality
+        if: ${{ needs.resolve.outputs.operation == 'quality' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EDGE_BEFORE_MODE -cne 'ManagedTun') { throw 'Quality requires active ManagedTun' }
+          if ($env:EDGE_BEFORE_RELEASE -cne $env:EDGE_RELEASE_SET_SHA256) { throw 'Quality must measure accepted exact release' }
+          & $env:EDGE_CURRENT_CONSOLE quality $env:EDGE_CONTROLLER_ENDPOINT
+          if ($LASTEXITCODE -ne 0) { throw "Read-only quality observation failed: $LASTEXITCODE" }
+          Write-Host 'quality_selector_mutations=0'
+          Write-Host 'quality_full_matrix_accepted=false'
+          Write-Host 'quality_line2_auth_boundary=VM_ONLY_NOT_AVAILABLE_ON_WINDOWS'
 
       - name: Read-only privileged runtime evidence after restart
         if: ${{ always() }}
