@@ -2764,7 +2764,9 @@ fn build_doctor_checks(
                 && ubuntu_selector
                     .and_then(|value| value.desired_main_route.as_ref())
                     .is_some(),
-            detail: "Git-owned desktop and WSL route defaults must be present in the rendered config".to_owned(),
+            detail:
+                "Git-owned desktop and WSL route defaults must be present in the rendered config"
+                    .to_owned(),
 
             check_id: String::new(),
             status: CheckStatus::Unspecified as i32,
