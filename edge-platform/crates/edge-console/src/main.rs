@@ -393,6 +393,49 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("runtime_warp=PASS");
             Ok(())
         }
+        Command::QualityLine1 => {
+            let install_root = installed_root_from_console()?;
+            let active = load_verified_activation(&install_root)?;
+            if Path::new(&active.console_path).canonicalize()? != env::current_exe()?.canonicalize()? {
+                return Err("Line1 quality requires the exact active installed console".into());
+            }
+            let desired = canonical_production_desired_state()?;
+            if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
+                return Err("Line1 quality requires the accepted ManagedTun mode".into());
+            }
+            let clash = format!("http://127.0.0.1:{STAGE2_CLASH_API_PORT}");
+            let report = edge_clash::measure_line1_quality(&clash).await?;
+            let observed_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            println!("quality_schema=line1-native-delay/v1");
+            println!("vantage=WINDOWS");
+            println!("observed_at_unix_seconds={observed_at}");
+            println!("release_set_sha256={}", active.release_set_sha256);
+            println!("probe=sing-box-native-clash-named-outbound-delay");
+            println!("metric=HTTPS_URL_TEST_DELAY_ONLY");
+            println!("sample_budget_per_outbound={}", edge_clash::LINE1_QUALITY_SAMPLES);
+            println!("selector_mutations=0");
+            println!("tunnel_mutations=0");
+            println!("selector_before_after=IDENTICAL");
+            let mut failures = 0;
+            for row in report.rows {
+                failures += row.failures;
+                let stats = edge_clash::line1_latency_summary(&row.success_ms);
+                let (min, median, max) = stats
+                    .map(|(min, median, max)| {
+                        (min.to_string(), median.to_string(), max.to_string())
+                    })
+                    .unwrap_or_else(|| ("UNAVAILABLE".to_owned(), "UNAVAILABLE".to_owned(), "UNAVAILABLE".to_owned()));
+                println!(
+                    "candidate={} successes={} failures={} min_ms={} median_ms={} max_ms={}",
+                    row.tag, row.success_ms.len(), row.failures, min, median, max
+                );
+            }
+            if failures > 0 {
+                return Err(format!("Line1 native delay quality had {failures} failed HTTP probes").into());
+            }
+            println!("quality_status=PASS");
+            Ok(())
+        }
         Command::PrivilegedPrepareCredentialAccess(args) => {
             let install_root = PathBuf::from(args.install_root);
             let result = submit_privileged_request(
