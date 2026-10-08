@@ -314,6 +314,17 @@ jobs:
           }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
+          # Stage 4B.2-C: NO teardown before independent foreign CloudflareWARP DNS
+          # recovery and an independent control-channel restore have been proven.
+          # This is deliberately before 'Execute typed lifecycle mutation'.
+          if ($env:EDGE_OPERATION -in @('stop','rollback')) {
+            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: stop/rollback requires independently proven CloudflareWARP DNS and control-channel restoration'
+          }
+          if ($currentMode -ceq 'ManagedTun' -and
+              $env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly' -and
+              $env:EDGE_OPERATION -in @('converge','repair')) {
+            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: ManagedTun to ProxyOnly requires independent DNS/control-channel recovery'
+          }
           switch ($currentMode) {
             'ProxyOnly' {
               if ($currentTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
