@@ -43,6 +43,7 @@ pub(crate) enum LocalCommand {
     Status,
     Verify,
     Diagnose,
+    QualityLine2,
     BootstrapBase,
     BootstrapTunnel,
     BootstrapFull,
@@ -62,6 +63,7 @@ impl LocalCommand {
             Self::Status => "local-status",
             Self::Verify => "local-verify",
             Self::Diagnose => "local-diagnose",
+            Self::QualityLine2 => "local-quality-line2",
             Self::BootstrapBase => "local-bootstrap-base",
             Self::BootstrapTunnel => "local-bootstrap-tunnel",
             Self::BootstrapFull => "local-bootstrap-full",
@@ -113,6 +115,7 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "status"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "quality-line2"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-converge"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-verify"]).is_ok());

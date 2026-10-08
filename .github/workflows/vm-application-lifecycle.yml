@@ -43,6 +43,7 @@ jobs:
               "converge",
               "verify",
               "diagnose",
+              "quality-line2",
               "rollback",
           }:
               command_family = "production"
@@ -59,7 +60,7 @@ jobs:
           else:
               fail(
                   "unsupported command grammar; steady-state production uses "
-                  "/production enroll-runtime|converge|verify|diagnose|rollback, provider-only target-plane commands, "
+                  "/production enroll-runtime|converge|verify|diagnose|quality-line2|rollback, provider-only target-plane commands, "
                   "or disposable /application acceptance|cleanup"
               )
 
@@ -344,7 +345,7 @@ jobs:
       cancel-in-progress: false
     if: >-
       needs.authorize.outputs.command_family == 'production' &&
-      needs.authorize.outputs.operation == 'diagnose'
+      (needs.authorize.outputs.operation == 'diagnose' || needs.authorize.outputs.operation == 'quality-line2')
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -400,6 +401,7 @@ jobs:
           printf 'agent_sha256=%s\n' "${EDGE_AGENT_SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Execute read-only production provider inventory
+        if: needs.authorize.outputs.operation == 'diagnose'
         shell: bash
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
@@ -434,7 +436,7 @@ jobs:
       needs.authorize.outputs.command_family == 'production' &&
       (
         (
-          needs.authorize.outputs.operation == 'diagnose' &&
+          (needs.authorize.outputs.operation == 'diagnose' || needs.authorize.outputs.operation == 'quality-line2') &&
           needs.production_observe.result == 'success'
         ) ||
         (
@@ -511,7 +513,7 @@ jobs:
               expected_release_set="${PROVIDER_RELEASE_SET_SHA256}"
               expected_owner="${PROVIDER_AGENT_SHA256}"
               ;;
-            diagnose)
+            diagnose|quality-line2)
               expected_revision="${OBSERVE_ACCEPTED_REVISION}"
               expected_release_set="${OBSERVE_RELEASE_SET_SHA256}"
               expected_owner="${OBSERVE_AGENT_SHA256}"
@@ -572,6 +574,9 @@ jobs:
               ;;
             diagnose)
               local_operation="diagnose"
+              ;;
+            quality-line2)
+              local_operation="quality-line2"
               ;;
             *)
               echo "runtime plane received unsupported production operation" >&2
