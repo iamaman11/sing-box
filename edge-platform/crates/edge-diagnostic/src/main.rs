@@ -37,7 +37,7 @@ use windows_sys::Win32::Networking::WinSock::{
 #[cfg(windows)]
 use windows_sys::Win32::System::Services::{
     QueryServiceStatusEx, SC_STATUS_PROCESS_INFO, SERVICE_CONTINUE_PENDING, SERVICE_PAUSED,
-    SERVICE_PAUSE_PENDING, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
+    SERVICE_PAUSE_PENDING, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS_PROCESS,
 };
 
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
@@ -152,6 +152,14 @@ fn native_nonzero_service_pid(pid: u32) -> Option<u32> {
 }
 
 #[cfg(windows)]
+fn native_service_pid_valid_for_state(state: u32) -> bool {
+    matches!(
+        state,
+        SERVICE_RUNNING | SERVICE_PAUSE_PENDING | SERVICE_PAUSED | SERVICE_CONTINUE_PENDING
+    )
+}
+
+#[cfg(windows)]
 fn scm_native_process_id(
     service: &windows_service::service::Service,
 ) -> Result<(Option<u32>, bool), String> {
@@ -177,10 +185,7 @@ fn scm_native_process_id(
     // Microsoft documents that PID may not be valid in START_PENDING/STOP_PENDING.
     // The observable PID is a candidate until its process path and creation
     // identity have been independently checked.
-    let pid_valid_for_state = matches!(
-        native.dwCurrentState,
-        SERVICE_RUNNING | SERVICE_PAUSE_PENDING | SERVICE_PAUSED | SERVICE_CONTINUE_PENDING
-    );
+    let pid_valid_for_state = native_service_pid_valid_for_state(native.dwCurrentState);
     Ok((native_nonzero_service_pid(native.dwProcessId), pid_valid_for_state))
 }
 
@@ -962,7 +967,8 @@ mod tests {
     fn native_scm_pid_preserves_start_pending_owner() {
         assert_eq!(native_nonzero_service_pid(15124), Some(15124));
         assert_eq!(native_nonzero_service_pid(0), None);
-        assert_eq!(SERVICE_RUNNING, 4);
+        assert!(native_service_pid_valid_for_state(SERVICE_RUNNING));
+        assert!(!native_service_pid_valid_for_state(SERVICE_START_PENDING));
     }
 
     #[cfg(windows)]
