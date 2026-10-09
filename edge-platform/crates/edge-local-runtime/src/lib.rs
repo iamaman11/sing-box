@@ -408,6 +408,21 @@ pub fn start_local_runtime(
     paths: &LocalRuntimePaths,
     visible_window: bool,
 ) -> Result<RuntimeOperationResult, String> {
+    start_local_runtime_with_policy(paths, visible_window, false)
+}
+
+fn existing_owner_for_noop(
+    owner: Option<&ProcessObservation>,
+    explicit_restart: bool,
+) -> Option<&ProcessObservation> {
+    if explicit_restart { None } else { owner }
+}
+
+fn start_local_runtime_with_policy(
+    paths: &LocalRuntimePaths,
+    visible_window: bool,
+    explicit_restart: bool,
+) -> Result<RuntimeOperationResult, String> {
     let mut managed = exact_managed_runtime_processes(&paths.config_path);
     if managed.len() > 1 {
         return Err(format!(
@@ -443,6 +458,17 @@ pub fn start_local_runtime(
                 .collect::<Vec<_>>()
                 .join(" | ")
         ));
+    }
+
+    if let Some(process) = existing_owner_for_noop(runtime.as_ref(), explicit_restart) {
+        let local_singbox = inspect_local_runtime(&paths.config_path);
+        return Ok(RuntimeOperationResult {
+            pid: Some(process.pid),
+            note: "NOOP_ALREADY_RUNNING: exact managed sing-box preserved; start never replaces a running TUN"
+                .to_owned(),
+            warnings: local_singbox.warnings.clone(),
+            local_singbox,
+        });
     }
 
     if !paths.singbox_binary_path.is_file() {
@@ -671,13 +697,13 @@ pub fn stop_local_runtime(
 }
 
 pub fn restart_local_runtime(paths: &LocalRuntimePaths) -> Result<RuntimeOperationResult, String> {
-    start_local_runtime(paths, false)
+    start_local_runtime_with_policy(paths, false, true)
 }
 
 pub fn restart_local_runtime_visible(
     paths: &LocalRuntimePaths,
 ) -> Result<RuntimeOperationResult, String> {
-    start_local_runtime(paths, true)
+    start_local_runtime_with_policy(paths, true, true)
 }
 
 fn stage_and_validate_config(paths: &LocalRuntimePaths) -> Result<StagedConfig, String> {
@@ -1177,6 +1203,25 @@ mod tests {
     #[test]
     fn windows_stop_rejects_invalid_pid_without_process_mutation() {
         assert!(stop_process(0).is_err());
+    }
+
+    #[test]
+    fn ordinary_start_preserves_exact_owner_and_explicit_restart_can_replace() {
+        let owner = ProcessObservation {
+            pid: 42,
+            name: "sing-box".to_owned(),
+            executable_path: None,
+            parent_pid: None,
+            command_line: "sing-box run -c managed.json".to_owned(),
+            config_path: Some("managed.json".to_owned()),
+        };
+        assert_eq!(
+            existing_owner_for_noop(Some(&owner), false).map(|process| process.pid),
+            Some(42)
+        );
+        assert!(existing_owner_for_noop(Some(&owner), true).is_none());
+        assert!(existing_owner_for_noop(None, false).is_none());
+        assert!(existing_owner_for_noop(None, true).is_none());
     }
 
     #[test]
