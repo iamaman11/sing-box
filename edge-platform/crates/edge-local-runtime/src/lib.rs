@@ -408,6 +408,28 @@ pub fn start_local_runtime(
     paths: &LocalRuntimePaths,
     visible_window: bool,
 ) -> Result<RuntimeOperationResult, String> {
+    start_local_runtime_with_policy(paths, visible_window, false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalStartDecision {
+    NoopManaged,
+    Activate,
+}
+
+fn local_start_decision(managed_present: bool, explicit_restart: bool) -> LocalStartDecision {
+    if managed_present && !explicit_restart {
+        LocalStartDecision::NoopManaged
+    } else {
+        LocalStartDecision::Activate
+    }
+}
+
+fn start_local_runtime_with_policy(
+    paths: &LocalRuntimePaths,
+    visible_window: bool,
+    explicit_restart: bool,
+) -> Result<RuntimeOperationResult, String> {
     let mut managed = exact_managed_runtime_processes(&paths.config_path);
     if managed.len() > 1 {
         return Err(format!(
@@ -443,6 +465,18 @@ pub fn start_local_runtime(
                 .collect::<Vec<_>>()
                 .join(" | ")
         ));
+    }
+
+    if local_start_decision(runtime.is_some(), explicit_restart) == LocalStartDecision::NoopManaged {
+        let process = runtime.expect("noop requires exactly one managed owner");
+        let local_singbox = inspect_local_runtime(&paths.config_path);
+        return Ok(RuntimeOperationResult {
+            pid: Some(process.pid),
+            note: "NOOP_ALREADY_RUNNING: exact managed sing-box preserved; start never replaces a running TUN"
+                .to_owned(),
+            warnings: local_singbox.warnings.clone(),
+            local_singbox,
+        });
     }
 
     if !paths.singbox_binary_path.is_file() {
@@ -671,13 +705,13 @@ pub fn stop_local_runtime(
 }
 
 pub fn restart_local_runtime(paths: &LocalRuntimePaths) -> Result<RuntimeOperationResult, String> {
-    start_local_runtime(paths, false)
+    start_local_runtime_with_policy(paths, false, true)
 }
 
 pub fn restart_local_runtime_visible(
     paths: &LocalRuntimePaths,
 ) -> Result<RuntimeOperationResult, String> {
-    start_local_runtime(paths, true)
+    start_local_runtime_with_policy(paths, true, true)
 }
 
 fn stage_and_validate_config(paths: &LocalRuntimePaths) -> Result<StagedConfig, String> {
@@ -1177,6 +1211,26 @@ mod tests {
     #[test]
     fn windows_stop_rejects_invalid_pid_without_process_mutation() {
         assert!(stop_process(0).is_err());
+    }
+
+    #[test]
+    fn ordinary_start_preserves_exact_owner_and_explicit_restart_can_replace() {
+        assert_eq!(
+            local_start_decision(true, false),
+            LocalStartDecision::NoopManaged
+        );
+        assert_eq!(
+            local_start_decision(true, true),
+            LocalStartDecision::Activate
+        );
+        assert_eq!(
+            local_start_decision(false, false),
+            LocalStartDecision::Activate
+        );
+        assert_eq!(
+            local_start_decision(false, true),
+            LocalStartDecision::Activate
+        );
     }
 
     #[test]
