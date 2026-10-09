@@ -1786,9 +1786,9 @@ fn require_exact_immutable_activation_console(install_root: &Path) -> Result<(),
     let running = env::current_exe()
         .and_then(|path| path.canonicalize())
         .map_err(|err| format!("cannot verify invoking console path before activation: {err}"))?;
-    let expected = Path::new(&active.console_path).canonicalize().map_err(|err| {
-        format!("cannot resolve exact active immutable console path: {err}")
-    })?;
+    let expected = Path::new(&active.console_path)
+        .canonicalize()
+        .map_err(|err| format!("cannot resolve exact active immutable console path: {err}"))?;
     if running != expected {
         return Err(format!(
             "activation requires exact immutable console {}; never invoke from the stable bin/edge-console.exe, which cannot be replaced while running",
