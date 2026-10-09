@@ -467,8 +467,9 @@ fn start_local_runtime_with_policy(
         ));
     }
 
-    if local_start_decision(runtime.is_some(), explicit_restart) == LocalStartDecision::NoopManaged {
-        let process = runtime.expect("noop requires exactly one managed owner");
+    if let Some(process) = runtime.as_ref()
+        && local_start_decision(true, explicit_restart) == LocalStartDecision::NoopManaged
+    {
         let local_singbox = inspect_local_runtime(&paths.config_path);
         return Ok(RuntimeOperationResult {
             pid: Some(process.pid),
