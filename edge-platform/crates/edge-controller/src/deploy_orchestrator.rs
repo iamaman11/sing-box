@@ -854,7 +854,6 @@ fn append_local_runtime_dns_guard(repo_root: &Path, warnings: &mut Vec<String>) 
 
     warnings.push("local sing-box stopped before readiness verification completed".to_owned());
     warnings.extend(observed.warnings);
-    warnings.extend(restore_windows_dns_if_owned());
 }
 
 fn phase_journal(
