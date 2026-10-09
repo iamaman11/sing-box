@@ -903,6 +903,117 @@ jobs:
           }
           $doctor | Write-Host
 
+      - name: Observe Cloudflare One effective client state (read-only)
+        if: ${{ needs.resolve.outputs.operation == 'diagnose' }}
+        shell: powershell
+        run: |
+          # Only observe an independently owned client. Never emit raw settings or
+          # diagnostics: they can include private organization and network data.
+          $ErrorActionPreference = 'Stop'
+          $serviceState = 'UNKNOWN'
+          $servicePid = 0
+          try {
+            $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='CloudflareWARP'" -ErrorAction Stop
+            if ($null -ne $svc) {
+              $serviceState = if ([string]$svc.State -ceq 'Running') { 'RUNNING' } else { 'NOT_RUNNING' }
+              $servicePid = [int]$svc.ProcessId
+            }
+          } catch { $serviceState = 'UNKNOWN' }
+
+          $listener = 'UNKNOWN'
+          try {
+            $dnsEndpoints = @(
+              @(Get-NetUDPEndpoint -LocalPort 53 -ErrorAction Stop) +
+              @(Get-NetTCPConnection -LocalPort 53 -State Listen -ErrorAction Stop)
+            ) | Where-Object { $_.LocalAddress -in @('127.0.2.2','127.0.2.3') }
+            $listener = if ($dnsEndpoints.Count -eq 0) { 'NOT_OBSERVED' }
+                        elseif ($servicePid -gt 0 -and @($dnsEndpoints | Where-Object { [int]$_.OwningProcess -eq $servicePid }).Count -gt 0) { 'WARP_SERVICE_PROCESS' }
+                        else { 'OTHER_OR_UNATTRIBUTED' }
+          } catch { $listener = 'UNKNOWN' }
+
+          # Only the installed vendor CLI at its exact standard path is allowed.
+          # The child CLI is bounded; a timed-out child is closed, not warp-svc.
+          $warpCli = Join-Path $env:ProgramFiles 'Cloudflare\Cloudflare WARP\warp-cli.exe'
+          function Read-CloudflareClient([string]$verb) {
+            if (-not (Test-Path -LiteralPath $warpCli -PathType Leaf)) {
+              return @{ outcome = 'CLI_NOT_FOUND'; value = '' }
+            }
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $warpCli
+            $psi.Arguments = $verb
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $child = New-Object System.Diagnostics.Process
+            $child.StartInfo = $psi
+            try {
+              if (-not $child.Start()) { return @{ outcome = 'START_FAILED'; value = '' } }
+              $stdout = $child.StandardOutput.ReadToEndAsync()
+              $stderr = $child.StandardError.ReadToEndAsync()
+              if (-not $child.WaitForExit(10000)) {
+                try { $child.Kill(); $child.WaitForExit(2000) | Out-Null } catch {}
+                return @{ outcome = 'CLI_TIMEOUT'; value = '' }
+              }
+              if ($child.ExitCode -ne 0) { return @{ outcome = 'CLI_ERROR'; value = '' } }
+              $value = $stdout.GetAwaiter().GetResult()
+              if ($value.Length -gt 65536) { return @{ outcome = 'OVERSIZE'; value = '' } }
+              return @{ outcome = 'OK'; value = $value }
+            } catch {
+              return @{ outcome = 'CLI_UNAVAILABLE'; value = '' }
+            } finally { $child.Dispose() }
+          }
+
+          $status = Read-CloudflareClient 'status'
+          $settings = Read-CloudflareClient 'settings'
+          $connectivity = 'UNKNOWN'
+          if ($status.outcome -ceq 'OK') {
+            if ($status.value -match '\bConnected\b') { $connectivity = 'CONNECTED' }
+            elseif ($status.value -match '\bDisconnected\b') { $connectivity = 'DISCONNECTED' }
+          }
+          $mode = 'UNKNOWN'
+          $split = 'UNKNOWN'
+          $profileHash = 'UNKNOWN'
+          $splitHash = 'UNKNOWN'
+          $fallback = 'UNKNOWN'
+          $meshSplitExact = 'UNKNOWN'
+          if ($settings.outcome -ceq 'OK') {
+            $modeMatch = [regex]::Match($settings.value, '(?m)^\s*(?:\([^)\r\n]+\)\s*)?Mode:\s*(WarpWithDnsOverHttps|TunnelOnly|DnsOverHttps|WarpProxy|PostureOnly)\b')
+            if ($modeMatch.Success) { $mode = $modeMatch.Groups[1].Value }
+            $profileMatch = [regex]::Match($settings.value, '(?m)^\s*(?:\([^)\r\n]+\)\s*)?Profile ID:\s*([0-9a-fA-F-]{36})(?:\s|$)')
+            if ($profileMatch.Success) {
+              $sha = [Security.Cryptography.SHA256]::Create()
+              try { $profileHash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($profileMatch.Groups[1].Value.ToLowerInvariant()))).Replace('-','').ToLowerInvariant() }
+              finally { $sha.Dispose() }
+            }
+            $splitMatch = [regex]::Match($settings.value, '(?m)^\s*(?:\([^)\r\n]+\)\s*)?(Exclude|Include) mode, with hosts/ips:')
+            if ($splitMatch.Success) {
+              $split = $splitMatch.Groups[1].Value.ToUpperInvariant()
+              $section = $settings.value.Substring($splitMatch.Index + $splitMatch.Length)
+              $nextField = [regex]::Match($section, '(?m)^\s*\([^)\r\n]+\)\s+\S[^:\r\n]*:')
+              if ($nextField.Success) { $section = $section.Substring(0, $nextField.Index) }
+              $sha = [Security.Cryptography.SHA256]::Create()
+              try { $splitHash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($section.Trim()))).Replace('-','').ToLowerInvariant() }
+              finally { $sha.Dispose() }
+              $meshSplitExact = if ($section -match '(?m)^\s*100\.96\.0\.0/12(?:\s|$)') { 'YES' } else { 'NO' }
+            }
+            $fallback = if ($settings.value -match '(?m)^\s*(?:\([^)\r\n]+\)\s*)?Fallback domains:') { 'PRESENT' } else { 'NOT_LISTED' }
+          }
+          # No registry NameServer or local listener proves a DNS writer or failover.
+          Write-Host "cloudflare_one_service=$serviceState"
+          Write-Host "cloudflare_one_local_dns_listener=$listener"
+          Write-Host "cloudflare_one_cli_status=$($status.outcome)"
+          Write-Host "cloudflare_one_connectivity=$connectivity"
+          Write-Host "cloudflare_one_cli_settings=$($settings.outcome)"
+          Write-Host "cloudflare_one_effective_mode=$mode"
+          Write-Host "cloudflare_one_profile_id_sha256=$profileHash"
+          Write-Host "cloudflare_one_split_tunnel_mode=$split"
+          Write-Host "cloudflare_one_split_entries_sha256=$splitHash"
+          Write-Host "cloudflare_one_split_mesh_cidr_exact=$meshSplitExact"
+          Write-Host "cloudflare_one_local_domain_fallback=$fallback"
+          Write-Host 'cloudflare_one_dns_writer=UNKNOWN'
+          Write-Host 'cloudflare_one_no_tun_recovery=UNPROVEN'
+
       - name: Publish bounded lifecycle evidence
         if: ${{ always() }}
         shell: powershell
