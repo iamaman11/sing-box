@@ -415,11 +415,7 @@ fn existing_owner_for_noop(
     owner: Option<&ProcessObservation>,
     explicit_restart: bool,
 ) -> Option<&ProcessObservation> {
-    if explicit_restart {
-        None
-    } else {
-        owner
-    }
+    if explicit_restart { None } else { owner }
 }
 
 fn start_local_runtime_with_policy(
