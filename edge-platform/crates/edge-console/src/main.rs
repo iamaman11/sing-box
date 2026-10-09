@@ -276,6 +276,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::PrivilegedActivate(args) => {
             let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
             let result = submit_privileged_request(
                 &install_root,
                 WindowsPrivilegedRequest {
@@ -312,6 +314,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::PrivilegedReinstallAccepted(args) => {
             let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
             let result = submit_privileged_request(
                 &install_root,
                 WindowsPrivilegedRequest {
@@ -1772,11 +1776,36 @@ fn require_supported_reinstall_authority() -> Result<(), String> {
     }
 }
 
+// Both the submitting CLI and the privileged dispatcher must execute from
+// the verified immutable release directory. Calling from bin/edge-console.exe
+// would lock the very stable EXE the installer needs to replace, but only
+// AFTER the old sing-box has already been stopped.
+fn require_exact_immutable_activation_console(install_root: &Path) -> Result<(), String> {
+    let active = load_verified_activation(install_root)
+        .map_err(|err| format!("cannot verify active release before activation: {err}"))?;
+    let running = env::current_exe()
+        .and_then(|path| path.canonicalize())
+        .map_err(|err| format!("cannot verify invoking console path before activation: {err}"))?;
+    let expected = Path::new(&active.console_path).canonicalize().map_err(|err| {
+        format!("cannot resolve exact active immutable console path: {err}")
+    })?;
+    if running != expected {
+        return Err(format!(
+            "activation requires exact immutable console {}; never invoke from the stable bin/edge-console.exe, which cannot be replaced while running",
+            expected.display()
+        ));
+    }
+    Ok(())
+}
+
 fn activate_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
     force_rematerialize: bool,
 ) -> Result<(String, String, Option<String>), String> {
+    // This runs again inside privileged dispatch, BEFORE touching sing-box.
+    // Updating the stable console fails on Windows if the same EXE is loaded.
+    require_exact_immutable_activation_console(install_root)?;
     let accepted_revision = request
         .accepted_revision
         .as_deref()
