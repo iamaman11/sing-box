@@ -83,6 +83,7 @@ def main() -> None:
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     require(
         "Set-DnsClientServerAddress" not in edge_local_runtime
+        and "restore_windows_dns_if_owned" not in windows_controller
         and "Clear-DnsClientCache" not in edge_local_runtime
         and "restore_windows_dns_if_owned" not in edge_local_runtime
         and "WINDOWS_OWNED_DNS_IPV4" not in edge_local_runtime,
