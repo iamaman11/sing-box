@@ -46,7 +46,7 @@ use edge_local_runtime::{
     LocalRuntimePaths, RuntimeProcessClassification, classify_runtime_process,
     exact_managed_runtime_processes, inspect_local_runtime,
     restart_local_runtime as restart_runtime_process,
-    restart_local_runtime_visible as restart_runtime_process_visible, restore_windows_dns_if_owned,
+    restart_local_runtime_visible as restart_runtime_process_visible,
     start_local_runtime as start_runtime_process, stop_local_runtime as stop_runtime_process,
 };
 use edge_observability::init as init_observability;
@@ -1566,7 +1566,6 @@ impl ControllerService for ControllerServerImpl {
                     result
                         .warnings
                         .extend(observed_after_start.warnings.clone());
-                    result.warnings.extend(restore_windows_dns_if_owned());
                     append_operation_event(
                         &self.state,
                         operation.id,
@@ -1727,7 +1726,6 @@ impl ControllerService for ControllerServerImpl {
                     result
                         .warnings
                         .extend(observed_after_start.warnings.clone());
-                    result.warnings.extend(restore_windows_dns_if_owned());
                     append_operation_event(
                         &self.state,
                         operation.id,
