@@ -89,6 +89,31 @@ def main() -> None:
         and "WINDOWS_OWNED_DNS_IPV4" not in edge_local_runtime,
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
+    # Cloudflare One observation is allowed only inside existing read-only diagnose.
+    foreign_marker = "      - name: Observe Cloudflare One effective client state (read-only)"
+    require(windows_physical.count(foreign_marker) == 1, "foreign observation must not create duplicate owners")
+    foreign_observation = windows_physical.split(foreign_marker, 1)[1].split(
+        "      - name: Publish bounded lifecycle evidence", 1
+    )[0]
+    require(
+        "if: ${{ needs.resolve.outputs.operation == 'diagnose' }}" in foreign_observation
+        and "Read-CloudflareClient 'status'" in foreign_observation
+        and "Read-CloudflareClient 'settings'" in foreign_observation
+        and "cloudflare_one_effective_mode=$mode" in foreign_observation
+        and "cloudflare_one_split_tunnel_mode=$split" in foreign_observation
+        and "cloudflare_one_profile_id_sha256=$profileHash" in foreign_observation
+        and "cloudflare_one_dns_writer=UNKNOWN" in foreign_observation
+        and "cloudflare_one_no_tun_recovery=UNPROVEN" in foreign_observation
+        and "Write-Host $settings.value" not in foreign_observation
+        and "Write-Host $status.value" not in foreign_observation
+        and "Set-DnsClientServerAddress" not in foreign_observation
+        and "Clear-DnsClientCache" not in foreign_observation
+        and "warp-diag" not in foreign_observation
+        and "warp-cli connect" not in foreign_observation
+        and "warp-cli disconnect" not in foreign_observation
+        and "Set-NetRoute" not in foreign_observation,
+        "foreign Cloudflare One diagnostic must be nonsecret and read-only",
+    )
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
     vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
     shared_types = SHARED_TYPES.read_text(encoding="utf-8")
