@@ -89,6 +89,20 @@ def main() -> None:
         and "WINDOWS_OWNED_DNS_IPV4" not in edge_local_runtime,
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
+    require(
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 2
+        and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 1
+        and "fn require_exact_immutable_activation_console(install_root: &Path)" in windows_console
+        and "let expected = Path::new(&active.console_path).canonicalize()" in windows_console
+        and "if running != expected {" in windows_console
+        and "never invoke from the stable bin/edge-console.exe" in windows_console
+        and windows_console.split("fn activate_privileged_release(", 1)[1].index(
+            "require_exact_immutable_activation_console(install_root)?;"
+        ) < windows_console.split("fn activate_privileged_release(", 1)[1].index(
+            "stop_runtime_process(&local_singbox_config_path"
+        ),
+        "immutable console preflight must reject loaded stable EXE at CLI and dispatcher before stopping ManagedTun",
+    )
     # Cloudflare One observation is allowed only inside existing read-only diagnose.
     foreign_marker = "      - name: Observe Cloudflare One effective client state (read-only)"
     require(windows_physical.count(foreign_marker) == 1, "foreign observation must not create duplicate owners")
