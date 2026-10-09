@@ -2071,9 +2071,7 @@ mod tests {
             .unwrap();
         let tun = inbounds
             .iter_mut()
-            .find(|inbound| {
-                inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in")
-            })
+            .find(|inbound| inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in"))
             .unwrap();
         assert_eq!(tun.get("dns_mode").and_then(Value::as_str), Some("hijack"));
         tun["dns_mode"] = Value::String("native".to_owned());
@@ -2101,7 +2099,10 @@ mod tests {
             .find(|inbound| inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in"))
             .unwrap();
         tun["dns_mode"] = Value::String("hijack".to_owned());
-        assert_eq!(reverted, accepted, "offline experiment changed another field");
+        assert_eq!(
+            reverted, accepted,
+            "offline experiment changed another field"
+        );
         let authoritative: Value =
             serde_json::from_slice(&render_windows_config(&stage2_runtime_state()).unwrap())
                 .unwrap();
