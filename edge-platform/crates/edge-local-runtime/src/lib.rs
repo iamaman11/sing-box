@@ -684,7 +684,7 @@ pub fn stop_local_runtime(
         );
     }
 
-    stop_process(process.pid);
+    stop_process(process.pid)?;
     let local_singbox = inspect_local_runtime(config_path);
     let warnings = local_singbox.warnings.clone();
     Ok(RuntimeOperationResult {
