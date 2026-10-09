@@ -32,28 +32,23 @@ production rollback, class-scoped application credential rotation, Stage-3 proof
 retirement/contraction and Stage-4A zero-consumer physical shrink are accepted and must not be
 reopened for confidence.
 
-The project is now in Stage 4B: one managed Windows TUN cutover under the existing SCM
-`EdgePlatformController` owner. The accepted proxy-only runtime is the starting point. The cutover
-must prove routes, DNS, bypass/loop prevention, direct + WARP, controller/runtime restart, Windows
-reboot/recovery and rollback/failure behavior before the currently working external Windows sing-box
-is replaced. Stage 4A warning cleanup is not a prerequisite and must not become a new refactoring loop.
-
-Stage 4B.1 code proof is closed: the typed Git-owned datapath authority, canonical renderer, exact
-`sing-box check`, desired-state provenance, bounded previous-ReleaseSet rollback, native diagnostics and
-SCM startup convergence are accepted while production remains `PROXY_ONLY`.
-
-Before any TUN work, a separate **PROXY_ONLY ChatGPT/operator lifecycle gate** must physically prove
-`/windows diagnose`, exact accepted `/windows converge`, same-release `/windows repair`, exact
-`/windows rollback`, reconvergence and live DIRECT/WARP proxy functionality while the existing external
-sing-box remains untouched. Only after that gate is terminal PASS may Stage 4B.2 begin with one physical
-cutover acceptance through that same Windows workflow boundary. Its fixed
-mutation operation is added only after 4B.2 read-only proof identifies the exact external startup owner
-and bounded restore procedure, and only after the canonical `MANAGED_TUN` mode-flip revision itself
-passes exact-head CI and no-rebuild promotion. No hidden environment toggle, second Windows workflow, Scheduled Task/watchdog or parallel DNS manager
-is accepted. Stage 4B.2-C physical evidence proved that Windows TUN needs administrator-class authority;
-the accepted boundary keeps the dedicated `NT SERVICE\EdgePlatformController` identity and grants only
-that principal local Administrators membership instead of switching the service identity to LocalSystem.
-See `ARCHITECTURE.md` for the complete entry contract.
+The project is in Stage 4B with the Windows `MANAGED_TUN` already owned by the single SCM
+`EdgePlatformController`. Stage 4B.1 source/renderer and the normal controlled
+ManagedTun-to-ManagedTun lifecycle have accepted tests and physical evidence, including an
+ordinary reboot. They are **not** proof of TUN-absent DNS/GitHub control recovery.
+**Stage 4B.2-C remains OPEN:** the foreign Cloudflare One Client is in `TunnelOnly` mode,
+and its adapter has contained both `172.19.0.2` (the project's TUN DNS) and the Ethernet
+DHCP resolver `192.168.100.1`. Presence of the latter, or `previous.pb=ManagedTun`, is not
+an independent no-TUN rescue. Keep the accepted `hijack + strict_route` DNS leak guard;
+`native` is offline-only, not a proven fix. TUN stop/rollback/fault injection and blind
+deployment of a newer ReleaseSet stay blocked until #26 records physical administrator,
+independent DNS/GitHub transport and bounded recovery acceptance. Published artifacts may
+differ from the exact currently installed Windows ReleaseSet; diagnose before any mutation.
+Stage 4B.5 Android Mesh E2E remains open; Stage 4C deletion-first follows acceptance.
+No extra Windows service, scheduler, DNS writer, WFP exception or foreign-owner edit is allowed.
+The dedicated `NT SERVICE\EdgePlatformController` retains the accepted least-scope
+administrator-class TUN ownership instead of switching the service to LocalSystem.
+See `ARCHITECTURE.md` for the stable invariants; #26 alone owns execution order.
 
 ## Steady-state owner map
 
@@ -166,8 +161,9 @@ Accepted ownership:
 - runner has no plaintext/decrypted application-secret authority;
 - Windows Cloudflare One Client remains foreign/no-touch even when it mirrors the active sing-box TUN resolver onto its own adapter.
 
-The console is not a fallback startup owner. The external pre-existing Windows sing-box is not
-adopted as LKG, rollback authority or managed state before the final managed-TUN cutover.
+The console is not a fallback startup owner. The historical external Windows sing-box was not
+adopted as release/rollback authority: the currently running managed TUN is SCM-owned, and
+`previous.pb` is also `ManagedTun`, not a no-TUN rescue.
 
 ## Credential transition
 
@@ -237,11 +233,10 @@ store, workflow or generic privilege to work around incomplete wiring.
 ## Deletion-first finalization
 
 After a replacement path is live-proven, classify its old consumers and delete dead behavior before
-adding abstractions or splitting large files. Stage 4A removes only complete zero-consumer
-transitional vertical slices. Its exit condition is not "no more code to simplify"; it is a fresh
-repository-wide audit showing that every remaining transitional boundary has a real
-production/acceptance/bootstrap/recovery/rollback consumer. At that point #26 closes Stage 4A and
-Stage 4B performs the separate managed Windows TUN cutover.
+adding abstractions or splitting large files. Stage 4A's zero-consumer shrink is already closed;
+its historical exit decision must not be reopened merely for cleanup. Stage 4B completes physical
+failure recovery and remaining functional acceptance. Only then Stage 4C deletes newly orphaned
+transitional consumers using exact GitHub evidence and bounded CI.
 
 A successful finalization should reduce:
 - lifecycle owners;
@@ -272,4 +267,4 @@ Never reintroduce:
 - a second desired-state or secret-history store;
 - blind retry after uncertain mutation;
 - a second Windows startup/runtime owner;
-- TUN/default-route/system-proxy ownership before #26 explicitly records `STAGE4A=CLOSED` and opens the Stage 4B cutover gate.
+- a second TUN/default-route/system-proxy owner or teardown that bypasses #26's current Stage 4B.2-C recovery gate.
