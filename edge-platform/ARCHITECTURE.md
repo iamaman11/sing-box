@@ -833,6 +833,93 @@ The numbered requirements below are the accepted design constraints that produce
    are proven. Cloudflare One and sing-box must operate simultaneously with explicit nonoverlapping
    route and DNS authority; no second owner, DNS watchdog, fallback daemon or unproven reset.
 
+#### Stage 4B.2-C DNS independence — source-proven decision (2026-10-09)
+
+**Observed Windows reality, not a diagnosis of router failure.** The installed immutable
+ReleaseSet `1ebe355143ac3d59a11d4c40755e1f8aa2aa9060c957822d831f18d4ace667b5`
+pins sing-box `v1.14.2` (Windows ZIP SHA-256
+`c2d8bfff918755808781dfdeeb8581b6c91eb3a243d9a7b55483cfc0c0684d32`).
+Its exact `go.mod` pins `github.com/sagernet/sing-tun` at
+`ddaa4ca25e3bcb776d6ce81f4477b3becb5426de`.
+On this Windows host, the read-only local agent proved:
+`warp-svc.exe` sets the foreign CloudflareWARP adapter's DNS to
+`172.19.0.2,192.168.100.1`; Ethernet obtains `192.168.100.1` via DHCP;
+the latter has a physical on-link route but an explicit DNS query there
+timed out. WFP read-only inspection showed `sing-tun` sublayer PERMIT exact
+sing-box process (weight 13), PERMIT managed TUN interface (weight 11) and
+BLOCK remote port 53 (weight 10). TCP/53 reported Winsock 10013; router
+TCP/80 and TCP/443 worked. This **proves current active TUN policy blocks
+ordinary Ethernet DNS**, not that the router resolver is broken or would
+work after TUN failure. The user confirmed physical administrator console
+access, not a completed automatic recovery test.
+
+**Exact pinned upstream behavior**, not speculative Windows WFP changes:
+- `sing-tun/tun_windows.go`: both `dns_mode=native` and
+  `dns_mode=hijack` configure native DNS **on the project TUN adapter**
+  (`configure`, `luid.SetDNS`); `disabled` does not configure TUN DNS.
+- With `strict_route=true`, sing-tun opens `FWPM_SESSION_FLAG_DYNAMIC`.
+  The additional Windows remote-port-53 WFP BLOCK v4/v6 is installed
+  **only when** `DNSModeOrDefault() == DNSModeHijack`; not when `native`.
+  Thus `native + strict_route` is a *source-supported test candidate* for
+  simultaneous ordinary Ethernet DNS, **not** a verified no-leak policy.
+- A clean close calls `FwpmEngineClose0`. Windows WFP dynamic-session
+  lifecycle removes its associated objects at close/process rundown by
+  platform contract. This does **not** prove real host route/DNS/SCM/
+  CloudflareWARP/GitHub Runner recovery after sing-box failure.
+- `route_exclude_address`, direct `warp-svc.exe` routing and `strict_route`
+  alone **cannot** grant ordinary Windows processes an exception to the
+  observed host-wide `hijack` port-53 block. Never add ad-hoc WFP permit
+  rules, a DNS watchdog, a second controller or DNS writers to bypass it.
+
+**Decision matrix / current authority:**
+- `hijack + strict_route=true`: **CURRENT ACCEPTED HOST POLICY** for normal
+  single-TUN DNS leak prevention, but fails the stronger invariant that
+  native Ethernet DNS can be independently used while TUN is running.
+- `native + strict_route=true`: **CANDIDATE ONLY**. Retains per-TUN native
+  DNS settings and strict WFP session, omits the extra port-53 BLOCK; Windows
+  multihomed resolver behavior can leak queries via Ethernet or WARP.
+  Never infer leak safety from `sing-box check` or a passing DNS probe.
+- `disabled`, or disabling `strict_route` alone: **NOT AN ACCEPTED
+  REPLACEMENT**. Changes resolver/anti-leak semantics without the required
+  independently scoped DNS policy or evidence.
+
+**Bounded acceptance, in order; no change to production on the design step:**
+1. Prove source and dependency identity; validate a *proposed* candidate
+   offline with the exact released `sing-box check` and renderer unit
+   tests, including WARP Mesh/excluded routes and no writes to foreign DNS.
+   Keep canonical desired mode/config `hijack` until explicitly accepted.
+2. Before any physical activation, agree on which Windows resolver requests
+   may use independent Ethernet versus sing-box's managed DoT. Specify
+   explicit non-TUN DNS authorization/anti-leak checks for both Windows
+   multihomed queries and foreign Cloudflare One/Mesh, plus IPv6.
+   A standalone direct `Resolve-DnsName -Server 192.168.100.1` success
+   would prove only an explicitly targeted resolver, not DNS isolation,
+   automatic failover or GitHub runner independence.
+3. Require one pre-authorized, bounded **physical** evaluation with owner
+   present at the confirmed local administrator console, exact release
+   manifest, before/after network DNS/route/WFP evidence, positive DNS
+   tests on each required path, negative DNS leak tests and Cloudflare
+   Mesh functionality. Define and prove deterministic reversion before
+   changing the working TUN. Do not execute stop/crash/reboot/rollback
+   to discover whether a recovery path exists.
+4. Separately prove TUN-absent Windows DNS fallback, removal of dynamic
+   WFP filters, non-TUN network and independent GitHub control transport.
+   The existing GitHub broker/token path **uses TUN** while it is healthy.
+   Ethernet DHCP default route and a manual administrator console are
+   not equivalent to a verified automatic remote recovery channel.
+
+**Current result:** `SING_TUN_DYNAMIC_WFP_SESSION=SOURCE_PROVED`;
+`HIJACK_OUTSIDE_TUN_DNS_BLOCK=HOST_PROVED` (historical label preserved
+only for this decision text); `NATIVE_MODE_SIMULTANEOUS_DNS=UNTESTED`;
+`NATIVE_MODE_NO_LEAK=UNTESTED`; `AUTOMATIC_RECOVERY=UNPROVEN`.
+**Stage 4B.2-C OPEN; stop/rollback/fault injection BLOCKED.**
+Canonical operator execution cursor and local evidence: issue #26.
+Upstream exact sources:
+https://github.com/SagerNet/sing-box/blob/v1.14.2/go.mod ;
+https://github.com/SagerNet/sing-tun/blob/ddaa4ca25e3b/tun_windows.go ;
+https://sing-box.sagernet.org/configuration/inbound/tun/ ;
+https://learn.microsoft.com/en-us/windows/win32/fwp/object-management .
+
 #### Stage 4B execution gates
 
 **4B.1 — code-proven candidate, no live TUN mutation**
