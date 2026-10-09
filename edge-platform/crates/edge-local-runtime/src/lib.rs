@@ -456,8 +456,13 @@ pub fn start_local_runtime(
     // External sing-box processes are never stopped by this owner.
     let staged = stage_and_validate_config(paths)?;
 
-    if let Some(process) = runtime.as_ref() {
-        stop_process(process.pid)?;
+    if let Some(process) = runtime.as_ref()
+        && let Err(err) = stop_process(process.pid)
+    {
+        // The old TUN may still own DNS/routes: leave its active config untouched
+        // and do not leak the rendered candidate on an unsuccessful stop.
+        let _ = discard_staged_config(&staged);
+        return Err(err);
     }
 
     if let Err(err) = activate_staged_config(paths, &staged) {
