@@ -3,15 +3,15 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-#[cfg(windows)]
-use std::mem::size_of;
-#[cfg(windows)]
-use std::ptr::null_mut;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
+use std::mem::size_of;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use std::ptr::null_mut;
 
 use edge_shared_types::{
     LocalSingboxState, WindowsDatapathMode, canonical_production_desired_state,
