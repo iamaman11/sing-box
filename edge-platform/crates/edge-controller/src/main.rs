@@ -1522,6 +1522,7 @@ impl ControllerService for ControllerServerImpl {
         request: Request<StartLocalRuntimeRequest>,
     ) -> Result<Response<LocalRuntimeResponse>, Status> {
         let request = request.into_inner();
+        require_nonrestarting_start(request.force_restart)?;
         let operation = self
             .state
             .lock()
@@ -4716,6 +4717,16 @@ fn persisted_agent_tls_paths(
     }
 }
 
+fn require_nonrestarting_start(force_restart: bool) -> Result<(), Status> {
+    if force_restart {
+        Err(Status::failed_precondition(
+            "StartLocalRuntime never restarts a managed process; use the explicit RestartLocalRuntime operation",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn platform_error_to_status(err: PlatformError) -> Status {
     Status::internal(format!("{} [{}]: {}", err.code, err.stage, err.message))
 }
@@ -4729,6 +4740,13 @@ mod tests {
         WindowsCredentialProjection, credential_delivery_bundle,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn start_rpc_rejects_force_restart_and_accepts_ordinary_idempotent_start() {
+        assert!(require_nonrestarting_start(false).is_ok());
+        let error = require_nonrestarting_start(true).unwrap_err();
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    }
 
     #[test]
     fn windows_service_startup_decision_is_mode_scoped_and_fail_closed() {
