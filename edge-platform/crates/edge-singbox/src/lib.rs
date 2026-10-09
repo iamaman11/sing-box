@@ -2083,21 +2083,24 @@ mod tests {
     #[test]
     fn stage4b_native_dns_offline_candidate_changes_exactly_one_field() {
         let (accepted, candidate) = stage4b_offline_native_dns_candidate();
-        assert_eq!(
-            candidate.pointer("/inbounds/2/dns_mode").and_then(Value::as_str),
-            Some("native")
-        );
-        assert_eq!(
-            candidate.pointer("/inbounds/2/strict_route").and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            candidate.pointer("/inbounds/2/auto_route").and_then(Value::as_bool),
-            Some(true)
-        );
+        let tun = candidate["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|inbound| inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in"))
+            .unwrap();
+        assert_eq!(tun.get("dns_mode").and_then(Value::as_str), Some("native"));
+        assert_eq!(tun.get("strict_route").and_then(Value::as_bool), Some(true));
+        assert_eq!(tun.get("auto_route").and_then(Value::as_bool), Some(true));
 
         let mut reverted = candidate;
-        reverted["inbounds"][2]["dns_mode"] = Value::String("hijack".to_owned());
+        let tun = reverted["inbounds"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|inbound| inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in"))
+            .unwrap();
+        tun["dns_mode"] = Value::String("hijack".to_owned());
         assert_eq!(reverted, accepted, "offline experiment changed another field");
         let authoritative: Value =
             serde_json::from_slice(&render_windows_config(&stage2_runtime_state()).unwrap())
