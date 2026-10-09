@@ -314,6 +314,18 @@ jobs:
           }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
+          # The exact currently installed release still calls the retired
+          # DNS-reset heuristic and ignores process termination confirmation
+          # on shutdown. The newer published ReleaseSet cannot protect a
+          # handoff executed by the OLD console/controller.
+          # Never initiate this release's destructive handoff over the same
+          # TUN-dependent GitHub transport. A supervised local-admin physical
+          # transition needs separate acceptance; diagnose remains read-only.
+          if ($currentRelease -ceq '1ebe355143ac3d59a11d4c40755e1f8aa2aa9060c957822d831f18d4ace667b5' -and
+              $currentMode -ceq 'ManagedTun' -and
+              $env:EDGE_OPERATION -in @('converge','repair','restart-controller','start')) {
+            throw 'PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED: installed ReleaseSet contains unsafe shutdown DNS reset and unconfirmed sing-box termination; physical local-admin recovery gate is not accepted'
+          }
           # Stage 4B.2-C: NO teardown before independent foreign CloudflareWARP DNS
           # recovery and an independent control-channel restore have been proven.
           # This is deliberately before 'Execute typed lifecycle mutation'.
