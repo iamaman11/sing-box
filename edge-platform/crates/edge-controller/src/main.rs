@@ -8,7 +8,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 #[cfg(windows)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::sync::{OnceLock, mpsc};
@@ -24,6 +24,10 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 #[cfg(windows)]
 use windows_service::service_dispatcher;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
 
 mod cli;
 mod deploy_orchestrator;
@@ -137,6 +141,12 @@ struct WindowsServiceConfig {
 static WINDOWS_SERVICE_CONFIG: OnceLock<WindowsServiceConfig> = OnceLock::new();
 #[cfg(windows)]
 static CONTROLLER_SERVICE_ERROR_WRITTEN: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static WINDOWS_SERVICE_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static WINDOWS_RUNTIME_REPLACEMENT_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(windows)]
+static WINDOWS_RUNTIME_OWNER_GATE: Mutex<()> = Mutex::new(());
 
 #[cfg(windows)]
 windows_service::define_windows_service!(
@@ -517,6 +527,143 @@ fn write_controller_service_boundary_error(stage: &str, message: &str, overwrite
     let _ = write_controller_service_error(&config.repo_root, stage, message);
 }
 
+// One service-owned kernel process-exit wait per observed child. This uses no
+// periodic health poll, independent task scheduler, or blind launch retry.
+#[cfg(windows)]
+fn wait_for_windows_child_exit(pid: u32) -> Result<(), String> {
+    if pid == 0 {
+        return Err("refusing Windows child-exit wait on pid 0".to_owned());
+    }
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return Err(format!(
+            "cannot acquire exact child pid {pid} process-exit handle: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    let result = unsafe { WaitForSingleObject(handle, u32::MAX) };
+    let error = if result == WAIT_OBJECT_0 {
+        0
+    } else {
+        unsafe { GetLastError() }
+    };
+    unsafe { CloseHandle(handle) };
+    if result == WAIT_OBJECT_0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "native child-exit wait failed: pid={pid} result={result:#x} error={error}"
+        ))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn child_exit_auto_recovery_allowed(
+    shutdown: bool,
+    privileged_handoff: bool,
+    explicit_replacement: bool,
+    recovery_consumed: bool,
+    exact_absent: bool,
+) -> bool {
+    !shutdown
+        && !privileged_handoff
+        && !explicit_replacement
+        && !recovery_consumed
+        && exact_absent
+}
+
+#[cfg(windows)]
+async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), String> {
+    if !is_installed_windows_root(&repo_root) {
+        return Ok(());
+    }
+    let config_path = default_local_config_path(&repo_root);
+    if !windows_runtime_state_path(&repo_root).is_file() || !config_path.is_file() {
+        return Ok(());
+    }
+    let initial = exact_managed_runtime_processes(&config_path);
+    if initial.len() != 1 || initial[0].parent_pid != Some(std::process::id()) {
+        return Err("SCM startup did not expose one exact child owned by this controller".to_owned());
+    }
+    let mut pid = initial[0].pid;
+    let mut recovered = false;
+    loop {
+        let observed_generation = WINDOWS_RUNTIME_REPLACEMENT_GENERATION.load(Ordering::Acquire);
+        tokio::task::spawn_blocking(move || wait_for_windows_child_exit(pid))
+            .await
+            .map_err(|err| format!("native child wait join failed: {err}"))??;
+
+        // The gate serializes reobservation + potential launch against existing
+        // StartLocalRuntime and RestartLocalRuntime RPCs in THIS SCM process.
+        let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
+            .lock()
+            .map_err(|_| "Windows runtime owner gate poisoned".to_owned())?;
+        if WINDOWS_SERVICE_STOP_REQUESTED.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // The installed privileged dispatcher commits a request file BEFORE
+        // intentional child teardown; it keeps the file through SCM handoff.
+        // Never race that exact native release/reinstall transition.
+        if repo_root.join("exchange/requests/request.pb").exists() {
+            return Ok(());
+        }
+        let explicit_replacement =
+            WINDOWS_RUNTIME_REPLACEMENT_GENERATION.load(Ordering::Acquire) != observed_generation;
+        let owners = exact_managed_runtime_processes(&config_path);
+        if owners.len() == 1 {
+            if owners[0].pid == pid {
+                return Err(format!(
+                    "process-exit signalled for pid {pid}, but exact owner still reports same pid; no speculative action"
+                ));
+            }
+            if owners[0].parent_pid != Some(std::process::id()) {
+                return Err("new managed runtime is not owned by current SCM controller".to_owned());
+            }
+            pid = owners[0].pid;
+            continue; // A newly observed exact child; next OS exit event, no polling.
+        }
+        if owners.len() > 1
+            || !matches!(
+                classify_runtime_process(&config_path),
+                RuntimeProcessClassification::Absent
+            )
+        {
+            return Err("child exited with conflicting or ambiguous sing-box ownership".to_owned());
+        }
+        if !child_exit_auto_recovery_allowed(
+            false,
+            false,
+            explicit_replacement,
+            recovered,
+            true,
+        ) {
+            // An explicit failed restart remains for its caller to diagnose;
+            // repeated crashes never launch a second automatic mutation.
+            return if recovered && !explicit_replacement {
+                Err("automatic child recovery budget exhausted after one recovery".to_owned())
+            } else {
+                Ok(())
+            };
+        }
+        if !repo_root.join("current.pb").is_file() {
+            return Err("installed ReleaseSet authority disappeared; fail-closed".to_owned());
+        }
+        let paths = LocalRuntimePaths {
+            singbox_binary_path: default_singbox_binary_path(&repo_root),
+            config_path: config_path.clone(),
+            state_path: windows_runtime_state_path(&repo_root),
+            runtime_root: default_runtime_root(&repo_root),
+        };
+        let result = start_runtime_process(&paths, false)
+            .map_err(|err| format!("one-shot native child recovery failed: {err}"))?;
+        pid = result.pid.ok_or(
+            "one-shot native child recovery returned no exact process identity"
+        )?;
+        recovered = true;
+        eprintln!("Windows SCM one-shot managed sing-box child recovery succeeded");
+    }
+}
+
 #[cfg(windows)]
 fn run_windows_service(args: cli::ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     let (repo_root, addr) = resolve_serve_config(args)?;
@@ -559,6 +706,7 @@ fn edge_controller_service_main(_arguments: Vec<OsString>) {
 
 #[cfg(windows)]
 fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
+    WINDOWS_SERVICE_STOP_REQUESTED.store(false, Ordering::Release);
     let config = WINDOWS_SERVICE_CONFIG
         .get()
         .cloned()
@@ -567,6 +715,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Stop | ServiceControl::Shutdown => {
+                WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release);
                 let _ = shutdown_tx.send(());
                 ServiceControlHandlerResult::NoError
             }
@@ -686,6 +835,15 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let repo_root = config.repo_root.clone();
+            // An OS process-handle wait, not a timer or a second Windows owner.
+            // The controller's own child is supervised while this SCM service runs.
+            let supervisor_root = repo_root.clone();
+            let supervisor = runtime.spawn(async move {
+                if let Err(err) = supervise_windows_managed_child(supervisor_root.clone()).await {
+                    let _ = write_controller_service_error(&supervisor_root, "child_exit", &err);
+                    eprintln!("Windows managed child supervision stopped fail-closed: {err}");
+                }
+            });
             let serve_result = runtime.block_on(serve_prebound_with_shutdown(
                 service,
                 listener,
@@ -693,6 +851,8 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = tokio::task::spawn_blocking(move || shutdown_rx.recv()).await;
                 },
             ));
+            WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release);
+            supervisor.abort();
             let cleanup_result = stop_runtime_process(&default_local_config_path(&repo_root), true)
                 .map(|_| ())
                 .map_err(|err| {
@@ -1551,7 +1711,18 @@ impl ControllerService for ControllerServerImpl {
         }
 
         let paths = local_runtime_paths_from_start(&self.repo_root, &request);
-        let response = match start_runtime_process(&paths, request.visible_window) {
+        let started = {
+            let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
+                .lock()
+                .map_err(|_| Status::internal("Windows runtime owner gate poisoned"))?;
+            if self.repo_root.join("exchange/requests/request.pb").exists() {
+                return Err(Status::failed_precondition(
+                    "privileged release handoff pending: refusing competing runtime start",
+                ));
+            }
+            start_runtime_process(&paths, request.visible_window)
+        };
+        let response = match started {
             Ok(mut result) => {
                 let _ = refresh_app_readiness_phase(
                     &self.repo_root,
@@ -1707,11 +1878,23 @@ impl ControllerService for ControllerServerImpl {
         }
 
         let paths = local_runtime_paths_from_restart(&self.repo_root, &request);
-        let response = match if request.visible_window {
-            restart_runtime_process_visible(&paths)
-        } else {
-            restart_runtime_process(&paths)
-        } {
+        let restarted = {
+            let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
+                .lock()
+                .map_err(|_| Status::internal("Windows runtime owner gate poisoned"))?;
+            if self.repo_root.join("exchange/requests/request.pb").exists() {
+                return Err(Status::failed_precondition(
+                    "privileged release handoff pending: refusing competing runtime restart",
+                ));
+            }
+            WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel);
+            if request.visible_window {
+                restart_runtime_process_visible(&paths)
+            } else {
+                restart_runtime_process(&paths)
+            }
+        };
+        let response = match restarted {
             Ok(mut result) => {
                 let _ = refresh_app_readiness_phase(
                     &self.repo_root,
@@ -4733,6 +4916,17 @@ fn platform_error_to_status(err: PlatformError) -> Status {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn managed_child_exit_recovery_is_one_shot_and_refuses_all_intended_handoffs() {
+        use super::child_exit_auto_recovery_allowed;
+        assert!(child_exit_auto_recovery_allowed(false, false, false, false, true));
+        assert!(!child_exit_auto_recovery_allowed(true, false, false, false, true));
+        assert!(!child_exit_auto_recovery_allowed(false, true, false, false, true));
+        assert!(!child_exit_auto_recovery_allowed(false, false, true, false, true));
+        assert!(!child_exit_auto_recovery_allowed(false, false, false, true, true));
+        assert!(!child_exit_auto_recovery_allowed(false, false, false, false, false));
+    }
+
     use super::*;
     use edge_shared_types::{
         CredentialDeliveryBundle, CredentialDeliverySlot, RealityPublicIdentity,
