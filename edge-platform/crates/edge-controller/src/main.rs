@@ -1711,6 +1711,7 @@ impl ControllerService for ControllerServerImpl {
         }
 
         let paths = local_runtime_paths_from_start(&self.repo_root, &request);
+        #[cfg(windows)]
         let started = {
             let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
                 .lock()
@@ -1722,6 +1723,8 @@ impl ControllerService for ControllerServerImpl {
             }
             start_runtime_process(&paths, request.visible_window)
         };
+        #[cfg(not(windows))]
+        let started = start_runtime_process(&paths, request.visible_window);
         let response = match started {
             Ok(mut result) => {
                 let _ = refresh_app_readiness_phase(
@@ -1878,6 +1881,7 @@ impl ControllerService for ControllerServerImpl {
         }
 
         let paths = local_runtime_paths_from_restart(&self.repo_root, &request);
+        #[cfg(windows)]
         let restarted = {
             let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
                 .lock()
@@ -1893,6 +1897,12 @@ impl ControllerService for ControllerServerImpl {
             } else {
                 restart_runtime_process(&paths)
             }
+        };
+        #[cfg(not(windows))]
+        let restarted = if request.visible_window {
+            restart_runtime_process_visible(&paths)
+        } else {
+            restart_runtime_process(&paths)
         };
         let response = match restarted {
             Ok(mut result) => {
