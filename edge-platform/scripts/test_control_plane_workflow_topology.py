@@ -1752,6 +1752,15 @@ def main() -> None:
         "candidate and promotion paths must converge through the typed platform build-manifest contract",
     )
     require(
+        "base_mesh_image: ${{ steps.resolve.outputs.base_mesh_image }}" in edge_platform_ci
+        and "base_mesh_image=%s" in edge_platform_ci
+        and "BASE_MESH_IMAGE: ${{ needs.dependencies.outputs.base_mesh_image }}" in edge_platform_ci
+        and 'if [[ "${mesh_ref}" != "${BASE_MESH_IMAGE}" ]]; then' in edge_platform_ci
+        and edge_platform_ci.count('docker buildx imagetools inspect "${mesh_ref}"') == 1,
+        "CI must live-check a changed pinned Mesh digest once, reuse identical accepted base digest, and never re-check Docker Hub at promotion",
+    )
+
+    require(
         "needs.windows.outputs.artifact_sha256" not in edge_platform_ci
         and "needs.windows.outputs.controller_sha256" not in edge_platform_ci
         and "needs.windows.outputs.console_sha256" not in edge_platform_ci
