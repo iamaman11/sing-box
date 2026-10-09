@@ -823,14 +823,15 @@ The numbered requirements below are the accepted design constraints that produce
    decision is to keep that dedicated virtual service identity and grant only that principal membership
    in the local built-in Administrators group required by the Windows TUN/Wintun path. Do not switch the
    controller identity to LocalSystem and do not create a second privileged TUN owner.
-10. The old PowerShell DNS reset remains recovery-only while it has a real consumer. New managed-TUN DNS
-   must not depend on it. Cloudflare One Client remains a foreign owner: if `warp-svc` observes the managed
-   TUN resolver and re-pins that address onto its own `CloudflareWARP` adapter, the sing-box project records
-   that foreign state but does not reset or rewrite it. Exact rollback/removal of `sing-box-tun` must prove
-   that the foreign adapter no longer depends on the removed TUN resolver. If failed-runtime cleanup proves a
-   project-owned host DNS reset is still necessary, implement that mutation inside the existing local-runtime
-   boundary with native Windows APIs and exact-interface ownership; otherwise delete the obsolete reset in
-   Stage 4C.
+10. Cloudflare One Client remains a foreign, independent owner. Its local DNS proxy addresses
+   `127.0.2.2` and `127.0.2.3` must **never** be treated as proof that our application owns an
+   adapter. Retire the former PowerShell DNS-reset-on-stop/startup-failure path: it selected interfaces
+   by those DNS addresses and could reset Cloudflare One Client DNS. The managed Windows TUN DNS
+   (`172.19.0.2`) is separate; this project must not reset/rewrite the `CloudflareWARP` adapter.
+   If `warp-svc` re-pins managed TUN DNS onto that foreign adapter, observe without mutation and
+   keep TUN teardown/rollback blocked until true independent DNS and control-channel restoration
+   are proven. Cloudflare One and sing-box must operate simultaneously with explicit nonoverlapping
+   route and DNS authority; no second owner, DNS watchdog, fallback daemon or unproven reset.
 
 #### Stage 4B execution gates
 

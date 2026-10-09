@@ -81,6 +81,14 @@ def main() -> None:
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
+    require(
+        "Set-DnsClientServerAddress" not in edge_local_runtime
+        and "restore_windows_dns_if_owned" not in windows_controller
+        and "Clear-DnsClientCache" not in edge_local_runtime
+        and "restore_windows_dns_if_owned" not in edge_local_runtime
+        and "WINDOWS_OWNED_DNS_IPV4" not in edge_local_runtime,
+        "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
+    )
     vm_agent = VM_AGENT.read_text(encoding="utf-8")
     vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
     shared_types = SHARED_TYPES.read_text(encoding="utf-8")
