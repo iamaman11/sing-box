@@ -7,11 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
-use std::mem::size_of;
-#[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(windows)]
-use std::ptr::null_mut;
 
 use edge_shared_types::{
     LocalSingboxState, WindowsDatapathMode, canonical_production_desired_state,
@@ -22,16 +18,8 @@ use sysinfo::{Pid, Signal, System};
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BUFFER_OVERFLOW, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, GetLastError,
-    SetLastError,
+    CloseHandle, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, GetLastError, SetLastError,
 };
-#[cfg(windows)]
-use windows_sys::Win32::NetworkManagement::IpHelper::{
-    ConvertInterfaceLuidToIndex, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
-    GAA_FLAG_SKIP_UNICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
-};
-#[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
 #[cfg(windows)]
 use windows_sys::Win32::Security::{
     AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
@@ -47,12 +35,6 @@ const STARTUP_OBSERVATION_INTERVAL_MS: u64 = 500;
 const SMOKE_STARTUP_TIMEOUT_SECS: u64 = 8;
 const SMOKE_IO_TIMEOUT_SECS: u64 = 5;
 const SMOKE_RESPONSE_BODY: &str = "EDGE_NON_TUN_SMOKE_OK";
-const WINDOWS_OWNED_DNS_IPV4: [[u8; 4]; 2] = [[127, 0, 2, 2], [127, 0, 2, 3]];
-
-fn is_owned_windows_dns_ipv4(address: [u8; 4]) -> bool {
-    WINDOWS_OWNED_DNS_IPV4.contains(&address)
-}
-
 /*
  * Stage 4B.2-C: no independent recovery owner currently guarantees DNS continuity
  * for foreign CloudflareWARP when managed TUN 172.19.0.1/172.19.0.2 is removed.
@@ -112,17 +94,6 @@ pub struct NonTunSmokeResult {
 struct StagedConfig {
     candidate_path: PathBuf,
     backup_path: PathBuf,
-}
-
-pub fn restore_windows_dns_if_owned() -> Vec<String> {
-    #[cfg(windows)]
-    {
-        restore_windows_dns_if_owned_windows()
-    }
-    #[cfg(not(windows))]
-    {
-        Vec::new()
-    }
 }
 
 pub fn run_non_tun_loopback_smoke(
@@ -630,14 +601,13 @@ fn launch_singbox(
     #[cfg(windows)]
     {
         if managed_tun_debug_privilege_required()? {
-            return spawn_with_temporary_debug_privilege(&mut command)
-                .map_err(with_dns_guard_on_failure);
+            return spawn_with_temporary_debug_privilege(&mut command);
         }
     }
 
     command
         .spawn()
-        .map_err(|err| with_dns_guard_on_failure(format!("failed to start sing-box: {err}")))
+        .map_err(|err| format!("failed to start sing-box: {err}"))
 }
 
 pub fn stop_local_runtime(
@@ -659,8 +629,7 @@ pub fn stop_local_runtime(
 
     let Some(process) = runtime else {
         let local_singbox = inspect_local_runtime(config_path);
-        let mut warnings = local_singbox.warnings.clone();
-        warnings.extend(restore_windows_dns_if_owned());
+        let warnings = local_singbox.warnings.clone();
         return Ok(RuntimeOperationResult {
             pid: None,
             note: "managed sing-box is not running".to_owned(),
@@ -678,8 +647,7 @@ pub fn stop_local_runtime(
 
     stop_process(process.pid);
     let local_singbox = inspect_local_runtime(config_path);
-    let mut warnings = local_singbox.warnings.clone();
-    warnings.extend(restore_windows_dns_if_owned());
+    let warnings = local_singbox.warnings.clone();
     Ok(RuntimeOperationResult {
         pid: Some(process.pid),
         note: "exact managed sing-box stopped; external sing-box ownership was not mutated"
@@ -989,171 +957,6 @@ fn attach_runtime_logs(command: &mut Command, runtime_root: &Path) {
     }
 }
 
-fn with_dns_guard_on_failure(message: String) -> String {
-    let warnings = restore_windows_dns_if_owned();
-    if warnings.is_empty() {
-        message
-    } else {
-        format!("{message}; {}", warnings.join("; "))
-    }
-}
-
-#[cfg(windows)]
-fn restore_windows_dns_if_owned_windows() -> Vec<String> {
-    let owned_indices = match observe_owned_windows_dns_adapter_indices() {
-        Ok(indices) => indices,
-        Err(err) => {
-            return vec![format!(
-                "windows DNS guard observation failed closed before mutation: {err}"
-            )];
-        }
-    };
-    if owned_indices.is_empty() {
-        return Vec::new();
-    }
-
-    let index_list = owned_indices
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-$indices = @({index_list})
-foreach ($index in $indices) {{
-    Set-DnsClientServerAddress -InterfaceIndex ([uint32]$index) -ResetServerAddresses
-}}
-Clear-DnsClientCache
-"#
-    );
-
-    let status = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status();
-
-    let mut warnings = match status {
-        Ok(status) if status.success() => vec![format!(
-            "windows DNS guard: reset exact owned DNS on interface index(es) {}; cleared Windows DNS client cache",
-            owned_indices
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        )],
-        Ok(status) => {
-            return vec![format!(
-                "windows DNS guard reset failed with status {status}"
-            )];
-        }
-        Err(err) => {
-            return vec![format!("windows DNS guard reset failed to run: {err}")];
-        }
-    };
-
-    match observe_owned_windows_dns_adapter_indices() {
-        Ok(indices) if indices.is_empty() => {}
-        Ok(indices) => warnings.push(format!(
-            "windows DNS guard post-reset verification still observes owned DNS on interface index(es): {}",
-            indices
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        )),
-        Err(err) => warnings.push(format!(
-            "windows DNS guard post-reset verification failed: {err}"
-        )),
-    }
-
-    warnings
-}
-
-#[cfg(windows)]
-fn observe_owned_windows_dns_adapter_indices() -> Result<Vec<u32>, String> {
-    const WORKING_BUFFER_BYTES: usize = 15 * 1024;
-    const MAX_TRIES: usize = 3;
-
-    let flags = GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
-    let mut required_bytes = WORKING_BUFFER_BYTES as u32;
-
-    for _ in 0..MAX_TRIES {
-        let word_bytes = size_of::<usize>();
-        let words = (required_bytes as usize).div_ceil(word_bytes).max(1);
-        let mut buffer = vec![0usize; words];
-        let adapters = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
-
-        let result = unsafe {
-            GetAdaptersAddresses(
-                AF_UNSPEC as u32,
-                flags,
-                null_mut(),
-                adapters,
-                &mut required_bytes,
-            )
-        };
-        if result == ERROR_BUFFER_OVERFLOW {
-            continue;
-        }
-        if result != 0 {
-            return Err(format!(
-                "GetAdaptersAddresses failed with Win32 error {result}"
-            ));
-        }
-
-        let mut owned_indices = Vec::new();
-        let mut adapter = adapters;
-        while !adapter.is_null() {
-            let mut dns_server = unsafe { (*adapter).FirstDnsServerAddress };
-            let mut owned = false;
-            while !dns_server.is_null() {
-                let socket = unsafe { (*dns_server).Address.lpSockaddr };
-                if !socket.is_null() && unsafe { (*socket).sa_family } == AF_INET {
-                    let ipv4 = unsafe { &*socket.cast::<SOCKADDR_IN>() };
-                    let octets = unsafe { ipv4.sin_addr.S_un.S_addr.to_ne_bytes() };
-                    if is_owned_windows_dns_ipv4(octets) {
-                        owned = true;
-                        break;
-                    }
-                }
-                dns_server = unsafe { (*dns_server).Next };
-            }
-
-            if owned {
-                let mut interface_index = 0u32;
-                let status =
-                    unsafe { ConvertInterfaceLuidToIndex(&(*adapter).Luid, &mut interface_index) };
-                if status != 0 {
-                    return Err(format!(
-                        "ConvertInterfaceLuidToIndex failed with Win32 error {status}"
-                    ));
-                }
-                if interface_index == 0 {
-                    return Err("owned DNS adapter resolved to interface index 0".to_owned());
-                }
-                owned_indices.push(interface_index);
-            }
-
-            adapter = unsafe { (*adapter).Next };
-        }
-
-        owned_indices.sort_unstable();
-        owned_indices.dedup();
-        return Ok(owned_indices);
-    }
-
-    Err(format!(
-        "GetAdaptersAddresses exceeded {MAX_TRIES} bounded buffer attempts"
-    ))
-}
-
 fn exact_managed_config_argument(
     arguments: &[String],
     expected_config_path: &Path,
@@ -1310,14 +1113,6 @@ mod tests {
             assert!(failure.contains("CloudflareWARP DNS restoration"));
             assert!(failure.contains(operation));
         }
-    }
-
-    #[test]
-    fn windows_dns_ownership_is_exact() {
-        assert!(is_owned_windows_dns_ipv4([127, 0, 2, 2]));
-        assert!(is_owned_windows_dns_ipv4([127, 0, 2, 3]));
-        assert!(!is_owned_windows_dns_ipv4([127, 0, 2, 4]));
-        assert!(!is_owned_windows_dns_ipv4([8, 8, 8, 8]));
     }
 
     #[test]
