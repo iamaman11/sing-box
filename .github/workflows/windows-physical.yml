@@ -314,39 +314,6 @@ jobs:
           }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
-          # This exact older release can reset sentinel DNS while its managed
-          # child is stopped. The one-host 4B.2-C physical stop proved router
-          # and Windows DNS, direct GitHub HTTPS and independent runner dispatch
-          # with NO TUN, and exact native SCM recovery. Allow a single bounded
-          # ManagedTun-to-ManagedTun upgrade through the verified immutable
-          # console, never the loaded stable bin/edge-console.exe. Refuse every
-          # other mutating operation against the older installed release.
-          if ($currentRelease -ceq '1ebe355143ac3d59a11d4c40755e1f8aa2aa9060c957822d831f18d4ace667b5' -and
-              $currentMode -ceq 'ManagedTun' -and
-              $env:EDGE_OPERATION -in @('converge','repair','restart-controller','start')) {
-            $exactLegacyUpgrade = (
-              $env:EDGE_OPERATION -ceq 'converge' -and
-              $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun' -and
-              $env:EDGE_RELEASE_SET_SHA256 -cne $currentRelease -and
-              $currentTun -ceq 'true' -and
-              [string]$values['scm_state'] -ceq 'Running' -and
-              [string]$values['scm_executable_matches_release'] -ceq 'true' -and
-              [string]$values['controller_listener_present'] -ceq 'true'
-            )
-            if (-not $exactLegacyUpgrade) {
-              throw 'PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED: only exact supervised-accepted ManagedTun release upgrade is permitted'
-            }
-            $sentinelDns = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop |
-              Where-Object { $_.ServerAddresses -contains '127.0.2.2' -or $_.ServerAddresses -contains '127.0.2.3' })
-            $etherDns = @((Get-DnsClientServerAddress -InterfaceAlias 'Ethernet' -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
-            $foreignDns = @((Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
-            if ($sentinelDns.Count -ne 0 -or
-                ($etherDns -join ',') -cne '192.168.100.1' -or
-                ($foreignDns -join ',') -cne '172.19.0.2,192.168.100.1') {
-              throw 'PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED: no sentinel/foreign DNS parity proof'
-            }
-            Write-Host 'legacy_managed_tun_exact_remote_upgrade=PHYSICAL_NO_TUN_RECOVERY_PROVEN'
-          }
           # Stage 4B.2-C: NO teardown before independent foreign CloudflareWARP DNS
           # recovery and an independent control-channel restore have been proven.
           # This is deliberately before 'Execute typed lifecycle mutation'.

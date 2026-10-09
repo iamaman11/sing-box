@@ -222,21 +222,11 @@ def main() -> None:
         "Windows TUN teardown must be rejected before the operator or native owner mutates runtime, without affecting ManagedTun-to-ManagedTun activation",
     )
     require(
-        "PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED" in windows_physical
-        and "1ebe355143ac3d59a11d4c40755e1f8aa2aa9060c957822d831f18d4ace667b5" in windows_physical
-        and "$env:EDGE_OPERATION -in @('converge','repair','restart-controller','start')" in windows_physical
-        and "legacy_managed_tun_exact_remote_upgrade=PHYSICAL_NO_TUN_RECOVERY_PROVEN" in windows_physical
-        and "$env:EDGE_RELEASE_SET_SHA256 -cne $currentRelease" in windows_physical
-        and "$currentTun -ceq 'true'" in windows_physical
-        and "controller_listener_present" in windows_physical
-        and "Get-DnsClientServerAddress -InterfaceAlias 'Ethernet'" in windows_physical
-        and "Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP'" in windows_physical
-        and "'127.0.2.2'" in windows_physical
-        and "'127.0.2.3'" in windows_physical
-        and windows_physical.index("PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED")
-        < windows_physical.index("      - name: Execute typed lifecycle mutation")
-        and "Set-DnsClientServerAddress" not in windows_physical,
-        "known installed ManagedTun legacy DNS writer must fail closed before GitHub lifecycle mutation without gaining a DNS reset writer",
+        "PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED" not in windows_physical
+        and "legacy_managed_tun_exact_remote_upgrade" not in windows_physical
+        and "1ebe355143ac3d59a11d4c40755e1f8aa2aa9060c957822d831f18d4ace667b5" not in windows_physical
+        and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical,
+        "completed one-shot migration exception must be deleted without weakening TUN teardown/rollback guard",
     )
     require(
         "/windows cutover" not in router
