@@ -225,6 +225,14 @@ def main() -> None:
         "PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED" in windows_physical
         and "1ebe355143ac3d59a11d4c40755e1f8aa2aa9060c957822d831f18d4ace667b5" in windows_physical
         and "$env:EDGE_OPERATION -in @('converge','repair','restart-controller','start')" in windows_physical
+        and "legacy_managed_tun_exact_remote_upgrade=PHYSICAL_NO_TUN_RECOVERY_PROVEN" in windows_physical
+        and "$env:EDGE_RELEASE_SET_SHA256 -cne $currentRelease" in windows_physical
+        and "$currentTun -ceq 'true'" in windows_physical
+        and "controller_listener_present" in windows_physical
+        and "Get-DnsClientServerAddress -InterfaceAlias 'Ethernet'" in windows_physical
+        and "Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP'" in windows_physical
+        and "'127.0.2.2'" in windows_physical
+        and "'127.0.2.3'" in windows_physical
         and windows_physical.index("PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED")
         < windows_physical.index("      - name: Execute typed lifecycle mutation")
         and "Set-DnsClientServerAddress" not in windows_physical,
