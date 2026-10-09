@@ -18,11 +18,14 @@ use edge_shared_types::{
     decode_windows_runtime_state,
 };
 use edge_singbox::{render_windows_config, sync_local_config};
-use sysinfo::{Pid, Signal, System};
+use sysinfo::{Pid, System};
+#[cfg(not(windows))]
+use sysinfo::Signal;
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, GetLastError, SetLastError,
+    CloseHandle, ERROR_NOT_ALL_ASSIGNED, ERROR_SUCCESS, GetLastError, SetLastError, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Security::{
@@ -31,7 +34,8 @@ use windows_sys::Win32::Security::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, GetCurrentProcess, OpenProcessToken,
+    CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, GetCurrentProcess, OpenProcess, OpenProcessToken,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 };
 
 const STARTUP_OBSERVATION_SECS: u64 = 10;
@@ -453,7 +457,7 @@ pub fn start_local_runtime(
     let staged = stage_and_validate_config(paths)?;
 
     if let Some(process) = runtime.as_ref() {
-        stop_process(process.pid);
+        stop_process(process.pid)?;
     }
 
     if let Err(err) = activate_staged_config(paths, &staged) {
@@ -924,13 +928,58 @@ fn classify_processes(
         .unwrap_or(RuntimeProcessClassification::Absent)
 }
 
-fn stop_process(pid: u32) {
+// Confirm the exact prior process has exited before another TUN owner can launch.
+// A signal being sent (or an ignored kill error) is not completion evidence.
+#[cfg(windows)]
+fn stop_process(pid: u32) -> Result<(), String> {
+    if pid == 0 {
+        return Err("refusing to terminate an invalid process id".to_owned());
+    }
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return Err(format!(
+            "failed to open managed process pid {pid} for bounded termination: {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    // This is one OS process wait, not a polling loop. A failed TerminateProcess
+    // can race a naturally exited process; an actually signalled handle wins.
+    let (result, last_error) = unsafe {
+        let _ = TerminateProcess(handle, 1);
+        let result = WaitForSingleObject(handle, 5_000);
+        let last_error = if result == WAIT_OBJECT_0 {
+            0
+        } else {
+            GetLastError()
+        };
+        CloseHandle(handle);
+        (result, last_error)
+    };
+    match result {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_TIMEOUT => Err(format!(
+            "managed process pid {pid} did not exit within the bounded 5-second wait; refusing replacement"
+        )),
+        _ => Err(format!(
+            "unable to confirm managed process pid {pid} exit; wait result {result:#x}, Windows error {last_error}; refusing replacement"
+        )),
+    }
+}
+
+// Linux local-runtime is not the Windows TUN owner. Still propagate failure
+// to deliver the signal instead of reporting a successful stop unconditionally.
+#[cfg(not(windows))]
+fn stop_process(pid: u32) -> Result<(), String> {
     let mut system = System::new_all();
     system.refresh_all();
-    if let Some(process) = system.process(Pid::from_u32(pid)) {
-        let _ = process.kill_with(Signal::Kill);
-        let _ = process.kill();
+    let process = system
+        .process(Pid::from_u32(pid))
+        .ok_or_else(|| format!("managed process pid {pid} disappeared before stop"))?;
+    if process.kill_with(Signal::Kill) != Some(true) {
+        return Err(format!("failed to signal managed process pid {pid}"));
     }
+    Ok(())
 }
 
 fn observe_startup(child: &mut std::process::Child) -> Result<(), String> {
@@ -1117,6 +1166,12 @@ mod tests {
             assert!(failure.contains("CloudflareWARP DNS restoration"));
             assert!(failure.contains(operation));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_stop_rejects_invalid_pid_without_process_mutation() {
+        assert!(stop_process(0).is_err());
     }
 
     #[test]
