@@ -568,6 +568,7 @@ jobs:
       debian_base_image: ${{ steps.resolve.outputs.debian_base_image }}
       ubuntu_base_image: ${{ steps.resolve.outputs.ubuntu_base_image }}
       mesh_image: ${{ steps.resolve.outputs.mesh_image }}
+      base_mesh_image: ${{ steps.resolve.outputs.base_mesh_image }}
       docker_engine_version: ${{ steps.resolve.outputs.docker_engine_version }}
       containerd_version: ${{ steps.resolve.outputs.containerd_version }}
       compose_version: ${{ steps.resolve.outputs.compose_version }}
@@ -744,6 +745,7 @@ jobs:
             printf 'debian_base_image=%s\n' "${debian_ref}"
             printf 'ubuntu_base_image=%s\n' "${ubuntu_ref}"
             printf 'mesh_image=%s\n' "${mesh_ref}"
+            printf 'base_mesh_image=%s\n' "${EDGE_MESH_IMAGE}"
             printf 'docker_engine_version=%s\n' "${docker_engine_version}"
             printf 'containerd_version=%s\n' "${containerd_version}"
             printf 'compose_version=%s\n' "${compose_version}"
@@ -1403,6 +1405,7 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
           RELEASE_INPUT_SHA256: ${{ needs.dependencies.outputs.release_input_sha256 }}
+          BASE_MESH_IMAGE: ${{ needs.dependencies.outputs.base_mesh_image }}
         run: |
           set -euo pipefail
           windows="${RUNNER_TEMP}/candidate/windows"
@@ -1462,7 +1465,11 @@ jobs:
           docker buildx imagetools inspect "${gateway_ref}" >/dev/null
           docker buildx imagetools inspect "${warp_ref}" >/dev/null
           docker logout ghcr.io >/dev/null
-          docker buildx imagetools inspect "${mesh_ref}" >/dev/null
+          # Trust unchanged Mesh digest only via the verified immutable base
+          # ReleaseSet. New digests still require live registry verification.
+          if [[ "${mesh_ref}" != "${BASE_MESH_IMAGE}" ]]; then
+            docker buildx imagetools inspect "${mesh_ref}" >/dev/null
+          fi
 
           cp "${linux}/application-bundle.pb" "${authority}/application-bundle.pb"
           cp "${linux}/application-bundle.pb.sha256" "${authority}/application-bundle.pb.sha256"
@@ -1629,12 +1636,13 @@ jobs:
 
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"
           warp_ref="$(sed -n 's/^warp_egress_image=//p' <<<"${verify_output}")"
-          mesh_ref="$(sed -n 's/^mesh_image=//p' <<<"${verify_output}")"
+          # Candidate provenance already verified a changed Mesh digest.
+          # Postmerge reuses the exact tested tree and does not revalidate
+          # an immutable public registry image or rebuild any candidate.
           printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           docker buildx imagetools inspect "${gateway_ref}" >/dev/null
           docker buildx imagetools inspect "${warp_ref}" >/dev/null
           docker logout ghcr.io >/dev/null
-          docker buildx imagetools inspect "${mesh_ref}" >/dev/null
 
           jq -n \
             --arg accepted_revision "${ACCEPTED_REVISION}" \

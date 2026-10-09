@@ -172,8 +172,10 @@ def main() -> None:
         and "Do not mutate Windows from an unaccepted mode-flip revision" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
         and "Stage 3 and Stage 4A are closed" in readme
-        and "The project is now in Stage 4B" in readme
-        and "currently working external Windows sing-box" in readme
+        and "The project is in Stage 4B with the Windows `MANAGED_TUN` already owned" in readme
+        and "**Stage 4B.2-C remains OPEN:**" in readme
+        and "The accepted proxy-only runtime is the starting point" not in readme
+        and "currently working external Windows sing-box" not in readme
         and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
         and "class-scoped application rotation" in readme
         and "/production rollback" in runbook
@@ -181,14 +183,15 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "Current execution is Stage 4B" in root_readme
-        and "Stage-transition rule: Stage 4A is closed" in root_readme
+        and "**Stage 4B.2-C remains OPEN**" in root_readme
+        and "Stage-transition rule: Stage 4A is closed and the managed Windows TUN is physically running" in root_readme
+        and "The currently working external Windows sing-box/TUN" not in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
         and "`/production rollback` uses the same" in application_readme
         and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
-        "operator documentation must match closed Stage 3/4A and the active bounded Stage 4B managed-TUN cutover without advertising historical authority",
+        "operator documentation must reflect the installed SCM-owned TUN and the still-open independent DNS/control recovery gate",
     )
     require(
         "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
@@ -1748,6 +1751,15 @@ def main() -> None:
         and edge_platform_ci.count("verify-candidate") == 2,
         "candidate and promotion paths must converge through the typed platform build-manifest contract",
     )
+    require(
+        "base_mesh_image: ${{ steps.resolve.outputs.base_mesh_image }}" in edge_platform_ci
+        and "base_mesh_image=%s" in edge_platform_ci
+        and "BASE_MESH_IMAGE: ${{ needs.dependencies.outputs.base_mesh_image }}" in edge_platform_ci
+        and 'if [[ "${mesh_ref}" != "${BASE_MESH_IMAGE}" ]]; then' in edge_platform_ci
+        and edge_platform_ci.count('docker buildx imagetools inspect "${mesh_ref}"') == 1,
+        "CI must live-check a changed pinned Mesh digest once, reuse identical accepted base digest, and never re-check Docker Hub at promotion",
+    )
+
     require(
         "needs.windows.outputs.artifact_sha256" not in edge_platform_ci
         and "needs.windows.outputs.controller_sha256" not in edge_platform_ci
