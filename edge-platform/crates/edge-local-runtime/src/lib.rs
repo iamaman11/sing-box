@@ -411,18 +411,11 @@ pub fn start_local_runtime(
     start_local_runtime_with_policy(paths, visible_window, false)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalStartDecision {
-    NoopManaged,
-    Activate,
-}
-
-fn local_start_decision(managed_present: bool, explicit_restart: bool) -> LocalStartDecision {
-    if managed_present && !explicit_restart {
-        LocalStartDecision::NoopManaged
-    } else {
-        LocalStartDecision::Activate
-    }
+fn existing_owner_for_noop(
+    owner: Option<&ProcessObservation>,
+    explicit_restart: bool,
+) -> Option<&ProcessObservation> {
+    if explicit_restart { None } else { owner }
 }
 
 fn start_local_runtime_with_policy(
@@ -467,9 +460,7 @@ fn start_local_runtime_with_policy(
         ));
     }
 
-    if let Some(process) = runtime.as_ref()
-        && local_start_decision(true, explicit_restart) == LocalStartDecision::NoopManaged
-    {
+    if let Some(process) = existing_owner_for_noop(runtime.as_ref(), explicit_restart) {
         let local_singbox = inspect_local_runtime(&paths.config_path);
         return Ok(RuntimeOperationResult {
             pid: Some(process.pid),
@@ -1216,22 +1207,21 @@ mod tests {
 
     #[test]
     fn ordinary_start_preserves_exact_owner_and_explicit_restart_can_replace() {
+        let owner = ProcessObservation {
+            pid: 42,
+            name: "sing-box".to_owned(),
+            executable_path: None,
+            parent_pid: None,
+            command_line: "sing-box run -c managed.json".to_owned(),
+            config_path: Some("managed.json".to_owned()),
+        };
         assert_eq!(
-            local_start_decision(true, false),
-            LocalStartDecision::NoopManaged
+            existing_owner_for_noop(Some(&owner), false).map(|process| process.pid),
+            Some(42)
         );
-        assert_eq!(
-            local_start_decision(true, true),
-            LocalStartDecision::Activate
-        );
-        assert_eq!(
-            local_start_decision(false, false),
-            LocalStartDecision::Activate
-        );
-        assert_eq!(
-            local_start_decision(false, true),
-            LocalStartDecision::Activate
-        );
+        assert!(existing_owner_for_noop(Some(&owner), true).is_none());
+        assert!(existing_owner_for_noop(None, false).is_none());
+        assert!(existing_owner_for_noop(None, true).is_none());
     }
 
     #[test]
