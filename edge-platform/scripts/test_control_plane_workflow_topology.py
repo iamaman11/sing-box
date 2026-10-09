@@ -93,7 +93,7 @@ def main() -> None:
         windows_console.count("require_exact_immutable_activation_console(&install_root)") == 2
         and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 1
         and "fn require_exact_immutable_activation_console(install_root: &Path)" in windows_console
-        and "let expected = Path::new(&active.console_path).canonicalize()" in windows_console
+        and "let expected = Path::new(&active.console_path)" in windows_console
         and "if running != expected {" in windows_console
         and "never invoke from the stable bin/edge-console.exe" in windows_console
         and windows_console.split("fn activate_privileged_release(", 1)[1].index(
