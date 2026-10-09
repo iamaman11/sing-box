@@ -2053,6 +2053,88 @@ mod tests {
         );
     }
 
+    // Offline Stage 4B.2-C experiment only: production renders hijack and
+    // never exposes an unaccepted native DNS knob to the Windows controller.
+    fn stage4b_offline_native_dns_candidate() -> (Value, Value) {
+        let accepted: Value = serde_json::from_slice(
+            &render_windows_config_for_mode(
+                &stage2_runtime_state(),
+                WindowsDatapathMode::ManagedTun,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut candidate = accepted.clone();
+        let inbounds = candidate
+            .get_mut("inbounds")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let tun = inbounds
+            .iter_mut()
+            .find(|inbound| inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in"))
+            .unwrap();
+        assert_eq!(tun.get("dns_mode").and_then(Value::as_str), Some("hijack"));
+        tun["dns_mode"] = Value::String("native".to_owned());
+        (accepted, candidate)
+    }
+
+    #[test]
+    fn stage4b_native_dns_offline_candidate_changes_exactly_one_field() {
+        let (accepted, candidate) = stage4b_offline_native_dns_candidate();
+        let tun = candidate["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|inbound| inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in"))
+            .unwrap();
+        assert_eq!(tun.get("dns_mode").and_then(Value::as_str), Some("native"));
+        assert_eq!(tun.get("strict_route").and_then(Value::as_bool), Some(true));
+        assert_eq!(tun.get("auto_route").and_then(Value::as_bool), Some(true));
+
+        let mut reverted = candidate;
+        let tun = reverted["inbounds"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|inbound| inbound.get("tag").and_then(Value::as_str) == Some("managed-tun-in"))
+            .unwrap();
+        tun["dns_mode"] = Value::String("hijack".to_owned());
+        assert_eq!(
+            reverted, accepted,
+            "offline experiment changed another field"
+        );
+        let authoritative: Value =
+            serde_json::from_slice(&render_windows_config(&stage2_runtime_state()).unwrap())
+                .unwrap();
+        assert_eq!(
+            authoritative, accepted,
+            "offline experiment must not alter canonical production rendering"
+        );
+    }
+
+    #[test]
+    fn stage4b_native_dns_offline_candidate_passes_exact_sing_box_check_when_supplied() {
+        let Some(binary) = std::env::var_os("EDGE_TEST_SING_BOX") else {
+            return; // Native config validation runs with the locked binary in Windows CI.
+        };
+        let (_accepted, candidate) = stage4b_offline_native_dns_candidate();
+        let repo_root = unique_test_dir();
+        fs::create_dir_all(&repo_root).unwrap();
+        let config_path = repo_root.join("stage4b-offline-native-dns-candidate.json");
+        fs::write(&config_path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+
+        let status = Command::new(binary)
+            .args(["check", "-c"])
+            .arg(&config_path)
+            .status()
+            .unwrap();
+        let _ = fs::remove_dir_all(repo_root);
+        assert!(
+            status.success(),
+            "exact pinned sing-box rejected offline-only native DNS candidate"
+        );
+    }
+
     #[test]
     fn exact_sing_box_accepts_stage4b_managed_tun_config_when_supplied() {
         let Some(binary) = std::env::var_os("EDGE_TEST_SING_BOX") else {
