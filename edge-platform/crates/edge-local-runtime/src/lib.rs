@@ -18,9 +18,9 @@ use edge_shared_types::{
     decode_windows_runtime_state,
 };
 use edge_singbox::{render_windows_config, sync_local_config};
-use sysinfo::{Pid, System};
 #[cfg(not(windows))]
 use sysinfo::Signal;
+use sysinfo::{Pid, System};
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
