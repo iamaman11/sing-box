@@ -2787,7 +2787,10 @@ mod tests {
             credential_transition_action: None,
         };
         let encoded = encode_windows_privileged_request(&request).unwrap();
-        assert_eq!(decode_windows_privileged_request(&encoded).unwrap(), request);
+        assert_eq!(
+            decode_windows_privileged_request(&encoded).unwrap(),
+            request
+        );
 
         let mut invalid = request.clone();
         invalid.accepted_revision = None;
