@@ -185,8 +185,10 @@ def main() -> None:
         and "process_classification=ABSENT;process_evidence_complete=true;process_count=0;"
             in windows_physical
         and "Get-CimInstance -ClassName Win32_Service" in windows_physical
-        and "offline_native_activation=BLOCKED_LEGACY_PRIVILEGED_DISPATCH_LACKS_OFFLINE_OPERATION"
+        and "offline_native_activation=NOT_EXECUTED_READ_ONLY_PREFLIGHT"
             in windows_physical
+        and "offline_command_advertised=$offlineCommandAdvertised" in windows_physical
+        and "installedCommands = @(& $console --help)" in windows_physical
         and "offline_mutations_performed=0" in windows_physical
         and windows_physical.count("      - name: Execute typed lifecycle mutation") == 1,
         "offline preflight must observe exact stopped owner and old privileged task without installation or TUN capture",
