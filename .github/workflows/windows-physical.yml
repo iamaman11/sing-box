@@ -314,11 +314,30 @@ jobs:
           }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
-          # Stage 4B.2-C: NO teardown before independent foreign CloudflareWARP DNS
-          # recovery and an independent control-channel restore have been proven.
-          # This is deliberately before 'Execute typed lifecycle mutation'.
-          if ($env:EDGE_OPERATION -in @('stop','rollback')) {
-            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: stop/rollback requires independently proven CloudflareWARP DNS and control-channel restoration'
+          # Independent ProxyOnly/no-TUN teardown remains unsupported. A strictly
+          # managed-TUN previous-release rollback is an explicit release handoff,
+          # not permission to stop the host TUN or mutate foreign DNS ownership.
+          if ($env:EDGE_OPERATION -eq 'stop') {
+            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: stop requires independently proven CloudflareWARP DNS and control-channel restoration'
+          }
+          if ($env:EDGE_OPERATION -eq 'rollback') {
+            if ($currentMode -cne 'ManagedTun' -or $env:EDGE_EXPECTED_MODE -cne 'ManagedTun' -or
+                $currentTun -cne 'true' -or $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256 -or
+                [string]$values['scm_state'] -cne 'Running' -or
+                [string]$values['scm_executable_matches_release'] -cne 'true' -or
+                [string]$values['controller_listener_present'] -cne 'true' -or
+                [string]$values['controller_listener_pid'] -cne [string]$values['scm_process_id']) {
+              throw 'PRE_MUTATION_ROLLBACK_BLOCKED: exact accepted Running ManagedTun owner required'
+            }
+            $foreignAdapter = Get-NetAdapter -Name 'CloudflareWARP' -ErrorAction Stop
+            $foreignDns = @(Get-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP' -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object ServerAddresses)
+            $routerDns = @(Get-DnsClientServerAddress -InterfaceAlias 'Ethernet' -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object ServerAddresses)
+            if ([string]$foreignAdapter.Status -cne 'Up' -or
+                ($foreignDns -join ',') -cne '172.19.0.2,192.168.100.1' -or
+                ($routerDns -join ',') -cne '192.168.100.1') {
+              throw 'PRE_MUTATION_ROLLBACK_BLOCKED: foreign CloudflareWARP/Ethernet DNS or owner differs from accepted no-TUN rescue baseline'
+            }
+            Write-Host 'managed_tun_previous_rollback_dns_owner_preflight=PASS'
           }
           if ($currentMode -ceq 'ManagedTun' -and
               $env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly' -and
@@ -420,6 +439,15 @@ jobs:
             }
             if ([string]$previousValues['exact_release_files'] -cne 'PASS') {
               throw 'Previous ReleaseSet exact files are not verified'
+            }
+            if ($env:EDGE_OPERATION -eq 'rollback' -and
+                ([string]$previousValues['release_set_sha256'] -ceq $currentRelease -or
+                 [string]$previousValues['windows_datapath_mode'] -cne 'ManagedTun' -or
+                 $managedBefore.Count -ne 1 -or
+                 [string]$values['managed_tun_present'] -cne 'true' -or
+                 [string]$values['managed_tun_ipv4'] -cne '172.19.0.1' -or
+                 [string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2')) {
+              throw 'PRE_MUTATION_ROLLBACK_BLOCKED: distinct verified previous release and exact single-owner ManagedTun required'
             }
             "EDGE_BEFORE_PREVIOUS_RELEASE=$([string]$previousValues['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           }
