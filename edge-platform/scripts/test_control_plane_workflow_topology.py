@@ -175,6 +175,25 @@ def main() -> None:
         "diagnose must bypass privileged post-mutation assertions and any lifecycle mutation",
     )
 
+    # A previous successful TUN cutover on the deleted VM never authorizes
+    # an unauthenticated restart on the rebuilt server. This pre-mutation
+    # policy has to be upstream of every native activation, not a warning.
+    pre_mutation = windows_physical.split(
+        "      - name: Assert isolated root and observe pre-state", 1
+    )[1].split("      - name: Execute typed lifecycle mutation", 1)[0]
+    require(
+        "PRE_MUTATION_MANAGED_TUN_PREAUTH_BLOCKED" in pre_mutation
+        and "[string]$values['scm_state'] -cne 'Running'" in pre_mutation
+        and "[int]$values['managed_singbox_process_count'] -ne 1" in pre_mutation
+        and "$currentTun -cne 'true'" in pre_mutation
+        and "independent no-TUN DNS/control restoration are UNPROVEN" in pre_mutation
+        and "Write-Warning 'Recovering a partial ManagedTun activation" not in windows_physical
+        and "EDGE_BEFORE_PARTIAL_MANAGED_TUN" not in windows_physical
+        and "privileged-activate" not in pre_mutation
+        and "      - name: Execute typed lifecycle mutation" in windows_physical,
+        "stopped or partial ManagedTun must fail closed before any route-capturing lifecycle mutation",
+    )
+
     # Cloudflare One observation is allowed only inside existing read-only diagnose.
     foreign_marker = "      - name: Observe Cloudflare One effective client state (read-only)"
     require(windows_physical.count(foreign_marker) == 1, "foreign observation must not create duplicate owners")
@@ -347,7 +366,7 @@ def main() -> None:
         and "Resolve expected Windows datapath mode" in windows_physical
         and "Prove MANAGED_TUN ordinary Windows traffic DNS and foreign Mesh coexistence" in windows_physical
         and "Refuse unproven automatic rollback after MANAGED_TUN verification failure" in windows_physical
-        and "Recovering a partial ManagedTun activation with no managed TUN present" in windows_physical
+        and "PRE_MUTATION_MANAGED_TUN_PREAUTH_BLOCKED" in windows_physical
         and "Exact immutable rollback console is unavailable" not in windows_physical
         and "Stable rollback console is missing" not in windows_physical
         and "runtime_server_ip" not in windows_diagnostic

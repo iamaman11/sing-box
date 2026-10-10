@@ -472,12 +472,15 @@ jobs:
               if ($currentTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
             }
             'ManagedTun' {
-              if ($currentTun -cne 'true') {
-                if ($env:EDGE_OPERATION -in @('diagnose','quality-line1')) {
-                  throw 'ManagedTun state is missing managed TUN'
-                }
-                Write-Warning 'Recovering a partial ManagedTun activation with no managed TUN present'
-                "EDGE_BEFORE_PARTIAL_MANAGED_TUN=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
+              # Incident 2026-10-10: never recapture host routes from a stopped,
+              # partially activated or unowned ManagedTun before independently
+              # proven no-TUN DNS/control recovery and live Line1 authentication.
+              # Neither a green ReleaseSet nor sing-box config syntax proves it.
+              # Read-only /windows diagnose uses its separate safe observation step.
+              if ($currentTun -cne 'true' -or
+                  [string]$values['scm_state'] -cne 'Running' -or
+                  [int]$values['managed_singbox_process_count'] -ne 1) {
+                throw 'PRE_MUTATION_MANAGED_TUN_PREAUTH_BLOCKED: active authenticated Line1 and independent no-TUN DNS/control restoration are UNPROVEN; do not capture Windows routes'
               }
             }
             default { throw "Unsupported installed Windows datapath mode: $currentMode" }
