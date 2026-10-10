@@ -282,6 +282,15 @@ failure and fail-closed compensating cleanup remain the terminal authority.
 No SSH mutation replay, global retry, additional job or service. A `PASS`
 snapshot is diagnostic only, never physical acceptance.
 
+**New disposable VM acceptance cleanup dependency:** the sole typed coordinator
+first removes Mesh runtime/provider and acceptance DNS/temporary access, then
+detaches and deletes the **exact project-owned VPC while the source VM remains
+owned and observable**, and only after verified VPC absence destroys the VM.
+Any stale/foreign/ambiguous attachment, failed detach or uncertain VPC read
+blocks VM destruction and produces `DIAGNOSTIC_REQUIRED` rather than erasing
+the resource ownership needed for recovery. Final independent zero-leak proof
+still gates PASS. No new transport, scheduler, daemon, retry or generic shell.
+
 ## Safety
 
 Never reintroduce:

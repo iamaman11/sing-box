@@ -121,9 +121,15 @@ fn cleanup_plan(progress: &AcceptanceProgress) -> Result<Vec<CleanupStep>, Strin
     }
     steps.extend([CleanupStep::MeshProvider, CleanupStep::Dns]);
     if progress.vm_possible {
-        steps.extend([CleanupStep::Access, CleanupStep::VmSupport]);
+        // VPC detach/delete must happen while the exact owned VM is still
+        // observable; Vultr can retain stale attachments after VM destruction.
+        steps.push(CleanupStep::Access);
     }
-    steps.extend([CleanupStep::Vpc, CleanupStep::FinalZeroLeak]);
+    steps.push(CleanupStep::Vpc);
+    if progress.vm_possible {
+        steps.push(CleanupStep::VmSupport);
+    }
+    steps.push(CleanupStep::FinalZeroLeak);
     Ok(steps)
 }
 
@@ -737,6 +743,7 @@ async fn cleanup_environment(
     }
 
     let mut failures = Vec::new();
+    let mut vpc_cleanup_verified = false;
 
     for step in plan {
         match step {
@@ -769,21 +776,30 @@ async fn cleanup_environment(
                 .await;
                 record_cleanup_failure(&mut failures, "access_release", result);
             }
+            CleanupStep::Vpc => {
+                // Detach exact lifecycle-owned VM, then delete project VPC,
+                // while the owned VM still exists and remains identifiable.
+                let result =
+                    timed_stage("cleanup.vpc", vpc_cleanup_to_absent(paths.vpc_spec)).await;
+                vpc_cleanup_verified = result.is_ok();
+                record_cleanup_failure(&mut failures, "vpc_cleanup", result);
+            }
             CleanupStep::VmSupport => {
+                // Never destroy the only provable attachment owner after an
+                // uncertain VPC detach; preserve it for exact later recovery.
+                if !vpc_cleanup_verified {
+                    failures.push(
+                        "vm_support_cleanup: blocked until exact VPC detach/deletion is verified"
+                            .to_owned(),
+                    );
+                    continue;
+                }
                 let result = timed_stage(
                     "cleanup.vm_support",
                     acceptance_destroy_and_cleanup(vultr_spec, machine_id, source_revision),
                 )
                 .await;
                 record_cleanup_failure(&mut failures, "vm_support_cleanup", result);
-            }
-            CleanupStep::Vpc => {
-                // VPC cleanup intentionally follows VM destruction. That removes the strongest
-                // attachment dependency while the VPC owner still fresh-observes/fresh-plans
-                // every destructive transition.
-                let result =
-                    timed_stage("cleanup.vpc", vpc_cleanup_to_absent(paths.vpc_spec)).await;
-                record_cleanup_failure(&mut failures, "vpc_cleanup", result);
             }
             CleanupStep::FinalZeroLeak => {
                 let final_zero_leak = timed_stage(
@@ -873,6 +889,36 @@ fn print_cleanup_certificate(certificate: &CleanupCertificate<'_>) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_proves_exact_vpc_detach_before_destroying_vm_owner() {
+        let progress = AcceptanceProgress {
+            mutation_started: true,
+            vm_possible: true,
+            mesh_runtime_possible: true,
+        };
+        let plan = cleanup_plan(&progress).unwrap();
+        let vpc = plan
+            .iter()
+            .position(|step| *step == CleanupStep::Vpc)
+            .unwrap();
+        let destroy = plan
+            .iter()
+            .position(|step| *step == CleanupStep::VmSupport)
+            .unwrap();
+        assert!(vpc < destroy);
+        assert_eq!(plan.last(), Some(&CleanupStep::FinalZeroLeak));
+    }
+
+    #[test]
+    fn incomplete_vpc_cleanup_is_not_a_vm_destruction_authority() {
+        // Only a verified VPC transition may unlock VM deletion. A stale
+        // attachment or provider read error remains DIAGNOSTIC_REQUIRED.
+        let disposition = terminal_disposition(TerminalPath::SuccessCleanupFailed);
+        assert_eq!(disposition.outcome, "DIAGNOSTIC_REQUIRED");
+        assert_eq!(disposition.compensation, "FAILED");
+        assert_eq!(disposition.zero_leaked_resources, "UNPROVEN");
+    }
 
     #[test]
     fn ssh_forensics_is_bounded_to_transport_errors_not_application_mutations() {
@@ -971,8 +1017,8 @@ mod tests {
                 CleanupStep::MeshProvider,
                 CleanupStep::Dns,
                 CleanupStep::Access,
-                CleanupStep::VmSupport,
                 CleanupStep::Vpc,
+                CleanupStep::VmSupport,
                 CleanupStep::FinalZeroLeak,
             ]
         );
