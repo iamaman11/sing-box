@@ -36,6 +36,25 @@ Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner.
 
 **Before Stage 4B.5 Android Mesh, Gate `NEW_VM_FRESH_APPLICATION_DEPLOYMENT` must PASS:** create a **new disposable Vultr VM** using the existing typed `/application acceptance` via issue #1. Require read-only Vultr doctor/inventory and clean room before any new VM, exact ReleaseSet v1 installation/health, idempotent reapply, v2 upgrade, exact rollback, VM reboot and postboot application+Mesh+DNS+VPC checks, scoped teardown, final zero-leak check and independent fresh provider inventory. No production VM mutations. [Active cursor #26](https://github.com/iamaman11/sing-box/issues/26) and [gate contract](https://github.com/iamaman11/sing-box/issues/26#issuecomment-6098256373) own progress. Stage 4C deletion-first follows Android functional acceptance.
 
+**Cloudflare Mesh NODE prerequisite:** Cloudflare's server Mesh node requires an
+exact warp_connector device profile (MASQUE/Traffic and DNS/100.96.0.0/12)
+before server enrollment; this is not an Android-client-only prerequisite.
+The typed `cloudflare-zero-trust doctor --scope vm-server` must fail closed
+when the node profile or other shared account prerequisites are missing,
+before the disposable VM is created. A missing project Mesh-node profile
+must be provisioned only by an accepted scoped Cloudflare owner; do not
+forge an Android client identity or bypass readiness in YAML.
+
+**Current Mesh inactive diagnostic slice (pre-4B.5):** the existing disposable
+`/application acceptance` must retain the Cloudflare provider `healthy` gate. If local
+`MeshRuntimeState` is READY but provider health remains `inactive`, take exactly one
+additional typed read-only deep Mesh observation before compensation destroys the guest;
+emit only fixed-field, normalized, non-secret status (no raw CLI/log/token/registration ID).
+The original provider failure remains primary even if this observation is unavailable.
+This diagnostic improvement by itself does **not** close the full new-VM lifecycle gate.
+Source, negative tests, accepted exact-head CI and new physical v1→v2→rollback→reboot
+proof are separate obligations in the sole master plan, issue #26.
+
 **Separate residual guard:** the foreign Cloudflare One Client is in `TunnelOnly` and may list both TUN DNS `172.19.0.2` and router `192.168.100.1`. Automatic independent no-TUN DNS/GitHub restore and ManagedTun→ProxyOnly teardown are not accepted. Keep `hijack + strict_route`, leave `native` DNS offline-only, never stop working TUN to manufacture recovery proof, and do not add an extra Windows service, DNS writer, daemon, scheduler, WFP exception or edit foreign Cloudflare One/MISH/OKX. The dedicated `NT SERVICE\\EdgePlatformController` retains least-scope TUN ownership; do not switch to LocalSystem.
 
 ## Steady-state owner map

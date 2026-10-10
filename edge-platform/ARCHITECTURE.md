@@ -912,7 +912,7 @@ access, not a completed automatic recovery test.
 `HIJACK_OUTSIDE_TUN_DNS_BLOCK=HOST_PROVED` (historical label preserved
 only for this decision text); `NATIVE_MODE_SIMULTANEOUS_DNS=UNTESTED`;
 `NATIVE_MODE_NO_LEAK=UNTESTED`; `AUTOMATIC_RECOVERY=UNPROVEN`.
-**Stage 4B.2-C OPEN; stop/rollback/fault injection BLOCKED.**
+**Historical 2026-10-09 gate state (superseded by issue #26):** Stage 4B.2-C was OPEN and fault injection BLOCKED at that checkpoint. The later bounded ManagedTun acceptance is CLOSED; independent automatic no-TUN DNS/GitHub recovery and ManagedTun→ProxyOnly teardown remain unproven. Do not treat this historical paragraph as a current execution gate.
 Canonical operator execution cursor and local evidence: issue #26.
 Upstream exact sources:
 https://github.com/SagerNet/sing-box/blob/v1.14.2/go.mod ;
@@ -1011,6 +1011,15 @@ database or another sing-box process. Transient Line 1 selection must restore th
 on every terminal path.
 
 **4B.5 — Line 3 Android Mesh functional closure**
+
+Before new-VM server Mesh acceptance, Cloudflare's *node* profile is a required
+account-level prerequisite: exact warp_connector selector, MASQUE Traffic and
+DNS mode, and the Mesh CIDR. This is not an Android user-client profile.
+`vm-server` preflight must check that node profile and shared account
+prerequisites; Android device enrollment/real traffic remains a separate
+4B.5 functional gate. Never bypass the missing node profile by renaming
+the scope, and never mutate the active Cloudflare account via the
+historical migration-only target-plane route.
 
 Line 3 reuses the existing Cloudflare Mesh provider lifecycle, VM local Mesh runtime owner and
 `vultr-cloudflare-mesh` container. A healthy connector or private/VPC CIDR route is not by itself evidence

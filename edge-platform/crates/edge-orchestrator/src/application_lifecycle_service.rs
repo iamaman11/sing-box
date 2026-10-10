@@ -1353,7 +1353,7 @@ pub(crate) async fn cleanup_mesh_runtime_remote(
     }
 }
 
-async fn observe_mesh_runtime_remote_once(
+pub(crate) async fn observe_mesh_runtime_remote_once(
     authority: &ApplicationAuthority,
 ) -> Result<MeshRuntimeState, String> {
     let (mut client, _tunnel) = connect_agent(authority).await?;
@@ -1362,6 +1362,67 @@ async fn observe_mesh_runtime_remote_once(
         .await
         .map_err(|err| format!("typed VerifyMeshRuntime RPC failed: {err}"))
         .map(|response| response.into_inner())
+}
+
+/// Fixed-schema, secret-safe evidence for a *provider* health failure after local
+/// convergence. Unlike the broader internal forensic summary, no identities,
+/// network addresses, filenames, image names, logs, or raw probe output escape.
+pub(crate) fn mesh_provider_failure_evidence(
+    state: &MeshRuntimeState,
+    expected_registration: &str,
+) -> String {
+    let diagnostics = state.diagnostics.as_ref();
+    let container = diagnostics.and_then(|value| value.container.as_ref());
+    let warp_state = match diagnostics.and_then(|value| value.warp_connection_state.as_deref()) {
+        Some("CONNECTED") => "CONNECTED",
+        Some("DISCONNECTED") => "DISCONNECTED",
+        Some(_) => "OTHER",
+        None => "UNKNOWN",
+    };
+    let protocol = match diagnostics.and_then(|value| value.tunnel_protocol.as_deref()) {
+        Some("MASQUE") => "MASQUE",
+        Some("WIREGUARD") => "WIREGUARD",
+        Some(_) => "OTHER",
+        None => "UNKNOWN",
+    };
+    let probe = |value: Option<&edge_shared_types::RuntimeProbeEvidence>| {
+        value
+            .map(|evidence| runtime_probe_status_label(evidence.status))
+            .unwrap_or("UNSPECIFIED")
+    };
+    let forwarding = match diagnostics.and_then(|value| value.ipv4_forwarding) {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    };
+    format!(
+        "local_diagnostic=OBSERVED runtime_ready={} exact_image_ready={} registration_match={} token_store_present={} container_running={} warp_state={} tunnel_protocol={} warp_status_probe={} warp_settings_probe={} ipv4_forwarding={} forwarding_probe={} mesh_network_attached={} container_restart_count={} container_oom_killed={} last_failure_reason_count={}",
+        state.runtime_ready,
+        state.exact_image_ready,
+        state.registration_id.as_deref() == Some(expected_registration),
+        state.token_store_present,
+        state.container_running,
+        warp_state,
+        protocol,
+        probe(diagnostics.and_then(|value| value.warp_status_probe.as_ref())),
+        probe(diagnostics.and_then(|value| value.warp_settings_probe.as_ref())),
+        forwarding,
+        probe(diagnostics.and_then(|value| value.ipv4_forwarding_probe.as_ref())),
+        diagnostics.is_some_and(|value| value.mesh_network_attached),
+        container
+            .and_then(|value| value.restart_count)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        container
+            .and_then(|value| value.oom_killed)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned()),
+        state
+            .last_failure_snapshot
+            .as_ref()
+            .map(|value| value.reasons.len())
+            .unwrap_or(0)
+    )
 }
 
 fn mesh_runtime_evidence_summary(state: &MeshRuntimeState) -> String {
@@ -1687,6 +1748,62 @@ fn unique_temp_file(prefix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_provider_failure_evidence_never_exposes_untrusted_identifiers_or_raw_probes() {
+        let mut state = MeshRuntimeState {
+            runtime_ready: true,
+            exact_image_ready: true,
+            token_store_present: true,
+            container_running: true,
+            registration_id: Some("registration-sensitive".to_owned()),
+            ..Default::default()
+        };
+        let diagnostics = edge_shared_types::MeshRuntimeDiagnostics {
+            warp_connection_state: Some("secret-unknown-state".to_owned()),
+            tunnel_protocol: Some("Bearer hidden-protocol".to_owned()),
+            ipv4_forwarding: Some(true),
+            mesh_network_attached: true,
+            warp_status_probe: Some(edge_shared_types::RuntimeProbeEvidence {
+                status: RuntimeProbeStatus::NonZero as i32,
+                diagnostic_stdout: Some("Bearer do-not-print".to_owned()),
+                diagnostic_stderr: Some("10.1.2.3".to_owned()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        state.diagnostics = Some(diagnostics);
+        let output = mesh_provider_failure_evidence(&state, "registration-sensitive");
+        assert!(output.contains("registration_match=true"));
+        assert!(output.contains("warp_state=OTHER"));
+        assert!(output.contains("tunnel_protocol=OTHER"));
+        assert!(output.contains("warp_status_probe=NON_ZERO"));
+        assert!(output.contains("ipv4_forwarding=true"));
+        assert!(output.contains("mesh_network_attached=true"));
+        for secret in [
+            "registration-sensitive",
+            "secret-unknown-state",
+            "Bearer",
+            "hidden-protocol",
+            "10.1.2.3",
+        ] {
+            assert!(!output.contains(secret));
+        }
+        let drift = mesh_provider_failure_evidence(&state, "other-registration");
+        assert!(drift.contains("registration_match=false"));
+        assert!(!drift.contains("other-registration"));
+    }
+
+    #[test]
+    fn mesh_provider_failure_evidence_preserves_unknown_probe_states_without_claiming_success() {
+        let output = mesh_provider_failure_evidence(&MeshRuntimeState::default(), "node");
+        assert!(output.contains("runtime_ready=false"));
+        assert!(output.contains("registration_match=false"));
+        assert!(output.contains("warp_state=UNKNOWN"));
+        assert!(output.contains("forwarding_probe=UNSPECIFIED"));
+        assert!(output.contains("ipv4_forwarding=unknown"));
+        assert!(output.contains("mesh_network_attached=false"));
+    }
     use edge_controller_core::application_lifecycle::{
         ApplicationBootstrapMode, ApplicationRuntimePolicy, Line2RuntimePolicy,
     };
