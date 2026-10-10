@@ -103,6 +103,28 @@ def main() -> None:
         ),
         "immutable console preflight must reject loaded stable EXE at CLI and dispatcher before stopping ManagedTun",
     )
+    require(
+        "fn supervise_windows_managed_child(repo_root: PathBuf)" in windows_controller
+        and "fn reconcile_windows_child_exit(" in windows_controller
+        and "WaitForSingleObject(handle, u32::MAX)" in windows_controller
+        and 'std::thread::Builder::new()' in windows_controller
+        and 'tokio::sync::oneshot::channel()' in windows_controller
+        and "spawn_blocking(move || wait_for_windows_child_exit" not in windows_controller
+        and "WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel)" in windows_controller
+        and "exchange/requests/request.pb" in windows_controller
+        and "destructive_windows_handoff_pending(repo_root)?" in windows_controller
+        and "WindowsPrivilegedOperation::ActivateRelease" in windows_controller
+        and "WindowsPrivilegedOperation::RestartControllerService" in windows_controller
+        and "completed_result.as_deref() != prior_privileged_result" in windows_controller
+        and "decode_windows_privileged_result(bytes)?" in windows_controller
+        and "decode_windows_activation_state(&activation_bytes)?" in windows_controller
+        and "if executable != expected {" in windows_controller
+        and "WINDOWS_RUNTIME_OWNER_GATE" in windows_controller
+        and "one-shot native child recovery budget exhausted" in windows_controller
+        and "write_controller_service_error(&supervisor_root, \"child_exit\", &err)" in windows_controller
+        and "WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release)" in windows_controller,
+        "SCM child exit response must use kernel event, exact single owner, durable handoff and bounded one-shot recovery without polling",
+    )
     # Cloudflare One observation is allowed only inside existing read-only diagnose.
     foreign_marker = "      - name: Observe Cloudflare One effective client state (read-only)"
     require(windows_physical.count(foreign_marker) == 1, "foreign observation must not create duplicate owners")
