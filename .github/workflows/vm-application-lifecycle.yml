@@ -809,7 +809,36 @@ jobs:
             .mutations_performed == 0
           ' "${RUNNER_TEMP}/acceptance-vultr-authority-doctor.json" >/dev/null
 
-          "${bin}" cloudflare-zero-trust doctor             infra/cloudflare/zero-trust-guardrails.json             > "${RUNNER_TEMP}/acceptance-zero-trust-doctor.json"
+          # The typed doctor writes its structured observation before returning BLOCKED.
+          # Surface only boolean readiness, never account/device/connector names or secrets.
+          cf_report="${RUNNER_TEMP}/acceptance-zero-trust-doctor.json"
+          cf_exit=0
+          "${bin}" cloudflare-zero-trust doctor infra/cloudflare/zero-trust-guardrails.json > "${cf_report}" || cf_exit=$?
+          if [[ -s "${cf_report}" ]]; then
+            jq -c '{
+              status,
+              token_read_authority,
+              device_settings_ready: .device_settings.ready,
+              connectors_ready: .connectors.ready,
+              unexpected_connector_count: (.connectors.unexpected_names | length),
+              mesh_node_profile_ready: .mesh_node_profile.ready,
+              mesh_selector_matches: .mesh_node_profile.exact_selector_matches,
+              mesh_cidr_included: .mesh_node_profile.mesh_cidr_included,
+              enrollment_ready: .enrollment.ready,
+              gateway_ready: .gateway.ready,
+              manual_prerequisites_ready: .manual_prerequisites.ready
+            }' "${cf_report}" | tee "${RUNNER_TEMP}/acceptance-cloudflare-readiness-summary.json"
+            {
+              echo '### Disposable application Cloudflare readiness (read-only)'
+              echo '~~~json'
+              cat "${RUNNER_TEMP}/acceptance-cloudflare-readiness-summary.json"
+              echo '~~~'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          if [[ "${cf_exit}" -ne 0 ]]; then
+            echo "Cloudflare Zero Trust readiness blocked disposable application acceptance before VM creation" >&2
+            exit "${cf_exit}"
+          fi
           jq -e '
             .status == "PASS" and
             .token_read_authority == "PASS" and
@@ -819,7 +848,7 @@ jobs:
             .enrollment.ready == true and
             .gateway.ready == true and
             .manual_prerequisites.ready == true
-          ' "${RUNNER_TEMP}/acceptance-zero-trust-doctor.json" >/dev/null
+          ' "${cf_report}" >/dev/null
 
       - name: Validate disposable provider desired state
         shell: bash

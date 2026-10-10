@@ -32,23 +32,11 @@ production rollback, class-scoped application credential rotation, Stage-3 proof
 retirement/contraction and Stage-4A zero-consumer physical shrink are accepted and must not be
 reopened for confidence.
 
-The project is in Stage 4B with the Windows `MANAGED_TUN` already owned by the single SCM
-`EdgePlatformController`. Stage 4B.1 source/renderer and the normal controlled
-ManagedTun-to-ManagedTun lifecycle have accepted tests and physical evidence, including an
-ordinary reboot. They are **not** proof of TUN-absent DNS/GitHub control recovery.
-**Stage 4B.2-C remains OPEN:** the foreign Cloudflare One Client is in `TunnelOnly` mode,
-and its adapter has contained both `172.19.0.2` (the project's TUN DNS) and the Ethernet
-DHCP resolver `192.168.100.1`. Presence of the latter, or `previous.pb=ManagedTun`, is not
-an independent no-TUN rescue. Keep the accepted `hijack + strict_route` DNS leak guard;
-`native` is offline-only, not a proven fix. TUN stop/rollback/fault injection and blind
-deployment of a newer ReleaseSet stay blocked until #26 records physical administrator,
-independent DNS/GitHub transport and bounded recovery acceptance. Published artifacts may
-differ from the exact currently installed Windows ReleaseSet; diagnose before any mutation.
-Stage 4B.5 Android Mesh E2E remains open; Stage 4C deletion-first follows acceptance.
-No extra Windows service, scheduler, DNS writer, WFP exception or foreign-owner edit is allowed.
-The dedicated `NT SERVICE\EdgePlatformController` retains the accepted least-scope
-administrator-class TUN ownership instead of switching the service to LocalSystem.
-See `ARCHITECTURE.md` for the stable invariants; #26 alone owns execution order.
+Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner. **Stage 4B.2-C is CLOSED for the accepted bounded ManagedTun contract**: physical first-child one-shot recovery, second-child fail-closed, attended SCM restart, exact previous-ManagedTun rollback and latest reconverge, real Windows reboot, one SCM + one child, TUN/DNS/GitHub recovery, native Line1 HTTPS 20/20 and ordinary Windows no-proxy DNS/HTTPS. [Full physical proof](https://github.com/iamaman11/sing-box/issues/26#issuecomment-6098179421).
+
+**Before Stage 4B.5 Android Mesh, Gate `NEW_VM_FRESH_APPLICATION_DEPLOYMENT` must PASS:** create a **new disposable Vultr VM** using the existing typed `/application acceptance` via issue #1. Require read-only Vultr doctor/inventory and clean room before any new VM, exact ReleaseSet v1 installation/health, idempotent reapply, v2 upgrade, exact rollback, VM reboot and postboot application+Mesh+DNS+VPC checks, scoped teardown, final zero-leak check and independent fresh provider inventory. No production VM mutations. [Active cursor #26](https://github.com/iamaman11/sing-box/issues/26) and [gate contract](https://github.com/iamaman11/sing-box/issues/26#issuecomment-6098256373) own progress. Stage 4C deletion-first follows Android functional acceptance.
+
+**Separate residual guard:** the foreign Cloudflare One Client is in `TunnelOnly` and may list both TUN DNS `172.19.0.2` and router `192.168.100.1`. Automatic independent no-TUN DNS/GitHub restore and ManagedTun→ProxyOnly teardown are not accepted. Keep `hijack + strict_route`, leave `native` DNS offline-only, never stop working TUN to manufacture recovery proof, and do not add an extra Windows service, DNS writer, daemon, scheduler, WFP exception or edit foreign Cloudflare One/MISH/OKX. The dedicated `NT SERVICE\\EdgePlatformController` retains least-scope TUN ownership; do not switch to LocalSystem.
 
 ## Steady-state owner map
 
