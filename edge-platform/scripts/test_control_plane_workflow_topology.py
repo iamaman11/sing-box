@@ -209,7 +209,9 @@ def main() -> None:
         and "Production release rollback is not yet a supported public operation" not in runbook
         and "Stage 3 and Stage 4A are closed" in readme
         and "Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner" in readme
-        and "**Stage 4B.2-C is CLOSED for the accepted bounded ManagedTun contract**" in readme
+        and "**Stage 4B.2-C had historical physical acceptance on the previous server/runtime generation, not the currently rebuilt server**" in readme
+        and "**ACTIVE P0" in readme
+        and "No start/converge/repair/restart-controller/rollback or unattended reboot" in readme
         and "The accepted proxy-only runtime is the starting point" not in readme
         and "currently working external Windows sing-box" not in readme
         and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
@@ -219,7 +221,9 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "**Stage 4B.2-C is physically CLOSED for the bounded ManagedTun lifecycle:**" in root_readme
+        and "**Stage 4B.2-C was physically accepted for the previous server/runtime generation (historical scope only):**" in root_readme
+        and "**ACTIVE P0" in root_readme
+        and "Do not dispatch `/windows converge|start|repair|rollback|restart-controller`" in root_readme
         and "Mandatory before Stage 4B.5 Android Mesh" in root_readme
         and "The currently working external Windows sing-box/TUN" not in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
