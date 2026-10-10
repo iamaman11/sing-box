@@ -2093,7 +2093,9 @@ fn require_managed_tun_rollback_pair(
     if request.accepted_revision.as_deref() != Some(current.source_revision.as_str())
         || request.release_set_sha256.as_deref() != Some(previous.release_set_sha256.as_str())
     {
-        return Err("rollback authority changed since exact submitted current/previous proof".to_owned());
+        return Err(
+            "rollback authority changed since exact submitted current/previous proof".to_owned(),
+        );
     }
     Ok(())
 }
@@ -4050,12 +4052,18 @@ mod tests {
         require_managed_tun_rollback_pair(&request, &current, &previous).unwrap();
 
         request.release_set_sha256 = Some("c".repeat(64));
-        assert!(require_managed_tun_rollback_pair(&request, &current, &previous)
-            .unwrap_err().contains("authority changed"));
+        assert!(
+            require_managed_tun_rollback_pair(&request, &current, &previous)
+                .unwrap_err()
+                .contains("authority changed")
+        );
         request.release_set_sha256 = Some(previous.release_set_sha256.clone());
         request.accepted_revision = Some("f".repeat(40));
-        assert!(require_managed_tun_rollback_pair(&request, &current, &previous)
-            .unwrap_err().contains("authority changed"));
+        assert!(
+            require_managed_tun_rollback_pair(&request, &current, &previous)
+                .unwrap_err()
+                .contains("authority changed")
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
