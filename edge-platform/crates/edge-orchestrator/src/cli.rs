@@ -226,7 +226,20 @@ pub(crate) enum CloudflareTargetPlaneCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareZeroTrustCommand {
-    Doctor(SpecArgs),
+    Doctor(ZeroTrustDoctorArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ZeroTrustReadinessScope {
+    AndroidClient,
+    VmServer,
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct ZeroTrustDoctorArgs {
+    pub spec_path: PathBuf,
+    #[arg(long, value_enum, default_value = "android-client")]
+    pub scope: ZeroTrustReadinessScope,
 }
 
 #[derive(Debug, Args, Clone)]
