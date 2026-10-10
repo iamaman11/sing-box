@@ -803,6 +803,26 @@ fn edge_controller_service_main(_arguments: Vec<OsString>) {
     }
 }
 
+// Startup failure must never clean up a foreign or orphaned child merely
+// because its command line points to our config. Only this SCM's unique
+// exact child may be torn down; an absent child requires no mutation.
+#[cfg(any(windows, test))]
+fn failed_windows_scm_start_owns_child(
+    exact_children: &[edge_local_runtime::ProcessObservation],
+    scm_pid: u32,
+) -> bool {
+    exact_children.len() == 1 && exact_children[0].parent_pid == Some(scm_pid)
+}
+
+#[cfg(windows)]
+fn stop_only_owned_child_after_failed_scm_start(repo_root: &Path) {
+    let config_path = default_local_config_path(repo_root);
+    let children = exact_managed_runtime_processes(&config_path);
+    if failed_windows_scm_start_owns_child(&children, std::process::id()) {
+        let _ = stop_runtime_process(&config_path, true);
+    }
+}
+
 #[cfg(windows)]
 fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
     WINDOWS_SERVICE_STOP_REQUESTED.store(false, Ordering::Release);
@@ -908,7 +928,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
-                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                stop_only_owned_child_after_failed_scm_start(&config.repo_root);
                 return Err(startup_failure(
                     "runtime_converge",
                     format!("Windows managed runtime startup convergence failed: {err}"),
@@ -916,7 +936,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Err(err) = clear_controller_service_error(&config.repo_root) {
-                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                stop_only_owned_child_after_failed_scm_start(&config.repo_root);
                 return Err(startup_failure("error_evidence_clear", err));
             }
 
@@ -929,7 +949,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
                 wait_hint: Duration::default(),
                 process_id: None,
             }) {
-                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                stop_only_owned_child_after_failed_scm_start(&config.repo_root);
                 return Err(startup_failure("scm_running", err.to_string()));
             }
 
@@ -5218,6 +5238,27 @@ mod tests {
             ),
             WindowsStartupDecision::BlockedConflict
         );
+    }
+
+    #[test]
+    fn failed_scm_start_cleanup_is_exact_single_child_of_current_owner_only() {
+        use edge_local_runtime::ProcessObservation;
+        let own = ProcessObservation {
+            pid: 20,
+            name: "sing-box".to_owned(),
+            executable_path: Some("sing-box".to_owned()),
+            parent_pid: Some(10),
+            command_line: "sing-box run -c owned.json".to_owned(),
+            config_path: Some("owned.json".to_owned()),
+        };
+        let mut other = own.clone();
+        other.pid = 21;
+        other.parent_pid = Some(15);
+        assert!(!failed_windows_scm_start_owns_child(&[], 10));
+        assert!(failed_windows_scm_start_owns_child(&[own.clone()], 10));
+        assert!(!failed_windows_scm_start_owns_child(&[own.clone()], 11));
+        assert!(!failed_windows_scm_start_owns_child(&[other.clone()], 10));
+        assert!(!failed_windows_scm_start_owns_child(&[own, other], 10));
     }
 
     #[test]
