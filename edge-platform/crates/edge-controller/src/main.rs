@@ -895,16 +895,16 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             ));
             WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release);
             supervisor.abort();
-            let cleanup_result = {
-                let _gate = WINDOWS_RUNTIME_OWNER_GATE
-                    .lock()
-                    .map_err(|_| "Windows runtime owner gate poisoned")?;
-                stop_runtime_process(&default_local_config_path(&repo_root), true)
-            }
-            .map(|_| ())
-            .map_err(|err| {
-                format!("failed to stop exact managed runtime on controller exit: {err}")
-            });
+            // Never return early from SCM cleanup: terminal SERVICE_STOPPED
+            // must still be reported exactly once even if this gate is poisoned.
+            let cleanup_result = match WINDOWS_RUNTIME_OWNER_GATE.lock() {
+                Ok(_gate) => stop_runtime_process(&default_local_config_path(&repo_root), true)
+                    .map(|_| ())
+                    .map_err(|err| {
+                        format!("failed to stop exact managed runtime on controller exit: {err}")
+                    }),
+                Err(_) => Err("Windows runtime owner gate poisoned on SCM cleanup".to_owned()),
+            };
 
             let (result, failure) = match (serve_result, cleanup_result) {
                 (Ok(()), Ok(())) => (Ok(()), None),
