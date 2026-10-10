@@ -214,7 +214,7 @@ pub(crate) enum CredentialDeliveryCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, Subcommand)]
+#[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareTargetPlaneCommand {
     Inventory,
     Plan,
@@ -222,11 +222,22 @@ pub(crate) enum CloudflareTargetPlaneCommand {
     ActiveConverge,
     Verify,
     VerifyActive,
+    AcceptanceProfile {
+        #[command(subcommand)]
+        command: MeshProfileCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CloudflareZeroTrustCommand {
     Doctor(ZeroTrustDoctorArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum MeshProfileCommand {
+    Plan,
+    Apply { authorized_plan_sha256: String },
+    Verify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -516,6 +527,25 @@ mod tests {
         let digest = "a".repeat(64);
         let cases = [
             vec!["edge-orchestrator", "production", "diagnose"],
+            vec![
+                "edge-orchestrator",
+                "cloudflare-target-plane",
+                "acceptance-profile",
+                "plan",
+            ],
+            vec![
+                "edge-orchestrator",
+                "cloudflare-target-plane",
+                "acceptance-profile",
+                "verify",
+            ],
+            vec![
+                "edge-orchestrator",
+                "cloudflare-target-plane",
+                "acceptance-profile",
+                "apply",
+                &digest,
+            ],
             vec!["edge-orchestrator", "credentials", "contract-verify"],
             vec![
                 "edge-orchestrator",

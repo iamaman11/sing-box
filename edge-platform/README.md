@@ -36,6 +36,15 @@ Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner.
 
 **Before Stage 4B.5 Android Mesh, Gate `NEW_VM_FRESH_APPLICATION_DEPLOYMENT` must PASS:** create a **new disposable Vultr VM** using the existing typed `/application acceptance` via issue #1. Require read-only Vultr doctor/inventory and clean room before any new VM, exact ReleaseSet v1 installation/health, idempotent reapply, v2 upgrade, exact rollback, VM reboot and postboot application+Mesh+DNS+VPC checks, scoped teardown, final zero-leak check and independent fresh provider inventory. No production VM mutations. [Active cursor #26](https://github.com/iamaman11/sing-box/issues/26) and [gate contract](https://github.com/iamaman11/sing-box/issues/26#issuecomment-6098256373) own progress. Stage 4C deletion-first follows Android functional acceptance.
 
+**Disposable Cloudflare Mesh profile owner:** the existing issue-#1 GitHub control plane and typed Cloudflare Target Plane
+expose `/application mesh-profile-plan`, `/application mesh-profile-apply <exact 64-hex plan authority>`
+and `/application mesh-profile-verify`. It reads the repository-owned acceptance
+Cloudflare guardrails/profile spec, refuses active production account and any
+preexisting profile drift/collision, allows at most **one** create with exact
+fresh observed-state authorization, and only reobserves after uncertain mutation.
+No profile PATCH/delete or foreign/default profile mutation. A terminal verified
+profile alone does not waive other VM-server doctor prerequisites.
+
 **Cloudflare Mesh NODE prerequisite:** Cloudflare's server Mesh node requires an
 exact warp_connector device profile (MASQUE/Traffic and DNS/100.96.0.0/12)
 before server enrollment; this is not an Android-client-only prerequisite.

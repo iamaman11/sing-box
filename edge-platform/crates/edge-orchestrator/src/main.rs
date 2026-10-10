@@ -9,6 +9,7 @@ mod cloudflare_dns_lifecycle_command;
 mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;
 mod cloudflare_mesh_lifecycle_service;
+mod cloudflare_mesh_profile_command;
 mod cloudflare_production_inventory;
 mod cloudflare_target_plane_command;
 mod cloudflare_zero_trust_doctor;
@@ -156,6 +157,9 @@ async fn run(
             }
             cli::CloudflareTargetPlaneCommand::VerifyActive => {
                 cloudflare_target_plane_command::verify_active_invariant().await
+            }
+            cli::CloudflareTargetPlaneCommand::AcceptanceProfile { command } => {
+                cloudflare_mesh_profile_command::run(command).await
             }
         },
         Command::CloudflareZeroTrust { command } => match command {

@@ -739,7 +739,7 @@ fn include_keyset(entries: &[CloudflareSplitTunnelEntry]) -> BTreeSet<String> {
         .collect()
 }
 
-fn next_free_precedence<I>(start: u64, used: I) -> Result<u64, String>
+pub(crate) fn next_free_precedence<I>(start: u64, used: I) -> Result<u64, String>
 where
     I: IntoIterator<Item = u64>,
 {

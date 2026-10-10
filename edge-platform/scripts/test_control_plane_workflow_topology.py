@@ -1015,8 +1015,14 @@ def main() -> None:
         "provider target-plane logic may remain internal, but its public transitional operator surface must be retired",
     )
     require(
-        application.count("group: vultr-control-plane-production") == 5,
-        "application backend must serialize enrollment, provider, observation, cleanup and disposable acceptance jobs",
+        application.count("group: vultr-control-plane-production") == 6
+        and "  mesh_profile:\n" in application
+        and "needs.authorize.outputs.command_family == 'mesh_profile'" in application
+        and 'cloudflare-target-plane acceptance-profile plan' in application
+        and 'cloudflare-target-plane acceptance-profile verify' in application
+        and 'cloudflare-target-plane acceptance-profile apply' in application
+        and '[[ "${EDGE_PLAN_AUTHORITY}" =~ ^[0-9a-f]{64}$ ]]' in application,
+        "existing application owner must serialize exact scoped Mesh-profile lifecycle with all provider, production, cleanup and disposable jobs",
     )
     production_observe = application.split("  production_observe:\n", 1)[1].split(
         "\n  production_runtime:", 1
