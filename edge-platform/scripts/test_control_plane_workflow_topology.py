@@ -109,7 +109,10 @@ def main() -> None:
         and "WaitForSingleObject(handle, u32::MAX)" in windows_controller
         and "WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel)" in windows_controller
         and "exchange/requests/request.pb" in windows_controller
-        and "read_windows_privileged_result_marker(repo_root)?.as_deref()" in windows_controller
+        and "completed_result.as_deref() != prior_privileged_result" in windows_controller
+        and "decode_windows_privileged_result(bytes)?" in windows_controller
+        and "decode_windows_activation_state(&activation_bytes)?" in windows_controller
+        and "if executable != expected {" in windows_controller
         and "WINDOWS_RUNTIME_OWNER_GATE" in windows_controller
         and "one-shot native child recovery budget exhausted" in windows_controller
         and "write_controller_service_error(&supervisor_root, \"child_exit\", &err)" in windows_controller
