@@ -90,8 +90,8 @@ def main() -> None:
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
     require(
-        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 3
-        and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 2
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 5
+        and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 4
         and "fn require_exact_immutable_activation_console(install_root: &Path)" in windows_console
         and "let expected = Path::new(&active.console_path)" in windows_console
         and "if running != expected {" in windows_console
@@ -168,6 +168,49 @@ def main() -> None:
         and "let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);"
             not in windows_controller,
         "SCM failure cleanup must only stop a unique child owned by the current service",
+    )
+
+    # Offline mutation is a NEW wire contract, not a reinterpretation of the
+    # existing ActuateRelease opcode supported by the installed dispatcher.
+    require(
+        "WINDOWS_PRIVILEGED_OPERATION_OFFLINE_ACTIVATE_RELEASE = 12;"
+            in runtime_proto
+        and "WINDOWS_PRIVILEGED_OPERATION_OFFLINE_ROLLBACK_PREVIOUS_RELEASE = 13;"
+            in runtime_proto
+        and "PrivilegedOfflineActivate" in windows_console_cli
+        and "PrivilegedOfflineRollbackPrevious" in windows_console_cli
+        and "WindowsPrivilegedOperation::OfflineActivateRelease" in windows_console
+        and "WindowsPrivilegedOperation::OfflineRollbackPreviousRelease" in windows_console
+        and "fn offline_activate_privileged_release(" in windows_console
+        and "fn offline_rollback_privileged_release(" in windows_console
+        and "fn require_offline_windows_owner(" in windows_console
+        and "fn offline_retarget_controller_service(" in windows_console
+        and "OFFLINE_HANDOFF_BLOCKED" in windows_console
+        and "offline_handoff_gate(" in windows_console
+        and "require_offline_windows_owner(install_root, &before)?;" in windows_console
+        and "require_offline_windows_owner(install_root, &current)?;" in windows_console
+        and "fn restore_offline_release(" in windows_console
+        and "offline_release_handoff_refuses_running_scm_any_child_tun_or_wrong_owner"
+            in windows_console
+        and "offline_release_operations_have_dedicated_wire_numbers"
+            in windows_console
+        and "if require_offline_windows_owner(install_root, before).is_err()" in windows_console
+        and "offline_retarget_controller_service(install_root, &before, &post)" in windows_console
+        and "retarget_privileged_task(install_root, &post.console_path)" in windows_console
+        and "-Offline" in windows_console
+        and "[switch]$Offline" in windows_installer
+        and windows_installer.count("Assert-OfflineWindow") == 3
+        and "Get-CimInstance -ClassName Win32_Service" in windows_installer
+        and "Get-CimInstance -ClassName Win32_Process" in windows_installer
+        and "Get-NetAdapter -Name 'sing-box-tun'" in windows_installer
+        and "Stop-Service" not in windows_installer
+        and "Start-Service" not in windows_installer
+        and "Set-DnsClientServerAddress" not in windows_installer
+        and "privileged-offline-activate" not in router
+        and "privileged-offline-rollback-previous" not in router
+        and "offline mutation is not routed until the installed SYSTEM bootstrap can dispatch it"
+            not in router,
+        "offline install and rollback must be bounded typed SYSTEM operations and not bypass the existing protected issue router",
     )
 
     # The protected issue operator has a separate exact-command allowlist.
