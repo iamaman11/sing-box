@@ -234,21 +234,27 @@ def main() -> None:
         and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical.split("      - name: Execute typed lifecycle mutation", 1)[0]
         and "managed_tun_automatic_rollback=BLOCKED_NO_INDEPENDENT_DNS_RESTORE" in windows_physical
         and "privileged-rollback-previous" not in windows_physical.split("      - name: Refuse unproven automatic rollback after MANAGED_TUN verification failure", 1)[1].split("      - name: Final diagnostics and transport-only boundary", 1)[0]
-        and "$env:EDGE_OPERATION -in @('stop','rollback')" in windows_physical
+        and "$env:EDGE_OPERATION -eq 'stop'" in windows_physical
+        and "$env:EDGE_OPERATION -eq 'rollback'" in windows_physical
+        and "managed_tun_previous_rollback_dns_owner_preflight=PASS" in windows_physical
+        and "PRE_MUTATION_ROLLBACK_BLOCKED" in windows_physical.split("      - name: Execute typed lifecycle mutation", 1)[0]
         and "$currentMode -ceq 'ManagedTun'" in windows_physical
         and "$env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly'" in windows_physical
         and 'reject_unproven_windows_tun_teardown("stop-local")' in windows_controller_runtime
-        and 'reject_unproven_windows_tun_teardown("rollback-previous")' in windows_console
+        and 'fn require_managed_tun_rollback_pair(' in windows_console
+        and 'require_exact_immutable_activation_console(install_root)?;' in windows_console.split('fn rollback_privileged_release(', 1)[1].split('fn reconcile_activation_owner(', 1)[0]
+        and 'require_managed_tun_rollback_pair(request, &current, &previous)?;' in windows_console
         and '"managed-tun-to-proxy-only"' in windows_console
         and "failed to stop exact managed proxy before release transition" in windows_console,
-        "Windows TUN teardown must be rejected before the operator or native owner mutates runtime, without affecting ManagedTun-to-ManagedTun activation",
+        "Only explicit exact ManagedTun previous-release rollback may pass the existing owner; stop/ProxyOnly teardown stays blocked",
     )
     require(
         "PRE_MUTATION_LEGACY_DNS_WRITER_BLOCKED" not in windows_physical
         and "legacy_managed_tun_exact_remote_upgrade" not in windows_physical
         and "1ebe355143ac3d59a11d4c40755e1f8aa2aa9060c957822d831f18d4ace667b5" not in windows_physical
-        and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical,
-        "completed one-shot migration exception must be deleted without weakening TUN teardown/rollback guard",
+        and "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
+        and "PRE_MUTATION_ROLLBACK_BLOCKED" in windows_physical,
+        "completed one-shot migration exception must be deleted without enabling unguarded TUN teardown",
     )
     require(
         "/windows cutover" not in router
