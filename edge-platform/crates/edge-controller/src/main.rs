@@ -75,10 +75,10 @@ use edge_shared_types::{
     SecretRefEntry, SelectorState, SetSecretRefRequest, SetSelectorRequest, SetSelectorResponse,
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR,
-    WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsDatapathMode,
+    WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsDatapathMode, WindowsPrivilegedOperation,
     canonical_production_desired_state, decode_windows_activation_state,
-    decode_windows_privileged_request, decode_windows_privileged_result, decode_windows_runtime_state,
-    timestamp_from_unix_seconds, WindowsPrivilegedOperation,
+    decode_windows_privileged_request, decode_windows_privileged_result,
+    decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
