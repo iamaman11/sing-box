@@ -77,7 +77,8 @@ use edge_shared_types::{
     TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR,
     WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsDatapathMode,
     canonical_production_desired_state, decode_windows_activation_state,
-    decode_windows_privileged_result, decode_windows_runtime_state, timestamp_from_unix_seconds,
+    decode_windows_privileged_request, decode_windows_privileged_result, decode_windows_runtime_state,
+    timestamp_from_unix_seconds, WindowsPrivilegedOperation,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -571,6 +572,28 @@ fn child_exit_auto_recovery_allowed(
     !shutdown && !privileged_handoff && !explicit_replacement && !recovery_consumed && exact_absent
 }
 
+// A read-only runtime-evidence/ping request does not intentionally stop the
+// child and must not disable native recovery if the child fails concurrently.
+#[cfg(windows)]
+fn destructive_windows_handoff_pending(repo_root: &Path) -> Result<bool, String> {
+    let path = repo_root.join("exchange/requests/request.pb");
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(format!("cannot verify typed privileged request: {err}")),
+    };
+    let request = decode_windows_privileged_request(&bytes)?;
+    let operation = WindowsPrivilegedOperation::try_from(request.operation)
+        .map_err(|_| "unknown privileged operation during child-exit check".to_owned())?;
+    Ok(matches!(
+        operation,
+        WindowsPrivilegedOperation::ActivateRelease
+            | WindowsPrivilegedOperation::ReinstallAcceptedRelease
+            | WindowsPrivilegedOperation::RollbackPreviousRelease
+            | WindowsPrivilegedOperation::RestartControllerService
+    ))
+}
+
 #[cfg(windows)]
 fn read_windows_privileged_result_marker(repo_root: &Path) -> Result<Option<Vec<u8>>, String> {
     match fs::read(repo_root.join("exchange/results/result.pb")) {
@@ -642,11 +665,7 @@ fn reconcile_windows_child_exit(
     }
     // The exact privileged request exists BEFORE its intended sing-box stop
     // and remains until successful SCM handoff (or a recorded failure).
-    if repo_root
-        .join("exchange/requests/request.pb")
-        .try_exists()
-        .map_err(|err| format!("cannot verify privileged handoff state: {err}"))?
-    {
+    if destructive_windows_handoff_pending(repo_root)? {
         return Ok(None);
     }
     let completed_result = read_windows_privileged_result_marker(repo_root)?;
