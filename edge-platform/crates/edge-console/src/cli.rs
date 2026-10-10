@@ -236,16 +236,18 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["edge-console", "stage2-preflight"]).is_ok());
-        assert!(Cli::try_parse_from([
-            "edge-console",
-            "privileged-offline-activate",
-            "0123456789abcdef0123456789abcdef01234567",
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        ]).is_ok());
-        assert!(Cli::try_parse_from([
-            "edge-console",
-            "privileged-offline-rollback-previous"
-        ]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "privileged-offline-activate",
+                "0123456789abcdef0123456789abcdef01234567",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["edge-console", "privileged-offline-rollback-previous"]).is_ok()
+        );
         assert!(Cli::try_parse_from(["edge-console", "restart-verify-runtime"]).is_ok());
         assert!(
             Cli::try_parse_from([
