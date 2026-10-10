@@ -107,6 +107,9 @@ def main() -> None:
         "fn supervise_windows_managed_child(repo_root: PathBuf)" in windows_controller
         and "fn reconcile_windows_child_exit(" in windows_controller
         and "WaitForSingleObject(handle, u32::MAX)" in windows_controller
+        and 'std::thread::Builder::new()' in windows_controller
+        and 'tokio::sync::oneshot::channel()' in windows_controller
+        and "spawn_blocking(move || wait_for_windows_child_exit" not in windows_controller
         and "WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel)" in windows_controller
         and "exchange/requests/request.pb" in windows_controller
         and "destructive_windows_handoff_pending(repo_root)?" in windows_controller
