@@ -170,6 +170,28 @@ def main() -> None:
         "SCM failure cleanup must only stop a unique child owned by the current service",
     )
 
+    # Offline handoff preflight uses only already installed native privilege
+    # evidence; it cannot pretend that old dispatch supports new operations.
+    require(
+        '"/windows offline-preflight") operation="diagnose"; readonly_purpose="offline-preflight" ;;'
+            in windows_physical
+        and "readonly_purpose: ${{ steps.auth.outputs.readonly_purpose }}" in windows_physical
+        and "EDGE_READONLY_PURPOSE: ${{ needs.resolve.outputs.readonly_purpose }}" in windows_physical
+        and "if ($env:EDGE_READONLY_PURPOSE -ceq 'offline-preflight')" in windows_physical
+        and "offline_preflight_observation=PASS" in windows_physical
+        and "offline_privileged_task_readonly=PASS" in windows_physical
+        and "offline_zero_runtime_owners=PASS" in windows_physical
+        and "privileged-runtime-evidence --install-root $root" in windows_physical
+        and "process_classification=ABSENT;process_evidence_complete=true;process_count=0;"
+            in windows_physical
+        and "Get-CimInstance -ClassName Win32_Service" in windows_physical
+        and "offline_native_activation=BLOCKED_LEGACY_PRIVILEGED_DISPATCH_LACKS_OFFLINE_OPERATION"
+            in windows_physical
+        and "offline_mutations_performed=0" in windows_physical
+        and windows_physical.count("      - name: Execute typed lifecycle mutation") == 1,
+        "offline preflight must observe exact stopped owner and old privileged task without installation or TUN capture",
+    )
+
     # A human-stopped Windows controller is an observable degraded state,
     # not a reason for read-only diagnosis to run ManagedTun lifecycle checks.
     read_only_step = "      - name: Observe safe Windows state (read-only)"
