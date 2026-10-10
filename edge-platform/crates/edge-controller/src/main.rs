@@ -593,75 +593,81 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
             .await
             .map_err(|err| format!("native child wait join failed: {err}"))??;
 
-        // The gate serializes reobservation + potential launch against existing
-        // StartLocalRuntime and RestartLocalRuntime RPCs in THIS SCM process.
-        let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
-            .lock()
-            .map_err(|_| "Windows runtime owner gate poisoned".to_owned())?;
-        if WINDOWS_SERVICE_STOP_REQUESTED.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        // The installed privileged dispatcher commits a request file BEFORE
-        // intentional child teardown; it keeps the file through SCM handoff.
-        // Never race that exact native release/reinstall transition.
-        if repo_root.join("exchange/requests/request.pb").exists() {
-            return Ok(());
-        }
-        let explicit_replacement =
-            WINDOWS_RUNTIME_REPLACEMENT_GENERATION.load(Ordering::Acquire) != observed_generation;
-        let owners = exact_managed_runtime_processes(&config_path);
-        if owners.len() == 1 {
-            if owners[0].pid == pid {
-                return Err(format!(
-                    "process-exit signalled for pid {pid}, but exact owner still reports same pid; no speculative action"
-                ));
+        match reconcile_windows_child_exit(&repo_root, pid, observed_generation, recovered)? {
+            Some((next_pid, did_recover)) => {
+                pid = next_pid;
+                recovered |= did_recover;
             }
-            if owners[0].parent_pid != Some(std::process::id()) {
-                return Err("new managed runtime is not owned by current SCM controller".to_owned());
-            }
-            pid = owners[0].pid;
-            continue; // A newly observed exact child; next OS exit event, no polling.
+            None => return Ok(()),
         }
-        if owners.len() > 1
-            || !matches!(
-                classify_runtime_process(&config_path),
-                RuntimeProcessClassification::Absent
-            )
-        {
-            return Err("child exited with conflicting or ambiguous sing-box ownership".to_owned());
-        }
-        if !child_exit_auto_recovery_allowed(
-            false,
-            false,
-            explicit_replacement,
-            recovered,
-            true,
-        ) {
-            // An explicit failed restart remains for its caller to diagnose;
-            // repeated crashes never launch a second automatic mutation.
-            return if recovered && !explicit_replacement {
-                Err("automatic child recovery budget exhausted after one recovery".to_owned())
-            } else {
-                Ok(())
-            };
-        }
-        if !repo_root.join("current.pb").is_file() {
-            return Err("installed ReleaseSet authority disappeared; fail-closed".to_owned());
-        }
-        let paths = LocalRuntimePaths {
-            singbox_binary_path: default_singbox_binary_path(&repo_root),
-            config_path: config_path.clone(),
-            state_path: windows_runtime_state_path(&repo_root),
-            runtime_root: default_runtime_root(&repo_root),
-        };
-        let result = start_runtime_process(&paths, false)
-            .map_err(|err| format!("one-shot native child recovery failed: {err}"))?;
-        pid = result.pid.ok_or(
-            "one-shot native child recovery returned no exact process identity"
-        )?;
-        recovered = true;
-        eprintln!("Windows SCM one-shot managed sing-box child recovery succeeded");
     }
+
+// Synchronous ownership decision under one in-process gate. The guard never
+// crosses an async suspension; it also protects existing runtime RPC starts.
+#[cfg(windows)]
+fn reconcile_windows_child_exit(
+    repo_root: &Path,
+    exited_pid: u32,
+    observed_generation: u64,
+    recovery_consumed: bool,
+) -> Result<Option<(u32, bool)>, String> {
+    let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
+        .lock()
+        .map_err(|_| "Windows runtime owner gate poisoned".to_owned())?;
+    if WINDOWS_SERVICE_STOP_REQUESTED.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    // The exact privileged request exists BEFORE its intended sing-box stop
+    // and remains until successful SCM handoff (or a recorded failure).
+    if repo_root.join("exchange/requests/request.pb").exists() {
+        return Ok(None);
+    }
+    let explicit_replacement =
+        WINDOWS_RUNTIME_REPLACEMENT_GENERATION.load(Ordering::Acquire) != observed_generation;
+    let config_path = default_local_config_path(repo_root);
+    let owners = exact_managed_runtime_processes(&config_path);
+    if owners.len() == 1 {
+        if owners[0].pid == exited_pid {
+            return Err(format!(
+                "exit event for pid {exited_pid} still reports same live exact owner"
+            ));
+        }
+        if owners[0].parent_pid != Some(std::process::id()) {
+            return Err("replacement process is not owned by current SCM controller".to_owned());
+        }
+        return Ok(Some((owners[0].pid, false)));
+    }
+    if owners.len() > 1
+        || !matches!(
+            classify_runtime_process(&config_path),
+            RuntimeProcessClassification::Absent
+        )
+    {
+        return Err("child exited with conflicting or ambiguous sing-box ownership".to_owned());
+    }
+    if !child_exit_auto_recovery_allowed(false, false, explicit_replacement, recovery_consumed, true) {
+        return if recovery_consumed && !explicit_replacement {
+            Err("one-shot native child recovery budget exhausted".to_owned())
+        } else {
+            Ok(None) // An explicit failed restart is owned by its RPC caller.
+        };
+    }
+    if !repo_root.join("current.pb").is_file() {
+        return Err("exact installed release authority disappeared; refusing auto recovery".to_owned());
+    }
+    let paths = LocalRuntimePaths {
+        singbox_binary_path: default_singbox_binary_path(repo_root),
+        config_path,
+        state_path: windows_runtime_state_path(repo_root),
+        runtime_root: default_runtime_root(repo_root),
+    };
+    let result = start_runtime_process(&paths, false)
+        .map_err(|err| format!("one-shot native child recovery failed: {err}"))?;
+    let pid = result.pid.ok_or(
+        "one-shot native child recovery returned no exact process identity"
+    )?;
+    eprintln!("Windows SCM one-shot managed sing-box child recovery succeeded");
+    Ok(Some((pid, true)))
 }
 
 #[cfg(windows)]
