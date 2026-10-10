@@ -571,6 +571,17 @@ fn child_exit_auto_recovery_allowed(
 }
 
 #[cfg(windows)]
+fn read_windows_privileged_result_marker(repo_root: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(repo_root.join("exchange/results/result.pb")) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "cannot independently read durable privileged handoff result: {err}"
+        )),
+    }
+}
+
+#[cfg(windows)]
 async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), String> {
     if !is_installed_windows_root(&repo_root) {
         return Ok(());
@@ -591,7 +602,7 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
         let observed_generation = WINDOWS_RUNTIME_REPLACEMENT_GENERATION.load(Ordering::Acquire);
         // A privileged request may complete and disappear before this wait
         // wakes. Snapshot its durable result to fence that entire handoff.
-        let prior_result = fs::read(repo_root.join("exchange/results/result.pb")).ok();
+        let prior_result = read_windows_privileged_result_marker(&repo_root)?;
         tokio::task::spawn_blocking(move || wait_for_windows_child_exit(pid))
             .await
             .map_err(|err| format!("native child wait join failed: {err}"))??;
@@ -630,10 +641,11 @@ fn reconcile_windows_child_exit(
     }
     // The exact privileged request exists BEFORE its intended sing-box stop
     // and remains until successful SCM handoff (or a recorded failure).
-    if repo_root.join("exchange/requests/request.pb").exists()
-        || fs::read(repo_root.join("exchange/results/result.pb"))
-            .ok()
-            .as_deref()
+    if repo_root
+        .join("exchange/requests/request.pb")
+        .try_exists()
+        .map_err(|err| format!("cannot verify privileged handoff state: {err}"))?
+        || read_windows_privileged_result_marker(repo_root)?.as_deref()
             != prior_privileged_result
     {
         return Ok(None);
