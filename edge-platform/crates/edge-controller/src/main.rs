@@ -589,11 +589,14 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
     let mut recovered = false;
     loop {
         let observed_generation = WINDOWS_RUNTIME_REPLACEMENT_GENERATION.load(Ordering::Acquire);
+        // A privileged request may complete and disappear before this wait
+        // wakes. Snapshot its durable result to fence that entire handoff.
+        let prior_result = fs::read(repo_root.join("exchange/results/result.pb")).ok();
         tokio::task::spawn_blocking(move || wait_for_windows_child_exit(pid))
             .await
             .map_err(|err| format!("native child wait join failed: {err}"))??;
 
-        match reconcile_windows_child_exit(&repo_root, pid, observed_generation, recovered)? {
+        match reconcile_windows_child_exit(&repo_root, pid, observed_generation, recovered, prior_result.as_deref())? {
             Some((next_pid, did_recover)) => {
                 pid = next_pid;
                 recovered |= did_recover;
@@ -611,6 +614,7 @@ fn reconcile_windows_child_exit(
     exited_pid: u32,
     observed_generation: u64,
     recovery_consumed: bool,
+    prior_privileged_result: Option<&[u8]>,
 ) -> Result<Option<(u32, bool)>, String> {
     let _owner_gate = WINDOWS_RUNTIME_OWNER_GATE
         .lock()
@@ -620,7 +624,12 @@ fn reconcile_windows_child_exit(
     }
     // The exact privileged request exists BEFORE its intended sing-box stop
     // and remains until successful SCM handoff (or a recorded failure).
-    if repo_root.join("exchange/requests/request.pb").exists() {
+    if repo_root.join("exchange/requests/request.pb").exists()
+        || fs::read(repo_root.join("exchange/results/result.pb"))
+            .ok()
+            .as_deref()
+            != prior_privileged_result
+    {
         return Ok(None);
     }
     let explicit_replacement =
@@ -860,7 +869,12 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             ));
             WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release);
             supervisor.abort();
-            let cleanup_result = stop_runtime_process(&default_local_config_path(&repo_root), true)
+            let cleanup_result = {
+                let _gate = WINDOWS_RUNTIME_OWNER_GATE
+                    .lock()
+                    .map_err(|_| "Windows runtime owner gate poisoned")?;
+                stop_runtime_process(&default_local_config_path(&repo_root), true)
+            }
                 .map(|_| ())
                 .map_err(|err| {
                     format!("failed to stop exact managed runtime on controller exit: {err}")
