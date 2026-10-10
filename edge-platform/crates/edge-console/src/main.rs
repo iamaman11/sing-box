@@ -2205,8 +2205,14 @@ fn restore_offline_release(
     previous_bytes: &Option<Vec<u8>>,
 ) -> Result<(), String> {
     let observed = load_verified_activation(install_root).map_err(|err| err.to_string())?;
-    if observed.release_set_sha256 != before.release_set_sha256 {
-        offline_retarget_controller_service(install_root, &observed, before)?;
+    // Either the protected installer advanced current.pb before touching SCM,
+    // or SCM was already retargeted; both are valid bounded interruption points.
+    // Any third SCM identity/state is ambiguous and must never be overwritten.
+    if require_offline_windows_owner(install_root, before).is_err() {
+        require_offline_windows_owner(install_root, &observed)?;
+        if observed.release_set_sha256 != before.release_set_sha256 {
+            offline_retarget_controller_service(install_root, &observed, before)?;
+        }
     }
     write_atomic(&install_root.join("current.pb"), current_bytes)
         .map_err(|err| format!("offline current authority restoration failed: {err}"))?;
