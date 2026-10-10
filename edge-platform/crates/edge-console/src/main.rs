@@ -296,14 +296,18 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::PrivilegedRollbackPrevious(args) => {
             let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let (current, previous) = load_previous_release_rollback_pair(&install_root)
+                .map_err(ConsoleError::Command)?;
             let result = submit_privileged_request(
                 &install_root,
                 WindowsPrivilegedRequest {
                     schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
                     request_id: new_privileged_request_id()?,
                     operation: WindowsPrivilegedOperation::RollbackPreviousRelease as i32,
-                    accepted_revision: None,
-                    release_set_sha256: None,
+                    accepted_revision: Some(current.source_revision),
+                    release_set_sha256: Some(previous.release_set_sha256),
                     credential_generation: None,
                     credential_transition_action: None,
                 },
@@ -1165,7 +1169,7 @@ async fn process_privileged_request(
             activate_privileged_release(install_root, request, false)
         }
         Ok(WindowsPrivilegedOperation::RollbackPreviousRelease) => {
-            rollback_privileged_release(install_root)
+            rollback_privileged_release(install_root, request)
         }
         Ok(WindowsPrivilegedOperation::ReinstallAcceptedRelease) => {
             activate_privileged_release(install_root, request, true)
@@ -2070,14 +2074,41 @@ fn sync_stable_windows_release_tools(
     Ok(())
 }
 
+// An explicit previous-release rollback is a ManagedTun-to-ManagedTun release
+// handoff, never a general permission to remove TUN or use an unknown target.
+// The submitted exact authority pair is checked again by the privileged owner
+// BEFORE sing-box is stopped; a changed previous.pb fails without mutation.
+fn require_managed_tun_rollback_pair(
+    request: &WindowsPrivilegedRequest,
+    current: &WindowsActivationState,
+    previous: &WindowsActivationState,
+) -> Result<(), String> {
+    let desired = canonical_production_desired_state()?;
+    if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
+        return Err("rollback refuses a non-ManagedTun accepted desired mode".to_owned());
+    }
+    if current.release_set_sha256 == previous.release_set_sha256 {
+        return Err("rollback refuses identical current and previous release".to_owned());
+    }
+    if request.accepted_revision.as_deref() != Some(current.source_revision.as_str())
+        || request.release_set_sha256.as_deref() != Some(previous.release_set_sha256.as_str())
+    {
+        return Err(
+            "rollback authority changed since exact submitted current/previous proof".to_owned(),
+        );
+    }
+    Ok(())
+}
+
 fn rollback_privileged_release(
     install_root: &Path,
+    request: &WindowsPrivilegedRequest,
 ) -> Result<(String, String, Option<String>), String> {
-    // Direct privileged dispatcher calls must not bypass the GitHub operator gate.
-    edge_local_runtime::reject_unproven_windows_tun_teardown("rollback-previous")?;
+    require_exact_immutable_activation_console(install_root)?;
     let current_path = install_root.join("current.pb");
     let previous_path = install_root.join("previous.pb");
     let (current, previous) = load_previous_release_rollback_pair(install_root)?;
+    require_managed_tun_rollback_pair(request, &current, &previous)?;
 
     let managed_config = local_singbox_config_path(install_root);
     stop_runtime_process(&managed_config, true)
@@ -4001,6 +4032,38 @@ mod tests {
         let error = load_previous_release_rollback_pair(&root).unwrap_err();
         assert!(error.contains("previous.pb is absent"));
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn previous_managed_tun_rollback_requires_exact_unchanged_authority_pair() {
+        let root = rollback_test_root();
+        let current = rollback_test_activation(&root, "current", &"a".repeat(64));
+        let previous = rollback_test_activation(&root, "previous", &"b".repeat(64));
+        let mut request = WindowsPrivilegedRequest {
+            schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+            request_id: "rollback-test".to_owned(),
+            operation: WindowsPrivilegedOperation::RollbackPreviousRelease as i32,
+            accepted_revision: Some(current.source_revision.clone()),
+            release_set_sha256: Some(previous.release_set_sha256.clone()),
+            credential_generation: None,
+            credential_transition_action: None,
+        };
+        require_managed_tun_rollback_pair(&request, &current, &previous).unwrap();
+
+        request.release_set_sha256 = Some("c".repeat(64));
+        assert!(
+            require_managed_tun_rollback_pair(&request, &current, &previous)
+                .unwrap_err()
+                .contains("authority changed")
+        );
+        request.release_set_sha256 = Some(previous.release_set_sha256.clone());
+        request.accepted_revision = Some("f".repeat(40));
+        assert!(
+            require_managed_tun_rollback_pair(&request, &current, &previous)
+                .unwrap_err()
+                .contains("authority changed")
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
