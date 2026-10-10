@@ -2203,15 +2203,23 @@ fn restore_offline_release(
     before: &WindowsActivationState,
     current_bytes: &[u8],
     previous_bytes: &Option<Vec<u8>>,
+    alternate_scm_owner: Option<&WindowsActivationState>,
 ) -> Result<(), String> {
     let observed = load_verified_activation(install_root).map_err(|err| err.to_string())?;
-    // Either the protected installer advanced current.pb before touching SCM,
-    // or SCM was already retargeted; both are valid bounded interruption points.
-    // Any third SCM identity/state is ambiguous and must never be overwritten.
+    // The two legitimate interruption points are (a) current.pb advanced
+    // while SCM is old, (b) SCM retargeted while current.pb is old. Refuse
+    // any third owner instead of guessing by PID, filename or elapsed time.
     if require_offline_windows_owner(install_root, before).is_err() {
-        require_offline_windows_owner(install_root, &observed)?;
-        if observed.release_set_sha256 != before.release_set_sha256 {
-            offline_retarget_controller_service(install_root, &observed, before)?;
+        let replacement = if let Some(other) = alternate_scm_owner
+            && require_offline_windows_owner(install_root, other).is_ok()
+        {
+            other
+        } else {
+            require_offline_windows_owner(install_root, &observed)?;
+            &observed
+        };
+        if replacement.controller_path != before.controller_path {
+            offline_retarget_controller_service(install_root, replacement, before)?;
         }
     }
     write_atomic(&install_root.join("current.pb"), current_bytes)
@@ -2264,7 +2272,7 @@ fn offline_activate_privileged_release(
     })?;
     if !output.status.success() || post.release_set_sha256 != target {
         // No blind replay of installer after an unknown result.
-        let restore = restore_offline_release(install_root, &before, &current_bytes, &previous_bytes);
+        let restore = restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, None);
         return Err(format!(
             "offline installer not accepted; exit={}; restore={restore:?}; {}",
             output.status.code().unwrap_or(-1),
@@ -2274,7 +2282,7 @@ fn offline_activate_privileged_release(
     let handoff = offline_retarget_controller_service(install_root, &before, &post)
         .and_then(|_| retarget_privileged_task(install_root, &post.console_path));
     if let Err(err) = handoff {
-        let restore = restore_offline_release(install_root, &before, &current_bytes, &previous_bytes);
+        let restore = restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, None);
         return Err(format!("offline owner handoff failed: {err}; compensation={restore:?}; do not blindly retry"));
     }
     require_offline_windows_owner(install_root, &post)?;
@@ -2301,7 +2309,7 @@ fn offline_rollback_privileged_release(
         .and_then(|_| sync_stable_windows_release_tools(install_root, &previous))
         .and_then(|_| retarget_privileged_task(install_root, &previous.console_path))
     {
-        let restored = restore_offline_release(install_root, &current, &current_bytes, &Some(previous_bytes));
+        let restored = restore_offline_release(install_root, &current, &current_bytes, &Some(previous_bytes), Some(&previous));
         return Err(format!("offline rollback handoff failed: {err}; compensation={restored:?}; do not retry blindly"));
     }
     require_offline_windows_owner(install_root, &previous)?;
