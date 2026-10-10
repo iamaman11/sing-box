@@ -108,6 +108,7 @@ jobs:
       EDGE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
     steps:
       - name: Assert isolated root and observe pre-state
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -517,6 +518,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Lifecycle mutation failed: $LASTEXITCODE" }
 
       - name: Verify exact authority and SCM handoff
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -701,7 +703,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
 
       - name: Read-only privileged runtime evidence after restart
-        if: ${{ always() }}
+        if: ${{ always() && needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -881,6 +883,7 @@ jobs:
           throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: automatic rollback cannot prove CloudflareWARP DNS/control-channel recovery; preserve current runtime for independent diagnostics'
 
       - name: Final diagnostics and transport-only boundary
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
