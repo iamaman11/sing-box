@@ -2070,7 +2070,6 @@ fn activate_privileged_release(
     ))
 }
 
-
 fn offline_handoff_gate(
     stopped: bool,
     no_runtime_processes: bool,
@@ -2091,20 +2090,35 @@ fn require_offline_windows_owner(
 ) -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
     if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
-        return Err("OFFLINE_HANDOFF_BLOCKED: only current ManagedTun authority is supported".to_owned());
+        return Err(
+            "OFFLINE_HANDOFF_BLOCKED: only current ManagedTun authority is supported".to_owned(),
+        );
     }
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
     let service = manager
-        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_CONFIG | ServiceAccess::QUERY_STATUS)
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::QUERY_CONFIG | ServiceAccess::QUERY_STATUS,
+        )
         .map_err(|err| format!("offline SCM owner unavailable: {err}"))?;
-    let config = service.query_config().map_err(|err| format!("offline SCM configuration unavailable: {err}"))?;
-    let status = service.query_status().map_err(|err| format!("offline SCM state unavailable: {err}"))?;
+    let config = service
+        .query_config()
+        .map_err(|err| format!("offline SCM configuration unavailable: {err}"))?;
+    let status = service
+        .query_status()
+        .map_err(|err| format!("offline SCM state unavailable: {err}"))?;
     let expected_command = format!(
         "{} windows-service {} {}",
-        activation.controller_path, install_root.display(), INSTALLED_CONTROLLER_ADDR
+        activation.controller_path,
+        install_root.display(),
+        INSTALLED_CONTROLLER_ADDR
     );
-    let account = config.account_name.as_deref().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
+    let account = config
+        .account_name
+        .as_deref()
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let exact = config.executable_path.to_string_lossy() == expected_command
         && account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
         && config.start_type == ServiceStartType::AutoStart;
@@ -2145,10 +2159,14 @@ fn offline_retarget_controller_service(
     require_offline_windows_owner(install_root, from)?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
-    let service = manager.open_service(
-        WINDOWS_CONTROLLER_SERVICE_NAME,
-        ServiceAccess::QUERY_CONFIG | ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG,
-    ).map_err(|err| format!("offline SCM owner unavailable: {err}"))?;
+    let service = manager
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::QUERY_CONFIG
+                | ServiceAccess::QUERY_STATUS
+                | ServiceAccess::CHANGE_CONFIG,
+        )
+        .map_err(|err| format!("offline SCM owner unavailable: {err}"))?;
     let next = ServiceInfo {
         name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
         display_name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
@@ -2165,33 +2183,46 @@ fn offline_retarget_controller_service(
         account_name: Some(OsString::from(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)),
         account_password: None,
     };
-    service.change_config(&next).map_err(|err| format!("offline SCM retarget failed: {err}"))?;
-    let updated = service.query_config().map_err(|err| format!("offline SCM config readback failed: {err}"))?;
-    let state = service.query_status().map_err(|err| format!("offline SCM state readback failed: {err}"))?;
+    service
+        .change_config(&next)
+        .map_err(|err| format!("offline SCM retarget failed: {err}"))?;
+    let updated = service
+        .query_config()
+        .map_err(|err| format!("offline SCM config readback failed: {err}"))?;
+    let state = service
+        .query_status()
+        .map_err(|err| format!("offline SCM state readback failed: {err}"))?;
     let expected = format!(
         "{} windows-service {} {}",
-        to.controller_path, install_root.display(), INSTALLED_CONTROLLER_ADDR
+        to.controller_path,
+        install_root.display(),
+        INSTALLED_CONTROLLER_ADDR
     );
     if updated.executable_path.to_string_lossy() != expected
         || updated.start_type != ServiceStartType::AutoStart
         || state.current_state != ServiceState::Stopped
         || state.process_id.is_some()
     {
-        return Err("OFFLINE_HANDOFF_BLOCKED: SCM retarget has no exact stopped readback".to_owned());
+        return Err(
+            "OFFLINE_HANDOFF_BLOCKED: SCM retarget has no exact stopped readback".to_owned(),
+        );
     }
     Ok(())
 }
 
 #[cfg(not(windows))]
 fn require_offline_windows_owner(
-    _install_root: &Path, _activation: &WindowsActivationState,
+    _install_root: &Path,
+    _activation: &WindowsActivationState,
 ) -> Result<(), String> {
     Err("offline Windows ReleaseSet handoff is Windows-only".to_owned())
 }
 
 #[cfg(not(windows))]
 fn offline_retarget_controller_service(
-    _install_root: &Path, _from: &WindowsActivationState, _to: &WindowsActivationState,
+    _install_root: &Path,
+    _from: &WindowsActivationState,
+    _to: &WindowsActivationState,
 ) -> Result<(), String> {
     Err("offline Windows SCM retarget is Windows-only".to_owned())
 }
@@ -2244,35 +2275,71 @@ fn offline_activate_privileged_release(
     require_exact_immutable_activation_console(install_root)?;
     let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     require_offline_windows_owner(install_root, &before)?;
-    let revision = request.accepted_revision.as_deref()
+    let revision = request
+        .accepted_revision
+        .as_deref()
         .ok_or_else(|| "offline activation requires accepted revision".to_owned())?;
-    let target = request.release_set_sha256.as_deref()
+    let target = request
+        .release_set_sha256
+        .as_deref()
         .ok_or_else(|| "offline activation requires exact ReleaseSet SHA256".to_owned())?;
-    if target.len() != 64 || !target.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        || revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
-        return Err("offline activation requires exact lowercase canonical revision and SHA256".to_owned());
+    if target.len() != 64
+        || !target
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || revision.len() != 40
+        || !revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(
+            "offline activation requires exact lowercase canonical revision and SHA256".to_owned(),
+        );
     }
     if before.release_set_sha256 == target {
-        return Err("offline activation target already current; use read-only diagnose, do not replay".to_owned());
+        return Err(
+            "offline activation target already current; use read-only diagnose, do not replay"
+                .to_owned(),
+        );
     }
     let current_bytes = fs::read(install_root.join("current.pb")).map_err(|err| err.to_string())?;
     let previous_bytes = fs::read(install_root.join("previous.pb")).ok();
-    let installer = install_root.join("bootstrap").join("install-windows-release.ps1");
-    if !installer.is_file() { return Err("protected offline installer missing".to_owned()); }
+    let installer = install_root
+        .join("bootstrap")
+        .join("install-windows-release.ps1");
+    if !installer.is_file() {
+        return Err("protected offline installer missing".to_owned());
+    }
     let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
         .arg(&installer)
-        .args(["-AcceptedRevision", revision, "-ReleaseSetSha256", target, "-InstallRoot"])
+        .args([
+            "-AcceptedRevision",
+            revision,
+            "-ReleaseSetSha256",
+            target,
+            "-InstallRoot",
+        ])
         .arg(install_root)
         .arg("-Offline")
-        .stdin(Stdio::null()).output()
+        .stdin(Stdio::null())
+        .output()
         .map_err(|err| format!("offline protected installer invocation failed: {err}"))?;
     let post = load_verified_activation(install_root).map_err(|err| {
-        format!("offline installer outcome uncertain, current.pb unreadable; never blindly retry: {err}")
+        format!(
+            "offline installer outcome uncertain, current.pb unreadable; never blindly retry: {err}"
+        )
     })?;
     if !output.status.success() || post.release_set_sha256 != target {
         // No blind replay of installer after an unknown result.
-        let restore = restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, None);
+        let restore =
+            restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, None);
         return Err(format!(
             "offline installer not accepted; exit={}; restore={restore:?}; {}",
             output.status.code().unwrap_or(-1),
@@ -2282,8 +2349,11 @@ fn offline_activate_privileged_release(
     let handoff = offline_retarget_controller_service(install_root, &before, &post)
         .and_then(|_| retarget_privileged_task(install_root, &post.console_path));
     if let Err(err) = handoff {
-        let restore = restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, None);
-        return Err(format!("offline owner handoff failed: {err}; compensation={restore:?}; do not blindly retry"));
+        let restore =
+            restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, None);
+        return Err(format!(
+            "offline owner handoff failed: {err}; compensation={restore:?}; do not blindly retry"
+        ));
     }
     require_offline_windows_owner(install_root, &post)?;
     Ok((
@@ -2302,15 +2372,24 @@ fn offline_rollback_privileged_release(
     require_managed_tun_rollback_pair(request, &current, &previous)?;
     require_offline_windows_owner(install_root, &current)?;
     let current_bytes = fs::read(install_root.join("current.pb")).map_err(|err| err.to_string())?;
-    let previous_bytes = fs::read(install_root.join("previous.pb")).map_err(|err| err.to_string())?;
+    let previous_bytes =
+        fs::read(install_root.join("previous.pb")).map_err(|err| err.to_string())?;
     offline_retarget_controller_service(install_root, &current, &previous)?;
     if let Err(err) = write_atomic(&install_root.join("current.pb"), &previous_bytes)
         .map_err(|err| err.to_string())
         .and_then(|_| sync_stable_windows_release_tools(install_root, &previous))
         .and_then(|_| retarget_privileged_task(install_root, &previous.console_path))
     {
-        let restored = restore_offline_release(install_root, &current, &current_bytes, &Some(previous_bytes), Some(&previous));
-        return Err(format!("offline rollback handoff failed: {err}; compensation={restored:?}; do not retry blindly"));
+        let restored = restore_offline_release(
+            install_root,
+            &current,
+            &current_bytes,
+            &Some(previous_bytes),
+            Some(&previous),
+        );
+        return Err(format!(
+            "offline rollback handoff failed: {err}; compensation={restored:?}; do not retry blindly"
+        ));
     }
     require_offline_windows_owner(install_root, &previous)?;
     Ok((
@@ -4131,15 +4210,24 @@ mod tests {
             (true, true, true, false),
             (false, false, false, false),
         ] {
-            assert!(offline_handoff_gate(stopped, zero_process, no_tun, exact_owner)
-                .unwrap_err().contains("OFFLINE_HANDOFF_BLOCKED"));
+            assert!(
+                offline_handoff_gate(stopped, zero_process, no_tun, exact_owner)
+                    .unwrap_err()
+                    .contains("OFFLINE_HANDOFF_BLOCKED")
+            );
         }
     }
 
     #[test]
     fn offline_release_operations_have_dedicated_wire_numbers() {
-        assert_eq!(WindowsPrivilegedOperation::OfflineActivateRelease as i32, 12);
-        assert_eq!(WindowsPrivilegedOperation::OfflineRollbackPreviousRelease as i32, 13);
+        assert_eq!(
+            WindowsPrivilegedOperation::OfflineActivateRelease as i32,
+            12
+        );
+        assert_eq!(
+            WindowsPrivilegedOperation::OfflineRollbackPreviousRelease as i32,
+            13
+        );
         for operation in [
             WindowsPrivilegedOperation::OfflineActivateRelease,
             WindowsPrivilegedOperation::OfflineRollbackPreviousRelease,
@@ -4154,7 +4242,12 @@ mod tests {
                 credential_transition_action: None,
             };
             let encoded = encode_windows_privileged_request(&req).unwrap();
-            assert_eq!(decode_windows_privileged_request(&encoded).unwrap().operation, operation as i32);
+            assert_eq!(
+                decode_windows_privileged_request(&encoded)
+                    .unwrap()
+                    .operation,
+                operation as i32
+            );
             assert_eq!(privileged_wait_secs(&req), PRIVILEGED_ACTIVATE_WAIT_SECS);
             // An offline mutation cannot be re-observed as a successful
             // normal activation without exact stopped SCM and owner proof.
