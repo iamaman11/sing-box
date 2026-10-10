@@ -271,6 +271,17 @@ A successful finalization should reduce:
 
 Existing internal JSON is frozen migration debt and may only shrink.
 
+**Disposable VM application_v1 SSH forensics:** an SSH/banner/strict-tunnel
+failure in the accepted in-process application coordinator triggers **one
+read-only bounded** pre-cleanup snapshot from the same Vultr/SSH owners:
+actual VM provider readiness, port 22 TCP outcome (single 3s observation),
+attached exact runner `/32` ingress rule, firewall acquire-plan disposition,
+runner egress consistency and one CA-pinned SSH handshake-phase observation.
+Snapshot fields are fixed-schema with no credentials/raw SSH stderr. Original
+failure and fail-closed compensating cleanup remain the terminal authority.
+No SSH mutation replay, global retry, additional job or service. A `PASS`
+snapshot is diagnostic only, never physical acceptance.
+
 ## Safety
 
 Never reintroduce:
