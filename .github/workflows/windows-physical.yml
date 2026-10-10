@@ -107,7 +107,130 @@ jobs:
       EDGE_OPERATION: ${{ needs.resolve.outputs.operation }}
       EDGE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
     steps:
+      - name: Observe safe Windows state (read-only)
+        if: ${{ needs.resolve.outputs.operation == 'diagnose' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = [IO.Path]::GetFullPath($env:EDGE_INSTALL_ROOT)
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          if ($root -cne 'C:\sing-box' -or
+              $workspace.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'READ_ONLY_DIAGNOSE_BLOCKED: root/workspace isolation'
+          }
+          $current = Join-Path $root 'current.pb'
+          $stable = Join-Path $root 'bin\edge-diagnostic.exe'
+          if (-not (Test-Path -LiteralPath $stable -PathType Leaf)) {
+            throw 'READ_ONLY_DIAGNOSE_BLOCKED: stable diagnostic missing'
+          }
+          function Read-Doctor([string]$binary) {
+            $output = @(& $binary doctor $current)
+            $code = $LASTEXITCODE
+            $values = @{}
+            foreach ($line in $output) {
+              $parts = ([string]$line).Split('=', 2)
+              if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+            }
+            return @{ values = $values; code = $code }
+          }
+          function Assert-Doctor([hashtable]$observation) {
+            $v = $observation['values']
+            if ([string]$v['exact_release_files'] -cne 'PASS' -or
+                [string]$v['scm_service_name'] -cne 'EdgePlatformController' -or
+                [string]$v['release_set_sha256'] -notmatch '^[0-9a-f]{64}$' -or
+                [string]$v['windows_datapath_mode'] -notin @('ManagedTun','ProxyOnly') -or
+                [string]$v['scm_start_type'] -notin @('AutoStart','Manual','Disabled')) {
+              throw 'READ_ONLY_DIAGNOSE_BLOCKED: exact release/SCM/mode incomplete'
+            }
+            $cleanStopped = (
+              [string]$v['scm_state'] -ceq 'Stopped' -and
+              [string]$v['managed_tun_present'] -ceq 'false' -and
+              [string]$v['managed_singbox_process_count'] -ceq '0' -and
+              [string]$v['orphan_singbox_process_count'] -ceq '0' -and
+              [string]$v['conflicting_singbox_process_count'] -ceq '0' -and
+              [string]$v['unknown_singbox_process_count'] -ceq '0'
+            )
+            if ($observation['code'] -ne 0 -and -not $cleanStopped) {
+              throw 'READ_ONLY_DIAGNOSE_BLOCKED: failed doctor without exact clean stopped evidence'
+            }
+            return $cleanStopped
+          }
+          $a = Read-Doctor $stable
+          $stoppedA = Assert-Doctor $a
+          $exact = [string]$a['values']['diagnostic_path']
+          if ([string]::IsNullOrWhiteSpace($exact) -or -not (Test-Path -LiteralPath $exact -PathType Leaf)) {
+            throw 'READ_ONLY_DIAGNOSE_BLOCKED: exact diagnostic missing'
+          }
+          $b = Read-Doctor $exact
+          $stoppedB = Assert-Doctor $b
+          if ($stoppedA -ne $stoppedB) { throw 'READ_ONLY_DIAGNOSE_BLOCKED: stopped state drift' }
+          foreach ($key in @('release_set_sha256','windows_datapath_mode','scm_state','scm_start_type',
+              'managed_tun_present','managed_singbox_process_count','orphan_singbox_process_count',
+              'conflicting_singbox_process_count','unknown_singbox_process_count')) {
+            if ([string]$a['values'][$key] -cne [string]$b['values'][$key]) {
+              throw "READ_ONLY_DIAGNOSE_BLOCKED: observation changed in $key"
+            }
+          }
+          $v = $b['values']
+          $desired = if ([string]$v['windows_datapath_mode'] -cne $env:EDGE_EXPECTED_MODE) { 'DEGRADED_INSTALLED_MODE' }
+              elseif ($stoppedB -and $env:EDGE_EXPECTED_MODE -ceq 'ManagedTun') { 'DEGRADED_STOPPED' }
+              elseif ($b['code'] -eq 0) { 'PASS' } else { 'DEGRADED' }
+          $safety = if ($stoppedB -and [string]$v['scm_start_type'] -ceq 'AutoStart') {
+              'BLOCKED_STOPPED_OWNER_AUTOSTART'
+            } else { 'BLOCKED_NO_INDEPENDENT_DNS_CONTROL_RECOVERY' }
+          Write-Host 'observation_status=PASS'
+          Write-Host "desired_state_status=$desired"
+          Write-Host "scm_state=$([string]$v['scm_state'])"
+          Write-Host "scm_start_type=$([string]$v['scm_start_type'])"
+          Write-Host "managed_tun_present=$([string]$v['managed_tun_present'])"
+          Write-Host "release_set_sha256=$([string]$v['release_set_sha256'])"
+          Write-Host "managed_tun_restart_safety=$safety"
+          Write-Host 'independent_no_tun_dns_control_recovery=UNPROVEN'
+          if ($stoppedB) {
+            $route = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+              Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1
+            if ($null -eq $route -or [int]$route.InterfaceIndex -le 0) {
+              throw 'READ_ONLY_DIAGNOSE_BLOCKED: IPv4 default route missing'
+            }
+            $adapter = Get-NetAdapter -InterfaceIndex ([int]$route.InterfaceIndex) -ErrorAction Stop
+            if ([string]$adapter.Name -ceq 'sing-box-tun') {
+              throw 'READ_ONLY_DIAGNOSE_BLOCKED: route captured by sing-box'
+            }
+            Write-Host "direct_default_adapter=$($adapter.Name)"
+            Write-Host "direct_default_gateway=$($route.NextHop)"
+            $servers = @(Get-DnsClientServerAddress -InterfaceIndex ([int]$route.InterfaceIndex) -AddressFamily IPv4 -ErrorAction Stop |
+              ForEach-Object ServerAddresses)
+            if ($servers.Count -eq 0) { throw 'READ_ONLY_DIAGNOSE_BLOCKED: IPv4 resolver missing' }
+            Write-Host "direct_dns_server_count=$($servers.Count)"
+            $dns = @(Resolve-DnsName www.gstatic.com -Type A -DnsOnly -ErrorAction Stop |
+              Where-Object { $_.IPAddress })
+            if ($dns.Count -eq 0) { throw 'READ_ONLY_DIAGNOSE_BLOCKED: independent DNS failed' }
+            Write-Host 'direct_dns_resolution=PASS'
+            $http = (& curl.exe --noproxy '*' --silent --show-error --fail --connect-timeout 8 --max-time 15 --output NUL --write-out '%{http_code}' 'https://www.gstatic.com/generate_204').Trim()
+            if ($LASTEXITCODE -ne 0 -or $http -cne '204') {
+              throw "READ_ONLY_DIAGNOSE_BLOCKED: direct HTTPS failed exit=$LASTEXITCODE status=$http"
+            }
+            Write-Host 'direct_no_proxy_https=PASS'
+          }
+          foreach ($name in @('state','runtime','logs')) {
+            $denied = $false
+            try { [IO.Directory]::GetFileSystemEntries((Join-Path $root $name)) | Out-Null }
+            catch [UnauthorizedAccessException] { $denied = $true }
+            if (-not $denied) { throw "READ_ONLY_DIAGNOSE_BLOCKED: runner can read private state: $name" }
+          }
+          @(
+            '### Windows read-only observation',
+            '- Observation: PASS',
+            "- Desired state: $desired",
+            "- SCM: $([string]$v['scm_state'])",
+            "- TUN: $([string]$v['managed_tun_present'])",
+            "- Startup: $([string]$v['scm_start_type'])",
+            "- Safety: $safety",
+            '- Independent DNS/control recovery: UNPROVEN'
+          ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
+
       - name: Assert isolated root and observe pre-state
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -517,6 +640,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Lifecycle mutation failed: $LASTEXITCODE" }
 
       - name: Verify exact authority and SCM handoff
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -701,7 +825,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Managed proxy verification failed: $LASTEXITCODE" }
 
       - name: Read-only privileged runtime evidence after restart
-        if: ${{ always() }}
+        if: ${{ always() && needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -881,6 +1005,7 @@ jobs:
           throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: automatic rollback cannot prove CloudflareWARP DNS/control-channel recovery; preserve current runtime for independent diagnostics'
 
       - name: Final diagnostics and transport-only boundary
+        if: ${{ needs.resolve.outputs.operation != 'diagnose' }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
