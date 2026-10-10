@@ -342,8 +342,11 @@ struct ReadinessFlags {
 }
 
 fn scope_ready(scope: ZeroTrustReadinessScope, flags: ReadinessFlags) -> bool {
+    // Cloudflare requires the Mesh *node* profile before a server connects.
+    // That exact warp_connector selector is NOT the Android client profile.
+    // Android's real-traffic/device acceptance remains a separate Stage 4B.5 gate.
     match scope {
-        ZeroTrustReadinessScope::AndroidClient => {
+        ZeroTrustReadinessScope::AndroidClient | ZeroTrustReadinessScope::VmServer => {
             flags.device_settings
                 && flags.connectors
                 && flags.mesh_profile
@@ -351,10 +354,6 @@ fn scope_ready(scope: ZeroTrustReadinessScope, flags: ReadinessFlags) -> bool {
                 && flags.gateway
                 && flags.manual
         }
-        // The fresh VM acceptance must prove provider/runtime isolation,
-        // not an Android client device profile. Cloudflare Mesh server
-        // mutations are still guarded by their scoped typed lifecycle owner.
-        ZeroTrustReadinessScope::VmServer => flags.connectors,
     }
 }
 
@@ -410,8 +409,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vm_server_scope_is_independent_of_android_profile_but_requires_connector_isolation() {
-        let flags = ReadinessFlags {
+    fn vm_server_requires_mesh_node_profile_and_exact_shared_prerequisites() {
+        let missing_profile = ReadinessFlags {
             device_settings: true,
             connectors: true,
             mesh_profile: false,
@@ -419,22 +418,45 @@ mod tests {
             gateway: true,
             manual: true,
         };
-        assert!(!scope_ready(ZeroTrustReadinessScope::AndroidClient, flags));
-        assert!(scope_ready(ZeroTrustReadinessScope::VmServer, flags));
         assert!(!scope_ready(
             ZeroTrustReadinessScope::VmServer,
-            ReadinessFlags {
-                connectors: false,
-                ..flags
-            }
+            missing_profile
         ));
         assert!(!scope_ready(
             ZeroTrustReadinessScope::AndroidClient,
+            missing_profile
+        ));
+
+        let ready = ReadinessFlags {
+            mesh_profile: true,
+            ..missing_profile
+        };
+        assert!(scope_ready(ZeroTrustReadinessScope::VmServer, ready));
+        assert!(scope_ready(ZeroTrustReadinessScope::AndroidClient, ready));
+        for blocked in [
+            ReadinessFlags {
+                device_settings: false,
+                ..ready
+            },
+            ReadinessFlags {
+                connectors: false,
+                ..ready
+            },
+            ReadinessFlags {
+                enrollment: false,
+                ..ready
+            },
             ReadinessFlags {
                 gateway: false,
-                ..flags
-            }
-        ));
+                ..ready
+            },
+            ReadinessFlags {
+                manual: false,
+                ..ready
+            },
+        ] {
+            assert!(!scope_ready(ZeroTrustReadinessScope::VmServer, blocked));
+        }
     }
 
     #[test]

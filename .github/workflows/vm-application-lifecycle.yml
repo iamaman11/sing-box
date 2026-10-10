@@ -840,14 +840,16 @@ jobs:
             echo "Cloudflare Zero Trust readiness blocked disposable application acceptance before VM creation" >&2
             exit "${cf_exit}"
           fi
-          # VM-server acceptance is independent of Android device enrollment,
-          # device-profile selectors and client policy (separate Stage 4B.5).
-          # The typed server Mesh provider and clean-room stages remain mandatory.
+          # Cloudflare requires the warp_connector Mesh NODE profile before
+          # server attachment. That is distinct from Android client E2E
+          # enrollment/traffic, which remains a separate Stage 4B.5 gate.
+          # Keep account prerequisites fail-closed before disposable VM creation.
           jq -e '
             .scope == "vm-server" and
             .status == "PASS" and
             .token_read_authority == "PASS" and
-            .connectors.ready == true
+            .connectors.ready == true and
+            .mesh_node_profile.ready == true
           ' "${cf_report}" >/dev/null
 
       - name: Validate disposable provider desired state

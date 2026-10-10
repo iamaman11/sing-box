@@ -1,7 +1,7 @@
 use crate::application_lifecycle_command::resolve_application_authority_from_spec;
 use crate::application_lifecycle_service::{
-    cleanup_mesh_runtime_remote, converge_mesh_runtime_remote, observe_ipv4_network_remote,
-    verify_mesh_runtime_remote,
+    cleanup_mesh_runtime_remote, converge_mesh_runtime_remote, mesh_provider_failure_evidence,
+    observe_ipv4_network_remote, observe_mesh_runtime_remote_once, verify_mesh_runtime_remote,
 };
 use crate::cloudflare_mesh_lifecycle_service::{
     CloudflareMeshApiProvider, MeshExecutionPolicy, apply_mesh_once, authorize_mesh_apply,
@@ -101,16 +101,34 @@ pub(crate) async fn acceptance_runtime_apply(
     }
     println!("mesh_runtime_local_status=READY");
     println!("mesh_runtime_registration_identity=EXACT");
-    wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default())
-        .await
-        .map_err(|err| {
-            format!(
-                "{err}; local_runtime_ready={} exact_image_ready={} registration_identity=EXACT",
-                state.runtime_ready, state.exact_image_ready
-            )
-        })?;
+    if let Err(provider_failure) =
+        wait_mesh_provider_healthy(&mut provider, &desired, MeshExecutionPolicy::default()).await
+    {
+        // The guest can be locally READY while Cloudflare still reports inactive.
+        // Capture one read-only, typed deep observation before acceptance destroys this VM.
+        // Neither failed observation nor a provider timeout authorizes replaying convergence.
+        let diagnostic = observe_mesh_runtime_remote_once(&authority).await;
+        return Err(mesh_provider_failure_with_diagnostic(
+            &provider_failure,
+            diagnostic,
+            &credential.registration_id,
+        ));
+    }
     println!("mesh_provider_status=HEALTHY");
     Ok(())
+}
+
+fn mesh_provider_failure_with_diagnostic(
+    provider_failure: &str,
+    diagnostic: Result<edge_shared_types::MeshRuntimeState, String>,
+    expected_registration: &str,
+) -> String {
+    // Never append a raw RPC error: it can contain endpoints or other untrusted data.
+    let evidence = match diagnostic {
+        Ok(state) => mesh_provider_failure_evidence(&state, expected_registration),
+        Err(_) => "local_diagnostic=UNAVAILABLE".to_owned(),
+    };
+    format!("{provider_failure}; {evidence}")
 }
 
 pub(crate) async fn acceptance_runtime_verify(
@@ -463,6 +481,54 @@ mod tests {
                 link_scope: true,
             }],
         }
+    }
+
+    #[test]
+    fn inactive_provider_preserves_failure_and_bounded_typed_evidence() {
+        let state = edge_shared_types::MeshRuntimeState {
+            runtime_ready: true,
+            exact_image_ready: true,
+            registration_id: Some("node-a".to_owned()),
+            ..Default::default()
+        };
+        let error = mesh_provider_failure_with_diagnostic(
+            "Cloudflare Mesh node did not become healthy; last_status=inactive",
+            Ok(state),
+            "node-a",
+        );
+        assert!(error.contains("last_status=inactive"));
+        assert!(error.contains("local_diagnostic=OBSERVED"));
+        assert!(error.contains("registration_match=true"));
+        assert!(error.contains("runtime_ready=true"));
+        assert!(!error.contains("node-a"));
+    }
+
+    #[test]
+    fn inactive_provider_diagnostic_rpc_failure_does_not_replace_primary_failure() {
+        let error = mesh_provider_failure_with_diagnostic(
+            "last_status=inactive",
+            Err("Bearer secret-token at 10.0.0.1".to_owned()),
+            "node-a",
+        );
+        assert_eq!(error, "last_status=inactive; local_diagnostic=UNAVAILABLE");
+    }
+
+    #[test]
+    fn inactive_provider_registration_drift_fails_evidence_match() {
+        let state = edge_shared_types::MeshRuntimeState {
+            runtime_ready: false,
+            registration_id: Some("node-other".to_owned()),
+            ..Default::default()
+        };
+        let error = mesh_provider_failure_with_diagnostic(
+            "last_status=inactive",
+            Ok(state),
+            "node-expected",
+        );
+        assert!(error.contains("registration_match=false"));
+        assert!(error.contains("runtime_ready=false"));
+        assert!(!error.contains("node-other"));
+        assert!(!error.contains("node-expected"));
     }
 
     #[test]
