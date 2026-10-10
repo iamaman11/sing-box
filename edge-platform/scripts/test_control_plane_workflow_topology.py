@@ -208,8 +208,8 @@ def main() -> None:
         and "Do not mutate Windows from an unaccepted mode-flip revision" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
         and "Stage 3 and Stage 4A are closed" in readme
-        and "The project is in Stage 4B with the Windows `MANAGED_TUN` already owned" in readme
-        and "**Stage 4B.2-C remains OPEN:**" in readme
+        and "Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner" in readme
+        and "**Stage 4B.2-C is CLOSED for the accepted bounded ManagedTun contract**" in readme
         and "The accepted proxy-only runtime is the starting point" not in readme
         and "currently working external Windows sing-box" not in readme
         and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
@@ -219,15 +219,15 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "**Stage 4B.2-C remains OPEN**" in root_readme
-        and "Stage-transition rule: Stage 4A is closed and the managed Windows TUN is physically running" in root_readme
+        and "**Stage 4B.2-C is physically CLOSED for the bounded ManagedTun lifecycle:**" in root_readme
+        and "Mandatory before Stage 4B.5 Android Mesh" in root_readme
         and "The currently working external Windows sing-box/TUN" not in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
         and "`/production rollback` uses the same" in application_readme
         and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
-        "operator documentation must reflect the installed SCM-owned TUN and the still-open independent DNS/control recovery gate",
+        "operator documentation must reflect accepted ManagedTun D/E/F and the still-unproven independent no-TUN recovery contract",
     )
     require(
         "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
