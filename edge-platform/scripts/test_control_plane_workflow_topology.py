@@ -137,8 +137,8 @@ def main() -> None:
     read_only = windows_physical.split(read_only_step, 1)[1].split(prestate_step, 1)[0]
     require(
         "if: ${{ needs.resolve.outputs.operation == 'diagnose' }}" in read_only
-        and "Assert-Doctor $stableDoctor" in read_only
-        and "Assert-Doctor $exactDoctor" in read_only
+        and "Assert-Doctor $a" in read_only
+        and "Assert-Doctor $b" in read_only
         and "observation_status=PASS" in read_only
         and "desired_state_status=$desired" in read_only
         and "DEGRADED_STOPPED" in read_only
