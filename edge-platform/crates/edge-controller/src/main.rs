@@ -752,6 +752,8 @@ fn reconcile_windows_child_exit(
         state_path: windows_runtime_state_path(repo_root),
         runtime_root: default_runtime_root(repo_root),
     };
+    // One-shot recovery cannot bypass the same pre-TUN barrier as SCM startup.
+    require_native_windows_runtime_launch_safety(repo_root)?;
     let result = start_runtime_process(&paths, false)
         .map_err(|err| format!("one-shot native child recovery failed: {err}"))?;
     let pid = result
@@ -798,6 +800,26 @@ fn edge_controller_service_main(_arguments: Vec<OsString>) {
             write_controller_service_boundary_error("panic", &message, true);
             eprintln!("EdgePlatformController service panicked: {message}");
         }
+    }
+}
+
+// Startup failure must never clean up a foreign or orphaned child merely
+// because its command line points to our config. Only this SCM's unique
+// exact child may be torn down; an absent child requires no mutation.
+#[cfg(any(windows, test))]
+fn failed_windows_scm_start_owns_child(
+    exact_children: &[edge_local_runtime::ProcessObservation],
+    scm_pid: u32,
+) -> bool {
+    exact_children.len() == 1 && exact_children[0].parent_pid == Some(scm_pid)
+}
+
+#[cfg(windows)]
+fn stop_only_owned_child_after_failed_scm_start(repo_root: &Path) {
+    let config_path = default_local_config_path(repo_root);
+    let children = exact_managed_runtime_processes(&config_path);
+    if failed_windows_scm_start_owns_child(&children, std::process::id()) {
+        let _ = stop_runtime_process(&config_path, true);
     }
 }
 
@@ -906,7 +928,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if let Err(err) = converge_windows_runtime_on_service_start(&config.repo_root) {
-                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                stop_only_owned_child_after_failed_scm_start(&config.repo_root);
                 return Err(startup_failure(
                     "runtime_converge",
                     format!("Windows managed runtime startup convergence failed: {err}"),
@@ -914,7 +936,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Err(err) = clear_controller_service_error(&config.repo_root) {
-                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                stop_only_owned_child_after_failed_scm_start(&config.repo_root);
                 return Err(startup_failure("error_evidence_clear", err));
             }
 
@@ -927,7 +949,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
                 wait_hint: Duration::default(),
                 process_id: None,
             }) {
-                let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);
+                stop_only_owned_child_after_failed_scm_start(&config.repo_root);
                 return Err(startup_failure("scm_running", err.to_string()));
             }
 
@@ -1022,7 +1044,34 @@ enum WindowsStartupDecision {
     NoopManaged,
     RestartOrphanManaged,
     BlockedConflict,
+    BlockedUnprovenLine1,
     StartAbsent,
+}
+
+#[cfg(any(windows, test))]
+fn require_native_windows_route_capture_safety(mode: WindowsDatapathMode) -> Result<(), String> {
+    match mode {
+        WindowsDatapathMode::ProxyOnly => Ok(()),
+        WindowsDatapathMode::ManagedTun => Err(
+            "NATIVE_MANAGED_TUN_PREAUTH_BLOCKED: independently authenticated Line1 \
+             and no-TUN DNS/control restoration are not proved; refusing route capture"
+                .to_owned(),
+        ),
+        WindowsDatapathMode::Unspecified => {
+            Err("NATIVE_MANAGED_TUN_PREAUTH_BLOCKED: unspecified Windows datapath mode".to_owned())
+        }
+    }
+}
+
+#[cfg(windows)]
+fn require_native_windows_runtime_launch_safety(repo_root: &Path) -> Result<(), String> {
+    if !is_installed_windows_root(repo_root) {
+        return Ok(());
+    }
+    let desired = canonical_production_desired_state()?;
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "installed Windows datapath mode is invalid".to_owned())?;
+    require_native_windows_route_capture_safety(mode)
 }
 
 #[cfg(any(windows, test))]
@@ -1063,11 +1112,11 @@ fn windows_startup_decision(
                 if managed_parent_is_current_controller {
                     WindowsStartupDecision::NoopManaged
                 } else {
-                    WindowsStartupDecision::RestartOrphanManaged
+                    WindowsStartupDecision::BlockedUnprovenLine1
                 }
             }
             RuntimeProcessClassification::Conflicting(_) => WindowsStartupDecision::BlockedConflict,
-            RuntimeProcessClassification::Absent => WindowsStartupDecision::StartAbsent,
+            RuntimeProcessClassification::Absent => WindowsStartupDecision::BlockedUnprovenLine1,
         },
         WindowsDatapathMode::Unspecified => WindowsStartupDecision::BlockedConflict,
     }
@@ -1119,6 +1168,7 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
     ) {
         WindowsStartupDecision::NoopManaged => Ok("NOOP_MANAGED_RUNNING"),
         WindowsStartupDecision::RestartOrphanManaged => {
+            require_native_windows_route_capture_safety(mode)?;
             stop_runtime_process(&config_path, true)
                 .map_err(|err| format!("failed to stop orphaned exact managed runtime: {err}"))?;
             let paths = LocalRuntimePaths {
@@ -1131,6 +1181,10 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
                 format!("failed to restart orphaned exact managed runtime: {err}")
             })?;
             Ok("RESTARTED_ORPHAN_MANAGED")
+        }
+        WindowsStartupDecision::BlockedUnprovenLine1 => {
+            require_native_windows_route_capture_safety(mode)?;
+            Err("ManagedTun startup is blocked until pre-TUN Line1 and DNS/control recovery are independently verified".to_owned())
         }
         WindowsStartupDecision::BlockedConflict => {
             match &classification {
@@ -1162,6 +1216,7 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
             Ok("BLOCKED_CONFLICT")
         }
         WindowsStartupDecision::StartAbsent => {
+            require_native_windows_route_capture_safety(mode)?;
             let paths = LocalRuntimePaths {
                 singbox_binary_path: default_singbox_binary_path(repo_root),
                 config_path,
@@ -1823,7 +1878,8 @@ impl ControllerService for ControllerServerImpl {
                     "privileged release handoff pending: refusing competing runtime start",
                 ));
             }
-            start_runtime_process(&paths, request.visible_window)
+            require_native_windows_runtime_launch_safety(&self.repo_root)
+                .and_then(|_| start_runtime_process(&paths, request.visible_window))
         };
         #[cfg(not(windows))]
         let started = start_runtime_process(&paths, request.visible_window);
@@ -1993,12 +2049,15 @@ impl ControllerService for ControllerServerImpl {
                     "privileged release handoff pending: refusing competing runtime restart",
                 ));
             }
-            WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel);
-            if request.visible_window {
-                restart_runtime_process_visible(&paths)
-            } else {
-                restart_runtime_process(&paths)
-            }
+            // Reject before changing replacement generation or stopping any child.
+            require_native_windows_runtime_launch_safety(&self.repo_root).and_then(|_| {
+                WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel);
+                if request.visible_window {
+                    restart_runtime_process_visible(&paths)
+                } else {
+                    restart_runtime_process(&paths)
+                }
+            })
         };
         #[cfg(not(windows))]
         let restarted = if request.visible_window {
@@ -5121,7 +5180,7 @@ mod tests {
                 false,
                 WindowsDatapathMode::ManagedTun,
             ),
-            WindowsStartupDecision::RestartOrphanManaged
+            WindowsStartupDecision::BlockedUnprovenLine1
         );
         assert_eq!(
             windows_startup_decision(
@@ -5178,6 +5237,81 @@ mod tests {
                 WindowsDatapathMode::ProxyOnly,
             ),
             WindowsStartupDecision::BlockedConflict
+        );
+    }
+
+    #[test]
+    fn failed_scm_start_cleanup_is_exact_single_child_of_current_owner_only() {
+        use edge_local_runtime::ProcessObservation;
+        let own = ProcessObservation {
+            pid: 20,
+            name: "sing-box".to_owned(),
+            executable_path: Some("sing-box".to_owned()),
+            parent_pid: Some(10),
+            command_line: "sing-box run -c owned.json".to_owned(),
+            config_path: Some("owned.json".to_owned()),
+        };
+        let mut other = own.clone();
+        other.pid = 21;
+        other.parent_pid = Some(15);
+        assert!(!failed_windows_scm_start_owns_child(&[], 10));
+        assert!(failed_windows_scm_start_owns_child(&[own.clone()], 10));
+        assert!(!failed_windows_scm_start_owns_child(&[own.clone()], 11));
+        assert!(!failed_windows_scm_start_owns_child(&[other.clone()], 10));
+        assert!(!failed_windows_scm_start_owns_child(&[own, other], 10));
+    }
+
+    #[test]
+    fn native_managed_tun_requires_real_pre_tun_authentication_on_every_start() {
+        use edge_local_runtime::ProcessObservation;
+
+        assert!(
+            require_native_windows_route_capture_safety(WindowsDatapathMode::ProxyOnly).is_ok()
+        );
+        for unsafe_mode in [
+            WindowsDatapathMode::ManagedTun,
+            WindowsDatapathMode::Unspecified,
+        ] {
+            assert!(
+                require_native_windows_route_capture_safety(unsafe_mode)
+                    .unwrap_err()
+                    .contains("NATIVE_MANAGED_TUN_PREAUTH_BLOCKED"),
+            );
+        }
+        assert_eq!(
+            windows_startup_decision(
+                &RuntimeProcessClassification::Absent,
+                0,
+                false,
+                WindowsDatapathMode::ManagedTun,
+            ),
+            WindowsStartupDecision::BlockedUnprovenLine1,
+        );
+        let orphan = ProcessObservation {
+            pid: 77,
+            name: "sing-box".to_owned(),
+            executable_path: Some("sing-box".to_owned()),
+            parent_pid: Some(12),
+            command_line: "sing-box run -c orphan.json".to_owned(),
+            config_path: Some("orphan.json".to_owned()),
+        };
+        assert_eq!(
+            windows_startup_decision(
+                &RuntimeProcessClassification::Managed(orphan.clone()),
+                1,
+                false,
+                WindowsDatapathMode::ManagedTun,
+            ),
+            WindowsStartupDecision::BlockedUnprovenLine1,
+        );
+        assert_eq!(
+            windows_startup_decision(
+                &RuntimeProcessClassification::Managed(orphan),
+                1,
+                true,
+                WindowsDatapathMode::ManagedTun,
+            ),
+            WindowsStartupDecision::NoopManaged,
         );
     }
 
