@@ -20,7 +20,8 @@ use crate::cloudflare_mesh_lifecycle_command::{
 use crate::vultr_lifecycle_command::{
     acceptance_converge_substrate, acceptance_create_machine, acceptance_destroy_and_cleanup,
     acceptance_lease_acquire, acceptance_lease_release, acceptance_reboot,
-    acceptance_require_clean_room as vultr_require_clean_room, acceptance_verify_substrate,
+    acceptance_require_clean_room as vultr_require_clean_room, acceptance_ssh_failure_forensics,
+    acceptance_verify_substrate,
 };
 use crate::vultr_vpc_lifecycle_command::{
     acceptance_attach_and_verify as vpc_attach_and_verify,
@@ -431,6 +432,14 @@ pub(crate) async fn run_cleanup(
     }
 }
 
+fn is_ssh_transport_failure(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    lower.contains("ssh exited")
+        || lower.contains("strict ssh")
+        || lower.contains("ssh tunnel")
+        || lower.contains("banner exchange")
+}
+
 async fn run_lifecycle(
     context: &OrchestrationContext,
     args: &ApplicationAcceptanceArgs,
@@ -503,7 +512,7 @@ async fn run_lifecycle(
     .await
     .map_err(|detail| operational_failure("dns_create", detail))?;
 
-    let (release_v1, bundle_v1) = timed_stage(
+    let application_v1 = timed_stage(
         "application_v1",
         acceptance_apply_desired(
             context,
@@ -514,8 +523,25 @@ async fn run_lifecycle(
             ApplicationPlanClass::Apply,
         ),
     )
-    .await
-    .map_err(|detail| operational_failure("application_v1", detail))?;
+    .await;
+    let (release_v1, bundle_v1) = match application_v1 {
+        Ok(release) => release,
+        Err(detail) => {
+            if is_ssh_transport_failure(&detail) {
+                // Exactly one read-only diagnostic snapshot before compensation.
+                // The original SSH failure is preserved; the mutation is never replayed.
+                let snapshot = acceptance_ssh_failure_forensics(vultr_spec, machine_id).await;
+                tracing::warn!(
+                    component = "edge-orchestrator",
+                    event = "application.acceptance.ssh_failure_forensics",
+                    stage = "application_v1",
+                    evidence = %snapshot,
+                    "read-only SSH failure snapshot before cleanup"
+                );
+            }
+            return Err(operational_failure("application_v1", detail));
+        }
+    };
 
     timed_stage(
         "mesh_provider",
@@ -847,6 +873,31 @@ fn print_cleanup_certificate(certificate: &CleanupCertificate<'_>) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_forensics_is_bounded_to_transport_errors_not_application_mutations() {
+        assert!(is_ssh_transport_failure(
+            "ssh exited with status exit status: 255: Connection timed out during banner exchange"
+        ));
+        assert!(is_ssh_transport_failure("strict SSH tunnel exited early"));
+        assert!(!is_ssh_transport_failure(
+            "application current bundle digest differs"
+        ));
+        assert!(!is_ssh_transport_failure(
+            "Cloudflare mesh profile inactive"
+        ));
+    }
+
+    #[test]
+    fn ssh_failure_preserves_original_error_and_its_cleanup_owner() {
+        let original =
+            "ssh exited with status exit status: 255: Connection timed out during banner exchange";
+        let failure = operational_failure("application_v1", original.to_owned());
+        assert_eq!(failure.stage, "application_v1");
+        assert_eq!(failure.detail, original);
+        assert!(failure.cleanup_allowed);
+    }
+
     use edge_controller_core::application_lifecycle::{
         ApplicationRuntimePolicy, Line1RuntimePolicy, Line2RuntimePolicy,
     };

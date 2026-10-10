@@ -913,6 +913,25 @@ fn capture_transport_stage(
     }
 }
 
+/// One read-only SSH handshake-phase observation, with strict existing CA trust.
+/// No SSH mutation, login retry, remote shell or raw stderr is exposed.
+pub(crate) fn capture_ssh_transport_stage_once(
+    target_ip: &str,
+    logical_hostname: &str,
+    operator_private_key_path: &Path,
+    canonical_operator_public_key: &str,
+) -> Result<String, String> {
+    let trust = write_ca_known_hosts(logical_hostname, canonical_operator_public_key)?;
+    let stage = capture_transport_stage(
+        target_ip,
+        logical_hostname,
+        operator_private_key_path,
+        &trust,
+    );
+    let _ = fs::remove_file(&trust);
+    Ok(format!("{};probe_passed={}", stage.evidence, stage.passed))
+}
+
 fn should_retry_acceptance_after_transport_probe(
     last_class: StrictSshFailureClass,
     transport_probe_passed: bool,
