@@ -27,7 +27,9 @@ use windows_service::service_dispatcher;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+};
 
 mod cli;
 mod deploy_orchestrator;
@@ -565,11 +567,7 @@ fn child_exit_auto_recovery_allowed(
     recovery_consumed: bool,
     exact_absent: bool,
 ) -> bool {
-    !shutdown
-        && !privileged_handoff
-        && !explicit_replacement
-        && !recovery_consumed
-        && exact_absent
+    !shutdown && !privileged_handoff && !explicit_replacement && !recovery_consumed && exact_absent
 }
 
 #[cfg(windows)]
@@ -583,7 +581,9 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
     }
     let initial = exact_managed_runtime_processes(&config_path);
     if initial.len() != 1 || initial[0].parent_pid != Some(std::process::id()) {
-        return Err("SCM startup did not expose one exact child owned by this controller".to_owned());
+        return Err(
+            "SCM startup did not expose one exact child owned by this controller".to_owned(),
+        );
     }
     let mut pid = initial[0].pid;
     let mut recovered = false;
@@ -655,7 +655,13 @@ fn reconcile_windows_child_exit(
     {
         return Err("child exited with conflicting or ambiguous sing-box ownership".to_owned());
     }
-    if !child_exit_auto_recovery_allowed(false, false, explicit_replacement, recovery_consumed, true) {
+    if !child_exit_auto_recovery_allowed(
+        false,
+        false,
+        explicit_replacement,
+        recovery_consumed,
+        true,
+    ) {
         return if recovery_consumed && !explicit_replacement {
             Err("one-shot native child recovery budget exhausted".to_owned())
         } else {
@@ -663,7 +669,9 @@ fn reconcile_windows_child_exit(
         };
     }
     if !repo_root.join("current.pb").is_file() {
-        return Err("exact installed release authority disappeared; refusing auto recovery".to_owned());
+        return Err(
+            "exact installed release authority disappeared; refusing auto recovery".to_owned(),
+        );
     }
     let paths = LocalRuntimePaths {
         singbox_binary_path: default_singbox_binary_path(repo_root),
@@ -673,9 +681,9 @@ fn reconcile_windows_child_exit(
     };
     let result = start_runtime_process(&paths, false)
         .map_err(|err| format!("one-shot native child recovery failed: {err}"))?;
-    let pid = result.pid.ok_or(
-        "one-shot native child recovery returned no exact process identity"
-    )?;
+    let pid = result
+        .pid
+        .ok_or("one-shot native child recovery returned no exact process identity")?;
     eprintln!("Windows SCM one-shot managed sing-box child recovery succeeded");
     Ok(Some((pid, true)))
 }
@@ -4950,12 +4958,24 @@ mod tests {
     #[test]
     fn managed_child_exit_recovery_is_one_shot_and_refuses_all_intended_handoffs() {
         use super::child_exit_auto_recovery_allowed;
-        assert!(child_exit_auto_recovery_allowed(false, false, false, false, true));
-        assert!(!child_exit_auto_recovery_allowed(true, false, false, false, true));
-        assert!(!child_exit_auto_recovery_allowed(false, true, false, false, true));
-        assert!(!child_exit_auto_recovery_allowed(false, false, true, false, true));
-        assert!(!child_exit_auto_recovery_allowed(false, false, false, true, true));
-        assert!(!child_exit_auto_recovery_allowed(false, false, false, false, false));
+        assert!(child_exit_auto_recovery_allowed(
+            false, false, false, false, true
+        ));
+        assert!(!child_exit_auto_recovery_allowed(
+            true, false, false, false, true
+        ));
+        assert!(!child_exit_auto_recovery_allowed(
+            false, true, false, false, true
+        ));
+        assert!(!child_exit_auto_recovery_allowed(
+            false, false, true, false, true
+        ));
+        assert!(!child_exit_auto_recovery_allowed(
+            false, false, false, true, true
+        ));
+        assert!(!child_exit_auto_recovery_allowed(
+            false, false, false, false, false
+        ));
     }
 
     use super::*;
