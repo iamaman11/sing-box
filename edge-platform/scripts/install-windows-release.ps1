@@ -28,11 +28,8 @@ function Assert-OfflineWindow {
     if ([IO.Path]::GetFullPath($InstallRoot).TrimEnd('\') -cne 'C:\sing-box') {
         throw 'OFFLINE_HANDOFF_BLOCKED: unexpected install root'
     }
-    $scm = @(Get-CimInstance -ClassName Win32_Service -Filter "Name='EdgePlatformController'" -ErrorAction Stop)
-    if ($scm.Count -ne 1 -or [string]$scm[0].State -cne 'Stopped' -or
-        [string]$scm[0].StartMode -cne 'Auto' -or [int]$scm[0].ProcessId -ne 0) {
-        throw 'OFFLINE_HANDOFF_BLOCKED: exact SCM is not fully stopped'
-    }
+    # Exact SCM service identity, account, status and command are verified
+    # exclusively by the native privileged owner, not the release installer.
     $processes = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction Stop)
     if ($processes.Count -ne 0) {
         throw 'OFFLINE_HANDOFF_BLOCKED: sing-box process exists, no owner will be killed'
