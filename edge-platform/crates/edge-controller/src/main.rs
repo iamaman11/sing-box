@@ -665,9 +665,7 @@ fn reconcile_windows_child_exit(
         let activation_bytes = fs::read(repo_root.join("current.pb"))
             .map_err(|err| format!("cannot verify authority after privileged handoff: {err}"))?;
         let active = decode_windows_activation_state(&activation_bytes)?;
-        if result.active_release_set_sha256.as_deref()
-            != Some(active.release_set_sha256.as_str())
-        {
+        if result.active_release_set_sha256.as_deref() != Some(active.release_set_sha256.as_str()) {
             return Ok(None);
         }
         let executable = std::env::current_exe()
