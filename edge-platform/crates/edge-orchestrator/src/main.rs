@@ -160,7 +160,7 @@ async fn run(
         },
         Command::CloudflareZeroTrust { command } => match command {
             cli::CloudflareZeroTrustCommand::Doctor(args) => {
-                cloudflare_zero_trust_doctor::run(&args.spec_path).await
+                cloudflare_zero_trust_doctor::run(&args.spec_path, args.scope).await
             }
         },
         Command::Credentials { command } => {

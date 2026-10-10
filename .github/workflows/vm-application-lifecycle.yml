@@ -813,9 +813,10 @@ jobs:
           # Surface only boolean readiness, never account/device/connector names or secrets.
           cf_report="${RUNNER_TEMP}/acceptance-zero-trust-doctor.json"
           cf_exit=0
-          "${bin}" cloudflare-zero-trust doctor infra/cloudflare/zero-trust-guardrails.json > "${cf_report}" || cf_exit=$?
+          "${bin}" cloudflare-zero-trust doctor infra/cloudflare/zero-trust-guardrails.json --scope vm-server > "${cf_report}" || cf_exit=$?
           if [[ -s "${cf_report}" ]]; then
             jq -c '{
+              scope,
               status,
               token_read_authority,
               device_settings_ready: .device_settings.ready,
@@ -839,15 +840,14 @@ jobs:
             echo "Cloudflare Zero Trust readiness blocked disposable application acceptance before VM creation" >&2
             exit "${cf_exit}"
           fi
+          # VM-server acceptance is independent of Android device enrollment,
+          # device-profile selectors and client policy (separate Stage 4B.5).
+          # The typed server Mesh provider and clean-room stages remain mandatory.
           jq -e '
+            .scope == "vm-server" and
             .status == "PASS" and
             .token_read_authority == "PASS" and
-            .device_settings.ready == true and
-            .connectors.ready == true and
-            .mesh_node_profile.ready == true and
-            .enrollment.ready == true and
-            .gateway.ready == true and
-            .manual_prerequisites.ready == true
+            .connectors.ready == true
           ' "${cf_report}" >/dev/null
 
       - name: Validate disposable provider desired state

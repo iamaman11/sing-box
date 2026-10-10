@@ -1,3 +1,4 @@
+use crate::cli::ZeroTrustReadinessScope;
 use edge_provider_cloudflare::{
     get_device_profile_includes, get_zero_trust_device_settings, list_access_application_policies,
     list_access_applications, list_device_profiles, list_gateway_rules, list_mesh_nodes,
@@ -43,6 +44,7 @@ struct RequiredClientContract {
 
 #[derive(Debug, Serialize)]
 struct DoctorReport {
+    scope: &'static str,
     status: &'static str,
     token_read_authority: &'static str,
     account_id: String,
@@ -105,7 +107,7 @@ struct ManualPrerequisiteReport {
     ready: bool,
 }
 
-pub async fn run(spec_path: &Path) -> Result<(), String> {
+pub async fn run(spec_path: &Path, scope: ZeroTrustReadinessScope) -> Result<(), String> {
     let desired = load_guardrails(spec_path)?;
     validate_guardrails(&desired)?;
 
@@ -256,14 +258,23 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
     let reachability_confirmed = env_true(REACHABILITY_ATTESTATION_ENV);
     let manual_ready = !reachability_required || reachability_confirmed;
 
-    let ready = settings_ready
-        && connectors_ready
-        && mesh_profile_ready
-        && enrollment_ready
-        && gateway_ready
-        && manual_ready;
+    let ready = scope_ready(
+        scope,
+        ReadinessFlags {
+            device_settings: settings_ready,
+            connectors: connectors_ready,
+            mesh_profile: mesh_profile_ready,
+            enrollment: enrollment_ready,
+            gateway: gateway_ready,
+            manual: manual_ready,
+        },
+    );
 
     let report = DoctorReport {
+        scope: match scope {
+            ZeroTrustReadinessScope::AndroidClient => "android-client",
+            ZeroTrustReadinessScope::VmServer => "vm-server",
+        },
         status: if ready { "PASS" } else { "BLOCKED" },
         token_read_authority: "PASS",
         account_id: desired.account_id,
@@ -320,6 +331,33 @@ pub async fn run(spec_path: &Path) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ReadinessFlags {
+    device_settings: bool,
+    connectors: bool,
+    mesh_profile: bool,
+    enrollment: bool,
+    gateway: bool,
+    manual: bool,
+}
+
+fn scope_ready(scope: ZeroTrustReadinessScope, flags: ReadinessFlags) -> bool {
+    match scope {
+        ZeroTrustReadinessScope::AndroidClient => {
+            flags.device_settings
+                && flags.connectors
+                && flags.mesh_profile
+                && flags.enrollment
+                && flags.gateway
+                && flags.manual
+        }
+        // The fresh VM acceptance must prove provider/runtime isolation,
+        // not an Android client device profile. Cloudflare Mesh server
+        // mutations are still guarded by their scoped typed lifecycle owner.
+        ZeroTrustReadinessScope::VmServer => flags.connectors,
+    }
+}
+
 fn load_guardrails(path: &Path) -> Result<Guardrails, String> {
     let raw = fs::read_to_string(path).map_err(|err| {
         format!(
@@ -370,6 +408,34 @@ fn env_true(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_server_scope_is_independent_of_android_profile_but_requires_connector_isolation() {
+        let flags = ReadinessFlags {
+            device_settings: true,
+            connectors: true,
+            mesh_profile: false,
+            enrollment: true,
+            gateway: true,
+            manual: true,
+        };
+        assert!(!scope_ready(ZeroTrustReadinessScope::AndroidClient, flags));
+        assert!(scope_ready(ZeroTrustReadinessScope::VmServer, flags));
+        assert!(!scope_ready(
+            ZeroTrustReadinessScope::VmServer,
+            ReadinessFlags {
+                connectors: false,
+                ..flags
+            }
+        ));
+        assert!(!scope_ready(
+            ZeroTrustReadinessScope::AndroidClient,
+            ReadinessFlags {
+                gateway: false,
+                ..flags
+            }
+        ));
+    }
 
     #[test]
     fn explicit_attestation_is_required() {
