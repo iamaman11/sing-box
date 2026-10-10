@@ -1007,7 +1007,8 @@ pub fn validate_windows_privileged_request(
                 );
             }
         }
-        WindowsPrivilegedOperation::RollbackPreviousRelease => {
+        WindowsPrivilegedOperation::RollbackPreviousRelease
+        | WindowsPrivilegedOperation::OfflineRollbackPreviousRelease => {
             // These are immutable compare-and-swap leases, NOT caller-selected
             // rollback targets. Privileged dispatch independently verifies that
             // they match current.pb's source and previous.pb's exact ReleaseSet.
@@ -1036,7 +1037,8 @@ pub fn validate_windows_privileged_request(
             )?;
         }
         WindowsPrivilegedOperation::ActivateRelease
-        | WindowsPrivilegedOperation::ReinstallAcceptedRelease => {
+        | WindowsPrivilegedOperation::ReinstallAcceptedRelease
+        | WindowsPrivilegedOperation::OfflineActivateRelease => {
             let revision = request
                 .accepted_revision
                 .as_deref()
