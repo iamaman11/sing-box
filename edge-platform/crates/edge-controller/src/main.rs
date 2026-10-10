@@ -601,6 +601,7 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
             None => return Ok(()),
         }
     }
+}
 
 // Synchronous ownership decision under one in-process gate. The guard never
 // crosses an async suspension; it also protects existing runtime RPC starts.
