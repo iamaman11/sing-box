@@ -237,8 +237,9 @@ def main() -> None:
         and "$env:EDGE_OPERATION -eq 'stop'" in windows_physical
         and "$env:EDGE_OPERATION -eq 'rollback'" in windows_physical
         and "managed_tun_previous_rollback_dns_owner_preflight=PASS" in windows_physical
-        and "previous_release_git_desired_managed_tun=PASS" in windows_physical
-        and "https://raw.githubusercontent.com/iamaman11/sing-box/$previousSource/infra/production/production.textproto" in windows_physical
+        and "previous_release_native_desired_managed_tun=PASS" in windows_physical
+        and "$previousDiagnostic doctor $previous" in windows_physical
+        and "Invoke-WebRequest" not in windows_physical
         and "PRE_MUTATION_ROLLBACK_BLOCKED" in windows_physical.split("      - name: Execute typed lifecycle mutation", 1)[0]
         and "$currentMode -ceq 'ManagedTun'" in windows_physical
         and "$env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly'" in windows_physical
