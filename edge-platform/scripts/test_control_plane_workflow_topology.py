@@ -170,6 +170,14 @@ def main() -> None:
         "SCM failure cleanup must only stop a unique child owned by the current service",
     )
 
+    # The protected issue operator has a separate exact-command allowlist.
+    require(
+        "github.event.comment.body == '/windows offline-preflight'" in router
+        and "github.event.comment.body == '/windows diagnose'" in router
+        and "uses: ./.github/workflows/windows-physical.yml" in router,
+        "new offline preflight must be reachable through the sole protected GitHub issue control",
+    )
+
     # Offline handoff preflight uses only already installed native privilege
     # evidence; it cannot pretend that old dispatch supports new operations.
     require(
