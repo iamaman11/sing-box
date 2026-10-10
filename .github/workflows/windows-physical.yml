@@ -449,28 +449,30 @@ jobs:
                   [string]$values['managed_tun_dns_ipv4'] -cne '172.19.0.2') {
                 throw 'PRE_MUTATION_ROLLBACK_BLOCKED: distinct verified previous release and exact single-owner ManagedTun required'
               }
-              # Runtime-state mode alone is NOT proof of the previous release's
-              # compiled desired mode. Verify the immutable previous source in
-              # the sole canonical GitHub repository before a destructive handoff.
-              $previousSource = [string]$previousValues['source_revision']
-              if ($previousSource -cnotmatch '^[0-9a-f]{40}$') {
-                throw 'PRE_MUTATION_ROLLBACK_BLOCKED: previous ReleaseSet lacks exact source revision'
+              # The CURRENT diagnostic reports its own compiled mode even for
+              # previous.pb. Use the verified PREVIOUS immutable diagnostic to
+              # prove its distinct compiled desired mode (read-only, no fetch).
+              # Its later live-owner check may fail while a newer SCM runs; only
+              # the initial verified release identity/mode fields are consumed.
+              $previousDiagnostic = [string]$previousValues['diagnostic_path']
+              if ([string]::IsNullOrWhiteSpace($previousDiagnostic) -or
+                  -not (Test-Path -LiteralPath $previousDiagnostic -PathType Leaf)) {
+                throw 'PRE_MUTATION_ROLLBACK_BLOCKED: previous exact diagnostic missing'
               }
-              $previousSourceUrl = "https://raw.githubusercontent.com/iamaman11/sing-box/$previousSource/infra/production/production.textproto"
-              try {
-                $previousDesired = Invoke-WebRequest -Uri $previousSourceUrl -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
-              } catch {
-                throw 'PRE_MUTATION_ROLLBACK_BLOCKED: cannot independently verify canonical previous source desired mode'
+              $previousStatic = @(& $previousDiagnostic doctor $previous 2>$null)
+              $previousStaticRelease = @($previousStatic | Where-Object { [string]$_ -match '^release_set_sha256=' })
+              $previousStaticSource = @($previousStatic | Where-Object { [string]$_ -match '^source_revision=' })
+              $previousStaticMode = @($previousStatic | Where-Object { [string]$_ -match '^windows_datapath_mode=' })
+              if ($previousStaticRelease.Count -ne 1 -or
+                  $previousStaticSource.Count -ne 1 -or
+                  $previousStaticMode.Count -ne 1 -or
+                  [string]$previousStaticRelease[0] -cne "release_set_sha256=$([string]$previousValues['release_set_sha256'])" -or
+                  [string]$previousStaticSource[0] -cne "source_revision=$([string]$previousValues['source_revision'])" -or
+                  [string]$previousStaticMode[0] -cne 'windows_datapath_mode=ManagedTun' -or
+                  @($previousStatic | Where-Object { [string]$_ -ceq 'exact_release_files=PASS' }).Count -ne 1) {
+                throw 'PRE_MUTATION_ROLLBACK_BLOCKED: verified previous binary does not attest exact ManagedTun source and files'
               }
-              if ([int]$previousDesired.StatusCode -ne 200) {
-                throw 'PRE_MUTATION_ROLLBACK_BLOCKED: previous source revision unavailable'
-              }
-              $previousModes = @([regex]::Matches([string]$previousDesired.Content, '(?m)^windows_datapath_mode: .+$') | ForEach-Object Value)
-              if ($previousModes.Count -ne 1 -or
-                  $previousModes[0] -cne 'windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN') {
-                throw 'PRE_MUTATION_ROLLBACK_BLOCKED: previous source is not exactly ManagedTun'
-              }
-              Write-Host 'previous_release_git_desired_managed_tun=PASS'
+              Write-Host 'previous_release_native_desired_managed_tun=PASS'
             }
             "EDGE_BEFORE_PREVIOUS_RELEASE=$([string]$previousValues['release_set_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           }
