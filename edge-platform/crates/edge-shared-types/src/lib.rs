@@ -1008,16 +1008,32 @@ pub fn validate_windows_privileged_request(
             }
         }
         WindowsPrivilegedOperation::RollbackPreviousRelease => {
-            if request.accepted_revision.is_some()
-                || request.release_set_sha256.is_some()
-                || request.credential_generation.is_some()
+            // These are immutable compare-and-swap leases, NOT caller-selected
+            // rollback targets. Privileged dispatch independently verifies that
+            // they match current.pb's source and previous.pb's exact ReleaseSet.
+            let current_revision = request
+                .accepted_revision
+                .as_deref()
+                .ok_or_else(|| "rollback requires exact current source revision".to_owned())?;
+            let previous_release = request
+                .release_set_sha256
+                .as_deref()
+                .ok_or_else(|| "rollback requires exact previous ReleaseSet".to_owned())?;
+            if request.credential_generation.is_some()
                 || request.credential_transition_action.is_some()
             {
-                return Err(
-                    "ROLLBACK_PREVIOUS_RELEASE carries no caller-selected release authority"
-                        .to_owned(),
-                );
+                return Err("rollback must not carry credential mutation authority".to_owned());
             }
+            validate_lower_hex(
+                "WindowsPrivilegedRequest.rollback_current_revision",
+                current_revision,
+                40,
+            )?;
+            validate_lower_hex(
+                "WindowsPrivilegedRequest.rollback_previous_release",
+                previous_release,
+                64,
+            )?;
         }
         WindowsPrivilegedOperation::ActivateRelease
         | WindowsPrivilegedOperation::ReinstallAcceptedRelease => {
@@ -2760,20 +2776,36 @@ mod tests {
     }
 
     #[test]
-    fn windows_privileged_previous_release_rollback_carries_no_selected_digest() {
+    fn windows_privileged_previous_release_rollback_requires_exact_pair_lease() {
         let request = WindowsPrivilegedRequest {
             schema_version: 1,
             request_id: "request-release-rollback".to_owned(),
             operation: WindowsPrivilegedOperation::RollbackPreviousRelease as i32,
-            accepted_revision: None,
-            release_set_sha256: None,
+            accepted_revision: Some("a".repeat(40)),
+            release_set_sha256: Some("b".repeat(64)),
             credential_generation: None,
             credential_transition_action: None,
         };
-        assert!(encode_windows_privileged_request(&request).is_ok());
+        let encoded = encode_windows_privileged_request(&request).unwrap();
+        assert_eq!(
+            decode_windows_privileged_request(&encoded).unwrap(),
+            request
+        );
 
-        let mut invalid = request;
-        invalid.release_set_sha256 = Some("1".repeat(64));
+        let mut invalid = request.clone();
+        invalid.accepted_revision = None;
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+        invalid = request.clone();
+        invalid.release_set_sha256 = None;
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+        invalid = request.clone();
+        invalid.accepted_revision = Some("x".repeat(40));
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+        invalid = request.clone();
+        invalid.release_set_sha256 = Some("c".repeat(63));
+        assert!(encode_windows_privileged_request(&invalid).is_err());
+        invalid = request;
+        invalid.credential_generation = Some(1);
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
 
