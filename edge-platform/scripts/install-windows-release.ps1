@@ -7,7 +7,8 @@ param(
     [string]$AcceptedRevision,
     [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
-    [switch]$ForceRematerialize
+    [switch]$ForceRematerialize,
+    [switch]$Offline
 )
 
 Set-StrictMode -Version Latest
@@ -18,6 +19,29 @@ $GitHubReadAttempts = 3
 $GitHubReadTimeoutSec = 15
 $GitHubAssetTimeoutSec = 120
 $GitHubRetryDelaySec = 2
+
+function Assert-OfflineWindow {
+    if (-not $Offline) { return }
+    if ($ForceRematerialize) {
+        throw 'OFFLINE_HANDOFF_BLOCKED: offline rematerialization is not a supported transition'
+    }
+    if ([IO.Path]::GetFullPath($InstallRoot).TrimEnd('\') -cne 'C:\sing-box') {
+        throw 'OFFLINE_HANDOFF_BLOCKED: unexpected install root'
+    }
+    $scm = @(Get-CimInstance -ClassName Win32_Service -Filter "Name='EdgePlatformController'" -ErrorAction Stop)
+    if ($scm.Count -ne 1 -or [string]$scm[0].State -cne 'Stopped' -or
+        [string]$scm[0].StartMode -cne 'Auto' -or [int]$scm[0].ProcessId -ne 0) {
+        throw 'OFFLINE_HANDOFF_BLOCKED: exact SCM is not fully stopped'
+    }
+    $processes = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction Stop)
+    if ($processes.Count -ne 0) {
+        throw 'OFFLINE_HANDOFF_BLOCKED: sing-box process exists, no owner will be killed'
+    }
+    $tuns = @(Get-NetAdapter -Name 'sing-box-tun' -ErrorAction SilentlyContinue)
+    if ($tuns.Count -ne 0) {
+        throw 'OFFLINE_HANDOFF_BLOCKED: managed TUN adapter still exists'
+    }
+}
 
 function Assert-HexSha256 {
     param([string]$Value, [string]$Name)
@@ -209,7 +233,13 @@ function Invoke-Diagnostic {
         $parts = ([string]$line).Split("=", 2)
         if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
     }
-    if ($values["status"] -ne "PASS" -or $values["exact_release_files"] -ne "PASS") {
+    if ($Offline) {
+        if ([string]$values["exact_release_files"] -cne "PASS" -or
+            [string]$values["scm_state"] -cne "Stopped" -or
+            [string]$values["managed_tun_present"] -cne "false") {
+            throw "OFFLINE_HANDOFF_BLOCKED: diagnostic cannot attest exact files and stopped no-TUN host"
+        }
+    } elseif ($values["status"] -ne "PASS" -or $values["exact_release_files"] -ne "PASS") {
         throw "Windows diagnostic did not prove exact release state"
     }
     return $values
@@ -296,6 +326,8 @@ function Activate-ReleaseAuthority {
         diagnostic = $stableDiagnostic
     }
 }
+
+Assert-OfflineWindow
 
 $binDir = Join-Path $InstallRoot "bin"
 $releasesDir = Join-Path $InstallRoot "releases"
@@ -445,6 +477,8 @@ if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
         exit 0
     }
 }
+
+Assert-OfflineWindow
 
 $activation = Activate-ReleaseAuthority `
     -Tool $tool `
