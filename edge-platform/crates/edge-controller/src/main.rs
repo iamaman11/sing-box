@@ -1037,9 +1037,9 @@ fn require_native_windows_route_capture_safety(mode: WindowsDatapathMode) -> Res
              and no-TUN DNS/control restoration are not proved; refusing route capture"
                 .to_owned(),
         ),
-        WindowsDatapathMode::Unspecified => Err(
-            "NATIVE_MANAGED_TUN_PREAUTH_BLOCKED: unspecified Windows datapath mode".to_owned(),
-        ),
+        WindowsDatapathMode::Unspecified => {
+            Err("NATIVE_MANAGED_TUN_PREAUTH_BLOCKED: unspecified Windows datapath mode".to_owned())
+        }
     }
 }
 
@@ -2030,15 +2030,14 @@ impl ControllerService for ControllerServerImpl {
                 ));
             }
             // Reject before changing replacement generation or stopping any child.
-            require_native_windows_runtime_launch_safety(&self.repo_root)
-                .and_then(|_| {
-                    WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel);
-                    if request.visible_window {
-                        restart_runtime_process_visible(&paths)
-                    } else {
-                        restart_runtime_process(&paths)
-                    }
-                })
+            require_native_windows_runtime_launch_safety(&self.repo_root).and_then(|_| {
+                WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel);
+                if request.visible_window {
+                    restart_runtime_process_visible(&paths)
+                } else {
+                    restart_runtime_process(&paths)
+                }
+            })
         };
         #[cfg(not(windows))]
         let restarted = if request.visible_window {
@@ -5225,7 +5224,9 @@ mod tests {
     fn native_managed_tun_requires_real_pre_tun_authentication_on_every_start() {
         use edge_local_runtime::ProcessObservation;
 
-        assert!(require_native_windows_route_capture_safety(WindowsDatapathMode::ProxyOnly).is_ok());
+        assert!(
+            require_native_windows_route_capture_safety(WindowsDatapathMode::ProxyOnly).is_ok()
+        );
         for unsafe_mode in [
             WindowsDatapathMode::ManagedTun,
             WindowsDatapathMode::Unspecified,
