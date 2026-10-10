@@ -752,7 +752,9 @@ def main() -> None:
         not ZERO_TRUST_COMMAND.exists()
         and not ZERO_TRUST_SERVICE.exists()
         and not ZERO_TRUST_CORE.exists()
-        and "pub(crate) enum CloudflareZeroTrustCommand {\n    Doctor(SpecArgs),\n}" in credential_cli,
+        and ("pub(crate) enum CloudflareZeroTrustCommand {\n    Doctor(ZeroTrustDoctorArgs),\n}" in credential_cli
+        and "pub(crate) enum ZeroTrustReadinessScope {" in credential_cli
+        and "pub scope: ZeroTrustReadinessScope" in credential_cli),
         "retired Zero Trust mutation lifecycle must stay physically absent; only the read-only doctor CLI may remain",
     )
 
