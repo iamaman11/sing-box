@@ -174,9 +174,9 @@ def main() -> None:
     # existing ActuateRelease opcode supported by the installed dispatcher.
     require(
         "WINDOWS_PRIVILEGED_OPERATION_OFFLINE_ACTIVATE_RELEASE = 12;"
-            in runtime_proto
+            in RUNTIME_PROTO.read_text(encoding="utf-8")
         and "WINDOWS_PRIVILEGED_OPERATION_OFFLINE_ROLLBACK_PREVIOUS_RELEASE = 13;"
-            in runtime_proto
+            in RUNTIME_PROTO.read_text(encoding="utf-8")
         and "PrivilegedOfflineActivate" in windows_console_cli
         and "PrivilegedOfflineRollbackPrevious" in windows_console_cli
         and "WindowsPrivilegedOperation::OfflineActivateRelease" in windows_console
