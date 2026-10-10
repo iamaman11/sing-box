@@ -76,7 +76,8 @@ use edge_shared_types::{
     StageCredentialCandidateRequest, StartLocalRuntimeRequest, StopLocalRuntimeRequest,
     TraceObservation, VerifyRuntimeRequest, WINDOWS_CONTROLLER_ADDR,
     WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS, WindowsDatapathMode,
-    canonical_production_desired_state, decode_windows_runtime_state, timestamp_from_unix_seconds,
+    canonical_production_desired_state, decode_windows_activation_state,
+    decode_windows_privileged_result, decode_windows_runtime_state, timestamp_from_unix_seconds,
 };
 use edge_singbox::{default_trace_proxy_url, sync_local_config};
 use edge_state::{
@@ -645,9 +646,39 @@ fn reconcile_windows_child_exit(
         .join("exchange/requests/request.pb")
         .try_exists()
         .map_err(|err| format!("cannot verify privileged handoff state: {err}"))?
-        || read_windows_privileged_result_marker(repo_root)?.as_deref() != prior_privileged_result
     {
         return Ok(None);
+    }
+    let completed_result = read_windows_privileged_result_marker(repo_root)?;
+    if completed_result.as_deref() != prior_privileged_result {
+        // A new controller starts while a successful release handoff is
+        // finishing. Do not permanently disarm that NEW SCM owner merely
+        // because the privileged result became durable after SCM startup.
+        // The old owner, a failed handoff or an unverified pointer is fenced.
+        let Some(bytes) = completed_result.as_deref() else {
+            return Ok(None);
+        };
+        let result = decode_windows_privileged_result(bytes)?;
+        if !result.success {
+            return Ok(None);
+        }
+        let activation_bytes = fs::read(repo_root.join("current.pb"))
+            .map_err(|err| format!("cannot verify authority after privileged handoff: {err}"))?;
+        let active = decode_windows_activation_state(&activation_bytes)?;
+        if result.active_release_set_sha256.as_deref()
+            != Some(active.release_set_sha256.as_str())
+        {
+            return Ok(None);
+        }
+        let executable = std::env::current_exe()
+            .and_then(|path| path.canonicalize())
+            .map_err(|err| format!("cannot verify SCM image after handoff: {err}"))?;
+        let expected = Path::new(&active.controller_path)
+            .canonicalize()
+            .map_err(|err| format!("cannot verify exact controller after handoff: {err}"))?;
+        if executable != expected {
+            return Ok(None);
+        }
     }
     let explicit_replacement =
         WINDOWS_RUNTIME_REPLACEMENT_GENERATION.load(Ordering::Acquire) != observed_generation;
