@@ -294,6 +294,48 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             finish_privileged_result(&result)?;
             Ok(())
         }
+        Command::PrivilegedOfflineActivate(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::OfflineActivateRelease as i32,
+                    accepted_revision: Some(args.accepted_revision),
+                    release_set_sha256: Some(args.release_set_sha256),
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedOfflineRollbackPrevious(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let (current, previous) = load_previous_release_rollback_pair(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::OfflineRollbackPreviousRelease as i32,
+                    accepted_revision: Some(current.source_revision),
+                    release_set_sha256: Some(previous.release_set_sha256),
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
         Command::PrivilegedRollbackPrevious(args) => {
             let install_root = PathBuf::from(args.install_root);
             require_exact_immutable_activation_console(&install_root)
@@ -1009,7 +1051,9 @@ fn privileged_wait_secs(request: &WindowsPrivilegedRequest) -> u64 {
         Ok(
             WindowsPrivilegedOperation::ActivateRelease
             | WindowsPrivilegedOperation::RollbackPreviousRelease
-            | WindowsPrivilegedOperation::ReinstallAcceptedRelease,
+            | WindowsPrivilegedOperation::ReinstallAcceptedRelease
+            | WindowsPrivilegedOperation::OfflineActivateRelease
+            | WindowsPrivilegedOperation::OfflineRollbackPreviousRelease,
         ) => PRIVILEGED_ACTIVATE_WAIT_SECS,
         _ => PRIVILEGED_SHORT_WAIT_SECS,
     }
@@ -1170,6 +1214,12 @@ async fn process_privileged_request(
         }
         Ok(WindowsPrivilegedOperation::RollbackPreviousRelease) => {
             rollback_privileged_release(install_root, request)
+        }
+        Ok(WindowsPrivilegedOperation::OfflineActivateRelease) => {
+            offline_activate_privileged_release(install_root, request)
+        }
+        Ok(WindowsPrivilegedOperation::OfflineRollbackPreviousRelease) => {
+            offline_rollback_privileged_release(install_root, request)
         }
         Ok(WindowsPrivilegedOperation::ReinstallAcceptedRelease) => {
             activate_privileged_release(install_root, request, true)
