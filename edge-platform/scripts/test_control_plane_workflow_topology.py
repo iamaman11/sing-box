@@ -200,7 +200,7 @@ def main() -> None:
         and "-Offline" in windows_console
         and "[switch]$Offline" in windows_installer
         and windows_installer.count("Assert-OfflineWindow") == 3
-        and "Get-CimInstance -ClassName Win32_Service" in windows_installer
+        and "Get-CimInstance -ClassName Win32_Service" not in windows_installer
         and "Get-CimInstance -ClassName Win32_Process" in windows_installer
         and "Get-NetAdapter -Name 'sing-box-tun'" in windows_installer
         and "Stop-Service" not in windows_installer
