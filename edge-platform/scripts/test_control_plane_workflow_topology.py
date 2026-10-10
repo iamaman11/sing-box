@@ -125,6 +125,56 @@ def main() -> None:
         and "WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release)" in windows_controller,
         "SCM child exit response must use kernel event, exact single owner, durable handoff and bounded one-shot recovery without polling",
     )
+    # A human-stopped Windows controller is an observable degraded state,
+    # not a reason for read-only diagnosis to run ManagedTun lifecycle checks.
+    read_only_step = "      - name: Observe safe Windows state (read-only)"
+    prestate_step = "      - name: Assert isolated root and observe pre-state"
+    require(
+        windows_physical.count(read_only_step) == 1
+        and windows_physical.count(prestate_step) == 1,
+        "stopped-owner diagnosis must remain a single native read-only observation",
+    )
+    read_only = windows_physical.split(read_only_step, 1)[1].split(prestate_step, 1)[0]
+    require(
+        "if: ${{ needs.resolve.outputs.operation == 'diagnose' }}" in read_only
+        and "Assert-Doctor $stableDoctor" in read_only
+        and "Assert-Doctor $exactDoctor" in read_only
+        and "observation_status=PASS" in read_only
+        and "desired_state_status=$desired" in read_only
+        and "DEGRADED_STOPPED" in read_only
+        and "BLOCKED_STOPPED_OWNER_AUTOSTART" in read_only
+        and "independent_no_tun_dns_control_recovery=UNPROVEN" in read_only
+        and "Get-NetRoute -AddressFamily IPv4" in read_only
+        and "Resolve-DnsName www.gstatic.com" in read_only
+        and "curl.exe --noproxy '*'" in read_only
+        and "GetFileSystemEntries" in read_only
+        and not any(
+            action in read_only
+            for action in (
+                "Set-Service", "Start-Service", "Stop-Service",
+                "privileged-activate", "privileged-rollback-previous",
+                "start-local", "stop-local", "Set-DnsClientServerAddress",
+                "Set-NetRoute", "New-NetRoute", "sc.exe", "taskkill.exe",
+            )
+        ),
+        "diagnose must check actual stopped owner and direct network without mutation",
+    )
+    for name in (
+        prestate_step,
+        "      - name: Verify exact authority and SCM handoff",
+        "      - name: Final diagnostics and transport-only boundary",
+    ):
+        prefix = windows_physical.split(name, 1)[1].split("\n        shell:", 1)[0]
+        require(
+            "if: ${{ needs.resolve.outputs.operation != 'diagnose' }}" in prefix,
+            f"{name} must not apply ManagedTun lifecycle assertions to read-only diagnose",
+        )
+    require(
+        "if: ${{ always() && needs.resolve.outputs.operation != 'diagnose' }}" in windows_physical
+        and "if: ${{ needs.resolve.outputs.operation != 'diagnose' && needs.resolve.outputs.operation != 'quality-line1' }}" in windows_physical,
+        "diagnose must bypass privileged post-mutation assertions and any lifecycle mutation",
+    )
+
     # Cloudflare One observation is allowed only inside existing read-only diagnose.
     foreign_marker = "      - name: Observe Cloudflare One effective client state (read-only)"
     require(windows_physical.count(foreign_marker) == 1, "foreign observation must not create duplicate owners")
