@@ -90,8 +90,8 @@ def main() -> None:
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
     require(
-        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 2
-        and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 1
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 3
+        and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 2
         and "fn require_exact_immutable_activation_console(install_root: &Path)" in windows_console
         and "let expected = Path::new(&active.console_path)" in windows_console
         and "if running != expected {" in windows_console
