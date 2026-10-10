@@ -645,8 +645,7 @@ fn reconcile_windows_child_exit(
         .join("exchange/requests/request.pb")
         .try_exists()
         .map_err(|err| format!("cannot verify privileged handoff state: {err}"))?
-        || read_windows_privileged_result_marker(repo_root)?.as_deref()
-            != prior_privileged_result
+        || read_windows_privileged_result_marker(repo_root)?.as_deref() != prior_privileged_result
     {
         return Ok(None);
     }
@@ -4977,7 +4976,12 @@ mod tests {
     #[test]
     fn windows_child_exit_notification_is_native_process_handle_event() {
         let mut child = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 1"])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 1",
+            ])
             .spawn()
             .expect("spawn isolated Windows process");
         let result = super::wait_for_windows_child_exit(child.id());
