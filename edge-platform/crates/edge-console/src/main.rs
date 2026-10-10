@@ -4113,6 +4113,47 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
 mod tests {
     use super::*;
 
+    #[test]
+    fn offline_release_handoff_refuses_running_scm_any_child_tun_or_wrong_owner() {
+        assert!(offline_handoff_gate(true, true, true, true).is_ok());
+        for (stopped, zero_process, no_tun, exact_owner) in [
+            (false, true, true, true),
+            (true, false, true, true),
+            (true, true, false, true),
+            (true, true, true, false),
+            (false, false, false, false),
+        ] {
+            assert!(offline_handoff_gate(stopped, zero_process, no_tun, exact_owner)
+                .unwrap_err().contains("OFFLINE_HANDOFF_BLOCKED"));
+        }
+    }
+
+    #[test]
+    fn offline_release_operations_have_dedicated_wire_numbers() {
+        assert_eq!(WindowsPrivilegedOperation::OfflineActivateRelease as i32, 12);
+        assert_eq!(WindowsPrivilegedOperation::OfflineRollbackPreviousRelease as i32, 13);
+        for operation in [
+            WindowsPrivilegedOperation::OfflineActivateRelease,
+            WindowsPrivilegedOperation::OfflineRollbackPreviousRelease,
+        ] {
+            let req = WindowsPrivilegedRequest {
+                schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                request_id: "offline-exact-test".to_owned(),
+                operation: operation as i32,
+                accepted_revision: Some("a".repeat(40)),
+                release_set_sha256: Some("b".repeat(64)),
+                credential_generation: None,
+                credential_transition_action: None,
+            };
+            let encoded = encode_windows_privileged_request(&req).unwrap();
+            assert_eq!(decode_windows_privileged_request(&encoded).unwrap().operation, operation as i32);
+            assert_eq!(privileged_wait_secs(&req), PRIVILEGED_ACTIVATE_WAIT_SECS);
+            // An offline mutation cannot be re-observed as a successful
+            // normal activation without exact stopped SCM and owner proof.
+            assert!(activation_matches_request(Path::new("__absent__"), &req).is_none());
+        }
+    }
+
     async fn test_route_restore(
         failed_route: Option<&'static str>,
         failed_restore: bool,
