@@ -95,8 +95,19 @@ jobs:
           }:
               fail("unsupported lifecycle operation")
 
-          if not spec_re.fullmatch(spec_path) or ".." in spec_path or "//" in spec_path:
+          production_destroy = (
+              spec_path == "infra/production/production.textproto"
+              and machine_id == "production-1"
+              and operation in {"destroy-plan", "destroy-apply"}
+          )
+          if not production_destroy and (
+              not spec_re.fullmatch(spec_path)
+              or ".." in spec_path
+              or "//" in spec_path
+          ):
               fail("invalid spec_path")
+          if spec_path == "infra/production/production.textproto" and not production_destroy:
+              fail("production VM deletion is limited to exact owned production-1 plan/apply")
 
           if machine_id and not machine_re.fullmatch(machine_id):
               fail("invalid machine_id")

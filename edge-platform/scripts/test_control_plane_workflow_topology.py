@@ -1305,6 +1305,15 @@ def main() -> None:
         "Vultr backend must accept the typed lease-release NOOP absence proof without depending on an internal verified_absent field",
     )
     require(
+        'production_destroy = (' in vultr
+        and 'spec_path == "infra/production/production.textproto"' in vultr
+        and 'machine_id == "production-1"' in vultr
+        and 'operation in {"destroy-plan", "destroy-apply"}' in vultr
+        and 'if not production_destroy and (' in vultr
+        and 'if spec_path == "infra/production/production.textproto" and not production_destroy:' in vultr,
+        "production VM destroy must use only the exact canonical proto, exact machine and plan/apply pair",
+    )
+    require(
         '"cleanup-plan"' in vultr
         and "cleanup-plan)" in vultr
         and 'run_lifecycle cleanup-plan "${spec}" | tee "${RUNNER_TEMP}/result.json"' in vultr
