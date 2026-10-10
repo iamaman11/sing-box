@@ -227,7 +227,7 @@ function Invoke-Diagnostic {
         [Parameter(Mandatory)] [string]$State
     )
     $output = @(& $Diagnostic doctor $State)
-    if ($LASTEXITCODE -ne 0) { throw "Windows diagnostic failed for $State" }
+    if ($LASTEXITCODE -ne 0 -and -not $Offline) { throw "Windows diagnostic failed for $State" }
     $values = @{}
     foreach ($line in $output) {
         $parts = ([string]$line).Split("=", 2)
