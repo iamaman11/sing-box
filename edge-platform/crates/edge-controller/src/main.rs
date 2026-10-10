@@ -627,9 +627,17 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
         // A privileged request may complete and disappear before this wait
         // wakes. Snapshot its durable result to fence that entire handoff.
         let prior_result = read_windows_privileged_result_marker(&repo_root)?;
-        tokio::task::spawn_blocking(move || wait_for_windows_child_exit(pid))
-            .await
-            .map_err(|err| format!("native child wait join failed: {err}"))??;
+        // A detached native process-event waiter must not keep Tokio's
+        // blocking pool alive after SCM shutdown if exact child cleanup fails.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("managed-sing-box-exit".to_owned())
+            .spawn(move || {
+                let _ = tx.send(wait_for_windows_child_exit(pid));
+            })
+            .map_err(|err| format!("failed to register native child wait: {err}"))?;
+        rx.await
+            .map_err(|_| "native child event thread ended without observation".to_owned())??;
 
         match reconcile_windows_child_exit(
             &repo_root,
