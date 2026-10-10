@@ -196,6 +196,22 @@ mutations are resolved by read-only re-observation rather than blind replay.
 One semantic config has one renderer. A runtime stage/validate/restart path may copy, check and launch
 that generated config, but may not independently rewrite tunnel bindings or other semantic fields.
 
+## One-shot production VM replacement boundary
+
+The canonical production server is defined only by
+`infra/production/production.textproto`. GitHub allows the existing native
+Vultr destroy owner to expose **only** the exact production pair:
+`/vultr destroy-plan infra/production/production.textproto production-1`
+(read-only), then `/vultr destroy-apply infra/production/production.textproto
+production-1 <fresh-destroy-digest>` (single exact owned VM deletion).
+The Rust owner separately checks the fresh provider object, source revision,
+destroy digest and authorized plan. Other operations on the production proto
+remain disallowed in the Vultr workflow; normal production create/bootstrap
+is the existing `/production enroll-runtime` and later
+`/production converge` + `/production verify`. A destroy-plan is not
+authorization to erase without an explicit replacement readiness decision.
+No separate shell, control plane or permanent state.
+
 ## VM transport
 
 Steady-state VM operations use the repository self-hosted production runner as outbound transport:
