@@ -394,7 +394,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "windows-service",
- "windows-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
