@@ -4973,6 +4973,19 @@ fn platform_error_to_status(err: PlatformError) -> Status {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn windows_child_exit_notification_is_native_process_handle_event() {
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 1"])
+            .spawn()
+            .expect("spawn isolated Windows process");
+        let result = super::wait_for_windows_child_exit(child.id());
+        let exit = child.wait().expect("reap isolated Windows process");
+        assert!(result.is_ok(), "OS event wait failed: {result:?}");
+        assert!(exit.success());
+    }
+
     #[test]
     fn managed_child_exit_recovery_is_one_shot_and_refuses_all_intended_handoffs() {
         use super::child_exit_auto_recovery_allowed;
