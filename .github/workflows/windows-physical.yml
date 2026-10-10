@@ -246,13 +246,21 @@ jobs:
                 [string]$service.StartMode -cne 'Auto') {
               throw 'OFFLINE_PREFLIGHT_BLOCKED: SCM state or startup mode changed'
             }
+            $installedCommands = @(& $console --help)
+            if ($LASTEXITCODE -ne 0) {
+              throw 'OFFLINE_PREFLIGHT_BLOCKED: exact installed console command contract unreadable'
+            }
+            $offlineCommandAdvertised = @(
+              $installedCommands | Where-Object { [string]$_ -match '\bprivileged-offline-activate\b' }
+            ).Count -gt 0
             Write-Host 'offline_preflight_observation=PASS'
             Write-Host 'offline_privileged_task_readonly=PASS'
+            Write-Host "offline_command_advertised=$offlineCommandAdvertised"
             Write-Host 'offline_zero_runtime_owners=PASS'
             Write-Host "offline_installed_release=$installed"
             Write-Host "offline_accepted_target_release=$target"
             Write-Host "offline_release_transition_needed=$($installed -cne $target)"
-            Write-Host 'offline_native_activation=BLOCKED_LEGACY_PRIVILEGED_DISPATCH_LACKS_OFFLINE_OPERATION'
+            Write-Host 'offline_native_activation=NOT_EXECUTED_READ_ONLY_PREFLIGHT'
             Write-Host 'offline_mutations_performed=0'
             Write-Host 'offline_service_or_tun_restarted=false'
             @(
@@ -260,7 +268,7 @@ jobs:
               '- Native privileged task: reachable / zero runtime owners',
               "- Installed release: $installed",
               "- Accepted release: $target",
-              '- Offline activation: BLOCKED until native typed operation exists',
+              '- Offline activation: not executed; installed CLI capability observed above',
               '- Changes to Windows service / TUN / DNS / routes: none'
             ) | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
