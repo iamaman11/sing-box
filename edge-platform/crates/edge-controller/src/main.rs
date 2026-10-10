@@ -1164,7 +1164,7 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
         }
         WindowsStartupDecision::BlockedUnprovenLine1 => {
             require_native_windows_route_capture_safety(mode)?;
-            unreachable!("ManagedTun is not authorized without independently verified pre-TUN safety")
+            Err("ManagedTun startup is blocked until pre-TUN Line1 and DNS/control recovery are independently verified".to_owned())
         }
         WindowsStartupDecision::BlockedConflict => {
             match &classification {
