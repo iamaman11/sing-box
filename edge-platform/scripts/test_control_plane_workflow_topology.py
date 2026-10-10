@@ -125,6 +125,34 @@ def main() -> None:
         and "WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release)" in windows_controller,
         "SCM child exit response must use kernel event, exact single owner, durable handoff and bounded one-shot recovery without polling",
     )
+    # Native SCM safety cannot depend on the GitHub workflow barrier:
+    # Windows AutoStart and kernel-event child recovery invoke Rust directly.
+    native_gate = "require_native_windows_runtime_launch_safety"
+    require(
+        native_gate in windows_controller
+        and "NATIVE_MANAGED_TUN_PREAUTH_BLOCKED" in windows_controller
+        and "WindowsStartupDecision::BlockedUnprovenLine1" in windows_controller
+        and "native_managed_tun_requires_real_pre_tun_authentication_on_every_start"
+            in windows_controller
+        and "require_native_windows_route_capture_safety(mode)?;" in windows_controller
+        and "WindowsDatapathMode::ManagedTun => Err(" in windows_controller
+        and "require_native_windows_runtime_launch_safety(repo_root)?;" in windows_controller
+        and "require_native_windows_runtime_launch_safety(&self.repo_root)" in windows_controller
+        and windows_controller.count("require_native_windows_runtime_launch_safety(&self.repo_root)") == 2
+        and windows_controller.index(
+            "require_native_windows_runtime_launch_safety(repo_root)?;"
+        ) < windows_controller.index(
+            'map_err(|err| format!("one-shot native child recovery failed: {err}"))?'
+        )
+        and windows_controller.index(
+            "require_native_windows_runtime_launch_safety(&self.repo_root)"
+        ) < windows_controller.index(
+            "WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel);",
+            windows_controller.index("async fn restart_local_runtime("),
+        ),
+        "SCM boot, orphan restarts, child-event recovery and both RPC launch paths must fail closed before ManagedTun route capture",
+    )
+
     # A human-stopped Windows controller is an observable degraded state,
     # not a reason for read-only diagnosis to run ManagedTun lifecycle checks.
     read_only_step = "      - name: Observe safe Windows state (read-only)"
