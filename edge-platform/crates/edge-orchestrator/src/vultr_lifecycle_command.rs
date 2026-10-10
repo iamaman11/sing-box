@@ -1,6 +1,6 @@
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
-    apply_instance_action, prepare_strict_bootstrap,
+    apply_instance_action, capture_ssh_transport_stage_once, prepare_strict_bootstrap,
     prove_restricted_control_negative_capabilities, start_strict_agent_tunnel, strict_scp_upload,
     strict_ssh_accept, strict_ssh_capture, strict_ssh_run, strict_ssh_run_stdin,
     verify_operator_key_matches, wait_provider_ready,
@@ -2725,6 +2725,125 @@ pub(crate) async fn acceptance_require_clean_room(
     Ok(())
 }
 
+/// Capture read-only provider/firewall/TCP/SSH phases before the disposable
+/// acceptance coordinator compensates the VM. This function never mutates or
+/// retries an installation. Every diagnostic field is fixed-shape and bounded.
+pub(crate) async fn acceptance_ssh_failure_forensics(
+    spec_path: &Path,
+    machine_id: &str,
+) -> serde_json::Value {
+    let unavailable = || {
+        serde_json::json!({
+            "schema": "acceptance-ssh-forensics/v1",
+            "status": "UNAVAILABLE",
+            "mutations_performed": 0,
+        })
+    };
+    let Ok(desired) = load_desired_state(spec_path) else {
+        return unavailable();
+    };
+    // This forensic path must never observe an unrelated production machine.
+    if desired.environment != "application-acceptance" || machine_id != "application-acceptance-1" {
+        return unavailable();
+    }
+    let Ok(machine) = exact_existing_machine_observation(&desired, machine_id).await else {
+        return unavailable();
+    };
+    let Some(target_ip) = machine.main_ip.as_deref() else {
+        return unavailable();
+    };
+
+    let provider_ready = match operational_provider_from_env() {
+        Ok(mut provider) => match provider.get_instance(&machine.provider_id).await {
+            Ok(instance) => {
+                if instance.status == "active"
+                    && instance.power_status == "running"
+                    && instance.server_status == "ok"
+                    && instance.main_ip == target_ip
+                {
+                    "PASS"
+                } else {
+                    "FAIL"
+                }
+            }
+            Err(_) => "UNAVAILABLE",
+        },
+        Err(_) => "UNAVAILABLE",
+    };
+    let tcp = observe_tcp_readiness(
+        target_ip,
+        TcpReadinessPolicy {
+            max_attempts: 1,
+            max_elapsed: Duration::from_secs(3),
+            connect_timeout: Duration::from_secs(3),
+            backoff: Duration::ZERO,
+        },
+    )
+    .await
+    .ok();
+    let (tcp_state, tcp_error) = match tcp.as_ref() {
+        Some(result) => (
+            match result.final_state {
+                TcpReadinessState::Ready => "CONNECTED",
+                TcpReadinessState::Timeout => "FAILED",
+            },
+            result.last_error_class.map(|kind| format!("{kind:?}")),
+        ),
+        None => ("UNAVAILABLE", None),
+    };
+
+    let provider_evidence = match (lifecycle_provider_from_env(), support_provider_from_env()) {
+        (Ok(mut lifecycle), Ok(mut support)) => capture_support_access_provider_evidence(
+            &desired,
+            machine_id,
+            &mut lifecycle,
+            &mut support,
+        )
+        .await
+        .ok(),
+        _ => None,
+    };
+    let (controller_rule_once, firewall_attached, acquire_noop, runner_egress_matches) =
+        match provider_evidence {
+            Some(ref evidence) => (
+                Some(evidence.exact_controller_rules_present_once),
+                Some(evidence.firewall_group_attached_to_machine),
+                Some(evidence.acquire_plan_disposition == "NOOP"),
+                env::var("EDGE_CONTROLLER_IPV4")
+                    .ok()
+                    .map(|expected| expected == evidence.controller_ipv4),
+            ),
+            None => (None, None, None, None),
+        };
+    let ssh_phase = match (
+        operator_private_key_path_from_env(),
+        read_canonical_ssh_public_key(),
+    ) {
+        (Ok(private_key), Ok(public_key)) => {
+            if verify_operator_key_matches(&private_key, &public_key).is_ok() {
+                capture_ssh_transport_stage_once(target_ip, machine_id, &private_key, &public_key)
+                    .unwrap_or_else(|_| "UNAVAILABLE".to_owned())
+            } else {
+                "UNAVAILABLE".to_owned()
+            }
+        }
+        _ => "UNAVAILABLE".to_owned(),
+    };
+    serde_json::json!({
+        "schema": "acceptance-ssh-forensics/v1",
+        "status": "OBSERVED",
+        "provider_ready": provider_ready,
+        "tcp_22": tcp_state,
+        "tcp_error_class": tcp_error,
+        "controller_rule_once": controller_rule_once,
+        "firewall_attached": firewall_attached,
+        "access_plan_noop": acquire_noop,
+        "runner_egress_matches": runner_egress_matches,
+        "ssh_phase": ssh_phase,
+        "mutations_performed": 0,
+    })
+}
+
 pub(crate) async fn acceptance_lease_acquire(
     spec_path: &Path,
     machine_id: &str,
@@ -3345,6 +3464,44 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forensic_tcp_probe_is_single_attempt_and_never_mutates() {
+        let policy = TcpReadinessPolicy {
+            max_attempts: 1,
+            max_elapsed: Duration::from_secs(3),
+            connect_timeout: Duration::from_secs(3),
+            backoff: Duration::ZERO,
+        };
+        assert_eq!(policy.max_attempts, 1);
+        assert!(policy.validate().is_ok());
+        assert_eq!(policy.backoff, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn forensic_tcp_failure_is_classified_without_retry() {
+        let mut calls = 0usize;
+        let observed = observe_tcp_readiness_with_probe(
+            TcpReadinessPolicy {
+                max_attempts: 1,
+                max_elapsed: Duration::from_secs(3),
+                connect_timeout: Duration::from_secs(3),
+                backoff: Duration::ZERO,
+            },
+            |_| {
+                calls += 1;
+                async { Err(TcpReadinessFailureClass::ConnectTimeout) }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(observed.final_state, TcpReadinessState::Timeout);
+        assert_eq!(
+            observed.last_error_class,
+            Some(TcpReadinessFailureClass::ConnectTimeout)
+        );
+    }
 
     #[test]
     fn linux_boot_id_validation_is_strict() {
