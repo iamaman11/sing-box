@@ -596,7 +596,13 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
             .await
             .map_err(|err| format!("native child wait join failed: {err}"))??;
 
-        match reconcile_windows_child_exit(&repo_root, pid, observed_generation, recovered, prior_result.as_deref())? {
+        match reconcile_windows_child_exit(
+            &repo_root,
+            pid,
+            observed_generation,
+            recovered,
+            prior_result.as_deref(),
+        )? {
             Some((next_pid, did_recover)) => {
                 pid = next_pid;
                 recovered |= did_recover;
@@ -883,10 +889,10 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
                     .map_err(|_| "Windows runtime owner gate poisoned")?;
                 stop_runtime_process(&default_local_config_path(&repo_root), true)
             }
-                .map(|_| ())
-                .map_err(|err| {
-                    format!("failed to stop exact managed runtime on controller exit: {err}")
-                });
+            .map(|_| ())
+            .map_err(|err| {
+                format!("failed to stop exact managed runtime on controller exit: {err}")
+            });
 
             let (result, failure) = match (serve_result, cleanup_result) {
                 (Ok(()), Ok(())) => (Ok(()), None),
