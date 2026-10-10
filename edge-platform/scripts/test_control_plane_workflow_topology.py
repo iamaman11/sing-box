@@ -153,6 +153,23 @@ def main() -> None:
         "SCM boot, orphan restarts, child-event recovery and both RPC launch paths must fail closed before ManagedTun route capture",
     )
 
+    # The service-entry failure handler must not undo the fail-closed
+    # preflight by cleaning up a process inherited from an older owner.
+    require(
+        "fn failed_windows_scm_start_owns_child(" in windows_controller
+        and "fn stop_only_owned_child_after_failed_scm_start(" in windows_controller
+        and "failed_scm_start_cleanup_is_exact_single_child_of_current_owner_only"
+            in windows_controller
+        and "exact_children.len() == 1" in windows_controller
+        and "exact_children[0].parent_pid == Some(scm_pid)" in windows_controller
+        and windows_controller.count(
+            "stop_only_owned_child_after_failed_scm_start(&config.repo_root);"
+        ) == 3
+        and "let _ = stop_runtime_process(&default_local_config_path(&config.repo_root), true);"
+            not in windows_controller,
+        "SCM failure cleanup must only stop a unique child owned by the current service",
+    )
+
     # A human-stopped Windows controller is an observable degraded state,
     # not a reason for read-only diagnosis to run ManagedTun lifecycle checks.
     read_only_step = "      - name: Observe safe Windows state (read-only)"
