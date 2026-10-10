@@ -109,6 +109,9 @@ def main() -> None:
         and "WaitForSingleObject(handle, u32::MAX)" in windows_controller
         and "WINDOWS_RUNTIME_REPLACEMENT_GENERATION.fetch_add(1, Ordering::AcqRel)" in windows_controller
         and "exchange/requests/request.pb" in windows_controller
+        and "destructive_windows_handoff_pending(repo_root)?" in windows_controller
+        and "WindowsPrivilegedOperation::ActivateRelease" in windows_controller
+        and "WindowsPrivilegedOperation::RestartControllerService" in windows_controller
         and "completed_result.as_deref() != prior_privileged_result" in windows_controller
         and "decode_windows_privileged_result(bytes)?" in windows_controller
         and "decode_windows_activation_state(&activation_bytes)?" in windows_controller
