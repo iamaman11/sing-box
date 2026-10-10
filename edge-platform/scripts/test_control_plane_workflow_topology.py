@@ -170,6 +170,38 @@ def main() -> None:
         "SCM failure cleanup must only stop a unique child owned by the current service",
     )
 
+    # The protected issue operator has a separate exact-command allowlist.
+    require(
+        "github.event.comment.body == '/windows offline-preflight'" in router
+        and "github.event.comment.body == '/windows diagnose'" in router
+        and "uses: ./.github/workflows/windows-physical.yml" in router,
+        "new offline preflight must be reachable through the sole protected GitHub issue control",
+    )
+
+    # Offline handoff preflight uses only already installed native privilege
+    # evidence; it cannot pretend that old dispatch supports new operations.
+    require(
+        '"/windows offline-preflight") operation="diagnose"; readonly_purpose="offline-preflight" ;;'
+            in windows_physical
+        and "readonly_purpose: ${{ steps.auth.outputs.readonly_purpose }}" in windows_physical
+        and "EDGE_READONLY_PURPOSE: ${{ needs.resolve.outputs.readonly_purpose }}" in windows_physical
+        and "if ($env:EDGE_READONLY_PURPOSE -ceq 'offline-preflight')" in windows_physical
+        and "offline_preflight_observation=PASS" in windows_physical
+        and "offline_privileged_task_readonly=PASS" in windows_physical
+        and "offline_zero_runtime_owners=PASS" in windows_physical
+        and "privileged-runtime-evidence --install-root $root" in windows_physical
+        and "process_classification=ABSENT;process_evidence_complete=true;process_count=0;"
+            in windows_physical
+        and "Get-CimInstance -ClassName Win32_Service" in windows_physical
+        and "offline_native_activation=NOT_EXECUTED_READ_ONLY_PREFLIGHT"
+            in windows_physical
+        and "offline_command_advertised=$offlineCommandAdvertised" in windows_physical
+        and "installedCommands = @(& $console --help)" in windows_physical
+        and "offline_mutations_performed=0" in windows_physical
+        and windows_physical.count("      - name: Execute typed lifecycle mutation") == 1,
+        "offline preflight must observe exact stopped owner and old privileged task without installation or TUN capture",
+    )
+
     # A human-stopped Windows controller is an observable degraded state,
     # not a reason for read-only diagnosis to run ManagedTun lifecycle checks.
     read_only_step = "      - name: Observe safe Windows state (read-only)"
@@ -399,7 +431,7 @@ def main() -> None:
         and "restart-verify-runtime" not in windows_physical
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 3
+        and windows_physical.count("privileged-runtime-evidence") == 4
         and windows_physical.rindex("verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
@@ -446,7 +478,7 @@ def main() -> None:
         and "managed_tun_present" in windows_physical
         and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "runtime_start=NOOP_ALREADY_RUNNING" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 3
+        and windows_physical.count("privileged-runtime-evidence") == 4
         and "EDGE_STOPPED_OWNER_RECOVERY=YES" in windows_physical
         and "Bounded recovery still observes privileged external sing-box ownership" in windows_physical
         and "stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT" in windows_physical
