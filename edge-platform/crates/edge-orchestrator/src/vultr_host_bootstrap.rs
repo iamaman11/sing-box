@@ -721,7 +721,7 @@ impl StrictSshAcceptanceObservation {
 }
 
 fn bounded_ssh_evidence(stderr: &[u8]) -> String {
-    let mut parts = String::from_utf8_lossy(stderr)
+    let lines = String::from_utf8_lossy(stderr)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -742,13 +742,44 @@ fn bounded_ssh_evidence(stderr: &[u8]) -> String {
                 line.chars().take(240).collect::<String>()
             }
         })
-        .take(4)
         .collect::<Vec<_>>();
-    if parts.is_empty() {
+    // Verbose SSH logs begin with client/config headers. Report the decisive
+    // terminal failure, not only those first four uninformative header lines.
+    let mut relevant = lines
+        .iter()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            [
+                "permission denied",
+                "host key verification",
+                "remote host identification has changed",
+                "certificate invalid",
+                "connection refused",
+                "connection timed out",
+                "no route to host",
+                "network is unreachable",
+                "connection closed",
+                "connection reset",
+                "kex_exchange_identification",
+                "edge_substrate_fail:",
+                "ssh: connect to host",
+                "error:",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
+        })
+        .rev()
+        .take(4)
+        .cloned()
+        .collect::<Vec<_>>();
+    if relevant.is_empty() {
+        relevant = lines.iter().rev().take(4).cloned().collect::<Vec<_>>();
+    }
+    relevant.reverse();
+    if relevant.is_empty() {
         "no-stderr".to_owned()
     } else {
-        parts.truncate(4);
-        parts.join(" | ")
+        relevant.join(" | ")
     }
 }
 
@@ -2124,10 +2155,23 @@ mod tests {
         );
         assert_eq!(unmarked_remote.detail, "no-stderr");
 
-        let sensitive = bounded_ssh_evidence(b"password=secret\nline-2\nline-3\nline-4\nline-5\n");
+        let sensitive = bounded_ssh_evidence(b"line-1\nline-2\nline-3\nline-4\npassword=secret\n");
         assert!(sensitive.contains("[redacted sensitive SSH evidence]"));
         assert!(!sensitive.contains("secret"));
-        assert!(!sensitive.contains("line-5"));
+
+        let verbose = bounded_ssh_evidence(
+            b"OpenSSH_9.6p1\ndebug1: Reading configuration data\ndebug1: Applying options\nssh: connect to host example port 22: Connection refused\n",
+        );
+        assert!(verbose.contains("Connection refused"));
+        assert!(!verbose.contains("OpenSSH_9.6p1"));
+        assert_eq!(
+            classify_strict_ssh_failure(
+                Some(255),
+                b"OpenSSH_9.6p1\ndebug1: Reading configuration data\nPermission denied (publickey).\n",
+            )
+            .class,
+            StrictSshFailureClass::Authentication
+        );
     }
 
     #[test]
