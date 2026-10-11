@@ -384,6 +384,9 @@ def main() -> None:
     shared_types = SHARED_TYPES.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
+    hosted_production_main = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(
+        encoding="utf-8"
+    )
     credential_command = CREDENTIAL_COMMAND.read_text(encoding="utf-8")
     credential_cli = CREDENTIAL_CLI.read_text(encoding="utf-8")
     credential_provider = CREDENTIAL_PROVIDER.read_text(encoding="utf-8")
@@ -1763,8 +1766,8 @@ def main() -> None:
         and "pub(crate) async fn verify_dns_noop(" in production_command
         and "pub(crate) async fn enroll_runtime(" in production_command
         and "dns_verify_noop(spec, spec).await" in production_command
-        and "production_command::converge" not in orchestrator_main
-        and "production_command::verify(" not in orchestrator_main
+        and "production_command::converge" not in hosted_production_main
+        and "production_command::verify(" not in hosted_production_main
         and "Converge(ProductionRuntimeArgs)" not in credential_cli
         and "Verify(ProductionRuntimeArgs)" not in credential_cli
         and "ProductionRuntimeArgs" not in credential_cli,
