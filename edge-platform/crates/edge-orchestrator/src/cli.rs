@@ -528,9 +528,26 @@ mod tests {
     fn initial_pair_preflight_rejects_missing_or_invalid_parameters() {
         for args in [
             vec!["edge-orchestrator", "credentials", "initial-pair-preflight"],
-            vec!["edge-orchestrator", "credentials", "initial-pair-preflight", "101"],
-            vec!["edge-orchestrator", "credentials", "initial-pair-preflight", "101", "other"],
-            vec!["edge-orchestrator", "credentials", "initial-pair-publish", "101", "a"],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-preflight",
+                "101",
+            ],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-preflight",
+                "101",
+                "other",
+            ],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-publish",
+                "101",
+                "a",
+            ],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
