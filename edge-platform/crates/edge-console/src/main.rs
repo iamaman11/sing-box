@@ -2343,7 +2343,9 @@ fn restore_offline_authority_pointers(
     previous: &Option<Vec<u8>>,
 ) -> Result<(), String> {
     restore_offline_previous(
-        &install_root.join("previous.pb"), old_current_bytes, previous,
+        &install_root.join("previous.pb"),
+        old_current_bytes,
+        previous,
     )?;
     write_atomic(&install_root.join("current.pb"), old_current_bytes)
         .map_err(|err| format!("offline current authority restoration failed: {err}"))
@@ -2368,9 +2370,7 @@ fn restore_offline_release(
         })?;
         require_offline_windows_owner_from_snapshot(install_root, replacement)?;
         if replacement.controller_path != before.controller_path {
-            offline_retarget_controller_service_checked(
-                install_root, replacement, before, true,
-            )?;
+            offline_retarget_controller_service_checked(install_root, replacement, before, true)?;
         }
     }
     // Restore previous first; a failed prerequisite never overwrites current.
@@ -2453,7 +2453,11 @@ fn offline_activate_privileged_release(
         Ok(value) => value,
         Err(err) => {
             let compensation = restore_offline_release(
-                install_root, &before, &current_bytes, &previous_bytes, None,
+                install_root,
+                &before,
+                &current_bytes,
+                &previous_bytes,
+                None,
             );
             return Err(format!(
                 "offline installer outcome uncertain, current.pb unreadable: {err}; compensation={compensation:?}; do not retry blindly"
@@ -2473,15 +2477,25 @@ fn offline_activate_privileged_release(
     let handoff = offline_retarget_controller_service(install_root, &before, &post)
         .and_then(|_| retarget_privileged_task(install_root, &post.console_path));
     if let Err(err) = handoff {
-        let restore =
-            restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, Some(&post));
+        let restore = restore_offline_release(
+            install_root,
+            &before,
+            &current_bytes,
+            &previous_bytes,
+            Some(&post),
+        );
         return Err(format!(
             "offline owner handoff failed: {err}; compensation={restore:?}; do not blindly retry"
         ));
     }
     if let Err(err) = require_offline_windows_owner(install_root, &post) {
-        let compensation =
-            restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, Some(&post));
+        let compensation = restore_offline_release(
+            install_root,
+            &before,
+            &current_bytes,
+            &previous_bytes,
+            Some(&post),
+        );
         return Err(format!(
             "offline post-handoff owner not verified: {err}; compensation={compensation:?}; do not retry blindly"
         ));
@@ -4336,7 +4350,8 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = env::temp_dir().join(format!(
-            "edge-offline-restore-{label}-{}-{unique}", std::process::id()
+            "edge-offline-restore-{label}-{}-{unique}",
+            std::process::id()
         ));
         fs::create_dir(&root).unwrap();
         root
@@ -4354,9 +4369,11 @@ mod tests {
         );
         fs::remove_file(&previous).unwrap();
         fs::create_dir(&previous).unwrap();
-        assert!(snapshot_offline_previous(&previous)
-            .unwrap_err()
-            .contains("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED"));
+        assert!(
+            snapshot_offline_previous(&previous)
+                .unwrap_err()
+                .contains("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED")
+        );
         assert!(previous.is_dir());
         fs::remove_dir_all(root).unwrap();
     }
@@ -4369,8 +4386,11 @@ mod tests {
         fs::write(&current, b"torn-current").unwrap();
         fs::write(&previous, b"new-previous").unwrap();
         restore_offline_authority_pointers(
-            &root, b"verified-old-current", &Some(b"verified-old-previous".to_vec()),
-        ).unwrap();
+            &root,
+            b"verified-old-current",
+            &Some(b"verified-old-previous".to_vec()),
+        )
+        .unwrap();
         assert_eq!(fs::read(&current).unwrap(), b"verified-old-current");
         assert_eq!(fs::read(&previous).unwrap(), b"verified-old-previous");
         fs::remove_dir_all(root).unwrap();
@@ -4383,8 +4403,8 @@ mod tests {
         let previous = root.join("previous.pb");
         fs::write(&current, b"new-current").unwrap();
         fs::write(&previous, b"foreign-previous").unwrap();
-        let err = restore_offline_authority_pointers(&root, b"verified-old-current", &None)
-            .unwrap_err();
+        let err =
+            restore_offline_authority_pointers(&root, b"verified-old-current", &None).unwrap_err();
         assert!(err.contains("OFFLINE_PREVIOUS_RESTORE_BLOCKED"));
         assert_eq!(fs::read(&current).unwrap(), b"new-current");
         assert_eq!(fs::read(&previous).unwrap(), b"foreign-previous");
@@ -4403,9 +4423,11 @@ mod tests {
         let previous = root.join("previous.pb");
         fs::write(&current, b"torn-current").unwrap();
         fs::create_dir(&previous).unwrap();
-        assert!(restore_offline_authority_pointers(&root, b"saved-current", &None)
-            .unwrap_err()
-            .contains("OFFLINE_PREVIOUS_RESTORE_BLOCKED"));
+        assert!(
+            restore_offline_authority_pointers(&root, b"saved-current", &None)
+                .unwrap_err()
+                .contains("OFFLINE_PREVIOUS_RESTORE_BLOCKED")
+        );
         assert_eq!(fs::read(&current).unwrap(), b"torn-current");
         fs::remove_dir_all(root).unwrap();
     }
