@@ -433,6 +433,19 @@ proxy selection, or the foreign Cloudflare One adapter. The VM has its own
 separate read-only initial probe. Neither report authorizes a publish by
 itself; worker binding metadata cannot substitute for an authenticated GET.
 
+For the VM, `edge-agent local credential-initial-verify <generation>` is
+the nonmutating next acceptance boundary after initial-apply. It requires
+only the exact unpromoted VM candidate (no active/previous), verifies the
+rendered runtime environment against the protected candidate bytes,
+observes all three running Docker application containers with the native
+Bollard owner, and reuses existing `line2_quality::measure` to perform
+five authenticated HTTP 204 samples through **each** of the six Line2
+HTTP/SOCKS5/HTTPS direct/WARP endpoints. It prints
+`line2_authenticated_endpoints=6` only after all samples pass, while keeping
+`line1_authenticated_endpoints=UNPROVEN` and
+`credential_pair_committed=false`. Thus a passed VM-local Line2 gate is
+neither a Windows tunnel proof nor permission to promote a credential.
+
 The integrated PR must continue beyond preflight to the **single full initial
 transaction**, staged source-only bundle, distinct host activation and
 isolated authenticated Line1/Line2 acceptance before merge. Do not treat these
