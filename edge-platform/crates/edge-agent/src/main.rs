@@ -187,6 +187,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             run_local_bootstrap(&stack_dir, BootstrapMode::BootstrapFull).await
         }
         cli::LocalCommand::BundleConverge => run_local_bundle_converge(&stack_dir).await,
+        cli::LocalCommand::BundleStageInitial => {
+            run_local_bundle_stage_initial(&stack_dir).await
+        },
         cli::LocalCommand::BundleVerify => run_local_bundle_verify(&stack_dir).await,
         cli::LocalCommand::BundleRollback => run_local_bundle_rollback(&stack_dir).await,
         cli::LocalCommand::MeshVerify => {
@@ -395,6 +398,34 @@ async fn run_local_bundle_rollback(stack_dir: &Path) -> Result<(), AgentError> {
             restored.warnings.join("; ")
         )))
     }
+}
+
+async fn run_local_bundle_stage_initial(stack_dir: &Path) -> Result<(), AgentError> {
+    let request = read_local_bundle_request().map_err(AgentError::Command)?;
+    let (bundle_id, bundle_digest) =
+        validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
+    validate_initial_policy_bundle_request(&request).map_err(AgentError::Command)?;
+    require_empty_vm_initial_credential_host(stack_dir).map_err(AgentError::Command)?;
+    require_empty_vm_initial_bundle_host(stack_dir).map_err(AgentError::Command)?;
+    let docker = observe_docker().await.map_err(AgentError::Command)?;
+    require_no_vm_application_containers(&docker).map_err(AgentError::Command)?;
+    let applied = apply_digest_bound_bundle(stack_dir, request, true)
+        .map_err(AgentError::Command)?;
+    if applied.active_bundle_id.as_deref() != Some(bundle_id.as_str())
+        || applied.active_bundle_digest.as_deref() != Some(bundle_digest.as_str())
+        || stack_dir.join(RUNTIME_ENV_FILE).exists()
+    {
+        return Err(AgentError::Command(
+            "initial application staging did not preserve exact policy-only release".to_owned(),
+        ));
+    }
+    println!("operation=BUNDLE_STAGE_INITIAL");
+    println!("application_bundle_id={bundle_id}");
+    println!("application_bundle_digest={bundle_digest}");
+    println!("application_runtime_started=false");
+    println!("credential_active_present=false");
+    println!("credential_authentication=UNPROVEN");
+    Ok(())
 }
 
 async fn run_local_bundle_converge(stack_dir: &Path) -> Result<(), AgentError> {
@@ -1033,7 +1064,7 @@ fn apply_bundle(
         request.bundle_id.as_deref(),
         request.bundle_digest.as_deref(),
     ) {
-        (Some(_), Some(_)) => apply_digest_bound_bundle(stack_dir, request),
+        (Some(_), Some(_)) => apply_digest_bound_bundle(stack_dir, request, false),
         (None, None) => apply_legacy_bundle(stack_dir, request),
         _ => Err(
             "bundle_id and bundle_digest must either both be present or both be absent".to_owned(),
@@ -1125,8 +1156,14 @@ fn validate_digest_bound_bundle_request(
 fn apply_digest_bound_bundle(
     stack_dir: &Path,
     request: ApplyBundleRequest,
+    initial_policy_only: bool,
 ) -> Result<ApplyBundleResponse, String> {
     let (bundle_id, expected_digest) = validate_digest_bound_bundle_request(&request)?;
+    if initial_policy_only {
+        validate_initial_policy_bundle_request(&request)?;
+        require_empty_vm_initial_credential_host(stack_dir)?;
+        require_empty_vm_initial_bundle_host(stack_dir)?;
+    }
 
     if let Some(current) = read_application_release(stack_dir)
         && current.bundle_id == bundle_id
@@ -1166,7 +1203,15 @@ fn apply_digest_bound_bundle(
     for file in &request.stack_files {
         write_bundle_file(&staging, file, &mut written_paths)?;
     }
-    materialize_vm_owned_runtime_environment(&staging)?;
+    if initial_policy_only {
+        // Fresh stage contains repository policy and pinned images, never an
+        // active credential or generated runtime. Only initial-apply may start.
+        if staging.join(RUNTIME_ENV_FILE).exists() {
+            return Err("initial bundle must not materialize runtime credentials".to_owned());
+        }
+    } else {
+        materialize_vm_owned_runtime_environment(&staging)?;
+    }
 
     let release = ApplicationBundleRelease {
         schema_version: 1,
@@ -1332,6 +1377,57 @@ fn write_application_release(
     .map_err(|err| format!("failed to write application release marker: {err}"))
 }
 
+fn validate_initial_policy_bundle_request(request: &ApplyBundleRequest) -> Result<(), String> {
+    let mut required = BTreeSet::from([
+        "docker-compose.yml",
+        RUNTIME_POLICY_FILE,
+        IMAGE_ENV_FILE,
+    ]);
+    let mut seen = BTreeSet::new();
+    for file in &request.stack_files {
+        validate_bundle_relative_path(&file.relative_path)?;
+        if !seen.insert(file.relative_path.as_str()) {
+            return Err("initial bundle contains duplicate file paths".to_owned());
+        }
+        if file.relative_path == RUNTIME_ENV_FILE
+            || file.relative_path.contains("runtime-secrets")
+            || file.relative_path.contains(".env.runtime.new")
+            || file.sensitive
+        {
+            return Err("initial policy bundle must not contain credentials".to_owned());
+        }
+        if file.relative_path == RUNTIME_POLICY_FILE {
+            let policy = std::str::from_utf8(&file.content)
+                .map_err(|_| "initial runtime policy must be UTF-8".to_owned())?;
+            validate_runtime_policy_env(policy)?;
+        }
+        required.remove(file.relative_path.as_str());
+    }
+    if !required.is_empty() {
+        return Err("initial policy bundle requires exact Compose, image and runtime policy inputs".to_owned());
+    }
+    Ok(())
+}
+
+fn require_empty_vm_initial_bundle_host(stack_dir: &Path) -> Result<(), String> {
+    let parent = stack_dir.parent().ok_or_else(|| {
+        "initial bundle requires a host-state parent".to_owned()
+    })?;
+    for name in [STAGING_STACK_DIR, PREVIOUS_STACK_DIR, ROLLBACK_STACK_DIR] {
+        if parent.join(name).exists() {
+            return Err(format!("initial bundle refuses ambiguous existing stack state {name}"));
+        }
+    }
+    if stack_dir.exists() {
+        let mut entries = fs::read_dir(stack_dir)
+            .map_err(|err| format!("initial bundle cannot inspect target stack: {err}"))?;
+        if entries.next().is_some() {
+            return Err("initial bundle refuses existing application stack content".to_owned());
+        }
+    }
+    Ok(())
+}
+
 fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), String> {
     if !stack_dir.join(RUNTIME_POLICY_FILE).is_file() {
         return Ok(());
@@ -1446,6 +1542,20 @@ fn require_empty_vm_initial_credential_host(stack_dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
+fn require_initial_vm_policy_bundle_ready(stack_dir: &Path) -> Result<(), String> {
+    if read_application_release(stack_dir).is_none() {
+        return Err("initial VM credential apply requires an exact staged application bundle".to_owned());
+    }
+    if !stack_dir.join("docker-compose.yml").is_file() {
+        return Err("initial VM credential apply requires staged Compose".to_owned());
+    }
+    let policy = fs::read_to_string(stack_dir.join(RUNTIME_POLICY_FILE))
+        .map_err(|_| "initial VM credential apply requires staged policy".to_owned())?;
+    validate_runtime_policy_env(&policy)?;
+    read_exact_image_environment(stack_dir)?;
+    Ok(())
+}
+
 fn require_no_vm_application_containers(observation: &DockerObservation) -> Result<(), String> {
     if !observation.reachable {
         return Err("initial VM enrollment refuses unknown Docker daemon state".to_owned());
@@ -1468,7 +1578,10 @@ async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Resul
     if generation == 0 {
         return Err("initial VM enrollment requires a positive Worker generation".to_owned());
     }
-    // Both guards execute before fetching a secret or writing host state.
+    // A digest-bound canonical policy bundle must already be installed. This
+    // observation precedes secret fetch and any mutation, and is not a second
+    // generator or a silent bootstrap of missing repository files.
+    require_initial_vm_policy_bundle_ready(stack_dir)?;
     require_empty_vm_initial_credential_host(stack_dir)?;
     let docker = observe_docker().await?;
     require_no_vm_application_containers(&docker)?;
