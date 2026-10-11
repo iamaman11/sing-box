@@ -283,14 +283,14 @@ fn verify_canonical_dummy_ab_probe(
             CREDENTIAL_DUMMY_PROBE_GENERATION_A | CREDENTIAL_DUMMY_PROBE_GENERATION_B
         )
         || observed
-            != &CredentialDeliveryBundle {
+            != &(CredentialDeliveryBundle {
                 schema_version: 1,
                 generation,
                 projection: projection as i32,
                 dummy_non_secret: true,
                 slot: CredentialDeliverySlot::Unspecified as i32,
                 payload: None,
-            }
+            })
     {
         return Err(
             "initial Worker-v2 proof refused: endpoint is not the exact canonical dummy slot"
