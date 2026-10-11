@@ -371,7 +371,9 @@ async fn publish_rotation_slot(
             let evidence = match readback {
                 Ok(observed) => {
                     let current = projection_observation(&observed, &projection.projection)?;
-                    if current.worker_latest_version_id == before_projection.worker_latest_version_id {
+                    if current.worker_latest_version_id
+                        == before_projection.worker_latest_version_id
+                    {
                         "LATEST_VERSION_UNCHANGED"
                     } else {
                         "LATEST_VERSION_CHANGED_CONTENT_UNPROVEN"
