@@ -3154,10 +3154,8 @@ fn verify_bootstrap_post_state(
     if post_state.warp_egress_ready != Some(true) {
         warnings.push("WARP egress datapath is not ready after bootstrap".to_owned());
     }
-    if post_state.mesh_runtime_ready == Some(false) {
-        warnings.push("enabled Mesh runtime is not ready after bootstrap".to_owned());
-    }
-
+    // Line 3 Mesh owns an independent lifecycle. Its disabled or degraded
+    // state cannot reject a Line 1/Line 2 bootstrap or credential cutover.
     BootstrapVerification {
         success: warnings.is_empty(),
         warnings,
@@ -5469,7 +5467,11 @@ mod tests {
 
         let verification = verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &state);
         assert!(verification.success);
-
+        let mut without_mesh = state;
+        without_mesh.mesh_runtime_ready = Some(false);
+        let independent =
+            verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &without_mesh);
+        assert!(independent.success, "Line 3 must not gate Line 1/2 readiness");
         fs::remove_dir_all(root).unwrap();
     }
 
