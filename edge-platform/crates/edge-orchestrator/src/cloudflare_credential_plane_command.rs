@@ -2014,7 +2014,9 @@ mod tests {
         changed = pending.clone();
         changed.worker_secret_bindings.pop();
         assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
-        assert!(verify_exact_pending_worker_version(&original, &original, "fresh-version").is_err());
+        assert!(
+            verify_exact_pending_worker_version(&original, &original, "fresh-version").is_err()
+        );
     }
 
     #[test]
