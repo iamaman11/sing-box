@@ -1646,6 +1646,16 @@ async fn apply_vm_credential_runtime(
     Ok(())
 }
 
+fn require_vm_active_v2_for_promotion(state: &LocalCredentialState) -> Result<(), String> {
+    if state.active.is_none() {
+        return Err(
+            "VM promotion refuses initial enrollment without an explicit paired Worker-v2 cutover"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 async fn transition_vm_credential(
     stack_dir: &Path,
     action: CredentialTransitionAction,
@@ -1710,6 +1720,7 @@ async fn transition_vm_credential(
             Ok(Some(state))
         }
         CredentialTransitionAction::Promote => {
+            require_vm_active_v2_for_promotion(&state)?;
             if state.previous.is_some() {
                 return Err(
                     "previous credential rollback buffer must be dropped before promotion"
@@ -4597,6 +4608,13 @@ mod tests {
             root.join("runtime-secrets/application-v2")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vm_initial_promotion_cannot_adopt_unproven_legacy_runtime() {
+        let no_active_v2 = LocalCredentialState::default();
+        let err = require_vm_active_v2_for_promotion(&no_active_v2).unwrap_err();
+        assert!(err.contains("refuses initial enrollment"));
     }
 
     #[test]
