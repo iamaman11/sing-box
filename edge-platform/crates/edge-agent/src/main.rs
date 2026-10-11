@@ -660,9 +660,11 @@ fn verify_initial_agent_binary(expected_sha256: &str) -> Result<(), String> {
     {
         return Err("VM first-use proof requires an exact SHA-256 from immutable ReleaseSet".to_owned());
     }
-    let exe = fs::read_link("/proc/self/exe")
-        .map_err(|err| format!("VM initial proof cannot resolve running agent image: {err}"))?;
-    let observed = edge_shared_types::file_sha256_lower_hex(&exe)?;
+    // Hash the kernel's live executable handle, not its resolved pathname:
+    // the path can be replaced while an old process is still running.
+    let observed = edge_shared_types::file_sha256_lower_hex(
+        Path::new("/proc/self/exe"),
+    )?;
     if observed != expected_sha256 {
         return Err("VM first-use attestation refuses non-ReleaseSet agent bytes".to_owned());
     }
