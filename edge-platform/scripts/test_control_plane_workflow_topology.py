@@ -811,6 +811,31 @@ def main() -> None:
         "VM runtime credentials must be Worker-v2-only and fail closed, without local generator or legacy rollback",
     )
 
+    # A new generation cannot be declared active merely because a local
+    # candidate pointer exists. Both owners prove exact applied artifacts;
+    # VM also requires a verified READY runtime before moving the cursor.
+    vm_promote = vm_agent_runtime.split(
+        "CredentialTransitionAction::Promote => {", 1
+    )[1].split("CredentialTransitionAction::ApplyLegacy =>", 1)[0]
+    # Credential transitions are implemented in their isolated source module.
+    windows_transition = Path("edge-platform/crates/edge-console/src/credential_transition.rs").read_text(encoding="utf-8")
+    windows_promote = windows_transition.split(
+        "CredentialTransitionAction::Promote => {", 1
+    )[1].split("CredentialTransitionAction::ApplyActive =>", 1)[0]
+    require(
+        "require_vm_active_v2_for_promotion(&state)?" in vm_promote
+        and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in vm_promote
+        and "verify_bootstrap_post_state(stack_dir, BootstrapMode::BootstrapFull, &runtime)" in vm_promote
+        and "store.promote_candidate()?" in vm_promote
+        and "require_active_v2_for_rotation(&state)?" in windows_promote
+        and "verify_exact_candidate_runtime(install_root, activation, &store, candidate)?" in windows_promote
+        and "store.promote_candidate()?" in windows_promote
+        and "require_active_v2_for_rotation(&state)?"
+        in windows_transition.split("CredentialTransitionAction::ApplyCandidate => {", 1)[1].split("CredentialTransitionAction::Promote =>", 1)[0]
+        and "vm_candidate_promotion_cannot_commit_an_unapplied_worker_generation" in vm_agent,
+        "rotation entrypoints must refuse initial enrollment and verify candidate artifacts before promotion",
+    )
+
     require(
         "message StageCredentialCandidateRequest" in credential_proto
         and "CredentialDeliveryBundle bundle = 1;" in credential_proto

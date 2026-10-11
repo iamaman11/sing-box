@@ -1613,6 +1613,24 @@ fn print_vm_rendered_credential_source(stack_dir: &Path) {
     println!("credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF");
 }
 
+fn verify_vm_candidate_runtime_materialized(
+    stack_dir: &Path,
+    candidate: &edge_shared_types::CredentialDeliveryBundle,
+) -> Result<(), String> {
+    let secrets = ApplicationRuntimeSecrets::from_vm_bundle(candidate)?;
+    let expected = vm_runtime_environment(stack_dir, &secrets)?;
+    let actual = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE)).map_err(|_| {
+        "VM candidate promotion requires a readable rendered environment".to_owned()
+    })?;
+    if actual != expected {
+        return Err(
+            "VM candidate promotion refused: rendered environment differs from candidate Worker-v2 generation"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 async fn apply_vm_credential_runtime(
     stack_dir: &Path,
     secrets: &ApplicationRuntimeSecrets,
@@ -1624,6 +1642,16 @@ async fn apply_vm_credential_runtime(
             "VM credential runtime failed readiness verification: {}",
             result.warnings.join("; ")
         ));
+    }
+    Ok(())
+}
+
+fn require_vm_active_v2_for_promotion(state: &LocalCredentialState) -> Result<(), String> {
+    if state.active.is_none() {
+        return Err(
+            "VM promotion refuses initial enrollment without an explicit paired Worker-v2 cutover"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -1692,14 +1720,26 @@ async fn transition_vm_credential(
             Ok(Some(state))
         }
         CredentialTransitionAction::Promote => {
+            require_vm_active_v2_for_promotion(&state)?;
             if state.previous.is_some() {
                 return Err(
                     "previous credential rollback buffer must be dropped before promotion"
                         .to_owned(),
                 );
             }
-            if state.candidate.is_none() {
-                return Err("VM v2 candidate is absent".to_owned());
+            let candidate = state
+                .candidate
+                .as_ref()
+                .ok_or_else(|| "VM v2 candidate is absent".to_owned())?;
+            let bundle = store.read_bundle(candidate)?;
+            verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
+            let runtime = inspect_runtime(stack_dir, AgentMode::Readiness).await;
+            let proof = verify_bootstrap_post_state(stack_dir, BootstrapMode::BootstrapFull, &runtime);
+            if !proof.success {
+                return Err(format!(
+                    "VM candidate promotion requires READY running runtime: {}",
+                    proof.warnings.join("; ")
+                ));
             }
             Ok(Some(store.promote_candidate()?))
         }
@@ -3126,10 +3166,8 @@ fn verify_bootstrap_post_state(
     if post_state.warp_egress_ready != Some(true) {
         warnings.push("WARP egress datapath is not ready after bootstrap".to_owned());
     }
-    if post_state.mesh_runtime_ready == Some(false) {
-        warnings.push("enabled Mesh runtime is not ready after bootstrap".to_owned());
-    }
-
+    // Line 3 Mesh owns an independent lifecycle. Its disabled or degraded
+    // state cannot reject a Line 1/Line 2 bootstrap or credential cutover.
     BootstrapVerification {
         success: warnings.is_empty(),
         warnings,
@@ -4573,6 +4611,55 @@ mod tests {
     }
 
     #[test]
+    fn vm_initial_promotion_cannot_adopt_unproven_legacy_runtime() {
+        let no_active_v2 = LocalCredentialState::default();
+        let err = require_vm_active_v2_for_promotion(&no_active_v2).unwrap_err();
+        assert!(err.contains("refuses initial enrollment"));
+    }
+
+    #[test]
+    fn vm_candidate_promotion_cannot_commit_an_unapplied_worker_generation() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
+        let candidate = vm_test_credential_bundle(109, CredentialDeliverySlot::A);
+        assert!(verify_vm_candidate_runtime_materialized(&stack, &candidate).is_err());
+
+        fs::write(stack.join(RUNTIME_ENV_FILE), "arbitrary=other-source\n").unwrap();
+        let error = verify_vm_candidate_runtime_materialized(&stack, &candidate).unwrap_err();
+        assert!(error.contains("differs from candidate"));
+
+        let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&candidate).unwrap();
+        write_vm_runtime_environment(&stack, &secrets).unwrap();
+        verify_vm_candidate_runtime_materialized(&stack, &candidate).unwrap();
+
+        // Distinct delivery metadata may legitimately describe identical runtime
+        // bytes (e.g. a class-scoped delta with no VM-facing change). Only a
+        // credential-value mismatch is evidence of an unapplied VM candidate.
+        let mut second = vm_test_credential_bundle(110, CredentialDeliverySlot::B);
+        verify_vm_candidate_runtime_materialized(&stack, &second).unwrap();
+        let edge_shared_types::credential_delivery_bundle::Payload::Vm(vm) =
+            second.payload.as_mut().unwrap()
+        else {
+            unreachable!("VM-only fixture")
+        };
+        vm.tunnel_auth
+            .as_mut()
+            .unwrap()
+            .direct
+            .as_mut()
+            .unwrap()
+            .hysteria2_password = "f".repeat(64);
+        assert!(verify_vm_candidate_runtime_materialized(&stack, &second).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn vm_runtime_materialization_refuses_legacy_and_requires_explicit_active_v2() {
         let root = unique_test_dir();
         let stack = root.join("stack");
@@ -5415,7 +5502,14 @@ mod tests {
 
         let verification = verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &state);
         assert!(verification.success);
-
+        let mut without_mesh = state;
+        without_mesh.mesh_runtime_ready = Some(false);
+        let independent =
+            verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &without_mesh);
+        assert!(
+            independent.success,
+            "Line 3 must not gate Line 1/2 readiness"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -405,6 +405,55 @@ reinstallation green.
 
 The new stack receives independently generated credential generations.
 
+### Initial paired Worker-v2 enrollment (not steady-state rotation)
+
+Initial enrollment is a distinct bounded operation, because `/credentials rotate` requires
+an already-active v2 generation on **both** hosts. Neither reuse rotation as initial
+enrollment nor bypass this guard with direct local `promote`.
+
+**Before any write** the operator must observe: the exact accepted ReleaseSet; the
+Windows SCM/TUN/DNS condition and independently proven no-TUN control recovery;
+the existing VM runtime and any legacy secret (presence only); both permanent
+Cloudflare Access host identities installed behind their OS trust boundaries;
+the fixed A/B Workers and a provably unused target slot; no local active/candidate/
+previous v2 pointers or foreign owner ambiguity. Any missing proof is BLOCKED,
+never inferred from a Worker version tag, `ready=true`, or a password file.
+
+One GitHub-owned Rust credential operation creates **one** fresh snapshot with paired
+least-privilege Windows/VM projections (matching delivery, tunnel-auth and
+Reality-identity generation, fixed A/B slot). No GitHub runner observes or persists
+plaintext; Workers hold only fixed encrypted secret bindings; local native owners
+fetch exact generation using permanent host-specific Access identities.
+
+On a new, isolated non-serving runtime, hosts may stage and validate candidates
+without installing them as active. Runtime application requires an explicit typed
+initial-enrollment gate, functional Line1 authentication on all four direct/WARP
+endpoints through a bounded non-TUN path, and a proven return to independent
+DNS/management access. A runtime already serving legacy traffic must not be
+restarted or switched to perform initial enrollment without this safety proof;
+testing a candidate is not evidence of successful application.
+
+Both existing rotation `ApplyCandidate` and `Promote` operations require an
+established local active Worker-v2 generation; no-active-v2 initial enrollment
+cannot be simulated by these commands. VM promotion checks the exact rendered
+candidate environment and local READY state; Windows promotion checks the exact
+rendered candidate state/config. **These are necessary on-disk/readiness checks,
+not proof that a running process consumed those credentials.** Container reload,
+authenticated Line1 E2E and the independent Windows control recovery gate require
+separate physical evidence before an explicit paired initial cutover is accepted.
+If either host is unknown or disagrees, stop without claiming `ACCEPTED`; no
+implicit legacy fallback, generation guessing, or retransmission after an
+uncertain provider mutation. Only a successful paired cutover permits legacy
+credential-file deletion and normal v2 rotation.
+
+**Physical starting state 2026-10-11:** Cloudflare fixed A/B contract PASS;
+VM native diagnostic `credential_state_present=false`, three running containers;
+Windows SCM stopped, no TUN, direct DNS/HTTPS PASS, independent automated
+recovery UNPROVEN. Therefore production initial enrollment is **BLOCKED**; code
+can be built/tested, and safe read-only checks are allowed, but neither
+`host-bootstrap-converge` (which includes privileged Windows activation) nor
+`/credentials rotate` is a safe initial activation shortcut.
+
 Operator terms:
 - **active credential generation** — the validated local generation currently in use;
 - **candidate credential generation** — fetched/staged generation not yet accepted.
