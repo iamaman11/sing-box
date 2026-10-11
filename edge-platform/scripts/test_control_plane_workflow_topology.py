@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-import json
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
@@ -1667,81 +1664,42 @@ def main() -> None:
         "      - name: Verify bounded local runtime authority", 1
     )[1].split("      - name: Verify exact transported application bundle", 1)[0]
     require(
-        "vm_owner_identity=BLOCKED_OWNER_ABSENT_OR_NOT_EXECUTABLE" in owner_preflight
-        and "vm_owner_identity=BLOCKED_EXPECTED_RELEASE_AUTHORITY" in owner_preflight
+        "      - production_observe" not in production_runtime.split("    if:", 1)[0]
+        and "needs.production_observe.result" not in production_runtime
+        and "OBSERVE_AGENT_SHA256" not in production_runtime
+        and "OBSERVE_RELEASE_SET_SHA256" not in production_runtime
+        and "needs.authorize.outputs.operation == 'diagnose' ||" in production_runtime
+        and "needs.authorize.outputs.operation == 'quality-line2' ||" in production_runtime,
+        "native VM read-only observation must run in parallel with provider inventory",
+    )
+    require(
+        "vm_owner_identity=PASS_NATIVE_INSTALLED_READONLY" in owner_preflight
+        and "vm_owner_identity=BLOCKED_INSTALLED_OWNER_PATH" in owner_preflight
+        and "vm_owner_identity=BLOCKED_INSTALLED_OWNER_FILESYSTEM_TRUST" in owner_preflight
         and "vm_owner_identity=BLOCKED_OWNER_DIGEST_UNAVAILABLE" in owner_preflight
         and "vm_owner_identity=BLOCKED_INSTALLED_OWNER_MISMATCH" in owner_preflight
-        and "vm_owner_next_safe_action=VERIFY_INSTALLED_RELEASE_PROVENANCE_READ_ONLY" in owner_preflight
         and "vm_owner_identity=PASS_EXACT_ACCEPTED_OWNER" in owner_preflight
         and 'echo "vm_owner_observed_sha256=${observed}"' in owner_preflight
-        and 'echo "vm_owner_expected_sha256=${expected_owner}"' in owner_preflight
-        and 'if [[ "${observed}" != "${expected_owner}" ]]; then' in owner_preflight
+        and "for path in /usr /usr/local /usr/local/libexec" in owner_preflight
+        and 'if [[ ! -x "${owner}" || -L "${owner}" ]]; then' in owner_preflight
+        and "diagnose|quality-line2)" in owner_preflight
+        and "converge|verify|rollback)" in owner_preflight
+        and owner_preflight.index("vm_owner_identity=PASS_NATIVE_INSTALLED_READONLY")
+        < owner_preflight.index("converge|verify|rollback)")
         and owner_preflight.index('if [[ "${observed}" != "${expected_owner}" ]]; then')
         < owner_preflight.index('sudo -n "${owner}" local status >/dev/null')
-        and owner_preflight.count("curl --fail --silent --show-error") == 1
-        and '"/releases?per_page=100"' not in owner_preflight
-        and '"https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100"' in owner_preflight
-        and 'if [[ "${REQUESTED_OPERATION}" != "diagnose" ]]; then' in owner_preflight
-        and 'vm_owner_identity=PASS_PUBLISHED_INSTALLED_READONLY' in owner_preflight
-        and 'vm_owner_identity=BLOCKED_NO_EXACT_PUBLISHED_RELEASE' in owner_preflight
-        and 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_FILESYSTEM_TRUST' in owner_preflight
-        and 'vm_owner_identity=BLOCKED_OWNER_CHANGED_DURING_PROOF' in owner_preflight
+        and "curl " not in owner_preflight
+        and "python3" not in owner_preflight
         and "ssh " not in owner_preflight,
-        "read-only production owner identity must verify published digest and refuse any untrusted sudo invocation",
+        "VM native read-only observation must be version-independent; mutations remain exact accepted release",
     )
     require(
         "vm_credential_observation=PASS" in production_runtime
         and "vm_credential_observation=UNAVAILABLE" in production_runtime
         and "'^credential_(state_present|active_present|active_generation|active_slot|candidate_present|previous_present)='" in production_runtime
         and 'sudo -n "${owner}" local credential-state' in production_runtime,
-        "production diagnose must expose only bounded VM credential generation state via the already permitted typed root owner",
+        "production diagnose must expose only bounded VM credential generation state via the existing root owner",
     )
-    # Execute exactly the embedded provenance predicate against safe synthetic
-    # GitHub Release metadata; a forged, draft or mismatched asset must be rejected.
-    embedded = owner_preflight.split("python3 -c '\n", 1)[1].split(
-        "\n          ' \"${observed}\"", 1
-    )[0]
-    require(all(line.startswith("          ") for line in embedded.splitlines()), "provenance predicate YAML literal indentation drift")
-    predicate = "\n".join(line[10:] for line in embedded.splitlines())
-    digest = "a" * 64
-    accepted = {
-        "tag_name": "edge-release-" + "b" * 64,
-        "target_commitish": "c" * 40,
-        "draft": False,
-        "prerelease": False,
-        "published_at": "2026-10-11T00:00:00Z",
-        "assets": [{
-            "name": "edge-agent-linux-amd64",
-            "state": "uploaded",
-            "digest": "sha256:" + digest,
-        }],
-    }
-    fixtures = [
-        ([accepted], True),
-        ([{**accepted, "draft": True}], False),
-        ([{**accepted, "prerelease": True}], False),
-        ([{**accepted, "tag_name": "unverified"}], False),
-        ([{**accepted, "target_commitish": "main"}], False),
-        ([{**accepted, "assets": [{**accepted["assets"][0], "digest": "sha256:" + "d" * 64}]}], False),
-        ([{**accepted, "assets": [{**accepted["assets"][0], "name": "untrusted"}]}], False),
-        ([{**accepted, "assets": [{**accepted["assets"][0], "state": "pending"}]}], False),
-        ({"message": "rate limit"}, False),
-        ([], False),
-    ]
-    for releases, should_pass in fixtures:
-        completed = subprocess.run(
-            [sys.executable, "-c", predicate, digest],
-            input=json.dumps(releases),
-            text=True,
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-        require(
-            (completed.returncode == 0) == should_pass
-            and (not should_pass or completed.stdout.strip() == accepted["tag_name"]),
-            f"published installed-owner provenance predicate rejected fixture safety invariant: {completed.stderr}",
-        )
     require(
         "production_rollback_desired" not in production_command
         and "pub(crate) async fn rollback(" not in production_command,
