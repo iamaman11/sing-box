@@ -627,6 +627,18 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
     }))
 }
 
+fn require_disposable_initial_probe_target(spec: &str, machine: &str) -> Result<(), String> {
+    if spec != "infra/vultr/application-acceptance.json"
+        || machine != "application-acceptance-1"
+    {
+        return Err(
+            "initial host proof can only target the fixed disposable application-acceptance VM"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 /// Read-only guest proof through the *existing* restricted SSH tunnel and
 /// AgentService; fresh disposable ownership and exact ReleaseSet are mandatory.
 async fn run_initial_host_probe(
@@ -636,13 +648,7 @@ async fn run_initial_host_probe(
     if args.len() != 8 {
         return Err("usage: edge-orchestrator vultr-lifecycle initial-host-probe <disposable-vultr-spec> <machine-id> <generation> <slot:a|b> <provider-intent-sha256> <release-set-sha256> <github-run-id> <agent-artifact-path>".to_owned());
     }
-    if args[0] != "infra/vultr/application-acceptance.json" || args[1] != "application-acceptance-1"
-    {
-        return Err(
-            "initial host proof can only target the fixed disposable application-acceptance VM"
-                .to_owned(),
-        );
-    }
+    require_disposable_initial_probe_target(&args[0], &args[1])?;
     let desired = load_desired_state(Path::new(&args[0]))?;
     let generation: u64 = args[2]
         .parse()
@@ -664,6 +670,11 @@ async fn run_initial_host_probe(
     }
     if generation == 0 || github_run_id == 0 {
         return Err("initial host proof requires positive generation and run ID".to_owned());
+    }
+    if env::var("GITHUB_SHA").ok().as_deref()
+        != Some(context.release().source_revision.as_str())
+    {
+        return Err("initial host proof refuses GitHub source revision drift".to_owned());
     }
     if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[6].as_str()) {
         return Err("initial host proof refuses caller-supplied foreign GitHub run ID".to_owned());
@@ -3619,6 +3630,7 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>",
+        "  edge-orchestrator vultr-lifecycle initial-host-probe <disposable-vultr-spec> <machine-id> <generation> <slot:a|b> <provider-intent-sha256> <release-set-sha256> <github-run-id> <edge-agent-artifact-path>",
         "  edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path> <local-owner-artifact-path>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
@@ -3638,6 +3650,23 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_native_host_attestation_never_targets_production_or_wrong_vm() {
+        assert!(require_disposable_initial_probe_target(
+            "infra/vultr/application-acceptance.json",
+            "application-acceptance-1"
+        ).is_ok());
+        for (spec, machine) in [
+            ("infra/vultr/application-acceptance.json", "production-1"),
+            ("infra/vultr/disposable-acceptance.json", "lifecycle-acceptance-1"),
+            ("infra/production/production.textproto", "production-1"),
+            ("infra/vultr/application-acceptance.json", "wrong-machine"),
+        ] {
+            assert!(require_disposable_initial_probe_target(spec, machine).is_err());
+        }
+        assert!(usage().contains("vultr-lifecycle initial-host-probe"));
+    }
+
     #[test]
     fn disposable_ssh_forensics_never_target_production_or_wrong_machine() {
         assert!(is_disposable_ssh_forensic_target(
