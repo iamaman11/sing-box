@@ -1615,6 +1615,14 @@ def main() -> None:
         and 'run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"' in vultr,
         "Vultr backend must expose the existing typed read-only instance action plan through the sole router",
     )
+    require(
+        vultr.count('cat "${RUNNER_TEMP}/post-start-substrate.json" >&2') == 1
+        and vultr.count('cat "${RUNNER_TEMP}/post-reboot-substrate.json" >&2') == 1
+        and vultr.count('cat "${RUNNER_TEMP}/apply-noop-substrate.json" >&2') == 1
+        and vultr.count('cat "${verify_output}" >&2') == 1
+        and "if ! run_lifecycle substrate-verify" in vultr,
+        "native disposable substrate failure evidence must reach GH Actions before cleanup without retry",
+    )
     substrate_verify = vultr_lifecycle_command.split(
         "async fn run_substrate_verify(", 1
     )[1].split("async fn run_transport_proof(", 1)[0]

@@ -1321,3 +1321,10 @@ Every other machine/environment, including production, is excluded by typed
 identity. This adds no new command, transport, service, retry, sleep or mutation;
 provider power-ready is not treated as guest SSH-ready. It classifies the next
 physical incident rather than silently retrying instance creation.
+
+
+Disposable Vultr workflow uses stdout redirection only to preserve successful
+structured JSON evidence. If native `substrate-verify` fails at initial,
+no-op, post-start or post-reboot verification, the existing workflow prints the
+captured bounded native failure-forensic evidence before the existing abort and
+cleanup. No second probe, mutation, polling owner or fallback transport is used.

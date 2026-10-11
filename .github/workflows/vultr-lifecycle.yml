@@ -324,7 +324,10 @@ jobs:
               echo "host substrate convergence exceeded bounded mutation steps" >&2
               return 1
             }
-            run_lifecycle substrate-verify "${spec}" "${machine}" > "${verify_output}"
+            if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${verify_output}"; then
+              cat "${verify_output}" >&2
+              return 1
+            fi
             jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
           }
           acquire_host_access() {
@@ -523,7 +526,10 @@ jobs:
               noop_authority="$(machine_authority "${RUNNER_TEMP}/apply-noop-plan.json")"
               run_lifecycle apply "${spec}" "${machine}" "${noop_authority}" > "${RUNNER_TEMP}/apply-noop.json"
               jq -e '.action == "NOOP" and .provider_ready == true' "${RUNNER_TEMP}/apply-noop.json" >/dev/null
-              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-substrate.json"
+              if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-substrate.json"; then
+                cat "${RUNNER_TEMP}/apply-noop-substrate.json" >&2
+                exit 1
+              fi
               jq -e '.status == "PASS" and .plan.action == "NOOP"' "${RUNNER_TEMP}/apply-noop-substrate.json" >/dev/null
 
               run_lifecycle action-plan "${spec}" "${machine}" halt > "${RUNNER_TEMP}/halt-plan.json"
@@ -534,14 +540,20 @@ jobs:
               start_authority="$(plan_authority "${RUNNER_TEMP}/start-plan.json")"
               run_lifecycle action "${spec}" "${machine}" start "${start_authority}" > "${RUNNER_TEMP}/start.json"
               jq -e '.power_status == "running"' "${RUNNER_TEMP}/start.json" >/dev/null
-              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-start-substrate.json"
+              if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-start-substrate.json"; then
+                cat "${RUNNER_TEMP}/post-start-substrate.json" >&2
+                exit 1
+              fi
               jq -e '.status == "PASS" and .plan.action == "NOOP"' \
                 "${RUNNER_TEMP}/post-start-substrate.json" >/dev/null
 
               run_lifecycle action-plan "${spec}" "${machine}" reboot > "${RUNNER_TEMP}/reboot-plan.json"
               reboot_authority="$(plan_authority "${RUNNER_TEMP}/reboot-plan.json")"
               run_lifecycle action "${spec}" "${machine}" reboot "${reboot_authority}" > "${RUNNER_TEMP}/reboot.json"
-              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-substrate.json"
+              if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-substrate.json"; then
+                cat "${RUNNER_TEMP}/post-reboot-substrate.json" >&2
+                exit 1
+              fi
               jq -e '.status == "PASS" and .plan.action == "NOOP"' \
                 "${RUNNER_TEMP}/post-reboot-substrate.json" >/dev/null
 
