@@ -123,7 +123,9 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
             initial_pair_preflight(&control_token, &desired, generation, slot).await
         }
-        CredentialDeliveryCommand::InitialPairJournalObserve { journal_history_path } => {
+        CredentialDeliveryCommand::InitialPairJournalObserve {
+            journal_history_path,
+        } => {
             let history = fs::read_to_string(&journal_history_path)
                 .map_err(|err| format!("cannot read initial attempt journal history: {err}"))?;
             require_empty_initial_history(&history)?;
@@ -142,18 +144,13 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             journal_history_path,
         } => {
             let observed = observe(&control_token, &desired).await?;
-            let expected = initial_pair_provider_intent_sha256(
-                &desired,
-                &observed,
-                generation,
-                slot,
-            )?;
+            let expected =
+                initial_pair_provider_intent_sha256(&desired, &observed, generation, slot)?;
             if expected != provider_intent_sha256 {
                 return Err("initial journal refuses stale or forged provider intent".to_owned());
             }
-            let history = fs::read_to_string(&journal_history_path).map_err(|err| {
-                format!("initial journal history cannot be read: {err}")
-            })?;
+            let history = fs::read_to_string(&journal_history_path)
+                .map_err(|err| format!("initial journal history cannot be read: {err}"))?;
             let request = InitialPairJournalPlan {
                 generation,
                 slot: slot.as_str().to_owned(),

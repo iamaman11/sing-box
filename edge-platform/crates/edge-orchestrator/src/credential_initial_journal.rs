@@ -2,9 +2,7 @@
 //! transaction. GitHub issue #26's durable comments are an audit journal,
 //! never a second desired-state or secret authority. No provider mutation or
 //! history write is performed in this module.
-use edge_shared_types::{
-    CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
-};
+use edge_shared_types::{CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B};
 use serde::{Deserialize, Serialize};
 
 const MARKER: &str = "<!-- sing-box-credential-initial-attempt/v1 -->";
@@ -43,7 +41,10 @@ struct IssueComment {
 }
 
 fn valid_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_request(request: &InitialPairJournalPlan) -> Result<(), String> {
@@ -53,7 +54,9 @@ fn validate_request(request: &InitialPairJournalPlan) -> Result<(), String> {
         || request.github_run_id == 0
         || (request.slot != "A" && request.slot != "B")
     {
-        return Err("initial journal requires one real generation, fixed slot and run ID".to_owned());
+        return Err(
+            "initial journal requires one real generation, fixed slot and run ID".to_owned(),
+        );
     }
     for (name, value) in [
         ("provider intent", &request.provider_intent_sha256),
@@ -63,7 +66,9 @@ fn validate_request(request: &InitialPairJournalPlan) -> Result<(), String> {
         ("release set", &request.release_set_sha256),
     ] {
         if !valid_sha256(value) {
-            return Err(format!("initial journal requires exact lowercase SHA-256 for {name}"));
+            return Err(format!(
+                "initial journal requires exact lowercase SHA-256 for {name}"
+            ));
         }
     }
     if request.vm_attestation_sha256 == request.windows_attestation_sha256 {
@@ -92,10 +97,13 @@ fn validate_journal_history(history: &str) -> Result<(), String> {
             let content = body.strip_prefix(MARKER).ok_or_else(|| {
                 "initial journal contains displaced attempt marker; refusing issuance".to_owned()
             })?;
-            let record: AttemptRecord = serde_json::from_str(content.trim())
-                .map_err(|_| "initial journal contains malformed attempt; refusing issuance".to_owned())?;
+            let record: AttemptRecord = serde_json::from_str(content.trim()).map_err(|_| {
+                "initial journal contains malformed attempt; refusing issuance".to_owned()
+            })?;
             if record.schema != SCHEMA || record.phase != "BEGIN" {
-                return Err("initial journal contains unknown attempt phase; refusing issuance".to_owned());
+                return Err(
+                    "initial journal contains unknown attempt phase; refusing issuance".to_owned(),
+                );
             }
             return Err(format!(
                 "initial journal already has durable BEGIN in run {}; no replay or new initial issuance",
@@ -156,10 +164,15 @@ mod tests {
         assert!(!record.contains("secret_text"));
         assert!(!record.contains("password"));
         let history = serde_json::json!([{"body": record}]).to_string();
-        assert!(plan_initial_pair_reservation(&request(), &history)
-            .unwrap_err()
-            .contains("no replay"));
-        let different = InitialPairJournalPlan { generation: 102, ..request() };
+        assert!(
+            plan_initial_pair_reservation(&request(), &history)
+                .unwrap_err()
+                .contains("no replay")
+        );
+        let different = InitialPairJournalPlan {
+            generation: 102,
+            ..request()
+        };
         assert!(plan_initial_pair_reservation(&different, &history).is_err());
     }
 
@@ -174,28 +187,61 @@ mod tests {
         ] {
             assert!(plan_initial_pair_reservation(&request(), body).is_err());
         }
-        assert!(plan_initial_pair_reservation(&request(), r#"[{"body":"normal issue comment"}]"#).is_ok());
+        assert!(
+            plan_initial_pair_reservation(&request(), r#"[{"body":"normal issue comment"}]"#)
+                .is_ok()
+        );
     }
 
     #[test]
     fn rejects_dummy_generations_missing_attestation_and_bad_digests() {
-        for generation in [0, CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B] {
-            assert!(plan_initial_pair_reservation(
-                &InitialPairJournalPlan { generation, ..request() }, "[]"
-            ).is_err());
+        for generation in [
+            0,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+        ] {
+            assert!(
+                plan_initial_pair_reservation(
+                    &InitialPairJournalPlan {
+                        generation,
+                        ..request()
+                    },
+                    "[]"
+                )
+                .is_err()
+            );
         }
         for bad in ["", "a", "A".repeat(64).as_str(), "g".repeat(64).as_str()] {
-            assert!(plan_initial_pair_reservation(
-                &InitialPairJournalPlan { vm_attestation_sha256: bad.to_owned(), ..request() },
-                "[]"
-            ).is_err());
+            assert!(
+                plan_initial_pair_reservation(
+                    &InitialPairJournalPlan {
+                        vm_attestation_sha256: bad.to_owned(),
+                        ..request()
+                    },
+                    "[]"
+                )
+                .is_err()
+            );
         }
-        assert!(plan_initial_pair_reservation(
-            &InitialPairJournalPlan { windows_attestation_sha256: "b".repeat(64), ..request() },
-            "[]"
-        ).is_err());
-        assert!(plan_initial_pair_reservation(
-            &InitialPairJournalPlan { github_run_id: 0, ..request() }, "[]"
-        ).is_err());
+        assert!(
+            plan_initial_pair_reservation(
+                &InitialPairJournalPlan {
+                    windows_attestation_sha256: "b".repeat(64),
+                    ..request()
+                },
+                "[]"
+            )
+            .is_err()
+        );
+        assert!(
+            plan_initial_pair_reservation(
+                &InitialPairJournalPlan {
+                    github_run_id: 0,
+                    ..request()
+                },
+                "[]"
+            )
+            .is_err()
+        );
     }
 }
