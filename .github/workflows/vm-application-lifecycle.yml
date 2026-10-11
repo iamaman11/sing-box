@@ -434,7 +434,7 @@ jobs:
       cancel-in-progress: false
     if: >-
       needs.authorize.outputs.command_family == 'production' &&
-      (needs.authorize.outputs.operation == 'diagnose' || needs.authorize.outputs.operation == 'quality-line2')
+      needs.authorize.outputs.operation == 'diagnose'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -518,16 +518,13 @@ jobs:
     needs:
       - authorize
       - production_provider
-      - production_observe
     if: >-
       always() &&
       needs.authorize.result == 'success' &&
       needs.authorize.outputs.command_family == 'production' &&
       (
-        (
-          (needs.authorize.outputs.operation == 'diagnose' || needs.authorize.outputs.operation == 'quality-line2') &&
-          needs.production_observe.result == 'success'
-        ) ||
+        needs.authorize.outputs.operation == 'diagnose' ||
+        needs.authorize.outputs.operation == 'quality-line2' ||
         (
           (
             needs.authorize.outputs.operation == 'converge' ||
@@ -556,9 +553,6 @@ jobs:
       PROVIDER_AGENT_SHA256: ${{ needs.production_provider.outputs.agent_sha256 }}
       PROVIDER_APPLICATION_BUNDLE_SHA256: ${{ needs.production_provider.outputs.application_bundle_sha256 }}
       PROVIDER_APPLICATION_BUNDLE_ASSET_ID: ${{ needs.production_provider.outputs.application_bundle_asset_id }}
-      OBSERVE_ACCEPTED_REVISION: ${{ needs.production_observe.outputs.accepted_revision }}
-      OBSERVE_RELEASE_SET_SHA256: ${{ needs.production_observe.outputs.release_set_sha256 }}
-      OBSERVE_AGENT_SHA256: ${{ needs.production_observe.outputs.agent_sha256 }}
 
     steps:
       - name: Download exact ReleaseSet-bound VM bundle
@@ -591,137 +585,72 @@ jobs:
 
       - name: Verify bounded local runtime authority
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           owner="/usr/local/libexec/sing-box/edge-agent"
-          if [[ ! -x "${owner}" ]]; then
-            echo 'vm_owner_identity=BLOCKED_OWNER_ABSENT_OR_NOT_EXECUTABLE' >&2
+          if [[ ! -x "${owner}" || -L "${owner}" ]]; then
+            echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_PATH' >&2
             exit 1
           fi
 
-          case "${REQUESTED_OPERATION}" in
-            converge|verify|rollback)
-              expected_revision="${PROVIDER_ACCEPTED_REVISION}"
-              expected_release_set="${PROVIDER_RELEASE_SET_SHA256}"
-              expected_owner="${PROVIDER_AGENT_SHA256}"
-              ;;
-            diagnose|quality-line2)
-              expected_revision="${OBSERVE_ACCEPTED_REVISION}"
-              expected_release_set="${OBSERVE_RELEASE_SET_SHA256}"
-              expected_owner="${OBSERVE_AGENT_SHA256}"
-              ;;
-            *)
-              echo "runtime plane received unsupported production operation" >&2
+          # Native host filesystem authority for reading its own actual state.
+          # Refuse writable/symlinked paths before invoking the fixed sudo allowlist.
+          for path in /usr /usr/local /usr/local/libexec "$(dirname "${owner}")" "${owner}"; do
+            if [[ -L "${path}" || "$(stat -c '%u:%g:%a' "${path}")" != "0:0:755" ]]; then
+              echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_FILESYSTEM_TRUST' >&2
               exit 1
-              ;;
-          esac
-
-          if [[ "${expected_revision}" != "${GITHUB_SHA}" ||
-                ! "${expected_release_set}" =~ ^[0-9a-f]{64}$ ||
-                ! "${expected_owner}" =~ ^[0-9a-f]{64}$ ]]; then
-            echo 'vm_owner_identity=BLOCKED_EXPECTED_RELEASE_AUTHORITY' >&2
+            fi
+          done
+          if [[ "$(id -u)" = "0" ]]; then
+            echo 'production self-hosted runner must not run as root' >&2
             exit 1
           fi
+          if sudo -n id -u >/dev/null 2>&1; then
+            echo 'production self-hosted runner unexpectedly has generic root authority' >&2
+            exit 1
+          fi
+          if test -r /var/run/docker.sock; then
+            echo 'production self-hosted runner unexpectedly has direct Docker socket authority' >&2
+            exit 1
+          fi
+
           if ! observed="$(sha256sum "${owner}" | awk '{print $1}')"; then
             echo 'vm_owner_identity=BLOCKED_OWNER_DIGEST_UNAVAILABLE' >&2
             exit 1
           fi
-          # SHA-256 is non-secret release identity, not a credential fingerprint.
           echo "vm_owner_observed_sha256=${observed}"
-          echo "vm_owner_expected_sha256=${expected_owner}"
-          echo "vm_owner_expected_release_set=${expected_release_set}"
-          if [[ "${observed}" != "${expected_owner}" ]]; then
-            # Never execute an older owner for mutate/verify/quality commands.
-            if [[ "${REQUESTED_OPERATION}" != "diagnose" ]]; then
-              echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_MISMATCH' >&2
-              echo 'vm_owner_next_safe_action=VERIFY_INSTALLED_RELEASE_PROVENANCE_READ_ONLY' >&2
-              exit 1
-            fi
-            # Native fixed sudo allowlist is already read-only for diagnose; also prove
-            # the installed binary and its directory are root-owned and not writable.
-            if [[ -L "${owner}" ||
-                  "$(stat -c '%u:%g:%a' "${owner}")" != "0:0:755" ||
-                  "$(stat -c '%u:%g:%a' "$(dirname "${owner}")")" != "0:0:755" ]]; then
-              echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_FILESYSTEM_TRUST' >&2
-              exit 1
-            fi
-            if ! command -v python3 >/dev/null 2>&1; then
-              echo 'vm_owner_identity=BLOCKED_PROVENANCE_PARSER_MISSING' >&2
-              exit 1
-            fi
-            # One bounded GET to the canonical repository's published immutable
-            # ReleaseSet assets. Only a digest-exact accepted edge-agent is trusted.
-            if ! release_index="$(curl --fail --silent --show-error \
-                 --proto '=https' --connect-timeout 10 --max-time 30 \
-                 --header "Authorization: Bearer ${GH_TOKEN}" \
-                 --header "Accept: application/vnd.github+json" \
-                 "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100")"; then
-              echo 'vm_owner_identity=BLOCKED_PROVENANCE_LOOKUP_UNAVAILABLE' >&2
-              exit 1
-            fi
-            if ! trusted_release="$(python3 -c '
-          import json, re, sys
-          try:
-              releases = json.load(sys.stdin)
-          except (ValueError, TypeError):
-              sys.exit(2)
-          if not isinstance(releases, list) or len(releases) > 100:
-              sys.exit(2)
-          digest = "sha256:" + sys.argv[1]
-          matches = []
-          for item in releases:
-              if not isinstance(item, dict):
-                  continue
-              tag = item.get("tag_name", "")
-              revision = item.get("target_commitish", "")
-              if (not isinstance(tag, str)
-                  or re.fullmatch(r"edge-release-[0-9a-f]{64}", tag) is None
-                  or not isinstance(revision, str)
-                  or re.fullmatch(r"[0-9a-f]{40}", revision) is None
-                  or item.get("draft") is not False
-                  or item.get("prerelease") is not False
-                  or not item.get("published_at")):
-                  continue
-              for asset in item.get("assets", []):
-                  if (isinstance(asset, dict)
-                      and asset.get("name") == "edge-agent-linux-amd64"
-                      and asset.get("state") == "uploaded"
-                      and asset.get("digest") == digest):
-                      matches.append((item["published_at"], tag))
-                      break
-          if not matches:
-              sys.exit(2)
-          print(sorted(matches)[-1][1])
-          ' "${observed}" <<<"${release_index}")"; then
-              echo 'vm_owner_identity=BLOCKED_NO_EXACT_PUBLISHED_RELEASE' >&2
-              exit 1
-            fi
-            unset release_index
-            if [[ "$(sha256sum "${owner}" | awk '{print $1}')" != "${observed}" ]]; then
-              echo 'vm_owner_identity=BLOCKED_OWNER_CHANGED_DURING_PROOF' >&2
-              exit 1
-            fi
-            echo 'vm_owner_identity=PASS_PUBLISHED_INSTALLED_READONLY'
-            echo "vm_owner_trusted_release_tag=${trusted_release}"
-          else
-            echo 'vm_owner_identity=PASS_EXACT_ACCEPTED_OWNER'
-          fi
+          echo "vm_owner_desired_revision=${GITHUB_SHA}"
 
-          if [[ "$(id -u)" = "0" ]]; then
-            echo "production self-hosted runner must not run as root" >&2
-            exit 1
-          fi
-          if sudo -n id -u >/dev/null 2>&1; then
-            echo "production self-hosted runner unexpectedly has generic root authority" >&2
-            exit 1
-          fi
-          if test -r /var/run/docker.sock; then
-            echo "production self-hosted runner unexpectedly has direct Docker socket authority" >&2
-            exit 1
-          fi
-          sudo -n "${owner}" local status >/dev/null
+          case "${REQUESTED_OPERATION}" in
+            diagnose|quality-line2)
+              # Read existing VM state using its installed, root-owned Rust owner.
+              # Desired ReleaseSet drift must not blind read-only diagnostics.
+              echo 'vm_owner_identity=PASS_NATIVE_INSTALLED_READONLY'
+              ;;
+            converge|verify|rollback)
+              expected_revision="${PROVIDER_ACCEPTED_REVISION}"
+              expected_release_set="${PROVIDER_RELEASE_SET_SHA256}"
+              expected_owner="${PROVIDER_AGENT_SHA256}"
+              if [[ "${expected_revision}" != "${GITHUB_SHA}" ||
+                    ! "${expected_release_set}" =~ ^[0-9a-f]{64}$ ||
+                    ! "${expected_owner}" =~ ^[0-9a-f]{64}$ ]]; then
+                echo 'vm_owner_identity=BLOCKED_EXPECTED_RELEASE_AUTHORITY' >&2
+                exit 1
+              fi
+              echo "vm_owner_expected_sha256=${expected_owner}"
+              echo "vm_owner_expected_release_set=${expected_release_set}"
+              if [[ "${observed}" != "${expected_owner}" ]]; then
+                echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_MISMATCH' >&2
+                exit 1
+              fi
+              echo 'vm_owner_identity=PASS_EXACT_ACCEPTED_OWNER'
+              sudo -n "${owner}" local status >/dev/null
+              ;;
+            *)
+              echo 'vm_owner_identity=BLOCKED_UNSUPPORTED_OPERATION' >&2
+              exit 1
+              ;;
+          esac
 
       - name: Verify exact transported application bundle
         if: env.REQUESTED_OPERATION == 'converge' || env.REQUESTED_OPERATION == 'verify'
