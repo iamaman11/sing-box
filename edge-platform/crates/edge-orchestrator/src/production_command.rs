@@ -1,15 +1,7 @@
 use crate::application_lifecycle_command::{
     production_converge_desired, production_verify_desired,
 };
-use crate::cloudflare_dns_lifecycle_command::{
-    acceptance_verify_noop as dns_verify_noop, production_converge as dns_converge,
-};
-use crate::cloudflare_mesh_lifecycle_command::{
-    acceptance_converge_provider as mesh_converge_provider,
-    acceptance_runtime_apply as mesh_runtime_apply,
-    acceptance_runtime_verify as mesh_runtime_verify,
-};
-use crate::cloudflare_target_plane_command::verify_active_invariant as verify_active_cloudflare_plane;
+use crate::cloudflare_dns_lifecycle_command::acceptance_verify_noop as dns_verify_noop;
 use crate::vultr_lifecycle_command::{
     acceptance_converge_substrate as substrate_converge, acceptance_lease_acquire as lease_acquire,
     acceptance_lease_release as lease_release, acceptance_verify_substrate as substrate_verify,
@@ -86,6 +78,14 @@ pub(crate) async fn converge(
     let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
 
+    // A routine converge is not an authorized DNS cutover. Fail before any
+    // provider/VM mutation if production DNS differs from its current owner.
+    dns_verify_noop(spec, spec).await.map_err(|err| {
+        format!(
+            "production converge blocked before mutation: canonical DNS is not a verified NOOP; explicit authenticated cutover is required: {err}"
+        )
+    })?;
+
     production_converge_machine(spec, &composition.machine_id).await?;
     lease_acquire(spec, &composition.machine_id).await?;
 
@@ -98,9 +98,8 @@ pub(crate) async fn converge(
             edge_agent_artifact_path,
         )
         .await?;
-        dns_converge(spec, spec).await?;
-        mesh_converge_provider(spec, spec, spec).await?;
-        mesh_runtime_apply(spec, spec, spec).await?;
+        // Core Line1/Line2/WARP does not publish DNS or create optional Mesh.
+
         verify_with_lease(release_context, &composition, edge_agent_artifact_path).await?;
         Ok::<_, String>((release_id, bundle_digest))
     }
@@ -111,6 +110,8 @@ pub(crate) async fn converge(
         (Ok((release_id, bundle_digest)), Ok(())) => {
             print_identity(release_context, &composition, "PASS");
             println!("operation=CONVERGE");
+            println!("production_dns_mutation=0");
+            println!("optional_mesh_mutation=0");
             println!("application_release_id={release_id}");
             println!("application_bundle_digest={bundle_digest}");
             println!("transient_support_access=ABSENT");
@@ -174,8 +175,7 @@ async fn verify_with_lease(
     )
     .await?;
     dns_verify_noop(spec, spec).await?;
-    mesh_runtime_verify(spec, spec, spec).await?;
-    verify_active_cloudflare_plane().await?;
+    // The independently owned optional Line3 Mesh is verified separately.
     Ok(())
 }
 
