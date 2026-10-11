@@ -226,6 +226,20 @@ pub(crate) enum CredentialDeliveryCommand {
         run_id: u64,
         journal_history_path: std::path::PathBuf,
     },
+    // Single-use initial provider mutation. NOT routed by GitHub until BOTH
+    // disposable host job origins and immutable artifacts are independently
+    // authenticated. The durable BEGIN must already exist and match exactly.
+    InitialPairPublish {
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        provider_intent_sha256: String,
+        vm_attestation_sha256: String,
+        windows_attestation_sha256: String,
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
     HostBootstrapConverge,
     RotateApplication {
         #[arg(value_enum)]
