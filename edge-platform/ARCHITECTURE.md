@@ -617,6 +617,51 @@ Final diagnostics must provide secret-safe read-only evidence for:
 
 A diagnostic result does not repair the machine.
 
+### Accepted native read-only production diagnosis (2026-10-11)
+
+The existing `/production diagnose` GitHub operation is the canonical one-command entry point
+for production VM and provider observation. Its two independent read-only jobs must run
+concurrently: provider inventory through the existing GitHub-hosted typed orchestrator;
+VM runtime observation through the existing low-privilege, outbound-only VM self-hosted
+GitHub runner invoking its installed root-owned Rust `edge-agent local diagnose`
+through the fixed `sudo` allowlist. Observation must not require the newest runtime
+binary to be installed, a completed provider inventory, a rebuild, SSH access, an
+extra VM-side GitHub Release lookup, Python interpreter, daemon, scheduler or polling
+loop. An installed/desired revision mismatch is **reported**, not hidden by blocking
+read-only observation; the host filesystem ownership boundary must remain enforced.
+`converge`, `verify` and `rollback` retain their separate exact accepted
+ReleaseSet and binary-identity gates. A diagnostic observation NEVER authorizes mutation.
+
+**Physical acceptance:** [PR #339](https://github.com/iamaman11/sing-box/pull/339),
+[exact-head CI #38104473521](https://github.com/iamaman11/sing-box/actions/runs/38104473521),
+[no-rebuild promotion #38104822020](https://github.com/iamaman11/sing-box/actions/runs/38104822020),
+and [real VM diagnose #38104889553](https://github.com/iamaman11/sing-box/actions/runs/38104889553)
+PASS. On the last run, the VM runtime job completed before provider inventory;
+the native owner reported `healthy=true`, `ready=true`, Docker/Compose available,
+three expected exact-image containers running, zero missing/degraded reasons,
+network object counts, and Mesh not ready. Credential state observation succeeded
+but `credential_state_present=false`. Provider inventory later completed read-only.
+These facts prove **observability and local runtime readiness**, not authenticated
+end-to-end Line1 datapath acceptance.
+
+**Coverage limit — do not misreport as complete:** current `local diagnose` does
+not by itself establish Hysteria2 per-endpoint authentication, server-side rejection
+reason, Windows/VM active credential-generation parity, real browser DNS/traffic
+through Windows ManagedTun, independent DNS/control recovery or reboot safety.
+The 2026-10-10 `authentication failed, status code: 400` remains causally UNPROVEN;
+`ready=true` and running containers do not supersede that observation.
+Report each unobserved layer as `UNKNOWN/UNPROVEN`, never `PASS`, and distinguish
+missing local v2 credential-state from proof of absent legacy runtime credentials.
+
+Next diagnostic improvements belong inside the **existing typed native owners**,
+not workflow shell: bounded nonsecret per-Line1 functional result and rejection
+classification, active generation/endpoint identity metadata from each host, and
+specific correlation/time/first-failure provenance. Each output must separate
+`observed`, `blocked`, `unknown` and `not_applicable`, and state the next safe
+read-only check; no plaintext, password, keys, credential hashes, or arbitrary
+container log exports. The GitHub Actions queue adds unavoidable scheduling latency;
+the native local probe should remain bounded and avoid unrelated network prerequisites.
+
 Installed Windows diagnostics/status must observe the SCM-owned managed runtime directly and must
 not treat the intentionally absent server-agent RPC listener on port 50061 as a Windows health
 failure. The 50061/`acceptance-serve` surface is transitional only for disposable bootstrap-time
