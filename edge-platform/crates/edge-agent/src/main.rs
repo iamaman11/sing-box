@@ -1613,6 +1613,23 @@ fn print_vm_rendered_credential_source(stack_dir: &Path) {
     println!("credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF");
 }
 
+fn verify_vm_candidate_runtime_materialized(
+    stack_dir: &Path,
+    candidate: &edge_shared_types::CredentialDeliveryBundle,
+) -> Result<(), String> {
+    let secrets = ApplicationRuntimeSecrets::from_vm_bundle(candidate)?;
+    let expected = vm_runtime_environment(stack_dir, &secrets)?;
+    let actual = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE))
+        .map_err(|_| "VM candidate promotion requires a readable rendered environment".to_owned())?;
+    if actual != expected {
+        return Err(
+            "VM candidate promotion refused: rendered environment differs from candidate Worker-v2 generation"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 async fn apply_vm_credential_runtime(
     stack_dir: &Path,
     secrets: &ApplicationRuntimeSecrets,
@@ -1698,8 +1715,19 @@ async fn transition_vm_credential(
                         .to_owned(),
                 );
             }
-            if state.candidate.is_none() {
-                return Err("VM v2 candidate is absent".to_owned());
+            let candidate = state
+                .candidate
+                .as_ref()
+                .ok_or_else(|| "VM v2 candidate is absent".to_owned())?;
+            let bundle = store.read_bundle(candidate)?;
+            verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
+            let runtime = inspect_runtime(stack_dir, AgentMode::Readiness).await;
+            let proof = verify_bootstrap_post_state(stack_dir, BootstrapMode::BootstrapFull, &runtime);
+            if !proof.success {
+                return Err(format!(
+                    "VM candidate promotion requires READY running runtime: {}",
+                    proof.warnings.join("; ")
+                ));
             }
             Ok(Some(store.promote_candidate()?))
         }
@@ -4570,6 +4598,32 @@ mod tests {
             root.join("runtime-secrets/application-v2")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vm_candidate_promotion_cannot_commit_an_unapplied_worker_generation() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
+        let candidate = vm_test_credential_bundle(109, CredentialDeliverySlot::A);
+        assert!(verify_vm_candidate_runtime_materialized(&stack, &candidate).is_err());
+
+        fs::write(stack.join(RUNTIME_ENV_FILE), "arbitrary=other-source\n").unwrap();
+        let error = verify_vm_candidate_runtime_materialized(&stack, &candidate).unwrap_err();
+        assert!(error.contains("differs from candidate"));
+
+        let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&candidate).unwrap();
+        write_vm_runtime_environment(&stack, &secrets).unwrap();
+        verify_vm_candidate_runtime_materialized(&stack, &candidate).unwrap();
+
+        let second = vm_test_credential_bundle(110, CredentialDeliverySlot::B);
+        assert!(verify_vm_candidate_runtime_materialized(&stack, &second).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
