@@ -48,6 +48,7 @@ pub(crate) enum LocalCommand {
     BootstrapTunnel,
     BootstrapFull,
     BundleConverge,
+    BundleStageInitial,
     BundleVerify,
     BundleRollback,
     MeshVerify,
@@ -70,6 +71,7 @@ impl LocalCommand {
             Self::BootstrapTunnel => "local-bootstrap-tunnel",
             Self::BootstrapFull => "local-bootstrap-full",
             Self::BundleConverge => "local-bundle-converge",
+            Self::BundleStageInitial => "local-bundle-stage-initial",
             Self::BundleVerify => "local-bundle-verify",
             Self::BundleRollback => "local-bundle-rollback",
             Self::MeshVerify => "local-mesh-verify",
@@ -121,6 +123,7 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "quality-line2"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-converge"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-stage-initial"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-rollback"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
