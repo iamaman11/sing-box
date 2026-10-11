@@ -192,7 +192,9 @@ pub(crate) fn verify_expected_initial_attempt(
         || record.release_set_sha256 != expected.release_set_sha256
         || record.github_run_id != expected.github_run_id
     {
-        return Err("durable initial BEGIN does not equal current host/provider/release intent".to_owned());
+        return Err(
+            "durable initial BEGIN does not equal current host/provider/release intent".to_owned(),
+        );
     }
     Ok(())
 }
@@ -308,14 +310,38 @@ mod tests {
         let history = serde_json::json!([{"body": record}]).to_string();
         verify_expected_initial_attempt(&history, &record, &intended).unwrap();
         let changed = [
-            InitialPairJournalPlan { generation: 102, ..request() },
-            InitialPairJournalPlan { slot: "B".to_owned(), ..request() },
-            InitialPairJournalPlan { provider_intent_sha256: "f".repeat(64), ..request() },
-            InitialPairJournalPlan { vm_attestation_sha256: "f".repeat(64), ..request() },
-            InitialPairJournalPlan { windows_attestation_sha256: "f".repeat(64), ..request() },
-            InitialPairJournalPlan { release_source_revision: "f".repeat(64), ..request() },
-            InitialPairJournalPlan { release_set_sha256: "f".repeat(64), ..request() },
-            InitialPairJournalPlan { github_run_id: 1012, ..request() },
+            InitialPairJournalPlan {
+                generation: 102,
+                ..request()
+            },
+            InitialPairJournalPlan {
+                slot: "B".to_owned(),
+                ..request()
+            },
+            InitialPairJournalPlan {
+                provider_intent_sha256: "f".repeat(64),
+                ..request()
+            },
+            InitialPairJournalPlan {
+                vm_attestation_sha256: "f".repeat(64),
+                ..request()
+            },
+            InitialPairJournalPlan {
+                windows_attestation_sha256: "f".repeat(64),
+                ..request()
+            },
+            InitialPairJournalPlan {
+                release_source_revision: "f".repeat(64),
+                ..request()
+            },
+            InitialPairJournalPlan {
+                release_set_sha256: "f".repeat(64),
+                ..request()
+            },
+            InitialPairJournalPlan {
+                github_run_id: 1012,
+                ..request()
+            },
         ];
         for mismatch in changed {
             assert!(verify_expected_initial_attempt(&history, &record, &mismatch).is_err());
