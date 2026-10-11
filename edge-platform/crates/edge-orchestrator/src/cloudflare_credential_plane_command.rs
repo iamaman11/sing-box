@@ -224,9 +224,15 @@ fn initial_pair_provider_intent_sha256(
     let vm = projection_observation(observed, "vm")?;
     let windows = projection_observation(observed, "windows")?;
     let version_id = |projection: &ProjectionObservation| -> Result<String, String> {
-        let latest = projection.worker_latest_version_id.as_deref().ok_or_else(|| {
-            format!("{} initial intent has no latest Worker version", projection.projection)
-        })?;
+        let latest = projection
+            .worker_latest_version_id
+            .as_deref()
+            .ok_or_else(|| {
+                format!(
+                    "{} initial intent has no latest Worker version",
+                    projection.projection
+                )
+            })?;
         if projection.worker_active_version_ids.as_slice() != [latest] {
             return Err(format!(
                 "{} initial intent refuses Worker version race",
@@ -276,7 +282,9 @@ async fn initial_pair_preflight(
     let confirmed_sha256 =
         initial_pair_provider_intent_sha256(desired, &reobserved, generation, slot)?;
     if provider_intent_sha256 != confirmed_sha256 {
-        return Err("initial paired provider intent drifted during read-only re-observation".to_owned());
+        return Err(
+            "initial paired provider intent drifted during read-only re-observation".to_owned(),
+        );
     }
     println!("operation=CREDENTIAL_INITIAL_PAIR_PREFLIGHT");
     println!("credential_generation={generation}");
@@ -1655,9 +1663,13 @@ mod tests {
         make_terminal(&mut observed, "vm");
         make_terminal(&mut observed, "windows");
 
-        let initial =
-            initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
-                .unwrap();
+        let initial = initial_pair_provider_intent_sha256(
+            &desired,
+            &observed,
+            207,
+            CredentialDeliverySlotArg::A,
+        )
+        .unwrap();
         assert_eq!(initial.len(), 64);
         assert!(initial.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(
@@ -1697,12 +1709,15 @@ mod tests {
             Some("windows-updated-version".to_owned());
         observed.projections[0].worker_active_version_ids =
             vec!["windows-updated-version".to_owned()];
-        let changed =
-            initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
-                .unwrap();
+        let changed = initial_pair_provider_intent_sha256(
+            &desired,
+            &observed,
+            207,
+            CredentialDeliverySlotArg::A,
+        )
+        .unwrap();
         assert_ne!(initial, changed);
-        observed.projections[0].worker_active_version_ids =
-            vec!["windows-version-id".to_owned()];
+        observed.projections[0].worker_active_version_ids = vec!["windows-version-id".to_owned()];
         assert!(
             initial_pair_provider_intent_sha256(
                 &desired,
@@ -1712,8 +1727,7 @@ mod tests {
             )
             .is_err()
         );
-        observed.projections[0].worker_latest_version_id =
-            Some("windows-version-id".to_owned());
+        observed.projections[0].worker_latest_version_id = Some("windows-version-id".to_owned());
         observed.projections[0].host_service_token_client_id =
             Some("replaced-access-client-id".to_owned());
         assert_ne!(
