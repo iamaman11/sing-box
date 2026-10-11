@@ -1,6 +1,7 @@
 use crate::cli::{
     CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
 };
+use crate::credential_initial_journal::{InitialPairJournalPlan, plan_initial_pair_reservation};
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
     RotateCredentialSnapshotRequest, generate_rotation_credential_snapshot,
@@ -119,6 +120,49 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
         CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
             initial_pair_preflight(&control_token, &desired, generation, slot).await
+        }
+        CredentialDeliveryCommand::InitialPairJournalPlan {
+            generation,
+            slot,
+            provider_intent_sha256,
+            vm_attestation_sha256,
+            windows_attestation_sha256,
+            run_id,
+            journal_history_path,
+        } => {
+            let observed = observe(&control_token, &desired).await?;
+            let expected = initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                generation,
+                slot,
+            )?;
+            if expected != provider_intent_sha256 {
+                return Err("initial journal refuses stale or forged provider intent".to_owned());
+            }
+            let history = fs::read_to_string(&journal_history_path).map_err(|err| {
+                format!("initial journal history cannot be read: {err}")
+            })?;
+            let request = InitialPairJournalPlan {
+                generation,
+                slot: slot.as_str().to_owned(),
+                provider_intent_sha256,
+                vm_attestation_sha256,
+                windows_attestation_sha256,
+                release_source_revision: required_env("GITHUB_SHA")?,
+                release_set_sha256: required_env("EDGE_RELEASE_SET_SHA256")?,
+                github_run_id: run_id,
+            };
+            let result = plan_initial_pair_reservation(&request, &history)?;
+            // This output is non-secret and is NOT a journal write or a
+            // Cloudflare mutation. A trusted job must still attest origins,
+            // persist BEGIN once, read it back, then apply the provider gate.
+            println!("operation=CREDENTIAL_INITIAL_PAIR_JOURNAL_PLAN");
+            println!("credential_attempt_record={result}");
+            println!("credential_provider_mutations=0");
+            println!("credential_journal_mutations=0");
+            println!("initial_publication_authorized=false");
+            Ok(())
         }
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await

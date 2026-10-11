@@ -5,6 +5,7 @@ mod application_lifecycle_command;
 mod application_lifecycle_service;
 mod cli;
 mod cloudflare_credential_plane_command;
+mod credential_initial_journal;
 mod cloudflare_dns_lifecycle_command;
 mod cloudflare_dns_lifecycle_service;
 mod cloudflare_mesh_lifecycle_command;

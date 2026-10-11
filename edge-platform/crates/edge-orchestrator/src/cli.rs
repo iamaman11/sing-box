@@ -205,6 +205,18 @@ pub(crate) enum CredentialDeliveryCommand {
         #[arg(value_enum)]
         slot: CredentialDeliverySlotArg,
     },
+    // Non-mutating plan; requires separately authenticated host evidence.
+    // Never opens the Cloudflare write capability or commits the GitHub journal.
+    InitialPairJournalPlan {
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        provider_intent_sha256: String,
+        vm_attestation_sha256: String,
+        windows_attestation_sha256: String,
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+    },
     HostBootstrapConverge,
     RotateApplication {
         #[arg(value_enum)]
