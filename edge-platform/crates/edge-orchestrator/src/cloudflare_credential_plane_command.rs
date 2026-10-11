@@ -1933,7 +1933,7 @@ mod tests {
 
     #[test]
     fn first_use_begin_file_create_new_has_no_overwrite_path() {
-        let record = "<!-- sing-box-credential-initial-attempt/v1 -->\\n{}";
+        let record = "<!-- sing-box-credential-initial-attempt/v1 -->\n{}";
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
