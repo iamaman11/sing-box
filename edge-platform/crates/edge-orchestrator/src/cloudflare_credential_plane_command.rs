@@ -21,8 +21,6 @@ use std::{env, fs};
 
 const SLOT_A: &str = "EDGE_CREDENTIAL_BUNDLE_A";
 const SLOT_B: &str = "EDGE_CREDENTIAL_BUNDLE_B";
-const PROBE_GENERATION_A: u64 = 9_000_001;
-const PROBE_GENERATION_B: u64 = 9_000_002;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProjectionDesired {
