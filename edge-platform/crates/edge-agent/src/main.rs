@@ -1676,9 +1676,9 @@ async fn verify_initial_vm_credential_functional(
     line2_quality::measure(stack_dir, read_typed_runtime_environment)?;
     // A passing network sample is not sufficient if another owner changed the
     // credential cursor or rendered runtime while the test was in progress.
-    let after_state = store.read_state()?.ok_or_else(|| {
-        "initial VM functional proof lost its credential cursor".to_owned()
-    })?;
+    let after_state = store
+        .read_state()?
+        .ok_or_else(|| "initial VM functional proof lost its credential cursor".to_owned())?;
     if after_state != state {
         return Err("initial VM functional proof refuses a changed credential cursor".to_owned());
     }
