@@ -4238,6 +4238,44 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn initial_vm_enrollment_refuses_legacy_runtime_or_partial_state() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        assert!(require_empty_vm_initial_credential_host(&stack).is_ok());
+
+        let env = stack.join(RUNTIME_ENV_FILE);
+        fs::write(&env, "LEGACY_SECRET=opaque\\n").unwrap();
+        assert!(require_empty_vm_initial_credential_host(&stack)
+            .unwrap_err()
+            .contains("runtime artifact"));
+        fs::remove_file(&env).unwrap();
+
+        let old = legacy_vm_runtime_secret_path(&stack).unwrap();
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, "opaque").unwrap();
+        assert!(require_empty_vm_initial_credential_host(&stack)
+            .unwrap_err()
+            .contains("legacy runtime"));
+        fs::remove_file(&old).unwrap();
+
+        let rendered = stack.join("rendered/line1-gateway.json");
+        fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+        fs::write(&rendered, "{}").unwrap();
+        assert!(require_empty_vm_initial_credential_host(&stack)
+            .unwrap_err()
+            .contains("runtime artifact"));
+        fs::remove_file(&rendered).unwrap();
+
+        let store = vm_credential_store_root(&stack).unwrap();
+        fs::create_dir_all(&store).unwrap();
+        assert!(require_empty_vm_initial_credential_host(&stack)
+            .unwrap_err()
+            .contains("absent v2 store"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn returns_health_state() {
         let server = AgentServerImpl {
