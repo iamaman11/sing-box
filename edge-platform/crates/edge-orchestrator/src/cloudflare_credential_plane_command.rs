@@ -525,7 +525,7 @@ async fn initial_pair_publish(
     // Deliberately sequential: cross-Worker atomicity does not exist.
     // A failed/unknown first PATCH or deployment aborts the transaction.
     // New secrets are generated exactly once and never regenerated on retry.
-    publish_rotation_slot(
+    let vm_published_version = publish_rotation_slot(
         control_token,
         &rotation_token,
         desired,
@@ -540,16 +540,16 @@ async fn initial_pair_publish(
         .worker_latest_version_id
         .as_deref()
         != Some(windows_previous.as_str())
-        || projection_observation(&after_vm, "vm")?
-            .worker_latest_version_id
-            .as_deref()
-            == Some(vm_previous.as_str())
+        || verify_exact_active_worker_version(
+            projection_observation(&after_vm, "vm")?,
+            &vm_published_version,
+        ).is_err()
     {
         return Err(
             "initial paired publish observed an unexpected intermediate Worker version".to_owned(),
         );
     }
-    publish_rotation_slot(
+    let windows_published_version = publish_rotation_slot(
         control_token,
         &rotation_token,
         desired,
@@ -560,22 +560,22 @@ async fn initial_pair_publish(
     )
     .await?;
     let after = observe(control_token, desired).await?;
-    for (projection, previous) in [
-        (&vm, vm_previous.as_str()),
-        (&windows, windows_previous.as_str()),
+    for (projection, expected_version) in [
+        (&vm, vm_published_version.as_str()),
+        (&windows, windows_published_version.as_str()),
     ] {
         if projection_delivery_state(desired, projection, &after)?
             != ProjectionDeliveryState::FixedAb
-            || projection_observation(&after, &projection.projection)?
-                .worker_latest_version_id
-                .as_deref()
-                == Some(previous)
         {
             return Err(format!(
-                "{} initial publish does not have exact newly active Worker version",
+                "{} initial publish lost the exact fixed A/B topology",
                 projection.projection
             ));
         }
+        verify_exact_active_worker_version(
+            projection_observation(&after, &projection.projection)?,
+            expected_version,
+        )?;
     }
     println!("credential_initial_pair_provider_publish=PASS");
     println!("credential_generation={}", request.generation);
@@ -699,7 +699,7 @@ async fn publish_rotation_slot(
     slot_name: &str,
     secret_text: &str,
     expected_latest_version: Option<&str>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let before = observe(control_token, desired).await?;
     let before_projection = projection_observation(&before, &projection.projection)?;
     if projection_delivery_state(desired, projection, &before)? != ProjectionDeliveryState::FixedAb
@@ -780,7 +780,7 @@ async fn publish_rotation_slot(
         let observed = observe(control_token, desired).await?;
         let current = projection_observation(&observed, &projection.projection)?;
         if verify_exact_active_worker_version(current, &version_id).is_ok() {
-            return Ok(());
+            return Ok(version_id);
         }
         // Re-observation may confirm deployment succeeded, but it cannot
         // authorize a second mutation when the first ACK was uncertain.
@@ -801,7 +801,7 @@ async fn publish_rotation_slot(
         projection_observation(&after, &projection.projection)?,
         &version_id,
     )?;
-    Ok(())
+    Ok(version_id)
 }
 
 /// Read-only compare of the exact PATCH result immediately before deploying it.
