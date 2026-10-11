@@ -240,6 +240,8 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("credential_generation={generation}");
             println!("credential_initial_state=APPLIED_NOT_PROMOTED");
             println!("line2_authenticated_endpoints=6");
+            println!("line2_egress_identity=UNPROVEN");
+            println!("external_tls_chain=UNPROVEN");
             println!("line1_authenticated_endpoints=UNPROVEN");
             println!("credential_pair_committed=false");
             println!("credential_runtime_mutations=0");
