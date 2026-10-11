@@ -62,6 +62,72 @@ The intended end state is smaller than the current transitional implementation. 
 mutable states, operator commands and orchestration branches is a correctness objective, not only a
 maintainability preference.
 
+### Delivery lock: functional installation, not preparatory PRs
+
+**Normative Stage N1/N2 invariant (2026-10-12; executable cursor: Issue #26).**
+The next accepted delivery is a **clean, disposable Vultr VM running the exact
+immutable accepted sing-box release, with independent external authenticated
+traffic evidence for all four Line1 and all six Line2 endpoints (4/4 + 6/6)**.
+Source compilation, source CI, a ReleaseSet candidate, Worker binding metadata,
+dummy probes, Docker container readiness, an SSH-ready guest, and a published
+credential generation are intermediate evidence only. None can close N1/N2.
+
+**No auxiliary delivery loop.** Until the physical 4/4 + 6/6 gate is satisfied:
+
+1. The existing integrated Draft PR #348 is the **only source change set for
+   completing N1/N2**. Do not open a helper-only, diagnostic-only, preparatory,
+   documentation-only, or individual-primitive PR; do not split N1 into another
+   stage or label a partial preflight as a release. Fix each discovered missing
+   boundary inside the same complete GitHub -> typed Rust owner -> Windows/VM
+   consumer -> externally verified network vertical.
+2. Do not introduce new permanent or temporary *application services*, agents,
+   schedulers, daemons, polling owners, long-running sidecars, generic shell
+   executors, alternate deployment transports, independent credential issuers,
+   fallback credentials, legacy credential-selection paths, or a second
+   production desired-state authority. The existing bounded disposable VM and
+   separately isolated non-TUN Windows acceptance consumer are **test targets**,
+   not new permanent owners. Use the existing seven GitHub workflows and native
+   owners; an exception cannot be silently granted by creating a helper PR.
+3. Preserve strict fail-closed security: prove real unused A/B contents on both
+   Workers through both host-specific Access identities; bind trustworthy
+   disposable host/job provenance and exact artifact identity; durably record and
+   re-read one first-use GitHub BEGIN **before any irreversible provider PATCH**.
+   Two-Worker publication is not atomic. On a lost ACK, partial publication,
+   stale version or ambiguous outcome, stop and perform read-only reconciliation
+   without mutation replay. Never manufacture a passing E2E by bypassing this.
+4. **Source acceptance is a prerequisite, not the finish line.** Complete the
+   entire integrated implementation and its negative tests, run exact-head
+   Windows/Linux/OCI/ReleaseSet CI, merge only the verified tested tree, and
+   publish its immutable no-rebuild ReleaseSet; then execute the already
+   defined disposable physical acceptance immediately, not another preparation
+   initiative. Never deploy an unmerged Draft as a production authority.
+5. The physical report MUST bind the release digest, source SHA, freshly created
+   disposable VM identity, credential generation/projection/slot, independent
+   endpoint attempts/results, TLS chain/hostname, direct vs WARP public egress
+   identity, reboot proof, negative auth/generation tests and zero-leak cleanup.
+   **Line1 4/4 Hysteria2/Reality** and **Line2 6/6 HTTP/SOCKS5/HTTPS** must each
+   carry authenticated external traffic. A failed endpoint means FAIL, not
+   “partially accepted”. Wrong password, stale generation or malformed
+   certificate must fail closed.
+6. Do not change serving production VM, production DNS, active Windows
+   SCM/TUN/routes/DNS, Cloudflare One, MISH or OKX during N1/N2. In particular,
+   a test hostname/certificate must not be made to work via production DNS
+   cutover. N3 and N4 alone own the separately gated Windows and production
+   handoffs, after isolated physical PASS.
+7. On physical failure, retain the failed exact run evidence, classify the
+   **specific failed boundary**, repair only the same integrated vertical and
+   rerun the full gate. After #348 has merged, a necessary corrective PR is
+   allowed **only** as a single integrated end-to-end repair, never as a helper
+   or a substitute for physical proof. If an external blocker cannot be
+   resolved safely, record BLOCKED with owner and observable exit criterion;
+   do not expand scope or invent a new preparatory stage.
+
+**Finish condition:** one full external, reproducible, independently observable
+4/4 + 6/6 clean-VM install with exact accepted ReleaseSet and safe cleanup.
+Only after this evidence may work advance to N3. Issue #26 alone sets the
+ordered operational steps. Any older Stage 4B historical instructions or
+intermediate CI snapshots must not supersede this delivery lock.
+
 ## 1. One-owner architecture
 
 ```text
@@ -1323,6 +1389,11 @@ Expected cleanup after convergence includes:
 Delete dead behavior before splitting large Rust composition roots.
 
 ## 12. Safety invariants
+
+- Stage N1/N2 is closed only by physical clean-VM installation and **4/4 Line1 + 6/6 Line2 authenticated external traffic**, not by source CI or local READY.
+- No helper PR, extra preparatory stage, new application service/agent/daemon, fallback credential or alternate transport may delay or substitute for that integrated delivery; see **Delivery lock** above.
+- Keep production VM/DNS and stopped Windows TUN unchanged until separately accepted N3/N4 cutover gates; uncertain provider writes are never replayed.
+
 
 - one owner per mutable resource class;
 - no second desired-state store;
