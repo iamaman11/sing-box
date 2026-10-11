@@ -4226,6 +4226,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn initial_vm_enrollment_refuses_unobservable_docker_state() {
+        assert!(require_no_vm_application_containers(&DockerObservation::unreachable())
+            .unwrap_err()
+            .contains("unknown Docker daemon state"));
+    }
+
+    #[test]
     fn initial_vm_enrollment_refuses_legacy_runtime_or_partial_state() {
         let root = unique_test_dir();
         let stack = root.join("stack");
