@@ -1749,6 +1749,26 @@ def main() -> None:
         and "pub(crate) async fn rollback(" not in production_command,
         "steady-state production rollback must have no legacy orchestrator lease/SSH implementation",
     )
+    # Product convergence must not silently publish production DNS or require
+    # the independent Android Mesh. A verified DNS NOOP precedes all writes.
+    core_converge = production_command.split("pub(crate) async fn converge(", 1)[1].split(
+        "pub(crate) async fn verify(", 1
+    )[0]
+    core_verify = production_command.split("async fn verify_with_lease(", 1)[1].split(
+        "fn print_identity(", 1
+    )[0]
+    require(
+        "dns_verify_noop(spec, spec).await.map_err" in core_converge
+        and core_converge.index("dns_verify_noop(spec, spec).await.map_err")
+        < core_converge.index("production_converge_machine(")
+        and "dns_converge(" not in core_converge
+        and "mesh_converge_provider(" not in core_converge
+        and "mesh_runtime_apply(" not in core_converge
+        and "mesh_runtime_verify(" not in core_verify
+        and "verify_active_cloudflare_plane(" not in core_verify
+        and "dns_verify_noop(spec, spec).await?;" in core_verify,
+        "Line1/2 converge must fail closed on DNS drift before mutation and must not mutate or require optional Mesh",
+    )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
     cleanup_job = application.split("\n  cleanup:\n", 1)[1].split("\n  acceptance:\n", 1)[0]
