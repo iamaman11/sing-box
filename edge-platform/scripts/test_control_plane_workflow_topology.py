@@ -383,12 +383,31 @@ def main() -> None:
     vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
     shared_types = SHARED_TYPES.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
+    initial_bundle = vm_agent_runtime.split("async fn run_local_bundle_stage_initial(", 1)[1].split(
+        "async fn run_local_bundle_converge(", 1
+    )[0]
+    require(
+        "BundleStageInitial" in vm_agent_cli
+        and "run_local_bundle_stage_initial(&stack_dir).await" in vm_agent_runtime
+        and "validate_digest_bound_bundle_request(&request)" in initial_bundle
+        and "validate_initial_policy_bundle_request(&request)" in initial_bundle
+        and "require_empty_vm_initial_credential_host(stack_dir)" in initial_bundle
+        and "require_empty_vm_initial_bundle_host(stack_dir)" in initial_bundle
+        and "require_no_vm_application_containers(&docker)" in initial_bundle
+        and "apply_digest_bound_bundle(stack_dir, request, true)" in initial_bundle
+        and "application_runtime_started=false" in initial_bundle
+        and "credential_authentication=UNPROVEN" in initial_bundle
+        and "initial_policy_only: bool" in vm_agent_runtime
+        and "materialize_vm_owned_runtime_environment(&staging)?" in vm_agent_runtime,
+        "fresh policy-only bundle staging must be exact, single-owner, and never start runtime",
+    )
     initial_vm_apply = vm_agent_runtime.split("async fn initial_apply_vm_credential(", 1)[1].split(
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]
     require(
         "CredentialInitialApply { generation: u64 }" in vm_agent_cli
         and "initial_apply_vm_credential(&stack_dir, generation)" in vm_agent_runtime
+        and "require_initial_vm_policy_bundle_ready(stack_dir)?" in initial_vm_apply
         and "require_empty_vm_initial_credential_host(stack_dir)?" in initial_vm_apply
         and "let docker = observe_docker().await?;" in initial_vm_apply
         and "require_no_vm_application_containers(&docker)?" in initial_vm_apply
