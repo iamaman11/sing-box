@@ -461,6 +461,8 @@ def main() -> None:
         in vm_initial_functional
         and "promote_candidate" not in vm_initial_functional
         and "line2_authenticated_endpoints=6" in vm_agent_runtime
+        and "line2_egress_identity=UNPROVEN" in vm_agent_runtime
+        and "external_tls_chain=UNPROVEN" in vm_agent_runtime
         and "line1_authenticated_endpoints=UNPROVEN" in vm_agent_runtime
         and "credential_pair_committed=false" in vm_agent_runtime,
         "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
