@@ -449,7 +449,8 @@ def main() -> None:
         and "release_context.release().source_revision.clone()" in credential_provider
         and "release_context.release().release_set_sha256.clone()" in credential_provider
         and 'required_env("EDGE_RELEASE_SET_SHA256")' not in credential_provider
-        and "run_delivery(command, release_context)" in orchestrator_main
+        and "run_delivery(command, release_context)"
+        in Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(encoding="utf-8")
         and "initial_pair_provider_intent_sha256(" in credential_provider
         and 'credential-initial-pair-provider-intent/v1' in credential_provider
         and "credentials initial-pair-journal-observe" in credentials
