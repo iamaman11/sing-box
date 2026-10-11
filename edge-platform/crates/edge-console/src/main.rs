@@ -2088,6 +2088,15 @@ fn require_offline_windows_owner(
     install_root: &Path,
     activation: &WindowsActivationState,
 ) -> Result<(), String> {
+    require_offline_windows_owner_at(install_root, activation, &install_root.join("current.pb"))
+}
+
+#[cfg(windows)]
+fn require_offline_windows_owner_at(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    authority_path: &Path,
+) -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
     if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
         return Err(
@@ -2128,7 +2137,7 @@ fn require_offline_windows_owner(
     );
     let output = Command::new(&activation.diagnostic_path)
         .arg("doctor")
-        .arg(install_root.join("current.pb"))
+        .arg(authority_path)
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("offline exact native diagnostic unavailable: {err}"))?;
@@ -2225,6 +2234,80 @@ fn offline_retarget_controller_service(
     _to: &WindowsActivationState,
 ) -> Result<(), String> {
     Err("offline Windows SCM retarget is Windows-only".to_owned())
+}
+
+// A saved, previously verified activation is independent of a torn current.pb.
+// Use a single exclusive temporary proof in the SAME install root (the native
+// diagnostic derives its root from authority_path.parent()). Never overwrite a
+// leftover proof after a crash, and never trust a caller-provided executable.
+#[cfg(windows)]
+fn require_offline_windows_owner_from_snapshot(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+) -> Result<(), String> {
+    verify_windows_activation_files(activation)?;
+    let proof = install_root.join("offline-recovery-proof.pb");
+    let bytes = encode_windows_activation_state(activation)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&proof)
+        .map_err(|err| format!("exclusive offline recovery proof unavailable: {err}"))?;
+    let written = file.write_all(&bytes).and_then(|_| file.sync_all());
+    drop(file);
+    let result = written
+        .map_err(|err| format!("failed to persist bounded offline recovery proof: {err}"))
+        .and_then(|_| require_offline_windows_owner_at(install_root, activation, &proof));
+    let cleanup = fs::remove_file(&proof)
+        .map_err(|err| format!("offline recovery proof cleanup failed: {err}"));
+    result?;
+    cleanup
+}
+
+#[cfg(not(windows))]
+fn require_offline_windows_owner_from_snapshot(
+    _install_root: &Path,
+    _activation: &WindowsActivationState,
+) -> Result<(), String> {
+    Err("offline recovery proof is Windows-only".to_owned())
+}
+
+// Snapshot an existing rollback authority without collapsing read errors into
+// absence. Only ENOENT is a legitimate missing previous.pb.
+fn snapshot_offline_previous(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED: cannot read existing rollback authority: {err}"
+        )),
+    }
+}
+
+fn restore_offline_previous(
+    path: &Path,
+    old_current_bytes: &[u8],
+    previous: &Option<Vec<u8>>,
+) -> Result<(), String> {
+    if let Some(bytes) = previous {
+        return write_atomic(path, bytes)
+            .map_err(|err| format!("offline previous authority restoration failed: {err}"));
+    }
+    // Only the protected installer is permitted to create previous.pb when
+    // none existed. It copies exact old current.pb, so a different new file
+    // must not be deleted by compensation.
+    match fs::read(path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "OFFLINE_PREVIOUS_RESTORE_BLOCKED: previous state unreadable: {err}"
+        )),
+        Ok(bytes) if bytes == old_current_bytes => fs::remove_file(path)
+            .map_err(|err| format!("offline generated previous authority removal failed: {err}")),
+        Ok(_) => Err(
+            "OFFLINE_PREVIOUS_RESTORE_BLOCKED: new previous.pb is not the exact saved current authority"
+                .to_owned(),
+        ),
+    }
 }
 
 // A failed or uncertain offline handoff never starts either controller or
