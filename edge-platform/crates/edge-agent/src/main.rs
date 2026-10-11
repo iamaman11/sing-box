@@ -214,20 +214,38 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {
-            require_empty_vm_initial_credential_host(&stack_dir).map_err(AgentError::Command)?;
-            let docker = observe_docker().await.map_err(AgentError::Command)?;
-            require_no_vm_application_containers(&docker).map_err(AgentError::Command)?;
-            verify_canonical_dummy_ab_slots(
-                CredentialProjectionKind::Vm,
-                &vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?,
-            )
-            .await
-            .map_err(AgentError::Command)?;
+            verify_initial_vm_dummy_probe(&stack_dir).await.map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_INITIAL_PROBE");
             println!("credential_projection=VM");
             println!("credential_slot_A=EXACT_DUMMY");
             println!("credential_slot_B=EXACT_DUMMY");
             println!("credential_store_present=false");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            Ok(())
+        }
+        cli::LocalCommand::CredentialInitialAttest {
+            generation,
+            slot,
+            provider_intent_sha256,
+            release_set_sha256,
+        } => {
+            verify_initial_vm_dummy_probe(&stack_dir).await.map_err(AgentError::Command)?;
+            let slot = parse_first_use_slot(&slot).map_err(AgentError::Command)?;
+            let machine = fs::read_to_string("/etc/machine-id")
+                .map_err(|err| AgentError::Command(format!("VM machine identity unreadable: {err}")))?;
+            let digest = edge_shared_types::first_use_host_attestation_sha256(
+                CredentialProjectionKind::Vm,
+                generation,
+                slot,
+                &provider_intent_sha256,
+                &release_set_sha256,
+                &machine,
+            ).map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_ATTEST");
+            println!("credential_projection=VM");
+            println!("credential_generation={generation}");
+            println!("credential_host_attestation_sha256={digest}");
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");
             Ok(())
@@ -619,6 +637,24 @@ fn print_credential_state_evidence(state: Option<&LocalCredentialState>) {
             println!("credential_{name}_sha256={}", value.sha256);
         }
     }
+}
+
+fn parse_first_use_slot(value: &str) -> Result<edge_shared_types::CredentialDeliverySlot, String> {
+    match value {
+        "a" => Ok(edge_shared_types::CredentialDeliverySlot::A),
+        "b" => Ok(edge_shared_types::CredentialDeliverySlot::B),
+        _ => Err("first-use attestation requires slot a or b".to_owned()),
+    }
+}
+
+async fn verify_initial_vm_dummy_probe(stack_dir: &Path) -> Result<(), String> {
+    require_empty_vm_initial_credential_host(stack_dir)?;
+    let docker = observe_docker().await?;
+    require_no_vm_application_containers(&docker)?;
+    verify_canonical_dummy_ab_slots(
+        CredentialProjectionKind::Vm,
+        &vm_credential_access_identity_path(stack_dir)?,
+    ).await
 }
 
 async fn serve_acceptance_rpc(

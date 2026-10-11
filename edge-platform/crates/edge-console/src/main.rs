@@ -205,6 +205,42 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 .map_err(ConsoleError::Command)?;
             Ok(())
         }
+        Command::CredentialInitialAttest(args) => {
+            let root = Path::new(&args.install_root);
+            run_windows_initial_credential_probe(root).await.map_err(ConsoleError::Command)?;
+            let activation = load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!("Windows first-use attestation release is unverified: {err}"))
+            })?;
+            if activation.release_set_sha256 != args.release_set_sha256 {
+                return Err(ConsoleError::Command(
+                    "Windows first-use attestation refuses a different local ReleaseSet".to_owned()
+                ));
+            }
+            let slot = match args.slot.as_str() {
+                "a" => edge_shared_types::CredentialDeliverySlot::A,
+                "b" => edge_shared_types::CredentialDeliverySlot::B,
+                _ => return Err(ConsoleError::Command("initial slot must be a or b".to_owned())),
+            };
+            let machine = env::var("COMPUTERNAME")
+                .map_err(|_| ConsoleError::Command("Windows machine identity unavailable".to_owned()))?;
+            let digest = edge_shared_types::first_use_host_attestation_sha256(
+                edge_shared_types::CredentialProjectionKind::Windows,
+                args.generation,
+                slot,
+                &args.provider_intent_sha256,
+                &args.release_set_sha256,
+                &machine,
+            ).map_err(ConsoleError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_ATTEST");
+            println!("credential_projection=WINDOWS");
+            println!("credential_generation={}", args.generation);
+            println!("credential_host_attestation_sha256={digest}");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            println!("windows_tun_mutations=0");
+            println!("windows_dns_mutations=0");
+            Ok(())
+        }
         Command::CredentialState(args) => {
             let state = fetch_credential_state(args.resolve()).await?;
             print_windows_credential_state(state.as_ref());

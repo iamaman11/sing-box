@@ -13,6 +13,9 @@ pub mod release {
 }
 
 pub use edge::platform::v1::*;
+
+pub mod initial_credential_attestation;
+pub use initial_credential_attestation::first_use_host_attestation_sha256;
 use prost::Message;
 pub use release::v1::{
     CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,

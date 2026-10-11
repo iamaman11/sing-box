@@ -56,6 +56,12 @@ pub(crate) enum LocalCommand {
     CredentialState,
     // Read-only Access-authenticated fixed A/B dummy proof for a fresh VM.
     CredentialInitialProbe,
+    CredentialInitialAttest {
+        generation: u64,
+        slot: String,
+        provider_intent_sha256: String,
+        release_set_sha256: String,
+    },
     // Strictly fresh, non-serving VM only; never a rotation or legacy handoff.
     CredentialInitialApply { generation: u64 },
     // Authenticated Line2 proof of unpromoted exact first-use VM candidate.
@@ -82,6 +88,7 @@ impl LocalCommand {
             Self::MeshCleanup => "local-mesh-cleanup",
             Self::CredentialState => "local-credential-state",
             Self::CredentialInitialProbe => "local-credential-initial-probe",
+            Self::CredentialInitialAttest { .. } => "local-credential-initial-attest",
             Self::CredentialInitialApply { .. } => "local-credential-initial-apply",
             Self::CredentialInitialVerify { .. } => "local-credential-initial-verify",
             Self::CredentialStage { .. } => "local-credential-stage",
