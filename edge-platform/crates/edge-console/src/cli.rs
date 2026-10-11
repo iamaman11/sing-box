@@ -26,6 +26,8 @@ pub(crate) enum Command {
     Status(EndpointArgs),
     Doctor(EndpointArgs),
     CredentialState(EndpointArgs),
+    // Read-only first-enrollment proof; never applies credentials or changes TUN.
+    CredentialInitialProbe(InstallRootArgs),
     SmokeRuntime,
     Stage2Preflight,
     ProvisionRuntimeState(InstallRootArgs),
@@ -74,6 +76,7 @@ impl Command {
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
             Self::CredentialState(_) => "credential-state",
+            Self::CredentialInitialProbe(_) => "credential-initial-probe",
             Self::SmokeRuntime => "smoke-runtime",
             Self::Stage2Preflight => "stage2-preflight",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
@@ -203,6 +206,8 @@ mod tests {
     #[test]
     fn parses_installed_automation_commands() {
         assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "credential-initial-probe"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "credential-initial-probe", "--install-root", r"C:\sing-box"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "smoke-runtime"]).is_ok());
         assert!(
