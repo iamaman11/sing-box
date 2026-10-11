@@ -1646,10 +1646,15 @@ def main() -> None:
     require(
         "runs-on: ubuntu-24.04" in production_provider
         and production_provider.count("edge-platform/scripts/resolve_durable_release.sh") == 1
-        and 'provider_operation="active-converge"' in production_provider
-        and 'provider_operation="verify-active"' in production_provider
-        and 'verify|rollback)' in production_provider
-        and '"${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${provider_operation}"' in production_provider
+        and 'Read-only production DNS ownership gate' in production_provider
+        and 'converge|verify|rollback)' in production_provider
+        and '"${EDGE_PROVIDER_ORCHESTRATOR}" production dns-noop' in production_provider
+        and "cloudflare-target-plane" not in production_provider
+        and "active-converge" not in production_provider
+        and "verify-active" not in production_provider
+        and "grep -Fxq 'operation=PRODUCTION_DNS_NOOP'" in production_provider
+        and "grep -Fxq 'provider_mutations=0'" in production_provider
+        and "grep -Fxq 'production_runtime_mutations=0'" in production_provider
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_provider
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_provider
         and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_provider
@@ -1912,15 +1917,14 @@ def main() -> None:
         "typed acceptance destroy authority must come from validated ReleaseSet accepted revision",
     )
     require(
-        'provider_operation="active-converge"' in production_provider
-        and 'provider_operation="verify-active"' in production_provider
+        '"${EDGE_PROVIDER_ORCHESTRATOR}" production dns-noop' in production_provider
         and "MeshVerify" in vm_agent_cli
         and "MeshCleanup" in vm_agent_cli
         and 'local_operation="bundle-converge"' in production_runtime
         and edge_platform_ci.count("application-bundle-build") == 2
         and "export-bundle" not in application
         and "VULTR_SSH_PRIVATE_KEY" not in production_runtime,
-        "Mesh ownership must remain split: hosted provider authority, candidate-only semantic bundle build, and self-hosted local runtime owner",
+        "Optional Mesh must be independent: GitHub provider DNS NOOP, candidate-only application bundle, and local VM runtime owner",
     )
 
     orchestrator_manifest = Path("edge-platform/crates/edge-orchestrator/Cargo.toml").read_text(
