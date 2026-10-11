@@ -117,6 +117,9 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
 
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
+        CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
+            initial_pair_preflight(&control_token, &desired, generation, slot).await
+        }
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await
         }
@@ -137,6 +140,71 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             .await
         }
     }
+}
+
+// Provider-side non-mutating half of the single N1/N2 initial transaction.
+// This does not consume a host attestation and may never authorize a POST.
+fn validate_initial_pair_provider_observation(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    generation: u64,
+    _slot: CredentialDeliverySlotArg,
+) -> Result<(), String> {
+    if generation == 0
+        || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_A
+        || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_B
+    {
+        return Err("fresh credential generation must be nonzero and distinct from canonical dummy probes".to_owned());
+    }
+    validate_access_boundary(desired, observed)?;
+    let vm = projection_observation(observed, "vm")?;
+    let windows = projection_observation(observed, "windows")?;
+    for projection in projections(desired) {
+        let current = projection_observation(observed, &projection.projection)?;
+        if projection_delivery_state(desired, &projection, observed)? != ProjectionDeliveryState::FixedAb
+            || current.worker_latest_version_id.as_deref().unwrap_or("").is_empty()
+            || current.worker_active_version_ids.len() != 1
+        {
+            return Err(format!(
+                "initial paired provider preflight refuses drifted {} Worker version or A/B topology",
+                projection.projection
+            ));
+        }
+    }
+    for (label, left, right) in [
+        ("Worker identity", vm.worker_id.as_deref(), windows.worker_id.as_deref()),
+        ("Access service token", vm.host_service_token_id.as_deref(), windows.host_service_token_id.as_deref()),
+        ("Access client identity", vm.host_service_token_client_id.as_deref(), windows.host_service_token_client_id.as_deref()),
+        ("Access application", vm.access_application_id.as_deref(), windows.access_application_id.as_deref()),
+    ] {
+        if left.is_none() || right.is_none() || left == right {
+            return Err(format!("initial paired provider preflight requires distinct nonempty VM and Windows {label}"));
+        }
+    }
+    Ok(())
+}
+
+async fn initial_pair_preflight(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    generation: u64,
+    slot: CredentialDeliverySlotArg,
+) -> Result<(), String> {
+    let observed = observe(control_token, desired).await?;
+    validate_initial_pair_provider_observation(desired, &observed, generation, slot)?;
+    println!("operation=CREDENTIAL_INITIAL_PAIR_PREFLIGHT");
+    println!("credential_generation={generation}");
+    println!("credential_slot={}", slot.as_str());
+    println!("worker_projection_count=2");
+    println!("provider_topology=EXACT_FIXED_AB");
+    println!("vm_access_identity_distinct=true");
+    println!("windows_access_identity_distinct=true");
+    println!("host_dummy_slot_attestations=REQUIRED");
+    println!("worker_version_bound_publish=NOT_IMPLEMENTED");
+    println!("initial_publication_authorized=false");
+    println!("credential_provider_mutations=0");
+    println!("credential_runtime_mutations=0");
+    Ok(())
 }
 
 async fn rotate_application_publish(
@@ -1507,6 +1575,37 @@ mod tests {
             .version_tag;
         current.worker_version_tag = Some(version_tag.clone());
         current.worker_latest_version_tag = Some(version_tag);
+    }
+
+    #[test]
+    fn initial_pair_provider_gate_rejects_any_identity_or_version_drift() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "vm");
+        make_terminal(&mut observed, "windows");
+        assert!(validate_initial_pair_provider_observation(
+            &desired, &observed, 101, CredentialDeliverySlotArg::A,
+        ).is_ok());
+        for invalid in [0, CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B] {
+            assert!(validate_initial_pair_provider_observation(
+                &desired, &observed, invalid, CredentialDeliverySlotArg::A,
+            ).is_err());
+        }
+        let client = observed.projections[0].host_service_token_client_id.clone();
+        observed.projections[1].host_service_token_client_id = client;
+        assert!(validate_initial_pair_provider_observation(
+            &desired, &observed, 101, CredentialDeliverySlotArg::A,
+        ).is_err());
+        observed.projections[1].host_service_token_client_id = Some("distinct-client-id".to_owned());
+        observed.projections[1].worker_active_version_ids = vec!["stale-active-version".to_owned()];
+        assert!(validate_initial_pair_provider_observation(
+            &desired, &observed, 101, CredentialDeliverySlotArg::A,
+        ).is_err());
+        observed.projections[1].worker_active_version_ids = vec!["windows-version-id".to_owned()];
+        observed.projections[0].host_service_token_id = observed.projections[1].host_service_token_id.clone();
+        assert!(validate_initial_pair_provider_observation(
+            &desired, &observed, 101, CredentialDeliverySlotArg::A,
+        ).is_err());
     }
 
     #[test]
