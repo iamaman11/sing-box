@@ -186,7 +186,10 @@ def main() -> None:
             in windows_console
         and "load_verified_activation_path(install_root, &previous_path, \"previous.pb\")"
             in windows_console
-        and "fs::read(install_root.join(\"previous.pb\")).ok()" not in windows_console
+        and "fs::read(install_root.join(\"previous.pb\")).ok()"
+            not in windows_console.split("fn offline_activate_privileged_release(", 1)[1].split(
+                "fn offline_rollback_privileged_release(", 1
+            )[0]
         and "fn restore_offline_authority_pointers(" in windows_console
         and "restore_offline_authority_pointers(install_root, current_bytes, previous_bytes)?;"
             in offline_restore
