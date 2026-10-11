@@ -2088,6 +2088,15 @@ fn require_offline_windows_owner(
     install_root: &Path,
     activation: &WindowsActivationState,
 ) -> Result<(), String> {
+    require_offline_windows_owner_at(install_root, activation, &install_root.join("current.pb"))
+}
+
+#[cfg(windows)]
+fn require_offline_windows_owner_at(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    authority_path: &Path,
+) -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
     if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
         return Err(
@@ -2128,7 +2137,7 @@ fn require_offline_windows_owner(
     );
     let output = Command::new(&activation.diagnostic_path)
         .arg("doctor")
-        .arg(install_root.join("current.pb"))
+        .arg(authority_path)
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("offline exact native diagnostic unavailable: {err}"))?;
@@ -2156,7 +2165,21 @@ fn offline_retarget_controller_service(
     from: &WindowsActivationState,
     to: &WindowsActivationState,
 ) -> Result<(), String> {
-    require_offline_windows_owner(install_root, from)?;
+    offline_retarget_controller_service_checked(install_root, from, to, false)
+}
+
+#[cfg(windows)]
+fn offline_retarget_controller_service_checked(
+    install_root: &Path,
+    from: &WindowsActivationState,
+    to: &WindowsActivationState,
+    restore_from_verified_snapshot: bool,
+) -> Result<(), String> {
+    if restore_from_verified_snapshot {
+        require_offline_windows_owner_from_snapshot(install_root, from)?;
+    } else {
+        require_offline_windows_owner(install_root, from)?;
+    }
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
     let service = manager
@@ -2211,6 +2234,16 @@ fn offline_retarget_controller_service(
 }
 
 #[cfg(not(windows))]
+fn offline_retarget_controller_service_checked(
+    _install_root: &Path,
+    _from: &WindowsActivationState,
+    _to: &WindowsActivationState,
+    _restore_from_verified_snapshot: bool,
+) -> Result<(), String> {
+    Err("offline SCM recovery handoff is Windows-only".to_owned())
+}
+
+#[cfg(not(windows))]
 fn require_offline_windows_owner(
     _install_root: &Path,
     _activation: &WindowsActivationState,
@@ -2227,6 +2260,97 @@ fn offline_retarget_controller_service(
     Err("offline Windows SCM retarget is Windows-only".to_owned())
 }
 
+// A saved, previously verified activation is independent of a torn current.pb.
+// Use a single exclusive temporary proof in the SAME install root (the native
+// diagnostic derives its root from authority_path.parent()). Never overwrite a
+// leftover proof after a crash, and never trust a caller-provided executable.
+#[cfg(windows)]
+fn require_offline_windows_owner_from_snapshot(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+) -> Result<(), String> {
+    verify_windows_activation_files(activation)?;
+    let proof = install_root.join("offline-recovery-proof.pb");
+    let bytes = encode_windows_activation_state(activation)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&proof)
+        .map_err(|err| format!("exclusive offline recovery proof unavailable: {err}"))?;
+    let written = file.write_all(&bytes).and_then(|_| file.sync_all());
+    drop(file);
+    let result = written
+        .map_err(|err| format!("failed to persist bounded offline recovery proof: {err}"))
+        .and_then(|_| require_offline_windows_owner_at(install_root, activation, &proof));
+    let cleanup = fs::remove_file(&proof)
+        .map_err(|err| format!("offline recovery proof cleanup failed: {err}"));
+    result?;
+    cleanup
+}
+
+#[cfg(not(windows))]
+fn require_offline_windows_owner_from_snapshot(
+    _install_root: &Path,
+    _activation: &WindowsActivationState,
+) -> Result<(), String> {
+    Err("offline recovery proof is Windows-only".to_owned())
+}
+
+// Snapshot an existing rollback authority without collapsing read errors into
+// absence. Only ENOENT is a legitimate missing previous.pb.
+fn snapshot_offline_previous(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED: cannot read existing rollback authority: {err}"
+        )),
+    }
+}
+
+fn restore_offline_previous(
+    path: &Path,
+    old_current_bytes: &[u8],
+    previous: &Option<Vec<u8>>,
+) -> Result<(), String> {
+    if let Some(bytes) = previous {
+        return write_atomic(path, bytes)
+            .map_err(|err| format!("offline previous authority restoration failed: {err}"));
+    }
+    // Only the protected installer is permitted to create previous.pb when
+    // none existed. It copies exact old current.pb, so a different new file
+    // must not be deleted by compensation.
+    match fs::read(path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "OFFLINE_PREVIOUS_RESTORE_BLOCKED: previous state unreadable: {err}"
+        )),
+        Ok(bytes) if bytes == old_current_bytes => fs::remove_file(path)
+            .map_err(|err| format!("offline generated previous authority removal failed: {err}")),
+        Ok(_) => Err(
+            "OFFLINE_PREVIOUS_RESTORE_BLOCKED: new previous.pb is not the exact saved current authority"
+                .to_owned(),
+        ),
+    }
+}
+
+// This bounded pointer-only compensation can be fault-injected on any OS.
+// It never calls SCM or starts a process. Every failure stops before the
+// current authority is rewritten, leaving an inspectable split state.
+fn restore_offline_authority_pointers(
+    install_root: &Path,
+    old_current_bytes: &[u8],
+    previous: &Option<Vec<u8>>,
+) -> Result<(), String> {
+    restore_offline_previous(
+        &install_root.join("previous.pb"),
+        old_current_bytes,
+        previous,
+    )?;
+    write_atomic(&install_root.join("current.pb"), old_current_bytes)
+        .map_err(|err| format!("offline current authority restoration failed: {err}"))
+}
+
 // A failed or uncertain offline handoff never starts either controller or
 // sing-box. Restore exact previous authority only from locally verified bytes.
 fn restore_offline_release(
@@ -2236,32 +2360,21 @@ fn restore_offline_release(
     previous_bytes: &Option<Vec<u8>>,
     alternate_scm_owner: Option<&WindowsActivationState>,
 ) -> Result<(), String> {
-    let observed = load_verified_activation(install_root).map_err(|err| err.to_string())?;
-    // The two legitimate interruption points are (a) current.pb advanced
-    // while SCM is old, (b) SCM retargeted while current.pb is old. Refuse
-    // any third owner instead of guessing by PID, filename or elapsed time.
-    if require_offline_windows_owner(install_root, before).is_err() {
-        let replacement = if let Some(other) = alternate_scm_owner
-            && require_offline_windows_owner(install_root, other).is_ok()
-        {
-            other
-        } else {
-            require_offline_windows_owner(install_root, &observed)?;
-            &observed
-        };
+    // Never read the possibly torn current.pb to decide whether compensation
+    // is safe. Each SCM candidate must be a verified immutable activation:
+    // the old snapshot, or the exact new/rollback candidate supplied above.
+    // Any third owner must fail closed without writing the release pointers.
+    if require_offline_windows_owner_from_snapshot(install_root, before).is_err() {
+        let replacement = alternate_scm_owner.ok_or_else(|| {
+            "OFFLINE_RESTORE_BLOCKED: current SCM does not match saved old authority and no exact replacement was proved".to_owned()
+        })?;
+        require_offline_windows_owner_from_snapshot(install_root, replacement)?;
         if replacement.controller_path != before.controller_path {
-            offline_retarget_controller_service(install_root, replacement, before)?;
+            offline_retarget_controller_service_checked(install_root, replacement, before, true)?;
         }
     }
-    write_atomic(&install_root.join("current.pb"), current_bytes)
-        .map_err(|err| format!("offline current authority restoration failed: {err}"))?;
-    if let Some(bytes) = previous_bytes {
-        write_atomic(&install_root.join("previous.pb"), bytes)
-            .map_err(|err| format!("offline previous authority restoration failed: {err}"))?;
-    } else if install_root.join("previous.pb").exists() {
-        fs::remove_file(install_root.join("previous.pb"))
-            .map_err(|err| format!("offline previous authority deletion failed: {err}"))?;
-    }
+    // Restore previous first; a failed prerequisite never overwrites current.
+    restore_offline_authority_pointers(install_root, current_bytes, previous_bytes)?;
     sync_stable_windows_release_tools(install_root, before)?;
     retarget_privileged_task(install_root, &before.console_path)?;
     require_offline_windows_owner(install_root, before)?;
@@ -2303,7 +2416,12 @@ fn offline_activate_privileged_release(
         );
     }
     let current_bytes = fs::read(install_root.join("current.pb")).map_err(|err| err.to_string())?;
-    let previous_bytes = fs::read(install_root.join("previous.pb")).ok();
+    let previous_path = install_root.join("previous.pb");
+    let previous_bytes = snapshot_offline_previous(&previous_path)?;
+    if previous_bytes.is_some() {
+        load_verified_activation_path(install_root, &previous_path, "previous.pb")
+            .map_err(|err| format!("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED: {err}"))?;
+    }
     let installer = install_root
         .join("bootstrap")
         .join("install-windows-release.ps1");
@@ -2331,11 +2449,21 @@ fn offline_activate_privileged_release(
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("offline protected installer invocation failed: {err}"))?;
-    let post = load_verified_activation(install_root).map_err(|err| {
-        format!(
-            "offline installer outcome uncertain, current.pb unreadable; never blindly retry: {err}"
-        )
-    })?;
+    let post = match load_verified_activation(install_root) {
+        Ok(value) => value,
+        Err(err) => {
+            let compensation = restore_offline_release(
+                install_root,
+                &before,
+                &current_bytes,
+                &previous_bytes,
+                None,
+            );
+            return Err(format!(
+                "offline installer outcome uncertain, current.pb unreadable: {err}; compensation={compensation:?}; do not retry blindly"
+            ));
+        }
+    };
     if !output.status.success() || post.release_set_sha256 != target {
         // No blind replay of installer after an unknown result.
         let restore =
@@ -2349,13 +2477,29 @@ fn offline_activate_privileged_release(
     let handoff = offline_retarget_controller_service(install_root, &before, &post)
         .and_then(|_| retarget_privileged_task(install_root, &post.console_path));
     if let Err(err) = handoff {
-        let restore =
-            restore_offline_release(install_root, &before, &current_bytes, &previous_bytes, None);
+        let restore = restore_offline_release(
+            install_root,
+            &before,
+            &current_bytes,
+            &previous_bytes,
+            Some(&post),
+        );
         return Err(format!(
             "offline owner handoff failed: {err}; compensation={restore:?}; do not blindly retry"
         ));
     }
-    require_offline_windows_owner(install_root, &post)?;
+    if let Err(err) = require_offline_windows_owner(install_root, &post) {
+        let compensation = restore_offline_release(
+            install_root,
+            &before,
+            &current_bytes,
+            &previous_bytes,
+            Some(&post),
+        );
+        return Err(format!(
+            "offline post-handoff owner not verified: {err}; compensation={compensation:?}; do not retry blindly"
+        ));
+    }
     Ok((
         "OFFLINE_RELEASE_ACTIVATED".to_owned(),
         "exact ReleaseSet installed; SCM remains Stopped; no TUN/DNS/routes changed and no service started".to_owned(),
@@ -4199,6 +4343,94 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn offline_test_root(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "edge-offline-restore-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn previous_snapshot_only_treats_missing_file_as_absence() {
+        let root = offline_test_root("snapshot");
+        let previous = root.join("previous.pb");
+        assert!(snapshot_offline_previous(&previous).unwrap().is_none());
+        fs::write(&previous, b"previous-exact").unwrap();
+        assert_eq!(
+            snapshot_offline_previous(&previous).unwrap(),
+            Some(b"previous-exact".to_vec())
+        );
+        fs::remove_file(&previous).unwrap();
+        fs::create_dir(&previous).unwrap();
+        assert!(
+            snapshot_offline_previous(&previous)
+                .unwrap_err()
+                .contains("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED")
+        );
+        assert!(previous.is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_pointer_restore_uses_verified_saved_bytes_even_when_current_torn() {
+        let root = offline_test_root("torn-pointer");
+        let current = root.join("current.pb");
+        let previous = root.join("previous.pb");
+        fs::write(&current, b"torn-current").unwrap();
+        fs::write(&previous, b"new-previous").unwrap();
+        restore_offline_authority_pointers(
+            &root,
+            b"verified-old-current",
+            &Some(b"verified-old-previous".to_vec()),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&current).unwrap(), b"verified-old-current");
+        assert_eq!(fs::read(&previous).unwrap(), b"verified-old-previous");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_pointer_restore_never_deletes_unknown_previous_or_replays_current() {
+        let root = offline_test_root("unknown-previous");
+        let current = root.join("current.pb");
+        let previous = root.join("previous.pb");
+        fs::write(&current, b"new-current").unwrap();
+        fs::write(&previous, b"foreign-previous").unwrap();
+        let err =
+            restore_offline_authority_pointers(&root, b"verified-old-current", &None).unwrap_err();
+        assert!(err.contains("OFFLINE_PREVIOUS_RESTORE_BLOCKED"));
+        assert_eq!(fs::read(&current).unwrap(), b"new-current");
+        assert_eq!(fs::read(&previous).unwrap(), b"foreign-previous");
+
+        fs::write(&previous, b"verified-old-current").unwrap();
+        restore_offline_authority_pointers(&root, b"verified-old-current", &None).unwrap();
+        assert_eq!(fs::read(&current).unwrap(), b"verified-old-current");
+        assert!(!previous.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_pointer_restore_blocks_unreadable_previous_before_current_rewrite() {
+        let root = offline_test_root("read-error");
+        let current = root.join("current.pb");
+        let previous = root.join("previous.pb");
+        fs::write(&current, b"torn-current").unwrap();
+        fs::create_dir(&previous).unwrap();
+        assert!(
+            restore_offline_authority_pointers(&root, b"saved-current", &None)
+                .unwrap_err()
+                .contains("OFFLINE_PREVIOUS_RESTORE_BLOCKED")
+        );
+        assert_eq!(fs::read(&current).unwrap(), b"torn-current");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn offline_release_handoff_refuses_running_scm_any_child_tun_or_wrong_owner() {

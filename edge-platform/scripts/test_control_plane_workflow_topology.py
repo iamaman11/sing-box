@@ -170,6 +170,45 @@ def main() -> None:
         "SCM failure cleanup must only stop a unique child owned by the current service",
     )
 
+    # P0 interrupted offline handoff: no dropping a failed previous.pb read,
+    # no decoding a possibly torn current.pb before restoring verified bytes.
+    offline_restore_start = windows_console.index("fn restore_offline_release(")
+    offline_restore_end = windows_console.index(
+        "fn offline_activate_privileged_release(", offline_restore_start
+    )
+    offline_restore = windows_console[offline_restore_start:offline_restore_end]
+    require(
+        "fn snapshot_offline_previous(" in windows_console
+        and "Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None)"
+            in windows_console
+        and "OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED" in windows_console
+        and "let previous_bytes = snapshot_offline_previous(&previous_path)?;"
+            in windows_console
+        and "load_verified_activation_path(install_root, &previous_path, \"previous.pb\")"
+            in windows_console
+        and "fs::read(install_root.join(\"previous.pb\")).ok()"
+            not in windows_console.split("fn offline_activate_privileged_release(", 1)[1].split(
+                "fn offline_rollback_privileged_release(", 1
+            )[0]
+        and "fn restore_offline_authority_pointers(" in windows_console
+        and "restore_offline_authority_pointers(install_root, current_bytes, previous_bytes)?;"
+            in offline_restore
+        and "load_verified_activation(install_root)" not in offline_restore
+        and "require_offline_windows_owner_from_snapshot(install_root, before)" in offline_restore
+        and "offline_retarget_controller_service_checked(" in offline_restore
+        and "fn require_offline_windows_owner_from_snapshot(" in windows_console
+        and "create_new(true)" in windows_console
+        and "offline-recovery-proof.pb" in windows_console
+        and "OFFLINE_PREVIOUS_RESTORE_BLOCKED" in windows_console
+        and "offline_pointer_restore_uses_verified_saved_bytes_even_when_current_torn"
+            in windows_console
+        and "offline_pointer_restore_never_deletes_unknown_previous_or_replays_current"
+            in windows_console
+        and "offline_pointer_restore_blocks_unreadable_previous_before_current_rewrite"
+            in windows_console,
+        "offline restore must remain fail-closed against torn current authority, unreadable prior rollback, and mismatched SCM owner",
+    )
+
     # Offline mutation is a NEW wire contract, not a reinterpretation of the
     # existing ActuateRelease opcode supported by the installed dispatcher.
     require(
@@ -194,7 +233,8 @@ def main() -> None:
             in windows_console
         and "offline_release_operations_have_dedicated_wire_numbers"
             in windows_console
-        and "if require_offline_windows_owner(install_root, before).is_err()" in windows_console
+        and "if require_offline_windows_owner_from_snapshot(install_root, before).is_err()"
+            in windows_console
         and "offline_retarget_controller_service(install_root, &before, &post)" in windows_console
         and "retarget_privileged_task(install_root, &post.console_path)" in windows_console
         and "-Offline" in windows_console
