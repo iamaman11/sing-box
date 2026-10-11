@@ -3,7 +3,22 @@ name: Edge Platform CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
+    paths:
+      - "edge-platform/**"
+      - "infra/vultr/**"
+      - "infra/application/**"
+      - "infra/cloudflare/**"
+      - "infra/LOCAL_AGENT_EXECUTION_CONTRACT.md"
+      - "win/**"
+      - ".github/workflows/edge-platform-ci.yml"
+      - ".github/workflows/edge-control-plane.yml"
+      - ".github/workflows/credential-lifecycle.yml"
+      - ".github/workflows/windows-physical.yml"
+      - ".github/workflows/vultr-lifecycle.yml"
+      - ".github/workflows/vm-application-lifecycle.yml"
+  push:
+    branches: [main]
     paths:
       - "edge-platform/**"
       - "infra/vultr/**"
@@ -22,8 +37,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: edge-platform-ci-${{ github.event.action == 'closed' && 'promotion' || 'candidate' }}-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'push' && 'edge-platform-promotion-main' || format('edge-platform-candidate-pr-{0}', github.event.pull_request.number) }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   verify:
@@ -1528,13 +1543,14 @@ jobs:
 
   promote:
     name: Promote accepted candidate
-    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
       actions: read
       packages: read
+      pull-requests: read
     steps:
       - name: Locate exact successful candidate
         id: locate
@@ -1542,19 +1558,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.event.pull_request.merge_commit_sha }}
-          EVENT_CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          ACCEPTED_REVISION: ${{ github.sha }}
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           [[ "${ACCEPTED_REVISION}" =~ ^[0-9a-f]{40}$ ]]
 
-          candidate_revision="${EVENT_CANDIDATE_REVISION}"
+          # Only a genuine two-parent main merge may promote a candidate.
+          # The accepted merge tree must exactly equal its CI-tested PR head.
+          accepted_commit="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}")"
+          test "$(jq -er '.parents | length' <<<"${accepted_commit}")" = "2"
+          candidate_revision="$(jq -er '.parents[1].sha' <<<"${accepted_commit}")"
           [[ "${candidate_revision}" =~ ^[0-9a-f]{40}$ ]]
-
-          accepted_tree="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}" --jq '.tree.sha')"
+          accepted_tree="$(jq -er '.tree.sha' <<<"${accepted_commit}")"
           candidate_tree="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}" --jq '.tree.sha')"
           test "${accepted_tree}" = "${candidate_tree}"
+
+          # Detect out-of-order pull_request.closed/merged events by validating
+          # the final merged PR against GitHub's actual committed merge SHA.
+          associated_prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls?per_page=10")"
+          trusted_pr="$(jq -cer --arg accepted "${ACCEPTED_REVISION}" --arg candidate "${candidate_revision}" '
+            [.[] | select(.merged_at != null)
+              | select(.base.ref == "main")
+              | select(.merge_commit_sha == $accepted)
+              | select(.head.sha == $candidate)]
+            | if length == 1 then .[0] else error("accepted merge has no unique matching merged PR") end
+          ' <<<"${associated_prs}")"
+          test "$(jq -er '.merged_at' <<<"${trusted_pr}")" != "null"
 
           runs="$(gh api "repos/${REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs?event=pull_request&head_sha=${candidate_revision}&per_page=100")"
           latest_run="$(jq -cer --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" '
