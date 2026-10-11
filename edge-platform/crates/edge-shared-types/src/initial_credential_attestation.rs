@@ -25,13 +25,17 @@ pub fn first_use_host_attestation_sha256(
     release_set_sha256: &str,
     host_identity: &str,
 ) -> Result<String, String> {
-    if !matches!(projection, CredentialProjectionKind::Vm | CredentialProjectionKind::Windows)
-        || !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B)
+    if !matches!(
+        projection,
+        CredentialProjectionKind::Vm | CredentialProjectionKind::Windows
+    ) || !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B)
         || generation == 0
         || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_A
         || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_B
     {
-        return Err("initial attestation requires a real generation, projection and fixed slot".to_owned());
+        return Err(
+            "initial attestation requires a real generation, projection and fixed slot".to_owned(),
+        );
     }
     if !lowercase_sha256(provider_intent_sha256) || !lowercase_sha256(release_set_sha256) {
         return Err("initial attestation requires exact lowercase SHA-256 inputs".to_owned());
@@ -54,7 +58,11 @@ pub fn first_use_host_attestation_sha256(
         bytes.extend_from_slice(field);
     }
     let hash = digest(&SHA256, &bytes);
-    Ok(hash.as_ref().iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(hash
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 #[cfg(test)]
@@ -72,34 +80,105 @@ mod tests {
                 &arguments.0,
                 &arguments.1,
                 machine,
-            ).unwrap()
+            )
+            .unwrap()
         };
-        let vm = digest(CredentialProjectionKind::Vm, 101, CredentialDeliverySlot::A, "vm-machine");
+        let vm = digest(
+            CredentialProjectionKind::Vm,
+            101,
+            CredentialDeliverySlot::A,
+            "vm-machine",
+        );
         assert_eq!(vm.len(), 64);
-        assert_eq!(vm, digest(CredentialProjectionKind::Vm, 101, CredentialDeliverySlot::A, "vm-machine"));
-        assert_ne!(vm, digest(CredentialProjectionKind::Windows, 101, CredentialDeliverySlot::A, "vm-machine"));
-        assert_ne!(vm, digest(CredentialProjectionKind::Vm, 102, CredentialDeliverySlot::A, "vm-machine"));
-        assert_ne!(vm, digest(CredentialProjectionKind::Vm, 101, CredentialDeliverySlot::B, "vm-machine"));
-        assert_ne!(vm, digest(CredentialProjectionKind::Vm, 101, CredentialDeliverySlot::A, "other-machine"));
+        assert_eq!(
+            vm,
+            digest(
+                CredentialProjectionKind::Vm,
+                101,
+                CredentialDeliverySlot::A,
+                "vm-machine"
+            )
+        );
+        assert_ne!(
+            vm,
+            digest(
+                CredentialProjectionKind::Windows,
+                101,
+                CredentialDeliverySlot::A,
+                "vm-machine"
+            )
+        );
+        assert_ne!(
+            vm,
+            digest(
+                CredentialProjectionKind::Vm,
+                102,
+                CredentialDeliverySlot::A,
+                "vm-machine"
+            )
+        );
+        assert_ne!(
+            vm,
+            digest(
+                CredentialProjectionKind::Vm,
+                101,
+                CredentialDeliverySlot::B,
+                "vm-machine"
+            )
+        );
+        assert_ne!(
+            vm,
+            digest(
+                CredentialProjectionKind::Vm,
+                101,
+                CredentialDeliverySlot::A,
+                "other-machine"
+            )
+        );
     }
 
     #[test]
     fn malformed_or_reserved_first_use_evidence_is_rejected() {
-        for generation in [0, CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B] {
-            assert!(first_use_host_attestation_sha256(
-                CredentialProjectionKind::Vm, generation, CredentialDeliverySlot::A,
-                &"a".repeat(64), &"b".repeat(64), "vm-machine"
-            ).is_err());
+        for generation in [
+            0,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+        ] {
+            assert!(
+                first_use_host_attestation_sha256(
+                    CredentialProjectionKind::Vm,
+                    generation,
+                    CredentialDeliverySlot::A,
+                    &"a".repeat(64),
+                    &"b".repeat(64),
+                    "vm-machine"
+                )
+                .is_err()
+            );
         }
         for identity in ["", "with\nnewline"] {
-            assert!(first_use_host_attestation_sha256(
-                CredentialProjectionKind::Windows, 101, CredentialDeliverySlot::B,
-                &"a".repeat(64), &"b".repeat(64), identity
-            ).is_err());
+            assert!(
+                first_use_host_attestation_sha256(
+                    CredentialProjectionKind::Windows,
+                    101,
+                    CredentialDeliverySlot::B,
+                    &"a".repeat(64),
+                    &"b".repeat(64),
+                    identity
+                )
+                .is_err()
+            );
         }
-        assert!(first_use_host_attestation_sha256(
-            CredentialProjectionKind::Windows, 101, CredentialDeliverySlot::B,
-            &"a".repeat(63), &"b".repeat(64), "win-machine"
-        ).is_err());
+        assert!(
+            first_use_host_attestation_sha256(
+                CredentialProjectionKind::Windows,
+                101,
+                CredentialDeliverySlot::B,
+                &"a".repeat(63),
+                &"b".repeat(64),
+                "win-machine"
+            )
+            .is_err()
+        );
     }
 }

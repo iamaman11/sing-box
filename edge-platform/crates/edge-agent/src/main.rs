@@ -214,7 +214,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {
-            verify_initial_vm_dummy_probe(&stack_dir).await.map_err(AgentError::Command)?;
+            verify_initial_vm_dummy_probe(&stack_dir)
+                .await
+                .map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_INITIAL_PROBE");
             println!("credential_projection=VM");
             println!("credential_slot_A=EXACT_DUMMY");
@@ -230,10 +232,13 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             provider_intent_sha256,
             release_set_sha256,
         } => {
-            verify_initial_vm_dummy_probe(&stack_dir).await.map_err(AgentError::Command)?;
+            verify_initial_vm_dummy_probe(&stack_dir)
+                .await
+                .map_err(AgentError::Command)?;
             let slot = parse_first_use_slot(&slot).map_err(AgentError::Command)?;
-            let machine = fs::read_to_string("/etc/machine-id")
-                .map_err(|err| AgentError::Command(format!("VM machine identity unreadable: {err}")))?;
+            let machine = fs::read_to_string("/etc/machine-id").map_err(|err| {
+                AgentError::Command(format!("VM machine identity unreadable: {err}"))
+            })?;
             let digest = edge_shared_types::first_use_host_attestation_sha256(
                 CredentialProjectionKind::Vm,
                 generation,
@@ -241,7 +246,8 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 &provider_intent_sha256,
                 &release_set_sha256,
                 &machine,
-            ).map_err(AgentError::Command)?;
+            )
+            .map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_INITIAL_ATTEST");
             println!("credential_projection=VM");
             println!("credential_generation={generation}");
@@ -654,7 +660,8 @@ async fn verify_initial_vm_dummy_probe(stack_dir: &Path) -> Result<(), String> {
     verify_canonical_dummy_ab_slots(
         CredentialProjectionKind::Vm,
         &vm_credential_access_identity_path(stack_dir)?,
-    ).await
+    )
+    .await
 }
 
 async fn serve_acceptance_rpc(

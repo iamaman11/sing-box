@@ -63,11 +63,19 @@ pub(crate) enum LocalCommand {
         release_set_sha256: String,
     },
     // Strictly fresh, non-serving VM only; never a rotation or legacy handoff.
-    CredentialInitialApply { generation: u64 },
+    CredentialInitialApply {
+        generation: u64,
+    },
     // Authenticated Line2 proof of unpromoted exact first-use VM candidate.
-    CredentialInitialVerify { generation: u64 },
-    CredentialStage { generation: u64 },
-    CredentialTransition { action: String },
+    CredentialInitialVerify {
+        generation: u64,
+    },
+    CredentialStage {
+        generation: u64,
+    },
+    CredentialTransition {
+        action: String,
+    },
 }
 
 impl LocalCommand {
