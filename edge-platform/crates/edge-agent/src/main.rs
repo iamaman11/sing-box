@@ -1446,12 +1446,8 @@ fn require_empty_vm_initial_credential_host(stack_dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
-fn require_no_running_vm_application_containers() -> Result<(), String> {
-    let info = Command::new("docker")
-        .args(["info", "--format", "{{.ServerVersion}}"])
-        .output()
-        .map_err(|err| format!("initial VM enrollment cannot inspect Docker: {err}"))?;
-    if !info.status.success() {
+fn require_no_vm_application_containers(observation: &DockerObservation) -> Result<(), String> {
+    if !observation.reachable {
         return Err("initial VM enrollment refuses unknown Docker daemon state".to_owned());
     }
     for container in [
@@ -1459,19 +1455,9 @@ fn require_no_running_vm_application_containers() -> Result<(), String> {
         "vultr-line1-gateway",
         "vultr-line2-proxy",
     ] {
-        let observation = Command::new("docker")
-            .args(["container", "inspect", "--format", "{{.Id}}", container])
-            .output()
-            .map_err(|err| format!("initial VM Docker inspection failed: {err}"))?;
-        if observation.status.success() {
+        if observation.container_present(container) {
             return Err(format!(
                 "initial VM enrollment refuses an existing application container: {container}"
-            ));
-        }
-        let error = String::from_utf8_lossy(&observation.stderr);
-        if !error.contains("No such object") && !error.contains("No such container") {
-            return Err(format!(
-                "initial VM enrollment cannot prove application container absent: {container}"
             ));
         }
     }
@@ -1484,7 +1470,8 @@ async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Resul
     }
     // Both guards execute before fetching a secret or writing host state.
     require_empty_vm_initial_credential_host(stack_dir)?;
-    require_no_running_vm_application_containers()?;
+    let docker = observe_docker().await?;
+    require_no_vm_application_containers(&docker)?;
     let staged = fetch_and_stage_vm_credential_candidate(stack_dir, generation).await?;
     if staged.active.is_some() || staged.previous.is_some() {
         return Err("initial VM enrollment discovered nonempty active/previous state".to_owned());
