@@ -459,6 +459,8 @@ def main() -> None:
         in vm_initial_functional
         and "line2_quality::measure(stack_dir, read_typed_runtime_environment)?"
         in vm_initial_functional
+        and "if after_state != state {" in vm_initial_functional
+        and vm_initial_functional.count("verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?") == 2
         and "promote_candidate" not in vm_initial_functional
         and "line2_authenticated_endpoints=6" in vm_agent_runtime
         and "line2_egress_identity=UNPROVEN" in vm_agent_runtime
