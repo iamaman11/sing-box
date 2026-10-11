@@ -12,7 +12,10 @@ use edge_local_runtime::{
     run_non_tun_loopback_smoke, stop_local_runtime as stop_runtime_process,
 };
 use edge_observability::init as init_observability;
-use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
+use edge_secrets::{
+    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
+    verify_canonical_dummy_ab_slots,
+};
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
 use rusqlite::Connection;
@@ -195,6 +198,12 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     "doctor reported failing checks".to_owned(),
                 ))
             }
+        }
+        Command::CredentialInitialProbe(args) => {
+            run_windows_initial_credential_probe(Path::new(&args.install_root))
+                .await
+                .map_err(ConsoleError::Command)?;
+            Ok(())
         }
         Command::CredentialState(args) => {
             let state = fetch_credential_state(args.resolve()).await?;
@@ -1774,6 +1783,59 @@ fn append_redacted_runtime_token(output: &mut String, token: &mut String) {
         output.push_str(token);
     }
     token.clear();
+}
+
+fn require_initial_windows_credential_host(install_root: &Path) -> Result<(), String> {
+    // Any existing store directory, even with missing/corrupt cursor, is
+    // ambiguous. Never interpret it as an unused first-enrollment slot.
+    let store_present = windows_credential_store_path(install_root).exists();
+    let runtime_present = windows_runtime_state_path(install_root).exists();
+    initial_windows_credential_eligibility(store_present, runtime_present)?;
+    load_verified_activation(install_root)
+        .map_err(|err| format!("initial Windows proof requires an exact immutable release: {err}"))?;
+    Ok(())
+}
+
+fn initial_windows_credential_eligibility(
+    store_present: bool,
+    runtime_present: bool,
+) -> Result<(), String> {
+    if store_present {
+        return Err(
+            "initial Windows proof refuses an existing or incomplete v2 credential store"
+                .to_owned(),
+        );
+    }
+    if runtime_present {
+        return Err(
+            "initial Windows proof refuses an existing managed runtime state".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+async fn run_windows_initial_credential_probe(install_root: &Path) -> Result<(), String> {
+    require_initial_windows_credential_host(install_root)?;
+    let identity_path = install_root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
+    verify_canonical_dummy_ab_slots(
+        edge_shared_types::CredentialProjectionKind::Windows,
+        &identity_path,
+    )
+    .await?;
+    println!("operation=CREDENTIAL_INITIAL_PROBE");
+    println!("credential_projection=WINDOWS");
+    println!("credential_slot_A=EXACT_DUMMY");
+    println!("credential_slot_B=EXACT_DUMMY");
+    println!("credential_store_present=false");
+    println!("credential_provider_mutations=0");
+    println!("credential_runtime_mutations=0");
+    println!("windows_tun_mutations=0");
+    println!("windows_dns_mutations=0");
+    println!("credential_initial_authority=NOT_COMMITTED");
+    Ok(())
 }
 
 async fn stage_windows_credential_candidate_from_worker(
@@ -4922,6 +4984,18 @@ mod tests {
             active_release_set_sha256: None,
         };
         assert!(encode_windows_privileged_result(&result).is_ok());
+    }
+
+    #[test]
+    fn initial_windows_proof_refuses_active_or_incomplete_local_state() {
+        assert!(initial_windows_credential_eligibility(false, false).is_ok());
+        assert!(initial_windows_credential_eligibility(true, false)
+            .unwrap_err()
+            .contains("incomplete v2 credential store"));
+        assert!(initial_windows_credential_eligibility(false, true)
+            .unwrap_err()
+            .contains("managed runtime state"));
+        assert!(initial_windows_credential_eligibility(true, true).is_err());
     }
 
     #[test]
