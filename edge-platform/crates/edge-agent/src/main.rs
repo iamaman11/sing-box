@@ -174,6 +174,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("network_route_count={}", network.routes.len());
             let mesh = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
             print_mesh_state_evidence(&mesh);
+            print_vm_rendered_credential_source(&stack_dir);
             Ok(())
         }
         cli::LocalCommand::BootstrapBase => {
@@ -1533,6 +1534,106 @@ fn read_legacy_vm_runtime_secrets(stack_dir: &Path) -> Result<ApplicationRuntime
         )
     })?;
     ApplicationRuntimeSecrets::parse_env(&raw)
+}
+
+// Observe what the on-disk runtime configuration actually contains, not just
+// whether a Cloudflare Worker or a local credential pointer exists.
+// This is read-only and never prints secret values, digests, or full env content.
+// A matching rendered file does not prove the running container loaded it.
+#[derive(Debug, PartialEq, Eq)]
+enum VmRenderedCredentialSource {
+    V2Active {
+        delivery_generation: u64,
+        tunnel_auth_generation: u64,
+        reality_generation: u64,
+        line2_generation: u64,
+    },
+    LegacyLocal,
+    Unproven(&'static str),
+}
+
+fn observe_vm_rendered_credential_source(stack_dir: &Path) -> VmRenderedCredentialSource {
+    let rendered = match fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE)) {
+        Ok(value) => value,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return VmRenderedCredentialSource::Unproven("RUNTIME_ENV_ABSENT");
+        }
+        Err(_) => return VmRenderedCredentialSource::Unproven("RUNTIME_ENV_UNREADABLE"),
+    };
+
+    let active = match active_vm_credential_bundle(stack_dir) {
+        Ok(value) => value,
+        Err(_) => return VmRenderedCredentialSource::Unproven("V2_STATE_INVALID"),
+    };
+    if let Some(bundle) = active.as_ref() {
+        let secrets = match ApplicationRuntimeSecrets::from_vm_bundle(bundle) {
+            Ok(value) => value,
+            Err(_) => return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID"),
+        };
+        if vm_runtime_environment(stack_dir, &secrets)
+            .is_ok_and(|expected| expected == rendered)
+        {
+            if let Some(edge_shared_types::credential_delivery_bundle::Payload::Vm(vm)) =
+                bundle.payload.as_ref()
+            {
+                if let (Some(tunnel), Some(reality), Some(line2)) = (
+                    vm.tunnel_auth.as_ref(),
+                    vm.reality_identity.as_ref(),
+                    vm.line2_proxy.as_ref(),
+                ) {
+                    return VmRenderedCredentialSource::V2Active {
+                        delivery_generation: bundle.generation,
+                        tunnel_auth_generation: tunnel.generation,
+                        reality_generation: reality.generation,
+                        line2_generation: line2.generation,
+                    };
+                }
+            }
+            return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID");
+        }
+    }
+
+    let legacy_path = match legacy_vm_runtime_secret_path(stack_dir) {
+        Ok(path) => path,
+        Err(_) => return VmRenderedCredentialSource::Unproven("LEGACY_PATH_INVALID"),
+    };
+    if legacy_path.is_file() {
+        let legacy = match read_legacy_vm_runtime_secrets(stack_dir) {
+            Ok(value) => value,
+            Err(_) => return VmRenderedCredentialSource::Unproven("LEGACY_STATE_INVALID"),
+        };
+        if vm_runtime_environment(stack_dir, &legacy)
+            .is_ok_and(|expected| expected == rendered)
+        {
+            return VmRenderedCredentialSource::LegacyLocal;
+        }
+    }
+    VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
+}
+
+fn print_vm_rendered_credential_source(stack_dir: &Path) {
+    match observe_vm_rendered_credential_source(stack_dir) {
+        VmRenderedCredentialSource::V2Active {
+            delivery_generation,
+            tunnel_auth_generation,
+            reality_generation,
+            line2_generation,
+        } => {
+            println!("credential_rendered_source=V2_ACTIVE_RENDERED");
+            println!("credential_delivery_generation={delivery_generation}");
+            println!("credential_tunnel_auth_generation={tunnel_auth_generation}");
+            println!("credential_reality_generation={reality_generation}");
+            println!("credential_line2_generation={line2_generation}");
+        }
+        VmRenderedCredentialSource::LegacyLocal => {
+            println!("credential_rendered_source=LEGACY_LOCAL_RENDERED");
+        }
+        VmRenderedCredentialSource::Unproven(reason) => {
+            println!("credential_rendered_source=UNPROVEN");
+            println!("credential_rendered_reason={reason}");
+        }
+    }
+    println!("credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF");
 }
 
 async fn apply_vm_credential_runtime(
@@ -5458,6 +5559,69 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("vultr-line1-gateway"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_only_credential_origin_distinguishes_legacy_v2_and_unproven() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::Unproven("RUNTIME_ENV_ABSENT")
+        );
+
+        // No real credential values are returned by this classification.
+        let legacy = ApplicationRuntimeSecrets::generate();
+        let private_dir = root.join(RUNTIME_SECRET_DIR);
+        fs::create_dir_all(&private_dir).unwrap();
+        fs::write(private_dir.join(RUNTIME_SECRET_FILE), legacy.render_env()).unwrap();
+        write_vm_runtime_environment(&stack, &legacy).unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::LegacyLocal
+        );
+
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        )
+        .unwrap();
+        let delivery = vm_test_credential_bundle(100, CredentialDeliverySlot::A);
+        store.stage_candidate(&delivery).unwrap();
+        store.promote_candidate().unwrap();
+
+        // A pointer update alone cannot claim the rendered runtime has switched.
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::LegacyLocal
+        );
+
+        let v2 = ApplicationRuntimeSecrets::from_vm_bundle(&delivery).unwrap();
+        write_vm_runtime_environment(&stack, &v2).unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::V2Active {
+                delivery_generation: 100,
+                tunnel_auth_generation: 7,
+                reality_generation: 3,
+                line2_generation: 2,
+            }
+        );
+
+        fs::write(stack.join(RUNTIME_ENV_FILE), "unrelated=not-a-runtime\n").unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
         );
 
         fs::remove_dir_all(root).unwrap();
