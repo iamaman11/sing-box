@@ -1226,7 +1226,10 @@ fn require_exact_secret_bindings(
 
 fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, String> {
     let projection_kind = projection_kind(projection)?;
-    let slots = [(SLOT_A, PROBE_GENERATION_A), (SLOT_B, PROBE_GENERATION_B)]
+    let slots = [
+        (SLOT_A, CREDENTIAL_DUMMY_PROBE_GENERATION_A),
+        (SLOT_B, CREDENTIAL_DUMMY_PROBE_GENERATION_B),
+    ]
         .into_iter()
         .map(|(name, generation)| {
             let payload = CredentialDeliveryBundle {
