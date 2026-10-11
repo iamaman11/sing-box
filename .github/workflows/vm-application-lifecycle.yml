@@ -662,39 +662,39 @@ jobs:
               exit 1
             fi
             if ! trusted_release="$(python3 -c '
-import json, re, sys
-try:
-    releases = json.load(sys.stdin)
-except (ValueError, TypeError):
-    sys.exit(2)
-if not isinstance(releases, list) or len(releases) > 100:
-    sys.exit(2)
-digest = "sha256:" + sys.argv[1]
-matches = []
-for item in releases:
-    if not isinstance(item, dict):
-        continue
-    tag = item.get("tag_name", "")
-    revision = item.get("target_commitish", "")
-    if (not isinstance(tag, str)
-        or re.fullmatch(r"edge-release-[0-9a-f]{64}", tag) is None
-        or not isinstance(revision, str)
-        or re.fullmatch(r"[0-9a-f]{40}", revision) is None
-        or item.get("draft") is not False
-        or item.get("prerelease") is not False
-        or not item.get("published_at")):
-        continue
-    for asset in item.get("assets", []):
-        if (isinstance(asset, dict)
-            and asset.get("name") == "edge-agent-linux-amd64"
-            and asset.get("state") == "uploaded"
-            and asset.get("digest") == digest):
-            matches.append((item["published_at"], tag))
-            break
-if not matches:
-    sys.exit(2)
-print(sorted(matches)[-1][1])
-' "${observed}" <<<"${release_index}")"; then
+          import json, re, sys
+          try:
+              releases = json.load(sys.stdin)
+          except (ValueError, TypeError):
+              sys.exit(2)
+          if not isinstance(releases, list) or len(releases) > 100:
+              sys.exit(2)
+          digest = "sha256:" + sys.argv[1]
+          matches = []
+          for item in releases:
+              if not isinstance(item, dict):
+                  continue
+              tag = item.get("tag_name", "")
+              revision = item.get("target_commitish", "")
+              if (not isinstance(tag, str)
+                  or re.fullmatch(r"edge-release-[0-9a-f]{64}", tag) is None
+                  or not isinstance(revision, str)
+                  or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+                  or item.get("draft") is not False
+                  or item.get("prerelease") is not False
+                  or not item.get("published_at")):
+                  continue
+              for asset in item.get("assets", []):
+                  if (isinstance(asset, dict)
+                      and asset.get("name") == "edge-agent-linux-amd64"
+                      and asset.get("state") == "uploaded"
+                      and asset.get("digest") == digest):
+                      matches.append((item["published_at"], tag))
+                      break
+          if not matches:
+              sys.exit(2)
+          print(sorted(matches)[-1][1])
+          ' "${observed}" <<<"${release_index}")"; then
               echo 'vm_owner_identity=BLOCKED_NO_EXACT_PUBLISHED_RELEASE' >&2
               exit 1
             fi
