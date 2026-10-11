@@ -538,10 +538,13 @@ def main() -> None:
         and "external_tls_chain=UNPROVEN" in vm_agent_runtime
         and "line1_authenticated_endpoints=UNPROVEN" in vm_agent_runtime
         and "CredentialInitialAttest" in vm_agent_cli
-        and "verify_initial_vm_dummy_probe(&stack_dir)" in vm_agent_runtime
+        and "attest_initial_vm_host(" in vm_agent_runtime
+        and "verify_initial_vm_dummy_probe(stack_dir).await?" in vm_agent_runtime
         and "first_use_host_attestation_sha256(" in vm_agent_runtime
         and "expected_agent_sha256" in vm_agent_cli
-        and "verify_initial_agent_binary(&expected_agent_sha256)" in vm_agent_runtime
+        and "verify_initial_agent_binary(expected_agent_sha256)?" in vm_agent_runtime
+        and "async fn verify_initial_credential_host(" in vm_agent_runtime
+        and "request: Request<InitialCredentialHostProbeRequest>" in vm_agent_runtime
         and "credential_exact_agent_binary=true" in vm_agent_runtime
         and "file_sha256_lower_hex(" in vm_agent_runtime
         and 'Path::new("/proc/self/exe")' in vm_agent_runtime
