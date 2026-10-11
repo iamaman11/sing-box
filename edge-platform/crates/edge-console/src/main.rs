@@ -1790,7 +1790,8 @@ fn require_initial_windows_credential_host(install_root: &Path) -> Result<(), St
     // ambiguous. Never interpret it as an unused first-enrollment slot.
     let store_present = windows_credential_store_path(install_root).exists();
     let runtime_present = windows_runtime_state_path(install_root).exists();
-    initial_windows_credential_eligibility(store_present, runtime_present)?;
+    let config_present = local_singbox_config_path(install_root).exists();
+    initial_windows_credential_eligibility(store_present, runtime_present, config_present)?;
     load_verified_activation(install_root).map_err(|err| {
         format!("initial Windows proof requires an exact immutable release: {err}")
     })?;
@@ -1800,6 +1801,7 @@ fn require_initial_windows_credential_host(install_root: &Path) -> Result<(), St
 fn initial_windows_credential_eligibility(
     store_present: bool,
     runtime_present: bool,
+    config_present: bool,
 ) -> Result<(), String> {
     if store_present {
         return Err(
@@ -1809,6 +1811,9 @@ fn initial_windows_credential_eligibility(
     }
     if runtime_present {
         return Err("initial Windows proof refuses an existing managed runtime state".to_owned());
+    }
+    if config_present {
+        return Err("initial Windows proof refuses an existing rendered sing-box config".to_owned());
     }
     Ok(())
 }
@@ -4987,18 +4992,21 @@ mod tests {
 
     #[test]
     fn initial_windows_proof_refuses_active_or_incomplete_local_state() {
-        assert!(initial_windows_credential_eligibility(false, false).is_ok());
+        assert!(initial_windows_credential_eligibility(false, false, false).is_ok());
         assert!(
-            initial_windows_credential_eligibility(true, false)
+            initial_windows_credential_eligibility(true, false, false)
                 .unwrap_err()
                 .contains("incomplete v2 credential store")
         );
         assert!(
-            initial_windows_credential_eligibility(false, true)
+            initial_windows_credential_eligibility(false, true, false)
                 .unwrap_err()
                 .contains("managed runtime state")
         );
-        assert!(initial_windows_credential_eligibility(true, true).is_err());
+        assert!(initial_windows_credential_eligibility(true, true, true).is_err());
+        assert!(initial_windows_credential_eligibility(false, false, true)
+            .unwrap_err()
+            .contains("rendered sing-box config"));
     }
 
     #[test]
