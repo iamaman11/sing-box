@@ -232,6 +232,19 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("credential_runtime_mutations=0");
             Ok(())
         }
+        cli::LocalCommand::CredentialInitialVerify { generation } => {
+            verify_initial_vm_credential_functional(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_VERIFY");
+            println!("credential_generation={generation}");
+            println!("credential_initial_state=APPLIED_NOT_PROMOTED");
+            println!("line2_authenticated_endpoints=6");
+            println!("line1_authenticated_endpoints=UNPROVEN");
+            println!("credential_pair_committed=false");
+            println!("credential_runtime_mutations=0");
+            Ok(())
+        }
         cli::LocalCommand::CredentialInitialApply { generation } => {
             initial_apply_vm_credential(&stack_dir, generation)
                 .await
@@ -1597,6 +1610,52 @@ fn require_no_vm_application_containers(observation: &DockerObservation) -> Resu
             ));
         }
     }
+    Ok(())
+}
+
+fn validate_unpromoted_vm_initial_state(
+    state: &LocalCredentialState,
+    generation: u64,
+) -> Result<(), String> {
+    if generation == 0 || state.active.is_some() || state.previous.is_some() {
+        return Err("initial VM functional proof refuses active/previous or zero generation".to_owned());
+    }
+    let candidate = state.candidate.as_ref().ok_or_else(|| {
+        "initial VM functional proof requires exactly one staged candidate".to_owned()
+    })?;
+    if candidate.generation != generation {
+        return Err("initial VM functional proof refuses candidate generation mismatch".to_owned());
+    }
+    Ok(())
+}
+
+async fn verify_initial_vm_credential_functional(
+    stack_dir: &Path,
+    generation: u64,
+) -> Result<(), String> {
+    let store = open_vm_credential_store(stack_dir)?;
+    let state = store.read_state()?.ok_or_else(|| {
+        "initial VM functional proof requires a persisted candidate state".to_owned()
+    })?;
+    validate_unpromoted_vm_initial_state(&state, generation)?;
+    let candidate = state.candidate.as_ref().ok_or_else(|| {
+        "initial VM functional proof candidate disappeared".to_owned()
+    })?;
+    let bundle = store.read_bundle(candidate)?;
+    verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
+    let docker = observe_docker().await?;
+    if !docker.reachable {
+        return Err("initial VM functional proof cannot observe Docker".to_owned());
+    }
+    for name in ["vultr-warp-egress", "vultr-line1-gateway", "vultr-line2-proxy"] {
+        if !docker.container_running(name) {
+            return Err(format!("initial VM functional proof requires running container {name}"));
+        }
+    }
+    // Real authenticated 204 through each of six direct/WARP HTTP,
+    // SOCKS5 and HTTPS endpoints. Reuse the existing native quality owner;
+    // no configuration change, pointer promotion, or secret export.
+    line2_quality::measure(stack_dir, read_typed_runtime_environment)?;
     Ok(())
 }
 
@@ -4998,6 +5057,28 @@ mod tests {
             root.join("runtime-secrets/application-v2")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn vm_initial_functional_gate_requires_exact_unpromoted_candidate() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        ).unwrap();
+        let empty = LocalCredentialState::default();
+        assert!(validate_unpromoted_vm_initial_state(&empty, 109).is_err());
+        let bundle = vm_test_credential_bundle(109, CredentialDeliverySlot::A);
+        let state = store.stage_delivery_candidate(&bundle).unwrap();
+        assert!(validate_unpromoted_vm_initial_state(&state, 109).is_ok());
+        assert!(validate_unpromoted_vm_initial_state(&state, 110).is_err());
+        assert!(validate_unpromoted_vm_initial_state(&state, 0).is_err());
+        let mut unexpected_active = state.clone();
+        unexpected_active.active = unexpected_active.candidate.take();
+        assert!(validate_unpromoted_vm_initial_state(&unexpected_active, 109).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
