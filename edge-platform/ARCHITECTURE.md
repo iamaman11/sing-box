@@ -433,15 +433,18 @@ DNS/management access. A runtime already serving legacy traffic must not be
 restarted or switched to perform initial enrollment without this safety proof;
 testing a candidate is not evidence of successful application.
 
-After the exact applied VM environment + ready runtime and exact applied Windows
-state/config are independently observed, a coordinated commit may promote the
-paired candidate generation; both local `Promote` paths now reject a candidate
-whose generated artifacts are not the exact candidate generation, and VM also
-requires a READY runtime. These gates prove local application, not the independent
-end-to-end functional check. If either host is unknown or disagrees, stop without
-claiming `ACCEPTED`; no implicit legacy fallback, generation guessing, or
-retransmission after an uncertain provider mutation. Only a successful paired
-cutover permits legacy credential-file deletion and normal v2 rotation.
+Both existing rotation `ApplyCandidate` and `Promote` operations require an
+established local active Worker-v2 generation; no-active-v2 initial enrollment
+cannot be simulated by these commands. VM promotion checks the exact rendered
+candidate environment and local READY state; Windows promotion checks the exact
+rendered candidate state/config. **These are necessary on-disk/readiness checks,
+not proof that a running process consumed those credentials.** Container reload,
+authenticated Line1 E2E and the independent Windows control recovery gate require
+separate physical evidence before an explicit paired initial cutover is accepted.
+If either host is unknown or disagrees, stop without claiming `ACCEPTED`; no
+implicit legacy fallback, generation guessing, or retransmission after an
+uncertain provider mutation. Only a successful paired cutover permits legacy
+credential-file deletion and normal v2 rotation.
 
 **Physical starting state 2026-10-11:** Cloudflare fixed A/B contract PASS;
 VM native diagnostic `credential_state_present=false`, three running containers;
