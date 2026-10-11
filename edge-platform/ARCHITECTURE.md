@@ -417,6 +417,22 @@ The new stack receives independently generated credential generations.
 
 ### Initial paired Worker-v2 enrollment (not steady-state rotation)
 
+**Initial fixed A/B slot proof (N1, read-only):** Cloudflare secret binding
+metadata never establishes that an A/B slot is unused. The VM's typed
+`edge-agent local credential-initial-probe` first proves a clean host and
+observes both well-known *nonsecret* Worker probe generations through the
+permanent VM Access service identity. The existing Worker must return two
+exact canonical dummy bundles of the VM projection (different generations),
+with no live payload, and no ambiguity or missing response; otherwise it
+fails closed. Provider and runtime mutations are zero, and no Worker payload
+or Access secret is printed. Both probe generation constants are shared with
+the Rust Worker publisher. Windows must independently prove its own projection
+and the initial issue must enforce both proofs at the final provider publish
+boundary before any A/B secret replacement. A successful VM-only proof does
+**not** authorize the provider to issue credentials and is **not** evidence
+of Line1/Line2 authentication. No credential rotation command may bypass
+this separate initial issuance gate.
+
 **Fresh VM policy-only bootstrap (N1, source only):** the typed
 `edge-agent local bundle-stage-initial` accepts only an exact digest-bound
 application bundle with immutable Compose, pinned image digests and Git-owned
