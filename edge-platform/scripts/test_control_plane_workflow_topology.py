@@ -390,8 +390,10 @@ def main() -> None:
         "CredentialInitialApply { generation: u64 }" in vm_agent_cli
         and "initial_apply_vm_credential(&stack_dir, generation)" in vm_agent_runtime
         and "require_empty_vm_initial_credential_host(stack_dir)?" in initial_vm_apply
-        and "require_no_running_vm_application_containers()?" in initial_vm_apply
-        and initial_vm_apply.index("require_no_running_vm_application_containers()?")
+        and "let docker = observe_docker().await?;" in initial_vm_apply
+        and "require_no_vm_application_containers(&docker)?" in initial_vm_apply
+        and "Command::new(\"docker\")" not in initial_vm_apply
+        and initial_vm_apply.index("require_no_vm_application_containers(&docker)?")
         < initial_vm_apply.index("fetch_and_stage_vm_credential_candidate(")
         and "apply_vm_credential_runtime(stack_dir, &secrets).await?" in initial_vm_apply
         and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in initial_vm_apply
