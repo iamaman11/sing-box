@@ -442,6 +442,8 @@ Bollard owner, and reuses existing `line2_quality::measure` to perform
 five authenticated HTTP 204 samples through **each** of the six Line2
 HTTP/SOCKS5/HTTPS direct/WARP endpoints. It prints
 `line2_authenticated_endpoints=6` only after all samples pass, while keeping
+external direct-vs-WARP egress identity and external TLS chain `UNPROVEN`;
+these must be checked by independent external clients. It also keeps
 `line1_authenticated_endpoints=UNPROVEN` and
 `credential_pair_committed=false`. Thus a passed VM-local Line2 gate is
 neither a Windows tunnel proof nor permission to promote a credential.
