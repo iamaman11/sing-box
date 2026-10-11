@@ -446,6 +446,17 @@ def main() -> None:
         and "validate_initial_pair_provider_observation(" in credential_provider,
         "hosted initial provider gate must stay read-only and fail closed until both host attestations",
     )
+    publish_slot = credential_provider.split(
+        "async fn publish_rotation_slot(", 1
+    )[1].split("pub(crate) async fn verify_credential_plane_invariant(", 1)[0]
+    require(
+        publish_slot.count("cloudflare::patch_latest_worker_version_secrets(") == 1
+        and publish_slot.count("cloudflare::deploy_worker_version(") == 1
+        and "LATEST_VERSION_CHANGED_CONTENT_UNPROVEN" in publish_slot
+        and "stop without replay or deploy" in publish_slot
+        and "stop without replay;" in publish_slot,
+        "ambiguous Cloudflare PATCH/deploy may only reconcile read-only, never retry a mutation",
+    )
     vm_initial_functional = vm_agent_runtime.split(
         "async fn verify_initial_vm_credential_functional(", 1
     )[1].split("async fn initial_apply_vm_credential(", 1)[0]

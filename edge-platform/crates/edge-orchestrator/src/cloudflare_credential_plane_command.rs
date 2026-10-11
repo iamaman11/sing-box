@@ -364,29 +364,25 @@ async fn publish_rotation_slot(
     {
         Ok(version_id) => version_id,
         Err(err) => {
-            let observed = observe(control_token, desired).await?;
-            let current = projection_observation(&observed, &projection.projection)?;
-            if current.worker_latest_version_id == before_projection.worker_latest_version_id {
-                return Err(format!(
-                    "{} inactive-slot publication failed and read-only re-observation proved no new Worker version: {err}",
-                    projection.projection
-                ));
-            }
-            if current.worker_latest_version_tag.as_deref() != Some(material.version_tag.as_str())
-                || projection_delivery_state(desired, projection, &observed)?
-                    != ProjectionDeliveryState::FixedAbLatestPendingDeployment
-            {
-                return Err(format!(
-                    "{} inactive-slot publication outcome is uncertain after re-observation: {err}",
-                    projection.projection
-                ));
-            }
-            current.worker_latest_version_id.clone().ok_or_else(|| {
-                format!(
-                    "{} inactive-slot publication created no observable latest Worker version",
-                    projection.projection
-                )
-            })?
+            // Cloudflare hides secret values from GET. A new version is not
+            // proof that *our* exact opaque bytes landed. Neither retry the
+            // PATCH nor deploy an unverified candidate after a lost ACK.
+            let readback = observe(control_token, desired).await;
+            let evidence = match readback {
+                Ok(observed) => {
+                    let current = projection_observation(&observed, &projection.projection)?;
+                    if current.worker_latest_version_id == before_projection.worker_latest_version_id {
+                        "LATEST_VERSION_UNCHANGED"
+                    } else {
+                        "LATEST_VERSION_CHANGED_CONTENT_UNPROVEN"
+                    }
+                }
+                Err(_) => "READBACK_UNAVAILABLE",
+            };
+            return Err(format!(
+                "{} inactive-slot PATCH result is not confirmed; evidence={evidence}; stop without replay or deploy; source={err}",
+                projection.projection
+            ));
         }
     };
 
@@ -403,28 +399,12 @@ async fn publish_rotation_slot(
         if current.worker_active_version_ids == vec![version_id.clone()] {
             return Ok(());
         }
-        if current.worker_latest_version_id.as_deref() != Some(version_id.as_str())
-            || projection_delivery_state(desired, projection, &observed)?
-                != ProjectionDeliveryState::FixedAbLatestPendingDeployment
-        {
-            return Err(format!(
-                "{} candidate deployment outcome is uncertain after re-observation: {first_err}",
-                projection.projection
-            ));
-        }
-        cloudflare::deploy_worker_version(
-            rotation_token,
-            &desired.target_account_id,
-            &projection.worker_name,
-            &version_id,
-        )
-        .await
-        .map_err(|retry_err| {
-            format!(
-                "{} candidate deployment failed after re-observation proved the first attempt unchanged: first={first_err}; retry={retry_err}",
-                projection.projection
-            )
-        })?;
+        // Re-observation may confirm deployment succeeded, but it cannot
+        // authorize a second mutation when the first ACK was uncertain.
+        return Err(format!(
+            "{} candidate deployment not confirmed for exact version {}; stop without replay; source={first_err}",
+            projection.projection, version_id
+        ));
     }
 
     let after = observe(control_token, desired).await?;

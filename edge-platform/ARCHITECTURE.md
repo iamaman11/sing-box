@@ -417,6 +417,17 @@ The new stack receives independently generated credential generations.
 
 ### Initial paired Worker-v2 enrollment (not steady-state rotation)
 
+**Provider mutation fail-closed invariant:** a lost ACK for a credential Worker
+secret PATCH is not proof of which opaque bytes were stored, even if the
+latest Worker version advanced. The native rotation owner now reads version
+metadata and stops without deploying or retrying that PATCH. A failed deploy
+may be accepted only if read-only observation proves the exact previously
+returned version is already active; otherwise it stops without a second
+deploy. The initial pair publisher must add a durable pre-mutation journal
+and both host attestations before it gains any mutation authority. No
+cross-Worker atomicity or automatic replay is claimed.
+
+
 **Integrated N1/N2 operator contract (under construction):** a single
 `/credentials initial-pair-preflight <generation> <a|b>` request resolves the
 exact immutable orchestrator through GitHub and checks both Worker identities,
