@@ -5,6 +5,7 @@
 use edge_shared_types::{CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B};
 use serde::{Deserialize, Serialize};
 
+const MARKER_FAMILY: &str = "<!-- sing-box-credential-initial-attempt/";
 const MARKER: &str = "<!-- sing-box-credential-initial-attempt/v1 -->";
 const SCHEMA: &str = "sing-box.credential-initial-attempt/v1";
 
@@ -90,7 +91,7 @@ fn validate_journal_history(history: &str) -> Result<(), String> {
         let Some(body) = comment.body else {
             continue;
         };
-        if body.contains(MARKER) {
+        if body.contains(MARKER_FAMILY) {
             // No source may regenerate the first-use pair, even if an earlier
             // attempt was interrupted before PATCH. A missing/invalid record
             // is unknown, NOT permission to replay a mutation.
@@ -183,6 +184,7 @@ mod tests {
             "[",
             r#"[{"body":"<!-- sing-box-credential-initial-attempt/v1 --> broken"}]"#,
             r#"[{"body":"ignored <!-- sing-box-credential-initial-attempt/v1 --> {}"}]"#,
+            r#"[{"body":"<!-- sing-box-credential-initial-attempt/v2 --> {}"}]"#,
             r#"[{"body":"<!-- sing-box-credential-initial-attempt/v1 --> {\"schema\":\"unknown\"}"}]"#,
         ] {
             assert!(plan_initial_pair_reservation(&request(), body).is_err());
