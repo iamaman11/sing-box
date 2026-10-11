@@ -1338,3 +1338,18 @@ failed boot-ID-change proof reports post-observation evidence and refuses any
 mutation replay. The GitHub workflow surfaces both failure results before
 cleanup rather than hiding them in redirected output. Production or mismatched
 VM identities cannot invoke disposable forensics.
+
+
+### Exact initial pair provider intent (N1)
+
+The read-only native initial pair preflight produces
+`initial_pair_provider_intent_sha256`: a non-secret SHA-256 digest over the
+versioned intent schema, desired Cloudflare account, generation and slot,
+plus the independently observed VM and Windows Worker identity, exact
+active/latest version, Access application, service token and client identity.
+The same metadata may be observed repeatedly and yields the same digest.
+Any desired-generation, slot, Worker version or host Access change invalidates
+the digest; active-vs-latest version drift fails closed. The digest is designed
+to bind the future append-only GitHub provider-attempt journal and BOTH real
+host attestations, not to replace either. Current preflight remains read-only,
+does not issue credentials, and prints `initial_publication_authorized=false`.

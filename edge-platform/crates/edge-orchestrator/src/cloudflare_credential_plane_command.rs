@@ -210,6 +210,56 @@ fn validate_initial_pair_provider_observation(
     Ok(())
 }
 
+// A stable, non-secret journal key for the *observed* baseline of BOTH
+// Workers. Every eventual host attestation and append-only attempt record
+// must bind to this exact digest. Provider metadata alone cannot authorize
+// publication, regardless of this digest matching.
+fn initial_pair_provider_intent_sha256(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    generation: u64,
+    slot: CredentialDeliverySlotArg,
+) -> Result<String, String> {
+    validate_initial_pair_provider_observation(desired, observed, generation, slot)?;
+    let vm = projection_observation(observed, "vm")?;
+    let windows = projection_observation(observed, "windows")?;
+    let version_id = |projection: &ProjectionObservation| -> Result<&str, String> {
+        let latest = projection.worker_latest_version_id.as_deref().ok_or_else(|| {
+            format!("{} initial intent has no latest Worker version", projection.projection)
+        })?;
+        if projection.worker_active_version_ids.as_slice() != [latest] {
+            return Err(format!(
+                "{} initial intent refuses Worker version race",
+                projection.projection
+            ));
+        }
+        Ok(latest)
+    };
+    let identity = serde_json::json!({
+        "schema": "credential-initial-pair-provider-intent/v1",
+        "account_id": desired.target_account_id,
+        "generation": generation,
+        "slot": slot.as_str(),
+        "vm": {
+            "worker_id": vm.worker_id,
+            "latest_active_version_id": version_id(vm)?,
+            "access_application_id": vm.access_application_id,
+            "access_service_token_id": vm.host_service_token_id,
+            "access_client_id": vm.host_service_token_client_id,
+        },
+        "windows": {
+            "worker_id": windows.worker_id,
+            "latest_active_version_id": version_id(windows)?,
+            "access_application_id": windows.access_application_id,
+            "access_service_token_id": windows.host_service_token_id,
+            "access_client_id": windows.host_service_token_client_id,
+        },
+    });
+    let bytes = serde_json::to_vec(&identity)
+        .map_err(|err| format!("failed to encode initial provider intent: {err}"))?;
+    Ok(sha256_hex(&bytes))
+}
+
 async fn initial_pair_preflight(
     control_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
@@ -217,7 +267,8 @@ async fn initial_pair_preflight(
     slot: CredentialDeliverySlotArg,
 ) -> Result<(), String> {
     let observed = observe(control_token, desired).await?;
-    validate_initial_pair_provider_observation(desired, &observed, generation, slot)?;
+    let provider_intent_sha256 =
+        initial_pair_provider_intent_sha256(desired, &observed, generation, slot)?;
     println!("operation=CREDENTIAL_INITIAL_PAIR_PREFLIGHT");
     println!("credential_generation={generation}");
     println!("credential_slot={}", slot.as_str());
@@ -225,6 +276,7 @@ async fn initial_pair_preflight(
     println!("provider_topology=EXACT_FIXED_AB");
     println!("vm_access_identity_distinct=true");
     println!("windows_access_identity_distinct=true");
+    println!("initial_pair_provider_intent_sha256={provider_intent_sha256}");
     println!("host_dummy_slot_attestations=REQUIRED");
     println!("worker_version_bound_publish=NOT_IMPLEMENTED");
     println!("initial_publication_authorized=false");
@@ -1583,6 +1635,86 @@ mod tests {
             .version_tag;
         current.worker_version_tag = Some(version_tag.clone());
         current.worker_latest_version_tag = Some(version_tag);
+    }
+
+    #[test]
+    fn initial_provider_intent_is_exact_version_and_identity_bound() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "vm");
+        make_terminal(&mut observed, "windows");
+
+        let initial =
+            initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
+                .unwrap();
+        assert_eq!(initial.len(), 64);
+        assert!(initial.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::A
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                208,
+                CredentialDeliverySlotArg::A
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::B
+            )
+            .unwrap()
+        );
+
+        // Even a fully valid new Worker deployment invalidates all previously
+        // observed attestations. Never reuse an intent under a changed version.
+        observed.projections[0].worker_latest_version_id =
+            Some("windows-updated-version".to_owned());
+        observed.projections[0].worker_active_version_ids =
+            vec!["windows-updated-version".to_owned()];
+        let changed =
+            initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
+                .unwrap();
+        assert_ne!(initial, changed);
+        observed.projections[0].worker_active_version_ids =
+            vec!["windows-version-id".to_owned()];
+        assert!(
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::A
+            )
+            .is_err()
+        );
+        observed.projections[0].worker_latest_version_id =
+            Some("windows-version-id".to_owned());
+        observed.projections[0].host_service_token_client_id =
+            Some("replaced-access-client-id".to_owned());
+        assert_ne!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::A
+            )
+            .unwrap()
+        );
     }
 
     #[test]

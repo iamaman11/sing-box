@@ -441,6 +441,9 @@ def main() -> None:
         and "grep -Fxq 'initial_publication_authorized=false'" in credentials
         and "grep -Fxq 'credential_provider_mutations=0'" in credentials
         and "credentials initial-pair-publish" not in credentials
+        and "initial_pair_provider_intent_sha256={provider_intent_sha256}" in credential_provider
+        and "initial_pair_provider_intent_sha256(" in credential_provider
+        and 'credential-initial-pair-provider-intent/v1' in credential_provider
         and "initial_publication_authorized=false" in credential_provider
         and "initial_pair_preflight(&control_token" in credential_provider
         and "validate_initial_pair_provider_observation(" in credential_provider,
