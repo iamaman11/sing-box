@@ -24,6 +24,24 @@ pub(crate) fn validate(release_context: &OrchestrationContext) -> Result<(), Str
     Ok(())
 }
 
+/// Read-only provider boundary for the real GitHub operator workflow.
+/// Not a DNS publish path, and does not depend on optional Android Mesh.
+pub(crate) async fn verify_dns_noop(
+    release_context: &OrchestrationContext,
+) -> Result<(), String> {
+    release_context.application_release_authority()?;
+    let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
+    dns_verify_noop(spec, spec).await.map_err(|err| {
+        format!("production DNS NOOP preflight refused: explicit authenticated cutover required: {err}")
+    })?;
+    print_identity(release_context, &composition, "PASS");
+    println!("operation=PRODUCTION_DNS_NOOP");
+    println!("provider_mutations=0");
+    println!("production_runtime_mutations=0");
+    Ok(())
+}
+
 pub(crate) async fn enroll_runtime(
     release_context: &OrchestrationContext,
     edge_agent_artifact_path: &Path,
