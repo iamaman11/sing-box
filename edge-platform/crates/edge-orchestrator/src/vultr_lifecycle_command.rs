@@ -578,7 +578,7 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
     let operator_private_key_path = operator_private_key_path_from_env()?;
     verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
     let mut provider = operational_provider_from_env()?;
-    let (observation, authorized) = build_host_substrate_authority(
+    let result = build_host_substrate_authority(
         &mut provider,
         &desired,
         machine,
@@ -588,7 +588,21 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
         &substrate,
         HostSubstrateExecutionPolicy::default(),
     )
-    .await?;
+    .await;
+    let (observation, authorized) = match result {
+        Ok(value) => value,
+        Err(err) => {
+            // Preserve the failure, but capture one existing native, typed,
+            // read-only forensic observation before disposable cleanup.
+            // Never diagnose unrelated production machines through this path.
+            if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+                let forensic =
+                    acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+                println!("disposable_ssh_failure_forensics={forensic}");
+            }
+            return Err(err);
+        }
+    };
     if authorized.plan.action != HostSubstrateAction::Noop {
         return Err(format!(
             "host substrate verify is BLOCKED; next action is {:?}: {}",
@@ -2725,6 +2739,14 @@ pub(crate) async fn acceptance_require_clean_room(
     Ok(())
 }
 
+fn is_disposable_ssh_forensic_target(environment: &str, machine_id: &str) -> bool {
+    matches!(
+        (environment, machine_id),
+        ("application-acceptance", "application-acceptance-1")
+            | ("lifecycle-acceptance", "lifecycle-acceptance-1")
+    )
+}
+
 /// Capture read-only provider/firewall/TCP/SSH phases before the disposable
 /// acceptance coordinator compensates the VM. This function never mutates or
 /// retries an installation. Every diagnostic field is fixed-shape and bounded.
@@ -2743,7 +2765,7 @@ pub(crate) async fn acceptance_ssh_failure_forensics(
         return unavailable();
     };
     // This forensic path must never observe an unrelated production machine.
-    if desired.environment != "application-acceptance" || machine_id != "application-acceptance-1" {
+    if !is_disposable_ssh_forensic_target(&desired.environment, machine_id) {
         return unavailable();
     }
     let Ok(machine) = exact_existing_machine_observation(&desired, machine_id).await else {
@@ -3463,6 +3485,30 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disposable_ssh_forensics_never_target_production_or_wrong_machine() {
+        assert!(is_disposable_ssh_forensic_target(
+            "lifecycle-acceptance",
+            "lifecycle-acceptance-1"
+        ));
+        assert!(is_disposable_ssh_forensic_target(
+            "application-acceptance",
+            "application-acceptance-1"
+        ));
+        assert!(!is_disposable_ssh_forensic_target(
+            "production",
+            "production-1"
+        ));
+        assert!(!is_disposable_ssh_forensic_target(
+            "lifecycle-acceptance",
+            "production-1"
+        ));
+        assert!(!is_disposable_ssh_forensic_target(
+            "production",
+            "lifecycle-acceptance-1"
+        ));
+    }
+
     use super::*;
 
     #[test]

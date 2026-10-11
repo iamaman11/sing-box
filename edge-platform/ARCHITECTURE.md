@@ -1308,3 +1308,16 @@ Delete dead behavior before splitting large Rust composition roots.
 - generated external config is never first-party authority;
 - no TUN/DNS/default-route/system-proxy ownership before its explicit gate;
 - foreign projects remain no-touch at all times; legacy sing-box ownership changes only inside the explicit issue-#26 handoff gate.
+
+
+### Disposable VM SSH failure visibility (N1/N2)
+
+The existing native Rust `vultr-lifecycle substrate-verify` now reports one
+`disposable_ssh_failure_forensics` observation on strict substrate failure,
+before the existing cleanup. The same typed provider/firewall/controller-egress,
+TCP:22 and strict SSH handshake-stage observer already used for application
+acceptance is reused for the specifically owned `lifecycle-acceptance-1` VM.
+Every other machine/environment, including production, is excluded by typed
+identity. This adds no new command, transport, service, retry, sleep or mutation;
+provider power-ready is not treated as guest SSH-ready. It classifies the next
+physical incident rather than silently retrying instance creation.

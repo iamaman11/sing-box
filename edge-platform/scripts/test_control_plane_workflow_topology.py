@@ -1615,6 +1615,23 @@ def main() -> None:
         and 'run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"' in vultr,
         "Vultr backend must expose the existing typed read-only instance action plan through the sole router",
     )
+    substrate_verify = vultr_lifecycle_command.split(
+        "async fn run_substrate_verify(", 1
+    )[1].split("async fn run_transport_proof(", 1)[0]
+    require(
+        "is_disposable_ssh_forensic_target(&desired.environment, &args[1])"
+        in substrate_verify
+        and "acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1])"
+        in substrate_verify
+        and "disposable_ssh_failure_forensics=" in substrate_verify
+        and "is_disposable_ssh_forensic_target(environment: &str, machine_id: &str)"
+        in vultr_lifecycle_command
+        and '("lifecycle-acceptance", "lifecycle-acceptance-1")'
+        in vultr_lifecycle_command
+        and "mutations_performed" in vultr_lifecycle_command
+        and "capture_ssh_transport_stage_once(" in vultr_lifecycle_command,
+        "disposable lifecycle SSH failure must expose native typed read-only phase evidence before cleanup",
+    )
     require(
         vpc.count("group: vultr-control-plane-production") == 1,
         "VPC backend must serialize its execute mutation job",
