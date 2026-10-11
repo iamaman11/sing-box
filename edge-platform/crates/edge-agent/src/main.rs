@@ -5472,7 +5472,10 @@ mod tests {
         without_mesh.mesh_runtime_ready = Some(false);
         let independent =
             verify_bootstrap_post_state(&root, BootstrapMode::BootstrapBase, &without_mesh);
-        assert!(independent.success, "Line 3 must not gate Line 1/2 readiness");
+        assert!(
+            independent.success,
+            "Line 3 must not gate Line 1/2 readiness"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
