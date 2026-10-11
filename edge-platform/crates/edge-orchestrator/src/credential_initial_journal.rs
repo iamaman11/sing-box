@@ -116,7 +116,6 @@ fn validate_journal_history(history: &str) -> Result<(), String> {
     Ok(())
 }
 
-
 /// Verify exactly one **already persisted** GitHub BEGIN with the entire
 /// original record unchanged. This is read-only and is not permission to PATCH:
 /// only an independently authorized, single-run host+provider owner may
@@ -125,7 +124,8 @@ pub(crate) fn verify_recorded_initial_attempt(
     history: &str,
     exact_record: &str,
 ) -> Result<(), String> {
-    let (marker, content) = exact_record.split_once('\n')
+    let (marker, content) = exact_record
+        .split_once('\n')
         .ok_or_else(|| "initial journal readback requires canonical record marker".to_owned())?;
     if marker != MARKER || content.trim().is_empty() {
         return Err("initial journal readback refuses malformed record marker".to_owned());
@@ -145,8 +145,9 @@ pub(crate) fn verify_recorded_initial_attempt(
         release_set_sha256: record.release_set_sha256,
         github_run_id: record.github_run_id,
     })?;
-    let comments: Vec<IssueComment> = serde_json::from_str(history)
-        .map_err(|_| "initial journal readback requires complete GitHub comment array".to_owned())?;
+    let comments: Vec<IssueComment> = serde_json::from_str(history).map_err(|_| {
+        "initial journal readback requires complete GitHub comment array".to_owned()
+    })?;
     let mut seen = 0;
     for comment in comments {
         if comment.body.trim().is_empty() {
@@ -154,7 +155,9 @@ pub(crate) fn verify_recorded_initial_attempt(
         }
         if comment.body.contains(MARKER_FAMILY) {
             if comment.body != exact_record {
-                return Err("initial journal readback detected different or malformed BEGIN".to_owned());
+                return Err(
+                    "initial journal readback detected different or malformed BEGIN".to_owned(),
+                );
             }
             seen += 1;
         }

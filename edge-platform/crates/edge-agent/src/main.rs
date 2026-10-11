@@ -236,8 +236,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             // The candidate agent must be the exact immutable binary named
             // by the trusted ReleaseSet resolver, not just an arbitrary VM
             // process presented alongside a caller-supplied release digest.
-            verify_initial_agent_binary(&expected_agent_sha256)
-                .map_err(AgentError::Command)?;
+            verify_initial_agent_binary(&expected_agent_sha256).map_err(AgentError::Command)?;
             verify_initial_vm_dummy_probe(&stack_dir)
                 .await
                 .map_err(AgentError::Command)?;
@@ -658,13 +657,13 @@ fn verify_initial_agent_binary(expected_sha256: &str) -> Result<(), String> {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        return Err("VM first-use proof requires an exact SHA-256 from immutable ReleaseSet".to_owned());
+        return Err(
+            "VM first-use proof requires an exact SHA-256 from immutable ReleaseSet".to_owned(),
+        );
     }
     // Hash the kernel's live executable handle, not its resolved pathname:
     // the path can be replaced while an old process is still running.
-    let observed = edge_shared_types::file_sha256_lower_hex(
-        Path::new("/proc/self/exe"),
-    )?;
+    let observed = edge_shared_types::file_sha256_lower_hex(Path::new("/proc/self/exe"))?;
     if observed != expected_sha256 {
         return Err("VM first-use attestation refuses non-ReleaseSet agent bytes".to_owned());
     }

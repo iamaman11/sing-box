@@ -141,8 +141,9 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         } => {
             let history = fs::read_to_string(journal_history_path)
                 .map_err(|err| format!("initial journal readback cannot open history: {err}"))?;
-            let exact = fs::read_to_string(exact_record_path)
-                .map_err(|err| format!("initial journal readback cannot open intended record: {err}"))?;
+            let exact = fs::read_to_string(exact_record_path).map_err(|err| {
+                format!("initial journal readback cannot open intended record: {err}")
+            })?;
             verify_recorded_initial_attempt(&history, &exact)?;
             println!("credential_initial_journal_exact_begin=true");
             println!("credential_provider_mutations=0");
