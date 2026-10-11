@@ -35,9 +35,10 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, CredentialDeliverySlot, CredentialProjectionKind, CredentialStateObservation,
-    CredentialTransitionAction, Empty, FileCategory, FilePresence, Ipv4NetworkObservation,
-    InitialCredentialHostProbeRequest, InitialCredentialHostProbeResponse, LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    BundleFile, ContainerRuntimeObservation, CredentialDeliverySlot, CredentialProjectionKind,
+    CredentialStateObservation, CredentialTransitionAction, Empty, FileCategory, FilePresence,
+    InitialCredentialHostProbeRequest, InitialCredentialHostProbeResponse, Ipv4NetworkObservation,
+    LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
     ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
@@ -789,7 +790,9 @@ impl AgentService for AgentServerImpl {
         let slot = CredentialDeliverySlot::try_from(request.slot)
             .map_err(|_| Status::invalid_argument("unknown initial credential slot"))?;
         if !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B) {
-            return Err(Status::invalid_argument("initial credential slot must be A or B"));
+            return Err(Status::invalid_argument(
+                "initial credential slot must be A or B",
+            ));
         }
         let digest = attest_initial_vm_host(
             &self.stack_dir,
