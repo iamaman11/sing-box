@@ -818,7 +818,7 @@ def main() -> None:
         "CredentialTransitionAction::Promote => {", 1
     )[1].split("CredentialTransitionAction::ApplyLegacy =>", 1)[0]
     # Credential transitions are implemented in their isolated source module.
-    windows_transition = (ROOT / "edge-platform/crates/edge-console/src/credential_transition.rs").read_text(encoding="utf-8")
+    windows_transition = Path("edge-platform/crates/edge-console/src/credential_transition.rs").read_text(encoding="utf-8")
     windows_promote = windows_transition.split(
         "CredentialTransitionAction::Promote => {", 1
     )[1].split("CredentialTransitionAction::ApplyActive =>", 1)[0]
