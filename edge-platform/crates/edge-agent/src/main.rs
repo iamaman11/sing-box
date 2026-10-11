@@ -4620,7 +4620,23 @@ mod tests {
         write_vm_runtime_environment(&stack, &secrets).unwrap();
         verify_vm_candidate_runtime_materialized(&stack, &candidate).unwrap();
 
-        let second = vm_test_credential_bundle(110, CredentialDeliverySlot::B);
+        // Distinct delivery metadata may legitimately describe identical runtime
+        // bytes (e.g. a class-scoped delta with no VM-facing change). Only a
+        // credential-value mismatch is evidence of an unapplied VM candidate.
+        let mut second = vm_test_credential_bundle(110, CredentialDeliverySlot::B);
+        verify_vm_candidate_runtime_materialized(&stack, &second).unwrap();
+        let edge_shared_types::credential_delivery_bundle::Payload::Vm(vm) =
+            second.payload.as_mut().unwrap()
+        else {
+            unreachable!("VM-only fixture")
+        };
+        vm.tunnel_auth
+            .as_mut()
+            .unwrap()
+            .direct
+            .as_mut()
+            .unwrap()
+            .hysteria2_password = "f".repeat(64);
         assert!(verify_vm_candidate_runtime_materialized(&stack, &second).is_err());
         fs::remove_dir_all(root).unwrap();
     }
