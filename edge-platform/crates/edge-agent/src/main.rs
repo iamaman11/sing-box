@@ -232,6 +232,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             provider_intent_sha256,
             release_set_sha256,
             expected_agent_sha256,
+            run_id,
         } => {
             // The candidate agent must be the exact immutable binary named
             // by the trusted ReleaseSet resolver, not just an arbitrary VM
@@ -251,12 +252,14 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 &provider_intent_sha256,
                 &release_set_sha256,
                 &machine,
+                run_id,
             )
             .map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_INITIAL_ATTEST");
             println!("credential_projection=VM");
             println!("credential_generation={generation}");
             println!("credential_host_attestation_sha256={digest}");
+            println!("credential_github_run_id={run_id}");
             println!("credential_exact_agent_binary=true");
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");

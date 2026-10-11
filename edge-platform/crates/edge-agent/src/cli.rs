@@ -62,6 +62,7 @@ pub(crate) enum LocalCommand {
         provider_intent_sha256: String,
         release_set_sha256: String,
         expected_agent_sha256: String,
+        run_id: u64,
     },
     // Strictly fresh, non-serving VM only; never a rotation or legacy handoff.
     CredentialInitialApply {
@@ -168,6 +169,7 @@ mod tests {
                 &"a".repeat(64),
                 &"b".repeat(64),
                 &"c".repeat(64),
+                "1011",
             ])
             .is_ok()
         );

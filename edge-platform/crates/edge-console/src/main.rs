@@ -239,12 +239,14 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 &args.provider_intent_sha256,
                 &args.release_set_sha256,
                 &machine,
+                args.run_id,
             )
             .map_err(ConsoleError::Command)?;
             println!("operation=CREDENTIAL_INITIAL_ATTEST");
             println!("credential_projection=WINDOWS");
             println!("credential_generation={}", args.generation);
             println!("credential_host_attestation_sha256={digest}");
+            println!("credential_github_run_id={}", args.run_id);
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");
             println!("windows_tun_mutations=0");

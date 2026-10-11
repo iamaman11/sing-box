@@ -145,6 +145,7 @@ pub(crate) struct InitialCredentialAttestArgs {
     pub slot: String,
     pub provider_intent_sha256: String,
     pub release_set_sha256: String,
+    pub run_id: u64,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }

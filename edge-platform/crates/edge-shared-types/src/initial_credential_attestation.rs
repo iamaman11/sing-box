@@ -24,6 +24,7 @@ pub fn first_use_host_attestation_sha256(
     provider_intent_sha256: &str,
     release_set_sha256: &str,
     host_identity: &str,
+    github_run_id: u64,
 ) -> Result<String, String> {
     if !matches!(
         projection,
@@ -40,6 +41,9 @@ pub fn first_use_host_attestation_sha256(
     if !lowercase_sha256(provider_intent_sha256) || !lowercase_sha256(release_set_sha256) {
         return Err("initial attestation requires exact lowercase SHA-256 inputs".to_owned());
     }
+    if github_run_id == 0 {
+        return Err("initial attestation requires non-zero GitHub run identity".to_owned());
+    }
     let machine = host_identity.trim();
     if machine.is_empty() || machine.len() > 256 || machine.contains(['\n', '\r']) {
         return Err("initial attestation needs a bounded local machine identity".to_owned());
@@ -53,6 +57,7 @@ pub fn first_use_host_attestation_sha256(
         provider_intent_sha256.as_bytes(),
         release_set_sha256.as_bytes(),
         machine.as_bytes(),
+        &github_run_id.to_be_bytes(),
     ] {
         bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
         bytes.extend_from_slice(field);
@@ -80,6 +85,7 @@ mod tests {
                 &arguments.0,
                 &arguments.1,
                 machine,
+                1011,
             )
             .unwrap()
         };
@@ -138,6 +144,23 @@ mod tests {
     }
 
     #[test]
+    fn attestation_binds_github_run_identity() {
+        let compute = |run_id| {
+            first_use_host_attestation_sha256(
+                CredentialProjectionKind::Vm,
+                101,
+                CredentialDeliverySlot::A,
+                &"a".repeat(64),
+                &"b".repeat(64),
+                "vm-machine",
+                run_id,
+            )
+        };
+        assert_ne!(compute(1011).unwrap(), compute(1012).unwrap());
+        assert!(compute(0).is_err());
+    }
+
+    #[test]
     fn malformed_or_reserved_first_use_evidence_is_rejected() {
         for generation in [
             0,
@@ -151,7 +174,8 @@ mod tests {
                     CredentialDeliverySlot::A,
                     &"a".repeat(64),
                     &"b".repeat(64),
-                    "vm-machine"
+                    "vm-machine",
+                    1011,
                 )
                 .is_err()
             );
@@ -164,7 +188,8 @@ mod tests {
                     CredentialDeliverySlot::B,
                     &"a".repeat(64),
                     &"b".repeat(64),
-                    identity
+                    identity,
+                    1011,
                 )
                 .is_err()
             );
@@ -176,7 +201,8 @@ mod tests {
                 CredentialDeliverySlot::B,
                 &"a".repeat(63),
                 &"b".repeat(64),
-                "win-machine"
+                "win-machine",
+                1011,
             )
             .is_err()
         );
