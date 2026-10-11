@@ -1420,7 +1420,7 @@ fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, Strin
         .join(ACCESS_IDENTITY_FILE_NAME))
 }
 
-async // Initial enrollment deliberately does not reuse ApplyCandidate/Promote. It may
+// Initial enrollment deliberately does not reuse ApplyCandidate/Promote. It may
 // start only on an empty, isolated VM. Any interrupted attempt leaves evidence
 // behind and refuses a replay rather than generating or applying replacements.
 fn require_empty_vm_initial_credential_host(stack_dir: &Path) -> Result<(), String> {
@@ -1505,7 +1505,7 @@ async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Resul
     Ok(())
 }
 
-fn fetch_and_stage_vm_credential_candidate(
+async fn fetch_and_stage_vm_credential_candidate(
     stack_dir: &Path,
     generation: u64,
 ) -> Result<LocalCredentialState, String> {
