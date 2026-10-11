@@ -705,8 +705,23 @@ jobs:
             --repo-root . --inputs-json "${windows_inputs}")"
           [[ "${windows_input_sha}" =~ ^[0-9a-f]{64}$ ]]
 
+          # A completed main merge may precede its durable release publication
+          # (the old PR-close promotion race). For candidate input reuse only,
+          # fall back exactly one merge-parent to an already accepted release.
+          # Never use fallback for protected-main promotion or runtime mutation.
+          base_release_revision="${BASE_REVISION}"
+          current_release_count="$(gh api "repos/${REPOSITORY}/releases?per_page=100" |
+            jq --arg base "${BASE_REVISION}" '[.[] | select(.target_commitish == $base and .draft == false and .prerelease == false)] | length')"
+          [[ "${current_release_count}" =~ ^[0-9]+$ ]]
+          if [[ "${current_release_count}" = "0" ]]; then
+            base_commit="$(gh api "repos/${REPOSITORY}/git/commits/${BASE_REVISION}")"
+            test "$(jq -er '.parents | length' <<<"${base_commit}")" = "2"
+            base_release_revision="$(jq -er '.parents[0].sha' <<<"${base_commit}")"
+            [[ "${base_release_revision}" =~ ^[0-9a-f]{40}$ ]]
+            echo 'candidate_base_release=VERIFIED_IMMEDIATE_MERGE_PARENT'
+          fi
           base_dir="${RUNNER_TEMP}/base-edge-platform-release"
-          ACCEPTED_REVISION="${BASE_REVISION}" OUTPUT_DIR="${base_dir}" \
+          ACCEPTED_REVISION="${base_release_revision}" OUTPUT_DIR="${base_dir}" \
             bash edge-platform/scripts/resolve_durable_release.sh
           source "${base_dir}/resolved.env"
 
