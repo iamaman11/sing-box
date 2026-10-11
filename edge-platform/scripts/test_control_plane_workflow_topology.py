@@ -421,6 +421,31 @@ def main() -> None:
         and "if bundle.dummy_non_secret && !allow_dummy_probe" in credential_delivery_client,
         "fresh credential A/B proof must be authenticated, projection-bound, exact dummy only and read-only",
     )
+    require(
+        "CredentialInitialProbe(InstallRootArgs)" in windows_console_cli
+        and "run_windows_initial_credential_probe(Path::new(&args.install_root))" in windows_console
+        and "verify_canonical_dummy_ab_slots(" in windows_console
+        and "CredentialProjectionKind::Windows" in windows_console
+        and "initial_windows_credential_eligibility(" in windows_console
+        and "credential_provider_mutations=0" in windows_console
+        and "windows_dns_mutations=0" in windows_console
+        and "windows_tun_mutations=0" in windows_console,
+        "Windows initial proof must use its own exact Access projection without touching TUN or DNS",
+    )
+    require(
+        "initial-pair-preflight" in credentials
+        and 'needs.authorize.outputs.operation == \'initial-pair-preflight\'' in credentials
+        and "INITIAL_GENERATION" in credentials
+        and "INITIAL_SLOT" in credentials
+        and "credentials initial-pair-preflight" in credentials
+        and "grep -Fxq 'initial_publication_authorized=false'" in credentials
+        and "grep -Fxq 'credential_provider_mutations=0'" in credentials
+        and "credentials initial-pair-publish" not in credentials
+        and "initial_publication_authorized=false" in credential_provider
+        and "initial_pair_preflight(&control_token" in credential_provider
+        and "validate_initial_pair_provider_observation(" in credential_provider,
+        "hosted initial provider gate must stay read-only and fail closed until both host attestations",
+    )
     initial_vm_apply = vm_agent_runtime.split("async fn initial_apply_vm_credential(", 1)[1].split(
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]
