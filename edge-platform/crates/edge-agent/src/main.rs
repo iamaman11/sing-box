@@ -39,12 +39,13 @@ use edge_shared_types::{
     CredentialStateObservation, CredentialTransitionAction, Empty, FileCategory, FilePresence,
     InitialCredentialHostProbeRequest, InitialCredentialHostProbeResponse,
     InitialVmCredentialRuntimeRequest, InitialVmCredentialRuntimeResponse,
-    InitialVmLine2EndpointResult, Ipv4NetworkObservation, LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
-    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
-    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
-    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
-    RuntimeProbeEvidence, RuntimeProbeStatus, StageCredentialCandidateRequest,
-    VerifyRuntimeRequest, canonical_apply_bundle_digest, parse_credential_transition_action,
+    InitialVmLine2EndpointResult, Ipv4NetworkObservation, LocalCredentialState,
+    MeshContainerDiagnostics, MeshRuntimeConvergeRequest, MeshRuntimeDiagnostics,
+    MeshRuntimeFailureSnapshot, MeshRuntimeState, ReadBundleIdentityRequest,
+    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
+    StageCredentialCandidateRequest, VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    parse_credential_transition_action,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -880,12 +881,10 @@ impl AgentService for AgentServerImpl {
     ) -> Result<Response<InitialVmCredentialRuntimeResponse>, Status> {
         let request = request.into_inner();
         validate_initial_vm_runtime_request(&request).map_err(Status::failed_precondition)?;
-        let endpoints = verify_initial_vm_credential_functional(
-            &self.stack_dir,
-            request.generation,
-        )
-        .await
-        .map_err(Status::failed_precondition)?;
+        let endpoints =
+            verify_initial_vm_credential_functional(&self.stack_dir, request.generation)
+                .await
+                .map_err(Status::failed_precondition)?;
         Ok(Response::new(initial_vm_runtime_response(
             request.generation,
             true,

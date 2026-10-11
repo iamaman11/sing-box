@@ -261,38 +261,50 @@ mod tests {
         let req = request();
         let record = plan_initial_pair_reservation(&req, "[]").unwrap();
         let history = serde_json::json!([{ "body": record }]).to_string();
-        assert!(verify_initial_vm_runtime_gate(
-            &history,
-            &record,
-            req.generation,
-            &req.release_source_revision,
-            &req.release_set_sha256,
-            req.github_run_id,
-        ).is_ok());
-        assert!(verify_initial_vm_runtime_gate(
-            &history,
-            &record,
-            req.generation + 1,
-            &req.release_source_revision,
-            &req.release_set_sha256,
-            req.github_run_id,
-        ).is_err());
-        assert!(verify_initial_vm_runtime_gate(
-            &history,
-            &record,
-            req.generation,
-            &req.release_source_revision,
-            &req.release_set_sha256,
-            req.github_run_id + 1,
-        ).is_err());
-        assert!(verify_initial_vm_runtime_gate(
-            "[]",
-            &record,
-            req.generation,
-            &req.release_source_revision,
-            &req.release_set_sha256,
-            req.github_run_id,
-        ).is_err());
+        assert!(
+            verify_initial_vm_runtime_gate(
+                &history,
+                &record,
+                req.generation,
+                &req.release_source_revision,
+                &req.release_set_sha256,
+                req.github_run_id,
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_initial_vm_runtime_gate(
+                &history,
+                &record,
+                req.generation + 1,
+                &req.release_source_revision,
+                &req.release_set_sha256,
+                req.github_run_id,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_initial_vm_runtime_gate(
+                &history,
+                &record,
+                req.generation,
+                &req.release_source_revision,
+                &req.release_set_sha256,
+                req.github_run_id + 1,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_initial_vm_runtime_gate(
+                "[]",
+                &record,
+                req.generation,
+                &req.release_source_revision,
+                &req.release_set_sha256,
+                req.github_run_id,
+            )
+            .is_err()
+        );
     }
 
     fn request() -> InitialPairJournalPlan {

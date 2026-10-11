@@ -775,7 +775,9 @@ fn require_six_exact_vm_local_line2(
             || observed.successful_samples != 5
             || observed.failed_samples != 0
         {
-            return Err(format!("initial VM result refuses incomplete Line2 sample for {name}"));
+            return Err(format!(
+                "initial VM result refuses incomplete Line2 sample for {name}"
+            ));
         }
     }
     Ok(())
@@ -802,9 +804,11 @@ async fn run_initial_vm_runtime(
             return Err(format!("initial VM runtime refuses untrusted {key}"));
         }
     }
-    let generation: u64 = args[2].parse()
+    let generation: u64 = args[2]
+        .parse()
         .map_err(|_| "initial VM runtime requires numeric generation".to_owned())?;
-    let run_id: u64 = args[4].parse()
+    let run_id: u64 = args[4]
+        .parse()
         .map_err(|_| "initial VM runtime requires GitHub run ID".to_owned())?;
     if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[4].as_str())
         || env::var("GITHUB_SHA").ok().as_deref()
@@ -829,21 +833,24 @@ async fn run_initial_vm_runtime(
     context.validate_application_artifact(&expected_agent, Path::new(&args[7]))?;
     let desired = load_desired_state(Path::new(&args[0]))?;
     let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
-    let target_ip = observed.main_ip.as_deref()
+    let target_ip = observed
+        .main_ip
+        .as_deref()
         .ok_or_else(|| "initial VM runtime has no observed public IPv4".to_owned())?;
     let key = operator_private_key_path_from_env()?;
     let public_key = read_canonical_ssh_public_key()?;
     verify_operator_key_matches(&key, &public_key)?;
     let remote_sha = strict_ssh_capture(
-        target_ip, &args[1], &key, &public_key,
+        target_ip,
+        &args[1],
+        &key,
+        &public_key,
         "sha256sum /opt/vultr-edge-stack/bin/edge-agent | cut -d' ' -f1",
     )?;
     if remote_sha != expected_agent.sha256 {
         return Err("initial VM runtime refuses unexpected installed agent binary".to_owned());
     }
-    let (port, tunnel) = start_strict_agent_tunnel(
-        target_ip, &args[1], &key, &public_key,
-    )?;
+    let (port, tunnel) = start_strict_agent_tunnel(target_ip, &args[1], &key, &public_key)?;
     let mut client = AgentServiceClient::connect(format!("http://127.0.0.1:{port}"))
         .await
         .map_err(|err| format!("initial VM runtime restricted RPC unreachable: {err}"))?;
@@ -858,10 +865,12 @@ async fn run_initial_vm_runtime(
     } else {
         client.verify_initial_vm_credential(request).await
     }
-    .map_err(|err| format!(
-        "initial VM runtime {} unresolved; do not replay: {err}",
-        if apply { "apply" } else { "verify" },
-    ))?
+    .map_err(|err| {
+        format!(
+            "initial VM runtime {} unresolved; do not replay: {err}",
+            if apply { "apply" } else { "verify" },
+        )
+    })?
     .into_inner();
     drop(client);
     drop(tunnel);
@@ -3814,13 +3823,15 @@ mod tests {
             ("https-warp", "https", 9443),
         ]
         .iter()
-        .map(|(name, protocol, port)| edge_shared_types::InitialVmLine2EndpointResult {
-            endpoint: (*name).to_owned(),
-            protocol: (*protocol).to_owned(),
-            port: *port,
-            successful_samples: 5,
-            failed_samples: 0,
-        })
+        .map(
+            |(name, protocol, port)| edge_shared_types::InitialVmLine2EndpointResult {
+                endpoint: (*name).to_owned(),
+                protocol: (*protocol).to_owned(),
+                port: *port,
+                successful_samples: 5,
+                failed_samples: 0,
+            },
+        )
         .collect();
         assert!(require_six_exact_vm_local_line2(&response).is_ok());
         response.vm_local_line2[2].failed_samples = 1;
