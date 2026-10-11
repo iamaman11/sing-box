@@ -233,7 +233,8 @@ def main() -> None:
             in windows_console
         and "offline_release_operations_have_dedicated_wire_numbers"
             in windows_console
-        and "if require_offline_windows_owner(install_root, before).is_err()" in windows_console
+        and "if require_offline_windows_owner_from_snapshot(install_root, before).is_err()"
+            in windows_console
         and "offline_retarget_controller_service(install_root, &before, &post)" in windows_console
         and "retarget_privileged_task(install_root, &post.console_path)" in windows_console
         and "-Offline" in windows_console
