@@ -240,7 +240,7 @@ pub async fn run_delivery(
 fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
     // A BEGIN reservation is a non-secret exact payload for ONE authorized
     // GitHub comment, not a second credential authority.
-    if record.len() > 4096 || !record.starts_with("<!-- sing-box-credential-initial-attempt/v1 -->\\n") {
+    if record.len() > 4096 || !record.starts_with("<!-- sing-box-credential-initial-attempt/v1 -->\n") {
         return Err("initial BEGIN local record is malformed or too large".to_owned());
     }
     let mut options = OpenOptions::new();
@@ -1930,6 +1930,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_use_begin_file_create_new_has_no_overwrite_path() {
+        let record = "<!-- sing-box-credential-initial-attempt/v1 -->\\n{}";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-initial-attempt-{}-{unique}",
+            std::process::id()
+        ));
+        write_new_initial_record(&path, record).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), record);
+        assert!(write_new_initial_record(&path, record).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(write_new_initial_record(&path, "INVALID").is_err());
+    }
 
     fn desired() -> ProductionCredentialPlaneOwnership {
         ProductionCredentialPlaneOwnership {
