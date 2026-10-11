@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import re
+import subprocess
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
@@ -452,6 +453,37 @@ def main() -> None:
         and "validate_initial_pair_provider_observation(" in credential_provider,
         "hosted initial provider gate must stay read-only and fail closed until both host attestations",
     )
+    # Execute the actual GNU grep matcher, not just a substring assertion.
+    # A previous passing CI hid a literal-dollar suffix regression.
+    exact_digest_regex = re.search(
+        r"grep -Eq '(\^initial_pair_provider_intent_sha256=\[0-9a-f\]\{64\}\$)'",
+        credentials,
+    )
+    require(
+        exact_digest_regex is not None,
+        "initial pair preflight must use an exact-line 64-digit digest matcher",
+    )
+    valid_digest = "initial_pair_provider_intent_sha256=" + ("a" * 64)
+    invalid_digests = (
+        "initial_pair_provider_intent_sha256=" + ("a" * 63),
+        "initial_pair_provider_intent_sha256=" + ("a" * 65),
+        "initial_pair_provider_intent_sha256=" + ("A" * 64),
+        valid_digest + "$",
+        valid_digest + "tail",
+        "other_initial_pair_provider_intent_sha256=" + ("a" * 64),
+    )
+    for line, expected in ((valid_digest, True), *((item, False) for item in invalid_digests)):
+        outcome = subprocess.run(
+            ["grep", "-Eq", exact_digest_regex.group(1)],
+            input=line + "\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            (outcome.returncode == 0) == expected,
+            "initial pair digest shell validator accepted malformed evidence or rejected valid evidence",
+        )
     require(
         'if operation in {"rotate-application", "host-bootstrap-converge"}:' in credentials
         and 'os.environ.get("GITHUB_RUN_ATTEMPT") != "1"' in credentials
