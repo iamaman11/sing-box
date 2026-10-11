@@ -2,8 +2,7 @@ use crate::credential_store::write_atomic_private;
 use edge_shared_types::{
     CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialProjectionKind,
-    canonical_production_desired_state,
-    decode_credential_delivery_bundle,
+    canonical_production_desired_state, decode_credential_delivery_bundle,
 };
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, redirect::Policy};
@@ -179,7 +178,8 @@ pub async fn observe_canonical_credential_bundle(
     identity_path: &Path,
 ) -> Result<Option<CredentialDeliveryBundle>, String> {
     let identity = read_access_service_identity(identity_path)?;
-    observe_canonical_credential_bundle_with_identity(projection, generation, &identity, false).await
+    observe_canonical_credential_bundle_with_identity(projection, generation, &identity, false)
+        .await
 }
 
 async fn observe_canonical_credential_bundle_with_identity(
@@ -260,10 +260,7 @@ pub async fn verify_canonical_dummy_ab_slots(
         CREDENTIAL_DUMMY_PROBE_GENERATION_B,
     ] {
         let observed = observe_canonical_credential_bundle_with_identity(
-            projection,
-            generation,
-            &identity,
-            true,
+            projection, generation, &identity, true,
         )
         .await?
         .ok_or_else(|| "initial Worker-v2 proof requires both canonical dummy slots".to_owned())?;
@@ -277,20 +274,21 @@ fn verify_canonical_dummy_ab_probe(
     projection: CredentialProjectionKind,
     generation: u64,
 ) -> Result<(), String> {
-    if !matches!(projection, CredentialProjectionKind::Vm | CredentialProjectionKind::Windows)
-        || !matches!(
-            generation,
-            CREDENTIAL_DUMMY_PROBE_GENERATION_A | CREDENTIAL_DUMMY_PROBE_GENERATION_B
-        )
-        || observed
-            != &(CredentialDeliveryBundle {
-                schema_version: 1,
-                generation,
-                projection: projection as i32,
-                dummy_non_secret: true,
-                slot: CredentialDeliverySlot::Unspecified as i32,
-                payload: None,
-            })
+    let expected = CredentialDeliveryBundle {
+        schema_version: 1,
+        generation,
+        projection: projection as i32,
+        dummy_non_secret: true,
+        slot: CredentialDeliverySlot::Unspecified as i32,
+        payload: None,
+    };
+    if !matches!(
+        projection,
+        CredentialProjectionKind::Vm | CredentialProjectionKind::Windows
+    ) || !matches!(
+        generation,
+        CREDENTIAL_DUMMY_PROBE_GENERATION_A | CREDENTIAL_DUMMY_PROBE_GENERATION_B
+    ) || observed != &expected
     {
         return Err(
             "initial Worker-v2 proof refused: endpoint is not the exact canonical dummy slot"
@@ -324,48 +322,52 @@ mod tests {
             slot: CredentialDeliverySlot::Unspecified as i32,
             payload: None,
         };
-        assert!(verify_canonical_dummy_ab_probe(
+        let valid = verify_canonical_dummy_ab_probe(
             &dummy,
             CredentialProjectionKind::Vm,
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
-        )
-        .is_ok());
-        assert!(verify_canonical_dummy_ab_probe(
+        );
+        assert!(valid.is_ok());
+
+        let wrong_projection = verify_canonical_dummy_ab_probe(
             &dummy,
             CredentialProjectionKind::Windows,
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
-        )
-        .is_err());
-        assert!(verify_canonical_dummy_ab_probe(
+        );
+        assert!(wrong_projection.is_err());
+        let wrong_generation = verify_canonical_dummy_ab_probe(
             &dummy,
             CredentialProjectionKind::Vm,
             CREDENTIAL_DUMMY_PROBE_GENERATION_B,
-        )
-        .is_err());
+        );
+        assert!(wrong_generation.is_err());
+
         let mut not_dummy = dummy.clone();
         not_dummy.dummy_non_secret = false;
-        assert!(verify_canonical_dummy_ab_probe(
+        let wrong_payload = verify_canonical_dummy_ab_probe(
             &not_dummy,
             CredentialProjectionKind::Vm,
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
-        )
-        .is_err());
+        );
+        assert!(wrong_payload.is_err());
+
         let mut wrong_slot = dummy.clone();
         wrong_slot.slot = CredentialDeliverySlot::A as i32;
-        assert!(verify_canonical_dummy_ab_probe(
+        let wrong_slot_result = verify_canonical_dummy_ab_probe(
             &wrong_slot,
             CredentialProjectionKind::Vm,
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
-        )
-        .is_err());
+        );
+        assert!(wrong_slot_result.is_err());
+
         let mut wrong_schema = dummy;
         wrong_schema.schema_version = 2;
-        assert!(verify_canonical_dummy_ab_probe(
+        let wrong_schema_result = verify_canonical_dummy_ab_probe(
             &wrong_schema,
             CredentialProjectionKind::Vm,
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
-        )
-        .is_err());
+        );
+        assert!(wrong_schema_result.is_err());
     }
 
     #[test]
