@@ -604,6 +604,10 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
         }
     };
     if authorized.plan.action != HostSubstrateAction::Noop {
+        if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+            let forensic = acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+            println!("disposable_ssh_failure_forensics={forensic}");
+        }
         return Err(format!(
             "host substrate verify is BLOCKED; next action is {:?}: {}",
             authorized.plan.action,
