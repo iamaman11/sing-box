@@ -511,7 +511,7 @@ def main() -> None:
         "async fn verify_initial_vm_credential_functional(", 1
     )[1].split("async fn initial_apply_vm_credential(", 1)[0]
     require(
-        "CredentialInitialVerify { generation: u64 }" in vm_agent_cli
+        re.search(r"CredentialInitialVerify\\s*\\{\\s*generation:\\s*u64\\s*\\}", vm_agent_cli) is not None
         and "verify_initial_vm_credential_functional(&stack_dir, generation)" in vm_agent_runtime
         and "validate_unpromoted_vm_initial_state(&state, generation)?" in vm_initial_functional
         and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in vm_initial_functional
@@ -527,6 +527,14 @@ def main() -> None:
         and "line2_egress_identity=UNPROVEN" in vm_agent_runtime
         and "external_tls_chain=UNPROVEN" in vm_agent_runtime
         and "line1_authenticated_endpoints=UNPROVEN" in vm_agent_runtime
+        and "CredentialInitialAttest" in vm_agent_cli
+        and "verify_initial_vm_dummy_probe(&stack_dir)" in vm_agent_runtime
+        and "first_use_host_attestation_sha256(" in vm_agent_runtime
+        and "CredentialInitialAttest" in windows_console_cli
+        and "run_windows_initial_credential_probe(root)" in windows_console
+        and "first_use_host_attestation_sha256(" in windows_console
+        and "windows_tun_mutations=0" in windows_console
+        and "windows_dns_mutations=0" in windows_console
         and "credential_pair_committed=false" in vm_agent_runtime,
         "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
     )
@@ -534,7 +542,7 @@ def main() -> None:
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]
     require(
-        "CredentialInitialApply { generation: u64 }" in vm_agent_cli
+        re.search(r"CredentialInitialApply\\s*\\{\\s*generation:\\s*u64\\s*\\}", vm_agent_cli) is not None
         and "initial_apply_vm_credential(&stack_dir, generation)" in vm_agent_runtime
         and "require_initial_vm_policy_bundle_ready(stack_dir)?" in initial_vm_apply
         and "require_empty_vm_initial_credential_host(stack_dir)?" in initial_vm_apply

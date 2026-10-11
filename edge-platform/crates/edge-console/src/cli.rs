@@ -305,6 +305,17 @@ mod tests {
 
     #[test]
     fn parses_operation_id_as_typed_integer() {
+        assert!(Cli::try_parse_from(["edge-console", "credential-initial-attest"]).is_err());
+        assert!(Cli::try_parse_from([
+            "edge-console",
+            "credential-initial-attest",
+            "101",
+            "a",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            "--install-root",
+            r"C:\sing-box-acceptance",
+        ]).is_ok());
         let cli = Cli::try_parse_from(["edge-console", "get-operation", "42"]).unwrap();
         assert_eq!(cli.command_name(), "get-operation");
     }

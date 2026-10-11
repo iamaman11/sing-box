@@ -156,6 +156,16 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-verify"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-probe"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-attest"]).is_err());
+        assert!(Cli::try_parse_from([
+            "edge-agent",
+            "local",
+            "credential-initial-attest",
+            "101",
+            "a",
+            &"a".repeat(64),
+            &"b".repeat(64),
+        ]).is_ok());
         assert!(
             Cli::try_parse_from(["edge-agent", "local", "credential-initial-apply", "101"]).is_ok()
         );
