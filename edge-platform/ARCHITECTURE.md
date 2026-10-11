@@ -417,6 +417,28 @@ The new stack receives independently generated credential generations.
 
 ### Initial paired Worker-v2 enrollment (not steady-state rotation)
 
+**Integrated N1/N2 operator contract (under construction):** a single
+`/credentials initial-pair-preflight <generation> <a|b>` request resolves the
+exact immutable orchestrator through GitHub and checks both Worker identities,
+active/latest versions, fixed A/B layout and independently bound permanent
+Access service-token identities. This step is deliberately **read-only**:
+`initial_publication_authorized=false` until both native host attestations,
+a durable attempt identity and provider-side no-replay/partial-publication
+handling exist. It never generates or publishes a secret. The Windows owner
+provides `edge-console credential-initial-probe --install-root ...`: this
+checks the exact installed activation, refuses any existing/partial local v2
+store or managed runtime state, authenticates to the Windows-specific Worker,
+and proves both exact dummy generations. It does not touch DNS, TUN, SCM,
+proxy selection, or the foreign Cloudflare One adapter. The VM has its own
+separate read-only initial probe. Neither report authorizes a publish by
+itself; worker binding metadata cannot substitute for an authenticated GET.
+
+The integrated PR must continue beyond preflight to the **single full initial
+transaction**, staged source-only bundle, distinct host activation and
+isolated authenticated Line1/Line2 acceptance before merge. Do not treat these
+new preflight commands as N1/N2 acceptance, and never run them as a covert
+production or Windows-TUN cutover.
+
 **Initial fixed A/B slot proof (N1, read-only):** Cloudflare secret binding
 metadata never establishes that an A/B slot is unused. The VM's typed
 `edge-agent local credential-initial-probe` first proves a clean host and
