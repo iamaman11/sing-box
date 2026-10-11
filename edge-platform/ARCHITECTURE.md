@@ -417,9 +417,23 @@ The new stack receives independently generated credential generations.
 
 ### Initial paired Worker-v2 enrollment (not steady-state rotation)
 
+**Fresh VM policy-only bootstrap (N1, source only):** the typed
+`edge-agent local bundle-stage-initial` accepts only an exact digest-bound
+application bundle with immutable Compose, pinned image digests and Git-owned
+runtime policy. It requires an empty/non-serving host and absent local v2 and
+legacy credentials, stages the repository inputs **without** deriving a
+`.env.runtime` and **without** starting Docker containers. The operation
+refuses a second invocation, including after a partial or uncertain stage;
+there is no cleanup/retry to mask an incomplete initial transaction. This
+breaks the previous cycle in which normal `bundle-converge` required an
+active Worker-v2 projection while `credential-initial-apply` required a
+materialized application bundle. No independent secret authority is added.
+
 **New isolated VM application primitive (N1, source only):** the VM's typed
 `edge-agent local credential-initial-apply <generation>` is distinct from
-rotation. Before a Worker fetch or any disk mutation, it rejects an existing
+rotation. Before a Worker fetch or any disk mutation, it additionally requires the
+exact initial policy-only bundle marker, policy, Compose and image digests;
+it rejects an existing
 v2 store (including incomplete state), the old local credential file, an
 existing runtime environment/rendered sing-box configuration, unavailable
 Docker, or any of the three core application containers already present. It
