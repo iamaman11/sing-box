@@ -792,6 +792,25 @@ def main() -> None:
         and 'runtime-secrets/application-v2' in vm_agent,
         "Windows and VM v2 credentials must stay inside the existing private secret roots",
     )
+    # A Worker-only credential authority is meaningful only when VM activation
+    # cannot silently create or adopt an independent local secret at runtime.
+    materialize = vm_agent_runtime.split(
+        "fn materialize_vm_owned_runtime_environment", 1
+    )[1].split("fn validate_runtime_policy_env", 1)[0]
+    require(
+        'active_vm_credential_bundle(stack_dir)?.ok_or_else' in materialize
+        and 'ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?' in materialize
+        and 'ensure_vm_runtime_secret_store' not in vm_agent_runtime
+        and 'read_legacy_vm_runtime_secrets' not in vm_agent_runtime
+        and 'legacy VM credential apply is retired' in vm_agent_runtime
+        and 'credential_rendered_source=V2_ACTIVE_RENDERED' in vm_agent_runtime
+        and 'credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF'
+        in vm_agent_runtime
+        and 'vm_runtime_materialization_refuses_legacy_and_requires_explicit_active_v2'
+        in vm_agent,
+        "VM runtime credentials must be Worker-v2-only and fail closed, without local generator or legacy rollback",
+    )
+
     require(
         "message StageCredentialCandidateRequest" in credential_proto
         and "CredentialDeliveryBundle bundle = 1;" in credential_proto

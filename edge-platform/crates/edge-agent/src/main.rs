@@ -174,6 +174,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("network_route_count={}", network.routes.len());
             let mesh = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
             print_mesh_state_evidence(&mesh);
+            print_vm_rendered_credential_source(&stack_dir);
             Ok(())
         }
         cli::LocalCommand::BootstrapBase => {
@@ -1323,10 +1324,10 @@ fn materialize_vm_owned_runtime_environment(stack_dir: &Path) -> Result<(), Stri
     if !stack_dir.join(RUNTIME_POLICY_FILE).is_file() {
         return Ok(());
     }
-    let secrets = match active_vm_credential_bundle(stack_dir)? {
-        Some(bundle) => ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?,
-        None => ensure_vm_runtime_secret_store(stack_dir)?,
-    };
+    let bundle = active_vm_credential_bundle(stack_dir)?.ok_or_else(|| {
+        "VM runtime activation requires an active Cloudflare Worker v2 credential; independent local credential generation is forbidden".to_owned()
+    })?;
+    let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
     write_vm_runtime_environment(stack_dir, &secrets)
 }
 
@@ -1524,15 +1525,92 @@ fn legacy_vm_runtime_secret_path(stack_dir: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE))
 }
 
-fn read_legacy_vm_runtime_secrets(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {
-    let path = legacy_vm_runtime_secret_path(stack_dir)?;
-    let raw = fs::read_to_string(&path).map_err(|err| {
-        format!(
-            "legacy VM runtime secret store is unavailable at {}: {err}",
-            path.display()
-        )
-    })?;
-    ApplicationRuntimeSecrets::parse_env(&raw)
+// Observe what the on-disk runtime configuration actually contains, not just
+// whether a Cloudflare Worker or a local credential pointer exists.
+// This is read-only and never prints secret values, digests, or full env content.
+// A matching rendered file does not prove the running container loaded it.
+#[derive(Debug, PartialEq, Eq)]
+enum VmRenderedCredentialSource {
+    V2Active {
+        delivery_generation: u64,
+        tunnel_auth_generation: u64,
+        reality_generation: u64,
+        line2_generation: u64,
+    },
+    LegacyStorePresent,
+    Unproven(&'static str),
+}
+
+fn observe_vm_rendered_credential_source(stack_dir: &Path) -> VmRenderedCredentialSource {
+    let rendered = match fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE)) {
+        Ok(value) => value,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return VmRenderedCredentialSource::Unproven("RUNTIME_ENV_ABSENT");
+        }
+        Err(_) => return VmRenderedCredentialSource::Unproven("RUNTIME_ENV_UNREADABLE"),
+    };
+
+    let active = match active_vm_credential_bundle(stack_dir) {
+        Ok(value) => value,
+        Err(_) => return VmRenderedCredentialSource::Unproven("V2_STATE_INVALID"),
+    };
+    if let Some(bundle) = active.as_ref() {
+        let secrets = match ApplicationRuntimeSecrets::from_vm_bundle(bundle) {
+            Ok(value) => value,
+            Err(_) => return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID"),
+        };
+        if vm_runtime_environment(stack_dir, &secrets).is_ok_and(|expected| expected == rendered) {
+            if let Some(edge_shared_types::credential_delivery_bundle::Payload::Vm(vm)) =
+                bundle.payload.as_ref()
+            {
+                if let (Some(tunnel), Some(reality), Some(line2)) = (
+                    vm.tunnel_auth.as_ref(),
+                    vm.reality_identity.as_ref(),
+                    vm.line2_proxy.as_ref(),
+                ) {
+                    return VmRenderedCredentialSource::V2Active {
+                        delivery_generation: bundle.generation,
+                        tunnel_auth_generation: tunnel.generation,
+                        reality_generation: reality.generation,
+                        line2_generation: line2.generation,
+                    };
+                }
+            }
+            return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID");
+        }
+    }
+
+    if legacy_vm_runtime_secret_path(stack_dir).is_ok_and(|path| path.is_file()) {
+        // The legacy file is migration evidence only, never runtime authority.
+        return VmRenderedCredentialSource::LegacyStorePresent;
+    }
+    VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
+}
+
+fn print_vm_rendered_credential_source(stack_dir: &Path) {
+    match observe_vm_rendered_credential_source(stack_dir) {
+        VmRenderedCredentialSource::V2Active {
+            delivery_generation,
+            tunnel_auth_generation,
+            reality_generation,
+            line2_generation,
+        } => {
+            println!("credential_rendered_source=V2_ACTIVE_RENDERED");
+            println!("credential_delivery_generation={delivery_generation}");
+            println!("credential_tunnel_auth_generation={tunnel_auth_generation}");
+            println!("credential_reality_generation={reality_generation}");
+            println!("credential_line2_generation={line2_generation}");
+        }
+        VmRenderedCredentialSource::LegacyStorePresent => {
+            println!("credential_rendered_source=UNPROVEN");
+            println!("credential_rendered_reason=LEGACY_STORE_PRESENT_NO_V2_MATCH");
+        }
+        VmRenderedCredentialSource::Unproven(reason) => {
+            println!("credential_rendered_source=UNPROVEN");
+            println!("credential_rendered_reason={reason}");
+        }
+    }
+    println!("credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF");
 }
 
 async fn apply_vm_credential_runtime(
@@ -1592,15 +1670,16 @@ async fn transition_vm_credential(
                 .ok_or_else(|| "VM v2 candidate is absent".to_owned())?;
             let bundle = store.read_bundle(candidate)?;
             let candidate_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+            // Never attempt a first-time switch away from unknown/legacy runtime
+            // credentials. The initial v2 activation needs its own explicit
+            // enrollment transaction, not a hidden recovery to another source.
+            let active = state.active.as_ref().ok_or_else(|| {
+                "VM candidate application requires an established active Worker v2 generation; legacy recovery is forbidden".to_owned()
+            })?;
+            let active_bundle = store.read_bundle(active)?;
+            let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&active_bundle)?;
             if let Err(err) = apply_vm_credential_runtime(stack_dir, &candidate_secrets).await {
-                let recovery = if let Some(active) = state.active.as_ref() {
-                    let active_bundle = store.read_bundle(active)?;
-                    let active_secrets = ApplicationRuntimeSecrets::from_vm_bundle(&active_bundle)?;
-                    apply_vm_credential_runtime(stack_dir, &active_secrets).await
-                } else {
-                    let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
-                    apply_vm_credential_runtime(stack_dir, &legacy).await
-                };
+                let recovery = apply_vm_credential_runtime(stack_dir, &active_secrets).await;
                 return match recovery {
                     Ok(()) => Err(format!(
                         "VM candidate runtime failed and the pre-candidate runtime was restored: {err}"
@@ -1624,32 +1703,9 @@ async fn transition_vm_credential(
             }
             Ok(Some(store.promote_candidate()?))
         }
-        CredentialTransitionAction::ApplyLegacy => {
-            let legacy = read_legacy_vm_runtime_secrets(stack_dir)?;
-            if let Err(err) = apply_vm_credential_runtime(stack_dir, &legacy).await {
-                let fallback = state
-                    .candidate
-                    .as_ref()
-                    .or(state.active.as_ref())
-                    .ok_or_else(|| {
-                        format!(
-                            "VM legacy rollback proof failed with no v2 fallback available: {err}"
-                        )
-                    })?;
-                let bundle = store.read_bundle(fallback)?;
-                let v2 = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
-                let recovery = apply_vm_credential_runtime(stack_dir, &v2).await;
-                return match recovery {
-                    Ok(()) => Err(format!(
-                        "VM legacy rollback proof failed and v2 LKG was restored: {err}"
-                    )),
-                    Err(recovery_err) => Err(format!(
-                        "VM legacy rollback proof failed: {err}; v2 recovery also failed: {recovery_err}"
-                    )),
-                };
-            }
-            Ok(Some(state))
-        }
+        CredentialTransitionAction::ApplyLegacy => Err(
+            "legacy VM credential apply is retired; only Cloudflare Worker v2 credentials are authorized".to_owned(),
+        ),
         CredentialTransitionAction::ApplyActive => {
             let active = state
                 .active
@@ -1791,67 +1847,6 @@ async fn transition_vm_credential(
             Ok(Some(state))
         }
     }
-}
-
-fn ensure_vm_runtime_secret_store(stack_dir: &Path) -> Result<ApplicationRuntimeSecrets, String> {
-    let parent = stack_dir
-        .parent()
-        .ok_or_else(|| "application stack path has no parent".to_owned())?;
-    let dir = parent.join(RUNTIME_SECRET_DIR);
-    let path = dir.join(RUNTIME_SECRET_FILE);
-
-    if path.exists() {
-        let raw = fs::read_to_string(&path).map_err(|err| {
-            format!(
-                "failed to read VM runtime secret store {}: {err}",
-                path.display()
-            )
-        })?;
-        return ApplicationRuntimeSecrets::parse_env(&raw).map_err(|err| {
-            format!(
-                "VM runtime secret store {} is invalid: {err}",
-                path.display()
-            )
-        });
-    }
-
-    fs::create_dir_all(&dir).map_err(|err| {
-        format!(
-            "failed to create runtime secret directory {}: {err}",
-            dir.display()
-        )
-    })?;
-    set_private_directory_permissions(&dir)?;
-
-    let generated = ApplicationRuntimeSecrets::generate();
-    generated.validate()?;
-    let temporary = dir.join(format!("{RUNTIME_SECRET_FILE}.new"));
-    fs::write(&temporary, generated.render_env().as_bytes()).map_err(|err| {
-        format!(
-            "failed to write staged VM runtime secret store {}: {err}",
-            temporary.display()
-        )
-    })?;
-    set_bundle_file_permissions(&temporary, false, true)?;
-    fs::rename(&temporary, &path).map_err(|err| {
-        format!(
-            "failed to atomically publish VM runtime secret store {}: {err}",
-            path.display()
-        )
-    })?;
-
-    let observed = fs::read_to_string(&path).map_err(|err| {
-        format!(
-            "failed to re-read VM runtime secret store {}: {err}",
-            path.display()
-        )
-    })?;
-    ApplicationRuntimeSecrets::parse_env(&observed).map_err(|err| {
-        format!(
-            "published VM runtime secret store {} failed validation: {err}",
-            path.display()
-        )
-    })
 }
 
 #[cfg(unix)]
@@ -4578,7 +4573,7 @@ mod tests {
     }
 
     #[test]
-    fn vm_runtime_secret_store_is_generated_once_and_reused() {
+    fn vm_runtime_materialization_refuses_legacy_and_requires_explicit_active_v2() {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
@@ -4587,40 +4582,46 @@ mod tests {
             "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
         )
         .unwrap();
-
-        materialize_vm_owned_runtime_environment(&stack).unwrap();
-        let first = fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap();
-        let secret_dir = root.join(RUNTIME_SECRET_DIR);
-        let secret_path = secret_dir.join(RUNTIME_SECRET_FILE);
-        let store = fs::read_to_string(&secret_path).unwrap();
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&secret_dir).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-            assert_eq!(
-                fs::metadata(&secret_path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-
-        fs::remove_file(stack.join(RUNTIME_ENV_FILE)).unwrap();
-        materialize_vm_owned_runtime_environment(&stack).unwrap();
-        let second = fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap();
-
-        assert_eq!(first, second);
-        assert!(first.contains("PROXY_USERNAME=acceptance\n"));
-        assert!(first.contains("PROXY_PASSWORD="));
-        assert_eq!(
-            ApplicationRuntimeSecrets::parse_env(&store)
-                .unwrap()
-                .render_env(),
-            store
+        fs::write(stack.join(RUNTIME_ENV_FILE), "existing=untouched\n").unwrap();
+        let private_dir = root.join(RUNTIME_SECRET_DIR);
+        fs::create_dir_all(&private_dir).unwrap();
+        fs::write(
+            private_dir.join(RUNTIME_SECRET_FILE),
+            "legacy=not-authority\n",
+        )
+        .unwrap();
+        assert!(
+            materialize_vm_owned_runtime_environment(&stack)
+                .unwrap_err()
+                .contains("active Cloudflare Worker v2 credential")
         );
-
+        assert_eq!(
+            fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap(),
+            "existing=untouched\n"
+        );
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        )
+        .unwrap();
+        let delivery = vm_test_credential_bundle(100, CredentialDeliverySlot::A);
+        store.stage_candidate(&delivery).unwrap();
+        assert!(materialize_vm_owned_runtime_environment(&stack).is_err());
+        store.promote_candidate().unwrap();
+        materialize_vm_owned_runtime_environment(&stack).unwrap();
+        let expected = vm_runtime_environment(
+            &stack,
+            &ApplicationRuntimeSecrets::from_vm_bundle(&delivery).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap(),
+            expected
+        );
+        assert_eq!(
+            fs::read_to_string(private_dir.join(RUNTIME_SECRET_FILE)).unwrap(),
+            "legacy=not-authority\n"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -5463,6 +5464,69 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn read_only_credential_origin_distinguishes_legacy_v2_and_unproven() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::Unproven("RUNTIME_ENV_ABSENT")
+        );
+
+        // No real credential values are returned by this classification.
+        let private_dir = root.join(RUNTIME_SECRET_DIR);
+        fs::create_dir_all(&private_dir).unwrap();
+        fs::write(private_dir.join(RUNTIME_SECRET_FILE), "legacy=private\n").unwrap();
+        fs::write(stack.join(RUNTIME_ENV_FILE), "legacy=not-authorized\n").unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::LegacyStorePresent
+        );
+
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        )
+        .unwrap();
+        let delivery = vm_test_credential_bundle(100, CredentialDeliverySlot::A);
+        store.stage_candidate(&delivery).unwrap();
+        store.promote_candidate().unwrap();
+
+        // A pointer update alone cannot claim the rendered runtime has switched.
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::LegacyStorePresent
+        );
+
+        let v2 = ApplicationRuntimeSecrets::from_vm_bundle(&delivery).unwrap();
+        write_vm_runtime_environment(&stack, &v2).unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::V2Active {
+                delivery_generation: 100,
+                tunnel_auth_generation: 7,
+                reality_generation: 3,
+                line2_generation: 2,
+            }
+        );
+
+        fs::remove_file(private_dir.join(RUNTIME_SECRET_FILE)).unwrap();
+        fs::write(stack.join(RUNTIME_ENV_FILE), "unrelated=not-a-runtime\n").unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn vm_test_credential_bundle(
         generation: u64,
         slot: CredentialDeliverySlot,
@@ -5492,10 +5556,10 @@ mod tests {
                     reality_identity: Some(RealityPrivateIdentityGeneration {
                         generation: 3,
                         direct: Some(RealityPrivateIdentity {
-                            private_key: "C".repeat(43),
+                            private_key: "A".repeat(43),
                         }),
                         warp: Some(RealityPrivateIdentity {
-                            private_key: "D".repeat(43),
+                            private_key: "Q".repeat(43),
                         }),
                     }),
                     line2_proxy: Some(ProxyCredentialGeneration {
