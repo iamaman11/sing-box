@@ -173,6 +173,9 @@ async fn run(
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Diagnose => cloudflare_production_inventory::run().await,
+            cli::ProductionCommand::DnsNoop => {
+                production_command::verify_dns_noop(release_context).await
+            }
             cli::ProductionCommand::EnrollRuntime(args) => {
                 production_command::enroll_runtime(
                     release_context,
