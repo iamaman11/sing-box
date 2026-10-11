@@ -401,6 +401,26 @@ def main() -> None:
         and "materialize_vm_owned_runtime_environment(&staging)?" in vm_agent_runtime,
         "fresh policy-only bundle staging must be exact, single-owner, and never start runtime",
     )
+    credential_delivery_client = Path(
+        "edge-platform/crates/edge-secrets/src/credential_delivery.rs"
+    ).read_text(encoding="utf-8")
+    credential_provider = Path(
+        "edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "CredentialInitialProbe" in vm_agent_cli
+        and "verify_canonical_dummy_ab_slots(" in vm_agent_runtime
+        and "credential_slot_A=EXACT_DUMMY" in vm_agent_runtime
+        and "credential_slot_B=EXACT_DUMMY" in vm_agent_runtime
+        and "credential_provider_mutations=0" in vm_agent_runtime
+        and "credential_runtime_mutations=0" in vm_agent_runtime
+        and "CREDENTIAL_DUMMY_PROBE_GENERATION_A" in credential_provider
+        and "CREDENTIAL_DUMMY_PROBE_GENERATION_B" in credential_provider
+        and "verify_canonical_dummy_ab_probe(&observed, projection, generation)?"
+        in credential_delivery_client
+        and "if bundle.dummy_non_secret && !allow_dummy_probe" in credential_delivery_client,
+        "fresh credential A/B proof must be authenticated, projection-bound, exact dummy only and read-only",
+    )
     initial_vm_apply = vm_agent_runtime.split("async fn initial_apply_vm_credential(", 1)[1].split(
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]
