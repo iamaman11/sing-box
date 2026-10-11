@@ -1623,6 +1623,18 @@ def main() -> None:
         and "if ! run_lifecycle substrate-verify" in vultr,
         "native disposable substrate failure evidence must reach GH Actions before cleanup without retry",
     )
+    reboot_observation = vultr_lifecycle_command.split(
+        "let reboot_probe = if action == InstanceAction::Reboot {", 1
+    )[1].split("let next_plan = if matches!", 1)[0]
+    require(
+        "disposable_reboot_preflight_forensics=" in reboot_observation
+        and "disposable_reboot_post_observation_forensics=" in reboot_observation
+        and reboot_observation.count("acceptance_ssh_failure_forensics(") == 2
+        and "reboot rejected before provider mutation" in reboot_observation
+        and "no reboot replay" in reboot_observation
+        and vultr.count('cat "${RUNNER_TEMP}/reboot.json" >&2') == 1,
+        "disposable reboot must surface native pre/post SSH evidence and never replay ambiguous mutation",
+    )
     substrate_verify = vultr_lifecycle_command.split(
         "async fn run_substrate_verify(", 1
     )[1].split("async fn run_transport_proof(", 1)[0]

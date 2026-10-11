@@ -549,7 +549,10 @@ jobs:
 
               run_lifecycle action-plan "${spec}" "${machine}" reboot > "${RUNNER_TEMP}/reboot-plan.json"
               reboot_authority="$(plan_authority "${RUNNER_TEMP}/reboot-plan.json")"
-              run_lifecycle action "${spec}" "${machine}" reboot "${reboot_authority}" > "${RUNNER_TEMP}/reboot.json"
+              if ! run_lifecycle action "${spec}" "${machine}" reboot "${reboot_authority}" > "${RUNNER_TEMP}/reboot.json"; then
+                cat "${RUNNER_TEMP}/reboot.json" >&2
+                exit 1
+              fi
               if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-substrate.json"; then
                 cat "${RUNNER_TEMP}/post-reboot-substrate.json" >&2
                 exit 1

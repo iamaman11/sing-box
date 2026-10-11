@@ -2240,12 +2240,26 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         let canonical_public_key = read_canonical_ssh_public_key()?;
         let operator_private_key_path = operator_private_key_path_from_env()?;
         verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
-        let boot_id_before = observe_guest_boot_id(
+        // This is the read-only gate *before* reboot. A failed SSH
+        // observation must not cause a reboot or a mutation retry.
+        let boot_id_before = match observe_guest_boot_id(
             &operational.main_ip,
             &args[1],
             &operator_private_key_path,
             &canonical_public_key,
-        )?;
+        ) {
+            Ok(boot_id) => boot_id,
+            Err(err) => {
+                if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+                    let forensic =
+                        acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+                    println!("disposable_reboot_preflight_forensics={forensic}");
+                }
+                return Err(format!(
+                    "reboot rejected before provider mutation: guest boot_id SSH observation failed; {err}"
+                ));
+            }
+        };
         Some((
             canonical_public_key,
             operator_private_key_path,
@@ -2268,7 +2282,7 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         if let Some((canonical_public_key, operator_private_key_path, boot_id_before)) =
             reboot_probe
         {
-            let boot_id_after = wait_for_guest_boot_id_change(
+            let boot_id_after = match wait_for_guest_boot_id_change(
                 &operational.main_ip,
                 &args[1],
                 &operator_private_key_path,
@@ -2277,7 +2291,20 @@ async fn run_action(args: &[String]) -> Result<(), String> {
                 60,
                 std::time::Duration::from_secs(2),
             )
-            .await?;
+            .await
+            {
+                Ok(boot_id) => boot_id,
+                Err(err) => {
+                    if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+                        let forensic =
+                            acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+                        println!("disposable_reboot_post_observation_forensics={forensic}");
+                    }
+                    return Err(format!(
+                        "reboot completion not proven after one provider mutation; no reboot replay: {err}"
+                    ));
+                }
+            };
             Some(serde_json::json!({
                 "boot_id_before": boot_id_before,
                 "boot_id_after": boot_id_after,

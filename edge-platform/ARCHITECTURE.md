@@ -1328,3 +1328,13 @@ structured JSON evidence. If native `substrate-verify` fails at initial,
 no-op, post-start or post-reboot verification, the existing workflow prints the
 captured bounded native failure-forensic evidence before the existing abort and
 cleanup. No second probe, mutation, polling owner or fallback transport is used.
+
+
+For a disposable lifecycle reboot, the existing native `action reboot` first
+requires exact guest Linux boot ID over strict SSH. If that one-shot preflight
+fails, it performs zero reboot mutations and reports the same bounded
+provider/firewall/TCP/SSH phase forensics. After the single authorized reboot,
+failed boot-ID-change proof reports post-observation evidence and refuses any
+mutation replay. The GitHub workflow surfaces both failure results before
+cleanup rather than hiding them in redirected output. Production or mismatched
+VM identities cannot invoke disposable forensics.
