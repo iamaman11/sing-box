@@ -1656,7 +1656,7 @@ mod tests {
             )
             .is_err()
         );
-        observed.projections[1].worker_active_version_ids = vec!["windows-version-id".to_owned()];
+        observed.projections[1].worker_active_version_ids = vec!["vm-version-id".to_owned()];
         observed.projections[0].host_service_token_id =
             observed.projections[1].host_service_token_id.clone();
         assert!(
