@@ -1919,6 +1919,15 @@ def main() -> None:
         "candidate CI must resolve the accepted base once and transport only exact verified reuse bytes to the Linux job",
     )
     require(
+        'base_release_revision="${BASE_REVISION}"' in edge_platform_ci
+        and 'current_release_count="$(gh api "repos/${REPOSITORY}/releases?per_page=100"' in edge_platform_ci
+        and 'test "$(jq -er \'.parents | length\' <<<"${base_commit}")" = "2"' in edge_platform_ci
+        and 'base_release_revision="$(jq -er \'.parents[0].sha\' <<<"${base_commit}")"' in edge_platform_ci
+        and 'ACCEPTED_REVISION="${base_release_revision}" OUTPUT_DIR="${base_dir}"' in edge_platform_ci
+        and 'candidate_base_release=VERIFIED_IMMEDIATE_MERGE_PARENT' in edge_platform_ci,
+        "candidate input reuse may recover only through a verified published immediate main merge-parent",
+    )
+    require(
         'runtime_source_revision="${EDGE_RUNTIME_SOURCE_REVISION}"' in edge_platform_ci
         and 'EXPECTED_AGENT_SHA256: ${{ needs.dependencies.outputs.base_runtime_agent_sha256 }}' in edge_platform_ci
         and 'test "$(sha256sum "${base_dir}/edge-agent-linux-amd64" | awk \'{print $1}\')" = "${EXPECTED_AGENT_SHA256}"' in edge_platform_ci
