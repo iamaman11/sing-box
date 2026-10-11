@@ -223,7 +223,7 @@ fn initial_pair_provider_intent_sha256(
     validate_initial_pair_provider_observation(desired, observed, generation, slot)?;
     let vm = projection_observation(observed, "vm")?;
     let windows = projection_observation(observed, "windows")?;
-    let version_id = |projection: &ProjectionObservation| -> Result<&str, String> {
+    let version_id = |projection: &ProjectionObservation| -> Result<String, String> {
         let latest = projection.worker_latest_version_id.as_deref().ok_or_else(|| {
             format!("{} initial intent has no latest Worker version", projection.projection)
         })?;
@@ -233,7 +233,7 @@ fn initial_pair_provider_intent_sha256(
                 projection.projection
             ));
         }
-        Ok(latest)
+        Ok(latest.to_owned())
     };
     let identity = serde_json::json!({
         "schema": "credential-initial-pair-provider-intent/v1",
