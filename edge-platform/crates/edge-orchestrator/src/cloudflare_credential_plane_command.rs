@@ -105,7 +105,10 @@ struct DeliveryWorkerMaterial {
     slots: Vec<DeliverySlot>,
 }
 
-pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), String> {
+pub async fn run_delivery(
+    command: CredentialDeliveryCommand,
+    release_context: &edge_orchestrator::OrchestrationContext,
+) -> Result<(), String> {
     // The GitHub attempt journal is independent from Cloudflare provider
     // credentials. An unchanged read-only history check must work before the
     // workflow injects ANY Cloudflare control token.
@@ -161,8 +164,8 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
                 provider_intent_sha256,
                 vm_attestation_sha256,
                 windows_attestation_sha256,
-                release_source_revision: required_env("GITHUB_SHA")?,
-                release_set_sha256: required_env("EDGE_RELEASE_SET_SHA256")?,
+                release_source_revision: release_context.release().source_revision.clone(),
+                release_set_sha256: release_context.release().release_set_sha256.clone(),
                 github_run_id: run_id,
             };
             let result = plan_initial_pair_reservation(&request, &history)?;

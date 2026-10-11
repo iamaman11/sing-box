@@ -169,7 +169,7 @@ async fn run(
             }
         },
         Command::Credentials { command } => {
-            cloudflare_credential_plane_command::run_delivery(command).await
+            cloudflare_credential_plane_command::run_delivery(command, release_context).await
         }
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
