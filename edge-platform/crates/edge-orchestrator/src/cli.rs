@@ -746,12 +746,14 @@ mod tests {
     fn rejects_duplicate_hosted_production_mutation_surface() {
         use clap::Parser;
 
-        for operation in ["converge", "verify", "rollback"] {
+        for operation in ["converge", "verify"] {
             assert!(
-                Cli::try_parse_from(["edge-orchestrator", "production", operation]).is_err(),
-                "direct hosted production operation must be absent: {operation}"
+                Cli::try_parse_from(["edge-orchestrator", "production", operation, "agent.bin"])
+                    .is_err(),
+                "formerly valid direct hosted production operation must be absent: {operation}"
             );
         }
+        assert!(Cli::try_parse_from(["edge-orchestrator", "production", "rollback"]).is_err());
         assert!(Cli::try_parse_from(["edge-orchestrator", "production", "dns-noop"]).is_ok());
     }
 
