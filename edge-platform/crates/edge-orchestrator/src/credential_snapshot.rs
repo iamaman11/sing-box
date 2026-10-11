@@ -26,7 +26,10 @@ impl FreshCredentialSnapshotRequest {
             || self.delivery_generation == CREDENTIAL_DUMMY_PROBE_GENERATION_A
             || self.delivery_generation == CREDENTIAL_DUMMY_PROBE_GENERATION_B
         {
-            return Err("fresh delivery generation must be nonzero and must not reuse a dummy A/B probe".to_owned());
+            return Err(
+                "fresh delivery generation must be nonzero and must not reuse a dummy A/B probe"
+                    .to_owned(),
+            );
         }
         if !matches!(
             self.slot,
