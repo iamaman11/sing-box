@@ -525,6 +525,18 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn initial_pair_preflight_rejects_missing_or_invalid_parameters() {
+        for args in [
+            vec!["edge-orchestrator", "credentials", "initial-pair-preflight"],
+            vec!["edge-orchestrator", "credentials", "initial-pair-preflight", "101"],
+            vec!["edge-orchestrator", "credentials", "initial-pair-preflight", "101", "other"],
+            vec!["edge-orchestrator", "credentials", "initial-pair-publish", "101", "a"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
     fn parses_typed_orchestrator_commands() {
         let digest = "a".repeat(64);
         let cases = [
@@ -549,6 +561,13 @@ mod tests {
                 &digest,
             ],
             vec!["edge-orchestrator", "credentials", "contract-verify"],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-preflight",
+                "101",
+                "a",
+            ],
             vec![
                 "edge-orchestrator",
                 "credentials",
