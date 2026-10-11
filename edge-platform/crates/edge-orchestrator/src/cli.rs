@@ -199,6 +199,12 @@ impl CredentialDeliverySlotArg {
 #[derive(Debug, Clone, Copy, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
+    // Strictly read-only provider half of an initial paired transaction.
+    InitialPairPreflight {
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+    },
     HostBootstrapConverge,
     RotateApplication {
         #[arg(value_enum)]
