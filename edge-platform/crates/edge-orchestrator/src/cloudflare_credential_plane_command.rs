@@ -543,7 +543,8 @@ async fn initial_pair_publish(
         || verify_exact_active_worker_version(
             projection_observation(&after_vm, "vm")?,
             &vm_published_version,
-        ).is_err()
+        )
+        .is_err()
     {
         return Err(
             "initial paired publish observed an unexpected intermediate Worker version".to_owned(),
