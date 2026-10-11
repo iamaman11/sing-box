@@ -371,6 +371,38 @@ Do not move unrelated zone resources into the dedicated account merely for symme
 
 Legacy application credentials are not migrated into the new runtime.
 
+**Enforced single issuance path:** the GitHub-owned credential operation generates
+one application credential generation and publishes two least-privilege projections
+into Cloudflare credential Workers. VM/Windows local owners may persist protected
+immutable copies of the *same* verified Worker deliveries for offline runtime
+autonomy; they may not generate substitute credentials, adopt a historical local
+credential file, silently select a different generation, or recover to an
+untracked non-Worker secret. The Cloudflare Workers publish the accepted
+generations, while each local `active` pointer is the independently observable
+applied state; Worker availability is never required for already-running traffic.
+
+**Fail-closed VM implementation:** `edge-agent` requires an active, locally
+verified Worker-v2 projection before materializing any new VM runtime environment.
+A missing v2 cursor fails the operation without silently creating a local
+`application-runtime-v1.env`. The retired `ApplyLegacy` transition is rejected;
+failure while applying a v2 candidate may only restore the verified **previously
+active v2** projection. The `RetireLegacy` operation can remove the obsolete
+local file *only after* exact active-v2 runtime verification, never use it for
+authentication. Running containers must not be assumed to consume the on-disk
+environment without a separate bounded runtime-reload or functional proof.
+
+**Migration / operations gate:** On 2026-10-11 the existing production VM
+reported `credential_state_present=false`. Removing the legacy fallback in source
+does not prove v2 enrollment on this VM: installing or converging an updated
+binary may now deliberately fail closed. Never force restart, stop/recreate Line1,
+change Windows SCM/TUN/DNS, or delete the currently serving VM secret file to
+"prove" centralized credential ownership. First establish the exact paired
+Worker-issued v2 credentials, explicit local active projection and an independent
+safe client/network recovery path; only then authorize bounded cutover and
+destructive cleanup. Existing deployed runtime remains read-only until that gate
+is satisfied. No legacy secret-generation bypass may be reintroduced to make
+reinstallation green.
+
 The new stack receives independently generated credential generations.
 
 Operator terms:
@@ -519,6 +551,12 @@ Candidate acquisition and staging are deliberately narrower than the persistence
 - project-specific custom X25519/HKDF/AEAD transport is not canonical and must not return.
 
 The two Workers remain bounded A/B delivery mailboxes, not secret-history or runtime-state authorities.
+A `/production diagnose` read-only classification may report
+`credential_rendered_source=V2_ACTIVE_RENDERED` with nonsecret generation IDs,
+or `UNPROVEN` with a bounded reason (including an obsolete local store).
+A v2 rendered file alone is **not** end-to-end authentication proof; the
+diagnostic explicitly reports `credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF`.
+`healthy=true` without these proofs is local Docker/Compose readiness only.
 
 ## 5. Runtime autonomy and recovery
 
