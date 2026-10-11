@@ -154,15 +154,23 @@ fn validate_initial_pair_provider_observation(
         || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_A
         || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_B
     {
-        return Err("fresh credential generation must be nonzero and distinct from canonical dummy probes".to_owned());
+        return Err(
+            "fresh credential generation must be nonzero and distinct from canonical dummy probes"
+                .to_owned(),
+        );
     }
     validate_access_boundary(desired, observed)?;
     let vm = projection_observation(observed, "vm")?;
     let windows = projection_observation(observed, "windows")?;
     for projection in projections(desired) {
         let current = projection_observation(observed, &projection.projection)?;
-        if projection_delivery_state(desired, &projection, observed)? != ProjectionDeliveryState::FixedAb
-            || current.worker_latest_version_id.as_deref().unwrap_or("").is_empty()
+        if projection_delivery_state(desired, &projection, observed)?
+            != ProjectionDeliveryState::FixedAb
+            || current
+                .worker_latest_version_id
+                .as_deref()
+                .unwrap_or("")
+                .is_empty()
             || current.worker_active_version_ids.len() != 1
         {
             return Err(format!(
@@ -172,13 +180,31 @@ fn validate_initial_pair_provider_observation(
         }
     }
     for (label, left, right) in [
-        ("Worker identity", vm.worker_id.as_deref(), windows.worker_id.as_deref()),
-        ("Access service token", vm.host_service_token_id.as_deref(), windows.host_service_token_id.as_deref()),
-        ("Access client identity", vm.host_service_token_client_id.as_deref(), windows.host_service_token_client_id.as_deref()),
-        ("Access application", vm.access_application_id.as_deref(), windows.access_application_id.as_deref()),
+        (
+            "Worker identity",
+            vm.worker_id.as_deref(),
+            windows.worker_id.as_deref(),
+        ),
+        (
+            "Access service token",
+            vm.host_service_token_id.as_deref(),
+            windows.host_service_token_id.as_deref(),
+        ),
+        (
+            "Access client identity",
+            vm.host_service_token_client_id.as_deref(),
+            windows.host_service_token_client_id.as_deref(),
+        ),
+        (
+            "Access application",
+            vm.access_application_id.as_deref(),
+            windows.access_application_id.as_deref(),
+        ),
     ] {
         if left.is_none() || right.is_none() || left == right {
-            return Err(format!("initial paired provider preflight requires distinct nonempty VM and Windows {label}"));
+            return Err(format!(
+                "initial paired provider preflight requires distinct nonempty VM and Windows {label}"
+            ));
         }
     }
     Ok(())
@@ -1583,29 +1609,65 @@ mod tests {
         let mut observed = observation(&desired);
         make_terminal(&mut observed, "vm");
         make_terminal(&mut observed, "windows");
-        assert!(validate_initial_pair_provider_observation(
-            &desired, &observed, 101, CredentialDeliverySlotArg::A,
-        ).is_ok());
-        for invalid in [0, CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B] {
-            assert!(validate_initial_pair_provider_observation(
-                &desired, &observed, invalid, CredentialDeliverySlotArg::A,
-            ).is_err());
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_ok()
+        );
+        for invalid in [
+            0,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+        ] {
+            assert!(
+                validate_initial_pair_provider_observation(
+                    &desired,
+                    &observed,
+                    invalid,
+                    CredentialDeliverySlotArg::A,
+                )
+                .is_err()
+            );
         }
         let client = observed.projections[0].host_service_token_client_id.clone();
         observed.projections[1].host_service_token_client_id = client;
-        assert!(validate_initial_pair_provider_observation(
-            &desired, &observed, 101, CredentialDeliverySlotArg::A,
-        ).is_err());
-        observed.projections[1].host_service_token_client_id = Some("distinct-client-id".to_owned());
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_err()
+        );
+        observed.projections[1].host_service_token_client_id =
+            Some("distinct-client-id".to_owned());
         observed.projections[1].worker_active_version_ids = vec!["stale-active-version".to_owned()];
-        assert!(validate_initial_pair_provider_observation(
-            &desired, &observed, 101, CredentialDeliverySlotArg::A,
-        ).is_err());
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_err()
+        );
         observed.projections[1].worker_active_version_ids = vec!["windows-version-id".to_owned()];
-        observed.projections[0].host_service_token_id = observed.projections[1].host_service_token_id.clone();
-        assert!(validate_initial_pair_provider_observation(
-            &desired, &observed, 101, CredentialDeliverySlotArg::A,
-        ).is_err());
+        observed.projections[0].host_service_token_id =
+            observed.projections[1].host_service_token_id.clone();
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_err()
+        );
     }
 
     #[test]
