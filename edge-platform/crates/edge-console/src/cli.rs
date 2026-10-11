@@ -207,7 +207,15 @@ mod tests {
     fn parses_installed_automation_commands() {
         assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "credential-initial-probe"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "credential-initial-probe", "--install-root", r"C:\sing-box"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "credential-initial-probe",
+                "--install-root",
+                r"C:\sing-box"
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "smoke-runtime"]).is_ok());
         assert!(
