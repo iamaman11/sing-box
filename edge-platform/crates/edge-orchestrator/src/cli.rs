@@ -138,19 +138,12 @@ pub(crate) enum ProductionCommand {
     // Never exposed as a new comment command or a DNS mutation authority.
     DnsNoop,
     EnrollRuntime(ProductionEnrollRuntimeArgs),
-    Converge(ProductionRuntimeArgs),
-    Verify(ProductionRuntimeArgs),
 }
 
 #[derive(Debug, Args, Clone)]
 pub(crate) struct ProductionEnrollRuntimeArgs {
     pub edge_agent_artifact_path: PathBuf,
     pub runner_installer_path: PathBuf,
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct ProductionRuntimeArgs {
-    pub edge_agent_artifact_path: PathBuf,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -747,6 +740,21 @@ mod tests {
                 "retired standalone application lifecycle command must stay absent: {operation}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_duplicate_hosted_production_mutation_surface() {
+        use clap::Parser;
+
+        for operation in ["converge", "verify"] {
+            assert!(
+                Cli::try_parse_from(["edge-orchestrator", "production", operation, "agent.bin"])
+                    .is_err(),
+                "formerly valid direct hosted production operation must be absent: {operation}"
+            );
+        }
+        assert!(Cli::try_parse_from(["edge-orchestrator", "production", "rollback"]).is_err());
+        assert!(Cli::try_parse_from(["edge-orchestrator", "production", "dns-noop"]).is_ok());
     }
 
     #[test]

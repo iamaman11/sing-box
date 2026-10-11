@@ -1,15 +1,10 @@
-use crate::application_lifecycle_command::{
-    production_converge_desired, production_verify_desired,
-};
 use crate::cloudflare_dns_lifecycle_command::acceptance_verify_noop as dns_verify_noop;
 use crate::vultr_lifecycle_command::{
     acceptance_converge_substrate as substrate_converge, acceptance_lease_acquire as lease_acquire,
-    acceptance_lease_release as lease_release, acceptance_verify_substrate as substrate_verify,
-    bootstrap_production_runner, exact_existing_machine_observation, production_converge_machine,
+    acceptance_lease_release as lease_release, bootstrap_production_runner,
+    production_converge_machine,
 };
-use crate::vultr_vpc_lifecycle_command::{
-    acceptance_verify as vpc_verify, production_converge as vpc_converge,
-};
+use crate::vultr_vpc_lifecycle_command::production_converge as vpc_converge;
 use edge_controller_core::production::{
     CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
 };
@@ -86,115 +81,6 @@ pub(crate) async fn enroll_runtime(
             "{err}; transient support-access cleanup also failed: {release_err}"
         )),
     }
-}
-
-pub(crate) async fn converge(
-    release_context: &OrchestrationContext,
-    edge_agent_artifact_path: &Path,
-) -> Result<(), String> {
-    release_context.application_release_authority()?;
-    let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
-
-    // A routine converge is not an authorized DNS cutover. Fail before any
-    // provider/VM mutation if production DNS differs from its current owner.
-    dns_verify_noop(spec, spec).await.map_err(|err| {
-        format!(
-            "production converge blocked before mutation: canonical DNS is not a verified NOOP; explicit authenticated cutover is required: {err}"
-        )
-    })?;
-
-    production_converge_machine(spec, &composition.machine_id).await?;
-    lease_acquire(spec, &composition.machine_id).await?;
-
-    let operation = async {
-        substrate_converge(spec, &composition.machine_id).await?;
-        vpc_converge(spec).await?;
-        let (release_id, bundle_digest) = production_converge_desired(
-            release_context,
-            &composition.application,
-            edge_agent_artifact_path,
-        )
-        .await?;
-        // Core Line1/Line2/WARP does not publish DNS or create optional Mesh.
-
-        verify_with_lease(release_context, &composition, edge_agent_artifact_path).await?;
-        Ok::<_, String>((release_id, bundle_digest))
-    }
-    .await;
-
-    let release_result = lease_release(spec, &composition.machine_id).await;
-    match (operation, release_result) {
-        (Ok((release_id, bundle_digest)), Ok(())) => {
-            print_identity(release_context, &composition, "PASS");
-            println!("operation=CONVERGE");
-            println!("production_dns_mutation=0");
-            println!("optional_mesh_mutation=0");
-            println!("application_release_id={release_id}");
-            println!("application_bundle_digest={bundle_digest}");
-            println!("transient_support_access=ABSENT");
-            Ok(())
-        }
-        (Err(err), Ok(())) => Err(err),
-        (Ok(_), Err(release_err)) => Err(format!(
-            "production convergence passed but transient support-access cleanup failed: {release_err}"
-        )),
-        (Err(err), Err(release_err)) => Err(format!(
-            "{err}; transient support-access cleanup also failed: {release_err}"
-        )),
-    }
-}
-
-pub(crate) async fn verify(
-    release_context: &OrchestrationContext,
-    edge_agent_artifact_path: &Path,
-) -> Result<(), String> {
-    release_context.application_release_authority()?;
-    let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
-
-    exact_existing_machine_observation(&composition.machines, &composition.machine_id).await?;
-    lease_acquire(spec, &composition.machine_id).await?;
-    let operation =
-        verify_with_lease(release_context, &composition, edge_agent_artifact_path).await;
-    let release_result = lease_release(spec, &composition.machine_id).await;
-
-    match (operation, release_result) {
-        (Ok(()), Ok(())) => {
-            print_identity(release_context, &composition, "PASS");
-            println!("operation=VERIFY");
-            println!("provider_plan=NOOP");
-            println!("transient_support_access=ABSENT");
-            Ok(())
-        }
-        (Err(err), Ok(())) => Err(err),
-        (Ok(()), Err(release_err)) => Err(format!(
-            "production verification passed but transient support-access cleanup failed: {release_err}"
-        )),
-        (Err(err), Err(release_err)) => Err(format!(
-            "{err}; transient support-access cleanup also failed: {release_err}"
-        )),
-    }
-}
-
-async fn verify_with_lease(
-    release_context: &OrchestrationContext,
-    composition: &ProductionComposition,
-    edge_agent_artifact_path: &Path,
-) -> Result<(), String> {
-    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
-    exact_existing_machine_observation(&composition.machines, &composition.machine_id).await?;
-    substrate_verify(spec, &composition.machine_id).await?;
-    vpc_verify(spec).await?;
-    production_verify_desired(
-        release_context,
-        &composition.application,
-        edge_agent_artifact_path,
-    )
-    .await?;
-    dns_verify_noop(spec, spec).await?;
-    // The independently owned optional Line3 Mesh is verified separately.
-    Ok(())
 }
 
 fn print_identity(
