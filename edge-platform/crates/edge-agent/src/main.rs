@@ -5556,10 +5556,10 @@ mod tests {
                     reality_identity: Some(RealityPrivateIdentityGeneration {
                         generation: 3,
                         direct: Some(RealityPrivateIdentity {
-                            private_key: "C".repeat(43),
+                            private_key: "A".repeat(43),
                         }),
                         warp: Some(RealityPrivateIdentity {
-                            private_key: "D".repeat(43),
+                            private_key: "Q".repeat(43),
                         }),
                     }),
                     line2_proxy: Some(ProxyCredentialGeneration {
