@@ -807,7 +807,7 @@ def main() -> None:
         and 'credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF'
         in vm_agent_runtime
         and 'vm_runtime_materialization_refuses_legacy_and_requires_explicit_active_v2'
-        in vm_agent_runtime,
+        in vm_agent,
         "VM runtime credentials must be Worker-v2-only and fail closed, without local generator or legacy rollback",
     )
 
