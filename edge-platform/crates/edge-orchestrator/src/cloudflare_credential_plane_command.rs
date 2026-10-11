@@ -452,12 +452,13 @@ async fn initial_pair_publish(
             return Err(format!("initial pair publisher refuses untrusted {key}"));
         }
     }
-    if env::var("GITHUB_RUN_ID").ok().as_deref()
-        != Some(request.github_run_id.to_string().as_str())
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(request.github_run_id.to_string().as_str())
         || env::var("GITHUB_SHA").ok().as_deref()
             != Some(release_context.release().source_revision.as_str())
     {
-        return Err("initial pair publisher refuses a mismatched GitHub run or source revision".to_owned());
+        return Err(
+            "initial pair publisher refuses a mismatched GitHub run or source revision".to_owned(),
+        );
     }
 
     // A complete GitHub BEGIN must be durably persisted and independently
@@ -482,9 +483,10 @@ async fn initial_pair_publish(
     }
     let previous_version = |projection: &str| -> Result<String, String> {
         let observed = projection_observation(&before, projection)?;
-        observed.worker_latest_version_id.clone().ok_or_else(|| {
-            format!("{projection} has no expected initial version")
-        })
+        observed
+            .worker_latest_version_id
+            .clone()
+            .ok_or_else(|| format!("{projection} has no expected initial version"))
     };
     let vm_previous = previous_version("vm")?;
     let windows_previous = previous_version("windows")?;
@@ -495,7 +497,9 @@ async fn initial_pair_publish(
     if rotation_identity.status != "active"
         || rotation_identity.id == before.control_token_identity.id
     {
-        return Err("initial publish requires distinct active least-privilege mutation token".to_owned());
+        return Err(
+            "initial publish requires distinct active least-privilege mutation token".to_owned(),
+        );
     }
     let delivery_slot = match slot {
         CredentialDeliverySlotArg::A => CredentialDeliverySlot::A,
@@ -522,21 +526,39 @@ async fn initial_pair_publish(
     // A failed/unknown first PATCH or deployment aborts the transaction.
     // New secrets are generated exactly once and never regenerated on retry.
     publish_rotation_slot(
-        control_token, &rotation_token, desired, &vm, slot_name, &vm_secret,
+        control_token,
+        &rotation_token,
+        desired,
+        &vm,
+        slot_name,
+        &vm_secret,
         Some(&vm_previous),
-    ).await?;
+    )
+    .await?;
     let after_vm = observe(control_token, desired).await?;
-    if projection_observation(&after_vm, "windows")?.worker_latest_version_id.as_deref()
+    if projection_observation(&after_vm, "windows")?
+        .worker_latest_version_id
+        .as_deref()
         != Some(windows_previous.as_str())
-        || projection_observation(&after_vm, "vm")?.worker_latest_version_id.as_deref()
+        || projection_observation(&after_vm, "vm")?
+            .worker_latest_version_id
+            .as_deref()
             == Some(vm_previous.as_str())
     {
-        return Err("initial paired publish observed an unexpected intermediate Worker version".to_owned());
+        return Err(
+            "initial paired publish observed an unexpected intermediate Worker version".to_owned(),
+        );
     }
     publish_rotation_slot(
-        control_token, &rotation_token, desired, &windows, slot_name,
-        &windows_secret, Some(&windows_previous),
-    ).await?;
+        control_token,
+        &rotation_token,
+        desired,
+        &windows,
+        slot_name,
+        &windows_secret,
+        Some(&windows_previous),
+    )
+    .await?;
     let after = observe(control_token, desired).await?;
     for (projection, previous) in [
         (&vm, vm_previous.as_str()),
@@ -545,7 +567,9 @@ async fn initial_pair_publish(
         if projection_delivery_state(desired, projection, &after)?
             != ProjectionDeliveryState::FixedAb
             || projection_observation(&after, &projection.projection)?
-                .worker_latest_version_id.as_deref() == Some(previous)
+                .worker_latest_version_id
+                .as_deref()
+                == Some(previous)
         {
             return Err(format!(
                 "{} initial publish does not have exact newly active Worker version",
