@@ -535,7 +535,8 @@ def main() -> None:
         and "expected_agent_sha256" in vm_agent_cli
         and "verify_initial_agent_binary(&expected_agent_sha256)" in vm_agent_runtime
         and "credential_exact_agent_binary=true" in vm_agent_runtime
-        and "file_sha256_lower_hex(" in vm_agent_runtime\n        and "Path::new(\"/proc/self/exe\")" in vm_agent_runtime
+        and "file_sha256_lower_hex(" in vm_agent_runtime
+        and 'Path::new("/proc/self/exe")' in vm_agent_runtime
         and "CredentialInitialAttest" in windows_console_cli
         and "run_windows_initial_credential_probe(root)" in windows_console
         and "first_use_host_attestation_sha256(" in windows_console
