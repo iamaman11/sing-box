@@ -1791,8 +1791,9 @@ fn require_initial_windows_credential_host(install_root: &Path) -> Result<(), St
     let store_present = windows_credential_store_path(install_root).exists();
     let runtime_present = windows_runtime_state_path(install_root).exists();
     initial_windows_credential_eligibility(store_present, runtime_present)?;
-    load_verified_activation(install_root)
-        .map_err(|err| format!("initial Windows proof requires an exact immutable release: {err}"))?;
+    load_verified_activation(install_root).map_err(|err| {
+        format!("initial Windows proof requires an exact immutable release: {err}")
+    })?;
     Ok(())
 }
 
@@ -1807,9 +1808,7 @@ fn initial_windows_credential_eligibility(
         );
     }
     if runtime_present {
-        return Err(
-            "initial Windows proof refuses an existing managed runtime state".to_owned(),
-        );
+        return Err("initial Windows proof refuses an existing managed runtime state".to_owned());
     }
     Ok(())
 }
@@ -4989,12 +4988,16 @@ mod tests {
     #[test]
     fn initial_windows_proof_refuses_active_or_incomplete_local_state() {
         assert!(initial_windows_credential_eligibility(false, false).is_ok());
-        assert!(initial_windows_credential_eligibility(true, false)
-            .unwrap_err()
-            .contains("incomplete v2 credential store"));
-        assert!(initial_windows_credential_eligibility(false, true)
-            .unwrap_err()
-            .contains("managed runtime state"));
+        assert!(
+            initial_windows_credential_eligibility(true, false)
+                .unwrap_err()
+                .contains("incomplete v2 credential store")
+        );
+        assert!(
+            initial_windows_credential_eligibility(false, true)
+                .unwrap_err()
+                .contains("managed runtime state")
+        );
         assert!(initial_windows_credential_eligibility(true, true).is_err());
     }
 
