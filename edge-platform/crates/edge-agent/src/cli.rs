@@ -167,6 +167,7 @@ mod tests {
                 "a",
                 &"a".repeat(64),
                 &"b".repeat(64),
+                &"c".repeat(64),
             ])
             .is_ok()
         );
