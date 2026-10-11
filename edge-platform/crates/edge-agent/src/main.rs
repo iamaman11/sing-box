@@ -214,14 +214,12 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {
-            require_empty_vm_initial_credential_host(&stack_dir)
-                .map_err(AgentError::Command)?;
+            require_empty_vm_initial_credential_host(&stack_dir).map_err(AgentError::Command)?;
             let docker = observe_docker().await.map_err(AgentError::Command)?;
             require_no_vm_application_containers(&docker).map_err(AgentError::Command)?;
             verify_canonical_dummy_ab_slots(
                 CredentialProjectionKind::Vm,
-                &vm_credential_access_identity_path(&stack_dir)
-                    .map_err(AgentError::Command)?,
+                &vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?,
             )
             .await
             .map_err(AgentError::Command)?;
