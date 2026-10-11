@@ -1647,9 +1647,20 @@ async fn verify_initial_vm_credential_functional(
     if !docker.reachable {
         return Err("initial VM functional proof cannot observe Docker".to_owned());
     }
-    for name in ["vultr-warp-egress", "vultr-line1-gateway", "vultr-line2-proxy"] {
-        if !docker.container_running(name) {
-            return Err(format!("initial VM functional proof requires running container {name}"));
+    let images = read_exact_image_environment(stack_dir)?;
+    let gateway_image = images.get(EDGE_GATEWAY_IMAGE_KEY).ok_or_else(|| {
+        "initial VM functional proof requires pinned gateway image".to_owned()
+    })?;
+    let warp_image = images.get(EDGE_WARP_EGRESS_IMAGE_KEY).ok_or_else(|| {
+        "initial VM functional proof requires pinned WARP image".to_owned()
+    })?;
+    for (name, expected_image) in [
+        ("vultr-warp-egress", warp_image),
+        ("vultr-line1-gateway", gateway_image),
+        ("vultr-line2-proxy", gateway_image),
+    ] {
+        if !docker.container_exact_image_ready(name, expected_image) {
+            return Err(format!("initial VM functional proof refuses stopped or non-pinned container {name}"));
         }
     }
     // Real authenticated 204 through each of six direct/WARP HTTP,
