@@ -1655,7 +1655,7 @@ def main() -> None:
         and "grep -Fxq 'operation=PRODUCTION_DNS_NOOP'" in production_provider
         and "grep -Fxq 'provider_mutations=0'" in production_provider
         and "grep -Fxq 'production_runtime_mutations=0'" in production_provider
-        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in production_provider
+        and "CLOUDFLARE_CONTROL_TOKEN" not in production_provider
         and "CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}" in production_provider
         and "VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}" in production_provider
         and "VULTR_SSH_PRIVATE_KEY" not in production_provider
