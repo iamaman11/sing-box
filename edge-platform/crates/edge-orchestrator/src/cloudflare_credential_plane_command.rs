@@ -178,7 +178,10 @@ pub async fn run_delivery(
             // is not durable until the authorized workflow POSTs once and
             // independently verifies the full comment history.
             println!("operation=CREDENTIAL_INITIAL_PAIR_JOURNAL_PLAN");
-            println!("credential_attempt_record_sha256={}", sha256_hex(result.as_bytes()));
+            println!(
+                "credential_attempt_record_sha256={}",
+                sha256_hex(result.as_bytes())
+            );
             println!("credential_record_file_created=true");
             println!("credential_provider_mutations=0");
             println!("credential_journal_mutations=0");
@@ -240,7 +243,9 @@ pub async fn run_delivery(
 fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
     // A BEGIN reservation is a non-secret exact payload for ONE authorized
     // GitHub comment, not a second credential authority.
-    if record.len() > 4096 || !record.starts_with("<!-- sing-box-credential-initial-attempt/v1 -->\n") {
+    if record.len() > 4096
+        || !record.starts_with("<!-- sing-box-credential-initial-attempt/v1 -->\n")
+    {
         return Err("initial BEGIN local record is malformed or too large".to_owned());
     }
     let mut options = OpenOptions::new();
@@ -250,7 +255,8 @@ fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path)
+    let mut file = options
+        .open(path)
         .map_err(|err| format!("cannot create one-shot initial BEGIN file: {err}"))?;
     file.write_all(record.as_bytes())
         .and_then(|_| file.sync_all())
