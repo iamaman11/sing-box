@@ -394,7 +394,7 @@ jobs:
           [[ "${application_bundle_asset_id}" =~ ^[0-9]+$ ]]
           printf 'application_bundle_asset_id=%s\n' "${application_bundle_asset_id}" >> "${GITHUB_OUTPUT}"
 
-      - name: Converge or verify provider plane
+      - name: Read-only production DNS ownership gate
         shell: bash
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
@@ -403,19 +403,20 @@ jobs:
         run: |
           set -euo pipefail
           case "${REQUESTED_OPERATION}" in
-            converge)
-              provider_operation="active-converge"
-              ;;
-            verify|rollback)
-              provider_operation="verify-active"
+            converge|verify|rollback)
               ;;
             *)
               echo "provider plane received unsupported production operation" >&2
               exit 1
               ;;
           esac
+          # This is the actual GitHub operator path, before VM bundle mutation.
+          # No Cloudflare target-plane converge or implicit DNS/Mesh publication.
           result="${RUNNER_TEMP}/production-provider-result.txt"
-          "${EDGE_PROVIDER_ORCHESTRATOR}" cloudflare-target-plane "${provider_operation}" | tee "${result}"
+          "${EDGE_PROVIDER_ORCHESTRATOR}" production dns-noop | tee "${result}"
+          grep -Fxq 'operation=PRODUCTION_DNS_NOOP' "${result}"
+          grep -Fxq 'provider_mutations=0' "${result}"
+          grep -Fxq 'production_runtime_mutations=0' "${result}"
           {
             echo '### Production provider plane'
             echo
