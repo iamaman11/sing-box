@@ -1476,9 +1476,10 @@ async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Resul
     if staged.active.is_some() || staged.previous.is_some() {
         return Err("initial VM enrollment discovered nonempty active/previous state".to_owned());
     }
-    let candidate = staged.candidate.as_ref().ok_or_else(|| {
-        "initial VM enrollment requires the staged Worker candidate".to_owned()
-    })?;
+    let candidate = staged
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "initial VM enrollment requires the staged Worker candidate".to_owned())?;
     if candidate.generation != generation {
         return Err("initial VM enrollment candidate generation mismatch".to_owned());
     }
@@ -4227,9 +4228,11 @@ mod tests {
 
     #[test]
     fn initial_vm_enrollment_refuses_unobservable_docker_state() {
-        assert!(require_no_vm_application_containers(&DockerObservation::unreachable())
-            .unwrap_err()
-            .contains("unknown Docker daemon state"));
+        assert!(
+            require_no_vm_application_containers(&DockerObservation::unreachable())
+                .unwrap_err()
+                .contains("unknown Docker daemon state")
+        );
     }
 
     #[test]
@@ -4241,32 +4244,40 @@ mod tests {
 
         let env = stack.join(RUNTIME_ENV_FILE);
         fs::write(&env, "LEGACY_SECRET=opaque\\n").unwrap();
-        assert!(require_empty_vm_initial_credential_host(&stack)
-            .unwrap_err()
-            .contains("runtime artifact"));
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("runtime artifact")
+        );
         fs::remove_file(&env).unwrap();
 
         let old = legacy_vm_runtime_secret_path(&stack).unwrap();
         fs::create_dir_all(old.parent().unwrap()).unwrap();
         fs::write(&old, "opaque").unwrap();
-        assert!(require_empty_vm_initial_credential_host(&stack)
-            .unwrap_err()
-            .contains("legacy runtime"));
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("legacy runtime")
+        );
         fs::remove_file(&old).unwrap();
 
         let rendered = stack.join("rendered/line1-gateway.json");
         fs::create_dir_all(rendered.parent().unwrap()).unwrap();
         fs::write(&rendered, "{}").unwrap();
-        assert!(require_empty_vm_initial_credential_host(&stack)
-            .unwrap_err()
-            .contains("runtime artifact"));
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("runtime artifact")
+        );
         fs::remove_file(&rendered).unwrap();
 
         let store = vm_credential_store_root(&stack).unwrap();
         fs::create_dir_all(&store).unwrap();
-        assert!(require_empty_vm_initial_credential_host(&stack)
-            .unwrap_err()
-            .contains("absent v2 store"));
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("absent v2 store")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
