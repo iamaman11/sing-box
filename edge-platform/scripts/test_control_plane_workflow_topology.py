@@ -2161,6 +2161,27 @@ def main() -> None:
         "typed release ownership must not regress to redundant GitHub outputs or shell-owned manifest validation",
     )
     require(
+        "types: [opened, synchronize, reopened]" in edge_platform_ci
+        and "types: [opened, synchronize, reopened, closed]" not in edge_platform_ci
+        and "  push:\n    branches: [main]" in edge_platform_ci
+        and "group: ${{ github.event_name == 'push' && 'edge-platform-promotion-main'" in edge_platform_ci
+        and "cancel-in-progress: ${{ github.event_name != 'push' }}" in edge_platform_ci
+        and "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in edge_platform_ci
+        and "ACCEPTED_REVISION: ${{ github.sha }}" in edge_platform_ci
+        and "test \"$(jq -er '.parents | length' <<<\"\${accepted_commit}\")\" = \"2\"" in edge_platform_ci
+        and "candidate_revision=\"$(jq -er '.parents[1].sha'" in edge_platform_ci
+        and 'test "${accepted_tree}" = "${candidate_tree}"' in edge_platform_ci
+        and 'associated_prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls?per_page=10")"' in edge_platform_ci
+        and 'select(.merge_commit_sha == $accepted)' in edge_platform_ci
+        and 'select(.head.sha == $candidate)' in edge_platform_ci
+        and 'select(.base.ref == "main")' in edge_platform_ci
+        and 'if length == 1 then .[0] else error("accepted merge has no unique matching merged PR") end' in edge_platform_ci
+        and "pull-requests: read" in edge_platform_ci
+        and 'select(.status == "completed")' in edge_platform_ci
+        and 'select(.conclusion == "success")' in edge_platform_ci,
+        "CI promotion must execute on actual protected main merge and bind exact merged PR, tested tree, and completed successful candidate without rebuild",
+    )
+    require(
         "Publish accepted Windows artifact without rebuild" in edge_platform_ci
         and "name: edge-platform-windows-${{ steps.locate.outputs.accepted_revision }}" in edge_platform_ci
         and "Publish accepted Linux artifact without rebuild" not in edge_platform_ci
