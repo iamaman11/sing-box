@@ -207,6 +207,10 @@ pub(crate) enum CredentialDeliveryCommand {
     },
     // Non-mutating plan; requires separately authenticated host evidence.
     // Never opens the Cloudflare write capability or commits the GitHub journal.
+    // Read-only inspection of the complete GitHub Issue #26 attempt history.
+    InitialPairJournalObserve {
+        journal_history_path: std::path::PathBuf,
+    },
     InitialPairJournalPlan {
         generation: u64,
         #[arg(value_enum)]

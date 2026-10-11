@@ -1,7 +1,9 @@
 use crate::cli::{
     CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
 };
-use crate::credential_initial_journal::{InitialPairJournalPlan, plan_initial_pair_reservation};
+use crate::credential_initial_journal::{
+    InitialPairJournalPlan, plan_initial_pair_reservation, require_empty_initial_history,
+};
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
     RotateCredentialSnapshotRequest, generate_rotation_credential_snapshot,
@@ -120,6 +122,15 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
         CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
             initial_pair_preflight(&control_token, &desired, generation, slot).await
+        }
+        CredentialDeliveryCommand::InitialPairJournalObserve { journal_history_path } => {
+            let history = fs::read_to_string(&journal_history_path)
+                .map_err(|err| format!("cannot read initial attempt journal history: {err}"))?;
+            require_empty_initial_history(&history)?;
+            println!("credential_initial_journal_empty=true");
+            println!("credential_journal_mutations=0");
+            println!("credential_provider_mutations=0");
+            Ok(())
         }
         CredentialDeliveryCommand::InitialPairJournalPlan {
             generation,

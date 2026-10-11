@@ -72,6 +72,10 @@ fn validate_request(request: &InitialPairJournalPlan) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn require_empty_initial_history(history: &str) -> Result<(), String> {
+    validate_journal_history(history)
+}
+
 fn validate_journal_history(history: &str) -> Result<(), String> {
     // GitHub pagination is materialized by the trusted caller as a single
     // array. A malformed/partial read is a hard stop, never an empty ledger.
