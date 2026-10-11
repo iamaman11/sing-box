@@ -1813,7 +1813,9 @@ fn initial_windows_credential_eligibility(
         return Err("initial Windows proof refuses an existing managed runtime state".to_owned());
     }
     if config_present {
-        return Err("initial Windows proof refuses an existing rendered sing-box config".to_owned());
+        return Err(
+            "initial Windows proof refuses an existing rendered sing-box config".to_owned(),
+        );
     }
     Ok(())
 }
@@ -5004,9 +5006,11 @@ mod tests {
                 .contains("managed runtime state")
         );
         assert!(initial_windows_credential_eligibility(true, true, true).is_err());
-        assert!(initial_windows_credential_eligibility(false, false, true)
-            .unwrap_err()
-            .contains("rendered sing-box config"));
+        assert!(
+            initial_windows_credential_eligibility(false, false, true)
+                .unwrap_err()
+                .contains("rendered sing-box config")
+        );
     }
 
     #[test]
