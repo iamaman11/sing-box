@@ -7,8 +7,8 @@ use edge_orchestrator::credential_snapshot::{
 };
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
-    CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
     CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+    CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
     CredentialProjectionKind, CredentialRotationClass,
 };
 use prost::Message;
@@ -1230,25 +1230,25 @@ fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, 
         (SLOT_A, CREDENTIAL_DUMMY_PROBE_GENERATION_A),
         (SLOT_B, CREDENTIAL_DUMMY_PROBE_GENERATION_B),
     ]
-        .into_iter()
-        .map(|(name, generation)| {
-            let payload = CredentialDeliveryBundle {
-                schema_version: 1,
-                generation,
-                projection: projection_kind as i32,
-                dummy_non_secret: true,
-                slot: CredentialDeliverySlot::Unspecified as i32,
-                payload: None,
-            }
-            .encode_to_vec();
-            DeliverySlot {
-                name,
-                generation,
-                secret_text: hex_encode(&payload),
-                payload,
-            }
-        })
-        .collect::<Vec<_>>();
+    .into_iter()
+    .map(|(name, generation)| {
+        let payload = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation,
+            projection: projection_kind as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: None,
+        }
+        .encode_to_vec();
+        DeliverySlot {
+            name,
+            generation,
+            secret_text: hex_encode(&payload),
+            payload,
+        }
+    })
+    .collect::<Vec<_>>();
 
     let source = r#"const S=["EDGE_CREDENTIAL_BUNDLE_A","EDGE_CREDENTIAL_BUNDLE_B"];
 const P=__PROJECTION__;
