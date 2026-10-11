@@ -279,6 +279,7 @@ async fn initial_pair_preflight(
     println!("initial_pair_provider_intent_sha256={provider_intent_sha256}");
     println!("host_dummy_slot_attestations=REQUIRED");
     println!("worker_version_bound_publish=NOT_IMPLEMENTED");
+    println!("provider_attempt_journal=NOT_RECORDED");
     println!("initial_publication_authorized=false");
     println!("credential_provider_mutations=0");
     println!("credential_runtime_mutations=0");
