@@ -628,9 +628,7 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
 }
 
 fn require_disposable_initial_probe_target(spec: &str, machine: &str) -> Result<(), String> {
-    if spec != "infra/vultr/application-acceptance.json"
-        || machine != "application-acceptance-1"
-    {
+    if spec != "infra/vultr/application-acceptance.json" || machine != "application-acceptance-1" {
         return Err(
             "initial host proof can only target the fixed disposable application-acceptance VM"
                 .to_owned(),
@@ -671,9 +669,7 @@ async fn run_initial_host_probe(
     if generation == 0 || github_run_id == 0 {
         return Err("initial host proof requires positive generation and run ID".to_owned());
     }
-    if env::var("GITHUB_SHA").ok().as_deref()
-        != Some(context.release().source_revision.as_str())
-    {
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(context.release().source_revision.as_str()) {
         return Err("initial host proof refuses GitHub source revision drift".to_owned());
     }
     if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[6].as_str()) {
@@ -3652,13 +3648,19 @@ fn usage() -> String {
 mod tests {
     #[test]
     fn initial_native_host_attestation_never_targets_production_or_wrong_vm() {
-        assert!(require_disposable_initial_probe_target(
-            "infra/vultr/application-acceptance.json",
-            "application-acceptance-1"
-        ).is_ok());
+        assert!(
+            require_disposable_initial_probe_target(
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1"
+            )
+            .is_ok()
+        );
         for (spec, machine) in [
             ("infra/vultr/application-acceptance.json", "production-1"),
-            ("infra/vultr/disposable-acceptance.json", "lifecycle-acceptance-1"),
+            (
+                "infra/vultr/disposable-acceptance.json",
+                "lifecycle-acceptance-1",
+            ),
             ("infra/production/production.textproto", "production-1"),
             ("infra/vultr/application-acceptance.json", "wrong-machine"),
         ] {
