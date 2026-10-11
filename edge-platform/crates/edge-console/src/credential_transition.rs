@@ -63,6 +63,7 @@ pub(crate) fn transition(
             ))
         }
         CredentialTransitionAction::Promote => {
+            require_active_v2_for_promotion(&state)?;
             require_candidate_without_previous(&state)?;
             let candidate = state
                 .candidate
@@ -188,6 +189,16 @@ pub(crate) fn transition(
                 .to_owned(),
         ),
     }
+}
+
+fn require_active_v2_for_promotion(state: &LocalCredentialState) -> Result<(), String> {
+    if state.active.is_none() {
+        return Err(
+            "Windows promotion refuses initial enrollment without an explicit paired Worker-v2 cutover"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn require_candidate_without_previous(state: &LocalCredentialState) -> Result<(), String> {
@@ -341,6 +352,18 @@ fn discard_candidate_and_managed_runtime(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_promotion_refuses_missing_active_v2() {
+        let state = LocalCredentialState::default();
+        let err = require_active_v2_for_promotion(&state).unwrap_err();
+        assert!(err.contains("refuses initial enrollment"));
+    }
 }
 
 fn apply_runtime_state(
