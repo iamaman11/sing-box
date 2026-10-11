@@ -120,6 +120,14 @@ rebuild. Windows/Linux production never treats a mutable latest artifact as auth
 
 `edge-orchestrator` is the GitHub-hosted provider/production composition owner.
 
+The public `/production converge|verify|rollback` operator path is the GitHub
+workflow's exact ReleaseSet provider preflight and the self-hosted VM's typed
+`edge-agent local bundle-*` owner. Direct hosted Rust `production converge`
+and `production verify` subcommands, which separately reacquired SSH/leases
+and applied the same application, are deleted. The remaining hosted Rust
+`production dns-noop` is an internal read-only workflow preflight; exceptional
+`production enroll-runtime` is the sole bootstrap SSH consumer.
+
 It owns typed provider sequencing, plan/apply/verify/rollback semantics and the internal
 `/credentials` lifecycle owner. Provider credentials remain only in the GitHub Environment and do
 not move onto Windows or the production VM.
