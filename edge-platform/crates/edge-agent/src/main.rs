@@ -37,8 +37,9 @@ use edge_shared_types::{
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
     BundleFile, ContainerRuntimeObservation, CredentialDeliverySlot, CredentialProjectionKind,
     CredentialStateObservation, CredentialTransitionAction, Empty, FileCategory, FilePresence,
-    InitialCredentialHostProbeRequest, InitialCredentialHostProbeResponse, Ipv4NetworkObservation,
-    LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    InitialCredentialHostProbeRequest, InitialCredentialHostProbeResponse,
+    InitialVmCredentialRuntimeRequest, InitialVmCredentialRuntimeResponse,
+    InitialVmLine2EndpointResult, Ipv4NetworkObservation, LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
     ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
@@ -162,6 +163,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         }
         cli::LocalCommand::QualityLine2 => {
             line2_quality::measure(&stack_dir, read_typed_runtime_environment)
+                .map(|_| ())
                 .map_err(AgentError::Command)
         }
         cli::LocalCommand::Diagnose => {
@@ -691,6 +693,45 @@ async fn attest_initial_vm_host(
     )
 }
 
+fn validate_initial_vm_runtime_request(
+    request: &InitialVmCredentialRuntimeRequest,
+) -> Result<(), String> {
+    if request.generation == 0
+        || request.generation == edge_shared_types::CREDENTIAL_DUMMY_PROBE_GENERATION_A
+        || request.generation == edge_shared_types::CREDENTIAL_DUMMY_PROBE_GENERATION_B
+    {
+        return Err("first-use VM runtime refuses zero or dummy generation".to_owned());
+    }
+    validate_lower_hex("ReleaseSet", &request.release_set_sha256, 64)?;
+    verify_initial_agent_binary(&request.expected_agent_sha256)
+}
+
+fn initial_vm_runtime_response(
+    generation: u64,
+    materialized: bool,
+    endpoints: Vec<line2_quality::EndpointProof>,
+) -> InitialVmCredentialRuntimeResponse {
+    InitialVmCredentialRuntimeResponse {
+        projection: CredentialProjectionKind::Vm as i32,
+        generation,
+        candidate_unpromoted: true,
+        candidate_materialized: materialized,
+        vm_local_line2: endpoints
+            .into_iter()
+            .map(|p| InitialVmLine2EndpointResult {
+                endpoint: p.name.to_owned(),
+                protocol: p.protocol.to_owned(),
+                port: u32::from(p.port),
+                successful_samples: p.successes,
+                failed_samples: p.failures,
+            })
+            .collect(),
+        external_line1_proven: false,
+        external_line2_proven: false,
+        direct_warp_egress_distinct_proven: false,
+    }
+}
+
 fn parse_first_use_slot(value: &str) -> Result<edge_shared_types::CredentialDeliverySlot, String> {
     match value {
         "a" => Ok(edge_shared_types::CredentialDeliverySlot::A),
@@ -815,6 +856,41 @@ impl AgentService for AgentServerImpl {
             exact_dummy_ab: true,
             empty_host: true,
         }))
+    }
+
+    async fn apply_initial_vm_credential(
+        &self,
+        request: Request<InitialVmCredentialRuntimeRequest>,
+    ) -> Result<Response<InitialVmCredentialRuntimeResponse>, Status> {
+        let request = request.into_inner();
+        validate_initial_vm_runtime_request(&request).map_err(Status::failed_precondition)?;
+        initial_apply_vm_credential(&self.stack_dir, request.generation)
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(initial_vm_runtime_response(
+            request.generation,
+            true,
+            Vec::new(),
+        )))
+    }
+
+    async fn verify_initial_vm_credential(
+        &self,
+        request: Request<InitialVmCredentialRuntimeRequest>,
+    ) -> Result<Response<InitialVmCredentialRuntimeResponse>, Status> {
+        let request = request.into_inner();
+        validate_initial_vm_runtime_request(&request).map_err(Status::failed_precondition)?;
+        let endpoints = verify_initial_vm_credential_functional(
+            &self.stack_dir,
+            request.generation,
+        )
+        .await
+        .map_err(Status::failed_precondition)?;
+        Ok(Response::new(initial_vm_runtime_response(
+            request.generation,
+            true,
+            endpoints,
+        )))
     }
 
     async fn bootstrap_runtime(
@@ -1760,7 +1836,7 @@ fn validate_unpromoted_vm_initial_state(
 async fn verify_initial_vm_credential_functional(
     stack_dir: &Path,
     generation: u64,
-) -> Result<(), String> {
+) -> Result<Vec<line2_quality::EndpointProof>, String> {
     let store = open_vm_credential_store(stack_dir)?;
     let state = store.read_state()?.ok_or_else(|| {
         "initial VM functional proof requires a persisted candidate state".to_owned()
@@ -1797,7 +1873,7 @@ async fn verify_initial_vm_credential_functional(
     // Real authenticated 204 through each of six direct/WARP HTTP,
     // SOCKS5 and HTTPS endpoints. Reuse the existing native quality owner;
     // no configuration change, pointer promotion, or secret export.
-    line2_quality::measure(stack_dir, read_typed_runtime_environment)?;
+    let endpoints = line2_quality::measure(stack_dir, read_typed_runtime_environment)?;
     // A passing network sample is not sufficient if another owner changed the
     // credential cursor or rendered runtime while the test was in progress.
     let after_state = store
@@ -1807,7 +1883,7 @@ async fn verify_initial_vm_credential_functional(
         return Err("initial VM functional proof refuses a changed credential cursor".to_owned());
     }
     verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
-    Ok(())
+    Ok(endpoints)
 }
 
 async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Result<(), String> {
@@ -5208,6 +5284,27 @@ mod tests {
             root.join("runtime-secrets/application-v2")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_use_vm_runtime_response_never_claims_external_acceptance() {
+        let response = initial_vm_runtime_response(
+            101,
+            true,
+            vec![line2_quality::EndpointProof {
+                name: "http-direct",
+                protocol: "http",
+                port: 4128,
+                successes: 5,
+                failures: 0,
+            }],
+        );
+        assert!(response.candidate_unpromoted);
+        assert!(response.candidate_materialized);
+        assert_eq!(response.vm_local_line2.len(), 1);
+        assert!(!response.external_line1_proven);
+        assert!(!response.external_line2_proven);
+        assert!(!response.direct_warp_egress_distinct_proven);
     }
 
     #[test]

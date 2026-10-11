@@ -199,6 +199,33 @@ pub(crate) fn verify_expected_initial_attempt(
     Ok(())
 }
 
+/// Verify the original durable GitHub BEGIN once again before the exact
+/// disposable VM runtime applies a candidate. Reconciliation never issues,
+/// regenerates or repairs credentials.
+pub(crate) fn verify_initial_vm_runtime_gate(
+    history: &str,
+    exact_record: &str,
+    generation: u64,
+    source_revision: &str,
+    release_set_sha256: &str,
+    github_run_id: u64,
+) -> Result<(), String> {
+    verify_recorded_initial_attempt(history, exact_record)?;
+    let (_, body) = exact_record
+        .split_once('\n')
+        .ok_or_else(|| "VM runtime requires exact initial BEGIN marker".to_owned())?;
+    let record: AttemptRecord = serde_json::from_str(body)
+        .map_err(|_| "VM runtime requires canonical initial BEGIN".to_owned())?;
+    if record.generation != generation
+        || record.release_source_revision != source_revision
+        || record.release_set_sha256 != release_set_sha256
+        || record.github_run_id != github_run_id
+    {
+        return Err("VM runtime differs from persisted first-use BEGIN".to_owned());
+    }
+    Ok(())
+}
+
 /// Return a non-secret GitHub issue comment body for a caller that has already
 /// independently established BOTH owner-origin host attestations. Merely
 /// passing hex digests here must never be treated as host authentication.
@@ -228,6 +255,45 @@ pub(crate) fn plan_initial_pair_reservation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_runtime_requires_exact_durable_begin_for_run_and_release() {
+        let req = request();
+        let record = plan_initial_pair_reservation(&req, "[]").unwrap();
+        let history = serde_json::json!([{ "body": record }]).to_string();
+        assert!(verify_initial_vm_runtime_gate(
+            &history,
+            &record,
+            req.generation,
+            &req.release_source_revision,
+            &req.release_set_sha256,
+            req.github_run_id,
+        ).is_ok());
+        assert!(verify_initial_vm_runtime_gate(
+            &history,
+            &record,
+            req.generation + 1,
+            &req.release_source_revision,
+            &req.release_set_sha256,
+            req.github_run_id,
+        ).is_err());
+        assert!(verify_initial_vm_runtime_gate(
+            &history,
+            &record,
+            req.generation,
+            &req.release_source_revision,
+            &req.release_set_sha256,
+            req.github_run_id + 1,
+        ).is_err());
+        assert!(verify_initial_vm_runtime_gate(
+            "[]",
+            &record,
+            req.generation,
+            &req.release_source_revision,
+            &req.release_set_sha256,
+            req.github_run_id,
+        ).is_err());
+    }
 
     fn request() -> InitialPairJournalPlan {
         InitialPairJournalPlan {

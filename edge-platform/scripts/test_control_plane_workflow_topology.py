@@ -556,6 +556,41 @@ def main() -> None:
         and "credential_pair_committed=false" in vm_agent_runtime,
         "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
     )
+    # One native owner serves first-use VM apply/verify over the existing
+    # restricted AgentService. Local Line2 results must stay per endpoint;
+    # aggregate VM-local success must never be called external acceptance.
+    first_use_journal = Path(
+        "edge-platform/crates/edge-orchestrator/src/credential_initial_journal.rs"
+    ).read_text(encoding="utf-8")
+    line2_quality = Path(
+        "edge-platform/crates/edge-agent/src/line2_quality.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "rpc ApplyInitialVmCredential(InitialVmCredentialRuntimeRequest)" in agent_proto
+        and "rpc VerifyInitialVmCredential(InitialVmCredentialRuntimeRequest)" in agent_proto
+        and "message InitialVmLine2EndpointResult" in credential_proto
+        and "repeated InitialVmLine2EndpointResult vm_local_line2 = 5;" in credential_proto
+        and "async fn apply_initial_vm_credential(" in vm_agent_runtime
+        and "async fn verify_initial_vm_credential(" in vm_agent_runtime
+        and "validate_initial_vm_runtime_request(&request)" in vm_agent_runtime
+        and "initial_apply_vm_credential(&self.stack_dir, request.generation)" in vm_agent_runtime
+        and "verify_initial_vm_credential_functional(" in vm_agent_runtime
+        and "external_line1_proven: false" in vm_agent_runtime
+        and "external_line2_proven: false" in vm_agent_runtime
+        and "direct_warp_egress_distinct_proven: false" in vm_agent_runtime
+        and "pub(crate) struct EndpointProof" in line2_quality
+        and "endpoint_proofs.push(EndpointProof {" in line2_quality
+        and "fn verify_initial_vm_runtime_gate(" in first_use_journal
+        and "verify_recorded_initial_attempt(history, exact_record)?" in first_use_journal
+        and '"initial-runtime-apply" => run_initial_vm_runtime' in vultr_lifecycle_command
+        and '"initial-runtime-verify" => run_initial_vm_runtime' in vultr_lifecycle_command
+        and "verify_initial_vm_runtime_gate(" in vultr_lifecycle_command
+        and "require_six_exact_vm_local_line2(&response)?" in vultr_lifecycle_command
+        and "do not replay" in vultr_lifecycle_command
+        and "require_disposable_initial_probe_target(&args[0], &args[1])?" in vultr_lifecycle_command,
+        "VM first-use must use typed restricted owner and exact BEGIN with six "
+        "individual local Line2 results, never an external acceptance shortcut",
+    )
     initial_vm_apply = vm_agent_runtime.split("async fn initial_apply_vm_credential(", 1)[1].split(
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]

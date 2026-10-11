@@ -1,3 +1,4 @@
+use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, capture_ssh_transport_stage_once, prepare_strict_bootstrap,
@@ -39,7 +40,8 @@ use edge_provider_vultr::{VultrFirewallRule, VultrInstance};
 use edge_shared_types::agent_service_client::AgentServiceClient;
 use edge_shared_types::{
     CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, CredentialDeliverySlot, CredentialProjectionKind,
-    Empty, InitialCredentialHostProbeRequest,
+    Empty, InitialCredentialHostProbeRequest, InitialVmCredentialRuntimeRequest,
+    InitialVmCredentialRuntimeResponse,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -64,6 +66,8 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
         "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
+        "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
+        "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
         "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
@@ -747,6 +751,157 @@ async fn run_initial_host_probe(
         "credential_store_present": false,
         "credential_runtime_mutations": 0,
         "credential_provider_mutations": 0,
+    }))
+}
+
+fn require_six_exact_vm_local_line2(
+    response: &InitialVmCredentialRuntimeResponse,
+) -> Result<(), String> {
+    let expected = [
+        ("http-direct", "http", 4128),
+        ("socks5-direct", "socks5h", 4080),
+        ("https-direct", "https", 4443),
+        ("http-warp", "http", 3128),
+        ("socks5-warp", "socks5h", 1080),
+        ("https-warp", "https", 9443),
+    ];
+    if response.vm_local_line2.len() != expected.len() {
+        return Err("initial VM result is missing authenticated Line2 endpoints".to_owned());
+    }
+    for (observed, (name, protocol, port)) in response.vm_local_line2.iter().zip(expected) {
+        if observed.endpoint != name
+            || observed.protocol != protocol
+            || observed.port != port
+            || observed.successful_samples != 5
+            || observed.failed_samples != 0
+        {
+            return Err(format!("initial VM result refuses incomplete Line2 sample for {name}"));
+        }
+    }
+    Ok(())
+}
+
+async fn run_initial_vm_runtime(
+    args: &[String],
+    context: &OrchestrationContext,
+    apply: bool,
+) -> Result<(), String> {
+    if args.len() != 8 {
+        return Err("usage: edge-orchestrator vultr-lifecycle initial-runtime-apply|initial-runtime-verify <disposable-spec> <machine-id> <generation> <release-set-sha256> <github-run-id> <journal-history-path> <exact-BEGIN-path> <agent-artifact-path>".to_owned());
+    }
+    require_disposable_initial_probe_target(&args[0], &args[1])?;
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_ACTOR_ID", "44100369"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_JOB", "initial_vm_runtime"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("initial VM runtime refuses untrusted {key}"));
+        }
+    }
+    let generation: u64 = args[2].parse()
+        .map_err(|_| "initial VM runtime requires numeric generation".to_owned())?;
+    let run_id: u64 = args[4].parse()
+        .map_err(|_| "initial VM runtime requires GitHub run ID".to_owned())?;
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[4].as_str())
+        || env::var("GITHUB_SHA").ok().as_deref()
+            != Some(context.release().source_revision.as_str())
+        || args[3] != context.release().release_set_sha256
+    {
+        return Err("initial VM runtime refuses foreign GitHub run or ReleaseSet".to_owned());
+    }
+    let history = fs::read_to_string(&args[5])
+        .map_err(|err| format!("VM first-use BEGIN journal unreadable: {err}"))?;
+    let exact_begin = fs::read_to_string(&args[6])
+        .map_err(|err| format!("VM first-use exact BEGIN unreadable: {err}"))?;
+    verify_initial_vm_runtime_gate(
+        &history,
+        &exact_begin,
+        generation,
+        &context.release().source_revision,
+        &context.release().release_set_sha256,
+        run_id,
+    )?;
+    let expected_agent = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_agent, Path::new(&args[7]))?;
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
+    let target_ip = observed.main_ip.as_deref()
+        .ok_or_else(|| "initial VM runtime has no observed public IPv4".to_owned())?;
+    let key = operator_private_key_path_from_env()?;
+    let public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key, &public_key)?;
+    let remote_sha = strict_ssh_capture(
+        target_ip, &args[1], &key, &public_key,
+        "sha256sum /opt/vultr-edge-stack/bin/edge-agent | cut -d' ' -f1",
+    )?;
+    if remote_sha != expected_agent.sha256 {
+        return Err("initial VM runtime refuses unexpected installed agent binary".to_owned());
+    }
+    let (port, tunnel) = start_strict_agent_tunnel(
+        target_ip, &args[1], &key, &public_key,
+    )?;
+    let mut client = AgentServiceClient::connect(format!("http://127.0.0.1:{port}"))
+        .await
+        .map_err(|err| format!("initial VM runtime restricted RPC unreachable: {err}"))?;
+    let request = Request::new(InitialVmCredentialRuntimeRequest {
+        generation,
+        expected_agent_sha256: expected_agent.sha256.clone(),
+        release_set_sha256: args[3].clone(),
+    });
+    // Never replay the mutation, even if acknowledgement disappears.
+    let response = if apply {
+        client.apply_initial_vm_credential(request).await
+    } else {
+        client.verify_initial_vm_credential(request).await
+    }
+    .map_err(|err| format!(
+        "initial VM runtime {} unresolved; do not replay: {err}",
+        if apply { "apply" } else { "verify" },
+    ))?
+    .into_inner();
+    drop(client);
+    drop(tunnel);
+    if response.projection != CredentialProjectionKind::Vm as i32
+        || response.generation != generation
+        || !response.candidate_unpromoted
+        || !response.candidate_materialized
+        || response.external_line1_proven
+        || response.external_line2_proven
+        || response.direct_warp_egress_distinct_proven
+    {
+        return Err("initial VM runtime returned invalid candidate or external proof".to_owned());
+    }
+    if apply && !response.vm_local_line2.is_empty() {
+        return Err("initial VM apply falsely claims authenticated network samples".to_owned());
+    }
+    if !apply {
+        require_six_exact_vm_local_line2(&response)?;
+    }
+    print_json_value(serde_json::json!({
+        "operation": if apply { "INITIAL_VM_RUNTIME_APPLY" } else { "INITIAL_VM_RUNTIME_VERIFY" },
+        "status": "PASS",
+        "machine_id": args[1],
+        "release_set_sha256": args[3],
+        "github_run_id": run_id,
+        "generation": generation,
+        "candidate_unpromoted": true,
+        "candidate_materialized": true,
+        "vm_local_line2": response.vm_local_line2.iter().map(|endpoint| serde_json::json!({
+            "name": endpoint.endpoint.as_str(),
+            "protocol": endpoint.protocol.as_str(),
+            "port": endpoint.port,
+            "successful_samples": endpoint.successful_samples,
+            "failed_samples": endpoint.failed_samples,
+        })).collect::<Vec<_>>(),
+        "external_line1_4_of_4": "UNPROVEN",
+        "external_line2_6_of_6": "UNPROVEN",
+        "distinct_direct_warp_egress": "UNPROVEN",
+        "provider_mutations": 0,
+        "windows_tun_mutations": 0,
     }))
 }
 
@@ -3627,6 +3782,7 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>",
         "  edge-orchestrator vultr-lifecycle initial-host-probe <disposable-vultr-spec> <machine-id> <generation> <slot:a|b> <provider-intent-sha256> <release-set-sha256> <github-run-id> <edge-agent-artifact-path>",
+        "  edge-orchestrator vultr-lifecycle initial-runtime-apply|initial-runtime-verify <disposable-vultr-spec> <machine-id> <generation> <release-set-sha256> <github-run-id> <history-path> <exact-BEGIN-path> <edge-agent-artifact-path>",
         "  edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path> <local-owner-artifact-path>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
@@ -3646,6 +3802,33 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vm_first_use_line2_evidence_refuses_aggregate_and_incomplete_claims() {
+        let mut response = InitialVmCredentialRuntimeResponse::default();
+        response.vm_local_line2 = [
+            ("http-direct", "http", 4128),
+            ("socks5-direct", "socks5h", 4080),
+            ("https-direct", "https", 4443),
+            ("http-warp", "http", 3128),
+            ("socks5-warp", "socks5h", 1080),
+            ("https-warp", "https", 9443),
+        ]
+        .iter()
+        .map(|(name, protocol, port)| edge_shared_types::InitialVmLine2EndpointResult {
+            endpoint: (*name).to_owned(),
+            protocol: (*protocol).to_owned(),
+            port: *port,
+            successful_samples: 5,
+            failed_samples: 0,
+        })
+        .collect();
+        assert!(require_six_exact_vm_local_line2(&response).is_ok());
+        response.vm_local_line2[2].failed_samples = 1;
+        assert!(require_six_exact_vm_local_line2(&response).is_err());
+        response.vm_local_line2.pop();
+        assert!(require_six_exact_vm_local_line2(&response).is_err());
+    }
+
     #[test]
     fn initial_native_host_attestation_never_targets_production_or_wrong_vm() {
         assert!(

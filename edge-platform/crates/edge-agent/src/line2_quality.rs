@@ -9,7 +9,7 @@ const CURL_PATH: &str = "/usr/bin/curl";
 const TARGET: &str = "https://www.gstatic.com/generate_204";
 const SAMPLES: usize = 5;
 const MAX_MS: u64 = 7000;
-const PROXY_PORTS: [(&str, &str, u16); 6] = [
+pub(crate) const PROXY_PORTS: [(&str, &str, u16); 6] = [
     ("http-direct", "http", 4128),
     ("socks5-direct", "socks5h", 4080),
     ("https-direct", "https", 4443),
@@ -17,6 +17,15 @@ const PROXY_PORTS: [(&str, &str, u16); 6] = [
     ("socks5-warp", "socks5h", 1080),
     ("https-warp", "https", 9443),
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EndpointProof {
+    pub(crate) name: &'static str,
+    pub(crate) protocol: &'static str,
+    pub(crate) port: u16,
+    pub(crate) successes: u32,
+    pub(crate) failures: u32,
+}
 
 fn curl_config_quote(value: &str) -> Result<String, String> {
     if value.is_empty() || value.chars().any(|c| c.is_control()) {
@@ -111,7 +120,7 @@ fn one_sample(proxy: &str, local_resolution: Option<&str>, credentials: &str) ->
 pub(crate) fn measure(
     stack_dir: &Path,
     read_environment: impl FnOnce(&Path) -> Result<BTreeMap<String, String>, String>,
-) -> Result<(), String> {
+) -> Result<Vec<EndpointProof>, String> {
     let values = read_environment(stack_dir)?;
     let user = values
         .get("PROXY_USERNAME")
@@ -144,6 +153,7 @@ pub(crate) fn measure(
     println!("sample_budget_per_proxy={SAMPLES}");
     println!("runtime_mutations=0");
     let mut failures = 0;
+    let mut endpoint_proofs = Vec::with_capacity(PROXY_PORTS.len());
     for (tag, protocol, port) in PROXY_PORTS {
         let proxy = proxy_target(protocol, port, domain);
         let resolution = if protocol == "https" {
@@ -160,6 +170,13 @@ pub(crate) fn measure(
             }
         }
         failures += errors;
+        endpoint_proofs.push(EndpointProof {
+            name: tag,
+            protocol,
+            port,
+            successes: samples.len() as u32,
+            failures: errors,
+        });
         let (min, median, max) = summarize(&samples)
             .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
             .unwrap_or_else(|| {
@@ -182,12 +199,22 @@ pub(crate) fn measure(
         ));
     }
     println!("quality_status=PASS");
-    Ok(())
+    Ok(endpoint_proofs)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_proofs_preserve_each_protocol_and_port() {
+        assert_eq!(PROXY_PORTS.len(), 6);
+        for (name, protocol, port) in PROXY_PORTS {
+            assert!(!name.is_empty());
+            assert!(matches!(protocol, "http" | "socks5h" | "https"));
+            assert!(port > 1024);
+        }
+    }
 
     #[test]
     fn six_distinct_fixed_local_proxy_endpoints() {
