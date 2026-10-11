@@ -454,7 +454,9 @@ def main() -> None:
         and "verify_initial_vm_credential_functional(&stack_dir, generation)" in vm_agent_runtime
         and "validate_unpromoted_vm_initial_state(&state, generation)?" in vm_initial_functional
         and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in vm_initial_functional
-        and "docker.container_running(name)" in vm_initial_functional
+        and "read_exact_image_environment(stack_dir)?" in vm_initial_functional
+        and "docker.container_exact_image_ready(name, expected_image)"
+        in vm_initial_functional
         and "line2_quality::measure(stack_dir, read_typed_runtime_environment)?"
         in vm_initial_functional
         and "promote_candidate" not in vm_initial_functional
