@@ -417,6 +417,24 @@ The new stack receives independently generated credential generations.
 
 ### Initial paired Worker-v2 enrollment (not steady-state rotation)
 
+**New isolated VM application primitive (N1, source only):** the VM's typed
+`edge-agent local credential-initial-apply <generation>` is distinct from
+rotation. Before a Worker fetch or any disk mutation, it rejects an existing
+v2 store (including incomplete state), the old local credential file, an
+existing runtime environment/rendered sing-box configuration, unavailable
+Docker, or any of the three core application containers already present. It
+fetches the exact VM projection with its permanent host Access identity,
+stages one candidate and performs a forced core bootstrap. A partial or
+uncertain attempt leaves the candidate and fails closed on repetition.
+**Success means only `APPLIED_NOT_PROMOTED`, with authenticated traffic still
+`UNPROVEN`.** No initial promotion path is exposed until independent
+paired cross-host generation and authenticated endpoint evidence are provided.
+The normal `credential-stage` and rotation `ApplyCandidate/Promote` retain
+their own active-v2 requirements and must not substitute for this command.
+This is not yet available through the production command grammar or deployed
+to any VM. It must be used only by a future explicitly authorized disposable
+fresh-VM acceptance transaction; never against the serving production VM.
+
 Initial enrollment is a distinct bounded operation, because `/credentials rotate` requires
 an already-active v2 generation on **both** hosts. Neither reuse rotation as initial
 enrollment nor bypass this guard with direct local `promote`.
