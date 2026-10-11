@@ -116,6 +116,55 @@ fn validate_journal_history(history: &str) -> Result<(), String> {
     Ok(())
 }
 
+
+/// Verify exactly one **already persisted** GitHub BEGIN with the entire
+/// original record unchanged. This is read-only and is not permission to PATCH:
+/// only an independently authorized, single-run host+provider owner may
+/// pass through the subsequent mutation gate.
+pub(crate) fn verify_recorded_initial_attempt(
+    history: &str,
+    exact_record: &str,
+) -> Result<(), String> {
+    let (marker, content) = exact_record.split_once('\n')
+        .ok_or_else(|| "initial journal readback requires canonical record marker".to_owned())?;
+    if marker != MARKER || content.trim().is_empty() {
+        return Err("initial journal readback refuses malformed record marker".to_owned());
+    }
+    let record: AttemptRecord = serde_json::from_str(content)
+        .map_err(|_| "initial journal readback refuses invalid JSON record".to_owned())?;
+    if record.schema != SCHEMA || record.phase != "BEGIN" {
+        return Err("initial journal readback requires exact BEGIN schema".to_owned());
+    }
+    validate_request(&InitialPairJournalPlan {
+        generation: record.generation,
+        slot: record.slot,
+        provider_intent_sha256: record.provider_intent_sha256,
+        vm_attestation_sha256: record.vm_attestation_sha256,
+        windows_attestation_sha256: record.windows_attestation_sha256,
+        release_source_revision: record.release_source_revision,
+        release_set_sha256: record.release_set_sha256,
+        github_run_id: record.github_run_id,
+    })?;
+    let comments: Vec<IssueComment> = serde_json::from_str(history)
+        .map_err(|_| "initial journal readback requires complete GitHub comment array".to_owned())?;
+    let mut seen = 0;
+    for comment in comments {
+        if comment.body.trim().is_empty() {
+            return Err("initial journal readback refuses empty or incomplete comment".to_owned());
+        }
+        if comment.body.contains(MARKER_FAMILY) {
+            if comment.body != exact_record {
+                return Err("initial journal readback detected different or malformed BEGIN".to_owned());
+            }
+            seen += 1;
+        }
+    }
+    if seen != 1 {
+        return Err("initial journal readback requires one and only one durable BEGIN".to_owned());
+    }
+    Ok(())
+}
+
 /// Return a non-secret GitHub issue comment body for a caller that has already
 /// independently established BOTH owner-origin host attestations. Merely
 /// passing hex digests here must never be treated as host authentication.
@@ -199,6 +248,25 @@ mod tests {
                 .is_ok()
         );
         assert!(plan_initial_pair_reservation(&request(), "[]").is_ok());
+    }
+
+    #[test]
+    fn readback_requires_exact_single_persisted_begin() {
+        let record = plan_initial_pair_reservation(&request(), "[]").unwrap();
+        let once = serde_json::json!([{"body":"ordinary"}, {"body":record}]).to_string();
+        assert!(verify_recorded_initial_attempt(&once, &record).is_ok());
+        for history in [
+            "[]".to_owned(),
+            serde_json::json!([{"body":record}, {"body":record}]).to_string(),
+            serde_json::json!([{"body":record}, {"body":null}]).to_string(),
+            serde_json::json!([{"body":format!("{record}x")}]).to_string(),
+            serde_json::json!([{"body":record}, {"body":"<!-- sing-box-credential-initial-attempt/v2 -->"}]).to_string(),
+        ] {
+            assert!(verify_recorded_initial_attempt(&history, &record).is_err());
+        }
+        let changed = record.replace("\"generation\":101", "\"generation\":102");
+        assert!(verify_recorded_initial_attempt(&once, &changed).is_err());
+        assert!(verify_recorded_initial_attempt(&once, "BEGIN").is_err());
     }
 
     #[test]

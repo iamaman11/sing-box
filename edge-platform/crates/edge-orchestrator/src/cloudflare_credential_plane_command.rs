@@ -3,6 +3,7 @@ use crate::cli::{
 };
 use crate::credential_initial_journal::{
     InitialPairJournalPlan, plan_initial_pair_reservation, require_empty_initial_history,
+    verify_recorded_initial_attempt,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
@@ -132,6 +133,20 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             println!("credential_initial_journal_empty=true");
             println!("credential_journal_mutations=0");
             println!("credential_provider_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairJournalReadback {
+            journal_history_path,
+            exact_record_path,
+        } => {
+            let history = fs::read_to_string(journal_history_path)
+                .map_err(|err| format!("initial journal readback cannot open history: {err}"))?;
+            let exact = fs::read_to_string(exact_record_path)
+                .map_err(|err| format!("initial journal readback cannot open intended record: {err}"))?;
+            verify_recorded_initial_attempt(&history, &exact)?;
+            println!("credential_initial_journal_exact_begin=true");
+            println!("credential_provider_mutations=0");
+            println!("initial_publication_authorized=false");
             Ok(())
         }
         CredentialDeliveryCommand::InitialPairJournalPlan {

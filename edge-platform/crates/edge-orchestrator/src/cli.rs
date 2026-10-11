@@ -211,6 +211,11 @@ pub(crate) enum CredentialDeliveryCommand {
     InitialPairJournalObserve {
         journal_history_path: std::path::PathBuf,
     },
+    // Strictly read-only reconciliation AFTER durable GitHub comment write.
+    InitialPairJournalReadback {
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
     InitialPairJournalPlan {
         generation: u64,
         #[arg(value_enum)]

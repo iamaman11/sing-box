@@ -454,6 +454,8 @@ def main() -> None:
         and "credential_initial_journal_empty=true" in credentials
         and "credential_journal_mutations=0" in credentials
         and "require_empty_initial_history(&history)?" in credential_provider
+        and "verify_recorded_initial_attempt(&history, &exact)?" in credential_provider
+        and "initial_publication_authorized=false" in credential_provider
         and "initial_publication_authorized=false" in credential_provider
         and "initial_pair_preflight(&control_token" in credential_provider
         and "validate_initial_pair_provider_observation(" in credential_provider,
