@@ -1,7 +1,8 @@
 use crate::credential_store::write_atomic_private;
 use edge_shared_types::{
-    CredentialDeliveryBundle, CredentialProjectionKind, canonical_production_desired_state,
-    decode_credential_delivery_bundle,
+    CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+    CredentialDeliveryBundle, CredentialDeliverySlot, CredentialProjectionKind,
+    canonical_production_desired_state, decode_credential_delivery_bundle,
 };
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, redirect::Policy};
@@ -177,13 +178,15 @@ pub async fn observe_canonical_credential_bundle(
     identity_path: &Path,
 ) -> Result<Option<CredentialDeliveryBundle>, String> {
     let identity = read_access_service_identity(identity_path)?;
-    observe_canonical_credential_bundle_with_identity(projection, generation, &identity).await
+    observe_canonical_credential_bundle_with_identity(projection, generation, &identity, false)
+        .await
 }
 
 async fn observe_canonical_credential_bundle_with_identity(
     projection: CredentialProjectionKind,
     generation: u64,
     identity: &AccessServiceIdentity,
+    allow_dummy_probe: bool,
 ) -> Result<Option<CredentialDeliveryBundle>, String> {
     let url = canonical_credential_worker_url(projection, generation)?;
     let mut headers = HeaderMap::new();
@@ -235,13 +238,64 @@ async fn observe_canonical_credential_bundle_with_identity(
         return Err("credential Worker response size is invalid".to_owned());
     }
     let bundle = decode_credential_delivery_bundle(&body)?;
-    if bundle.dummy_non_secret {
+    if bundle.dummy_non_secret && !allow_dummy_probe {
         return Err("runtime credential staging rejects dummy proof bundles".to_owned());
     }
     if bundle.projection != projection as i32 || bundle.generation != generation {
         return Err("credential Worker returned the wrong projection or generation".to_owned());
     }
     Ok(Some(bundle))
+}
+
+/// Read-only proof that BOTH fixed A/B Worker slots still carry the canonical
+/// non-secret probe. A Worker binding name, version tag, or 404 cannot prove
+/// emptiness. Never returns payload bytes or Access credentials to the caller.
+pub async fn verify_canonical_dummy_ab_slots(
+    projection: CredentialProjectionKind,
+    identity_path: &Path,
+) -> Result<(), String> {
+    let identity = read_access_service_identity(identity_path)?;
+    for generation in [
+        CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+    ] {
+        let observed = observe_canonical_credential_bundle_with_identity(
+            projection, generation, &identity, true,
+        )
+        .await?
+        .ok_or_else(|| "initial Worker-v2 proof requires both canonical dummy slots".to_owned())?;
+        verify_canonical_dummy_ab_probe(&observed, projection, generation)?;
+    }
+    Ok(())
+}
+
+fn verify_canonical_dummy_ab_probe(
+    observed: &CredentialDeliveryBundle,
+    projection: CredentialProjectionKind,
+    generation: u64,
+) -> Result<(), String> {
+    let expected = CredentialDeliveryBundle {
+        schema_version: 1,
+        generation,
+        projection: projection as i32,
+        dummy_non_secret: true,
+        slot: CredentialDeliverySlot::Unspecified as i32,
+        payload: None,
+    };
+    if !matches!(
+        projection,
+        CredentialProjectionKind::Vm | CredentialProjectionKind::Windows
+    ) || !matches!(
+        generation,
+        CREDENTIAL_DUMMY_PROBE_GENERATION_A | CREDENTIAL_DUMMY_PROBE_GENERATION_B
+    ) || observed != &expected
+    {
+        return Err(
+            "initial Worker-v2 proof refused: endpoint is not the exact canonical dummy slot"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 pub async fn fetch_canonical_credential_bundle(
@@ -257,6 +311,64 @@ pub async fn fetch_canonical_credential_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_worker_dummy_probe_requires_exact_full_slot_not_just_generation() {
+        let dummy = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: None,
+        };
+        let valid = verify_canonical_dummy_ab_probe(
+            &dummy,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        );
+        assert!(valid.is_ok());
+
+        let wrong_projection = verify_canonical_dummy_ab_probe(
+            &dummy,
+            CredentialProjectionKind::Windows,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        );
+        assert!(wrong_projection.is_err());
+        let wrong_generation = verify_canonical_dummy_ab_probe(
+            &dummy,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+        );
+        assert!(wrong_generation.is_err());
+
+        let mut not_dummy = dummy.clone();
+        not_dummy.dummy_non_secret = false;
+        let wrong_payload = verify_canonical_dummy_ab_probe(
+            &not_dummy,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        );
+        assert!(wrong_payload.is_err());
+
+        let mut wrong_slot = dummy.clone();
+        wrong_slot.slot = CredentialDeliverySlot::A as i32;
+        let wrong_slot_result = verify_canonical_dummy_ab_probe(
+            &wrong_slot,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        );
+        assert!(wrong_slot_result.is_err());
+
+        let mut wrong_schema = dummy;
+        wrong_schema.schema_version = 2;
+        let wrong_schema_result = verify_canonical_dummy_ab_probe(
+            &wrong_schema,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        );
+        assert!(wrong_schema_result.is_err());
+    }
 
     #[test]
     fn identity_parser_is_closed_and_secret_safe_in_debug() {

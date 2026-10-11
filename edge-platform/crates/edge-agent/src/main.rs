@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use edge_observability::init as init_observability;
 use edge_secrets::{
     ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore,
-    fetch_canonical_credential_bundle,
+    fetch_canonical_credential_bundle, verify_canonical_dummy_ab_slots,
 };
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
@@ -211,6 +211,25 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::CredentialState => {
             let state = observe_vm_credential_state(&stack_dir).map_err(AgentError::Command)?;
             print_credential_state_evidence(state.as_ref());
+            Ok(())
+        }
+        cli::LocalCommand::CredentialInitialProbe => {
+            require_empty_vm_initial_credential_host(&stack_dir).map_err(AgentError::Command)?;
+            let docker = observe_docker().await.map_err(AgentError::Command)?;
+            require_no_vm_application_containers(&docker).map_err(AgentError::Command)?;
+            verify_canonical_dummy_ab_slots(
+                CredentialProjectionKind::Vm,
+                &vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?,
+            )
+            .await
+            .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_PROBE");
+            println!("credential_projection=VM");
+            println!("credential_slot_A=EXACT_DUMMY");
+            println!("credential_slot_B=EXACT_DUMMY");
+            println!("credential_store_present=false");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
             Ok(())
         }
         cli::LocalCommand::CredentialInitialApply { generation } => {

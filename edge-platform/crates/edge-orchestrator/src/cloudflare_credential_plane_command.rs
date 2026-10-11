@@ -7,6 +7,7 @@ use edge_orchestrator::credential_snapshot::{
 };
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
+    CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
     CredentialProjectionKind, CredentialRotationClass,
 };
@@ -20,8 +21,6 @@ use std::{env, fs};
 
 const SLOT_A: &str = "EDGE_CREDENTIAL_BUNDLE_A";
 const SLOT_B: &str = "EDGE_CREDENTIAL_BUNDLE_B";
-const PROBE_GENERATION_A: u64 = 9_000_001;
-const PROBE_GENERATION_B: u64 = 9_000_002;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProjectionDesired {
@@ -1227,26 +1226,29 @@ fn require_exact_secret_bindings(
 
 fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, String> {
     let projection_kind = projection_kind(projection)?;
-    let slots = [(SLOT_A, PROBE_GENERATION_A), (SLOT_B, PROBE_GENERATION_B)]
-        .into_iter()
-        .map(|(name, generation)| {
-            let payload = CredentialDeliveryBundle {
-                schema_version: 1,
-                generation,
-                projection: projection_kind as i32,
-                dummy_non_secret: true,
-                slot: CredentialDeliverySlot::Unspecified as i32,
-                payload: None,
-            }
-            .encode_to_vec();
-            DeliverySlot {
-                name,
-                generation,
-                secret_text: hex_encode(&payload),
-                payload,
-            }
-        })
-        .collect::<Vec<_>>();
+    let slots = [
+        (SLOT_A, CREDENTIAL_DUMMY_PROBE_GENERATION_A),
+        (SLOT_B, CREDENTIAL_DUMMY_PROBE_GENERATION_B),
+    ]
+    .into_iter()
+    .map(|(name, generation)| {
+        let payload = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation,
+            projection: projection_kind as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: None,
+        }
+        .encode_to_vec();
+        DeliverySlot {
+            name,
+            generation,
+            secret_text: hex_encode(&payload),
+            payload,
+        }
+    })
+    .collect::<Vec<_>>();
 
     let source = r#"const S=["EDGE_CREDENTIAL_BUNDLE_A","EDGE_CREDENTIAL_BUNDLE_B"];
 const P=__PROJECTION__;

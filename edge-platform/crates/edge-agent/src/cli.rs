@@ -54,6 +54,8 @@ pub(crate) enum LocalCommand {
     MeshVerify,
     MeshCleanup,
     CredentialState,
+    // Read-only Access-authenticated fixed A/B dummy proof for a fresh VM.
+    CredentialInitialProbe,
     // Strictly fresh, non-serving VM only; never a rotation or legacy handoff.
     CredentialInitialApply { generation: u64 },
     CredentialStage { generation: u64 },
@@ -77,6 +79,7 @@ impl LocalCommand {
             Self::MeshVerify => "local-mesh-verify",
             Self::MeshCleanup => "local-mesh-cleanup",
             Self::CredentialState => "local-credential-state",
+            Self::CredentialInitialProbe => "local-credential-initial-probe",
             Self::CredentialInitialApply { .. } => "local-credential-initial-apply",
             Self::CredentialStage { .. } => "local-credential-stage",
             Self::CredentialTransition { .. } => "local-credential-transition",
@@ -129,6 +132,7 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-admit", "101"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-stage", "101"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-probe"]).is_ok());
         assert!(
             Cli::try_parse_from(["edge-agent", "local", "credential-initial-apply", "101"]).is_ok()
         );
