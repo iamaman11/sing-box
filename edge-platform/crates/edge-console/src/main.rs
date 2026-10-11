@@ -2334,6 +2334,21 @@ fn restore_offline_previous(
     }
 }
 
+// This bounded pointer-only compensation can be fault-injected on any OS.
+// It never calls SCM or starts a process. Every failure stops before the
+// current authority is rewritten, leaving an inspectable split state.
+fn restore_offline_authority_pointers(
+    install_root: &Path,
+    old_current_bytes: &[u8],
+    previous: &Option<Vec<u8>>,
+) -> Result<(), String> {
+    restore_offline_previous(
+        &install_root.join("previous.pb"), old_current_bytes, previous,
+    )?;
+    write_atomic(&install_root.join("current.pb"), old_current_bytes)
+        .map_err(|err| format!("offline current authority restoration failed: {err}"))
+}
+
 // A failed or uncertain offline handoff never starts either controller or
 // sing-box. Restore exact previous authority only from locally verified bytes.
 fn restore_offline_release(
@@ -2358,13 +2373,8 @@ fn restore_offline_release(
             )?;
         }
     }
-    // Restore the previous rollback authority FIRST. A failure here must not
-    // overwrite current.pb; no unverified previous.pb may be deleted.
-    restore_offline_previous(
-        &install_root.join("previous.pb"), current_bytes, previous_bytes,
-    )?;
-    write_atomic(&install_root.join("current.pb"), current_bytes)
-        .map_err(|err| format!("offline current authority restoration failed: {err}"))?;
+    // Restore previous first; a failed prerequisite never overwrites current.
+    restore_offline_authority_pointers(install_root, current_bytes, previous_bytes)?;
     sync_stable_windows_release_tools(install_root, before)?;
     retarget_privileged_task(install_root, &before.console_path)?;
     require_offline_windows_owner(install_root, before)?;
@@ -2406,7 +2416,12 @@ fn offline_activate_privileged_release(
         );
     }
     let current_bytes = fs::read(install_root.join("current.pb")).map_err(|err| err.to_string())?;
-    let previous_bytes = snapshot_offline_previous(&install_root.join("previous.pb"))?;
+    let previous_path = install_root.join("previous.pb");
+    let previous_bytes = snapshot_offline_previous(&previous_path)?;
+    if previous_bytes.is_some() {
+        load_verified_activation_path(install_root, &previous_path, "previous.pb")
+            .map_err(|err| format!("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED: {err}"))?;
+    }
     let installer = install_root
         .join("bootstrap")
         .join("install-windows-release.ps1");
@@ -4314,6 +4329,86 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn offline_test_root(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "edge-offline-restore-{label}-{}-{unique}", std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn previous_snapshot_only_treats_missing_file_as_absence() {
+        let root = offline_test_root("snapshot");
+        let previous = root.join("previous.pb");
+        assert!(snapshot_offline_previous(&previous).unwrap().is_none());
+        fs::write(&previous, b"previous-exact").unwrap();
+        assert_eq!(
+            snapshot_offline_previous(&previous).unwrap(),
+            Some(b"previous-exact".to_vec())
+        );
+        fs::remove_file(&previous).unwrap();
+        fs::create_dir(&previous).unwrap();
+        assert!(snapshot_offline_previous(&previous)
+            .unwrap_err()
+            .contains("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED"));
+        assert!(previous.is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_pointer_restore_uses_verified_saved_bytes_even_when_current_torn() {
+        let root = offline_test_root("torn-pointer");
+        let current = root.join("current.pb");
+        let previous = root.join("previous.pb");
+        fs::write(&current, b"torn-current").unwrap();
+        fs::write(&previous, b"new-previous").unwrap();
+        restore_offline_authority_pointers(
+            &root, b"verified-old-current", &Some(b"verified-old-previous".to_vec()),
+        ).unwrap();
+        assert_eq!(fs::read(&current).unwrap(), b"verified-old-current");
+        assert_eq!(fs::read(&previous).unwrap(), b"verified-old-previous");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_pointer_restore_never_deletes_unknown_previous_or_replays_current() {
+        let root = offline_test_root("unknown-previous");
+        let current = root.join("current.pb");
+        let previous = root.join("previous.pb");
+        fs::write(&current, b"new-current").unwrap();
+        fs::write(&previous, b"foreign-previous").unwrap();
+        let err = restore_offline_authority_pointers(&root, b"verified-old-current", &None)
+            .unwrap_err();
+        assert!(err.contains("OFFLINE_PREVIOUS_RESTORE_BLOCKED"));
+        assert_eq!(fs::read(&current).unwrap(), b"new-current");
+        assert_eq!(fs::read(&previous).unwrap(), b"foreign-previous");
+
+        fs::write(&previous, b"verified-old-current").unwrap();
+        restore_offline_authority_pointers(&root, b"verified-old-current", &None).unwrap();
+        assert_eq!(fs::read(&current).unwrap(), b"verified-old-current");
+        assert!(!previous.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_pointer_restore_blocks_unreadable_previous_before_current_rewrite() {
+        let root = offline_test_root("read-error");
+        let current = root.join("current.pb");
+        let previous = root.join("previous.pb");
+        fs::write(&current, b"torn-current").unwrap();
+        fs::create_dir(&previous).unwrap();
+        assert!(restore_offline_authority_pointers(&root, b"saved-current", &None)
+            .unwrap_err()
+            .contains("OFFLINE_PREVIOUS_RESTORE_BLOCKED"));
+        assert_eq!(fs::read(&current).unwrap(), b"torn-current");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn offline_release_handoff_refuses_running_scm_any_child_tun_or_wrong_owner() {
