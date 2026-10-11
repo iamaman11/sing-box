@@ -420,9 +420,12 @@ The new stack receives independently generated credential generations.
 **GitHub operator retry guard:** repeat attempts (`GITHUB_RUN_ATTEMPT != 1`)
 of existing `rotate-application` and `host-bootstrap-converge` requests
 are refused during authorization, before any host or provider mutation.
-A new comment is a new request and is **not** yet protected by an
-authoritative cross-request attempt journal; initial paired publication remains
-disabled until that journal and both host proofs are installed.
+A new comment is a new request: GitHub's read-only first-use preflight
+now materializes all Issue #26 comment pages and the Rust owner rejects a
+previous, malformed or displaced credential BEGIN marker. That read-only
+observation is NOT a committed initial attempt. Actual pre-mutation BEGIN
+write/readback and verified dual host-job provenance are still absent;
+initial paired publication therefore remains disabled.
 
 **Provider mutation fail-closed invariant:** a lost ACK for a credential Worker
 secret PATCH is not proof of which opaque bytes were stored, even if the
@@ -450,6 +453,29 @@ and proves both exact dummy generations. It does not touch DNS, TUN, SCM,
 proxy selection, or the foreign Cloudflare One adapter. The VM has its own
 separate read-only initial probe. Neither report authorizes a publish by
 itself; worker binding metadata cannot substitute for an authenticated GET.
+
+**Pre-mutation identity and ownership (N1, Draft only):** the single
+native `edge-orchestrator credentials initial-pair-journal-plan` policy
+accepts an exact provider intent, fixed generation/slot, two distinct
+64-character host attestation digests, immutable ReleaseSet and GitHub run
+identity. It constructs a non-secret `BEGIN` comment; it never writes it.
+The read-only `initial-pair-journal-observe` route is now part of the
+existing GitHub credential preflight and rejects any prior/corrupt first
+attempt. Neither command is a credential publisher, and their input digests
+alone cannot authenticate a caller.
+
+Native `edge-agent local credential-initial-attest` and `edge-console
+credential-initial-attest` reuse each local owner's exact clean-state and
+authenticated dummy A/B probe before deriving a shared domain-separated
+SHA-256 evidence identifier. It binds role, first-use generation, slot,
+provider intent, ReleaseSet, and local machine identity; Windows also
+requires the exact installed ReleaseSet. **A hash is not a host signature.**
+The GitHub workflow must independently prove which immutable binaries
+actually ran on each owned *disposable* host and bind those verified outputs
+to the single run before it can write an irreversible BEGIN. The existing
+production VM/Windows root are not clean first-use hosts. Unknown ACK,
+cross-request duplicates and half-published Workers must always stop without
+repeating PATCH/deploy. Source-only acceptance does not prove this barrier.
 
 For the VM, `edge-agent local credential-initial-verify <generation>` is
 the nonmutating next acceptance boundary after initial-apply. It requires
