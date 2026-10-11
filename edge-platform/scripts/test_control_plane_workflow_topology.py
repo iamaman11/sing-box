@@ -511,7 +511,7 @@ def main() -> None:
         "async fn verify_initial_vm_credential_functional(", 1
     )[1].split("async fn initial_apply_vm_credential(", 1)[0]
     require(
-        re.search(r"CredentialInitialVerify\\s*\\{\\s*generation:\\s*u64\\s*\\}", vm_agent_cli) is not None
+        re.search(r"CredentialInitialVerify\s*\{\s*generation:\s*u64\s*\}", vm_agent_cli) is not None
         and "verify_initial_vm_credential_functional(&stack_dir, generation)" in vm_agent_runtime
         and "validate_unpromoted_vm_initial_state(&state, generation)?" in vm_initial_functional
         and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in vm_initial_functional
@@ -542,7 +542,7 @@ def main() -> None:
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]
     require(
-        re.search(r"CredentialInitialApply\\s*\\{\\s*generation:\\s*u64\\s*\\}", vm_agent_cli) is not None
+        re.search(r"CredentialInitialApply\s*\{\s*generation:\s*u64\s*\}", vm_agent_cli) is not None
         and "initial_apply_vm_credential(&stack_dir, generation)" in vm_agent_runtime
         and "require_initial_vm_policy_bundle_ready(stack_dir)?" in initial_vm_apply
         and "require_empty_vm_initial_credential_host(stack_dir)?" in initial_vm_apply
