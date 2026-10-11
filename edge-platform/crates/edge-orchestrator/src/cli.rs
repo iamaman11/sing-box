@@ -134,6 +134,9 @@ impl ApplicationLifecycleCommand {
 pub(crate) enum ProductionCommand {
     Validate,
     Diagnose,
+    // Internal read-only provider preflight used by the existing production workflow.
+    // Never exposed as a new comment command or a DNS mutation authority.
+    DnsNoop,
     EnrollRuntime(ProductionEnrollRuntimeArgs),
     Converge(ProductionRuntimeArgs),
     Verify(ProductionRuntimeArgs),
