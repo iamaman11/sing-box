@@ -1919,6 +1919,15 @@ def main() -> None:
         "candidate CI must resolve the accepted base once and transport only exact verified reuse bytes to the Linux job",
     )
     require(
+        'base_release_revision="${BASE_REVISION}"' in edge_platform_ci
+        and 'current_release_count="$(gh api "repos/${REPOSITORY}/releases?per_page=100"' in edge_platform_ci
+        and 'test "$(jq -er \'.parents | length\' <<<"${base_commit}")" = "2"' in edge_platform_ci
+        and 'base_release_revision="$(jq -er \'.parents[0].sha\' <<<"${base_commit}")"' in edge_platform_ci
+        and 'ACCEPTED_REVISION="${base_release_revision}" OUTPUT_DIR="${base_dir}"' in edge_platform_ci
+        and 'candidate_base_release=VERIFIED_IMMEDIATE_MERGE_PARENT' in edge_platform_ci,
+        "candidate input reuse may recover only through a verified published immediate main merge-parent",
+    )
+    require(
         'runtime_source_revision="${EDGE_RUNTIME_SOURCE_REVISION}"' in edge_platform_ci
         and 'EXPECTED_AGENT_SHA256: ${{ needs.dependencies.outputs.base_runtime_agent_sha256 }}' in edge_platform_ci
         and 'test "$(sha256sum "${base_dir}/edge-agent-linux-amd64" | awk \'{print $1}\')" = "${EXPECTED_AGENT_SHA256}"' in edge_platform_ci
@@ -2159,6 +2168,27 @@ def main() -> None:
         and '[[ "${EDGE_GATEWAY_IMAGE}" =~' not in edge_platform_ci
         and '[[ "${EDGE_WARP_EGRESS_IMAGE}" =~' not in edge_platform_ci,
         "typed release ownership must not regress to redundant GitHub outputs or shell-owned manifest validation",
+    )
+    require(
+        "types: [opened, synchronize, reopened]" in edge_platform_ci
+        and "types: [opened, synchronize, reopened, closed]" not in edge_platform_ci
+        and "  push:\n    branches: [main]" in edge_platform_ci
+        and "group: ${{ github.event_name == 'push' && 'edge-platform-promotion-main'" in edge_platform_ci
+        and "cancel-in-progress: ${{ github.event_name != 'push' }}" in edge_platform_ci
+        and "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in edge_platform_ci
+        and "ACCEPTED_REVISION: ${{ github.sha }}" in edge_platform_ci
+        and "test \"$(jq -er '.parents | length'" in edge_platform_ci
+        and "candidate_revision=\"$(jq -er '.parents[1].sha'" in edge_platform_ci
+        and 'test "${accepted_tree}" = "${candidate_tree}"' in edge_platform_ci
+        and 'associated_prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls?per_page=10")"' in edge_platform_ci
+        and 'select(.merge_commit_sha == $accepted)' in edge_platform_ci
+        and 'select(.head.sha == $candidate)' in edge_platform_ci
+        and 'select(.base.ref == "main")' in edge_platform_ci
+        and 'if length == 1 then .[0] else error("accepted merge has no unique matching merged PR") end' in edge_platform_ci
+        and "pull-requests: read" in edge_platform_ci
+        and 'select(.status == "completed")' in edge_platform_ci
+        and 'select(.conclusion == "success")' in edge_platform_ci,
+        "CI promotion must execute on actual protected main merge and bind exact merged PR, tested tree, and completed successful candidate without rebuild",
     )
     require(
         "Publish accepted Windows artifact without rebuild" in edge_platform_ci
