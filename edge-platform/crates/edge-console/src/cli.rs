@@ -315,6 +315,7 @@ mod tests {
                 "a",
                 &"a".repeat(64),
                 &"b".repeat(64),
+                "1011",
                 "--install-root",
                 r"C:\sing-box-acceptance",
             ])
