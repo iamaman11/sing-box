@@ -446,6 +446,12 @@ def main() -> None:
         and "validate_initial_pair_provider_observation(" in credential_provider,
         "hosted initial provider gate must stay read-only and fail closed until both host attestations",
     )
+    require(
+        'if operation in {"rotate-application", "host-bootstrap-converge"}:' in credentials
+        and 'os.environ.get("GITHUB_RUN_ATTEMPT") != "1"' in credentials
+        and "credential mutation replay forbidden: read-only reconciliation required" in credentials,
+        "GitHub credential mutation must fail closed before host preparation on a run re-attempt",
+    )
     publish_slot = credential_provider.split(
         "async fn publish_rotation_slot(", 1
     )[1].split("pub(crate) async fn verify_credential_plane_invariant(", 1)[0]

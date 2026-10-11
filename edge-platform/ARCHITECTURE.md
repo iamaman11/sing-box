@@ -417,6 +417,13 @@ The new stack receives independently generated credential generations.
 
 ### Initial paired Worker-v2 enrollment (not steady-state rotation)
 
+**GitHub operator retry guard:** repeat attempts (`GITHUB_RUN_ATTEMPT != 1`)
+of existing `rotate-application` and `host-bootstrap-converge` requests
+are refused during authorization, before any host or provider mutation.
+A new comment is a new request and is **not** yet protected by an
+authoritative cross-request attempt journal; initial paired publication remains
+disabled until that journal and both host proofs are installed.
+
 **Provider mutation fail-closed invariant:** a lost ACK for a credential Worker
 secret PATCH is not proof of which opaque bytes were stored, even if the
 latest Worker version advanced. The native rotation owner now reads version
