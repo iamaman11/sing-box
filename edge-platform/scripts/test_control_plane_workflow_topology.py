@@ -383,6 +383,25 @@ def main() -> None:
     vm_agent_cli = VM_AGENT_CLI.read_text(encoding="utf-8")
     shared_types = SHARED_TYPES.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
+    initial_vm_apply = vm_agent_runtime.split("async fn initial_apply_vm_credential(", 1)[1].split(
+        "async fn fetch_and_stage_vm_credential_candidate(", 1
+    )[0]
+    require(
+        "CredentialInitialApply { generation: u64 }" in vm_agent_cli
+        and "initial_apply_vm_credential(&stack_dir, generation)" in vm_agent_runtime
+        and "require_empty_vm_initial_credential_host(stack_dir)?" in initial_vm_apply
+        and "let docker = observe_docker().await?;" in initial_vm_apply
+        and "require_no_vm_application_containers(&docker)?" in initial_vm_apply
+        and "Command::new(\"docker\")" not in initial_vm_apply
+        and initial_vm_apply.index("require_no_vm_application_containers(&docker)?")
+        < initial_vm_apply.index("fetch_and_stage_vm_credential_candidate(")
+        and "apply_vm_credential_runtime(stack_dir, &secrets).await?" in initial_vm_apply
+        and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in initial_vm_apply
+        and "promote_candidate" not in initial_vm_apply
+        and "legacy_vm_runtime_secret_path(stack_dir)?.exists()" in vm_agent_runtime
+        and "VM candidate application requires an established active Worker v2 generation" in vm_agent_runtime,
+        "initial VM Worker-v2 application must be isolated, non-replayed and never auto-promoted",
+    )
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
     application_command = Path(
         "edge-platform/crates/edge-orchestrator/src/application_lifecycle_command.rs"

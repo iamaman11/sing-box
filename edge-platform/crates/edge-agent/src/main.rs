@@ -212,6 +212,18 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             print_credential_state_evidence(state.as_ref());
             Ok(())
         }
+        cli::LocalCommand::CredentialInitialApply { generation } => {
+            initial_apply_vm_credential(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_APPLY");
+            println!("credential_projection=VM");
+            println!("credential_generation={generation}");
+            println!("credential_initial_state=APPLIED_NOT_PROMOTED");
+            println!("credential_initial_authentication=UNPROVEN");
+            println!("runner_secret_access=false");
+            Ok(())
+        }
         cli::LocalCommand::CredentialStage { generation } => {
             let state = fetch_and_stage_vm_credential_candidate(&stack_dir, generation)
                 .await
@@ -1406,6 +1418,79 @@ fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, Strin
     Ok(parent
         .join(RUNTIME_SECRET_DIR)
         .join(ACCESS_IDENTITY_FILE_NAME))
+}
+
+// Initial enrollment deliberately does not reuse ApplyCandidate/Promote. It may
+// start only on an empty, isolated VM. Any interrupted attempt leaves evidence
+// behind and refuses a replay rather than generating or applying replacements.
+fn require_empty_vm_initial_credential_host(stack_dir: &Path) -> Result<(), String> {
+    if observe_vm_credential_state(stack_dir)?.is_some()
+        || vm_credential_store_root(stack_dir)?.exists()
+    {
+        return Err("initial VM enrollment requires absent v2 store and cursor; refusing uncertain or repeated enrollment".to_owned());
+    }
+    if legacy_vm_runtime_secret_path(stack_dir)?.exists() {
+        return Err("initial VM enrollment refuses a legacy runtime credential file".to_owned());
+    }
+    for relative in [
+        RUNTIME_ENV_FILE,
+        "rendered/line1-gateway.json",
+        "rendered/line2-proxy.json",
+    ] {
+        if stack_dir.join(relative).exists() {
+            return Err(format!(
+                "initial VM enrollment refuses existing runtime artifact {relative}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_no_vm_application_containers(observation: &DockerObservation) -> Result<(), String> {
+    if !observation.reachable {
+        return Err("initial VM enrollment refuses unknown Docker daemon state".to_owned());
+    }
+    for container in [
+        "vultr-warp-egress",
+        "vultr-line1-gateway",
+        "vultr-line2-proxy",
+    ] {
+        if observation.container_present(container) {
+            return Err(format!(
+                "initial VM enrollment refuses an existing application container: {container}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Result<(), String> {
+    if generation == 0 {
+        return Err("initial VM enrollment requires a positive Worker generation".to_owned());
+    }
+    // Both guards execute before fetching a secret or writing host state.
+    require_empty_vm_initial_credential_host(stack_dir)?;
+    let docker = observe_docker().await?;
+    require_no_vm_application_containers(&docker)?;
+    let staged = fetch_and_stage_vm_credential_candidate(stack_dir, generation).await?;
+    if staged.active.is_some() || staged.previous.is_some() {
+        return Err("initial VM enrollment discovered nonempty active/previous state".to_owned());
+    }
+    let candidate = staged
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "initial VM enrollment requires the staged Worker candidate".to_owned())?;
+    if candidate.generation != generation {
+        return Err("initial VM enrollment candidate generation mismatch".to_owned());
+    }
+    let store = open_vm_credential_store(stack_dir)?;
+    let bundle = store.read_bundle(candidate)?;
+    let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+    // Bootstrap forces fresh container recreation; this still does not prove
+    // authenticated Line1/2 connections. Never promote the candidate here.
+    apply_vm_credential_runtime(stack_dir, &secrets).await?;
+    verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
+    Ok(())
 }
 
 async fn fetch_and_stage_vm_credential_candidate(
@@ -4140,6 +4225,61 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn initial_vm_enrollment_refuses_unobservable_docker_state() {
+        assert!(
+            require_no_vm_application_containers(&DockerObservation::unreachable())
+                .unwrap_err()
+                .contains("unknown Docker daemon state")
+        );
+    }
+
+    #[test]
+    fn initial_vm_enrollment_refuses_legacy_runtime_or_partial_state() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        assert!(require_empty_vm_initial_credential_host(&stack).is_ok());
+
+        let env = stack.join(RUNTIME_ENV_FILE);
+        fs::write(&env, "LEGACY_SECRET=opaque\\n").unwrap();
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("runtime artifact")
+        );
+        fs::remove_file(&env).unwrap();
+
+        let old = legacy_vm_runtime_secret_path(&stack).unwrap();
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, "opaque").unwrap();
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("legacy runtime")
+        );
+        fs::remove_file(&old).unwrap();
+
+        let rendered = stack.join("rendered/line1-gateway.json");
+        fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+        fs::write(&rendered, "{}").unwrap();
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("runtime artifact")
+        );
+        fs::remove_file(&rendered).unwrap();
+
+        let store = vm_credential_store_root(&stack).unwrap();
+        fs::create_dir_all(&store).unwrap();
+        assert!(
+            require_empty_vm_initial_credential_host(&stack)
+                .unwrap_err()
+                .contains("absent v2 store")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn returns_health_state() {
