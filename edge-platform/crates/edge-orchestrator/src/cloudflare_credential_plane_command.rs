@@ -761,6 +761,14 @@ async fn publish_rotation_slot(
             projection.projection
         ));
     }
+    // A successful PATCH ACK alone does not authorize POST deployment:
+    // Cloudflare's mutable /versions/latest has no demonstrated atomic
+    // compare-and-swap against our original Worker version. Observe the
+    // returned new version and unchanged old deployment exactly once.
+    let before_deploy = observe(control_token, desired).await?;
+    let pending = projection_observation(&before_deploy, &projection.projection)?;
+    verify_exact_pending_worker_version(before_projection, pending, &version_id)?;
+
     let deploy_once = cloudflare::deploy_worker_version(
         rotation_token,
         &desired.target_account_id,
@@ -771,7 +779,7 @@ async fn publish_rotation_slot(
     if let Err(first_err) = deploy_once {
         let observed = observe(control_token, desired).await?;
         let current = projection_observation(&observed, &projection.projection)?;
-        if current.worker_active_version_ids == vec![version_id.clone()] {
+        if verify_exact_active_worker_version(current, &version_id).is_ok() {
             return Ok(());
         }
         // Re-observation may confirm deployment succeeded, but it cannot
@@ -787,6 +795,53 @@ async fn publish_rotation_slot(
         return Err(format!(
             "{} credential Worker did not return to exact fixed A/B topology after candidate deployment",
             projection.projection
+        ));
+    }
+    verify_exact_active_worker_version(
+        projection_observation(&after, &projection.projection)?,
+        &version_id,
+    )?;
+    Ok(())
+}
+
+/// Read-only compare of the exact PATCH result immediately before deploying it.
+/// This limits undetected races, but Cloudflare /versions/latest is not a CAS:
+/// provider changes between this GET and our POST still require host readback.
+fn verify_exact_pending_worker_version(
+    before: &ProjectionObservation,
+    pending: &ProjectionObservation,
+    returned_version: &str,
+) -> Result<(), String> {
+    if returned_version.trim().is_empty()
+        || before.worker_latest_version_id.as_deref() == Some(returned_version)
+        || pending.worker_latest_version_id.as_deref() != Some(returned_version)
+        || pending.worker_active_version_ids != before.worker_active_version_ids
+        || pending.worker_active_deployment_id != before.worker_active_deployment_id
+        || pending.worker_id != before.worker_id
+        || pending.worker_name != before.worker_name
+        || pending.worker_secret_bindings != before.worker_secret_bindings
+        || pending.worker_binding_count != before.worker_binding_count
+    {
+        return Err(format!(
+            "{} Worker PATCH readback is ambiguous or drifted; do not deploy or replay",
+            before.projection
+        ));
+    }
+    Ok(())
+}
+
+fn verify_exact_active_worker_version(
+    current: &ProjectionObservation,
+    expected_version: &str,
+) -> Result<(), String> {
+    if expected_version.trim().is_empty()
+        || current.worker_latest_version_id.as_deref() != Some(expected_version)
+        || current.worker_active_version_ids.as_slice() != [expected_version]
+        || current.worker_active_deployment_id.is_none()
+    {
+        return Err(format!(
+            "{} Worker deployment lacks exact active/latest version; do not replay",
+            current.projection
         ));
     }
     Ok(())
@@ -1932,6 +1987,53 @@ mod tests {
                 projection_observation(desired, "vm"),
             ],
         }
+    }
+
+    #[test]
+    fn exact_patch_readback_blocks_foreign_versions_or_implicit_deploy() {
+        let d = desired();
+        let mut state = observation(&d);
+        make_terminal(&mut state, "vm");
+        let original = projection_observation(&state, "vm").unwrap().clone();
+        let mut pending = original.clone();
+        pending.worker_latest_version_id = Some("fresh-version".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &pending, "fresh-version").is_ok());
+
+        let mut changed = pending.clone();
+        changed.worker_latest_version_id = Some("foreign-version".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_active_version_ids = vec!["fresh-version".to_owned()];
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_active_deployment_id = Some("foreign-deployment".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_id = Some("foreign-worker".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_secret_bindings.pop();
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        assert!(verify_exact_pending_worker_version(&original, &original, "fresh-version").is_err());
+    }
+
+    #[test]
+    fn exact_deployment_readback_never_accepts_old_or_foreign_latest() {
+        let d = desired();
+        let mut state = observation(&d);
+        make_terminal(&mut state, "windows");
+        let mut active = projection_observation(&state, "windows").unwrap().clone();
+        active.worker_latest_version_id = Some("fresh-version".to_owned());
+        active.worker_active_version_ids = vec!["fresh-version".to_owned()];
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_ok());
+        active.worker_latest_version_id = Some("foreign-version".to_owned());
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_err());
+        active.worker_latest_version_id = Some("fresh-version".to_owned());
+        active.worker_active_version_ids = vec!["old-version".to_owned()];
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_err());
+        active.worker_active_version_ids = vec!["fresh-version".to_owned()];
+        active.worker_active_deployment_id = None;
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_err());
     }
 
     fn make_terminal(observed: &mut CredentialPlaneObservation, projection_name: &str) {
