@@ -315,6 +315,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn initial_worker_dummy_probe_requires_exact_full_slot_not_just_generation() {
+        let dummy = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: None,
+        };
+        assert!(verify_canonical_dummy_ab_probe(
+            &dummy,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        )
+        .is_ok());
+        assert!(verify_canonical_dummy_ab_probe(
+            &dummy,
+            CredentialProjectionKind::Windows,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        )
+        .is_err());
+        assert!(verify_canonical_dummy_ab_probe(
+            &dummy,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+        )
+        .is_err());
+        let mut not_dummy = dummy.clone();
+        not_dummy.dummy_non_secret = false;
+        assert!(verify_canonical_dummy_ab_probe(
+            &not_dummy,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        )
+        .is_err());
+        let mut wrong_slot = dummy.clone();
+        wrong_slot.slot = CredentialDeliverySlot::A as i32;
+        assert!(verify_canonical_dummy_ab_probe(
+            &wrong_slot,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        )
+        .is_err());
+        let mut wrong_schema = dummy;
+        wrong_schema.schema_version = 2;
+        assert!(verify_canonical_dummy_ab_probe(
+            &wrong_schema,
+            CredentialProjectionKind::Vm,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn identity_parser_is_closed_and_secret_safe_in_debug() {
         let identity = AccessServiceIdentity::parse_env(
             "CF_ACCESS_CLIENT_ID=client-id\nCF_ACCESS_CLIENT_SECRET=client-secret\n",
