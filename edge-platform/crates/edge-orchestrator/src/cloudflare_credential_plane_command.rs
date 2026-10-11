@@ -269,6 +269,15 @@ async fn initial_pair_preflight(
     let observed = observe(control_token, desired).await?;
     let provider_intent_sha256 =
         initial_pair_provider_intent_sha256(desired, &observed, generation, slot)?;
+    // The provider-side plan is read-only. Re-observe once and fail if either
+    // Worker version or Access identity changed in the meantime. No polling
+    // and, in particular, no mutation authority is implied.
+    let reobserved = observe(control_token, desired).await?;
+    let confirmed_sha256 =
+        initial_pair_provider_intent_sha256(desired, &reobserved, generation, slot)?;
+    if provider_intent_sha256 != confirmed_sha256 {
+        return Err("initial paired provider intent drifted during read-only re-observation".to_owned());
+    }
     println!("operation=CREDENTIAL_INITIAL_PAIR_PREFLIGHT");
     println!("credential_generation={generation}");
     println!("credential_slot={}", slot.as_str());
@@ -277,6 +286,7 @@ async fn initial_pair_preflight(
     println!("vm_access_identity_distinct=true");
     println!("windows_access_identity_distinct=true");
     println!("initial_pair_provider_intent_sha256={provider_intent_sha256}");
+    println!("initial_pair_provider_version_barrier=READ_ONLY_REOBSERVED");
     println!("host_dummy_slot_attestations=REQUIRED");
     println!("worker_version_bound_publish=NOT_IMPLEMENTED");
     println!("provider_attempt_journal=NOT_RECORDED");
