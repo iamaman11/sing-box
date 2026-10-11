@@ -1377,6 +1377,11 @@ pub fn verify_windows_activation_files(state: &WindowsActivationState) -> Result
     Ok(())
 }
 
+/// Streaming SHA-256 for exact-release host executable verification.
+pub fn file_sha256_lower_hex(path: &Path) -> Result<String, String> {
+    Ok(digest_to_lower_hex(&sha256_file(path)?))
+}
+
 fn sha256_file(path: &Path) -> Result<Vec<u8>, String> {
     let mut file =
         File::open(path).map_err(|err| format!("failed to open {}: {err}", path.display()))?;

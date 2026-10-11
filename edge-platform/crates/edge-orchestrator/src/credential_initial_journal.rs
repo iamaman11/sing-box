@@ -38,7 +38,7 @@ struct AttemptRecord {
 
 #[derive(Deserialize)]
 struct IssueComment {
-    body: Option<String>,
+    body: String,
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -88,9 +88,10 @@ fn validate_journal_history(history: &str) -> Result<(), String> {
     let comments: Vec<IssueComment> = serde_json::from_str(history)
         .map_err(|_| "initial journal history must be complete JSON comment array".to_owned())?;
     for comment in comments {
-        let Some(body) = comment.body else {
-            continue;
-        };
+        let body = comment.body;
+        if body.trim().is_empty() {
+            return Err("initial journal refuses an empty issue comment body".to_owned());
+        }
         if body.contains(MARKER_FAMILY) {
             // No source may regenerate the first-use pair, even if an earlier
             // attempt was interrupted before PATCH. A missing/invalid record
@@ -185,6 +186,10 @@ mod tests {
             r#"[{"body":"<!-- sing-box-credential-initial-attempt/v1 --> broken"}]"#,
             r#"[{"body":"ignored <!-- sing-box-credential-initial-attempt/v1 --> {}"}]"#,
             r#"[{"body":"<!-- sing-box-credential-initial-attempt/v2 --> {}"}]"#,
+            r#"[{"id":1}]"#,
+            r#"[{"body":null}]"#,
+            r#"[{"body":""}]"#,
+            r#"[{"body":"   "}]"#,
             r#"[{"body":"<!-- sing-box-credential-initial-attempt/v1 --> {\"schema\":\"unknown\"}"}]"#,
         ] {
             assert!(plan_initial_pair_reservation(&request(), body).is_err());
@@ -193,6 +198,7 @@ mod tests {
             plan_initial_pair_reservation(&request(), r#"[{"body":"normal issue comment"}]"#)
                 .is_ok()
         );
+        assert!(plan_initial_pair_reservation(&request(), "[]").is_ok());
     }
 
     #[test]

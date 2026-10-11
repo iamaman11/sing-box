@@ -61,6 +61,7 @@ pub(crate) enum LocalCommand {
         slot: String,
         provider_intent_sha256: String,
         release_set_sha256: String,
+        expected_agent_sha256: String,
     },
     // Strictly fresh, non-serving VM only; never a rotation or legacy handoff.
     CredentialInitialApply {

@@ -231,7 +231,13 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             slot,
             provider_intent_sha256,
             release_set_sha256,
+            expected_agent_sha256,
         } => {
+            // The candidate agent must be the exact immutable binary named
+            // by the trusted ReleaseSet resolver, not just an arbitrary VM
+            // process presented alongside a caller-supplied release digest.
+            verify_initial_agent_binary(&expected_agent_sha256)
+                .map_err(AgentError::Command)?;
             verify_initial_vm_dummy_probe(&stack_dir)
                 .await
                 .map_err(AgentError::Command)?;
@@ -252,6 +258,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("credential_projection=VM");
             println!("credential_generation={generation}");
             println!("credential_host_attestation_sha256={digest}");
+            println!("credential_exact_agent_binary=true");
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");
             Ok(())
@@ -643,6 +650,23 @@ fn print_credential_state_evidence(state: Option<&LocalCredentialState>) {
             println!("credential_{name}_sha256={}", value.sha256);
         }
     }
+}
+
+fn verify_initial_agent_binary(expected_sha256: &str) -> Result<(), String> {
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("VM first-use proof requires an exact SHA-256 from immutable ReleaseSet".to_owned());
+    }
+    let exe = fs::read_link("/proc/self/exe")
+        .map_err(|err| format!("VM initial proof cannot resolve running agent image: {err}"))?;
+    let observed = edge_shared_types::file_sha256_lower_hex(&exe)?;
+    if observed != expected_sha256 {
+        return Err("VM first-use attestation refuses non-ReleaseSet agent bytes".to_owned());
+    }
+    Ok(())
 }
 
 fn parse_first_use_slot(value: &str) -> Result<edge_shared_types::CredentialDeliverySlot, String> {
