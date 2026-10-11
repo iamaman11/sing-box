@@ -1619,8 +1619,9 @@ fn verify_vm_candidate_runtime_materialized(
 ) -> Result<(), String> {
     let secrets = ApplicationRuntimeSecrets::from_vm_bundle(candidate)?;
     let expected = vm_runtime_environment(stack_dir, &secrets)?;
-    let actual = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE))
-        .map_err(|_| "VM candidate promotion requires a readable rendered environment".to_owned())?;
+    let actual = fs::read_to_string(stack_dir.join(RUNTIME_ENV_FILE)).map_err(|_| {
+        "VM candidate promotion requires a readable rendered environment".to_owned()
+    })?;
     if actual != expected {
         return Err(
             "VM candidate promotion refused: rendered environment differs from candidate Worker-v2 generation"
