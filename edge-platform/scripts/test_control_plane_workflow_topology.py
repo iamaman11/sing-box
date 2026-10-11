@@ -384,6 +384,9 @@ def main() -> None:
     shared_types = SHARED_TYPES.read_text(encoding="utf-8")
     vm_agent_runtime = vm_agent.split("#[cfg(test)]", 1)[0]
     production_command = PRODUCTION_COMMAND.read_text(encoding="utf-8")
+    application_command = Path(
+        "edge-platform/crates/edge-orchestrator/src/application_lifecycle_command.rs"
+    ).read_text(encoding="utf-8")
     hosted_production_main = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(
         encoding="utf-8"
     )
@@ -1770,8 +1773,10 @@ def main() -> None:
         and "production_command::verify(" not in hosted_production_main
         and "Converge(ProductionRuntimeArgs)" not in credential_cli
         and "Verify(ProductionRuntimeArgs)" not in credential_cli
-        and "ProductionRuntimeArgs" not in credential_cli,
-        "hosted production converge/verify must stay retired; only GitHub native DNS gate + VM runtime owner may mutate",
+        and "ProductionRuntimeArgs" not in credential_cli
+        and "pub(crate) async fn production_converge_desired(" not in application_command
+        and "pub(crate) async fn production_verify_desired(" not in application_command,
+        "hosted production converge/verify and dead application helpers must stay retired; only GitHub native DNS gate + VM runtime owner may mutate",
     )
 
     acceptance_job = application.split("\n  acceptance:\n", 1)[1]
