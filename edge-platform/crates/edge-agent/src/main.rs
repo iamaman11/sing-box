@@ -1204,6 +1204,8 @@ fn apply_digest_bound_bundle(
         write_bundle_file(&staging, file, &mut written_paths)?;
     }
     if initial_policy_only {
+        // Validate exact images before activating the policy-only stack.
+        read_exact_image_environment(&staging)?;
         // Fresh stage contains repository policy and pinned images, never an
         // active credential or generated runtime. Only initial-apply may start.
         if staging.join(RUNTIME_ENV_FILE).exists() {
@@ -1221,7 +1223,12 @@ fn apply_digest_bound_bundle(
     write_application_release(&staging, &release)?;
 
     let old_release = read_application_release(stack_dir);
-    if stack_dir.exists() {
+    if stack_dir.exists() && initial_policy_only {
+        // A precreated empty directory is not a previous application release.
+        fs::remove_dir(stack_dir).map_err(|err| {
+            format!("initial bundle target directory is no longer empty: {err}")
+        })?;
+    } else if stack_dir.exists() {
         if previous.exists() {
             fs::remove_dir_all(&previous).map_err(|err| {
                 format!(
