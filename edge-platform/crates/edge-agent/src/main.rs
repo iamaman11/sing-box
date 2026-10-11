@@ -1559,9 +1559,7 @@ fn observe_vm_rendered_credential_source(stack_dir: &Path) -> VmRenderedCredenti
             Ok(value) => value,
             Err(_) => return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID"),
         };
-        if vm_runtime_environment(stack_dir, &secrets)
-            .is_ok_and(|expected| expected == rendered)
-        {
+        if vm_runtime_environment(stack_dir, &secrets).is_ok_and(|expected| expected == rendered) {
             if let Some(edge_shared_types::credential_delivery_bundle::Payload::Vm(vm)) =
                 bundle.payload.as_ref()
             {
@@ -4587,13 +4585,20 @@ mod tests {
         fs::write(stack.join(RUNTIME_ENV_FILE), "existing=untouched\n").unwrap();
         let private_dir = root.join(RUNTIME_SECRET_DIR);
         fs::create_dir_all(&private_dir).unwrap();
-        fs::write(private_dir.join(RUNTIME_SECRET_FILE), "legacy=not-authority\n").unwrap();
+        fs::write(
+            private_dir.join(RUNTIME_SECRET_FILE),
+            "legacy=not-authority\n",
+        )
+        .unwrap();
         assert!(
             materialize_vm_owned_runtime_environment(&stack)
                 .unwrap_err()
                 .contains("active Cloudflare Worker v2 credential")
         );
-        assert_eq!(fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap(), "existing=untouched\n");
+        assert_eq!(
+            fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap(),
+            "existing=untouched\n"
+        );
         let store = CredentialStore::new(
             vm_credential_store_root(&stack).unwrap(),
             CredentialProjectionKind::Vm,
@@ -4609,7 +4614,10 @@ mod tests {
             &ApplicationRuntimeSecrets::from_vm_bundle(&delivery).unwrap(),
         )
         .unwrap();
-        assert_eq!(fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap(), expected);
+        assert_eq!(
+            fs::read_to_string(stack.join(RUNTIME_ENV_FILE)).unwrap(),
+            expected
+        );
         assert_eq!(
             fs::read_to_string(private_dir.join(RUNTIME_SECRET_FILE)).unwrap(),
             "legacy=not-authority\n"
