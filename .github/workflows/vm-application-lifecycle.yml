@@ -594,7 +594,10 @@ jobs:
         run: |
           set -euo pipefail
           owner="/usr/local/libexec/sing-box/edge-agent"
-          test -x "${owner}"
+          if [[ ! -x "${owner}" ]]; then
+            echo 'vm_owner_identity=BLOCKED_OWNER_ABSENT_OR_NOT_EXECUTABLE' >&2
+            exit 1
+          fi
 
           case "${REQUESTED_OPERATION}" in
             converge|verify|rollback)
@@ -613,11 +616,26 @@ jobs:
               ;;
           esac
 
-          test "${expected_revision}" = "${GITHUB_SHA}"
-          [[ "${expected_release_set}" =~ ^[0-9a-f]{64}$ ]]
-          [[ "${expected_owner}" =~ ^[0-9a-f]{64}$ ]]
-          observed="$(sha256sum "${owner}" | awk '{print $1}')"
-          test "${observed}" = "${expected_owner}"
+          if [[ "${expected_revision}" != "${GITHUB_SHA}" ||
+                ! "${expected_release_set}" =~ ^[0-9a-f]{64}$ ||
+                ! "${expected_owner}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'vm_owner_identity=BLOCKED_EXPECTED_RELEASE_AUTHORITY' >&2
+            exit 1
+          fi
+          if ! observed="$(sha256sum "${owner}" | awk '{print $1}')"; then
+            echo 'vm_owner_identity=BLOCKED_OWNER_DIGEST_UNAVAILABLE' >&2
+            exit 1
+          fi
+          # SHA-256 is non-secret release identity, not a credential fingerprint.
+          echo "vm_owner_observed_sha256=${observed}"
+          echo "vm_owner_expected_sha256=${expected_owner}"
+          echo "vm_owner_expected_release_set=${expected_release_set}"
+          if [[ "${observed}" != "${expected_owner}" ]]; then
+            echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_MISMATCH' >&2
+            echo 'vm_owner_next_safe_action=VERIFY_INSTALLED_RELEASE_PROVENANCE_READ_ONLY' >&2
+            exit 1
+          fi
+          echo 'vm_owner_identity=PASS_EXACT_ACCEPTED_OWNER'
 
           if [[ "$(id -u)" = "0" ]]; then
             echo "production self-hosted runner must not run as root" >&2

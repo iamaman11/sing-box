@@ -1660,6 +1660,25 @@ def main() -> None:
         and "sudo -n id -u" in production_runtime,
         "production runtime plane must remain transport-only: immutable ReleaseSet-bound bundle -> SHA verify -> fixed sudo local owner, with no source/render/provider/generic-root authority",
     )
+    owner_preflight = production_runtime.split(
+        "      - name: Verify bounded local runtime authority", 1
+    )[1].split("      - name: Verify exact transported application bundle", 1)[0]
+    require(
+        "vm_owner_identity=BLOCKED_OWNER_ABSENT_OR_NOT_EXECUTABLE" in owner_preflight
+        and "vm_owner_identity=BLOCKED_EXPECTED_RELEASE_AUTHORITY" in owner_preflight
+        and "vm_owner_identity=BLOCKED_OWNER_DIGEST_UNAVAILABLE" in owner_preflight
+        and "vm_owner_identity=BLOCKED_INSTALLED_OWNER_MISMATCH" in owner_preflight
+        and "vm_owner_next_safe_action=VERIFY_INSTALLED_RELEASE_PROVENANCE_READ_ONLY" in owner_preflight
+        and "vm_owner_identity=PASS_EXACT_ACCEPTED_OWNER" in owner_preflight
+        and 'echo "vm_owner_observed_sha256=${observed}"' in owner_preflight
+        and 'echo "vm_owner_expected_sha256=${expected_owner}"' in owner_preflight
+        and 'if [[ "${observed}" != "${expected_owner}" ]]; then' in owner_preflight
+        and owner_preflight.index('if [[ "${observed}" != "${expected_owner}" ]]; then')
+        < owner_preflight.index('sudo -n "${owner}" local status >/dev/null')
+        and "curl " not in owner_preflight
+        and "ssh " not in owner_preflight,
+        "read-only production owner identity must report bounded drift and fail closed BEFORE any privileged invocation",
+    )
     require(
         "production_rollback_desired" not in production_command
         and "pub(crate) async fn rollback(" not in production_command,
