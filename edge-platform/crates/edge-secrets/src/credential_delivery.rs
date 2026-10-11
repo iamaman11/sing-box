@@ -1,6 +1,8 @@
 use crate::credential_store::write_atomic_private;
 use edge_shared_types::{
-    CredentialDeliveryBundle, CredentialProjectionKind, canonical_production_desired_state,
+    CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+    CredentialDeliveryBundle, CredentialDeliverySlot, CredentialProjectionKind,
+    canonical_production_desired_state,
     decode_credential_delivery_bundle,
 };
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
@@ -177,13 +179,14 @@ pub async fn observe_canonical_credential_bundle(
     identity_path: &Path,
 ) -> Result<Option<CredentialDeliveryBundle>, String> {
     let identity = read_access_service_identity(identity_path)?;
-    observe_canonical_credential_bundle_with_identity(projection, generation, &identity).await
+    observe_canonical_credential_bundle_with_identity(projection, generation, &identity, false).await
 }
 
 async fn observe_canonical_credential_bundle_with_identity(
     projection: CredentialProjectionKind,
     generation: u64,
     identity: &AccessServiceIdentity,
+    allow_dummy_probe: bool,
 ) -> Result<Option<CredentialDeliveryBundle>, String> {
     let url = canonical_credential_worker_url(projection, generation)?;
     let mut headers = HeaderMap::new();
@@ -235,13 +238,66 @@ async fn observe_canonical_credential_bundle_with_identity(
         return Err("credential Worker response size is invalid".to_owned());
     }
     let bundle = decode_credential_delivery_bundle(&body)?;
-    if bundle.dummy_non_secret {
+    if bundle.dummy_non_secret && !allow_dummy_probe {
         return Err("runtime credential staging rejects dummy proof bundles".to_owned());
     }
     if bundle.projection != projection as i32 || bundle.generation != generation {
         return Err("credential Worker returned the wrong projection or generation".to_owned());
     }
     Ok(Some(bundle))
+}
+
+/// Read-only proof that BOTH fixed A/B Worker slots still carry the canonical
+/// non-secret probe. A Worker binding name, version tag, or 404 cannot prove
+/// emptiness. Never returns payload bytes or Access credentials to the caller.
+pub async fn verify_canonical_dummy_ab_slots(
+    projection: CredentialProjectionKind,
+    identity_path: &Path,
+) -> Result<(), String> {
+    let identity = read_access_service_identity(identity_path)?;
+    for generation in [
+        CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+    ] {
+        let observed = observe_canonical_credential_bundle_with_identity(
+            projection,
+            generation,
+            &identity,
+            true,
+        )
+        .await?
+        .ok_or_else(|| "initial Worker-v2 proof requires both canonical dummy slots".to_owned())?;
+        verify_canonical_dummy_ab_probe(&observed, projection, generation)?;
+    }
+    Ok(())
+}
+
+fn verify_canonical_dummy_ab_probe(
+    observed: &CredentialDeliveryBundle,
+    projection: CredentialProjectionKind,
+    generation: u64,
+) -> Result<(), String> {
+    if !matches!(projection, CredentialProjectionKind::Vm | CredentialProjectionKind::Windows)
+        || !matches!(
+            generation,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A | CREDENTIAL_DUMMY_PROBE_GENERATION_B
+        )
+        || observed
+            != &CredentialDeliveryBundle {
+                schema_version: 1,
+                generation,
+                projection: projection as i32,
+                dummy_non_secret: true,
+                slot: CredentialDeliverySlot::Unspecified as i32,
+                payload: None,
+            }
+    {
+        return Err(
+            "initial Worker-v2 proof refused: endpoint is not the exact canonical dummy slot"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 pub async fn fetch_canonical_credential_bundle(
