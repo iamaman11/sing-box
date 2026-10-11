@@ -454,6 +454,9 @@ def main() -> None:
         and "credential_initial_journal_empty=true" in credentials
         and "credential_journal_mutations=0" in credentials
         and "require_empty_initial_history(&history)?" in credential_provider
+        and "return run_readonly_journal(command);" in credential_provider
+        and credential_provider.index("return run_readonly_journal(command);")
+            < credential_provider.index('required_env("CLOUDFLARE_CONTROL_TOKEN")?')
         and "verify_recorded_initial_attempt(&history, &exact)?" in credential_provider
         and "initial_publication_authorized=false" in credential_provider
         and "initial_publication_authorized=false" in credential_provider

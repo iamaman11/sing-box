@@ -106,6 +106,16 @@ struct DeliveryWorkerMaterial {
 }
 
 pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), String> {
+    // The GitHub attempt journal is independent from Cloudflare provider
+    // credentials. An unchanged read-only history check must work before the
+    // workflow injects ANY Cloudflare control token.
+    if matches!(
+        &command,
+        CredentialDeliveryCommand::InitialPairJournalObserve { .. }
+            | CredentialDeliveryCommand::InitialPairJournalReadback { .. }
+    ) {
+        return run_readonly_journal(command);
+    }
     let control_token = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let desired = production.cloudflare.credential_plane.clone();
@@ -124,31 +134,9 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
         CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
             initial_pair_preflight(&control_token, &desired, generation, slot).await
         }
-        CredentialDeliveryCommand::InitialPairJournalObserve {
-            journal_history_path,
-        } => {
-            let history = fs::read_to_string(&journal_history_path)
-                .map_err(|err| format!("cannot read initial attempt journal history: {err}"))?;
-            require_empty_initial_history(&history)?;
-            println!("credential_initial_journal_empty=true");
-            println!("credential_journal_mutations=0");
-            println!("credential_provider_mutations=0");
-            Ok(())
-        }
-        CredentialDeliveryCommand::InitialPairJournalReadback {
-            journal_history_path,
-            exact_record_path,
-        } => {
-            let history = fs::read_to_string(journal_history_path)
-                .map_err(|err| format!("initial journal readback cannot open history: {err}"))?;
-            let exact = fs::read_to_string(exact_record_path).map_err(|err| {
-                format!("initial journal readback cannot open intended record: {err}")
-            })?;
-            verify_recorded_initial_attempt(&history, &exact)?;
-            println!("credential_initial_journal_exact_begin=true");
-            println!("credential_provider_mutations=0");
-            println!("initial_publication_authorized=false");
-            Ok(())
+        CredentialDeliveryCommand::InitialPairJournalObserve { .. }
+        | CredentialDeliveryCommand::InitialPairJournalReadback { .. } => {
+            unreachable!("read-only journal is dispatched before acquiring provider authority")
         }
         CredentialDeliveryCommand::InitialPairJournalPlan {
             generation,
@@ -207,6 +195,38 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             )
             .await
         }
+    }
+}
+
+fn run_readonly_journal(command: CredentialDeliveryCommand) -> Result<(), String> {
+    match command {
+        CredentialDeliveryCommand::InitialPairJournalObserve {
+            journal_history_path,
+        } => {
+            let history = fs::read_to_string(&journal_history_path)
+                .map_err(|err| format!("cannot read initial attempt journal history: {err}"))?;
+            require_empty_initial_history(&history)?;
+            println!("credential_initial_journal_empty=true");
+            println!("credential_journal_mutations=0");
+            println!("credential_provider_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairJournalReadback {
+            journal_history_path,
+            exact_record_path,
+        } => {
+            let history = fs::read_to_string(journal_history_path)
+                .map_err(|err| format!("initial journal readback cannot open history: {err}"))?;
+            let exact = fs::read_to_string(exact_record_path).map_err(|err| {
+                format!("initial journal readback cannot open intended record: {err}")
+            })?;
+            verify_recorded_initial_attempt(&history, &exact)?;
+            println!("credential_initial_journal_exact_begin=true");
+            println!("credential_provider_mutations=0");
+            println!("initial_publication_authorized=false");
+            Ok(())
+        }
+        _ => Err("read-only GitHub journal handler refuses provider command".to_owned()),
     }
 }
 
