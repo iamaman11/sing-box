@@ -559,6 +559,11 @@ def main() -> None:
     # One native owner serves first-use VM apply/verify over the existing
     # restricted AgentService. Local Line2 results must stay per endpoint;
     # aggregate VM-local success must never be called external acceptance.
+    # Load these alongside the first-use assertion; later all-workspace
+    # checks also load the same canonical proto and owner files.
+    agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
+    credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
+    vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     first_use_journal = Path(
         "edge-platform/crates/edge-orchestrator/src/credential_initial_journal.rs"
     ).read_text(encoding="utf-8")
