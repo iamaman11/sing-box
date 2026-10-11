@@ -4346,6 +4346,114 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn initial_policy_test_bundle() -> ApplyBundleRequest {
+        let mut request = ApplyBundleRequest {
+            stack_files: vec![
+                BundleFile {
+                    relative_path: "docker-compose.yml".to_owned(),
+                    content: b"services: {}\n".to_vec(),
+                    executable: false,
+                    sensitive: false,
+                },
+                BundleFile {
+                    relative_path: RUNTIME_POLICY_FILE.to_owned(),
+                    content: b"PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n"
+                        .to_vec(),
+                    executable: false,
+                    sensitive: false,
+                },
+                BundleFile {
+                    relative_path: IMAGE_ENV_FILE.to_owned(),
+                    content: concat!(
+                        "EDGE_GATEWAY_IMAGE=ghcr.io/iamaman11/vultr-edge-gateway@sha256:",
+                        "1111111111111111111111111111111111111111111111111111111111111111\n",
+                        "EDGE_WARP_EGRESS_IMAGE=ghcr.io/iamaman11/vultr-warp-egress@sha256:",
+                        "2222222222222222222222222222222222222222222222222222222222222222\n",
+                        "CLOUDFLARE_MESH_IMAGE=docker.io/cloudflare/mesh@sha256:",
+                        "3333333333333333333333333333333333333333333333333333333333333333\n",
+                    )
+                    .as_bytes()
+                    .to_vec(),
+                    executable: false,
+                    sensitive: false,
+                },
+            ],
+            host_files: Vec::new(),
+            deployment_summary: None,
+            agent_env_file: None,
+            prune_existing: true,
+            bundle_id: Some("fresh-n1".to_owned()),
+            bundle_digest: None,
+        };
+        request.bundle_digest = Some(canonical_apply_bundle_digest(&request).unwrap());
+        request
+    }
+
+    #[test]
+    fn fresh_policy_only_bundle_stages_without_credentials_and_cannot_replay() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let stack = root.join("stack");
+        let request = initial_policy_test_bundle();
+
+        validate_initial_policy_bundle_request(&request).unwrap();
+        require_empty_vm_initial_bundle_host(&stack).unwrap();
+        let staged = apply_digest_bound_bundle(&stack, request.clone(), true).unwrap();
+        assert_eq!(staged.active_bundle_id.as_deref(), Some("fresh-n1"));
+        assert!(stack.join("docker-compose.yml").is_file());
+        assert!(stack.join(RUNTIME_POLICY_FILE).is_file());
+        assert!(stack.join(IMAGE_ENV_FILE).is_file());
+        assert!(!stack.join(RUNTIME_ENV_FILE).exists());
+        assert!(!root.join(PREVIOUS_STACK_DIR).exists());
+        require_initial_vm_policy_bundle_ready(&stack).unwrap();
+
+        assert!(apply_digest_bound_bundle(&stack, request, true)
+            .unwrap_err()
+            .contains("existing application stack content"));
+        assert!(observe_vm_credential_state(&stack).unwrap().is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fresh_policy_only_bundle_rejects_secrets_incomplete_digest_and_partial_host() {
+        let mut request = initial_policy_test_bundle();
+        request.stack_files.retain(|file| file.relative_path != IMAGE_ENV_FILE);
+        assert!(validate_initial_policy_bundle_request(&request).is_err());
+
+        let mut request = initial_policy_test_bundle();
+        request.stack_files.push(BundleFile {
+            relative_path: RUNTIME_ENV_FILE.to_owned(),
+            content: b"PROXY_PASSWORD=forbidden\n".to_vec(),
+            executable: false,
+            sensitive: true,
+        });
+        assert!(validate_initial_policy_bundle_request(&request)
+            .unwrap_err()
+            .contains("must not contain credentials"));
+
+        let mut request = initial_policy_test_bundle();
+        request.stack_files.push(request.stack_files[0].clone());
+        assert!(validate_initial_policy_bundle_request(&request)
+            .unwrap_err()
+            .contains("duplicate"));
+
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&root).unwrap();
+        let staged = root.join(STAGING_STACK_DIR);
+        fs::create_dir_all(&staged).unwrap();
+        assert!(require_empty_vm_initial_bundle_host(&stack).is_err());
+        assert!(apply_digest_bound_bundle(
+            &stack,
+            initial_policy_test_bundle(),
+            true
+        )
+        .is_err());
+        assert!(!stack.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn initial_vm_enrollment_refuses_unobservable_docker_state() {
         assert!(
