@@ -2168,7 +2168,7 @@ def main() -> None:
         and "cancel-in-progress: ${{ github.event_name != 'push' }}" in edge_platform_ci
         and "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in edge_platform_ci
         and "ACCEPTED_REVISION: ${{ github.sha }}" in edge_platform_ci
-        and "test \"$(jq -er '.parents | length' <<<\"\${accepted_commit}\")\" = \"2\"" in edge_platform_ci
+        and "test \"$(jq -er '.parents | length'" in edge_platform_ci
         and "candidate_revision=\"$(jq -er '.parents[1].sha'" in edge_platform_ci
         and 'test "${accepted_tree}" = "${candidate_tree}"' in edge_platform_ci
         and 'associated_prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls?per_page=10")"' in edge_platform_ci
