@@ -64,6 +64,11 @@ pub(crate) fn transition(
         }
         CredentialTransitionAction::Promote => {
             require_candidate_without_previous(&state)?;
+            let candidate = state
+                .candidate
+                .as_ref()
+                .ok_or_else(|| "Windows v2 candidate is absent".to_owned())?;
+            verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
             let next = store.promote_candidate()?;
             let active = next.active.as_ref().ok_or_else(|| {
                 "Windows v2 active credential is absent after promotion".to_owned()
@@ -196,6 +201,17 @@ fn require_candidate_without_previous(state: &LocalCredentialState) -> Result<()
         return Err("Windows v2 candidate is absent".to_owned());
     }
     Ok(())
+}
+
+fn verify_exact_candidate_runtime(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    store: &CredentialStore,
+    candidate: &edge_shared_types::LocalCredentialBundleRef,
+) -> Result<(), String> {
+    verify_exact_active_runtime(install_root, activation, store, candidate).map_err(|_| {
+        "Windows candidate promotion refused: rendered state or config differs from exact Worker-v2 candidate generation".to_owned()
+    })
 }
 
 fn verify_exact_active_runtime(
