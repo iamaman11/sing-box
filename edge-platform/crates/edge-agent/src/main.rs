@@ -1618,7 +1618,9 @@ fn validate_unpromoted_vm_initial_state(
     generation: u64,
 ) -> Result<(), String> {
     if generation == 0 || state.active.is_some() || state.previous.is_some() {
-        return Err("initial VM functional proof refuses active/previous or zero generation".to_owned());
+        return Err(
+            "initial VM functional proof refuses active/previous or zero generation".to_owned(),
+        );
     }
     let candidate = state.candidate.as_ref().ok_or_else(|| {
         "initial VM functional proof requires exactly one staged candidate".to_owned()
@@ -1638,9 +1640,10 @@ async fn verify_initial_vm_credential_functional(
         "initial VM functional proof requires a persisted candidate state".to_owned()
     })?;
     validate_unpromoted_vm_initial_state(&state, generation)?;
-    let candidate = state.candidate.as_ref().ok_or_else(|| {
-        "initial VM functional proof candidate disappeared".to_owned()
-    })?;
+    let candidate = state
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "initial VM functional proof candidate disappeared".to_owned())?;
     let bundle = store.read_bundle(candidate)?;
     verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
     let docker = observe_docker().await?;
@@ -1648,19 +1651,21 @@ async fn verify_initial_vm_credential_functional(
         return Err("initial VM functional proof cannot observe Docker".to_owned());
     }
     let images = read_exact_image_environment(stack_dir)?;
-    let gateway_image = images.get(EDGE_GATEWAY_IMAGE_KEY).ok_or_else(|| {
-        "initial VM functional proof requires pinned gateway image".to_owned()
-    })?;
-    let warp_image = images.get(EDGE_WARP_EGRESS_IMAGE_KEY).ok_or_else(|| {
-        "initial VM functional proof requires pinned WARP image".to_owned()
-    })?;
+    let gateway_image = images
+        .get(EDGE_GATEWAY_IMAGE_KEY)
+        .ok_or_else(|| "initial VM functional proof requires pinned gateway image".to_owned())?;
+    let warp_image = images
+        .get(EDGE_WARP_EGRESS_IMAGE_KEY)
+        .ok_or_else(|| "initial VM functional proof requires pinned WARP image".to_owned())?;
     for (name, expected_image) in [
         ("vultr-warp-egress", warp_image),
         ("vultr-line1-gateway", gateway_image),
         ("vultr-line2-proxy", gateway_image),
     ] {
         if !docker.container_exact_image_ready(name, expected_image) {
-            return Err(format!("initial VM functional proof refuses stopped or non-pinned container {name}"));
+            return Err(format!(
+                "initial VM functional proof refuses stopped or non-pinned container {name}"
+            ));
         }
     }
     // Real authenticated 204 through each of six direct/WARP HTTP,
@@ -5078,7 +5083,8 @@ mod tests {
         let store = CredentialStore::new(
             vm_credential_store_root(&stack).unwrap(),
             CredentialProjectionKind::Vm,
-        ).unwrap();
+        )
+        .unwrap();
         let empty = LocalCredentialState::default();
         assert!(validate_unpromoted_vm_initial_state(&empty, 109).is_err());
         let bundle = vm_test_credential_bundle(109, CredentialDeliverySlot::A);
