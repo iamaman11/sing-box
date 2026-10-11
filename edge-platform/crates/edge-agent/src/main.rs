@@ -212,6 +212,18 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             print_credential_state_evidence(state.as_ref());
             Ok(())
         }
+        cli::LocalCommand::CredentialInitialApply { generation } => {
+            initial_apply_vm_credential(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_APPLY");
+            println!("credential_projection=VM");
+            println!("credential_generation={generation}");
+            println!("credential_initial_state=APPLIED_NOT_PROMOTED");
+            println!("credential_initial_authentication=UNPROVEN");
+            println!("runner_secret_access=false");
+            Ok(())
+        }
         cli::LocalCommand::CredentialStage { generation } => {
             let state = fetch_and_stage_vm_credential_candidate(&stack_dir, generation)
                 .await
@@ -1408,7 +1420,92 @@ fn vm_credential_access_identity_path(stack_dir: &Path) -> Result<PathBuf, Strin
         .join(ACCESS_IDENTITY_FILE_NAME))
 }
 
-async fn fetch_and_stage_vm_credential_candidate(
+async // Initial enrollment deliberately does not reuse ApplyCandidate/Promote. It may
+// start only on an empty, isolated VM. Any interrupted attempt leaves evidence
+// behind and refuses a replay rather than generating or applying replacements.
+fn require_empty_vm_initial_credential_host(stack_dir: &Path) -> Result<(), String> {
+    if observe_vm_credential_state(stack_dir)?.is_some()
+        || vm_credential_store_root(stack_dir)?.exists()
+    {
+        return Err("initial VM enrollment requires absent v2 store and cursor; refusing uncertain or repeated enrollment".to_owned());
+    }
+    if legacy_vm_runtime_secret_path(stack_dir)?.exists() {
+        return Err("initial VM enrollment refuses a legacy runtime credential file".to_owned());
+    }
+    for relative in [
+        RUNTIME_ENV_FILE,
+        "rendered/line1-gateway.json",
+        "rendered/line2-proxy.json",
+    ] {
+        if stack_dir.join(relative).exists() {
+            return Err(format!(
+                "initial VM enrollment refuses existing runtime artifact {relative}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_no_running_vm_application_containers() -> Result<(), String> {
+    let info = Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .map_err(|err| format!("initial VM enrollment cannot inspect Docker: {err}"))?;
+    if !info.status.success() {
+        return Err("initial VM enrollment refuses unknown Docker daemon state".to_owned());
+    }
+    for container in [
+        "vultr-warp-egress",
+        "vultr-line1-gateway",
+        "vultr-line2-proxy",
+    ] {
+        let observation = Command::new("docker")
+            .args(["container", "inspect", "--format", "{{.Id}}", container])
+            .output()
+            .map_err(|err| format!("initial VM Docker inspection failed: {err}"))?;
+        if observation.status.success() {
+            return Err(format!(
+                "initial VM enrollment refuses an existing application container: {container}"
+            ));
+        }
+        let error = String::from_utf8_lossy(&observation.stderr);
+        if !error.contains("No such object") && !error.contains("No such container") {
+            return Err(format!(
+                "initial VM enrollment cannot prove application container absent: {container}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Result<(), String> {
+    if generation == 0 {
+        return Err("initial VM enrollment requires a positive Worker generation".to_owned());
+    }
+    // Both guards execute before fetching a secret or writing host state.
+    require_empty_vm_initial_credential_host(stack_dir)?;
+    require_no_running_vm_application_containers()?;
+    let staged = fetch_and_stage_vm_credential_candidate(stack_dir, generation).await?;
+    if staged.active.is_some() || staged.previous.is_some() {
+        return Err("initial VM enrollment discovered nonempty active/previous state".to_owned());
+    }
+    let candidate = staged.candidate.as_ref().ok_or_else(|| {
+        "initial VM enrollment requires the staged Worker candidate".to_owned()
+    })?;
+    if candidate.generation != generation {
+        return Err("initial VM enrollment candidate generation mismatch".to_owned());
+    }
+    let store = open_vm_credential_store(stack_dir)?;
+    let bundle = store.read_bundle(candidate)?;
+    let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+    // Bootstrap forces fresh container recreation; this still does not prove
+    // authenticated Line1/2 connections. Never promote the candidate here.
+    apply_vm_credential_runtime(stack_dir, &secrets).await?;
+    verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
+    Ok(())
+}
+
+fn fetch_and_stage_vm_credential_candidate(
     stack_dir: &Path,
     generation: u64,
 ) -> Result<LocalCredentialState, String> {
