@@ -439,8 +439,8 @@ def main() -> None:
         and "INITIAL_SLOT" in credentials
         and "credentials initial-pair-preflight" in credentials
         and "initial_pair_provider_intent_sha256=" in credentials
-        and "grep -Eq" in credentials
-        and "[0-9a-f]{64}
+        and "grep -Eq '^initial_pair_provider_intent_sha256=[0-9a-f]{64}$'" in credentials
+        and "[0-9a-f]{64}[$]" not in credentials
         and "test" in credentials
         and "grep -Fxq 'credential_provider_mutations=0'" in credentials
         and "credentials initial-pair-publish" not in credentials
