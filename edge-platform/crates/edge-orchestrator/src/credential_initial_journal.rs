@@ -168,6 +168,35 @@ pub(crate) fn verify_recorded_initial_attempt(
     Ok(())
 }
 
+/// Exact one-shot reservation identity, checked against immutable ReleaseSet
+/// and BOTH independently trusted host attestations. A verified GitHub comment
+/// is a necessary durable barrier but is *not* proof of host job provenance.
+pub(crate) fn verify_expected_initial_attempt(
+    history: &str,
+    exact_record: &str,
+    expected: &InitialPairJournalPlan,
+) -> Result<(), String> {
+    validate_request(expected)?;
+    verify_recorded_initial_attempt(history, exact_record)?;
+    let (_, body) = exact_record
+        .split_once('\n')
+        .ok_or_else(|| "expected initial attempt has no record body".to_owned())?;
+    let record: AttemptRecord = serde_json::from_str(body)
+        .map_err(|_| "expected initial attempt has malformed body".to_owned())?;
+    if record.generation != expected.generation
+        || record.slot != expected.slot
+        || record.provider_intent_sha256 != expected.provider_intent_sha256
+        || record.vm_attestation_sha256 != expected.vm_attestation_sha256
+        || record.windows_attestation_sha256 != expected.windows_attestation_sha256
+        || record.release_source_revision != expected.release_source_revision
+        || record.release_set_sha256 != expected.release_set_sha256
+        || record.github_run_id != expected.github_run_id
+    {
+        return Err("durable initial BEGIN does not equal current host/provider/release intent".to_owned());
+    }
+    Ok(())
+}
+
 /// Return a non-secret GitHub issue comment body for a caller that has already
 /// independently established BOTH owner-origin host attestations. Merely
 /// passing hex digests here must never be treated as host authentication.
@@ -270,6 +299,28 @@ mod tests {
         let changed = record.replace("\"generation\":101", "\"generation\":102");
         assert!(verify_recorded_initial_attempt(&once, &changed).is_err());
         assert!(verify_recorded_initial_attempt(&once, "BEGIN").is_err());
+    }
+
+    #[test]
+    fn readback_is_fenced_to_exact_run_release_provider_and_both_host_evidences() {
+        let intended = request();
+        let record = plan_initial_pair_reservation(&intended, "[]").unwrap();
+        let history = serde_json::json!([{"body": record}]).to_string();
+        verify_expected_initial_attempt(&history, &record, &intended).unwrap();
+        let changed = [
+            InitialPairJournalPlan { generation: 102, ..request() },
+            InitialPairJournalPlan { slot: "B".to_owned(), ..request() },
+            InitialPairJournalPlan { provider_intent_sha256: "f".repeat(64), ..request() },
+            InitialPairJournalPlan { vm_attestation_sha256: "f".repeat(64), ..request() },
+            InitialPairJournalPlan { windows_attestation_sha256: "f".repeat(64), ..request() },
+            InitialPairJournalPlan { release_source_revision: "f".repeat(64), ..request() },
+            InitialPairJournalPlan { release_set_sha256: "f".repeat(64), ..request() },
+            InitialPairJournalPlan { github_run_id: 1012, ..request() },
+        ];
+        for mismatch in changed {
+            assert!(verify_expected_initial_attempt(&history, &record, &mismatch).is_err());
+        }
+        assert!(verify_expected_initial_attempt("[]", &record, &request()).is_err());
     }
 
     #[test]
