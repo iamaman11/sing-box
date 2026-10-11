@@ -8,6 +8,7 @@ use edge_orchestrator::credential_snapshot::{
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialIsolationProbe,
+    CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
     CredentialProjectionKind, CredentialRotationClass,
 };
 use prost::Message;
