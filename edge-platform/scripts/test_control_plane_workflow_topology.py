@@ -446,6 +446,23 @@ def main() -> None:
         and "validate_initial_pair_provider_observation(" in credential_provider,
         "hosted initial provider gate must stay read-only and fail closed until both host attestations",
     )
+    vm_initial_functional = vm_agent_runtime.split(
+        "async fn verify_initial_vm_credential_functional(", 1
+    )[1].split("async fn initial_apply_vm_credential(", 1)[0]
+    require(
+        "CredentialInitialVerify { generation: u64 }" in vm_agent_cli
+        and "verify_initial_vm_credential_functional(&stack_dir, generation)" in vm_agent_runtime
+        and "validate_unpromoted_vm_initial_state(&state, generation)?" in vm_initial_functional
+        and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in vm_initial_functional
+        and "docker.container_running(name)" in vm_initial_functional
+        and "line2_quality::measure(stack_dir, read_typed_runtime_environment)?"
+        in vm_initial_functional
+        and "promote_candidate" not in vm_initial_functional
+        and "line2_authenticated_endpoints=6" in vm_agent_runtime
+        and "line1_authenticated_endpoints=UNPROVEN" in vm_agent_runtime
+        and "credential_pair_committed=false" in vm_agent_runtime,
+        "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
+    )
     initial_vm_apply = vm_agent_runtime.split("async fn initial_apply_vm_credential(", 1)[1].split(
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]
