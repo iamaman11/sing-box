@@ -150,6 +150,7 @@ pub async fn run_delivery(
             windows_attestation_sha256,
             run_id,
             journal_history_path,
+            record_output_path,
         } => {
             let observed = observe(&control_token, &desired).await?;
             let expected =
@@ -170,11 +171,15 @@ pub async fn run_delivery(
                 github_run_id: run_id,
             };
             let result = plan_initial_pair_reservation(&request, &history)?;
-            // This output is non-secret and is NOT a journal write or a
-            // Cloudflare mutation. A trusted job must still attest origins,
-            // persist BEGIN once, read it back, then apply the provider gate.
+            // Atomic create-new, no replacement: a retry cannot silently
+            // alter the exact record later read back from GitHub.
+            write_new_initial_record(&record_output_path, &result)?;
+            // This is only a local non-secret file. GitHub ISSUE #26 BEGIN
+            // is not durable until the authorized workflow POSTs once and
+            // independently verifies the full comment history.
             println!("operation=CREDENTIAL_INITIAL_PAIR_JOURNAL_PLAN");
-            println!("credential_attempt_record={result}");
+            println!("credential_attempt_record_sha256={}", sha256_hex(result.as_bytes()));
+            println!("credential_record_file_created=true");
             println!("credential_provider_mutations=0");
             println!("credential_journal_mutations=0");
             println!("initial_publication_authorized=false");
@@ -230,6 +235,26 @@ pub async fn run_delivery(
             .await
         }
     }
+}
+
+fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
+    // A BEGIN reservation is a non-secret exact payload for ONE authorized
+    // GitHub comment, not a second credential authority.
+    if record.len() > 4096 || !record.starts_with("<!-- sing-box-credential-initial-attempt/v1 -->\\n") {
+        return Err("initial BEGIN local record is malformed or too large".to_owned());
+    }
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)
+        .map_err(|err| format!("cannot create one-shot initial BEGIN file: {err}"))?;
+    file.write_all(record.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|err| format!("initial BEGIN record was not durably written: {err}"))
 }
 
 fn run_readonly_journal(command: CredentialDeliveryCommand) -> Result<(), String> {

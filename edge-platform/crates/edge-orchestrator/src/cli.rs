@@ -225,6 +225,7 @@ pub(crate) enum CredentialDeliveryCommand {
         windows_attestation_sha256: String,
         run_id: u64,
         journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
     },
     // Single-use initial provider mutation. NOT routed by GitHub until BOTH
     // disposable host job origins and immutable artifacts are independently
