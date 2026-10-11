@@ -3,11 +3,12 @@ use crate::cli::{
 };
 use crate::credential_initial_journal::{
     InitialPairJournalPlan, plan_initial_pair_reservation, require_empty_initial_history,
-    verify_recorded_initial_attempt,
+    verify_expected_initial_attempt, verify_recorded_initial_attempt,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
-    RotateCredentialSnapshotRequest, generate_rotation_credential_snapshot,
+    FreshCredentialSnapshotRequest, RotateCredentialSnapshotRequest,
+    generate_fresh_credential_snapshot, generate_rotation_credential_snapshot,
 };
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
@@ -178,6 +179,36 @@ pub async fn run_delivery(
             println!("credential_journal_mutations=0");
             println!("initial_publication_authorized=false");
             Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairPublish {
+            generation,
+            slot,
+            provider_intent_sha256,
+            vm_attestation_sha256,
+            windows_attestation_sha256,
+            run_id,
+            journal_history_path,
+            exact_record_path,
+        } => {
+            initial_pair_publish(
+                &control_token,
+                &desired,
+                release_context,
+                InitialPairJournalPlan {
+                    generation,
+                    slot: slot.as_str().to_owned(),
+                    provider_intent_sha256,
+                    vm_attestation_sha256,
+                    windows_attestation_sha256,
+                    release_source_revision: release_context.release().source_revision.clone(),
+                    release_set_sha256: release_context.release().release_set_sha256.clone(),
+                    github_run_id: run_id,
+                },
+                slot,
+                &journal_history_path,
+                &exact_record_path,
+            )
+            .await
         }
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await
@@ -395,6 +426,144 @@ async fn initial_pair_preflight(
     Ok(())
 }
 
+/// This is the provider half of ONE first-use attempt, deliberately absent
+/// from the live GitHub command router until trusted disposable VM/Windows
+/// host jobs and their provenance/readback are integrated in the SAME PR.
+async fn initial_pair_publish(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    release_context: &edge_orchestrator::OrchestrationContext,
+    request: InitialPairJournalPlan,
+    slot: CredentialDeliverySlotArg,
+    journal_history_path: &Path,
+    exact_record_path: &Path,
+) -> Result<(), String> {
+    // Never allow a local shell, a re-run, or a different repository/actor
+    // to turn this source capability into an independent issuer.
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_ACTOR_ID", "44100369"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_JOB", "initial_pair_publish"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("initial pair publisher refuses untrusted {key}"));
+        }
+    }
+    if env::var("GITHUB_RUN_ID").ok().as_deref()
+        != Some(request.github_run_id.to_string().as_str())
+        || env::var("GITHUB_SHA").ok().as_deref()
+            != Some(release_context.release().source_revision.as_str())
+    {
+        return Err("initial pair publisher refuses a mismatched GitHub run or source revision".to_owned());
+    }
+
+    // A complete GitHub BEGIN must be durably persisted and independently
+    // read back before either Worker is patched. A supplied digest is never
+    // a substitute for this exact readback.
+    let history = fs::read_to_string(journal_history_path)
+        .map_err(|err| format!("initial publish cannot read GitHub history: {err}"))?;
+    let exact_record = fs::read_to_string(exact_record_path)
+        .map_err(|err| format!("initial publish cannot read persisted BEGIN: {err}"))?;
+    verify_expected_initial_attempt(&history, &exact_record, &request)?;
+    if request.release_source_revision != release_context.release().source_revision
+        || request.release_set_sha256 != release_context.release().release_set_sha256
+    {
+        return Err("initial publish refuses non-exact immutable ReleaseSet authority".to_owned());
+    }
+
+    let before = observe(control_token, desired).await?;
+    let current_intent =
+        initial_pair_provider_intent_sha256(desired, &before, request.generation, slot)?;
+    if current_intent != request.provider_intent_sha256 {
+        return Err("initial publish refuses changed Worker version/Access baseline".to_owned());
+    }
+    let previous_version = |projection: &str| -> Result<String, String> {
+        let observed = projection_observation(&before, projection)?;
+        observed.worker_latest_version_id.clone().ok_or_else(|| {
+            format!("{projection} has no expected initial version")
+        })
+    };
+    let vm_previous = previous_version("vm")?;
+    let windows_previous = previous_version("windows")?;
+
+    // Only this separate Cloudflare token can mutate Worker versions.
+    let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+    if rotation_identity.status != "active"
+        || rotation_identity.id == before.control_token_identity.id
+    {
+        return Err("initial publish requires distinct active least-privilege mutation token".to_owned());
+    }
+    let delivery_slot = match slot {
+        CredentialDeliverySlotArg::A => CredentialDeliverySlot::A,
+        CredentialDeliverySlotArg::B => CredentialDeliverySlot::B,
+    };
+    let snapshot = generate_fresh_credential_snapshot(FreshCredentialSnapshotRequest {
+        delivery_generation: request.generation,
+        slot: delivery_slot,
+        tunnel_auth_generation: request.generation,
+        reality_identity_generation: request.generation,
+        line2_proxy_generation: request.generation,
+    })?;
+    let slot_name = match delivery_slot {
+        CredentialDeliverySlot::A => SLOT_A,
+        CredentialDeliverySlot::B => SLOT_B,
+        CredentialDeliverySlot::Unspecified => unreachable!("validated first-use slot"),
+    };
+    let vm = projection_desired(desired, "vm")?;
+    let windows = projection_desired(desired, "windows")?;
+    let vm_secret = hex_encode(&snapshot.vm.encode_to_vec());
+    let windows_secret = hex_encode(&snapshot.windows.encode_to_vec());
+
+    // Deliberately sequential: cross-Worker atomicity does not exist.
+    // A failed/unknown first PATCH or deployment aborts the transaction.
+    // New secrets are generated exactly once and never regenerated on retry.
+    publish_rotation_slot(
+        control_token, &rotation_token, desired, &vm, slot_name, &vm_secret,
+        Some(&vm_previous),
+    ).await?;
+    let after_vm = observe(control_token, desired).await?;
+    if projection_observation(&after_vm, "windows")?.worker_latest_version_id.as_deref()
+        != Some(windows_previous.as_str())
+        || projection_observation(&after_vm, "vm")?.worker_latest_version_id.as_deref()
+            == Some(vm_previous.as_str())
+    {
+        return Err("initial paired publish observed an unexpected intermediate Worker version".to_owned());
+    }
+    publish_rotation_slot(
+        control_token, &rotation_token, desired, &windows, slot_name,
+        &windows_secret, Some(&windows_previous),
+    ).await?;
+    let after = observe(control_token, desired).await?;
+    for (projection, previous) in [
+        (&vm, vm_previous.as_str()),
+        (&windows, windows_previous.as_str()),
+    ] {
+        if projection_delivery_state(desired, projection, &after)?
+            != ProjectionDeliveryState::FixedAb
+            || projection_observation(&after, &projection.projection)?
+                .worker_latest_version_id.as_deref() == Some(previous)
+        {
+            return Err(format!(
+                "{} initial publish does not have exact newly active Worker version",
+                projection.projection
+            ));
+        }
+    }
+    println!("credential_initial_pair_provider_publish=PASS");
+    println!("credential_generation={}", request.generation);
+    println!("credential_slot={}", slot.as_str());
+    println!("paired_projection_count=2");
+    println!("credential_initial_begin_record=EXACT_READBACK");
+    println!("credential_initial_consumer_authentication=UNPROVEN");
+    println!("credential_initial_external_line1_4_of_4=UNPROVEN");
+    println!("credential_initial_external_line2_6_of_6=UNPROVEN");
+    Ok(())
+}
+
 async fn rotate_application_publish(
     control_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
@@ -470,6 +639,7 @@ async fn rotate_application_publish(
         &vm,
         slot_name,
         &vm_secret,
+        None,
     )
     .await?;
     publish_rotation_slot(
@@ -479,6 +649,7 @@ async fn rotate_application_publish(
         &windows,
         slot_name,
         &windows_secret,
+        None,
     )
     .await?;
 
@@ -503,6 +674,7 @@ async fn publish_rotation_slot(
     projection: &ProjectionDesired,
     slot_name: &str,
     secret_text: &str,
+    expected_latest_version: Option<&str>,
 ) -> Result<(), String> {
     let before = observe(control_token, desired).await?;
     let before_projection = projection_observation(&before, &projection.projection)?;
@@ -510,6 +682,15 @@ async fn publish_rotation_slot(
     {
         return Err(format!(
             "{} credential Worker drifted before inactive-slot publication",
+            projection.projection
+        ));
+    }
+    if expected_latest_version.is_some_and(|version| {
+        before_projection.worker_latest_version_id.as_deref() != Some(version)
+            || before_projection.worker_active_version_ids.as_slice() != [version]
+    }) {
+        return Err(format!(
+            "{} initial publication refuses stale Worker baseline before PATCH",
             projection.projection
         ));
     }
@@ -550,6 +731,12 @@ async fn publish_rotation_slot(
         }
     };
 
+    if before_projection.worker_latest_version_id.as_deref() == Some(version_id.as_str()) {
+        return Err(format!(
+            "{} provider returned unchanged version after secret PATCH",
+            projection.projection
+        ));
+    }
     let deploy_once = cloudflare::deploy_worker_version(
         rotation_token,
         &desired.target_account_id,
