@@ -126,9 +126,14 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-admit", "101"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-stage", "101"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-apply", "101"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-agent", "local", "credential-initial-apply", "101"]).is_ok()
+        );
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-apply"]).is_err());
-        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-promote", "101"]).is_err());
+        assert!(
+            Cli::try_parse_from(["edge-agent", "local", "credential-initial-promote", "101"])
+                .is_err()
+        );
         assert!(
             Cli::try_parse_from([
                 "edge-agent",
