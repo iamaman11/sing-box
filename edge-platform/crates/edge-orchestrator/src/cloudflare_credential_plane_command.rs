@@ -1994,7 +1994,12 @@ mod tests {
         let d = desired();
         let mut state = observation(&d);
         make_terminal(&mut state, "vm");
-        let original = state.projections.iter().find(|p| p.projection == "vm").unwrap().clone();
+        let original = state
+            .projections
+            .iter()
+            .find(|p| p.projection == "vm")
+            .unwrap()
+            .clone();
         let mut pending = original.clone();
         pending.worker_latest_version_id = Some("fresh-version".to_owned());
         assert!(verify_exact_pending_worker_version(&original, &pending, "fresh-version").is_ok());
@@ -2024,7 +2029,12 @@ mod tests {
         let d = desired();
         let mut state = observation(&d);
         make_terminal(&mut state, "windows");
-        let mut active = state.projections.iter().find(|p| p.projection == "windows").unwrap().clone();
+        let mut active = state
+            .projections
+            .iter()
+            .find(|p| p.projection == "windows")
+            .unwrap()
+            .clone();
         active.worker_latest_version_id = Some("fresh-version".to_owned());
         active.worker_active_version_ids = vec!["fresh-version".to_owned()];
         assert!(verify_exact_active_worker_version(&active, "fresh-version").is_ok());
