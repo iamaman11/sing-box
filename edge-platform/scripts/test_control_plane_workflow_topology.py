@@ -1623,7 +1623,7 @@ def main() -> None:
         in substrate_verify
         and "acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1])"
         in substrate_verify
-        and "disposable_ssh_failure_forensics=" in substrate_verify
+        and substrate_verify.count("disposable_ssh_failure_forensics=") == 2
         and "is_disposable_ssh_forensic_target(environment: &str, machine_id: &str)"
         in vultr_lifecycle_command
         and '("lifecycle-acceptance", "lifecycle-acceptance-1")'
