@@ -35,9 +35,9 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, CredentialStateObservation,
+    BundleFile, ContainerRuntimeObservation, CredentialDeliverySlot, CredentialProjectionKind, CredentialStateObservation,
     CredentialTransitionAction, Empty, FileCategory, FilePresence, Ipv4NetworkObservation,
-    LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
+    InitialCredentialHostProbeRequest, InitialCredentialHostProbeResponse, LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
     MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
     ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
     ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
@@ -234,26 +234,17 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             expected_agent_sha256,
             run_id,
         } => {
-            // The candidate agent must be the exact immutable binary named
-            // by the trusted ReleaseSet resolver, not just an arbitrary VM
-            // process presented alongside a caller-supplied release digest.
-            verify_initial_agent_binary(&expected_agent_sha256).map_err(AgentError::Command)?;
-            verify_initial_vm_dummy_probe(&stack_dir)
-                .await
-                .map_err(AgentError::Command)?;
             let slot = parse_first_use_slot(&slot).map_err(AgentError::Command)?;
-            let machine = fs::read_to_string("/etc/machine-id").map_err(|err| {
-                AgentError::Command(format!("VM machine identity unreadable: {err}"))
-            })?;
-            let digest = edge_shared_types::first_use_host_attestation_sha256(
-                CredentialProjectionKind::Vm,
+            let digest = attest_initial_vm_host(
+                &stack_dir,
                 generation,
                 slot,
                 &provider_intent_sha256,
                 &release_set_sha256,
-                &machine,
+                &expected_agent_sha256,
                 run_id,
             )
+            .await
             .map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_INITIAL_ATTEST");
             println!("credential_projection=VM");
@@ -673,6 +664,32 @@ fn verify_initial_agent_binary(expected_sha256: &str) -> Result<(), String> {
     Ok(())
 }
 
+async fn attest_initial_vm_host(
+    stack_dir: &Path,
+    generation: u64,
+    slot: CredentialDeliverySlot,
+    provider_intent_sha256: &str,
+    release_set_sha256: &str,
+    expected_agent_sha256: &str,
+    run_id: u64,
+) -> Result<String, String> {
+    // The same trusted native owner backs local and restricted-RPC proofs.
+    // Binary SHA is checked against /proc/self/exe, never a replaceable path.
+    verify_initial_agent_binary(expected_agent_sha256)?;
+    verify_initial_vm_dummy_probe(stack_dir).await?;
+    let machine = fs::read_to_string("/etc/machine-id")
+        .map_err(|err| format!("VM machine identity unreadable: {err}"))?;
+    edge_shared_types::first_use_host_attestation_sha256(
+        CredentialProjectionKind::Vm,
+        generation,
+        slot,
+        provider_intent_sha256,
+        release_set_sha256,
+        &machine,
+        run_id,
+    )
+}
+
 fn parse_first_use_slot(value: &str) -> Result<edge_shared_types::CredentialDeliverySlot, String> {
     match value {
         "a" => Ok(edge_shared_types::CredentialDeliverySlot::A),
@@ -762,6 +779,39 @@ impl AgentService for AgentServerImpl {
             .await
             .map_err(|err| Status::internal(format!("IPv4 network observation failed: {err}")))?;
         Ok(Response::new(observation))
+    }
+
+    async fn verify_initial_credential_host(
+        &self,
+        request: Request<InitialCredentialHostProbeRequest>,
+    ) -> Result<Response<InitialCredentialHostProbeResponse>, Status> {
+        let request = request.into_inner();
+        let slot = CredentialDeliverySlot::try_from(request.slot)
+            .map_err(|_| Status::invalid_argument("unknown initial credential slot"))?;
+        if !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B) {
+            return Err(Status::invalid_argument("initial credential slot must be A or B"));
+        }
+        let digest = attest_initial_vm_host(
+            &self.stack_dir,
+            request.generation,
+            slot,
+            &request.provider_intent_sha256,
+            &request.release_set_sha256,
+            &request.expected_agent_sha256,
+            request.github_run_id,
+        )
+        .await
+        .map_err(Status::failed_precondition)?;
+        Ok(Response::new(InitialCredentialHostProbeResponse {
+            attestation_sha256: digest,
+            github_run_id: request.github_run_id,
+            agent_sha256: request.expected_agent_sha256,
+            projection: CredentialProjectionKind::Vm as i32,
+            generation: request.generation,
+            slot: slot as i32,
+            exact_dummy_ab: true,
+            empty_host: true,
+        }))
     }
 
     async fn bootstrap_runtime(

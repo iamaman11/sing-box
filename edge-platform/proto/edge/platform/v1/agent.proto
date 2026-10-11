@@ -22,6 +22,7 @@ service AgentService {
   rpc ConvergeMeshRuntime(MeshRuntimeConvergeRequest) returns (MeshRuntimeState);
   rpc VerifyMeshRuntime(Empty) returns (MeshRuntimeState);
   rpc CleanupMeshRuntime(Empty) returns (MeshRuntimeState);
+  rpc VerifyInitialCredentialHost(InitialCredentialHostProbeRequest) returns (InitialCredentialHostProbeResponse);
   rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);
   rpc GetCredentialState(Empty) returns (CredentialStateObservation);
 }

@@ -37,7 +37,10 @@ use edge_controller_core::vultr_lifecycle::{
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::{VultrFirewallRule, VultrInstance};
 use edge_shared_types::agent_service_client::AgentServiceClient;
-use edge_shared_types::{CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, Empty};
+use edge_shared_types::{
+    CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, CredentialDeliverySlot, CredentialProjectionKind,
+    Empty, InitialCredentialHostProbeRequest,
+};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -60,6 +63,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-apply" => run_substrate_apply(&args[1..]).await,
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
+        "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
         "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
@@ -620,6 +624,108 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
         "observation": observation,
         "plan": authorized.plan,
         "plan_authority": authorized.authority,
+    }))
+}
+
+/// Read-only guest proof through the *existing* restricted SSH tunnel and
+/// AgentService; fresh disposable ownership and exact ReleaseSet are mandatory.
+async fn run_initial_host_probe(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 8 {
+        return Err("usage: edge-orchestrator vultr-lifecycle initial-host-probe <disposable-vultr-spec> <machine-id> <generation> <slot:a|b> <provider-intent-sha256> <release-set-sha256> <github-run-id> <agent-artifact-path>".to_owned());
+    }
+    if args[0] != "infra/vultr/application-acceptance.json"
+        || args[1] != "application-acceptance-1"
+    {
+        return Err("initial host proof can only target the fixed disposable application-acceptance VM".to_owned());
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let generation: u64 = args[2].parse()
+        .map_err(|_| "initial host proof needs numeric generation".to_owned())?;
+    let slot = match args[3].as_str() {
+        "a" => CredentialDeliverySlot::A,
+        "b" => CredentialDeliverySlot::B,
+        _ => return Err("initial host proof requires slot a or b".to_owned()),
+    };
+    let provider_intent = &args[4];
+    let release_set = &args[5];
+    let github_run_id: u64 = args[6].parse()
+        .map_err(|_| "initial host proof needs GitHub run ID".to_owned())?;
+    let expected_agent = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_agent, Path::new(&args[7]))?;
+    if release_set != &context.release().release_set_sha256 {
+        return Err("initial host proof requires exact immutable ReleaseSet".to_owned());
+    }
+    if generation == 0 || github_run_id == 0 {
+        return Err("initial host proof requires positive generation and run ID".to_owned());
+    }
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[6].as_str()) {
+        return Err("initial host proof refuses caller-supplied foreign GitHub run ID".to_owned());
+    }
+    let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
+    let target_ip = observed.main_ip.as_deref()
+        .ok_or_else(|| "exact disposable VM has no observed IPv4".to_owned())?;
+    let key_path = operator_private_key_path_from_env()?;
+    let public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key_path, &public_key)?;
+    let remote_sha = strict_ssh_capture(
+        target_ip, &args[1], &key_path, &public_key,
+        "sha256sum /opt/vultr-edge-stack/bin/edge-agent | cut -d' ' -f1",
+    )?;
+    if remote_sha != expected_agent.sha256 {
+        return Err("initial host proof rejects unpinned installed agent binary".to_owned());
+    }
+    let (port, tunnel) =
+        start_strict_agent_tunnel(target_ip, &args[1], &key_path, &public_key)?;
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let mut client = AgentServiceClient::connect(endpoint).await
+        .map_err(|err| format!("initial VM restricted AgentService connection failed: {err}"))?;
+    let result = client.verify_initial_credential_host(Request::new(
+        InitialCredentialHostProbeRequest {
+            generation,
+            slot: slot as i32,
+            provider_intent_sha256: provider_intent.clone(),
+            release_set_sha256: release_set.clone(),
+            github_run_id,
+            expected_agent_sha256: expected_agent.sha256.clone(),
+        }
+    )).await
+        .map_err(|err| format!("initial VM native host attestation refused: {err}"))?
+        .into_inner();
+    drop(client);
+    drop(tunnel);
+    if result.projection != CredentialProjectionKind::Vm as i32
+        || result.generation != generation
+        || result.slot != slot as i32
+        || result.github_run_id != github_run_id
+        || result.agent_sha256 != expected_agent.sha256
+        || !result.exact_dummy_ab
+        || !result.empty_host
+        || result.attestation_sha256.len() != 64
+        || !result.attestation_sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("initial VM proof returned mismatched or incomplete typed guest identity".to_owned());
+    }
+    print_json_value(serde_json::json!({
+        "operation": "CREDENTIAL_INITIAL_HOST_PROBE",
+        "status": "PASS",
+        "machine_id": args[1],
+        "guest_ipv4": target_ip,
+        "agent_sha256": result.agent_sha256,
+        "release_set_sha256": release_set,
+        "provider_intent_sha256": provider_intent,
+        "github_run_id": github_run_id,
+        "credential_generation": generation,
+        "credential_slot": args[3],
+        "credential_projection": "VM",
+        "credential_host_attestation_sha256": result.attestation_sha256,
+        "credential_slot_A": "EXACT_DUMMY",
+        "credential_slot_B": "EXACT_DUMMY",
+        "credential_store_present": false,
+        "credential_runtime_mutations": 0,
+        "credential_provider_mutations": 0,
     }))
 }
 
