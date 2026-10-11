@@ -196,7 +196,7 @@ impl CredentialDeliverySlotArg {
     }
 }
 
-#[derive(Debug, Clone, Copy, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
     // Strictly read-only provider half of an initial paired transaction.

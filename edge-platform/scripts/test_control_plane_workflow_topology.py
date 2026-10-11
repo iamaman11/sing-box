@@ -450,6 +450,7 @@ def main() -> None:
         and 'credential-initial-pair-provider-intent/v1' in credential_provider
         and "credentials initial-pair-journal-observe" in credentials
         and "gh api --paginate" in credentials
+        and "issues: read" in credentials
         and "credential_initial_journal_empty=true" in credentials
         and "credential_journal_mutations=0" in credentials
         and "require_empty_initial_history(&history)?" in credential_provider
