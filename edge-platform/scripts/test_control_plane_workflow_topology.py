@@ -596,6 +596,12 @@ def main() -> None:
         and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
         "fresh VM first-use must bind root-only Worker Access identity to the single GitHub lease and reject mutation replay",
     )
+    require(
+        "group: credential-transaction-${{ github.repository_id }}" in vultr
+        and "group: credential-transaction-${{ github.repository_id }}" in credentials
+        and "cancel-in-progress: false" in vultr,
+        "Vultr and credential workflows must share one non-cancelling initial-pair transaction lock",
+    )
     # A substring-only test missed a real YAML defect: a consumer at column
     # zero is NOT a GitHub workflow job. Keep first-use owners under jobs:.
     require(
