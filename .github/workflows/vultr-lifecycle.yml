@@ -130,6 +130,10 @@ jobs:
           if operation != "destroy-apply" and destroy_digest:
               fail("destroy_digest is only valid for destroy-apply")
 
+          # This bounded mutation may never be replayed after an uncertain SSH ACK.
+          if operation == "initial-policy-stage" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+              fail("initial policy/Access installation replay forbidden; dispose or reconcile read-only")
+
           if operation == "acceptance":
               if spec_path != "infra/vultr/disposable-acceptance.json":
                   fail("acceptance uses only the canonical disposable spec")
@@ -268,6 +272,10 @@ jobs:
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          # Only the first-install operation can receive existing host Access
+          # identity, never a regular lifecycle/production/runner operation.
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ needs.authorize.outputs.operation == 'initial-policy-stage' && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID || '' }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ needs.authorize.outputs.operation == 'initial-policy-stage' && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET || '' }}
         run: |
           set -euo pipefail
           bin="${EDGE_LIFECYCLE_ORCHESTRATOR}"
@@ -387,12 +395,19 @@ jobs:
             initial-policy-stage)
               test "${spec}" = "infra/vultr/application-acceptance.json"
               test "${machine}" = "application-acceptance-1"
+              test -n "${EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID}"
+              test -n "${EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET}"
               application_spec="infra/application/disposable-acceptance.json"
               test -f "${application_spec}"
               agent_manifest="${RUNNER_TEMP}/initial-policy-edge-agent.json"
               "${bin}" application-lifecycle materialize \
                 "${application_spec}" "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}"
               chmod 0600 "${agent_manifest}"
+
+              # A staged VM must have one strictly bounded SSH owner lease.
+              # The same existing lease-release closes access on all outcomes.
+              acquire_host_access "${spec}" "${machine}" "initial-policy-stage"
+              trap 'release_host_access "${spec}" "${machine}" "initial-policy-stage-final" >/dev/null 2>&1 || true' EXIT
               run_lifecycle initial-policy-stage \
                 "${spec}" "${machine}" "${application_spec}" \
                 "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}" \
@@ -403,9 +418,13 @@ jobs:
                 .machine_id == "application-acceptance-1" and
                 .runtime_credentials == "ABSENT" and
                 .application_containers == "NOT_STARTED" and
+                .vm_access_identity_installed == true and
+                .vm_access_identity_owner == "ROOT_0600" and
                 .provider_credential_mutations == 0 and
                 (.bundle_digest | type == "string")
               ' "${RUNNER_TEMP}/result.json" >/dev/null
+              release_host_access "${spec}" "${machine}" "initial-policy-stage"
+              trap - EXIT
               ;;
             doctor)
               run_lifecycle doctor "${spec}" | tee "${RUNNER_TEMP}/result.json"
