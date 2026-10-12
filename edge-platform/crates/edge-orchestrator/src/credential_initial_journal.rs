@@ -41,6 +41,13 @@ struct IssueComment {
     body: String,
 }
 
+fn valid_git_revision(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -63,7 +70,6 @@ fn validate_request(request: &InitialPairJournalPlan) -> Result<(), String> {
         ("provider intent", &request.provider_intent_sha256),
         ("VM attestation", &request.vm_attestation_sha256),
         ("Windows attestation", &request.windows_attestation_sha256),
-        ("source revision", &request.release_source_revision),
         ("release set", &request.release_set_sha256),
     ] {
         if !valid_sha256(value) {
@@ -71,6 +77,9 @@ fn validate_request(request: &InitialPairJournalPlan) -> Result<(), String> {
                 "initial journal requires exact lowercase SHA-256 for {name}"
             ));
         }
+    }
+    if !valid_git_revision(&request.release_source_revision) {
+        return Err("initial journal requires exact lowercase 40-character Git source revision".to_owned());
     }
     if request.vm_attestation_sha256 == request.windows_attestation_sha256 {
         return Err("initial journal rejects identical VM and Windows attestations".to_owned());
@@ -314,7 +323,7 @@ mod tests {
             provider_intent_sha256: "a".repeat(64),
             vm_attestation_sha256: "b".repeat(64),
             windows_attestation_sha256: "c".repeat(64),
-            release_source_revision: "d".repeat(64),
+            release_source_revision: "d".repeat(40),
             release_set_sha256: "e".repeat(64),
             github_run_id: 1011,
         }
@@ -425,6 +434,19 @@ mod tests {
             assert!(verify_expected_initial_attempt(&history, &record, &mismatch).is_err());
         }
         assert!(verify_expected_initial_attempt("[]", &record, &request()).is_err());
+    }
+
+    #[test]
+    fn initial_journal_accepts_git_revision_not_sha256_and_rejects_malformed() {
+        let valid = request();
+        assert!(plan_initial_pair_reservation(&valid, "[]").is_ok());
+        assert_eq!(valid.release_source_revision.len(), 40);
+        for bad in ["d".repeat(64), "g".repeat(40), "D".repeat(40), "".to_owned()] {
+            assert!(plan_initial_pair_reservation(
+                &InitialPairJournalPlan { release_source_revision: bad, ..request() },
+                "[]"
+            ).is_err());
+        }
     }
 
     #[test]
