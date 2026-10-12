@@ -639,6 +639,7 @@ def main() -> None:
                 "initial_preflight", "initial_vm_attest",
                 "initial_windows_attest", "initial_pair_publish",
                 "initial_vm_runtime", "initial_windows_consume",
+                "initial_acceptance_verdict",
             )
         )
         and not re.search(r"(?m)^initial_(?:preflight|vm_attest|windows_attest|pair_publish|vm_runtime|windows_consume):", vultr),
@@ -718,6 +719,10 @@ def main() -> None:
         and 'INITIAL_VM_DNS_CREATE' in vultr
         and 'provider_mutation_replay_allowed == false' in vultr
         and 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' in initial_flow
+        and 'initial_acceptance_verdict:' in initial_flow
+        and 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' in initial_flow
+        and 'Refuse candidate-only success without external witness, reboot and cleanup' in initial_flow
+        and 'Final physical 10-endpoint acceptance verdict' in initial_flow
         and 'initial_publication_authorized=false' in initial_flow
         and 'windows_tun_mutations' in initial_flow
         and 'windows_dns_mutations' in initial_flow,
