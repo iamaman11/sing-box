@@ -596,6 +596,21 @@ def main() -> None:
         and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
         "fresh VM first-use must bind root-only Worker Access identity to the single GitHub lease and reject mutation replay",
     )
+    # A substring-only test missed a real YAML defect: a consumer at column
+    # zero is NOT a GitHub workflow job. Keep first-use owners under jobs:.
+    require(
+        all(
+            re.search(r"(?m)^  " + re.escape(name) + r":\s*$", vultr)
+            for name in (
+                "initial_preflight", "initial_vm_attest",
+                "initial_windows_attest", "initial_pair_publish",
+                "initial_vm_runtime", "initial_windows_consume",
+            )
+        )
+        and not re.search(r"(?m)^initial_(?:preflight|vm_attest|windows_attest|pair_publish|vm_runtime|windows_consume):", vultr),
+        "all first-use jobs must be children of the reusable workflow jobs mapping",
+    )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
