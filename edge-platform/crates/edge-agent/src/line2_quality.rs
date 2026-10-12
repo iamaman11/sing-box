@@ -188,7 +188,9 @@ fn negative_auth_result(protocol: &str, exit_code: Option<i32>, output: &str) ->
     match protocol {
         // CONNECT denial by the proxy, not a 407 emitted by the origin.
         "http" | "https" => {
-            matches!(exit_code, Some(22 | 56)) && connect == "407" && (response == "000" || response == "407")
+            matches!(exit_code, Some(22 | 56))
+                && connect == "407"
+                && (response == "000" || response == "407")
         }
         // libcurl SOCKS5 login/handshake denial, not a broken listener.
         "socks5h" => matches!(exit_code, Some(67 | 97)) && connect == "000" && response == "000",
