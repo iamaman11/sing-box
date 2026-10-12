@@ -661,10 +661,15 @@ def main() -> None:
         and 'First-use Windows controller unavailable or non-empty; refusing Worker publication' in initial_flow
         and 'credential_candidate_generation=$env:GENERATION' in initial_flow
         and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
-        and 'needs: [authorize, execute]' in initial_flow
+        and 'needs: [authorize, execute, initial_preflight]' in initial_flow
+        and 'needs: [authorize, initial_windows_attest]' in vultr
+        and "needs.initial_windows_attest.result == 'success'" in vultr
+        and "always() &&" in vultr
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
         and 'credential-initial-attest' in initial_flow
+        and 'name: Bind first-use Cloudflare version intent\n    needs: authorize' in vultr
+        and 'name: Attest isolated Windows host without TUN or DNS mutation\n    needs: [authorize, initial_preflight]' in vultr
         and 'vultr-lifecycle initial-host-probe' in initial_flow
         and 'credentials initial-pair-journal-plan' in initial_flow
         and 'credentials initial-pair-journal-readback' in initial_flow
