@@ -1189,6 +1189,9 @@ jobs:
           if ([string]$values['release_set_sha256'] -cne $env:RELEASE_SET) {
             throw 'Initial Windows credential candidate requires exact accepted ReleaseSet'
           }
+          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') {
+            throw 'FIRST_USE_WINDOWS_ISOLATION_CHANGED: owner lost ProxyOnly before credential stage; refuse mutation'
+          }
           $console = [string]$values['console_path']
           if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Initial Windows immutable console missing'
