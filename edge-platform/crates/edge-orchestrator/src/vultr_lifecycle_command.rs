@@ -2,12 +2,12 @@ use crate::application_acceptance_command::validate_disposable_acceptance;
 use crate::application_lifecycle_command::{
     acceptance_stage_initial_policy, load_application_desired,
 };
-use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::cloudflare_dns_lifecycle_command::{
     acceptance_create as create_disposable_dns,
     acceptance_require_clean_room as require_clean_disposable_dns,
     acceptance_verify_noop as verify_disposable_dns,
 };
+use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, capture_ssh_transport_stage_once, prepare_strict_bootstrap,
