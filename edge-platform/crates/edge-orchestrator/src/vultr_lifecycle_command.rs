@@ -822,6 +822,7 @@ fn require_six_exact_vm_local_line2(
             || observed.port != port
             || observed.successful_samples != 5
             || observed.failed_samples != 0
+            || !observed.negative_auth_rejected
         {
             return Err(format!(
                 "initial VM result refuses incomplete Line2 sample for {name}"
@@ -953,6 +954,7 @@ async fn run_initial_vm_runtime(
             "port": endpoint.port,
             "successful_samples": endpoint.successful_samples,
             "failed_samples": endpoint.failed_samples,
+            "negative_auth_rejected": endpoint.negative_auth_rejected,
         })).collect::<Vec<_>>(),
         "external_line1_4_of_4": "UNPROVEN",
         "external_line2_6_of_6": "UNPROVEN",
@@ -3879,10 +3881,14 @@ mod tests {
                 port: *port,
                 successful_samples: 5,
                 failed_samples: 0,
+                negative_auth_rejected: true,
             },
         )
         .collect();
         assert!(require_six_exact_vm_local_line2(&response).is_ok());
+        response.vm_local_line2[2].negative_auth_rejected = false;
+        assert!(require_six_exact_vm_local_line2(&response).is_err());
+        response.vm_local_line2[2].negative_auth_rejected = true;
         response.vm_local_line2[2].failed_samples = 1;
         assert!(require_six_exact_vm_local_line2(&response).is_err());
         response.vm_local_line2.pop();
