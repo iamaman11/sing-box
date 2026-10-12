@@ -599,6 +599,7 @@ def main() -> None:
     require(
         "group: credential-transaction-${{ github.repository_id }}" in vultr
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
+        and "group: credential-transaction-${{ github.repository_id }}" in application
         and "cancel-in-progress: false" in vultr,
         "Vultr and credential workflows must share one non-cancelling initial-pair transaction lock",
     )
