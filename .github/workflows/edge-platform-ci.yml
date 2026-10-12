@@ -290,7 +290,7 @@ jobs:
               "tunnel_domain": "stage2-acceptance.alegria.by",
               "acme_email": "admin@alegria.by",
               "reality_server_name": "www.microsoft.com",
-              "acme_provider": "https://acme-staging-v02.api.letsencrypt.org/directory",
+              "acme_provider": "letsencrypt",
           }
           assert application["runtime_policy"]["line2"]["proxy_cert_cn"] == "stage2-acceptance.alegria.by"
 
