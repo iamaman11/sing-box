@@ -645,6 +645,21 @@ def main() -> None:
         "all first-use jobs must be children of the reusable workflow jobs mapping",
     )
 
+    # The Windows controller protocol has ONE exact loopback endpoint.
+    # A differently hardcoded port passed substring topology checks but would
+    # fail only after irreversible paired Cloudflare publication.
+    console_default = WINDOWS_CONSOLE.read_text(encoding="utf-8")
+    canonical_endpoint = re.search(
+        r'const DEFAULT_CONTROLLER_ENDPOINT: &str = "(http://127\\.0\\.0\\.1:\\d+)";',
+        console_default,
+    )
+    require(
+        canonical_endpoint is not None
+        and vultr.count("credential-state " + canonical_endpoint.group(1)) == 2
+        and "credential-state http://127.0.0.1:51051" not in vultr,
+        "first-use Windows pre/post publication probes must use exact native controller endpoint",
+    )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
