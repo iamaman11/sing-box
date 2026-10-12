@@ -993,7 +993,10 @@ fn authorize_initial_runtime_job(job: &str, apply: bool) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err("initial VM runtime refuses an unauthorized GitHub mutation or observation job".to_owned())
+        Err(
+            "initial VM runtime refuses an unauthorized GitHub mutation or observation job"
+                .to_owned(),
+        )
     }
 }
 
