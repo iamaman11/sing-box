@@ -569,6 +569,18 @@ def main() -> None:
         and 'application_containers == "NOT_STARTED"' in vultr,
         "GitHub-owned initial policy stage must invoke exact immutable native owner",
     )
+    # RPC and local bundle paths must reject the retired unbound / host-file
+    # write path rather than silently writing to arbitrary host roots.
+    bundle_entrypoint = vm_agent_runtime.rsplit("fn apply_bundle(", 1)[1].split(
+        "fn validate_digest_bound_bundle_request(", 1
+    )[0]
+    require(
+        "validate_digest_bound_bundle_request(&request)?" in bundle_entrypoint
+        and "apply_digest_bound_bundle(stack_dir, request, false)" in bundle_entrypoint
+        and "apply_legacy_bundle" not in vm_agent_runtime
+        and "fn application_rpc_refuses_legacy_bundle_and_host_file_writes()" in vm_agent,
+        "all application bundle transports must reject legacy unbound host writes",
+    )
     # First-use policy stage is the only pre-credential installation path.
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")

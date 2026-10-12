@@ -1312,63 +1312,11 @@ fn apply_bundle(
     stack_dir: &Path,
     request: ApplyBundleRequest,
 ) -> Result<ApplyBundleResponse, String> {
-    match (
-        request.bundle_id.as_deref(),
-        request.bundle_digest.as_deref(),
-    ) {
-        (Some(_), Some(_)) => apply_digest_bound_bundle(stack_dir, request, false),
-        (None, None) => apply_legacy_bundle(stack_dir, request),
-        _ => Err(
-            "bundle_id and bundle_digest must either both be present or both be absent".to_owned(),
-        ),
-    }
-}
-
-fn apply_legacy_bundle(
-    stack_dir: &Path,
-    request: ApplyBundleRequest,
-) -> Result<ApplyBundleResponse, String> {
-    let host_root = stack_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| stack_dir.to_path_buf());
-    let mut written_paths = Vec::new();
-    let mut warnings = Vec::new();
-
-    if request.prune_existing && stack_dir.exists() {
-        fs::remove_dir_all(stack_dir)
-            .map_err(|err| format!("failed to remove {}: {err}", stack_dir.display()))?;
-    }
-    fs::create_dir_all(stack_dir)
-        .map_err(|err| format!("failed to create {}: {err}", stack_dir.display()))?;
-
-    for file in request.stack_files {
-        write_bundle_file(stack_dir, &file, &mut written_paths)?;
-    }
-    for file in request.host_files {
-        write_bundle_file(&host_root, &file, &mut written_paths)?;
-    }
-    if let Some(file) = request.deployment_summary {
-        write_bundle_file(&host_root, &file, &mut written_paths)?;
-    } else {
-        warnings.push("deployment summary was not provided".to_owned());
-    }
-    if let Some(file) = request.agent_env_file {
-        write_bundle_file(&host_root, &file, &mut written_paths)?;
-    } else {
-        warnings.push("edge-agent environment file was not provided".to_owned());
-    }
-
-    Ok(ApplyBundleResponse {
-        success: true,
-        written_paths,
-        stack_dir: Some(stack_dir.display().to_string()),
-        warnings,
-        active_bundle_id: None,
-        active_bundle_digest: None,
-        previous_bundle_id: None,
-        previous_bundle_digest: None,
-    })
+    // One canonical bundle contract for local CLI and AgentService RPC.
+    // In particular a missing digest must NEVER fall back to writing host
+    // paths, certificate files or the agent's execution environment.
+    validate_digest_bound_bundle_request(&request)?;
+    apply_digest_bound_bundle(stack_dir, request, false)
 }
 
 fn validate_digest_bound_bundle_request(
@@ -4911,53 +4859,45 @@ mod tests {
     }
 
     #[test]
-    fn applies_bundle_files_to_stack_and_host_roots() {
+    fn application_rpc_refuses_legacy_bundle_and_host_file_writes() {
         let root = unique_test_dir();
         let stack = root.join("stack");
-        fs::create_dir_all(&stack).unwrap();
 
-        let response = apply_bundle(
-            &stack,
-            ApplyBundleRequest {
-                stack_files: vec![BundleFile {
-                    relative_path: "docker-compose.yml".to_owned(),
-                    content: b"services: {}\n".to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }],
-                host_files: vec![BundleFile {
-                    relative_path: "tls/ca.pem".to_owned(),
-                    content: b"ca".to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }],
-                deployment_summary: Some(BundleFile {
-                    relative_path: "deployment-summary.json".to_owned(),
-                    content: br#"{"label":"bundle-a","instance_id":"instance-1"}"#.to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }),
-                agent_env_file: Some(BundleFile {
-                    relative_path: "edge-agent.env".to_owned(),
-                    content: b"EDGE_AGENT_TLS_CA_CERT_PATH=/opt/vultr-edge-stack/tls/ca.pem\n"
-                        .to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }),
-                prune_existing: true,
-                bundle_id: None,
-                bundle_digest: None,
-            },
-        )
-        .unwrap();
+        let legacy = ApplyBundleRequest {
+            stack_files: vec![BundleFile {
+                relative_path: "docker-compose.yml".to_owned(),
+                content: b"services: {}\\n".to_vec(),
+                executable: false,
+                sensitive: false,
+            }],
+            host_files: vec![BundleFile {
+                relative_path: "tls/ca.pem".to_owned(),
+                content: b"ca".to_vec(),
+                executable: false,
+                sensitive: false,
+            }],
+            deployment_summary: None,
+            agent_env_file: None,
+            prune_existing: true,
+            bundle_id: None,
+            bundle_digest: None,
+        };
+        assert!(apply_bundle(&stack, legacy.clone()).is_err());
+        assert!(!stack.exists());
+        assert!(!root.join("tls/ca.pem").exists());
 
-        assert!(response.success);
-        assert!(stack.join("docker-compose.yml").is_file());
-        assert!(root.join("tls/ca.pem").is_file());
-        assert!(root.join("deployment-summary.json").is_file());
-        assert!(root.join("edge-agent.env").is_file());
+        let mut partially_bound = legacy.clone();
+        partially_bound.bundle_id = Some("release-a".to_owned());
+        assert!(apply_bundle(&stack, partially_bound).is_err());
+        assert!(!stack.exists());
 
-        fs::remove_dir_all(root).unwrap();
+        let mut forged = legacy;
+        forged.bundle_id = Some("release-a".to_owned());
+        let digest = canonical_apply_bundle_digest(&forged).unwrap();
+        forged.bundle_digest = Some(digest);
+        assert!(apply_bundle(&stack, forged).is_err());
+        assert!(!stack.exists());
+        assert!(!root.join("tls/ca.pem").exists());
     }
 
     #[test]
