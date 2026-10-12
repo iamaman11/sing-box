@@ -863,7 +863,7 @@ pub(crate) fn validate_disposable_acceptance(
         .line1
         .as_ref()
         .ok_or_else(|| "application acceptance requires line1 runtime policy".to_owned())?;
-    if line1.acme_provider != "https://acme-staging-v02.api.letsencrypt.org/directory" {
+    if line1.acme_provider != "letsencrypt" {
         return Err("application acceptance requires ACME staging authority".to_owned());
     }
     desired
@@ -963,8 +963,7 @@ mod tests {
                 line1: Some(Line1RuntimePolicy {
                     tunnel_domain: "stage2-acceptance.alegria.by".to_owned(),
                     acme_email: "admin@alegria.by".to_owned(),
-                    acme_provider: "https://acme-staging-v02.api.letsencrypt.org/directory"
-                        .to_owned(),
+                    acme_provider: "letsencrypt".to_owned(),
                     reality_server_name: "www.microsoft.com".to_owned(),
                 }),
                 line2: Some(Line2RuntimePolicy {
