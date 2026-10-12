@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -603,6 +604,32 @@ def main() -> None:
         and "cancel-in-progress: false" in vultr,
         "Vultr and credential workflows must share one non-cancelling initial-pair transaction lock",
     )
+    # CI must validate the *actual public network* reachability contract.
+    # Docker port publication is not enough if Vultr blocks the packet.
+    acceptance_firewalls = json.loads(
+        Path("infra/vultr/firewall-profiles.json").read_text(encoding="utf-8")
+    )
+    profile = next(
+        item for item in acceptance_firewalls["profiles"]
+        if item["name"] == "application-acceptance"
+    )
+    external = {
+        (item["protocol"], int(item["port"]))
+        for item in profile["rules"]
+        if item["subnet"] == "0.0.0.0" and item["subnet_size"] == 0
+    }
+    required = {
+        ("tcp", 80), ("tcp", 443), ("tcp", 5443),
+        ("udp", 8443), ("udp", 9444),
+        ("tcp", 4128), ("tcp", 4080), ("tcp", 4443),
+        ("tcp", 3128), ("tcp", 1080), ("tcp", 9443),
+    }
+    require(
+        external == required
+        and all(item["ip_type"] == "v4" for item in profile["rules"]),
+        "disposable VM firewall must expose exact 4 Line1 + 6 Line2 remote ports and ACME HTTP",
+    )
+
     # A substring-only test missed a real YAML defect: a consumer at column
     # zero is NOT a GitHub workflow job. Keep first-use owners under jobs:.
     require(
