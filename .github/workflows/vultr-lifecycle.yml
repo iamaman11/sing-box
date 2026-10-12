@@ -1120,7 +1120,7 @@ jobs:
           echo 'N1_FIRST_USE_VM_LOCAL_RUNTIME=PASS' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
 
-initial_windows_consume:
+  initial_windows_consume:
     name: Consume and validate Worker-v2 Windows candidate without TUN
     needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
