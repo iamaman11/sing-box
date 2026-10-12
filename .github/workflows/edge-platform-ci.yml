@@ -1200,7 +1200,7 @@ jobs:
             gateway_tag="${registry}/${owner}/vultr-edge-gateway:${build_tag}"
             warp_tag="${registry}/${owner}/vultr-warp-egress:${build_tag}"
 
-            docker build \
+            docker buildx build --platform linux/amd64 --provenance=false --sbom=false --push \
               --label "org.opencontainers.image.revision=${CANDIDATE_REVISION}" \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --build-arg "BASE_IMAGE=${DEBIAN_BASE_IMAGE}" \
@@ -1209,9 +1209,8 @@ jobs:
               --build-arg "SING_BOX_SHA256=${SING_BOX_SHA256}" \
               -t "${gateway_tag}" \
               win/vultr-waw/stack/edge-gateway
-            docker push "${gateway_tag}"
 
-            docker build \
+            docker buildx build --platform linux/amd64 --provenance=false --sbom=false --push \
               --label "org.opencontainers.image.revision=${CANDIDATE_REVISION}" \
               --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
               --build-arg "BASE_IMAGE=${UBUNTU_BASE_IMAGE}" \
@@ -1220,7 +1219,6 @@ jobs:
               --build-arg "WARP_SHA256=${WARP_SHA256}" \
               -t "${warp_tag}" \
               win/vultr-waw/stack/warp-egress
-            docker push "${warp_tag}"
             # VM_RUNTIME_BUILD_CONTRACT_END
 
             gateway_digest="$(docker buildx imagetools inspect "${gateway_tag}" --format '{{json .Manifest.Digest}}' | jq -er '.')"
@@ -1229,10 +1227,12 @@ jobs:
             [[ "${warp_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
             gateway_ref="${registry}/${owner}/vultr-edge-gateway@${gateway_digest}"
             warp_ref="${registry}/${owner}/vultr-warp-egress@${warp_digest}"
-            evidence_image="${gateway_tag}"
+            evidence_image="${gateway_ref}"
           fi
 
           sing_box_evidence="${RUNNER_TEMP}/sing-box-linux"
+          # Re-read the immutable registry digest: Buildx --push does not load a local image.
+          docker pull "${evidence_image}" >/dev/null
           gateway_container="$(docker create "${evidence_image}")"
           docker cp "${gateway_container}:/usr/local/bin/sing-box" "${sing_box_evidence}"
           docker rm "${gateway_container}" >/dev/null

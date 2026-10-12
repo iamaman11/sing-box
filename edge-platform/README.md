@@ -15,58 +15,13 @@ Before a mutation, refresh protected `main`, open PRs, latest Actions and the la
 
 ## Current convergence model
 
-> **ACTIVE P0 (2026-10-10, after physical production VM destroy/recreate):** Windows `/windows converge` activated the SCM-owned ManagedTun before live remote authentication/HTTPS was validated; `auto-direct-tunnel` failed and automatic rollback was blocked by the unresolved independent DNS/GitHub recovery requirement. The user manually stopped SCM; no TUN remains at the latest read-only observation. SCM AutoStart is a reboot hazard until separately mitigated. **No start/converge/repair/restart-controller/rollback or unattended reboot until #26's pre-TUN authenticated egress, credential-generation parity and independent no-TUN recovery acceptance.** [Failure #38084682564](https://github.com/iamaman11/sing-box/actions/runs/38084682564); [post-stop diagnose #38084907109](https://github.com/iamaman11/sing-box/actions/runs/38084907109). A historical PASS/20-of-20 on the previous VM does not authorize the new VM's Windows datapath. Production Line2 30/30 and 3 core containers are healthy, production Mesh runtime remains absent.
+**ACTIVE N1/N2 → N3 → N4 (2026-10-12).** [Issue #26](https://github.com/iamaman11/sing-box/issues/26) is the sole execution cursor and [Draft PR #348](https://github.com/iamaman11/sing-box/pull/348) the only integrated functional slice. Old Stage 4B.5 Android Mesh and Stage 4C cleanup are historical follow-on records, not competing live plans. Stage 2/3/4A acceptance remains historical; it does not license a rebuilt network.
 
-The target architecture is intentionally smaller than parts of the current repository. Some
-migration/bootstrap/acceptance paths still exist only because their final consumer has not yet been
-retired. Their presence does not make them steady-state authority.
+**VM present state:** [Provider doctor #38289563205](https://github.com/iamaman11/sing-box/actions/runs/38289563205) PASS with exact `application-acceptance-1` disposition **CREATE** and zero mutations: new VM, online self-hosted runner, installation, external authenticated Line1 4/4 + Line2 6/6, reboot and cleanup are **not yet accepted**. The old production VM was deleted. Current `/vultr initial-vm-install` in #348 is a transitional incomplete composition using hosted-runner SSH, an incompatible production-Windows first-use consumer, and unconditional final external BLOCKED. It must converge into the **same existing normal VM lifecycle** and bounded local owner used subsequently by production; only the durable Worker first-use journal/intent/unknown-ACK no-replay constraint remains a special internal transaction.
 
-Use the architecture classifications:
+**Windows present state:** [Read-only physical /windows diagnose #38288078001](https://github.com/iamaman11/sing-box/actions/runs/38288078001) PASS: `EdgePlatformController` is **Stopped / AutoStart**, managed TUN absent, direct DNS and ordinary HTTPS PASS, Cloudflare One connected in TunnelOnly. Automatic no-TUN DNS/control recovery, new-server Line1 and ManagedTun→ProxyOnly are unproven; do not start or mutate Windows WARP/MISH/OKX to force a PASS. N3 accepts **one** SCM controller, Git-backed desired `WindowsDatapathMode`, native in-controller ProxyOnly ↔ ManagedTun transitions with both real traffic modes, routes, DNS and reboot/recovery proof.
 
-- `CANONICAL` — required steady-state path;
-- `TRANSITIONAL` — bounded live consumer remains; do not broaden it;
-- `DELETION_CANDIDATE` — remove after exact consumer proof;
-- `HISTORICAL_EVIDENCE` — GitHub evidence only, never an execution path.
-
-Stage 3 and Stage 4A are closed. Stage 2 (fresh-v2 credentials plus the managed Windows
-proxy-only runtime), historical application-exclusive Cloudflare retirement, persistent local-owner
-production rollback, class-scoped application credential rotation, Stage-3 proof-token
-retirement/contraction and Stage-4A zero-consumer physical shrink are accepted and must not be
-reopened for confidence.
-
-Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner. **Stage 4B.2-C had historical physical acceptance on the previous server/runtime generation, not the currently rebuilt server**: physical first-child one-shot recovery, second-child fail-closed, attended SCM restart, exact previous-ManagedTun rollback and latest reconverge, real Windows reboot, one SCM + one child, TUN/DNS/GitHub recovery, native Line1 HTTPS 20/20 and ordinary Windows no-proxy DNS/HTTPS. [Full physical proof](https://github.com/iamaman11/sing-box/issues/26#issuecomment-6098179421).
-
-**Before Stage 4B.5 Android Mesh, Gate `NEW_VM_FRESH_APPLICATION_DEPLOYMENT` must PASS:** create a **new disposable Vultr VM** using the existing typed `/application acceptance` via issue #1. Require read-only Vultr doctor/inventory and clean room before any new VM, exact ReleaseSet v1 installation/health, idempotent reapply, v2 upgrade, exact rollback, VM reboot and postboot application+Mesh+DNS+VPC checks, scoped teardown, final zero-leak check and independent fresh provider inventory. No production VM mutations. [Active cursor #26](https://github.com/iamaman11/sing-box/issues/26) and [gate contract](https://github.com/iamaman11/sing-box/issues/26#issuecomment-6098256373) own progress. Stage 4C deletion-first follows Android functional acceptance.
-
-**Disposable Cloudflare Mesh profile owner:** the existing issue-#1 GitHub control plane and typed Cloudflare Target Plane
-expose `/application mesh-profile-plan`, `/application mesh-profile-apply <exact 64-hex plan authority>`
-and `/application mesh-profile-verify`. It reads the repository-owned acceptance
-Cloudflare guardrails/profile spec, refuses active production account and any
-preexisting profile drift/collision, allows at most **one** create with exact
-fresh observed-state authorization, and only reobserves after uncertain mutation.
-No profile PATCH/delete or foreign/default profile mutation. A terminal verified
-profile alone does not waive other VM-server doctor prerequisites.
-
-**Cloudflare Mesh NODE prerequisite:** Cloudflare's server Mesh node requires an
-exact warp_connector device profile (MASQUE/Traffic and DNS/100.96.0.0/12)
-before server enrollment; this is not an Android-client-only prerequisite.
-The typed `cloudflare-zero-trust doctor --scope vm-server` must fail closed
-when the node profile or other shared account prerequisites are missing,
-before the disposable VM is created. A missing project Mesh-node profile
-must be provisioned only by an accepted scoped Cloudflare owner; do not
-forge an Android client identity or bypass readiness in YAML.
-
-**Current Mesh inactive diagnostic slice (pre-4B.5):** the existing disposable
-`/application acceptance` must retain the Cloudflare provider `healthy` gate. If local
-`MeshRuntimeState` is READY but provider health remains `inactive`, take exactly one
-additional typed read-only deep Mesh observation before compensation destroys the guest;
-emit only fixed-field, normalized, non-secret status (no raw CLI/log/token/registration ID).
-The original provider failure remains primary even if this observation is unavailable.
-This diagnostic improvement by itself does **not** close the full new-VM lifecycle gate.
-Source, negative tests, accepted exact-head CI and new physical v1→v2→rollback→reboot
-proof are separate obligations in the sole master plan, issue #26.
-
-**Separate residual guard:** the foreign Cloudflare One Client is in `TunnelOnly` and may list both TUN DNS `172.19.0.2` and router `192.168.100.1`. Automatic independent no-TUN DNS/GitHub restore and ManagedTun→ProxyOnly teardown are not accepted. Keep `hijack + strict_route`, leave `native` DNS offline-only, never reactivate the currently stopped TUN to manufacture recovery proof, and do not add an extra Windows service, DNS writer, daemon, scheduler, WFP exception or edit foreign Cloudflare One/MISH/OKX. The dedicated `NT SERVICE\\EdgePlatformController` retains least-scope TUN ownership; do not switch to LocalSystem.
+**Operator product acceptance:** Issue #1 command → existing typed Rust owner → exact host. Self-hosted runners are bounded outbound transport only; local owners do all privileged runtime changes. Use one normal create/enroll/install/configure/diagnose/measure/repair/reinstall/destroy lifecycle. An acceptance VM is disposable, not a separate product installer. Independent authenticated 10/10 direct/WARP, public TLS, reboot and clean disposal are required; source/CI/provider metadata and internal loopback are not acceptance. See Issue #26 for live gates and failure resolution.
 
 ## Steady-state owner map
 
