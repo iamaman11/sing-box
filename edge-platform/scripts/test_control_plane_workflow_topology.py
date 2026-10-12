@@ -645,6 +645,19 @@ def main() -> None:
         "all first-use jobs must be children of the reusable workflow jobs mapping",
     )
 
+    # A staging CA certificate cannot pass independent public TLS trust.
+    # Disposable real network acceptance uses a separate hostname and DNS,
+    # never the permanent production hostname, but needs a trusted ACME issuer.
+    disposable_policy = json.loads(
+        Path("infra/application/disposable-acceptance.json").read_text(encoding="utf-8")
+    )
+    require(
+        disposable_policy["runtime_policy"]["line1"]["acme_provider"] == "letsencrypt"
+        and disposable_policy["runtime_policy"]["line1"]["tunnel_domain"]
+            == "stage2-acceptance.alegria.by",
+        "disposable real external TLS acceptance must use public-trust ACME on isolated DNS",
+    )
+
     # The installed SCM endpoint differs from the CLI's development fallback.
     # Never hardcode either port in the first-use workflow: the *verified*
     # immutable console resolves its own installed controller identity.
