@@ -1217,3 +1217,35 @@ jobs:
           Write-Host 'WINDOWS_DNS_MUTATIONS=0'
           Write-Host 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED'
 
+# Candidate and VM-local checks are necessary but never an external PASS.
+  # Keep this native one-command installation fail-closed until the required
+  # independent external witness and reboot/cleanup proof are implemented.
+  initial_acceptance_verdict:
+    name: Final physical 10-endpoint acceptance verdict
+    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume]
+    if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Refuse candidate-only success without external witness, reboot and cleanup
+        shell: bash
+        env:
+          VM_INSTALL_JOB: ${{ needs.execute.result }}
+          VM_LOCAL_JOB: ${{ needs.initial_vm_runtime.result }}
+          WINDOWS_CANDIDATE_JOB: ${{ needs.initial_windows_consume.result }}
+          VM_ATTEST_JOB: ${{ needs.initial_vm_attest.result }}
+          WINDOWS_ATTEST_JOB: ${{ needs.initial_windows_attest.result }}
+          PAIRED_WORKERS_JOB: ${{ needs.initial_pair_publish.result }}
+        run: |
+          set -euo pipefail
+          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB; do
+            printf '%s=%s\n' "${field}" "${!field}"
+          done
+          echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_EXTERNAL_LINE2_6_OF_6=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PUBLIC_TLS_DIRECT_WARP_REBOOT_CLEANUP=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' >> "${GITHUB_STEP_SUMMARY}"
+          echo '::error title=N1/N2 physical acceptance BLOCKED::No independent external 10/10 traffic, public TLS, reboot and zero-leak disposal witness. Candidate-only PASS cannot close this installation.'
+          exit 1
+
