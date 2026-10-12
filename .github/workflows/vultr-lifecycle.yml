@@ -10,6 +10,14 @@ on:
 
 permissions: {}
 
+# One native Vultr transaction can span the first-use VM, both independent
+# host attestations, GitHub BEGIN, paired Workers and two consumers.
+# Share the existing credential workflow's lock so no concurrent rotation
+# can interleave with an irreversible first-use PATCH.
+concurrency:
+  group: credential-transaction-${{ github.repository_id }}
+  cancel-in-progress: false
+
 jobs:
   authorize:
     runs-on: ubuntu-24.04
