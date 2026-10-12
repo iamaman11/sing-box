@@ -674,6 +674,9 @@ def main() -> None:
         and 'privileged-stage-credential' in initial_flow
         and 'credential-transition validate-candidate' in initial_flow
         and 'First-use Windows controller unavailable or non-empty; refusing Worker publication' in initial_flow
+        and 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED:' in initial_flow
+        and 'FIRST_USE_WINDOWS_ISOLATION_CHANGED:' in initial_flow
+        and initial_flow.count("['windows_datapath_mode'] -cne 'ProxyOnly'") == 2
         and 'credential_candidate_generation=$env:GENERATION' in initial_flow
         and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
         and 'needs: [authorize, execute, initial_preflight]' in initial_flow
