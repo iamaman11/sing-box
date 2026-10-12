@@ -10,6 +10,13 @@ on:
 
 permissions: {}
 
+# Acceptance/production application operations share the same managed VM and
+# Cloudflare DNS/Worker ownership as disposable first-use. Never interleave
+# another application operation between GitHub BEGIN and consumer verification.
+concurrency:
+  group: credential-transaction-${{ github.repository_id }}
+  cancel-in-progress: false
+
 jobs:
   authorize:
     runs-on: ubuntu-24.04
