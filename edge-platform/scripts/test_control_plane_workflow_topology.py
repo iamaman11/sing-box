@@ -572,6 +572,7 @@ def main() -> None:
     # A clean VM must receive only the existing dedicated Cloudflare host
     # identity (never an application credential) through the same exact owner.
     # The SSH lease, root-only file, and first-attempt guard are one operation.
+    vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     require(
         'if operation == "initial-policy-stage" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
         and 'acquire_host_access "${spec}" "${machine}" "initial-policy-stage"' in vultr
