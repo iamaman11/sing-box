@@ -605,6 +605,11 @@ def main() -> None:
         and 'initial_windows_attest:' in initial_flow
         and 'initial_pair_publish:' in initial_flow
         and 'initial_vm_runtime:' in initial_flow
+        and 'initial_windows_consume:' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
+        and 'privileged-stage-credential' in initial_flow
+        and 'credential-transition validate-candidate' in initial_flow
+        and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
         and 'needs: [authorize, execute]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
