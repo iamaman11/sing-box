@@ -948,6 +948,13 @@ jobs:
           if ([string]$values['release_set_sha256'] -cne $env:RELEASE_SET) {
             throw 'Windows local binary does not match first-use immutable ReleaseSet'
           }
+          # Never use the existing ManagedTun production host as the disposable
+          # first-use Windows consumer, even when its local credential store is
+          # absent. The proof must be from an independently installed ProxyOnly
+          # owner, otherwise the paired Cloudflare mutation never starts.
+          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') {
+            throw 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED: installed Windows owner is not ProxyOnly; never stage on ManagedTun production'
+          }
           $console = [string]$values['console_path']
           if ([string]::IsNullOrWhiteSpace($console) -or
               -not (Test-Path -LiteralPath $console -PathType Leaf)) {
