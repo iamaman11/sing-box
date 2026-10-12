@@ -25,6 +25,7 @@ pub(crate) struct EndpointProof {
     pub(crate) port: u16,
     pub(crate) successes: u32,
     pub(crate) failures: u32,
+    pub(crate) negative_auth_rejected: bool,
 }
 
 fn curl_config_quote(value: &str) -> Result<String, String> {
@@ -128,10 +129,25 @@ fn negative_auth_rejected(
 ) -> bool {
     let mut command = Command::new(CURL_PATH);
     command.args([
-        "-q", "--config", "-", "--silent", "--fail",
-        "--proto", "=https", "--connect-timeout", "3", "--max-time", "7",
-        "--noproxy", "", "--output", "/dev/null",
-        "--write-out", "%{http_connect};%{http_code}", "--proxy", proxy,
+        "-q",
+        "--config",
+        "-",
+        "--silent",
+        "--fail",
+        "--proto",
+        "=https",
+        "--connect-timeout",
+        "3",
+        "--max-time",
+        "7",
+        "--noproxy",
+        "",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_connect};%{http_code}",
+        "--proxy",
+        proxy,
     ]);
     if let Some(resolve) = local_resolution {
         command.args(["--resolve", resolve]);
@@ -172,14 +188,10 @@ fn negative_auth_result(protocol: &str, exit_code: Option<i32>, output: &str) ->
     match protocol {
         // CONNECT denial by the proxy, not a 407 emitted by the origin.
         "http" | "https" => {
-            exit_code == Some(22)
-                && connect == "407"
-                && (response == "000" || response == "407")
+            matches!(exit_code, Some(22 | 56)) && connect == "407" && (response == "000" || response == "407")
         }
         // libcurl SOCKS5 login/handshake denial, not a broken listener.
-        "socks5h" => matches!(exit_code, Some(67 | 97))
-            && connect == "000"
-            && response == "000",
+        "socks5h" => matches!(exit_code, Some(67 | 97)) && connect == "000" && response == "000",
         _ => false,
     }
 }
@@ -253,6 +265,7 @@ pub(crate) fn measure(
             port,
             successes: samples.len() as u32,
             failures: errors,
+            negative_auth_rejected: rejected,
         });
         let (min, median, max) = summarize(&samples)
             .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
@@ -327,6 +340,7 @@ mod tests {
     #[test]
     fn negative_authentication_requires_exact_proxy_denial() {
         assert!(negative_auth_result("http", Some(22), "407;000"));
+        assert!(negative_auth_result("http", Some(56), "407;000"));
         assert!(negative_auth_result("https", Some(22), "407;407"));
         assert!(negative_auth_result("socks5h", Some(97), "000;000"));
         assert!(negative_auth_result("socks5h", Some(67), "000;000"));
