@@ -750,3 +750,365 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-${RUNNER_TEMP}/singbox-vultr-ops}"
+
+# All first-use owners execute inside the SAME authorized issue-comment run.
+  # One CLI command, no separate credential-issuance issue command, no replay.
+  initial_preflight:
+    name: Bind first-use Cloudflare version intent
+    needs: [authorize, execute]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      intent: ${{ steps.proof.outputs.intent }}
+      release_set: ${{ steps.proof.outputs.release_set }}
+      generation: ${{ steps.proof.outputs.generation }}
+    steps:
+      - name: Read exact published release and empty GitHub journal
+        id: proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          history="${RUNNER_TEMP}/initial-history.json"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-observe "${history}" > "${RUNNER_TEMP}/journal.txt"
+          grep -Fxq 'credential_initial_journal_empty=true' "${RUNNER_TEMP}/journal.txt"
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          "${owner}" credentials initial-pair-preflight "${GITHUB_RUN_ID}" a > "${RUNNER_TEMP}/preflight.txt"
+          grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/preflight.txt"
+          grep -Fxq 'credential_provider_mutations=0' "${RUNNER_TEMP}/preflight.txt"
+          intent="$(sed -n 's/^initial_pair_provider_intent_sha256=//p' "${RUNNER_TEMP}/preflight.txt")"
+          [[ "${intent}" =~ ^[0-9a-f]{64}$ ]]
+          test "$(grep -c '^initial_pair_provider_intent_sha256=' "${RUNNER_TEMP}/preflight.txt")" -eq 1
+          printf 'intent=%s\nrelease_set=%s\ngeneration=%s\n' \
+            "${intent}" "${EDGE_RELEASE_SET_SHA256}" "${GITHUB_RUN_ID}" >> "${GITHUB_OUTPUT}"
+
+  initial_vm_attest:
+    name: Attest exact disposable VM owner
+    needs: [authorize, initial_preflight]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      attestation: ${{ steps.vm.outputs.attestation }}
+    steps:
+      - name: Authenticate VM binary and genuine dummy A/B slots
+        id: vm
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          INTENT: ${{ needs.initial_preflight.outputs.intent }}
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | cut -d' ' -f1)" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          key="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
+          test -s "${key}"
+          export EDGE_SSH_PRIVATE_KEY_PATH="${key}"
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          export EDGE_CONTROLLER_IPV4="${ip}"
+          "${owner}" vultr-lifecycle lease-acquire infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease.json"
+          jq -e '.status == "READY" and .lease_phase == "READY"' "${RUNNER_TEMP}/lease.json" >/dev/null
+          trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
+          "${owner}" vultr-lifecycle initial-host-probe \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" a "${INTENT}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${agent}" \
+            > "${RUNNER_TEMP}/vm-proof.json"
+          jq -e --arg g "${GENERATION}" --arg rel "${RELEASE_SET}" --arg intent "${INTENT}" \
+            '.status == "PASS" and .operation == "CREDENTIAL_INITIAL_HOST_PROBE" and
+             .credential_projection == "VM" and .credential_generation == ($g|tonumber) and
+             .release_set_sha256 == $rel and .provider_intent_sha256 == $intent and
+             .credential_slot_A == "EXACT_DUMMY" and .credential_slot_B == "EXACT_DUMMY" and
+             .credential_store_present == false and .credential_provider_mutations == 0 and
+             .credential_runtime_mutations == 0 and
+             (.credential_host_attestation_sha256|test("^[0-9a-f]{64}$"))' \
+            "${RUNNER_TEMP}/vm-proof.json" >/dev/null
+          attestation="$(jq -er .credential_host_attestation_sha256 "${RUNNER_TEMP}/vm-proof.json")"
+          "${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease-release.json"
+          jq -e '.status == "RELEASED"' "${RUNNER_TEMP}/lease-release.json" >/dev/null
+          trap - EXIT
+          printf 'attestation=%s\n' "${attestation}" >> "${GITHUB_OUTPUT}"
+
+  initial_windows_attest:
+    name: Attest isolated Windows host without TUN or DNS mutation
+    needs: [authorize, initial_preflight]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions: {}
+    outputs:
+      attestation: ${{ steps.windows.outputs.attestation }}
+    env:
+      EDGE_INSTALL_ROOT: C:\sing-box
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+      GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+      INTENT: ${{ needs.initial_preflight.outputs.intent }}
+    steps:
+      - name: Read-only local credential projection and exact release attestation
+        id: windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'First-use attestation replay forbidden' }
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release doctor failed' }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['release_set_sha256'] -cne $env:RELEASE_SET) {
+            throw 'Windows local binary does not match first-use immutable ReleaseSet'
+          }
+          $console = [string]$values['console_path']
+          if ([string]::IsNullOrWhiteSpace($console) -or
+              -not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'Immutable installed console missing'
+          }
+          $raw = @(& $console credential-initial-attest $env:GENERATION a $env:INTENT $env:RELEASE_SET $env:GITHUB_RUN_ID --install-root $env:EDGE_INSTALL_ROOT)
+          if ($LASTEXITCODE -ne 0) { throw 'Windows exact dummy A/B attestation failed' }
+          $proof = @{}
+          foreach ($line in $raw) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $proof[$parts[0]] = $parts[1] }
+          }
+          if ([string]$proof['operation'] -cne 'CREDENTIAL_INITIAL_ATTEST' -or
+              [string]$proof['credential_projection'] -cne 'WINDOWS' -or
+              [string]$proof['credential_generation'] -cne $env:GENERATION -or
+              [string]$proof['credential_github_run_id'] -cne $env:GITHUB_RUN_ID -or
+              [string]$proof['credential_provider_mutations'] -cne '0' -or
+              [string]$proof['credential_runtime_mutations'] -cne '0' -or
+              [string]$proof['windows_tun_mutations'] -cne '0' -or
+              [string]$proof['windows_dns_mutations'] -cne '0' -or
+              [string]$proof['credential_host_attestation_sha256'] -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Windows native attestation incomplete or unsafe'
+          }
+          "attestation=$($proof['credential_host_attestation_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          Write-Host 'WINDOWS_INITIAL_READONLY_ATTEST=PASS'
+
+  initial_pair_publish:
+    name: One-time GitHub BEGIN then version-fenced paired Worker publication
+    needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Commit exact durable BEGIN once and publish both projections
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+          INTENT: ${{ needs.initial_preflight.outputs.intent }}
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VM_ATTESTATION: ${{ needs.initial_vm_attest.outputs.attestation }}
+          WINDOWS_ATTESTATION: ${{ needs.initial_windows_attest.outputs.attestation }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          [[ "${INTENT}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${VM_ATTESTATION}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${WINDOWS_ATTESTATION}" =~ ^[0-9a-f]{64}$ ]]
+          test "${VM_ATTESTATION}" != "${WINDOWS_ATTESTATION}"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/initial-history.json"
+          exact="${RUNNER_TEMP}/exact-initial-begin.txt"
+          # The pre-write observation must be empty; no duplicate BEGIN,
+          # malformed record, changed intent, or unknown state is repairable.
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-plan "${GENERATION}" a \
+            "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
+            "${history}" "${exact}" > "${RUNNER_TEMP}/journal-plan.txt"
+          grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/journal-plan.txt"
+          test -s "${exact}"
+          # Write ONCE. A failed or missing POST acknowledgement is UNKNOWN.
+          # The workflow NEVER repeats POST, and NEVER PATCHes on UNKNOWN.
+          gh api --method POST "repos/${REPOSITORY}/issues/26/comments" \
+            --raw-field "body=$(cat "${exact}")" > "${RUNNER_TEMP}/begin-post.json"
+          jq -e --arg body "$(cat "${exact}")" \
+            '.body == $body and (.id|type == "number")' "${RUNNER_TEMP}/begin-post.json" >/dev/null
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-readback "${history}" "${exact}" > "${RUNNER_TEMP}/readback.txt"
+          grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
+          # The Rust publisher rechecks the same durable BEGIN, source,
+          # host attestations, Worker versions and identities before mutation.
+          "${owner}" credentials initial-pair-publish "${GENERATION}" a \
+            "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
+            "${history}" "${exact}" | tee "${RUNNER_TEMP}/pair-publish.txt"
+          grep -Fxq 'credential_initial_pair_provider_publish=PASS' "${RUNNER_TEMP}/pair-publish.txt"
+          grep -Fxq 'credential_initial_begin_record=EXACT_READBACK' "${RUNNER_TEMP}/pair-publish.txt"
+          grep -Fxq 'paired_projection_count=2' "${RUNNER_TEMP}/pair-publish.txt"
+          echo 'PAIRED_WORKER_FIRST_USE=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'External Line1 and Line2 remain UNPROVEN until physical acceptance.' >> "${GITHUB_STEP_SUMMARY}"
+
+  initial_vm_runtime:
+    name: Apply once and verify native VM runtime credential consumption
+    needs: [authorize, initial_preflight, initial_pair_publish]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Revalidate original BEGIN before one-time apply then read-only verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | cut -d' ' -f1)" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/initial-history.json"
+          exact="${RUNNER_TEMP}/exact-initial-begin.txt"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          # Reject another or malformed BEGIN; runtime's native journal gate
+          # independently validates exact SHA/release/run/generation.
+          jq -er --arg marker '<!-- sing-box-credential-initial-attempt/v1 -->' \
+            '[.[]|.body|select(startswith($marker))] | if length == 1 then .[0] else error("not exactly one first-use BEGIN") end' \
+            "${history}" > "${exact}"
+          python3 - "${exact}" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          p.write_bytes(p.read_bytes().removesuffix(b"\n"))
+          PY
+          "${owner}" credentials initial-pair-journal-readback "${history}" "${exact}" \
+            > "${RUNNER_TEMP}/readback.txt"
+          grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
+          key="${RUNNER_TEMP}/singbox-vultr-ops"
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
+          test -s "${key}"
+          export EDGE_SSH_PRIVATE_KEY_PATH="${key}"
+          export EDGE_CONTROLLER_IPV4="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          "${owner}" vultr-lifecycle lease-acquire infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease.json"
+          jq -e '.status == "READY" and .lease_phase == "READY"' "${RUNNER_TEMP}/lease.json" >/dev/null
+          trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
+          "${owner}" vultr-lifecycle initial-runtime-apply \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${history}" "${exact}" "${agent}" \
+            > "${RUNNER_TEMP}/runtime-apply.json"
+          jq -e '.status == "PASS" and .operation == "INITIAL_VM_RUNTIME_APPLY" and
+             .candidate_materialized == true and .candidate_unpromoted == true and
+             .external_line1_4_of_4 == "UNPROVEN" and .external_line2_6_of_6 == "UNPROVEN"' \
+            "${RUNNER_TEMP}/runtime-apply.json" >/dev/null
+          "${owner}" vultr-lifecycle initial-runtime-verify \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${history}" "${exact}" "${agent}" \
+            > "${RUNNER_TEMP}/runtime-verify.json"
+          jq -e '.status == "PASS" and .operation == "INITIAL_VM_RUNTIME_VERIFY" and
+             .candidate_unpromoted == true and .candidate_materialized == true and
+             (.vm_local_line2|length == 6) and
+             all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true) and
+             .external_line1_4_of_4 == "UNPROVEN" and .external_line2_6_of_6 == "UNPROVEN"' \
+            "${RUNNER_TEMP}/runtime-verify.json" >/dev/null
+          "${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease-release.json"
+          jq -e '.status == "RELEASED"' "${RUNNER_TEMP}/lease-release.json" >/dev/null
+          trap - EXIT
+          echo 'N1_FIRST_USE_VM_LOCAL_RUNTIME=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+
