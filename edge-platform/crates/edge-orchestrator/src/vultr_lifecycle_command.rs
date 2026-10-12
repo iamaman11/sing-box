@@ -651,7 +651,10 @@ fn require_disposable_initial_probe_target(spec: &str, machine: &str) -> Result<
 /// authorize local secret generation; the only issuer remains Worker-v2.
 /// GitHub-hosted owner sends it once over the existing strict bootstrap SSH
 /// stdin. Never place the token in command arguments, logs or stack policy.
-fn initial_vm_access_identity_payload(client_id: &str, client_secret: &str) -> Result<String, String> {
+fn initial_vm_access_identity_payload(
+    client_id: &str,
+    client_secret: &str,
+) -> Result<String, String> {
     validate_bootstrap_secret("initial VM Access client ID", client_id)?;
     validate_bootstrap_secret("initial VM Access client secret", client_secret)?;
     Ok(format!(
@@ -668,10 +671,9 @@ async fn install_disposable_initial_vm_access_identity(
     require_disposable_initial_probe_target(vultr_spec_path, machine_id)?;
     let desired = load_desired_state(Path::new(vultr_spec_path))?;
     let observed = exact_existing_machine_observation(&desired, machine_id).await?;
-    let target_ip = observed
-        .main_ip
-        .as_deref()
-        .ok_or_else(|| "initial VM Access installation requires observed disposable IPv4".to_owned())?;
+    let target_ip = observed.main_ip.as_deref().ok_or_else(|| {
+        "initial VM Access installation requires observed disposable IPv4".to_owned()
+    })?;
     let key = operator_private_key_path_from_env()?;
     let public_key = read_canonical_ssh_public_key()?;
     verify_operator_key_matches(&key, &public_key)?;
@@ -697,7 +699,20 @@ async fn install_disposable_initial_vm_access_identity(
         "if sudo test -e /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env || sudo test -L /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then echo PRESENT; else echo ABSENT; fi",
     )?;
     if presence != "ABSENT" {
-        return Err("initial VM Access identity already exists or cannot be safely observed; no replay".to_owned());
+        return Err(
+            "initial VM Access identity already exists or cannot be safely observed; no replay"
+                .to_owned(),
+        );
+    }
+    let directory = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "if sudo test -e /opt/vultr-edge-stack/runtime-secrets || sudo test -L /opt/vultr-edge-stack/runtime-secrets; then echo PRESENT; else echo ABSENT; fi",
+    )?;
+    if directory != "ABSENT" {
+        return Err("initial VM Access installation refuses a pre-existing secret directory".to_owned());
     }
     const INSTALL: &str = "set -eu; sudo -n install -d -o root -g root -m 0700 /opt/vultr-edge-stack/runtime-secrets; sudo -n install -o root -g root -m 0600 /dev/stdin /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env";
     strict_ssh_run_stdin(
@@ -746,8 +761,9 @@ async fn run_initial_policy_stage(
     // GitHub-hosted lifecycle job, never into a self-hosted runner.
     let vm_client_id = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
         .map_err(|_| "initial VM requires existing Cloudflare VM Access client ID".to_owned())?;
-    let vm_client_secret = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
-        .map_err(|_| "initial VM requires existing Cloudflare VM Access client secret".to_owned())?;
+    let vm_client_secret = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET").map_err(|_| {
+        "initial VM requires existing Cloudflare VM Access client secret".to_owned()
+    })?;
     let access_payload = initial_vm_access_identity_payload(&vm_client_id, &vm_client_secret)?;
 
     let (bundle_id, digest) = acceptance_stage_initial_policy(
