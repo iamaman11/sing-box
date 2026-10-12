@@ -557,6 +557,18 @@ def main() -> None:
         and "credential_pair_committed=false" in vm_agent_runtime,
         "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
     )
+    # The canonical GitHub operation must reach the native disposable
+    # policy owner rather than leaving another unused Rust CLI capability.
+    require(
+        'if tokens == ["/vultr", "initial-policy-stage"]:' in vultr
+        and 'spec_path = "infra/vultr/application-acceptance.json"' in vultr
+        and 'machine_id = "application-acceptance-1"' in vultr
+        and 'run_lifecycle initial-policy-stage' in vultr
+        and '"${bin}" application-lifecycle materialize' in vultr
+        and 'runtime_credentials == "ABSENT"' in vultr
+        and 'application_containers == "NOT_STARTED"' in vultr,
+        "GitHub-owned initial policy stage must invoke exact immutable native owner",
+    )
     # First-use policy stage is the only pre-credential installation path.
     agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")

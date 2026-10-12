@@ -47,7 +47,11 @@ jobs:
           destroy_digest = ""
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
-          if tokens == ["/vultr", "acceptance"]:
+          if tokens == ["/vultr", "initial-policy-stage"]:
+              operation = "initial-policy-stage"
+              spec_path = "infra/vultr/application-acceptance.json"
+              machine_id = "application-acceptance-1"
+          elif tokens == ["/vultr", "acceptance"]:
               operation = "acceptance"
               spec_path = "infra/vultr/disposable-acceptance.json"
               machine_id = "lifecycle-acceptance-1"
@@ -91,7 +95,7 @@ jobs:
           if operation not in {
               "doctor", "inventory", "plan", "access-release", "action-plan", "apply",
               "runner-bootstrap", "action", "destroy-plan", "destroy-apply",
-              "cleanup-plan", "cleanup", "acceptance",
+              "cleanup-plan", "cleanup", "acceptance", "initial-policy-stage",
           }:
               fail("unsupported lifecycle operation")
 
@@ -114,7 +118,7 @@ jobs:
 
           if operation in {
               "apply", "runner-bootstrap", "access-release", "action-plan", "action",
-              "destroy-plan", "destroy-apply"
+              "destroy-plan", "destroy-apply", "initial-policy-stage"
           } and not machine_id:
               fail("machine_id is required for targeted operation")
 
@@ -380,6 +384,29 @@ jobs:
           }
 
           case "${REQUESTED_OPERATION}" in
+            initial-policy-stage)
+              test "${spec}" = "infra/vultr/application-acceptance.json"
+              test "${machine}" = "application-acceptance-1"
+              application_spec="infra/application/disposable-acceptance.json"
+              test -f "${application_spec}"
+              agent_manifest="${RUNNER_TEMP}/initial-policy-edge-agent.json"
+              "${bin}" application-lifecycle materialize \
+                "${application_spec}" "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}"
+              chmod 0600 "${agent_manifest}"
+              run_lifecycle initial-policy-stage \
+                "${spec}" "${machine}" "${application_spec}" \
+                "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}" \
+                | tee "${RUNNER_TEMP}/result.json"
+              jq -e '
+                .operation == "INITIAL_VM_POLICY_STAGE" and
+                .status == "PASS" and
+                .machine_id == "application-acceptance-1" and
+                .runtime_credentials == "ABSENT" and
+                .application_containers == "NOT_STARTED" and
+                .provider_credential_mutations == 0 and
+                (.bundle_digest | type == "string")
+              ' "${RUNNER_TEMP}/result.json" >/dev/null
+              ;;
             doctor)
               run_lifecycle doctor "${spec}" | tee "${RUNNER_TEMP}/result.json"
               ;;
