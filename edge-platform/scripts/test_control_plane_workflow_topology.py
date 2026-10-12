@@ -650,7 +650,7 @@ def main() -> None:
     # fail only after irreversible paired Cloudflare publication.
     console_default = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     canonical_endpoint = re.search(
-        r'const DEFAULT_CONTROLLER_ENDPOINT: &str = "(http://127\\.0\\.0\\.1:\\d+)";',
+        r'const DEFAULT_CONTROLLER_ENDPOINT: &str = "(http://127\.0\.0\.1:\d+)";',
         console_default,
     )
     require(
