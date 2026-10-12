@@ -974,7 +974,7 @@ jobs:
           # Prove the existing controller can serve the subsequent privileged
           # candidate transaction BEFORE any non-replayable Worker PATCH.
           # This is a read-only RPC: neither SCM, TUN, DNS nor routes change.
-          $state = @(& $console credential-state http://127.0.0.1:51051)
+          $state = @(& $console credential-state http://127.0.0.1:50051)
           if ($LASTEXITCODE -ne 0 -or
               -not ($state -contains 'credential_state_present=false')) {
             throw 'First-use Windows controller unavailable or non-empty; refusing Worker publication'
@@ -1193,7 +1193,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Initial Windows Worker credential stage failed; do not replay' }
           & $console credential-transition validate-candidate --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate config validation failed; do not replay stage' }
-          $state = @(& $console credential-state http://127.0.0.1:51051)
+          $state = @(& $console credential-state http://127.0.0.1:50051)
           if ($LASTEXITCODE -ne 0 -or
               -not ($state -contains 'credential_state_present=true') -or
               -not ($state -contains 'credential_active_present=false') -or
