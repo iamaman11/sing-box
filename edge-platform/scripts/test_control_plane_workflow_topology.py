@@ -645,19 +645,20 @@ def main() -> None:
         "all first-use jobs must be children of the reusable workflow jobs mapping",
     )
 
-    # The Windows controller protocol has ONE exact loopback endpoint.
-    # A differently hardcoded port passed substring topology checks but would
-    # fail only after irreversible paired Cloudflare publication.
-    console_default = WINDOWS_CONSOLE.read_text(encoding="utf-8")
-    canonical_endpoint = re.search(
-        r'const DEFAULT_CONTROLLER_ENDPOINT: &str = "(http://127\.0\.0\.1:\d+)";',
-        console_default,
-    )
+    # The installed SCM endpoint differs from the CLI's development fallback.
+    # Never hardcode either port in the first-use workflow: the *verified*
+    # immutable console resolves its own installed controller identity.
+    console_source = WINDOWS_CONSOLE.read_text(encoding="utf-8")
+    shared_types = Path(
+        "edge-platform/crates/edge-shared-types/src/lib.rs"
+    ).read_text(encoding="utf-8")
     require(
-        canonical_endpoint is not None
-        and vultr.count("credential-state " + canonical_endpoint.group(1)) == 2
-        and "credential-state http://127.0.0.1:51051" not in vultr,
-        "first-use Windows pre/post publication probes must use exact native controller endpoint",
+        'WINDOWS_CONTROLLER_ENDPOINT' in shared_types
+        and 'return WINDOWS_CONTROLLER_ENDPOINT;' in console_source
+        and vultr.count('& $console credential-state') == 2
+        and 'credential-state http://' not in vultr
+        and 'credential-state https://' not in vultr,
+        "first-use Windows observation must use verified native installed SCM endpoint, not a hardcoded port",
     )
 
     # Single first-use request: new VM, two independent host owners, one
