@@ -5258,9 +5258,11 @@ mod tests {
                 port: 4128,
                 successes: 5,
                 failures: 0,
+                negative_auth_rejected: true,
             }],
         );
         assert!(response.candidate_unpromoted);
+        assert!(response.vm_local_line2[0].negative_auth_rejected);
         assert!(response.candidate_materialized);
         assert_eq!(response.vm_local_line2.len(), 1);
         assert!(!response.external_line1_proven);
