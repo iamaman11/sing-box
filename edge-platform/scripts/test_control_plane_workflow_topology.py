@@ -609,6 +609,8 @@ def main() -> None:
         and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
         and 'privileged-stage-credential' in initial_flow
         and 'credential-transition validate-candidate' in initial_flow
+        and 'First-use Windows controller unavailable or non-empty; refusing Worker publication' in initial_flow
+        and 'credential_candidate_generation=$env:GENERATION' in initial_flow
         and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
         and 'needs: [authorize, execute]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
