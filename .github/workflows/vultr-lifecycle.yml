@@ -471,6 +471,7 @@ jobs:
               jq -n \
                 --slurpfile machine "${RUNNER_TEMP}/initial-vm-create.json" \
                 --slurpfile substrate "${RUNNER_TEMP}/initial-vm-substrate.json" \
+                --slurpfile dns "${RUNNER_TEMP}/initial-vm-dns.json" \
                 --slurpfile policy "${RUNNER_TEMP}/initial-vm-policy.json" \
                 --arg revision "${source_revision}" \
                 '{
@@ -481,6 +482,7 @@ jobs:
                   machine_id: $policy[0].machine_id,
                   release_set_sha256: $policy[0].release_set_sha256,
                   host_substrate: $substrate[0],
+                  dns: $dns[0],
                   staged_policy: $policy[0],
                   external_line1: "UNPROVEN",
                   external_line2: "UNPROVEN",
