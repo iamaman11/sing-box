@@ -485,7 +485,7 @@ async fn initial_pair_publish(
     }
     if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(request.github_run_id.to_string().as_str())
         || env::var("GITHUB_SHA").ok().as_deref()
-            != Some(release_context.release().source_revision.as_str())
+            != Some(release_context.release().accepted_revision.as_str())
     {
         return Err(
             "initial pair publisher refuses a mismatched GitHub run or source revision".to_owned(),
