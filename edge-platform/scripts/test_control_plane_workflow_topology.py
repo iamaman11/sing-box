@@ -639,7 +639,7 @@ def main() -> None:
                 "initial_preflight", "initial_vm_attest",
                 "initial_windows_attest", "initial_pair_publish",
                 "initial_vm_runtime", "initial_windows_consume",
-                "initial_acceptance_verdict", "initial_cleanup",
+                "initial_acceptance_verdict", "initial_cleanup", "initial_reboot",
             )
         )
         and not re.search(r"(?m)^initial_(?:preflight|vm_attest|windows_attest|pair_publish|vm_runtime|windows_consume):", vultr),
@@ -668,6 +668,31 @@ def main() -> None:
         and 'destroy-apply' not in first_use_cleanup[1]
         and 'vultr-lifecycle cleanup' not in first_use_cleanup[1],
         "first-use MUST run one exact existing native disposable cleanup after terminal verdict and require zero-leak certificate",
+    )
+
+    # Reboot must be a SINGLE native provider action and its recovery proof
+    # must be a READ-ONLY candidate observation with the same durable BEGIN.
+    reboot_job_parts = vultr.split("\n  initial_reboot:\n", 1)
+    require(
+        len(reboot_job_parts) == 2
+        and 'needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume]'
+            in reboot_job_parts[1]
+        and 'vultr-lifecycle action-plan infra/vultr/application-acceptance.json application-acceptance-1 reboot'
+            in reboot_job_parts[1]
+        and 'vultr-lifecycle action infra/vultr/application-acceptance.json application-acceptance-1 reboot'
+            in reboot_job_parts[1]
+        and '.reboot_observation.boot_id_changed == true' in reboot_job_parts[1]
+        and 'vultr-lifecycle substrate-verify infra/vultr/application-acceptance.json application-acceptance-1'
+            in reboot_job_parts[1]
+        and 'vultr-lifecycle initial-runtime-verify' in reboot_job_parts[1]
+        and 'vultr-lifecycle initial-runtime-apply' not in reboot_job_parts[1]
+        and 'N1_N2_POST_REBOOT_VM_LOCAL_LINE2=PASS' in reboot_job_parts[1]
+        and "initial_reboot" in vultr.split("  initial_acceptance_verdict:", 1)[1].split("  initial_cleanup:", 1)[0]
+        and 'authorize_initial_runtime_job(' in vultr_lifecycle_command
+        and '(!apply && matches!(job, "initial_vm_runtime" | "initial_reboot"))'
+            in vultr_lifecycle_command
+        and 'initial_reboot_can_only_reobserve_not_reapply_credentials' in vultr_lifecycle_command,
+        "one-shot disposable reboot must prove real boot-ID change and same-candidate read-only recovery",
     )
 
     # A staging CA certificate cannot pass independent public TLS trust.
