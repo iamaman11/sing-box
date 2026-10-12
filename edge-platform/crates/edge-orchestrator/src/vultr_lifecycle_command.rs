@@ -3,6 +3,11 @@ use crate::application_lifecycle_command::{
     acceptance_stage_initial_policy, load_application_desired,
 };
 use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
+use crate::cloudflare_dns_lifecycle_command::{
+    acceptance_create as create_disposable_dns,
+    acceptance_require_clean_room as require_clean_disposable_dns,
+    acceptance_verify_noop as verify_disposable_dns,
+};
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, capture_ssh_transport_stage_once, prepare_strict_bootstrap,
@@ -70,6 +75,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
         "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
+        "initial-dns-create" => run_initial_dns_create(&args[1..], context).await,
         "initial-policy-stage" => run_initial_policy_stage(&args[1..], context).await,
         "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
         "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
@@ -798,6 +804,37 @@ async fn run_initial_policy_stage(
         "provider_credential_mutations": 0,
         "external_line1": "UNPROVEN",
         "external_line2": "UNPROVEN",
+    }))
+}
+
+// The first install reuses the existing disposable DNS owner rather than
+// adding an alternate record writer. Once the VM exists, one exact DNS
+// CREATE enables ACME name validation and external TLS client probes.
+// On unknown provider ACK, STOP; the canonical cleanup is a separate
+// authorized action after read-only reconciliation, never mutation replay.
+async fn run_initial_dns_create(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 2
+        || args[0] != "infra/cloudflare/application-acceptance-dns.json"
+        || args[1] != "infra/application/disposable-acceptance.json"
+    {
+        return Err("initial DNS requires exact disposable DNS and application specs".to_owned());
+    }
+    context.application_release_authority()?;
+    let application = load_application_desired(Path::new(&args[1]))?;
+    validate_disposable_acceptance(&application)?;
+    require_clean_disposable_dns(Path::new(&args[0])).await?;
+    create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
+    verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
+    print_json_value(serde_json::json!({
+        "operation": "INITIAL_VM_DNS_CREATE",
+        "status": "PASS",
+        "record": "stage2-acceptance.alegria.by",
+        "environment": "application-acceptance",
+        "external_tls": "UNPROVEN",
+        "provider_mutation_replay_allowed": false,
     }))
 }
 
