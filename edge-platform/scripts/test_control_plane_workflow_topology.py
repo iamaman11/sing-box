@@ -1831,8 +1831,10 @@ def main() -> None:
     )
 
     require(
-        vultr.count("group: vultr-control-plane-production") == 1,
-        "Vultr backend must serialize its execute mutation job",
+        vultr.count("group: vultr-control-plane-production") == 2
+        and "initial_cleanup:" in vultr
+        and "needs: [authorize, execute, initial_acceptance_verdict]" in vultr,
+        "Vultr execute and first-use disposable cleanup must share the exact single-owner lock",
     )
     require(
         "runs-on:" in windows_physical
