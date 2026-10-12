@@ -569,6 +569,25 @@ def main() -> None:
         and 'application_containers == "NOT_STARTED"' in vultr,
         "GitHub-owned initial policy stage must invoke exact immutable native owner",
     )
+    # A clean VM must receive only the existing dedicated Cloudflare host
+    # identity (never an application credential) through the same exact owner.
+    # The SSH lease, root-only file, and first-attempt guard are one operation.
+    require(
+        'if operation == "initial-policy-stage" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
+        and 'acquire_host_access "${spec}" "${machine}" "initial-policy-stage"' in vultr
+        and 'release_host_access "${spec}" "${machine}" "initial-policy-stage"' in vultr
+        and "vm_access_identity_installed == true" in vultr
+        and "vm_access_identity_owner == \"ROOT_0600\"" in vultr
+        and "secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID" in vultr
+        and "secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in vultr
+        and "fn initial_vm_access_identity_payload(" in vultr_lifecycle_command
+        and "strict_ssh_run_stdin(" in vultr_lifecycle_command
+        and "initial VM Access write outcome uncertain; do not repeat" in vultr_lifecycle_command
+        and "initial VM Access installation refuses a pre-existing secret directory" in vultr_lifecycle_command
+        and "vm_access_identity_owner" in vultr_lifecycle_command
+        and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
+        "fresh VM first-use must bind root-only Worker Access identity to the single GitHub lease and reject mutation replay",
+    )
     # RPC and local bundle paths must reject the retired unbound / host-file
     # write path rather than silently writing to arbitrary host roots.
     bundle_entrypoint = vm_agent_runtime.rsplit("fn apply_bundle(", 1)[1].split(
