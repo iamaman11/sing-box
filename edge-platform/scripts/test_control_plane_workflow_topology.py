@@ -656,6 +656,11 @@ def main() -> None:
         and 'needs: [authorize, execute, initial_acceptance_verdict]' in first_use_cleanup[1]
         and 'always() &&' in first_use_cleanup[1]
         and "needs.execute.result != 'skipped'" in first_use_cleanup[1]
+        and "needs.execute.outputs.first_use_provider_mutation_attempted == 'true'"
+            in first_use_cleanup[1]
+        and "first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}" in vultr
+        and 'echo \'first_use_provider_mutation_attempted=true\' >> "${GITHUB_OUTPUT}"' in vultr
+        and "id: execute_lifecycle" in vultr
         and 'group: vultr-control-plane-production' in first_use_cleanup[1]
         and 'application-cleanup \\' in first_use_cleanup[1]
         and '.zero_leaked_resources == "PASS"' in first_use_cleanup[1]
