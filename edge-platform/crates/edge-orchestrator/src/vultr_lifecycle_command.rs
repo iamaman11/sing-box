@@ -1,8 +1,8 @@
-use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::application_acceptance_command::validate_disposable_acceptance;
 use crate::application_lifecycle_command::{
     acceptance_stage_initial_policy, load_application_desired,
 };
+use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, capture_ssh_transport_stage_once, prepare_strict_bootstrap,
@@ -661,7 +661,9 @@ async fn run_initial_policy_stage(
     let desired = load_application_desired(Path::new(&args[2]))?;
     validate_disposable_acceptance(&desired)?;
     if desired.machine_id != args[1] || desired.vultr_spec_path != args[0] {
-        return Err("initial policy stage refuses mismatched provider/application target".to_owned());
+        return Err(
+            "initial policy stage refuses mismatched provider/application target".to_owned(),
+        );
     }
     let expected_agent = context.expected_application_artifact()?;
     context.validate_application_artifact(&expected_agent, Path::new(&args[4]))?;
