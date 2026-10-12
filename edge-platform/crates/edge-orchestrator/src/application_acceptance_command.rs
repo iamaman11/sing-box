@@ -864,7 +864,7 @@ pub(crate) fn validate_disposable_acceptance(
         .as_ref()
         .ok_or_else(|| "application acceptance requires line1 runtime policy".to_owned())?;
     if line1.acme_provider != "letsencrypt" {
-        return Err("application acceptance requires ACME staging authority".to_owned());
+        return Err("disposable network acceptance requires publicly trusted Let's Encrypt ACME authority".to_owned());
     }
     desired
         .runtime_policy
@@ -973,6 +973,15 @@ mod tests {
             },
             bootstrap_mode: ApplicationBootstrapMode::Full,
         }
+    }
+
+    #[test]
+    fn disposable_acceptance_requires_publicly_trusted_tls_not_staging() {
+        let mut value = desired();
+        validate_disposable_acceptance(&value).unwrap();
+        value.runtime_policy.line1.as_mut().unwrap().acme_provider =
+            "https://acme-staging-v02.api.letsencrypt.org/directory".to_owned();
+        assert!(validate_disposable_acceptance(&value).is_err());
     }
 
     #[test]
