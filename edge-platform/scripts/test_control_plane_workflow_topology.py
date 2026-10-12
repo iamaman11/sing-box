@@ -596,6 +596,36 @@ def main() -> None:
         and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
         "fresh VM first-use must bind root-only Worker Access identity to the single GitHub lease and reject mutation replay",
     )
+    # Single first-use request: new VM, two independent host owners, one
+    # durable BEGIN, paired Workers and the native VM runtime, no replay.
+    initial_flow = vultr.split("  initial_preflight:", 1)[1]
+    require(
+        'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
+        and 'initial_vm_attest:' in initial_flow
+        and 'initial_windows_attest:' in initial_flow
+        and 'initial_pair_publish:' in initial_flow
+        and 'initial_vm_runtime:' in initial_flow
+        and 'needs: [authorize, execute]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
+        and 'credential-initial-attest' in initial_flow
+        and 'vultr-lifecycle initial-host-probe' in initial_flow
+        and 'credentials initial-pair-journal-plan' in initial_flow
+        and 'credentials initial-pair-journal-readback' in initial_flow
+        and 'credentials initial-pair-publish' in initial_flow
+        and 'gh api --method POST "repos/${REPOSITORY}/issues/26/comments"' in initial_flow
+        and 'issues: write' in initial_flow
+        and 'GITHUB_RUN_ATTEMPT' in initial_flow
+        and 'vultr-lifecycle initial-runtime-apply' in initial_flow
+        and 'vultr-lifecycle initial-runtime-verify' in initial_flow
+        and 'all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true)' in initial_flow
+        and 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' in initial_flow
+        and 'initial_publication_authorized=false' in initial_flow
+        and 'windows_tun_mutations' in initial_flow
+        and 'windows_dns_mutations' in initial_flow,
+        "single initial install must bind release and both host attestations to durable BEGIN before paired publication",
+    )
+
     # RPC and local bundle paths must reject the retired unbound / host-file
     # write path rather than silently writing to arbitrary host roots.
     bundle_entrypoint = vm_agent_runtime.rsplit("fn apply_bundle(", 1)[1].split(
