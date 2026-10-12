@@ -558,6 +558,8 @@ def main() -> None:
         "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
     )
     # First-use policy stage is the only pre-credential installation path.
+    agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
+    vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     application_policy_service = Path(
         "edge-platform/crates/edge-orchestrator/src/application_lifecycle_service.rs"
     ).read_text(encoding="utf-8")
