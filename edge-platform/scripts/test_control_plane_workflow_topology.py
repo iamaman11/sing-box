@@ -650,7 +650,7 @@ def main() -> None:
     # cleanup orchestrator, not a second VM-only destroy or fallback executor.
     # It runs even when external acceptance fails after VM creation and its
     # outcome must be an independent zero-leak certificate, never inferred.
-    first_use_cleanup = vultr.split("\\n  initial_cleanup:\\n", 1)
+    first_use_cleanup = vultr.split("\n  initial_cleanup:\n", 1)
     require(
         len(first_use_cleanup) == 2
         and 'needs: [authorize, execute, initial_acceptance_verdict]' in first_use_cleanup[1]
