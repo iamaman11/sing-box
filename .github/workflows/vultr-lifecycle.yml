@@ -1112,3 +1112,51 @@ jobs:
           echo 'N1_FIRST_USE_VM_LOCAL_RUNTIME=PASS' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
 
+initial_windows_consume:
+    name: Consume and validate Worker-v2 Windows candidate without TUN
+    needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions: {}
+    env:
+      EDGE_INSTALL_ROOT: C:\sing-box
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+      GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+    steps:
+      - name: Stage and validate initial Windows projection, never apply or activate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'First-use Windows delivery replay forbidden' }
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'))
+          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate cannot prove exact installed release' }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['release_set_sha256'] -cne $env:RELEASE_SET) {
+            throw 'Initial Windows credential candidate requires exact accepted ReleaseSet'
+          }
+          $console = [string]$values['console_path']
+          if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'Initial Windows immutable console missing'
+          }
+          # Host eligibility was independently proven BEFORE paired publish.
+          # No active runtime, candidate or legacy path is ever overwritten.
+          # This is a one-time mutation: no retry after uncertain dispatch ACK.
+          & $console privileged-stage-credential ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows Worker credential stage failed; do not replay' }
+          & $console credential-transition validate-candidate --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate config validation failed; do not replay stage' }
+          Write-Host 'WINDOWS_WORKER_PROJECTION_CONSUMED=PASS'
+          Write-Host 'WINDOWS_CANDIDATE_VALIDATED=PASS'
+          Write-Host 'WINDOWS_TUN_MUTATIONS=0'
+          Write-Host 'WINDOWS_DNS_MUTATIONS=0'
+          Write-Host 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED'
+
