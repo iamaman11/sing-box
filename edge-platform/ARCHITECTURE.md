@@ -62,6 +62,60 @@ The intended end state is smaller than the current transitional implementation. 
 mutable states, operator commands and orchestration branches is a correctness objective, not only a
 maintainability preference.
 
+### Native product lifecycle authority (operator acceptance invariant — 2026-10-12)
+
+**One normal product lifecycle, not two installation products.** The ChatGPT
+operator uses the existing GitHub Issue #1 command inbox and accepted ReleaseSet
+to own the entire path: plan/provision, native install and configure, inspect,
+measure, verify, restart/reboot, repair/reinstall, recover and remove precisely
+owned VM and Windows resources. Typed Rust owners apply repository-authored
+desired state; GitHub Actions are closed-grammar transport, not a second
+orchestration/secret/runtime authority. Every operation must return a bounded
+machine-readable actual-state and acceptance report with source SHA, ReleaseSet,
+config digest, credential generation, owner, target, and failure/recovery status.
+
+First-use is a special *transaction safety condition*, not a separate
+acceptance-only installer, separate Windows identity owner, fallback producer or
+parallel runtime deployment path. The temporary `/vultr initial-vm-install`
+composition present in Draft #348 must be folded into the **same ordinary native
+VM lifecycle** used subsequently for production. The irreversible first-use
+Worker A/B transaction retains its durable BEGIN, distinct host identities,
+strict versions, verified readback and unknown-ACK no-replay boundary **inside**
+that lifecycle. A clean disposable VM is allowed as a test target, but the
+application on it must be installed/configured/diagnosed/uninstalled with the
+same owner and commands as a real machine. No acceptance-only Windows host
+mutation or fake substitute attestation is an acceptable product feature.
+
+**One Windows SCM owner and two real modes.** `EdgePlatformController` is the
+sole local privileged owner of installed sing-box, effective config and network
+state. Desired `WindowsDatapathMode` remains Git-backed; ordinary operator
+mode selection (ProxyOnly or ManagedTun) must converge the canonical desired
+state using the same native controller/installer and publish readback. ProxyOnly
+proves real local authenticated proxy traffic with zero managed TUN/route
+capture; ManagedTun proves ordinary Windows DNS, route, browser HTTPS and local
+proxy egress over the accepted Line1. Switching in *both* directions is a
+first-class supported operation, not release rollback, SCM stop, a separate
+one-time service or an ad-hoc registry/route edit. A safe switch requires
+pre/post native process, SCM, TUN adapter, route, DNS, listener, Internet and
+foreign-owner evidence plus independent no-TUN controller/DNS recovery; a failed
+precondition must change **nothing**. Do not mutate unrelated Cloudflare One,
+MISH or OKX. Lost acknowledgement triggers read-only reconciliation, not a
+blind second mutation.
+
+**Real operation evidence.** Diagnostics and measurements are available from
+the same ChatGPT/GitHub command surface, including desired vs applied config,
+all ten named external endpoints, valid/invalid authorization, TLS
+hostname/chain, distinct public direct/WARP egress, endpoint connection/DNS
+timing and quality. The same normal lifecycle must prove install,
+configuration updates, network mode changes, repair, reinstallation, reboot and
+cleanup. Internal loopback, metadata, DNS record creation, Docker READY,
+CI success and a completed workflow are necessary evidence where applicable
+but cannot replace independently authenticated end-to-end Internet traffic.
+A first-use clean VM with all external 4+6 links still belongs to N1/N2;
+native Windows bidirectional mode switch and recovery is N3; production
+replacement and full steady-state operation is N4. **No new stages or helper
+PRs:** implement in the existing integrated #348 and follow Issue #26.
+
 ### Delivery lock: functional installation, not preparatory PRs
 
 **Normative Stage N1/N2 invariant (2026-10-12; executable cursor: Issue #26).**
