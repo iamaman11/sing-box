@@ -160,7 +160,15 @@ jobs:
           PY
 
   execute:
-    needs: authorize
+    # For first-use, verify provider and Windows consumer BEFORE creating a
+    # billable VM or DNS record. All other typed operations remain available
+    # when the initial Windows attestation job is intentionally skipped.
+    needs: [authorize, initial_windows_attest]
+    if: >-
+      always() &&
+      needs.authorize.result == 'success' &&
+      (needs.authorize.outputs.operation != 'initial-vm-install' ||
+       needs.initial_windows_attest.result == 'success')
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
@@ -778,7 +786,7 @@ jobs:
   # One CLI command, no separate credential-issuance issue command, no replay.
   initial_preflight:
     name: Bind first-use Cloudflare version intent
-    needs: [authorize, execute]
+    needs: authorize
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     environment:
@@ -834,7 +842,7 @@ jobs:
 
   initial_vm_attest:
     name: Attest exact disposable VM owner
-    needs: [authorize, initial_preflight]
+    needs: [authorize, execute, initial_preflight]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     environment:
