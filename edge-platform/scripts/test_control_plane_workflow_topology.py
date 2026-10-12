@@ -647,11 +647,25 @@ def main() -> None:
         and 'vultr-lifecycle initial-runtime-apply' in initial_flow
         and 'vultr-lifecycle initial-runtime-verify' in initial_flow
         and 'all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true)' in initial_flow
+        and 'vultr-lifecycle initial-dns-create' not in initial_flow
+        and 'run_lifecycle initial-dns-create' in vultr
+        and 'infra/cloudflare/application-acceptance-dns.json' in vultr
+        and 'INITIAL_VM_DNS_CREATE' in vultr
+        and 'provider_mutation_replay_allowed == false' in vultr
         and 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' in initial_flow
         and 'initial_publication_authorized=false' in initial_flow
         and 'windows_tun_mutations' in initial_flow
         and 'windows_dns_mutations' in initial_flow,
         "single initial install must bind release and both host attestations to durable BEGIN before paired publication",
+    )
+
+    require(
+        'acceptance_create as create_disposable_dns' in vultr_lifecycle_command
+        and 'require_clean_disposable_dns(Path::new(&args[0])).await?' in vultr_lifecycle_command
+        and 'create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
+        and 'verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
+        and '"initial-dns-create" => run_initial_dns_create' in vultr_lifecycle_command,
+        "initial VM DNS must reuse one exact clean-room Cloudflare owner without mutation retry",
     )
 
     # RPC and local bundle paths must reject the retired unbound / host-file
