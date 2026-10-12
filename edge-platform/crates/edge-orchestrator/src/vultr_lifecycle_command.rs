@@ -646,10 +646,84 @@ fn require_disposable_initial_probe_target(spec: &str, machine: &str) -> Result<
     Ok(())
 }
 
-/// Read-only guest proof through the *existing* restricted SSH tunnel and
-/// AgentService; fresh disposable ownership and exact ReleaseSet are mandatory.
-/// Exact first-install boundary for the disposable N1 VM only. This command
-/// is called AFTER native Vultr create/substrate and BEFORE Worker issuance.
+/// Install the existing dedicated VM Access identity into the freshly staged
+/// disposable host. Host identity is not an application credential and cannot
+/// authorize local secret generation; the only issuer remains Worker-v2.
+/// GitHub-hosted owner sends it once over the existing strict bootstrap SSH
+/// stdin. Never place the token in command arguments, logs or stack policy.
+fn initial_vm_access_identity_payload(client_id: &str, client_secret: &str) -> Result<String, String> {
+    validate_bootstrap_secret("initial VM Access client ID", client_id)?;
+    validate_bootstrap_secret("initial VM Access client secret", client_secret)?;
+    Ok(format!(
+        "CF_ACCESS_CLIENT_ID={client_id}\nCF_ACCESS_CLIENT_SECRET={client_secret}\n"
+    ))
+}
+
+async fn install_disposable_initial_vm_access_identity(
+    vultr_spec_path: &str,
+    machine_id: &str,
+    expected_agent_sha256: &str,
+    payload: &str,
+) -> Result<(), String> {
+    require_disposable_initial_probe_target(vultr_spec_path, machine_id)?;
+    let desired = load_desired_state(Path::new(vultr_spec_path))?;
+    let observed = exact_existing_machine_observation(&desired, machine_id).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| "initial VM Access installation requires observed disposable IPv4".to_owned())?;
+    let key = operator_private_key_path_from_env()?;
+    let public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key, &public_key)?;
+
+    let agent_sha = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "sha256sum /opt/vultr-edge-stack/bin/edge-agent | cut -d' ' -f1",
+    )?;
+    if agent_sha != expected_agent_sha256 {
+        return Err("initial VM Access installation refuses a non-ReleaseSet agent".to_owned());
+    }
+
+    // Exact fixed file, not a caller-supplied path. An interrupted write leaves
+    // evidence, so a rerun fails closed instead of replacing an unknown token.
+    let presence = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "if sudo test -e /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env || sudo test -L /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then echo PRESENT; else echo ABSENT; fi",
+    )?;
+    if presence != "ABSENT" {
+        return Err("initial VM Access identity already exists or cannot be safely observed; no replay".to_owned());
+    }
+    const INSTALL: &str = "set -eu; sudo -n install -d -o root -g root -m 0700 /opt/vultr-edge-stack/runtime-secrets; sudo -n install -o root -g root -m 0600 /dev/stdin /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env";
+    strict_ssh_run_stdin(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        INSTALL,
+        payload.as_bytes(),
+    )
+    .map_err(|err| format!("initial VM Access write outcome uncertain; do not repeat: {err}"))?;
+    let owner = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "sudo stat -c '%u:%g:%a' /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env",
+    )?;
+    if owner != "0:0:600" {
+        return Err("initial VM Access identity ownership is not root:root mode 0600".to_owned());
+    }
+    Ok(())
+}
+
+/// Exact first-install boundary for the disposable N1 VM only. Called after
+/// native Vultr creation/substrate, before initial provider publication.
 async fn run_initial_policy_stage(
     args: &[String],
     context: &OrchestrationContext,
@@ -667,11 +741,27 @@ async fn run_initial_policy_stage(
     }
     let expected_agent = context.expected_application_artifact()?;
     context.validate_application_artifact(&expected_agent, Path::new(&args[4]))?;
+    // Require both existing Cloudflare host identities before ANY VM write.
+    // The immutable provider-approved values are injected only into this
+    // GitHub-hosted lifecycle job, never into a self-hosted runner.
+    let vm_client_id = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
+        .map_err(|_| "initial VM requires existing Cloudflare VM Access client ID".to_owned())?;
+    let vm_client_secret = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
+        .map_err(|_| "initial VM requires existing Cloudflare VM Access client secret".to_owned())?;
+    let access_payload = initial_vm_access_identity_payload(&vm_client_id, &vm_client_secret)?;
+
     let (bundle_id, digest) = acceptance_stage_initial_policy(
         context,
         &desired,
         Path::new(&args[3]),
         Path::new(&args[4]),
+    )
+    .await?;
+    install_disposable_initial_vm_access_identity(
+        &args[0],
+        &args[1],
+        &expected_agent.sha256,
+        &access_payload,
     )
     .await?;
     print_json_value(serde_json::json!({
@@ -685,6 +775,8 @@ async fn run_initial_policy_stage(
         "credential_generation": "UNISSUED",
         "application_containers": "NOT_STARTED",
         "runtime_credentials": "ABSENT",
+        "vm_access_identity_installed": true,
+        "vm_access_identity_owner": "ROOT_0600",
         "provider_credential_mutations": 0,
         "external_line1": "UNPROVEN",
         "external_line2": "UNPROVEN",
@@ -3893,6 +3985,24 @@ mod tests {
         assert!(require_six_exact_vm_local_line2(&response).is_err());
         response.vm_local_line2.pop();
         assert!(require_six_exact_vm_local_line2(&response).is_err());
+    }
+
+    #[test]
+    fn initial_vm_access_payload_is_fixed_and_rejects_invalid_secrets() {
+        let payload = initial_vm_access_identity_payload("id-123", "opaque-secret").unwrap();
+        assert_eq!(
+            payload,
+            "CF_ACCESS_CLIENT_ID=id-123\nCF_ACCESS_CLIENT_SECRET=opaque-secret\n"
+        );
+        for (id, secret) in [
+            ("", "valid"),
+            ("valid", ""),
+            ("valid\nCF_ACCESS_CLIENT_ID=forged", "valid"),
+            ("valid", "not\nsafe"),
+            ("has space", "valid"),
+        ] {
+            assert!(initial_vm_access_identity_payload(id, secret).is_err());
+        }
     }
 
     #[test]
