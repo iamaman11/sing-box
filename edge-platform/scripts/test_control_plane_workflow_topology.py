@@ -560,25 +560,32 @@ def main() -> None:
     # The canonical GitHub operation must reach the native disposable
     # policy owner rather than leaving another unused Rust CLI capability.
     require(
-        'if tokens == ["/vultr", "initial-policy-stage"]:' in vultr
+        'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
         and 'spec_path = "infra/vultr/application-acceptance.json"' in vultr
         and 'machine_id = "application-acceptance-1"' in vultr
         and 'run_lifecycle initial-policy-stage' in vultr
+        and 'run_lifecycle apply "${spec}" "${machine}" "${authority}"' in vultr
+        and 'converge_host_substrate "${spec}" "${machine}" "initial-vm-install"' in vultr
+        and '.plans | length == 1 and .[0].class == "CREATE"' in vultr
         and '"${bin}" application-lifecycle materialize' in vultr
         and 'runtime_credentials == "ABSENT"' in vultr
         and 'application_containers == "NOT_STARTED"' in vultr,
-        "GitHub-owned initial policy stage must invoke exact immutable native owner",
+        "one GitHub initial VM install must create a clean disposable host and invoke exact immutable policy owner",
     )
     # A clean VM must receive only the existing dedicated Cloudflare host
     # identity (never an application credential) through the same exact owner.
     # The SSH lease, root-only file, and first-attempt guard are one operation.
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     require(
-        'if operation == "initial-policy-stage" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
-        and 'acquire_host_access "${spec}" "${machine}" "initial-policy-stage"' in vultr
-        and 'release_host_access "${spec}" "${machine}" "initial-policy-stage"' in vultr
+        'if operation == "initial-vm-install" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
+        and 'acquire_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
+        and 'release_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
         and "vm_access_identity_installed == true" in vultr
         and "vm_access_identity_owner == \"ROOT_0600\"" in vultr
+        and 'operation: "INITIAL_VM_INSTALL"' in vultr
+        and 'status: "STAGED_NOT_ACCEPTED"' in vultr
+        and 'external_line1: "UNPROVEN"' in vultr
+        and 'external_line2: "UNPROVEN"' in vultr
         and "secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID" in vultr
         and "secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in vultr
         and "fn initial_vm_access_identity_payload(" in vultr_lifecycle_command
