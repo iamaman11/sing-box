@@ -79,7 +79,9 @@ fn validate_request(request: &InitialPairJournalPlan) -> Result<(), String> {
         }
     }
     if !valid_git_revision(&request.release_source_revision) {
-        return Err("initial journal requires exact lowercase 40-character Git source revision".to_owned());
+        return Err(
+            "initial journal requires exact lowercase 40-character Git source revision".to_owned(),
+        );
     }
     if request.vm_attestation_sha256 == request.windows_attestation_sha256 {
         return Err("initial journal rejects identical VM and Windows attestations".to_owned());
@@ -441,11 +443,22 @@ mod tests {
         let valid = request();
         assert!(plan_initial_pair_reservation(&valid, "[]").is_ok());
         assert_eq!(valid.release_source_revision.len(), 40);
-        for bad in ["d".repeat(64), "g".repeat(40), "D".repeat(40), "".to_owned()] {
-            assert!(plan_initial_pair_reservation(
-                &InitialPairJournalPlan { release_source_revision: bad, ..request() },
-                "[]"
-            ).is_err());
+        for bad in [
+            "d".repeat(64),
+            "g".repeat(40),
+            "D".repeat(40),
+            "".to_owned(),
+        ] {
+            assert!(
+                plan_initial_pair_reservation(
+                    &InitialPairJournalPlan {
+                        release_source_revision: bad,
+                        ..request()
+                    },
+                    "[]"
+                )
+                .is_err()
+            );
         }
     }
 
