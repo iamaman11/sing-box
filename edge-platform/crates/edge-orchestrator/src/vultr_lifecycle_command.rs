@@ -831,7 +831,7 @@ async fn run_initial_host_probe(
     if generation == 0 || github_run_id == 0 {
         return Err("initial host proof requires positive generation and run ID".to_owned());
     }
-    if env::var("GITHUB_SHA").ok().as_deref() != Some(context.release().source_revision.as_str()) {
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(context.release().accepted_revision.as_str()) {
         return Err("initial host proof refuses GitHub source revision drift".to_owned());
     }
     if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[6].as_str()) {
@@ -971,7 +971,7 @@ async fn run_initial_vm_runtime(
         .map_err(|_| "initial VM runtime requires GitHub run ID".to_owned())?;
     if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[4].as_str())
         || env::var("GITHUB_SHA").ok().as_deref()
-            != Some(context.release().source_revision.as_str())
+            != Some(context.release().accepted_revision.as_str())
         || args[3] != context.release().release_set_sha256
     {
         return Err("initial VM runtime refuses foreign GitHub run or ReleaseSet".to_owned());
