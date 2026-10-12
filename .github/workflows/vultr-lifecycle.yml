@@ -284,6 +284,7 @@ jobs:
           # identity, never a regular lifecycle/production/runner operation.
           EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID || '' }}
           EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET || '' }}
+          CLOUDFLARE_API_TOKEN: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_API_TOKEN || '' }}
         run: |
           set -euo pipefail
           bin="${EDGE_LIFECYCLE_ORCHESTRATOR}"
@@ -427,6 +428,18 @@ jobs:
               run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/initial-vm-create.json"
               jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
                 "${RUNNER_TEMP}/initial-vm-create.json" >/dev/null
+
+              # Create exactly one Cloudflare DNS A record through the
+              # existing disposable DNS owner. ACME and independent external
+              # hostname/TLS probes require this exact fresh VM binding.
+              # Unknown DNS ACK is terminal; never create again blindly.
+              test -n "${CLOUDFLARE_API_TOKEN}"
+              run_lifecycle initial-dns-create                 infra/cloudflare/application-acceptance-dns.json                 "${application_spec}" > "${RUNNER_TEMP}/initial-vm-dns.json"
+              jq -e '.operation == "INITIAL_VM_DNS_CREATE" and
+                     .status == "PASS" and
+                     .record == "stage2-acceptance.alegria.by" and
+                     .external_tls == "UNPROVEN" and
+                     .provider_mutation_replay_allowed == false'                      "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
 
               # No compensation after an uncertain create/apply result. The
               # exact disposable identity remains available for read-only
