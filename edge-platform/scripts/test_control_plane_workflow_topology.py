@@ -639,11 +639,35 @@ def main() -> None:
                 "initial_preflight", "initial_vm_attest",
                 "initial_windows_attest", "initial_pair_publish",
                 "initial_vm_runtime", "initial_windows_consume",
-                "initial_acceptance_verdict",
+                "initial_acceptance_verdict", "initial_cleanup",
             )
         )
         and not re.search(r"(?m)^initial_(?:preflight|vm_attest|windows_attest|pair_publish|vm_runtime|windows_consume):", vultr),
         "all first-use jobs must be children of the reusable workflow jobs mapping",
+    )
+
+    # Full first-use cleanup is owned by the existing disposable application
+    # cleanup orchestrator, not a second VM-only destroy or fallback executor.
+    # It runs even when external acceptance fails after VM creation and its
+    # outcome must be an independent zero-leak certificate, never inferred.
+    first_use_cleanup = vultr.split("\\n  initial_cleanup:\\n", 1)
+    require(
+        len(first_use_cleanup) == 2
+        and 'needs: [authorize, execute, initial_acceptance_verdict]' in first_use_cleanup[1]
+        and 'always() &&' in first_use_cleanup[1]
+        and "needs.execute.result != 'skipped'" in first_use_cleanup[1]
+        and 'group: vultr-control-plane-production' in first_use_cleanup[1]
+        and 'application-cleanup \\' in first_use_cleanup[1]
+        and '.zero_leaked_resources == "PASS"' in first_use_cleanup[1]
+        and '.terminal_stage == "complete"' in first_use_cleanup[1]
+        and "N1_N2_DISPOSABLE_ZERO_LEAK_CLEANUP=PASS" in first_use_cleanup[1]
+        and 'infra/cloudflare/application-acceptance-dns.json' in first_use_cleanup[1]
+        and 'infra/vultr/application-acceptance-vpc.json' in first_use_cleanup[1]
+        and 'miu.alegria.by' in first_use_cleanup[1]
+        and '"${EDGE_APPLICATION_ORCHESTRATOR}" application-cleanup' in first_use_cleanup[1]
+        and 'destroy-apply' not in first_use_cleanup[1]
+        and 'vultr-lifecycle cleanup' not in first_use_cleanup[1],
+        "first-use MUST run one exact existing native disposable cleanup after terminal verdict and require zero-leak certificate",
     )
 
     # A staging CA certificate cannot pass independent public TLS trust.
