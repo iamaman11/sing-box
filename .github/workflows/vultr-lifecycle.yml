@@ -160,6 +160,8 @@ jobs:
           PY
 
   execute:
+    outputs:
+      first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}
     # For first-use, verify provider and Windows consumer BEFORE creating a
     # billable VM or DNS record. All other typed operations remain available
     # when the initial Windows attestation job is intentionally skipped.
@@ -285,6 +287,7 @@ jobs:
           printf 'EDGE_RUNNER_REGISTRATION_EXPIRES_AT=%s\n' "${expires_at}" >> "${GITHUB_ENV}"
 
       - name: Execute typed lifecycle operation
+        id: execute_lifecycle
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
@@ -433,6 +436,10 @@ jobs:
                 "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
               authority="$(machine_authority "${RUNNER_TEMP}/initial-vm-plan.json")"
               [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              # Durable same-job boundary: after this point CREATE may have an
+              # unknown ACK. Only this exact run may authorize subsequent
+              # disposal. No cross-run or preflight cleanup is inferred.
+              echo 'first_use_provider_mutation_attempted=true' >> "${GITHUB_OUTPUT}"
               run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/initial-vm-create.json"
               jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
                 "${RUNNER_TEMP}/initial-vm-create.json" >/dev/null
@@ -1262,7 +1269,8 @@ jobs:
       always() &&
       needs.authorize.result == 'success' &&
       needs.authorize.outputs.operation == 'initial-vm-install' &&
-      needs.execute.result != 'skipped'
+      needs.execute.result != 'skipped' &&
+      needs.execute.outputs.first_use_provider_mutation_attempted == 'true'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
