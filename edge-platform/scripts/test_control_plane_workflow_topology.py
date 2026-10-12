@@ -954,7 +954,7 @@ def main() -> None:
         and "Production release rollback is not yet a supported public operation" not in runbook
         and "**ACTIVE N1/N2 → N3 → N4 (2026-10-12).**" in readme
         and "the sole execution cursor" in readme
-        and "the same existing normal VM lifecycle" in readme
+        and "same existing normal VM lifecycle" in readme
         and "The former production VM" not in readme
         and "The old production VM was deleted" in readme
         and "EdgePlatformController` is **Stopped / AutoStart**" in readme
