@@ -847,6 +847,11 @@ async fn run_initial_host_probe(
     }
     require_disposable_initial_probe_target(&args[0], &args[1])?;
     let desired = load_desired_state(Path::new(&args[0]))?;
+    authorize_initial_runtime_job(
+        &env::var("GITHUB_JOB")
+            .map_err(|_| "initial VM runtime requires GitHub job identity".to_owned())?,
+        apply,
+    )?;
     let generation: u64 = args[2]
         .parse()
         .map_err(|_| "initial host proof needs numeric generation".to_owned())?;
@@ -980,6 +985,18 @@ fn require_six_exact_vm_local_line2(
     Ok(())
 }
 
+// Only the original VM runtime job can apply first-use credentials. A distinct
+// post-reboot job may re-observe the same candidate, but never replay apply.
+fn authorize_initial_runtime_job(job: &str, apply: bool) -> Result<(), String> {
+    if (apply && job == "initial_vm_runtime")
+        || (!apply && matches!(job, "initial_vm_runtime" | "initial_reboot"))
+    {
+        Ok(())
+    } else {
+        Err("initial VM runtime refuses an unauthorized GitHub mutation or observation job".to_owned())
+    }
+}
+
 async fn run_initial_vm_runtime(
     args: &[String],
     context: &OrchestrationContext,
@@ -995,7 +1012,6 @@ async fn run_initial_vm_runtime(
         ("GITHUB_ACTOR_ID", "44100369"),
         ("GITHUB_EVENT_NAME", "issue_comment"),
         ("GITHUB_RUN_ATTEMPT", "1"),
-        ("GITHUB_JOB", "initial_vm_runtime"),
     ] {
         if env::var(key).ok().as_deref() != Some(expected) {
             return Err(format!("initial VM runtime refuses untrusted {key}"));
@@ -4010,6 +4026,16 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_reboot_can_only_reobserve_not_reapply_credentials() {
+        assert!(super::authorize_initial_runtime_job("initial_vm_runtime", true).is_ok());
+        assert!(super::authorize_initial_runtime_job("initial_vm_runtime", false).is_ok());
+        assert!(super::authorize_initial_runtime_job("initial_reboot", false).is_ok());
+        assert!(super::authorize_initial_runtime_job("initial_reboot", true).is_err());
+        assert!(super::authorize_initial_runtime_job("initial_cleanup", false).is_err());
+        assert!(super::authorize_initial_runtime_job("initial_pair_publish", true).is_err());
+    }
+
     #[test]
     fn vm_first_use_line2_evidence_refuses_aggregate_and_incomplete_claims() {
         let mut response = InitialVmCredentialRuntimeResponse::default();
