@@ -227,9 +227,9 @@ pub(crate) enum CredentialDeliveryCommand {
         journal_history_path: std::path::PathBuf,
         record_output_path: std::path::PathBuf,
     },
-    // Single-use initial provider mutation. NOT routed by GitHub until BOTH
-    // disposable host job origins and immutable artifacts are independently
-    // authenticated. The durable BEGIN must already exist and match exactly.
+    // Single-use initial provider mutation, reachable only from the same-run
+    // canonical VM installation workflow after BOTH authenticated host
+    // origins and the exact durable GitHub BEGIN have been proven.
     InitialPairPublish {
         generation: u64,
         #[arg(value_enum)]
