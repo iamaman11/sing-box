@@ -736,6 +736,7 @@ fn initial_vm_runtime_response(
                 port: u32::from(p.port),
                 successful_samples: p.successes,
                 failed_samples: p.failures,
+                negative_auth_rejected: p.negative_auth_rejected,
             })
             .collect(),
         external_line1_proven: false,
