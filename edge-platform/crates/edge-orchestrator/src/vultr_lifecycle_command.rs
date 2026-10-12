@@ -847,11 +847,6 @@ async fn run_initial_host_probe(
     }
     require_disposable_initial_probe_target(&args[0], &args[1])?;
     let desired = load_desired_state(Path::new(&args[0]))?;
-    authorize_initial_runtime_job(
-        &env::var("GITHUB_JOB")
-            .map_err(|_| "initial VM runtime requires GitHub job identity".to_owned())?,
-        apply,
-    )?;
     let generation: u64 = args[2]
         .parse()
         .map_err(|_| "initial host proof needs numeric generation".to_owned())?;
@@ -1020,6 +1015,11 @@ async fn run_initial_vm_runtime(
             return Err(format!("initial VM runtime refuses untrusted {key}"));
         }
     }
+    authorize_initial_runtime_job(
+        &env::var("GITHUB_JOB")
+            .map_err(|_| "initial VM runtime requires GitHub job identity".to_owned())?,
+        apply,
+    )?;
     let generation: u64 = args[2]
         .parse()
         .map_err(|_| "initial VM runtime requires numeric generation".to_owned())?;
