@@ -1,4 +1,8 @@
 use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
+use crate::application_acceptance_command::validate_disposable_acceptance;
+use crate::application_lifecycle_command::{
+    acceptance_stage_initial_policy, load_application_desired,
+};
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, capture_ssh_transport_stage_once, prepare_strict_bootstrap,
@@ -66,6 +70,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
         "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
+        "initial-policy-stage" => run_initial_policy_stage(&args[1..], context).await,
         "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
         "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
         "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
@@ -643,6 +648,47 @@ fn require_disposable_initial_probe_target(spec: &str, machine: &str) -> Result<
 
 /// Read-only guest proof through the *existing* restricted SSH tunnel and
 /// AgentService; fresh disposable ownership and exact ReleaseSet are mandatory.
+/// Exact first-install boundary for the disposable N1 VM only. This command
+/// is called AFTER native Vultr create/substrate and BEFORE Worker issuance.
+async fn run_initial_policy_stage(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 5 {
+        return Err("usage: edge-orchestrator vultr-lifecycle initial-policy-stage <disposable-vultr-spec> <machine-id> <application-spec> <agent-manifest> <agent-artifact>".to_owned());
+    }
+    require_disposable_initial_probe_target(&args[0], &args[1])?;
+    let desired = load_application_desired(Path::new(&args[2]))?;
+    validate_disposable_acceptance(&desired)?;
+    if desired.machine_id != args[1] || desired.vultr_spec_path != args[0] {
+        return Err("initial policy stage refuses mismatched provider/application target".to_owned());
+    }
+    let expected_agent = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_agent, Path::new(&args[4]))?;
+    let (bundle_id, digest) = acceptance_stage_initial_policy(
+        context,
+        &desired,
+        Path::new(&args[3]),
+        Path::new(&args[4]),
+    )
+    .await?;
+    print_json_value(serde_json::json!({
+        "operation": "INITIAL_VM_POLICY_STAGE",
+        "status": "PASS",
+        "machine_id": args[1],
+        "release_set_sha256": context.release().release_set_sha256,
+        "agent_sha256": expected_agent.sha256,
+        "bundle_id": bundle_id,
+        "bundle_digest": digest,
+        "credential_generation": "UNISSUED",
+        "application_containers": "NOT_STARTED",
+        "runtime_credentials": "ABSENT",
+        "provider_credential_mutations": 0,
+        "external_line1": "UNPROVEN",
+        "external_line2": "UNPROVEN",
+    }))
+}
+
 async fn run_initial_host_probe(
     args: &[String],
     context: &OrchestrationContext,
@@ -3791,6 +3837,7 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>",
         "  edge-orchestrator vultr-lifecycle initial-host-probe <disposable-vultr-spec> <machine-id> <generation> <slot:a|b> <provider-intent-sha256> <release-set-sha256> <github-run-id> <edge-agent-artifact-path>",
+        "  edge-orchestrator vultr-lifecycle initial-policy-stage <disposable-vultr-spec> <machine-id> <application-spec> <agent-manifest> <agent-artifact>",
         "  edge-orchestrator vultr-lifecycle initial-runtime-apply|initial-runtime-verify <disposable-vultr-spec> <machine-id> <generation> <release-set-sha256> <github-run-id> <history-path> <exact-BEGIN-path> <edge-agent-artifact-path>",
         "  edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path> <local-owner-artifact-path>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",

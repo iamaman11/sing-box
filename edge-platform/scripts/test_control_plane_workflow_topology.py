@@ -391,11 +391,12 @@ def main() -> None:
         "BundleStageInitial" in vm_agent_cli
         and "run_local_bundle_stage_initial(&stack_dir).await" in vm_agent_runtime
         and "validate_digest_bound_bundle_request(&request)" in initial_bundle
-        and "validate_initial_policy_bundle_request(&request)" in initial_bundle
-        and "require_empty_vm_initial_credential_host(stack_dir)" in initial_bundle
-        and "require_empty_vm_initial_bundle_host(stack_dir)" in initial_bundle
-        and "require_no_vm_application_containers(&docker)" in initial_bundle
-        and "apply_digest_bound_bundle(stack_dir, request, true)" in initial_bundle
+        and "stage_initial_vm_policy_bundle(stack_dir, request)" in initial_bundle
+        and "validate_initial_policy_bundle_request(&request)" in vm_agent_runtime
+        and "require_empty_vm_initial_credential_host(stack_dir)" in vm_agent_runtime
+        and "require_empty_vm_initial_bundle_host(stack_dir)" in vm_agent_runtime
+        and "require_no_vm_application_containers(&docker)" in vm_agent_runtime
+        and "apply_digest_bound_bundle(stack_dir, request, true)" in vm_agent_runtime
         and "application_runtime_started=false" in initial_bundle
         and "credential_authentication=UNPROVEN" in initial_bundle
         and "initial_policy_only: bool" in vm_agent_runtime
@@ -555,6 +556,31 @@ def main() -> None:
         and "windows_dns_mutations=0" in windows_console
         and "credential_pair_committed=false" in vm_agent_runtime,
         "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
+    )
+    # First-use policy stage is the only pre-credential installation path.
+    application_policy_service = Path(
+        "edge-platform/crates/edge-orchestrator/src/application_lifecycle_service.rs"
+    ).read_text(encoding="utf-8")
+    application_policy_command = Path(
+        "edge-platform/crates/edge-orchestrator/src/application_lifecycle_command.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "rpc StageInitialPolicyBundle(ApplyBundleRequest)" in agent_proto
+        and "async fn stage_initial_policy_bundle(" in vm_agent_runtime
+        and "stage_initial_vm_policy_bundle(&self.stack_dir, request.into_inner())" in vm_agent_runtime
+        and "async fn stage_initial_vm_policy_bundle(" in vm_agent_runtime
+        and "require_no_vm_application_containers(&docker)?" in vm_agent_runtime
+        and "stage_initial_application_policy(" in application_policy_service
+        and "stage_initial_policy_bundle(Request::new(prepared.request.clone()))"
+            in application_policy_service
+        and "initial policy stage RPC has uncertain outcome; no mutation replay"
+            in application_policy_service
+        and "acceptance_stage_initial_policy(" in application_policy_command
+        and '"initial-policy-stage" => run_initial_policy_stage' in vultr_lifecycle_command
+        and "validate_disposable_acceptance(&desired)?" in vultr_lifecycle_command
+        and "application_containers" in vultr_lifecycle_command
+        and "runtime_credentials" in vultr_lifecycle_command,
+        "initial disposable VM stage must install exact policy only through one restricted native owner",
     )
     # One native owner serves first-use VM apply/verify over the existing
     # restricted AgentService. Local Line2 results must stay per endpoint;

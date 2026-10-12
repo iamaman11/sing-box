@@ -2,8 +2,8 @@ use crate::application_lifecycle_service::{
     ApplicationAuthority, DesiredMutationMode, authorize_application_plan,
     authorize_application_rollback, candidate_application_image_environment, exact_file_sha256,
     execute_desired, execute_rollback, observe_application, prepare_application_bundle,
-    prepare_application_bundle_with_image_environment, rollback_plan_remote, verify_desired,
-    verify_exact_agent_artifact,
+    prepare_application_bundle_with_image_environment, rollback_plan_remote,
+    stage_initial_application_policy, verify_desired, verify_exact_agent_artifact,
 };
 use crate::vultr_host_bootstrap::{strict_ssh_accept, verify_operator_key_matches};
 use crate::vultr_lifecycle_command::{
@@ -105,6 +105,19 @@ pub(crate) fn materialize(
     context.materialize_application_inputs(&bundle_root, manifest_path, artifact_path)?;
     let artifact = load_artifact_manifest(manifest_path)?;
     verify_release_bound_application_inputs(context, &desired, &artifact, artifact_path)
+}
+
+pub(crate) async fn acceptance_stage_initial_policy(
+    context: &OrchestrationContext,
+    desired: &DesiredApplicationState,
+    manifest_path: &Path,
+    artifact_path: &Path,
+) -> Result<(String, String), String> {
+    let artifact = load_artifact_manifest(manifest_path)?;
+    verify_release_bound_application_inputs(context, desired, &artifact, artifact_path)?;
+    let prepared = prepare_application_bundle(Path::new("."), desired, &artifact)?;
+    let authority = resolve_application_authority(desired).await?;
+    stage_initial_application_policy(&authority, &artifact, artifact_path, &prepared).await
 }
 
 pub(crate) async fn acceptance_apply_desired(

@@ -840,7 +840,7 @@ fn operational_failure(stage: &'static str, detail: impl Into<String>) -> Accept
     }
 }
 
-fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(), String> {
+pub(crate) fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(), String> {
     if desired.environment != "application-acceptance" {
         return Err(format!(
             "application acceptance requires environment application-acceptance, got {}",

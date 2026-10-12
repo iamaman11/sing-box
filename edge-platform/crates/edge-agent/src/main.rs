@@ -464,13 +464,9 @@ async fn run_local_bundle_stage_initial(stack_dir: &Path) -> Result<(), AgentErr
     let request = read_local_bundle_request().map_err(AgentError::Command)?;
     let (bundle_id, bundle_digest) =
         validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
-    validate_initial_policy_bundle_request(&request).map_err(AgentError::Command)?;
-    require_empty_vm_initial_credential_host(stack_dir).map_err(AgentError::Command)?;
-    require_empty_vm_initial_bundle_host(stack_dir).map_err(AgentError::Command)?;
-    let docker = observe_docker().await.map_err(AgentError::Command)?;
-    require_no_vm_application_containers(&docker).map_err(AgentError::Command)?;
-    let applied =
-        apply_digest_bound_bundle(stack_dir, request, true).map_err(AgentError::Command)?;
+    let applied = stage_initial_vm_policy_bundle(stack_dir, request)
+        .await
+        .map_err(AgentError::Command)?;
     if applied.active_bundle_id.as_deref() != Some(bundle_id.as_str())
         || applied.active_bundle_digest.as_deref() != Some(bundle_digest.as_str())
         || stack_dir.join(RUNTIME_ENV_FILE).exists()
@@ -486,6 +482,21 @@ async fn run_local_bundle_stage_initial(stack_dir: &Path) -> Result<(), AgentErr
     println!("credential_active_present=false");
     println!("credential_authentication=UNPROVEN");
     Ok(())
+}
+
+// The existing local operator and restricted gRPC owner share this exact
+// fresh-install path. Neither may silently start runtime or promote credentials.
+async fn stage_initial_vm_policy_bundle(
+    stack_dir: &Path,
+    request: ApplyBundleRequest,
+) -> Result<ApplyBundleResponse, String> {
+    validate_digest_bound_bundle_request(&request)?;
+    validate_initial_policy_bundle_request(&request)?;
+    require_empty_vm_initial_credential_host(stack_dir)?;
+    require_empty_vm_initial_bundle_host(stack_dir)?;
+    let docker = observe_docker().await?;
+    require_no_vm_application_containers(&docker)?;
+    apply_digest_bound_bundle(stack_dir, request, true)
 }
 
 async fn run_local_bundle_converge(stack_dir: &Path) -> Result<(), AgentError> {
@@ -903,6 +914,16 @@ impl AgentService for AgentServerImpl {
         }
 
         Ok(Response::new(run_bootstrap(&self.stack_dir, mode).await))
+    }
+
+    async fn stage_initial_policy_bundle(
+        &self,
+        request: Request<ApplyBundleRequest>,
+    ) -> Result<Response<ApplyBundleResponse>, Status> {
+        let applied = stage_initial_vm_policy_bundle(&self.stack_dir, request.into_inner())
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(applied))
     }
 
     async fn apply_bundle(
