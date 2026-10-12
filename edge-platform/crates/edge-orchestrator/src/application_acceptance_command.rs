@@ -864,7 +864,10 @@ pub(crate) fn validate_disposable_acceptance(
         .as_ref()
         .ok_or_else(|| "application acceptance requires line1 runtime policy".to_owned())?;
     if line1.acme_provider != "letsencrypt" {
-        return Err("disposable network acceptance requires publicly trusted Let's Encrypt ACME authority".to_owned());
+        return Err(
+            "disposable network acceptance requires publicly trusted Let's Encrypt ACME authority"
+                .to_owned(),
+        );
     }
     desired
         .runtime_policy
