@@ -449,7 +449,7 @@ async fn initial_pair_preflight(
     println!("initial_pair_provider_intent_sha256={provider_intent_sha256}");
     println!("initial_pair_provider_version_barrier=READ_ONLY_REOBSERVED");
     println!("host_dummy_slot_attestations=REQUIRED");
-    println!("worker_version_bound_publish=NOT_IMPLEMENTED");
+    println!("worker_version_bound_publish=GATED_BY_TWO_HOSTS_AND_DURABLE_BEGIN");
     println!("provider_attempt_journal=NOT_RECORDED");
     println!("initial_publication_authorized=false");
     println!("credential_provider_mutations=0");
@@ -457,9 +457,9 @@ async fn initial_pair_preflight(
     Ok(())
 }
 
-/// This is the provider half of ONE first-use attempt, deliberately absent
-/// from the live GitHub command router until trusted disposable VM/Windows
-/// host jobs and their provenance/readback are integrated in the SAME PR.
+/// This is the provider half of ONE first-use attempt, reachable only
+/// through the verified same-run disposable VM, Windows and GitHub BEGIN
+/// owners in the canonical Vultr lifecycle workflow.
 async fn initial_pair_publish(
     control_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
