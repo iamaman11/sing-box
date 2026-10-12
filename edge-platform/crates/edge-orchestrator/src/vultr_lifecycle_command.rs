@@ -712,7 +712,9 @@ async fn install_disposable_initial_vm_access_identity(
         "if sudo test -e /opt/vultr-edge-stack/runtime-secrets || sudo test -L /opt/vultr-edge-stack/runtime-secrets; then echo PRESENT; else echo ABSENT; fi",
     )?;
     if directory != "ABSENT" {
-        return Err("initial VM Access installation refuses a pre-existing secret directory".to_owned());
+        return Err(
+            "initial VM Access installation refuses a pre-existing secret directory".to_owned(),
+        );
     }
     const INSTALL: &str = "set -eu; sudo -n install -d -o root -g root -m 0700 /opt/vultr-edge-stack/runtime-secrets; sudo -n install -o root -g root -m 0600 /dev/stdin /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env";
     strict_ssh_run_stdin(
