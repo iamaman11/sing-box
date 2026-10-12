@@ -946,37 +946,49 @@ def main() -> None:
         and "one explicit legacy-to-managed handoff" in architecture
         and "Stage 4B datapath convergence" in local_architecture
         and "Generated `runtime\\\\sing-box.json` never chooses the mode" in local_architecture
-        and "Stage 4B managed Windows TUN cutover" in runbook
+        and "## 10. Current N1/N2 → N3 native Windows modes (2026-10-12)" in runbook
         and "`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover" in architecture
         and "Shared-host foreign-project isolation" in architecture
         and "Sing-box configuration, protocol selection and quality authority" in architecture
-        and "Do not mutate Windows from an unaccepted mode-flip revision" in runbook
+        and "No Windows start, converge, repair, rollback, unattended reboot or TUN switch" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
-        and "Stage 3 and Stage 4A are closed" in readme
-        and "Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner" in readme
-        and "**Stage 4B.2-C had historical physical acceptance on the previous server/runtime generation, not the currently rebuilt server**" in readme
-        and "**ACTIVE P0" in readme
-        and "No start/converge/repair/restart-controller/rollback or unattended reboot" in readme
+        and "**ACTIVE N1/N2 → N3 → N4 (2026-10-12).**" in readme
+        and "the sole execution cursor" in readme
+        and "the same existing normal VM lifecycle" in readme
+        and "The former production VM" not in readme
+        and "The old production VM was deleted" in readme
+        and "EdgePlatformController` is **Stopped / AutoStart**" in readme
+        and "do not start or mutate Windows WARP/MISH/OKX" in readme
         and "The accepted proxy-only runtime is the starting point" not in readme
         and "currently working external Windows sing-box" not in readme
-        and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
-        and "class-scoped application rotation" in readme
+        and "bounded local owner" in readme
+        and "Independent authenticated 10/10 direct/WARP" in readme
         and "/production rollback" in runbook
         and "/credentials rotate tunnel-auth" in runbook
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "**Stage 4B.2-C was physically accepted for the previous server/runtime generation (historical scope only):**" in root_readme
-        and "**ACTIVE P0" in root_readme
-        and "Do not dispatch `/windows converge|start|repair|rollback|restart-controller`" in root_readme
-        and "Mandatory before Stage 4B.5 Android Mesh" in root_readme
+        and "> **ACTIVE N1/N2 — native VM install and external network acceptance (2026-10-12).**" in root_readme
+        and "**One delivery order:** N1/N2" in root_readme
+        and "Never start/restart/converge/repair/rollback TUN merely to retest" in root_readme
+        and "An acceptance VM is disposable" not in root_readme
+        and "First-use credentials require a durable journal" in root_readme
         and "The currently working external Windows sing-box/TUN" not in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
         and "`/production rollback` uses the same" in application_readme
         and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
-        "operator documentation must reflect accepted ManagedTun D/E/F and the still-unproven independent no-TUN recovery contract",
+        "operator docs must reflect sole Issue #26 N1/N2→N3→N4 and enforce stopped TUN/no-TUN recovery safety",
+    )
+    image_build_section = edge_platform_ci.split("# VM_RUNTIME_BUILD_CONTRACT_BEGIN", 1)[1].split("# VM_RUNTIME_BUILD_CONTRACT_END", 1)[0]
+    require(
+        image_build_section.count("docker buildx build --platform linux/amd64 --provenance=false --sbom=false --push") == 2
+        and "docker push" not in image_build_section
+        and 'evidence_image="${gateway_ref}"' in edge_platform_ci
+        and 'docker pull "${evidence_image}" >/dev/null' in edge_platform_ci
+        and 'docker buildx imagetools inspect "${gateway_ref}"' in edge_platform_ci,
+        "OCI candidate must publish once via Buildx and re-read immutable GHCR digests before attestations",
     )
     require(
         "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
