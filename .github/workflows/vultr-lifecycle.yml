@@ -1222,7 +1222,7 @@ jobs:
   # independent external witness and reboot/cleanup proof are implemented.
   initial_acceptance_verdict:
     name: Final physical 10-endpoint acceptance verdict
-    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume]
+    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume, initial_reboot]
     if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1237,9 +1237,10 @@ jobs:
           VM_ATTEST_JOB: ${{ needs.initial_vm_attest.result }}
           WINDOWS_ATTEST_JOB: ${{ needs.initial_windows_attest.result }}
           PAIRED_WORKERS_JOB: ${{ needs.initial_pair_publish.result }}
+          REBOOT_JOB: ${{ needs.initial_reboot.result }}
         run: |
           set -euo pipefail
-          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB; do
+          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB REBOOT_JOB; do
             printf '%s=%s\n' "${field}" "${!field}"
           done
           echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
@@ -1344,4 +1345,107 @@ jobs:
           test "${rc}" -eq 0
           jq -e '.outcome == "PASS" and .zero_leaked_resources == "PASS" and .terminal_stage == "complete"' "${result}" >/dev/null
           echo 'N1_N2_DISPOSABLE_ZERO_LEAK_CLEANUP=PASS' >> "${GITHUB_STEP_SUMMARY}"
+
+# Single authorized provider reboot after *both* isolated consumers have
+  # validated their initial candidates. Reuse native boot-ID change proof and
+  # native VM read-only candidate observation. Never repeat a lost reboot ACK.
+  initial_reboot:
+    name: One provider reboot and read-only credential recovery proof
+    needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Prove changed guest boot ID and post-reboot six authenticated VM-local proxies
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
+          test "$(sha256sum "${owner}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/initial-history.json"
+          exact="${RUNNER_TEMP}/exact-initial-begin.txt"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          jq -er --arg marker '<!-- sing-box-credential-initial-attempt/v1 -->' \
+            '[.[]|.body|select(startswith($marker))] | if length == 1 then .[0] else error("not exactly one first-use BEGIN") end' \
+            "${history}" > "${exact}"
+          python3 - "${exact}" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          p.write_bytes(p.read_bytes().removesuffix(b"\n"))
+          PY
+          "${owner}" credentials initial-pair-journal-readback "${history}" "${exact}" > "${RUNNER_TEMP}/readback.txt"
+          grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
+
+          key="${RUNNER_TEMP}/singbox-vultr-ops"
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
+          test -s "${key}"
+          chmod 0600 "${key}"
+          export EDGE_SSH_PRIVATE_KEY_PATH="${key}"
+          export EDGE_CONTROLLER_IPV4="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          "${owner}" vultr-lifecycle lease-acquire infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease.json"
+          jq -e '.status == "READY" and .lease_phase == "READY"' "${RUNNER_TEMP}/lease.json" >/dev/null
+          trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
+
+          "${owner}" vultr-lifecycle action-plan infra/vultr/application-acceptance.json application-acceptance-1 reboot > "${RUNNER_TEMP}/reboot-plan.json"
+          authority="$(jq -er '.plan_authority.authority_digest' "${RUNNER_TEMP}/reboot-plan.json")"
+          [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+          # One authorized provider reboot. On missing acknowledgement, stop.
+          "${owner}" vultr-lifecycle action infra/vultr/application-acceptance.json application-acceptance-1 reboot "${authority}" > "${RUNNER_TEMP}/reboot.json"
+          jq -e '.mutations_performed == 1 and .reboot_observation.boot_id_changed == true and
+                 (.reboot_observation.boot_id_before != .reboot_observation.boot_id_after)' \
+            "${RUNNER_TEMP}/reboot.json" >/dev/null
+          if ! "${owner}" vultr-lifecycle substrate-verify infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/reboot-substrate.json"; then
+            cat "${RUNNER_TEMP}/reboot-substrate.json" >&2
+            exit 1
+          fi
+          jq -e '.status == "PASS" and .plan.action == "NOOP"' "${RUNNER_TEMP}/reboot-substrate.json" >/dev/null
+
+          # Must be a separate READ-ONLY RPC; the first-use apply is never
+          # repeated after reboot, even if candidate runtime did not recover.
+          "${owner}" vultr-lifecycle initial-runtime-verify \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${history}" "${exact}" "${agent}" > "${RUNNER_TEMP}/reboot-runtime.json"
+          jq -e '.operation == "INITIAL_VM_RUNTIME_VERIFY" and .status == "PASS" and
+                 .candidate_materialized == true and .candidate_unpromoted == true and
+                 (.vm_local_line2 | length) == 6 and
+                 all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true) and
+                 .external_line1_4_of_4 == "UNPROVEN" and .external_line2_6_of_6 == "UNPROVEN"' \
+            "${RUNNER_TEMP}/reboot-runtime.json" >/dev/null
+          "${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease-release.json"
+          jq -e '.status == "RELEASED"' "${RUNNER_TEMP}/lease-release.json" >/dev/null
+          trap - EXIT
+          echo 'N1_N2_POST_REBOOT_GUEST_BOOT_ID=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_POST_REBOOT_VM_LOCAL_LINE2=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
 
