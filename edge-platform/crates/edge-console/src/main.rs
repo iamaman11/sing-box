@@ -1,8 +1,8 @@
 mod cli;
 mod credential_access_bootstrap;
 mod credential_transition;
-mod initial_line1_witness;
 mod error;
+mod initial_line1_witness;
 
 use clap::Parser;
 use edge_controller_core::{
@@ -267,15 +267,17 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::CredentialInitialAcceptanceBootstrap(args) => {
             let root = Path::new(&args.install_root);
-            load_verified_activation(root)
-                .map_err(|err| ConsoleError::Command(format!("isolated Windows release unverified: {err}")))?;
+            load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!("isolated Windows release unverified: {err}"))
+            })?;
             initial_line1_witness::bootstrap_access(root).map_err(ConsoleError::Command)?;
             Ok(())
         }
         Command::CredentialInitialAcceptanceStage(args) => {
             let root = Path::new(&args.install_root);
-            load_verified_activation(root)
-                .map_err(|err| ConsoleError::Command(format!("isolated Windows release unverified: {err}")))?;
+            load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!("isolated Windows release unverified: {err}"))
+            })?;
             initial_line1_witness::stage_from_worker(root, args.generation)
                 .await
                 .map_err(ConsoleError::Command)?;
@@ -283,14 +285,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::CredentialInitialLine1Witness(args) => {
             let root = Path::new(&args.install_root);
-            let activation = load_verified_activation(root)
-                .map_err(|err| ConsoleError::Command(format!("Line1 witness release is unverified: {err}")))?;
-            initial_line1_witness::run(
-                root,
-                Path::new(&activation.sing_box_path),
-                args.generation,
-            )
-            .map_err(ConsoleError::Command)?;
+            let activation = load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!("Line1 witness release is unverified: {err}"))
+            })?;
+            initial_line1_witness::run(root, Path::new(&activation.sing_box_path), args.generation)
+                .map_err(ConsoleError::Command)?;
             Ok(())
         }
         Command::CredentialState(args) => {
