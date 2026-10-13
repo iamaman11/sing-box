@@ -2434,7 +2434,11 @@ mod tests {
         assert!(windows.source.contains(SLOT_B));
         for worker in [&windows, &vm] {
             assert!(worker.source.contains("/v1/proof-slot"));
-            assert!(worker.source.contains("crypto.subtle.digest(\"SHA-256\",b)"));
+            assert!(
+                worker
+                    .source
+                    .contains("crypto.subtle.digest(\"SHA-256\",b)")
+            );
             assert!(!worker.source.contains("__DUMMY_A_DIGEST__"));
             assert!(!worker.source.contains("__DUMMY_B_DIGEST__"));
             for slot in &worker.slots {
