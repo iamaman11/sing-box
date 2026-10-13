@@ -2486,7 +2486,9 @@ mod tests {
         make_terminal(&mut observed, "vm");
         make_terminal(&mut observed, "windows");
         for projection in ["windows", "vm"] {
-            let old = previous_fixed_ab_version_tag(projection).unwrap().to_owned();
+            let old = previous_fixed_ab_version_tag(projection)
+                .unwrap()
+                .to_owned();
             let current = observed
                 .projections
                 .iter_mut()
@@ -2501,9 +2503,15 @@ mod tests {
                 projection: "windows".to_owned(),
             }
         );
-        assert!(validate_initial_pair_provider_observation(
-            &desired, &observed, 207, CredentialDeliverySlotArg::B,
-        ).is_err());
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::B,
+            )
+            .is_err()
+        );
     }
 
     #[test]
