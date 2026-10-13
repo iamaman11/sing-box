@@ -2726,6 +2726,14 @@ fn require_managed_tun_rollback_pair(
     if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
         return Err("rollback refuses a non-ManagedTun accepted desired mode".to_owned());
     }
+    require_exact_rollback_authority_pair(request, current, previous)
+}
+
+fn require_exact_rollback_authority_pair(
+    request: &WindowsPrivilegedRequest,
+    current: &WindowsActivationState,
+    previous: &WindowsActivationState,
+) -> Result<(), String> {
     if current.release_set_sha256 == previous.release_set_sha256 {
         return Err("rollback refuses identical current and previous release".to_owned());
     }
@@ -4831,18 +4839,33 @@ mod tests {
             credential_generation: None,
             credential_transition_action: None,
         };
-        require_managed_tun_rollback_pair(&request, &current, &previous).unwrap();
+        // The immutable authority pair is checked in both build modes.
+        // Actual release rollback remains forbidden on first-install ProxyOnly.
+        require_exact_rollback_authority_pair(&request, &current, &previous).unwrap();
+        let compiled_mode = canonical_production_desired_state()
+            .unwrap()
+            .windows_datapath_mode;
+        if compiled_mode == WindowsDatapathMode::ManagedTun as i32 {
+            require_managed_tun_rollback_pair(&request, &current, &previous).unwrap();
+        } else {
+            assert_eq!(compiled_mode, WindowsDatapathMode::ProxyOnly as i32);
+            assert!(
+                require_managed_tun_rollback_pair(&request, &current, &previous)
+                    .unwrap_err()
+                    .contains("non-ManagedTun")
+            );
+        }
 
         request.release_set_sha256 = Some("c".repeat(64));
         assert!(
-            require_managed_tun_rollback_pair(&request, &current, &previous)
+            require_exact_rollback_authority_pair(&request, &current, &previous)
                 .unwrap_err()
                 .contains("authority changed")
         );
         request.release_set_sha256 = Some(previous.release_set_sha256.clone());
         request.accepted_revision = Some("f".repeat(40));
         assert!(
-            require_managed_tun_rollback_pair(&request, &current, &previous)
+            require_exact_rollback_authority_pair(&request, &current, &previous)
                 .unwrap_err()
                 .contains("authority changed")
         );
