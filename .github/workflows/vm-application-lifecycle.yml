@@ -83,19 +83,21 @@ jobs:
               # Git chooses the machine; no caller-controlled IP, runner label,
               # shell, or second authority source.
               spec_path = tokens[2]
-              if not re.fullmatch(r"infra/application/[a-z0-9][a-z0-9_-]*\\.json", spec_path):
+              if not re.fullmatch(r"infra/application/[a-z0-9][a-z0-9_-]*\.json", spec_path):
                   fail("VM target must be an existing exact Git-owned application manifest")
               desired = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+              bundle_root = desired.get("bundle_root", "")
               if (desired.get("schema") != 2 or
                   desired.get("runtime_env_required") is not True or
-                  desired.get("bundle_root") != "win/vultr-waw/stack"):
-                  fail("VM application manifest has an unsupported typed schema/owner")
+                  not isinstance(bundle_root, str) or
+                  not re.fullmatch(r"(?:[a-z0-9][a-z0-9_-]*/){1,8}[a-z0-9][a-z0-9_-]*", bundle_root)):
+                  fail("VM application manifest has an unsupported typed schema/relative bundle owner")
               runtime_machine = desired.get("machine_id", "")
               if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", runtime_machine):
                   fail("VM application machine identity is malformed")
               provider_spec = desired.get("vultr_spec_path", "")
               if not isinstance(provider_spec, str) or not re.fullmatch(
-                  r"infra/vultr/[a-z0-9][a-z0-9_-]*\\.json", provider_spec
+                  r"infra/vultr/[a-z0-9][a-z0-9_-]*\.json", provider_spec
               ):
                   fail("VM manifest has an invalid Git-owned Vultr spec reference")
               inventory = json.loads(Path(provider_spec).read_text(encoding="utf-8"))
