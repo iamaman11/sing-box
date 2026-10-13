@@ -1417,7 +1417,11 @@ jobs:
           for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB REBOOT_JOB; do
             printf '%s=%s\n' "${field}" "${!field}"
           done
-          echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${WINDOWS_CANDIDATE_JOB}" == "success" ]]; then
+            echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          fi
           echo 'N1_N2_EXTERNAL_LINE2_6_OF_6=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N1_N2_PUBLIC_TLS_DIRECT_WARP_REBOOT_CLEANUP=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' >> "${GITHUB_STEP_SUMMARY}"
@@ -1431,6 +1435,55 @@ jobs:
   # Unknown CREATE ACK must stop at read-only reconciliation, never blindly
   # compensate a potentially foreign resource or replay the provider mutation.
   # A cleanup failure remains DIAGNOSTIC_REQUIRED, never a fake PASS.
+  initial_windows_cleanup:
+    name: Destroy only this run's isolated Windows acceptance tree
+    needs: [authorize, initial_preflight, initial_windows_isolate, initial_acceptance_verdict]
+    if: >-
+      always() &&
+      needs.authorize.outputs.operation == 'initial-vm-install' &&
+      needs.initial_windows_isolate.result != 'skipped'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+    steps:
+      - name: Refuse unknown scope; remove only exact owned acceptance root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $root = 'C:\sing-box-acceptance'
+          if (-not (Test-Path -LiteralPath $root)) {
+            Write-Host 'WINDOWS_ISOLATED_CLEANUP=ALREADY_ABSENT'
+            exit 0
+          }
+          $item = Get-Item -LiteralPath $root -Force
+          if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Windows acceptance cleanup refuses foreign or symlinked root'
+          }
+          $sentinel = Join-Path $root '.first-use-run'
+          if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
+            throw 'Windows acceptance cleanup refuses root lacking durable run sentinel'
+          }
+          $expected = "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}"
+          if ([IO.File]::ReadAllText($sentinel) -cne $expected) {
+            throw 'Windows acceptance cleanup refuses unknown owner or ReleaseSet'
+          }
+          if (Get-ChildItem -LiteralPath $root -Recurse -Force |
+              Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) {
+            throw 'Windows acceptance cleanup refuses link to foreign project state'
+          }
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+          if (Test-Path -LiteralPath $root) {
+            throw 'Windows acceptance root cleanup unconfirmed, no blind retry'
+          }
+          Write-Host 'WINDOWS_ISOLATED_OWNED_CLEANUP=PASS'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+
   initial_cleanup:
     name: Dispose exact first-use VM and prove zero-leak provider state
     needs: [authorize, execute, initial_acceptance_verdict]
