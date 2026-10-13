@@ -81,6 +81,7 @@ enum CredentialDeliveryAction {
     InstallDummyAbContract { projection: String },
     RestoreFixedAbVersionTag { projection: String },
     RestoreFixedAbBaseline { projection: String },
+    UpgradeSlotProofCode { projection: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +89,7 @@ enum ProjectionDeliveryState {
     LegacyLocked,
     FixedAbVersionTagMissing,
     FixedAbLatestPendingDeployment,
+    FixedAbProofUpgradeRequired,
     FixedAb,
 }
 
@@ -1229,10 +1231,26 @@ fn plan(
                     projection: projection.projection,
                 });
             }
+            ProjectionDeliveryState::FixedAbProofUpgradeRequired => {
+                return Ok(CredentialDeliveryAction::UpgradeSlotProofCode {
+                    projection: projection.projection,
+                });
+            }
             ProjectionDeliveryState::FixedAb => {}
         }
     }
     Ok(CredentialDeliveryAction::Noop)
+}
+
+// Immutable source-proven tags from the last accepted generation-search-only
+// Worker scripts, observed through the live provider before this source change.
+// They are NOT proof of the physical A/B secret binding values.
+fn previous_fixed_ab_version_tag(projection: &str) -> Result<&'static str, String> {
+    match projection {
+        "windows" => Ok("sing-box-phase6-ab-windows-6924f2f0655f58f9"),
+        "vm" => Ok("sing-box-phase6-ab-vm-371edd1d8616c67b"),
+        _ => Err("unknown previous Worker projection".to_owned()),
+    }
 }
 
 fn projection_delivery_state(
@@ -1263,6 +1281,16 @@ fn projection_delivery_state(
                 });
         let settings_tag = current.worker_version_tag.as_deref();
         let latest_tag = current.worker_latest_version_tag.as_deref();
+        let previous_tag = previous_fixed_ab_version_tag(&projection.projection)?;
+        if latest_is_only_active
+            && settings_tag == Some(previous_tag)
+            && latest_tag == Some(previous_tag)
+        {
+            // No script or secret change is authorized here. Exact binding
+            // inheritance and version fencing are still required to upgrade
+            // the code so hosts can prove which slot physically holds dummy.
+            return Ok(ProjectionDeliveryState::FixedAbProofUpgradeRequired);
+        }
         if latest_is_only_active
             && settings_tag == Some(material.version_tag.as_str())
             && latest_tag == Some(material.version_tag.as_str())
@@ -1924,6 +1952,7 @@ fn action_name(action: &CredentialDeliveryAction) -> &'static str {
             "RESTORE_FIXED_A_B_VERSION_TAG"
         }
         CredentialDeliveryAction::RestoreFixedAbBaseline { .. } => "RESTORE_FIXED_A_B_BASELINE",
+        CredentialDeliveryAction::UpgradeSlotProofCode { .. } => "UPGRADE_SLOT_PROOF_CODE",
     }
 }
 
@@ -2448,6 +2477,33 @@ mod tests {
         }
         assert!(!windows.source.contains("private_key"));
         assert!(!windows.source.contains("password"));
+    }
+
+    #[test]
+    fn old_generation_search_worker_requires_explicit_code_only_migration() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "vm");
+        make_terminal(&mut observed, "windows");
+        for projection in ["windows", "vm"] {
+            let old = previous_fixed_ab_version_tag(projection).unwrap().to_owned();
+            let current = observed
+                .projections
+                .iter_mut()
+                .find(|value| value.projection == projection)
+                .unwrap();
+            current.worker_version_tag = Some(old.clone());
+            current.worker_latest_version_tag = Some(old);
+        }
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::UpgradeSlotProofCode {
+                projection: "windows".to_owned(),
+            }
+        );
+        assert!(validate_initial_pair_provider_observation(
+            &desired, &observed, 207, CredentialDeliverySlotArg::B,
+        ).is_err());
     }
 
     #[test]
