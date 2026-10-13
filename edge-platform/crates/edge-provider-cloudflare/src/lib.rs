@@ -474,6 +474,64 @@ pub async fn patch_latest_worker_version_secrets(
     required_cloudflare_result_id("Worker version secret mutation", &payload.result)
 }
 
+/// Upload only Worker code while inheriting the two existing secret bindings
+/// from the latest provider version. No secret values enter this API request.
+/// This is a *single* irreversible provider write: its caller must durably
+/// fence the latest active version and never retry after uncertain ACK.
+/// Cloudflare's strict binding inheritance rejects missing/ambiguous bindings
+/// instead of silently dropping them.
+fn exact_binding_inherit_metadata(
+    version_tag: &str,
+) -> Result<serde_json::Value, String> {
+    require_non_empty("Worker proof version tag", version_tag)?;
+    Ok(serde_json::json!({
+        "main_module": "index.mjs",
+        "annotations": {
+            "workers/tag": version_tag,
+            "workers/message": "sing-box fixed-binding read-only attestation"
+        },
+        "bindings": [
+            { "name": "EDGE_CREDENTIAL_BUNDLE_A", "type": "inherit" },
+            { "name": "EDGE_CREDENTIAL_BUNDLE_B", "type": "inherit" }
+        ]
+    }))
+}
+
+pub async fn upload_worker_slot_proof_version(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+    version_tag: &str,
+    source: &str,
+) -> Result<String, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    if source.is_empty() || !source.contains("/v1/proof-slot") {
+        return Err("Worker code-only version must implement the fixed slot proof".to_owned());
+    }
+    let metadata = exact_binding_inherit_metadata(version_tag)?;
+    let module = reqwest::multipart::Part::text(source.to_owned())
+        .file_name("index.mjs")
+        .mime_str("application/javascript+module")
+        .map_err(|_| "Worker proof module MIME type is invalid".to_owned())?;
+    let form = reqwest::multipart::Form::new()
+        .text("metadata", metadata.to_string())
+        .part("index.mjs", module);
+    let client = authorized_client(api_token)?;
+    let response = client
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/versions?bindings_inherit=strict"
+        ))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|_| {
+            "Worker code-only version upload acknowledgement uncertain; STOP, reobserve, never replay".to_owned()
+        })?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    required_cloudflare_result_id("Worker code-only version upload", &payload.result)
+}
+
 fn worker_version_deployment_body(version_id: &str) -> Result<Value, String> {
     require_non_empty("Cloudflare Worker version ID", version_id)?;
     Ok(serde_json::json!({
@@ -2408,6 +2466,26 @@ mod tests {
         );
         assert!(required_cloudflare_result_id("test", &serde_json::json!({})).is_err());
         assert!(worker_version_deployment_body("").is_err());
+    }
+
+    #[test]
+    fn worker_code_only_upload_inherits_only_exact_fixed_bindings() {
+        let metadata =
+            exact_binding_inherit_metadata("sing-box-phase6-ab-vm-exact-proof").unwrap();
+        assert_eq!(metadata["main_module"], "index.mjs");
+        assert_eq!(
+            metadata["annotations"]["workers/tag"],
+            "sing-box-phase6-ab-vm-exact-proof"
+        );
+        assert_eq!(
+            metadata["bindings"],
+            serde_json::json!([
+                {"name": "EDGE_CREDENTIAL_BUNDLE_A", "type": "inherit"},
+                {"name": "EDGE_CREDENTIAL_BUNDLE_B", "type": "inherit"}
+            ])
+        );
+        assert!(!metadata.to_string().contains("secret_text"));
+        assert!(exact_binding_inherit_metadata("").is_err());
     }
 
     #[test]
