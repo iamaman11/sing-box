@@ -1788,11 +1788,25 @@ fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, 
 
     let source = r#"const S=["EDGE_CREDENTIAL_BUNDLE_A","EDGE_CREDENTIAL_BUNDLE_B"];
 const P=__PROJECTION__;
+const D=["__DUMMY_A_DIGEST__","__DUMMY_B_DIGEST__"];
+const Q=["__DUMMY_A_GENERATION__","__DUMMY_B_GENERATION__"];
 function H(v){if(typeof v!=="string"||v.length===0||v.length%2||!/^[0-9a-f]+$/.test(v))return null;const b=new Uint8Array(v.length/2);for(let i=0;i<b.length;i++)b[i]=parseInt(v.slice(i*2,i*2+2),16);return b}
 function V(b,p){let v=0n,s=0n;for(let i=0;i<10;i++){if(p>=b.length)return null;const x=BigInt(b[p++]);v|=(x&127n)<<s;if((x&128n)===0n)return[v,p];s+=7n}return null}
 function G(b){let p=0,z=null,g=null,r=null;while(p<b.length){const k=V(b,p);if(!k)return null;const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];if(!f)return null;if(w===0){const x=V(b,p);if(!x)return null;p=x[1];if(f===1)z=Number(x[0]);else if(f===2)g=x[0];else if(f===3)r=Number(x[0]);continue}if(w===1){if(p+8>b.length)return null;p+=8;continue}if(w===2){const x=V(b,p);if(!x||x[0]>BigInt(b.length))return null;p=x[1];const n=Number(x[0]);if(p+n>b.length)return null;p+=n;continue}if(w===5){if(p+4>b.length)return null;p+=4;continue}return null}return z===1&&g!==null&&r===P?g:null}
-export default{async fetch(q,e){const u=new URL(q.url),x=u.searchParams.get("generation");if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
-        .replace("__PROJECTION__", &(projection_kind as i32).to_string());
+export default{async fetch(q,e){const u=new URL(q.url),x=u.searchParams.get("generation");
+if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
+if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
+        .replace("__PROJECTION__", &(projection_kind as i32).to_string())
+        .replace("__DUMMY_A_DIGEST__", &sha256_hex(&slots[0].payload))
+        .replace("__DUMMY_B_DIGEST__", &sha256_hex(&slots[1].payload))
+        .replace(
+            "__DUMMY_A_GENERATION__",
+            &CREDENTIAL_DUMMY_PROBE_GENERATION_A.to_string(),
+        )
+        .replace(
+            "__DUMMY_B_GENERATION__",
+            &CREDENTIAL_DUMMY_PROBE_GENERATION_B.to_string(),
+        );
     let version_tag = format!(
         "sing-box-phase6-ab-{projection}-{}",
         &sha256_hex(source.as_bytes())[..16]
@@ -2418,6 +2432,16 @@ mod tests {
         }
         assert!(windows.source.contains(SLOT_A));
         assert!(windows.source.contains(SLOT_B));
+        for worker in [&windows, &vm] {
+            assert!(worker.source.contains("/v1/proof-slot"));
+            assert!(worker.source.contains("crypto.subtle.digest(\"SHA-256\",b)"));
+            assert!(!worker.source.contains("__DUMMY_A_DIGEST__"));
+            assert!(!worker.source.contains("__DUMMY_B_DIGEST__"));
+            for slot in &worker.slots {
+                assert!(worker.source.contains(&sha256_hex(&slot.payload)));
+                assert!(!worker.source.contains(&slot.secret_text));
+            }
+        }
         assert!(!windows.source.contains("private_key"));
         assert!(!windows.source.contains("password"));
     }
