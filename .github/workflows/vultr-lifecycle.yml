@@ -1328,6 +1328,79 @@ jobs:
           echo 'N1_FIRST_USE_VM_LOCAL_RUNTIME=PASS' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
 
+  initial_line2_external:
+    name: Independent public-port Line2 six-proxy HTTPS/TLS/auth witness
+    needs: [authorize, initial_preflight, initial_pair_publish, initial_vm_runtime]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Verify exact VM ownership, then prove six external proxy ports
+        shell: bash
+        env:
+          GH_TOKEN: \${{ github.token }}
+          REPOSITORY: \${{ github.repository }}
+          ACCEPTED_REVISION: \${{ github.sha }}
+          OUTPUT_DIR: \${{ runner.temp }}/edge-platform-release
+          GENERATION: \${{ needs.initial_preflight.outputs.generation }}
+          RELEASE_SET: \${{ needs.initial_preflight.outputs.release_set }}
+          VULTR_API_KEY: \${{ secrets.VULTR_API_KEY }}
+          VM_ACCESS_CLIENT_ID: \${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          VM_ACCESS_CLIENT_SECRET: \${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test "\${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "\${VM_ACCESS_CLIENT_ID}"
+          test -n "\${VM_ACCESS_CLIENT_SECRET}"
+          git init .
+          git remote add origin "https://github.com/\${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "\${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "\${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "\${OUTPUT_DIR}/resolved.env"
+          test "\${EDGE_RELEASE_SET_SHA256}" = "\${RELEASE_SET}"
+          owner="\${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "\${owner}" | cut -d' ' -f1)" = "\${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "\${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="\${OUTPUT_DIR}/resolved.env"
+          "\${owner}" vultr-lifecycle plan infra/vultr/application-acceptance.json application-acceptance-1 > "\${RUNNER_TEMP}/external-plan.json"
+          provider_id="$(jq -er '
+            if (.plans|length)==1 and .plans[0].machine_id=="application-acceptance-1" and
+               .plans[0].class=="NOOP" and (.plans[0].provider_id|type)=="string"
+            then .plans[0].provider_id else error("external witness requires exact owned NOOP VM") end
+          ' "\${RUNNER_TEMP}/external-plan.json")"
+          "\${owner}" vultr-lifecycle inventory infra/vultr/application-acceptance.json > "\${RUNNER_TEMP}/external-inventory.json"
+          vm_ipv4="$(jq -er --arg id "\${provider_id}" '
+            [.inventory.resources[]|select(.provider_id==$id)] |
+            if length==1 and (.[0].main_ip|type)=="string"
+            then .[0].main_ip else error("external witness provider IP ambiguous") end
+          ' "\${RUNNER_TEMP}/external-inventory.json")"
+          spec="infra/application/disposable-acceptance.json"
+          test "$(jq -er .environment "\${spec}")" = "application-acceptance"
+          test "$(jq -er .machine_id "\${spec}")" = "application-acceptance-1"
+          domain="$(jq -er '.runtime_policy.line1.tunnel_domain' "\${spec}")"
+          username="$(jq -er '.runtime_policy.line2.proxy_username' "\${spec}")"
+          test "$(jq -er '.runtime_policy.line2.proxy_cert_cn' "\${spec}")" = "\${domain}"
+          identity="\${RUNNER_TEMP}/vm-worker-access.env"
+          umask 077
+          printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
+            "\${VM_ACCESS_CLIENT_ID}" "\${VM_ACCESS_CLIENT_SECRET}" > "\${identity}"
+          trap 'rm -f "\${identity}"' EXIT
+          "\${owner}" credentials initial-line2-external-witness \
+            "\${GENERATION}" "\${vm_ipv4}" "\${domain}" "\${username}" "\${identity}" \
+            > "\${RUNNER_TEMP}/line2-external.txt"
+          grep -Fxq 'line2_external_6_of_6=PASS' "\${RUNNER_TEMP}/line2-external.txt"
+          grep -Fxq 'line2_direct_warp_egress_distinct=true' "\${RUNNER_TEMP}/line2-external.txt"
+          grep -Fxq 'vm_runtime_mutations=0' "\${RUNNER_TEMP}/line2-external.txt"
+          test "$(grep -c '^line2_external_endpoint=' "\${RUNNER_TEMP}/line2-external.txt")" -eq 6
+          echo 'N2_EXTERNAL_LINE2_6_OF_6=PASS' >> "\${GITHUB_STEP_SUMMARY}"
+
   initial_windows_consume:
     name: Consume and validate Worker-v2 Windows candidate without TUN
     needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]
