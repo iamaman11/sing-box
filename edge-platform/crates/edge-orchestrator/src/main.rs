@@ -13,6 +13,7 @@ mod cloudflare_mesh_profile_command;
 mod cloudflare_production_inventory;
 mod cloudflare_target_plane_command;
 mod cloudflare_zero_trust_doctor;
+mod credential_initial_journal;
 mod production_command;
 mod vultr_host_bootstrap;
 mod vultr_host_substrate_service;
@@ -168,7 +169,7 @@ async fn run(
             }
         },
         Command::Credentials { command } => {
-            cloudflare_credential_plane_command::run_delivery(command).await
+            cloudflare_credential_plane_command::run_delivery(command, release_context).await
         }
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),

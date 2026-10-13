@@ -1,9 +1,14 @@
 use crate::cli::{
     CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
 };
+use crate::credential_initial_journal::{
+    InitialPairJournalPlan, plan_initial_pair_reservation, require_empty_initial_history,
+    verify_expected_initial_attempt, verify_recorded_initial_attempt,
+};
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
-    RotateCredentialSnapshotRequest, generate_rotation_credential_snapshot,
+    FreshCredentialSnapshotRequest, RotateCredentialSnapshotRequest,
+    generate_fresh_credential_snapshot, generate_rotation_credential_snapshot,
 };
 use edge_provider_cloudflare as cloudflare;
 use edge_shared_types::{
@@ -101,7 +106,20 @@ struct DeliveryWorkerMaterial {
     slots: Vec<DeliverySlot>,
 }
 
-pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), String> {
+pub async fn run_delivery(
+    command: CredentialDeliveryCommand,
+    release_context: &edge_orchestrator::OrchestrationContext,
+) -> Result<(), String> {
+    // The GitHub attempt journal is independent from Cloudflare provider
+    // credentials. An unchanged read-only history check must work before the
+    // workflow injects ANY Cloudflare control token.
+    if matches!(
+        &command,
+        CredentialDeliveryCommand::InitialPairJournalObserve { .. }
+            | CredentialDeliveryCommand::InitialPairJournalReadback { .. }
+    ) {
+        return run_readonly_journal(command);
+    }
     let control_token = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let desired = production.cloudflare.credential_plane.clone();
@@ -117,6 +135,89 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
 
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
+        CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
+            initial_pair_preflight(&control_token, &desired, generation, slot).await
+        }
+        CredentialDeliveryCommand::InitialPairJournalObserve { .. }
+        | CredentialDeliveryCommand::InitialPairJournalReadback { .. } => {
+            unreachable!("read-only journal is dispatched before acquiring provider authority")
+        }
+        CredentialDeliveryCommand::InitialPairJournalPlan {
+            generation,
+            slot,
+            provider_intent_sha256,
+            vm_attestation_sha256,
+            windows_attestation_sha256,
+            run_id,
+            journal_history_path,
+            record_output_path,
+        } => {
+            let observed = observe(&control_token, &desired).await?;
+            let expected =
+                initial_pair_provider_intent_sha256(&desired, &observed, generation, slot)?;
+            if expected != provider_intent_sha256 {
+                return Err("initial journal refuses stale or forged provider intent".to_owned());
+            }
+            let history = fs::read_to_string(&journal_history_path)
+                .map_err(|err| format!("initial journal history cannot be read: {err}"))?;
+            let request = InitialPairJournalPlan {
+                generation,
+                slot: slot.as_str().to_owned(),
+                provider_intent_sha256,
+                vm_attestation_sha256,
+                windows_attestation_sha256,
+                release_source_revision: release_context.release().source_revision.clone(),
+                release_set_sha256: release_context.release().release_set_sha256.clone(),
+                github_run_id: run_id,
+            };
+            let result = plan_initial_pair_reservation(&request, &history)?;
+            // Atomic create-new, no replacement: a retry cannot silently
+            // alter the exact record later read back from GitHub.
+            write_new_initial_record(&record_output_path, &result)?;
+            // This is only a local non-secret file. GitHub ISSUE #26 BEGIN
+            // is not durable until the authorized workflow POSTs once and
+            // independently verifies the full comment history.
+            println!("operation=CREDENTIAL_INITIAL_PAIR_JOURNAL_PLAN");
+            println!(
+                "credential_attempt_record_sha256={}",
+                sha256_hex(result.as_bytes())
+            );
+            println!("credential_record_file_created=true");
+            println!("credential_provider_mutations=0");
+            println!("credential_journal_mutations=0");
+            println!("initial_publication_authorized=false");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairPublish {
+            generation,
+            slot,
+            provider_intent_sha256,
+            vm_attestation_sha256,
+            windows_attestation_sha256,
+            run_id,
+            journal_history_path,
+            exact_record_path,
+        } => {
+            initial_pair_publish(
+                &control_token,
+                &desired,
+                release_context,
+                InitialPairJournalPlan {
+                    generation,
+                    slot: slot.as_str().to_owned(),
+                    provider_intent_sha256,
+                    vm_attestation_sha256,
+                    windows_attestation_sha256,
+                    release_source_revision: release_context.release().source_revision.clone(),
+                    release_set_sha256: release_context.release().release_set_sha256.clone(),
+                    github_run_id: run_id,
+                },
+                slot,
+                &journal_history_path,
+                &exact_record_path,
+            )
+            .await
+        }
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await
         }
@@ -137,6 +238,386 @@ pub async fn run_delivery(command: CredentialDeliveryCommand) -> Result<(), Stri
             .await
         }
     }
+}
+
+fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
+    // A BEGIN reservation is a non-secret exact payload for ONE authorized
+    // GitHub comment, not a second credential authority.
+    if record.len() > 4096
+        || !record.starts_with("<!-- sing-box-credential-initial-attempt/v1 -->\n")
+    {
+        return Err("initial BEGIN local record is malformed or too large".to_owned());
+    }
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|err| format!("cannot create one-shot initial BEGIN file: {err}"))?;
+    file.write_all(record.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|err| format!("initial BEGIN record was not durably written: {err}"))
+}
+
+fn run_readonly_journal(command: CredentialDeliveryCommand) -> Result<(), String> {
+    match command {
+        CredentialDeliveryCommand::InitialPairJournalObserve {
+            journal_history_path,
+        } => {
+            let history = fs::read_to_string(&journal_history_path)
+                .map_err(|err| format!("cannot read initial attempt journal history: {err}"))?;
+            require_empty_initial_history(&history)?;
+            println!("credential_initial_journal_empty=true");
+            println!("credential_journal_mutations=0");
+            println!("credential_provider_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairJournalReadback {
+            journal_history_path,
+            exact_record_path,
+        } => {
+            let history = fs::read_to_string(journal_history_path)
+                .map_err(|err| format!("initial journal readback cannot open history: {err}"))?;
+            let exact = fs::read_to_string(exact_record_path).map_err(|err| {
+                format!("initial journal readback cannot open intended record: {err}")
+            })?;
+            verify_recorded_initial_attempt(&history, &exact)?;
+            println!("credential_initial_journal_exact_begin=true");
+            println!("credential_provider_mutations=0");
+            println!("initial_publication_authorized=false");
+            Ok(())
+        }
+        _ => Err("read-only GitHub journal handler refuses provider command".to_owned()),
+    }
+}
+
+// Provider-side non-mutating half of the single N1/N2 initial transaction.
+// This does not consume a host attestation and may never authorize a POST.
+fn validate_initial_pair_provider_observation(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    generation: u64,
+    _slot: CredentialDeliverySlotArg,
+) -> Result<(), String> {
+    if generation == 0
+        || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_A
+        || generation == CREDENTIAL_DUMMY_PROBE_GENERATION_B
+    {
+        return Err(
+            "fresh credential generation must be nonzero and distinct from canonical dummy probes"
+                .to_owned(),
+        );
+    }
+    validate_access_boundary(desired, observed)?;
+    let vm = projection_observation(observed, "vm")?;
+    let windows = projection_observation(observed, "windows")?;
+    for projection in projections(desired) {
+        let current = projection_observation(observed, &projection.projection)?;
+        if projection_delivery_state(desired, &projection, observed)?
+            != ProjectionDeliveryState::FixedAb
+            || current
+                .worker_latest_version_id
+                .as_deref()
+                .unwrap_or("")
+                .is_empty()
+            || current.worker_active_version_ids.len() != 1
+        {
+            return Err(format!(
+                "initial paired provider preflight refuses drifted {} Worker version or A/B topology",
+                projection.projection
+            ));
+        }
+    }
+    for (label, left, right) in [
+        (
+            "Worker identity",
+            vm.worker_id.as_deref(),
+            windows.worker_id.as_deref(),
+        ),
+        (
+            "Access service token",
+            vm.host_service_token_id.as_deref(),
+            windows.host_service_token_id.as_deref(),
+        ),
+        (
+            "Access client identity",
+            vm.host_service_token_client_id.as_deref(),
+            windows.host_service_token_client_id.as_deref(),
+        ),
+        (
+            "Access application",
+            vm.access_application_id.as_deref(),
+            windows.access_application_id.as_deref(),
+        ),
+    ] {
+        if left.is_none() || right.is_none() || left == right {
+            return Err(format!(
+                "initial paired provider preflight requires distinct nonempty VM and Windows {label}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+// A stable, non-secret journal key for the *observed* baseline of BOTH
+// Workers. Every eventual host attestation and append-only attempt record
+// must bind to this exact digest. Provider metadata alone cannot authorize
+// publication, regardless of this digest matching.
+fn initial_pair_provider_intent_sha256(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    generation: u64,
+    slot: CredentialDeliverySlotArg,
+) -> Result<String, String> {
+    validate_initial_pair_provider_observation(desired, observed, generation, slot)?;
+    let vm = projection_observation(observed, "vm")?;
+    let windows = projection_observation(observed, "windows")?;
+    let version_id = |projection: &ProjectionObservation| -> Result<String, String> {
+        let latest = projection
+            .worker_latest_version_id
+            .as_deref()
+            .ok_or_else(|| {
+                format!(
+                    "{} initial intent has no latest Worker version",
+                    projection.projection
+                )
+            })?;
+        if projection.worker_active_version_ids.as_slice() != [latest] {
+            return Err(format!(
+                "{} initial intent refuses Worker version race",
+                projection.projection
+            ));
+        }
+        Ok(latest.to_owned())
+    };
+    let identity = serde_json::json!({
+        "schema": "credential-initial-pair-provider-intent/v1",
+        "account_id": desired.target_account_id,
+        "generation": generation,
+        "slot": slot.as_str(),
+        "vm": {
+            "worker_id": vm.worker_id,
+            "latest_active_version_id": version_id(vm)?,
+            "access_application_id": vm.access_application_id,
+            "access_service_token_id": vm.host_service_token_id,
+            "access_client_id": vm.host_service_token_client_id,
+        },
+        "windows": {
+            "worker_id": windows.worker_id,
+            "latest_active_version_id": version_id(windows)?,
+            "access_application_id": windows.access_application_id,
+            "access_service_token_id": windows.host_service_token_id,
+            "access_client_id": windows.host_service_token_client_id,
+        },
+    });
+    let bytes = serde_json::to_vec(&identity)
+        .map_err(|err| format!("failed to encode initial provider intent: {err}"))?;
+    Ok(sha256_hex(&bytes))
+}
+
+async fn initial_pair_preflight(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    generation: u64,
+    slot: CredentialDeliverySlotArg,
+) -> Result<(), String> {
+    let observed = observe(control_token, desired).await?;
+    let provider_intent_sha256 =
+        initial_pair_provider_intent_sha256(desired, &observed, generation, slot)?;
+    // The provider-side plan is read-only. Re-observe once and fail if either
+    // Worker version or Access identity changed in the meantime. No polling
+    // and, in particular, no mutation authority is implied.
+    let reobserved = observe(control_token, desired).await?;
+    let confirmed_sha256 =
+        initial_pair_provider_intent_sha256(desired, &reobserved, generation, slot)?;
+    if provider_intent_sha256 != confirmed_sha256 {
+        return Err(
+            "initial paired provider intent drifted during read-only re-observation".to_owned(),
+        );
+    }
+    println!("operation=CREDENTIAL_INITIAL_PAIR_PREFLIGHT");
+    println!("credential_generation={generation}");
+    println!("credential_slot={}", slot.as_str());
+    println!("worker_projection_count=2");
+    println!("provider_topology=EXACT_FIXED_AB");
+    println!("vm_access_identity_distinct=true");
+    println!("windows_access_identity_distinct=true");
+    println!("initial_pair_provider_intent_sha256={provider_intent_sha256}");
+    println!("initial_pair_provider_version_barrier=READ_ONLY_REOBSERVED");
+    println!("host_dummy_slot_attestations=REQUIRED");
+    println!("worker_version_bound_publish=GATED_BY_TWO_HOSTS_AND_DURABLE_BEGIN");
+    println!("provider_attempt_journal=NOT_RECORDED");
+    println!("initial_publication_authorized=false");
+    println!("credential_provider_mutations=0");
+    println!("credential_runtime_mutations=0");
+    Ok(())
+}
+
+/// This is the provider half of ONE first-use attempt, reachable only
+/// through the verified same-run disposable VM, Windows and GitHub BEGIN
+/// owners in the canonical Vultr lifecycle workflow.
+async fn initial_pair_publish(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    release_context: &edge_orchestrator::OrchestrationContext,
+    request: InitialPairJournalPlan,
+    slot: CredentialDeliverySlotArg,
+    journal_history_path: &Path,
+    exact_record_path: &Path,
+) -> Result<(), String> {
+    // Never allow a local shell, a re-run, or a different repository/actor
+    // to turn this source capability into an independent issuer.
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_ACTOR_ID", "44100369"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_JOB", "initial_pair_publish"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("initial pair publisher refuses untrusted {key}"));
+        }
+    }
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(request.github_run_id.to_string().as_str())
+        || env::var("GITHUB_SHA").ok().as_deref()
+            != Some(release_context.release().accepted_revision.as_str())
+    {
+        return Err(
+            "initial pair publisher refuses a mismatched GitHub run or source revision".to_owned(),
+        );
+    }
+
+    // A complete GitHub BEGIN must be durably persisted and independently
+    // read back before either Worker is patched. A supplied digest is never
+    // a substitute for this exact readback.
+    let history = fs::read_to_string(journal_history_path)
+        .map_err(|err| format!("initial publish cannot read GitHub history: {err}"))?;
+    let exact_record = fs::read_to_string(exact_record_path)
+        .map_err(|err| format!("initial publish cannot read persisted BEGIN: {err}"))?;
+    verify_expected_initial_attempt(&history, &exact_record, &request)?;
+    if request.release_source_revision != release_context.release().source_revision
+        || request.release_set_sha256 != release_context.release().release_set_sha256
+    {
+        return Err("initial publish refuses non-exact immutable ReleaseSet authority".to_owned());
+    }
+
+    let before = observe(control_token, desired).await?;
+    let current_intent =
+        initial_pair_provider_intent_sha256(desired, &before, request.generation, slot)?;
+    if current_intent != request.provider_intent_sha256 {
+        return Err("initial publish refuses changed Worker version/Access baseline".to_owned());
+    }
+    let previous_version = |projection: &str| -> Result<String, String> {
+        let observed = projection_observation(&before, projection)?;
+        observed
+            .worker_latest_version_id
+            .clone()
+            .ok_or_else(|| format!("{projection} has no expected initial version"))
+    };
+    let vm_previous = previous_version("vm")?;
+    let windows_previous = previous_version("windows")?;
+
+    // Only this separate Cloudflare token can mutate Worker versions.
+    let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let rotation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+    if rotation_identity.status != "active"
+        || rotation_identity.id == before.control_token_identity.id
+    {
+        return Err(
+            "initial publish requires distinct active least-privilege mutation token".to_owned(),
+        );
+    }
+    let delivery_slot = match slot {
+        CredentialDeliverySlotArg::A => CredentialDeliverySlot::A,
+        CredentialDeliverySlotArg::B => CredentialDeliverySlot::B,
+    };
+    let snapshot = generate_fresh_credential_snapshot(FreshCredentialSnapshotRequest {
+        delivery_generation: request.generation,
+        slot: delivery_slot,
+        tunnel_auth_generation: request.generation,
+        reality_identity_generation: request.generation,
+        line2_proxy_generation: request.generation,
+    })?;
+    let slot_name = match delivery_slot {
+        CredentialDeliverySlot::A => SLOT_A,
+        CredentialDeliverySlot::B => SLOT_B,
+        CredentialDeliverySlot::Unspecified => unreachable!("validated first-use slot"),
+    };
+    let vm = projection_desired(desired, "vm")?;
+    let windows = projection_desired(desired, "windows")?;
+    let vm_secret = hex_encode(&snapshot.vm.encode_to_vec());
+    let windows_secret = hex_encode(&snapshot.windows.encode_to_vec());
+
+    // Deliberately sequential: cross-Worker atomicity does not exist.
+    // A failed/unknown first PATCH or deployment aborts the transaction.
+    // New secrets are generated exactly once and never regenerated on retry.
+    let vm_published_version = publish_rotation_slot(
+        control_token,
+        &rotation_token,
+        desired,
+        &vm,
+        slot_name,
+        &vm_secret,
+        Some(&vm_previous),
+    )
+    .await?;
+    let after_vm = observe(control_token, desired).await?;
+    if projection_observation(&after_vm, "windows")?
+        .worker_latest_version_id
+        .as_deref()
+        != Some(windows_previous.as_str())
+        || verify_exact_active_worker_version(
+            projection_observation(&after_vm, "vm")?,
+            &vm_published_version,
+        )
+        .is_err()
+    {
+        return Err(
+            "initial paired publish observed an unexpected intermediate Worker version".to_owned(),
+        );
+    }
+    let windows_published_version = publish_rotation_slot(
+        control_token,
+        &rotation_token,
+        desired,
+        &windows,
+        slot_name,
+        &windows_secret,
+        Some(&windows_previous),
+    )
+    .await?;
+    let after = observe(control_token, desired).await?;
+    for (projection, expected_version) in [
+        (&vm, vm_published_version.as_str()),
+        (&windows, windows_published_version.as_str()),
+    ] {
+        if projection_delivery_state(desired, projection, &after)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} initial publish lost the exact fixed A/B topology",
+                projection.projection
+            ));
+        }
+        verify_exact_active_worker_version(
+            projection_observation(&after, &projection.projection)?,
+            expected_version,
+        )?;
+    }
+    println!("credential_initial_pair_provider_publish=PASS");
+    println!("credential_generation={}", request.generation);
+    println!("credential_slot={}", slot.as_str());
+    println!("paired_projection_count=2");
+    println!("credential_initial_begin_record=EXACT_READBACK");
+    println!("credential_initial_consumer_authentication=UNPROVEN");
+    println!("credential_initial_external_line1_4_of_4=UNPROVEN");
+    println!("credential_initial_external_line2_6_of_6=UNPROVEN");
+    Ok(())
 }
 
 async fn rotate_application_publish(
@@ -214,6 +695,7 @@ async fn rotate_application_publish(
         &vm,
         slot_name,
         &vm_secret,
+        None,
     )
     .await?;
     publish_rotation_slot(
@@ -223,6 +705,7 @@ async fn rotate_application_publish(
         &windows,
         slot_name,
         &windows_secret,
+        None,
     )
     .await?;
 
@@ -247,13 +730,23 @@ async fn publish_rotation_slot(
     projection: &ProjectionDesired,
     slot_name: &str,
     secret_text: &str,
-) -> Result<(), String> {
+    expected_latest_version: Option<&str>,
+) -> Result<String, String> {
     let before = observe(control_token, desired).await?;
     let before_projection = projection_observation(&before, &projection.projection)?;
     if projection_delivery_state(desired, projection, &before)? != ProjectionDeliveryState::FixedAb
     {
         return Err(format!(
             "{} credential Worker drifted before inactive-slot publication",
+            projection.projection
+        ));
+    }
+    if expected_latest_version.is_some_and(|version| {
+        before_projection.worker_latest_version_id.as_deref() != Some(version)
+            || before_projection.worker_active_version_ids.as_slice() != [version]
+    }) {
+        return Err(format!(
+            "{} initial publication refuses stale Worker baseline before PATCH",
             projection.projection
         ));
     }
@@ -270,31 +763,43 @@ async fn publish_rotation_slot(
     {
         Ok(version_id) => version_id,
         Err(err) => {
-            let observed = observe(control_token, desired).await?;
-            let current = projection_observation(&observed, &projection.projection)?;
-            if current.worker_latest_version_id == before_projection.worker_latest_version_id {
-                return Err(format!(
-                    "{} inactive-slot publication failed and read-only re-observation proved no new Worker version: {err}",
-                    projection.projection
-                ));
-            }
-            if current.worker_latest_version_tag.as_deref() != Some(material.version_tag.as_str())
-                || projection_delivery_state(desired, projection, &observed)?
-                    != ProjectionDeliveryState::FixedAbLatestPendingDeployment
-            {
-                return Err(format!(
-                    "{} inactive-slot publication outcome is uncertain after re-observation: {err}",
-                    projection.projection
-                ));
-            }
-            current.worker_latest_version_id.clone().ok_or_else(|| {
-                format!(
-                    "{} inactive-slot publication created no observable latest Worker version",
-                    projection.projection
-                )
-            })?
+            // Cloudflare hides secret values from GET. A new version is not
+            // proof that *our* exact opaque bytes landed. Neither retry the
+            // PATCH nor deploy an unverified candidate after a lost ACK.
+            let readback = observe(control_token, desired).await;
+            let evidence = match readback {
+                Ok(observed) => {
+                    let current = projection_observation(&observed, &projection.projection)?;
+                    if current.worker_latest_version_id
+                        == before_projection.worker_latest_version_id
+                    {
+                        "LATEST_VERSION_UNCHANGED"
+                    } else {
+                        "LATEST_VERSION_CHANGED_CONTENT_UNPROVEN"
+                    }
+                }
+                Err(_) => "READBACK_UNAVAILABLE",
+            };
+            return Err(format!(
+                "{} inactive-slot PATCH result is not confirmed; evidence={evidence}; stop without replay or deploy; source={err}",
+                projection.projection
+            ));
         }
     };
+
+    if before_projection.worker_latest_version_id.as_deref() == Some(version_id.as_str()) {
+        return Err(format!(
+            "{} provider returned unchanged version after secret PATCH",
+            projection.projection
+        ));
+    }
+    // A successful PATCH ACK alone does not authorize POST deployment:
+    // Cloudflare's mutable /versions/latest has no demonstrated atomic
+    // compare-and-swap against our original Worker version. Observe the
+    // returned new version and unchanged old deployment exactly once.
+    let before_deploy = observe(control_token, desired).await?;
+    let pending = projection_observation(&before_deploy, &projection.projection)?;
+    verify_exact_pending_worker_version(before_projection, pending, &version_id)?;
 
     let deploy_once = cloudflare::deploy_worker_version(
         rotation_token,
@@ -306,31 +811,15 @@ async fn publish_rotation_slot(
     if let Err(first_err) = deploy_once {
         let observed = observe(control_token, desired).await?;
         let current = projection_observation(&observed, &projection.projection)?;
-        if current.worker_active_version_ids == vec![version_id.clone()] {
-            return Ok(());
+        if verify_exact_active_worker_version(current, &version_id).is_ok() {
+            return Ok(version_id);
         }
-        if current.worker_latest_version_id.as_deref() != Some(version_id.as_str())
-            || projection_delivery_state(desired, projection, &observed)?
-                != ProjectionDeliveryState::FixedAbLatestPendingDeployment
-        {
-            return Err(format!(
-                "{} candidate deployment outcome is uncertain after re-observation: {first_err}",
-                projection.projection
-            ));
-        }
-        cloudflare::deploy_worker_version(
-            rotation_token,
-            &desired.target_account_id,
-            &projection.worker_name,
-            &version_id,
-        )
-        .await
-        .map_err(|retry_err| {
-            format!(
-                "{} candidate deployment failed after re-observation proved the first attempt unchanged: first={first_err}; retry={retry_err}",
-                projection.projection
-            )
-        })?;
+        // Re-observation may confirm deployment succeeded, but it cannot
+        // authorize a second mutation when the first ACK was uncertain.
+        return Err(format!(
+            "{} candidate deployment not confirmed for exact version {}; stop without replay; source={first_err}",
+            projection.projection, version_id
+        ));
     }
 
     let after = observe(control_token, desired).await?;
@@ -338,6 +827,53 @@ async fn publish_rotation_slot(
         return Err(format!(
             "{} credential Worker did not return to exact fixed A/B topology after candidate deployment",
             projection.projection
+        ));
+    }
+    verify_exact_active_worker_version(
+        projection_observation(&after, &projection.projection)?,
+        &version_id,
+    )?;
+    Ok(version_id)
+}
+
+/// Read-only compare of the exact PATCH result immediately before deploying it.
+/// This limits undetected races, but Cloudflare /versions/latest is not a CAS:
+/// provider changes between this GET and our POST still require host readback.
+fn verify_exact_pending_worker_version(
+    before: &ProjectionObservation,
+    pending: &ProjectionObservation,
+    returned_version: &str,
+) -> Result<(), String> {
+    if returned_version.trim().is_empty()
+        || before.worker_latest_version_id.as_deref() == Some(returned_version)
+        || pending.worker_latest_version_id.as_deref() != Some(returned_version)
+        || pending.worker_active_version_ids != before.worker_active_version_ids
+        || pending.worker_active_deployment_id != before.worker_active_deployment_id
+        || pending.worker_id != before.worker_id
+        || pending.worker_name != before.worker_name
+        || pending.worker_secret_bindings != before.worker_secret_bindings
+        || pending.worker_binding_count != before.worker_binding_count
+    {
+        return Err(format!(
+            "{} Worker PATCH readback is ambiguous or drifted; do not deploy or replay",
+            before.projection
+        ));
+    }
+    Ok(())
+}
+
+fn verify_exact_active_worker_version(
+    current: &ProjectionObservation,
+    expected_version: &str,
+) -> Result<(), String> {
+    if expected_version.trim().is_empty()
+        || current.worker_latest_version_id.as_deref() != Some(expected_version)
+        || current.worker_active_version_ids.as_slice() != [expected_version]
+        || current.worker_active_deployment_id.is_none()
+    {
+        return Err(format!(
+            "{} Worker deployment lacks exact active/latest version; do not replay",
+            current.projection
         ));
     }
     Ok(())
@@ -1401,6 +1937,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn first_use_begin_file_create_new_has_no_overwrite_path() {
+        let record = "<!-- sing-box-credential-initial-attempt/v1 -->\n{}";
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-initial-attempt-{}-{unique}",
+            std::process::id()
+        ));
+        write_new_initial_record(&path, record).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), record);
+        assert!(write_new_initial_record(&path, record).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(write_new_initial_record(&path, "INVALID").is_err());
+    }
+
     fn desired() -> ProductionCredentialPlaneOwnership {
         ProductionCredentialPlaneOwnership {
             target_account_id: "6be6e4b6340822dbeb18cb6c2f09c660".to_owned(),
@@ -1485,6 +2039,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exact_patch_readback_blocks_foreign_versions_or_implicit_deploy() {
+        let d = desired();
+        let mut state = observation(&d);
+        make_terminal(&mut state, "vm");
+        let original = state
+            .projections
+            .iter()
+            .find(|p| p.projection == "vm")
+            .unwrap()
+            .clone();
+        let mut pending = original.clone();
+        pending.worker_latest_version_id = Some("fresh-version".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &pending, "fresh-version").is_ok());
+
+        let mut changed = pending.clone();
+        changed.worker_latest_version_id = Some("foreign-version".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_active_version_ids = vec!["fresh-version".to_owned()];
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_active_deployment_id = Some("foreign-deployment".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_id = Some("foreign-worker".to_owned());
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        changed = pending.clone();
+        changed.worker_secret_bindings.pop();
+        assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
+        assert!(
+            verify_exact_pending_worker_version(&original, &original, "fresh-version").is_err()
+        );
+    }
+
+    #[test]
+    fn exact_deployment_readback_never_accepts_old_or_foreign_latest() {
+        let d = desired();
+        let mut state = observation(&d);
+        make_terminal(&mut state, "windows");
+        let mut active = state
+            .projections
+            .iter()
+            .find(|p| p.projection == "windows")
+            .unwrap()
+            .clone();
+        active.worker_latest_version_id = Some("fresh-version".to_owned());
+        active.worker_active_version_ids = vec!["fresh-version".to_owned()];
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_ok());
+        active.worker_latest_version_id = Some("foreign-version".to_owned());
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_err());
+        active.worker_latest_version_id = Some("fresh-version".to_owned());
+        active.worker_active_version_ids = vec!["old-version".to_owned()];
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_err());
+        active.worker_active_version_ids = vec!["fresh-version".to_owned()];
+        active.worker_active_deployment_id = None;
+        assert!(verify_exact_active_worker_version(&active, "fresh-version").is_err());
+    }
+
     fn make_terminal(observed: &mut CredentialPlaneObservation, projection_name: &str) {
         let current = observed
             .projections
@@ -1507,6 +2120,159 @@ mod tests {
             .version_tag;
         current.worker_version_tag = Some(version_tag.clone());
         current.worker_latest_version_tag = Some(version_tag);
+    }
+
+    #[test]
+    fn initial_provider_intent_is_exact_version_and_identity_bound() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "vm");
+        make_terminal(&mut observed, "windows");
+
+        let initial = initial_pair_provider_intent_sha256(
+            &desired,
+            &observed,
+            207,
+            CredentialDeliverySlotArg::A,
+        )
+        .unwrap();
+        assert_eq!(initial.len(), 64);
+        assert!(initial.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::A
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                208,
+                CredentialDeliverySlotArg::A
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::B
+            )
+            .unwrap()
+        );
+
+        // Even a fully valid new Worker deployment invalidates all previously
+        // observed attestations. Never reuse an intent under a changed version.
+        observed.projections[0].worker_latest_version_id =
+            Some("windows-updated-version".to_owned());
+        observed.projections[0].worker_active_version_ids =
+            vec!["windows-updated-version".to_owned()];
+        let changed = initial_pair_provider_intent_sha256(
+            &desired,
+            &observed,
+            207,
+            CredentialDeliverySlotArg::A,
+        )
+        .unwrap();
+        assert_ne!(initial, changed);
+        observed.projections[0].worker_active_version_ids = vec!["windows-version-id".to_owned()];
+        assert!(
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::A
+            )
+            .is_err()
+        );
+        observed.projections[0].worker_latest_version_id = Some("windows-version-id".to_owned());
+        observed.projections[0].host_service_token_client_id =
+            Some("replaced-access-client-id".to_owned());
+        assert_ne!(
+            initial,
+            initial_pair_provider_intent_sha256(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::A
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn initial_pair_provider_gate_rejects_any_identity_or_version_drift() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "vm");
+        make_terminal(&mut observed, "windows");
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_ok()
+        );
+        for invalid in [
+            0,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+        ] {
+            assert!(
+                validate_initial_pair_provider_observation(
+                    &desired,
+                    &observed,
+                    invalid,
+                    CredentialDeliverySlotArg::A,
+                )
+                .is_err()
+            );
+        }
+        let client = observed.projections[0].host_service_token_client_id.clone();
+        observed.projections[1].host_service_token_client_id = client;
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_err()
+        );
+        observed.projections[1].host_service_token_client_id =
+            Some("distinct-client-id".to_owned());
+        observed.projections[1].worker_active_version_ids = vec!["stale-active-version".to_owned()];
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_err()
+        );
+        observed.projections[1].worker_active_version_ids = vec!["vm-version-id".to_owned()];
+        observed.projections[0].host_service_token_id =
+            observed.projections[1].host_service_token_id.clone();
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                101,
+                CredentialDeliverySlotArg::A,
+            )
+            .is_err()
+        );
     }
 
     #[test]

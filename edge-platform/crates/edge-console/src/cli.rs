@@ -26,6 +26,9 @@ pub(crate) enum Command {
     Status(EndpointArgs),
     Doctor(EndpointArgs),
     CredentialState(EndpointArgs),
+    // Read-only first-enrollment proof; never applies credentials or changes TUN.
+    CredentialInitialProbe(InstallRootArgs),
+    CredentialInitialAttest(InitialCredentialAttestArgs),
     SmokeRuntime,
     Stage2Preflight,
     ProvisionRuntimeState(InstallRootArgs),
@@ -74,6 +77,8 @@ impl Command {
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
             Self::CredentialState(_) => "credential-state",
+            Self::CredentialInitialProbe(_) => "credential-initial-probe",
+            Self::CredentialInitialAttest(_) => "credential-initial-attest",
             Self::SmokeRuntime => "smoke-runtime",
             Self::Stage2Preflight => "stage2-preflight",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
@@ -130,6 +135,17 @@ impl EndpointArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct InstallRootArgs {
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InitialCredentialAttestArgs {
+    pub generation: u64,
+    pub slot: String,
+    pub provider_intent_sha256: String,
+    pub release_set_sha256: String,
+    pub run_id: u64,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }
@@ -203,6 +219,16 @@ mod tests {
     #[test]
     fn parses_installed_automation_commands() {
         assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-console", "credential-initial-probe"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "credential-initial-probe",
+                "--install-root",
+                r"C:\sing-box"
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
         assert!(Cli::try_parse_from(["edge-console", "smoke-runtime"]).is_ok());
         assert!(
@@ -280,6 +306,21 @@ mod tests {
 
     #[test]
     fn parses_operation_id_as_typed_integer() {
+        assert!(Cli::try_parse_from(["edge-console", "credential-initial-attest"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "credential-initial-attest",
+                "101",
+                "a",
+                &"a".repeat(64),
+                &"b".repeat(64),
+                "1011",
+                "--install-root",
+                r"C:\sing-box-acceptance",
+            ])
+            .is_ok()
+        );
         let cli = Cli::try_parse_from(["edge-console", "get-operation", "42"]).unwrap();
         assert_eq!(cli.command_name(), "get-operation");
     }

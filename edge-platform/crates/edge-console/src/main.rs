@@ -12,7 +12,10 @@ use edge_local_runtime::{
     run_non_tun_loopback_smoke, stop_local_runtime as stop_runtime_process,
 };
 use edge_observability::init as init_observability;
-use edge_secrets::{ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle};
+use edge_secrets::{
+    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
+    verify_canonical_dummy_ab_slots,
+};
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
 use rusqlite::Connection;
@@ -195,6 +198,60 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     "doctor reported failing checks".to_owned(),
                 ))
             }
+        }
+        Command::CredentialInitialProbe(args) => {
+            run_windows_initial_credential_probe(Path::new(&args.install_root))
+                .await
+                .map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        Command::CredentialInitialAttest(args) => {
+            let root = Path::new(&args.install_root);
+            run_windows_initial_credential_probe(root)
+                .await
+                .map_err(ConsoleError::Command)?;
+            let activation = load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!(
+                    "Windows first-use attestation release is unverified: {err}"
+                ))
+            })?;
+            if activation.release_set_sha256 != args.release_set_sha256 {
+                return Err(ConsoleError::Command(
+                    "Windows first-use attestation refuses a different local ReleaseSet".to_owned(),
+                ));
+            }
+            let slot = match args.slot.as_str() {
+                "a" => edge_shared_types::CredentialDeliverySlot::A,
+                "b" => edge_shared_types::CredentialDeliverySlot::B,
+                _ => {
+                    return Err(ConsoleError::Command(
+                        "initial slot must be a or b".to_owned(),
+                    ));
+                }
+            };
+            let machine = env::var("COMPUTERNAME").map_err(|_| {
+                ConsoleError::Command("Windows machine identity unavailable".to_owned())
+            })?;
+            let digest = edge_shared_types::first_use_host_attestation_sha256(
+                edge_shared_types::CredentialProjectionKind::Windows,
+                args.generation,
+                slot,
+                &args.provider_intent_sha256,
+                &args.release_set_sha256,
+                &machine,
+                args.run_id,
+            )
+            .map_err(ConsoleError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_ATTEST");
+            println!("credential_projection=WINDOWS");
+            println!("credential_generation={}", args.generation);
+            println!("credential_host_attestation_sha256={digest}");
+            println!("credential_github_run_id={}", args.run_id);
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            println!("windows_tun_mutations=0");
+            println!("windows_dns_mutations=0");
+            Ok(())
         }
         Command::CredentialState(args) => {
             let state = fetch_credential_state(args.resolve()).await?;
@@ -1776,6 +1833,65 @@ fn append_redacted_runtime_token(output: &mut String, token: &mut String) {
     token.clear();
 }
 
+fn require_initial_windows_credential_host(install_root: &Path) -> Result<(), String> {
+    // Any existing store directory, even with missing/corrupt cursor, is
+    // ambiguous. Never interpret it as an unused first-enrollment slot.
+    let store_present = windows_credential_store_path(install_root).exists();
+    let runtime_present = windows_runtime_state_path(install_root).exists();
+    let config_present = local_singbox_config_path(install_root).exists();
+    initial_windows_credential_eligibility(store_present, runtime_present, config_present)?;
+    load_verified_activation(install_root).map_err(|err| {
+        format!("initial Windows proof requires an exact immutable release: {err}")
+    })?;
+    Ok(())
+}
+
+fn initial_windows_credential_eligibility(
+    store_present: bool,
+    runtime_present: bool,
+    config_present: bool,
+) -> Result<(), String> {
+    if store_present {
+        return Err(
+            "initial Windows proof refuses an existing or incomplete v2 credential store"
+                .to_owned(),
+        );
+    }
+    if runtime_present {
+        return Err("initial Windows proof refuses an existing managed runtime state".to_owned());
+    }
+    if config_present {
+        return Err(
+            "initial Windows proof refuses an existing rendered sing-box config".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+async fn run_windows_initial_credential_probe(install_root: &Path) -> Result<(), String> {
+    require_initial_windows_credential_host(install_root)?;
+    let identity_path = install_root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
+    verify_canonical_dummy_ab_slots(
+        edge_shared_types::CredentialProjectionKind::Windows,
+        &identity_path,
+    )
+    .await?;
+    println!("operation=CREDENTIAL_INITIAL_PROBE");
+    println!("credential_projection=WINDOWS");
+    println!("credential_slot_A=EXACT_DUMMY");
+    println!("credential_slot_B=EXACT_DUMMY");
+    println!("credential_store_present=false");
+    println!("credential_provider_mutations=0");
+    println!("credential_runtime_mutations=0");
+    println!("windows_tun_mutations=0");
+    println!("windows_dns_mutations=0");
+    println!("credential_initial_authority=NOT_COMMITTED");
+    Ok(())
+}
+
 async fn stage_windows_credential_candidate_from_worker(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
@@ -2610,6 +2726,14 @@ fn require_managed_tun_rollback_pair(
     if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
         return Err("rollback refuses a non-ManagedTun accepted desired mode".to_owned());
     }
+    require_exact_rollback_authority_pair(request, current, previous)
+}
+
+fn require_exact_rollback_authority_pair(
+    request: &WindowsPrivilegedRequest,
+    current: &WindowsActivationState,
+    previous: &WindowsActivationState,
+) -> Result<(), String> {
     if current.release_set_sha256 == previous.release_set_sha256 {
         return Err("rollback refuses identical current and previous release".to_owned());
     }
@@ -4715,18 +4839,33 @@ mod tests {
             credential_generation: None,
             credential_transition_action: None,
         };
-        require_managed_tun_rollback_pair(&request, &current, &previous).unwrap();
+        // The immutable authority pair is checked in both build modes.
+        // Actual release rollback remains forbidden on first-install ProxyOnly.
+        require_exact_rollback_authority_pair(&request, &current, &previous).unwrap();
+        let compiled_mode = canonical_production_desired_state()
+            .unwrap()
+            .windows_datapath_mode;
+        if compiled_mode == WindowsDatapathMode::ManagedTun as i32 {
+            require_managed_tun_rollback_pair(&request, &current, &previous).unwrap();
+        } else {
+            assert_eq!(compiled_mode, WindowsDatapathMode::ProxyOnly as i32);
+            assert!(
+                require_managed_tun_rollback_pair(&request, &current, &previous)
+                    .unwrap_err()
+                    .contains("non-ManagedTun")
+            );
+        }
 
         request.release_set_sha256 = Some("c".repeat(64));
         assert!(
-            require_managed_tun_rollback_pair(&request, &current, &previous)
+            require_exact_rollback_authority_pair(&request, &current, &previous)
                 .unwrap_err()
                 .contains("authority changed")
         );
         request.release_set_sha256 = Some(previous.release_set_sha256.clone());
         request.accepted_revision = Some("f".repeat(40));
         assert!(
-            require_managed_tun_rollback_pair(&request, &current, &previous)
+            require_exact_rollback_authority_pair(&request, &current, &previous)
                 .unwrap_err()
                 .contains("authority changed")
         );
@@ -4922,6 +5061,27 @@ mod tests {
             active_release_set_sha256: None,
         };
         assert!(encode_windows_privileged_result(&result).is_ok());
+    }
+
+    #[test]
+    fn initial_windows_proof_refuses_active_or_incomplete_local_state() {
+        assert!(initial_windows_credential_eligibility(false, false, false).is_ok());
+        assert!(
+            initial_windows_credential_eligibility(true, false, false)
+                .unwrap_err()
+                .contains("incomplete v2 credential store")
+        );
+        assert!(
+            initial_windows_credential_eligibility(false, true, false)
+                .unwrap_err()
+                .contains("managed runtime state")
+        );
+        assert!(initial_windows_credential_eligibility(true, true, true).is_err());
+        assert!(
+            initial_windows_credential_eligibility(false, false, true)
+                .unwrap_err()
+                .contains("rendered sing-box config")
+        );
     }
 
     #[test]

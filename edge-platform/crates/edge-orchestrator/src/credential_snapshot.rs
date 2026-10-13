@@ -1,5 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use edge_shared_types::{
+    CREDENTIAL_DUMMY_PROBE_GENERATION_A, CREDENTIAL_DUMMY_PROBE_GENERATION_B,
     CredentialDeliveryBundle, CredentialDeliverySlot, CredentialProjectionKind,
     CredentialRotationClass, ProxyCredentialGeneration, RealityPrivateIdentity,
     RealityPrivateIdentityGeneration, RealityPublicIdentity, RealityPublicIdentityGeneration,
@@ -21,8 +22,14 @@ pub struct FreshCredentialSnapshotRequest {
 
 impl FreshCredentialSnapshotRequest {
     fn validate(self) -> Result<(), String> {
-        if self.delivery_generation == 0 {
-            return Err("delivery_generation must be greater than zero".to_owned());
+        if self.delivery_generation == 0
+            || self.delivery_generation == CREDENTIAL_DUMMY_PROBE_GENERATION_A
+            || self.delivery_generation == CREDENTIAL_DUMMY_PROBE_GENERATION_B
+        {
+            return Err(
+                "fresh delivery generation must be nonzero and must not reuse a dummy A/B probe"
+                    .to_owned(),
+            );
         }
         if !matches!(
             self.slot,
@@ -295,6 +302,18 @@ mod tests {
         match snapshot.vm.payload.as_ref().unwrap() {
             credential_delivery_bundle::Payload::Vm(value) => value,
             _ => panic!("unexpected non-full VM payload"),
+        }
+    }
+
+    #[test]
+    fn first_issuance_does_not_reuse_reserved_worker_dummy_generations() {
+        for generation in [
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+        ] {
+            let mut invalid = request();
+            invalid.delivery_generation = generation;
+            assert!(generate_fresh_credential_snapshot(invalid).is_err());
         }
     }
 

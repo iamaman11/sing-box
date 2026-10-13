@@ -14,6 +14,9 @@ service AgentService {
   rpc GetVersion(Empty) returns (AgentVersion);
   rpc ObserveIpv4Network(Empty) returns (Ipv4NetworkObservation);
   rpc ApplyBundle(ApplyBundleRequest) returns (ApplyBundleResponse);
+  // Separate first-enrollment path: stores verified policy only, with no
+  // runtime secrets, running containers, bootstrap, or active credential cursor.
+  rpc StageInitialPolicyBundle(ApplyBundleRequest) returns (ApplyBundleResponse);
   rpc RollbackBundle(RollbackBundleRequest) returns (RollbackBundleResponse);
   rpc BootstrapRuntime(BootstrapRuntimeRequest) returns (BootstrapRuntimeResponse);
   rpc VerifyRuntime(VerifyRuntimeRequest) returns (AgentState);
@@ -22,6 +25,9 @@ service AgentService {
   rpc ConvergeMeshRuntime(MeshRuntimeConvergeRequest) returns (MeshRuntimeState);
   rpc VerifyMeshRuntime(Empty) returns (MeshRuntimeState);
   rpc CleanupMeshRuntime(Empty) returns (MeshRuntimeState);
+  rpc VerifyInitialCredentialHost(InitialCredentialHostProbeRequest) returns (InitialCredentialHostProbeResponse);
+  rpc ApplyInitialVmCredential(InitialVmCredentialRuntimeRequest) returns (InitialVmCredentialRuntimeResponse);
+  rpc VerifyInitialVmCredential(InitialVmCredentialRuntimeRequest) returns (InitialVmCredentialRuntimeResponse);
   rpc StageCredentialCandidate(StageCredentialCandidateRequest) returns (CredentialStateObservation);
   rpc GetCredentialState(Empty) returns (CredentialStateObservation);
 }

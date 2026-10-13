@@ -840,7 +840,9 @@ fn operational_failure(stage: &'static str, detail: impl Into<String>) -> Accept
     }
 }
 
-fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(), String> {
+pub(crate) fn validate_disposable_acceptance(
+    desired: &DesiredApplicationState,
+) -> Result<(), String> {
     if desired.environment != "application-acceptance" {
         return Err(format!(
             "application acceptance requires environment application-acceptance, got {}",
@@ -861,8 +863,11 @@ fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(
         .line1
         .as_ref()
         .ok_or_else(|| "application acceptance requires line1 runtime policy".to_owned())?;
-    if line1.acme_provider != "https://acme-staging-v02.api.letsencrypt.org/directory" {
-        return Err("application acceptance requires ACME staging authority".to_owned());
+    if line1.acme_provider != "letsencrypt" {
+        return Err(
+            "disposable network acceptance requires publicly trusted Let's Encrypt ACME authority"
+                .to_owned(),
+        );
     }
     desired
         .runtime_policy
@@ -961,8 +966,7 @@ mod tests {
                 line1: Some(Line1RuntimePolicy {
                     tunnel_domain: "stage2-acceptance.alegria.by".to_owned(),
                     acme_email: "admin@alegria.by".to_owned(),
-                    acme_provider: "https://acme-staging-v02.api.letsencrypt.org/directory"
-                        .to_owned(),
+                    acme_provider: "letsencrypt".to_owned(),
                     reality_server_name: "www.microsoft.com".to_owned(),
                 }),
                 line2: Some(Line2RuntimePolicy {
@@ -972,6 +976,15 @@ mod tests {
             },
             bootstrap_mode: ApplicationBootstrapMode::Full,
         }
+    }
+
+    #[test]
+    fn disposable_acceptance_requires_publicly_trusted_tls_not_staging() {
+        let mut value = desired();
+        validate_disposable_acceptance(&value).unwrap();
+        value.runtime_policy.line1.as_mut().unwrap().acme_provider =
+            "https://acme-staging-v02.api.letsencrypt.org/directory".to_owned();
+        assert!(validate_disposable_acceptance(&value).is_err());
     }
 
     #[test]

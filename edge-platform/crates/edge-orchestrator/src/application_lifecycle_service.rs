@@ -382,6 +382,82 @@ pub(crate) async fn observe_application(
     })
 }
 
+/// Stage one immutable policy-only application on a fresh disposable guest.
+/// Unlike execute_desired this never bootstraps Compose, promotes a release,
+/// or activates credentials. Uncertain RPC results are reconciled only by
+/// exact readback and never replayed.
+pub(crate) async fn stage_initial_application_policy(
+    authority: &ApplicationAuthority,
+    artifact: &AgentArtifactManifest,
+    artifact_path: &Path,
+    prepared: &PreparedApplicationBundle,
+) -> Result<(String, String), String> {
+    verify_exact_agent_artifact(artifact, artifact_path)?;
+    if read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?.is_some()
+        || read_control_state(authority)?.is_some()
+    {
+        return Err("initial policy stage refuses existing application release".to_owned());
+    }
+    let agent_sha = remote_file_sha(authority, REMOTE_AGENT)?;
+    if let Some(existing) = agent_sha {
+        if existing != artifact.sha256 {
+            return Err(
+                "initial policy stage refuses previously installed foreign agent".to_owned(),
+            );
+        }
+    } else {
+        install_exact_agent(authority, artifact, artifact_path)?;
+    }
+    ensure_private_agent_service(authority)?;
+    let (mut client, _tunnel) = connect_agent(authority).await?;
+    let expected = prepared.release.bundle_digest.as_str();
+    let expected_id = prepared
+        .request
+        .bundle_id
+        .as_deref()
+        .ok_or_else(|| "initial policy stage requires a canonical bundle ID".to_owned())?;
+    let applied = client
+        .stage_initial_policy_bundle(Request::new(prepared.request.clone()))
+        .await;
+    drop(client);
+    let response = match applied {
+        Ok(result) => result.into_inner(),
+        Err(err) => {
+            let observed = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
+            return Err(format!(
+                "initial policy stage RPC has uncertain outcome; no mutation replay: {err};                 exact_digest_observed={}",
+                exact_bundle_digest_observed(observed.as_ref(), expected)
+            ));
+        }
+    };
+    if response.active_bundle_id.as_deref() != Some(expected_id)
+        || response.active_bundle_digest.as_deref() != Some(expected)
+    {
+        return Err("initial policy stage returned a foreign bundle identity".to_owned());
+    }
+    let reobserved =
+        read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?.ok_or_else(|| {
+            "initial policy stage did not persist its exact release marker".to_owned()
+        })?;
+    if reobserved.bundle_id != expected_id
+        || reobserved.bundle_digest != expected
+        || read_control_state(authority)?.is_some()
+    {
+        return Err("initial policy stage did not preserve unpublished bundle identity".to_owned());
+    }
+    let runtime_present = strict_ssh_capture(
+        &authority.target_ip,
+        &authority.logical_hostname,
+        &authority.operator_private_key_path,
+        &authority.canonical_operator_public_key,
+        "if sudo test -e /opt/vultr-edge-stack/stack/.env.runtime; then printf present; else printf absent; fi",
+    )?;
+    if runtime_present != "absent" {
+        return Err("initial policy stage unexpectedly created runtime credentials".to_owned());
+    }
+    Ok((reobserved.bundle_id, reobserved.bundle_digest))
+}
+
 pub(crate) async fn execute_desired(
     authority: &ApplicationAuthority,
     desired: &DesiredApplicationState,

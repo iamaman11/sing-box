@@ -56,10 +56,28 @@ pub(crate) enum LocalCommand {
     CredentialState,
     // Read-only Access-authenticated fixed A/B dummy proof for a fresh VM.
     CredentialInitialProbe,
+    CredentialInitialAttest {
+        generation: u64,
+        slot: String,
+        provider_intent_sha256: String,
+        release_set_sha256: String,
+        expected_agent_sha256: String,
+        run_id: u64,
+    },
     // Strictly fresh, non-serving VM only; never a rotation or legacy handoff.
-    CredentialInitialApply { generation: u64 },
-    CredentialStage { generation: u64 },
-    CredentialTransition { action: String },
+    CredentialInitialApply {
+        generation: u64,
+    },
+    // Authenticated Line2 proof of unpromoted exact first-use VM candidate.
+    CredentialInitialVerify {
+        generation: u64,
+    },
+    CredentialStage {
+        generation: u64,
+    },
+    CredentialTransition {
+        action: String,
+    },
 }
 
 impl LocalCommand {
@@ -80,7 +98,9 @@ impl LocalCommand {
             Self::MeshCleanup => "local-mesh-cleanup",
             Self::CredentialState => "local-credential-state",
             Self::CredentialInitialProbe => "local-credential-initial-probe",
+            Self::CredentialInitialAttest { .. } => "local-credential-initial-attest",
             Self::CredentialInitialApply { .. } => "local-credential-initial-apply",
+            Self::CredentialInitialVerify { .. } => "local-credential-initial-verify",
             Self::CredentialStage { .. } => "local-credential-stage",
             Self::CredentialTransition { .. } => "local-credential-transition",
         }
@@ -132,7 +152,27 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "mesh-cleanup"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-admit", "101"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-stage", "101"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-agent", "local", "credential-initial-verify", "101"])
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-verify"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-probe"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-initial-attest"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "edge-agent",
+                "local",
+                "credential-initial-attest",
+                "101",
+                "a",
+                &"a".repeat(64),
+                &"b".repeat(64),
+                &"c".repeat(64),
+                "1011",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from(["edge-agent", "local", "credential-initial-apply", "101"]).is_ok()
         );

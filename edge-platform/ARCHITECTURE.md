@@ -62,6 +62,126 @@ The intended end state is smaller than the current transitional implementation. 
 mutable states, operator commands and orchestration branches is a correctness objective, not only a
 maintainability preference.
 
+### Native product lifecycle authority (operator acceptance invariant — 2026-10-12)
+
+**One normal product lifecycle, not two installation products.** The ChatGPT
+operator uses the existing GitHub Issue #1 command inbox and accepted ReleaseSet
+to own the entire path: plan/provision, native install and configure, inspect,
+measure, verify, restart/reboot, repair/reinstall, recover and remove precisely
+owned VM and Windows resources. Typed Rust owners apply repository-authored
+desired state; GitHub Actions are closed-grammar transport, not a second
+orchestration/secret/runtime authority. Every operation must return a bounded
+machine-readable actual-state and acceptance report with source SHA, ReleaseSet,
+config digest, credential generation, owner, target, and failure/recovery status.
+
+First-use is a special *transaction safety condition*, not a separate
+acceptance-only installer, separate Windows identity owner, fallback producer or
+parallel runtime deployment path. The temporary `/vultr initial-vm-install`
+composition present in Draft #348 must be folded into the **same ordinary native
+VM lifecycle** used subsequently for production. The irreversible first-use
+Worker A/B transaction retains its durable BEGIN, distinct host identities,
+strict versions, verified readback and unknown-ACK no-replay boundary **inside**
+that lifecycle. A clean disposable VM is allowed as a test target, but the
+application on it must be installed/configured/diagnosed/uninstalled with the
+same owner and commands as a real machine. No acceptance-only Windows host
+mutation or fake substitute attestation is an acceptable product feature.
+
+**One Windows SCM owner and two real modes.** `EdgePlatformController` is the
+sole local privileged owner of installed sing-box, effective config and network
+state. Desired `WindowsDatapathMode` remains Git-backed; ordinary operator
+mode selection (ProxyOnly or ManagedTun) must converge the canonical desired
+state using the same native controller/installer and publish readback. ProxyOnly
+proves real local authenticated proxy traffic with zero managed TUN/route
+capture; ManagedTun proves ordinary Windows DNS, route, browser HTTPS and local
+proxy egress over the accepted Line1. Switching in *both* directions is a
+first-class supported operation, not release rollback, SCM stop, a separate
+one-time service or an ad-hoc registry/route edit. A safe switch requires
+pre/post native process, SCM, TUN adapter, route, DNS, listener, Internet and
+foreign-owner evidence plus independent no-TUN controller/DNS recovery; a failed
+precondition must change **nothing**. Do not mutate unrelated Cloudflare One,
+MISH or OKX. Lost acknowledgement triggers read-only reconciliation, not a
+blind second mutation.
+
+**Real operation evidence.** Diagnostics and measurements are available from
+the same ChatGPT/GitHub command surface, including desired vs applied config,
+all ten named external endpoints, valid/invalid authorization, TLS
+hostname/chain, distinct public direct/WARP egress, endpoint connection/DNS
+timing and quality. The same normal lifecycle must prove install,
+configuration updates, network mode changes, repair, reinstallation, reboot and
+cleanup. Internal loopback, metadata, DNS record creation, Docker READY,
+CI success and a completed workflow are necessary evidence where applicable
+but cannot replace independently authenticated end-to-end Internet traffic.
+A first-use clean VM with all external 4+6 links still belongs to N1/N2;
+native Windows bidirectional mode switch and recovery is N3; production
+replacement and full steady-state operation is N4. **No new stages or helper
+PRs:** implement in the existing integrated #348 and follow Issue #26.
+
+### Delivery lock: functional installation, not preparatory PRs
+
+**Normative Stage N1/N2 invariant (2026-10-12; executable cursor: Issue #26).**
+The next accepted delivery is a **clean, disposable Vultr VM running the exact
+immutable accepted sing-box release, with independent external authenticated
+traffic evidence for all four Line1 and all six Line2 endpoints (4/4 + 6/6)**.
+Source compilation, source CI, a ReleaseSet candidate, Worker binding metadata,
+dummy probes, Docker container readiness, an SSH-ready guest, and a published
+credential generation are intermediate evidence only. None can close N1/N2.
+
+**No auxiliary delivery loop.** Until the physical 4/4 + 6/6 gate is satisfied:
+
+1. The existing integrated Draft PR #348 is the **only source change set for
+   completing N1/N2**. Do not open a helper-only, diagnostic-only, preparatory,
+   documentation-only, or individual-primitive PR; do not split N1 into another
+   stage or label a partial preflight as a release. Fix each discovered missing
+   boundary inside the same complete GitHub -> typed Rust owner -> Windows/VM
+   consumer -> externally verified network vertical.
+2. Do not introduce new permanent or temporary *application services*, agents,
+   schedulers, daemons, polling owners, long-running sidecars, generic shell
+   executors, alternate deployment transports, independent credential issuers,
+   fallback credentials, legacy credential-selection paths, or a second
+   production desired-state authority. The existing bounded disposable VM and
+   separately isolated non-TUN Windows acceptance consumer are **test targets**,
+   not new permanent owners. Use the existing seven GitHub workflows and native
+   owners; an exception cannot be silently granted by creating a helper PR.
+3. Preserve strict fail-closed security: prove real unused A/B contents on both
+   Workers through both host-specific Access identities; bind trustworthy
+   disposable host/job provenance and exact artifact identity; durably record and
+   re-read one first-use GitHub BEGIN **before any irreversible provider PATCH**.
+   Two-Worker publication is not atomic. On a lost ACK, partial publication,
+   stale version or ambiguous outcome, stop and perform read-only reconciliation
+   without mutation replay. Never manufacture a passing E2E by bypassing this.
+4. **Source acceptance is a prerequisite, not the finish line.** Complete the
+   entire integrated implementation and its negative tests, run exact-head
+   Windows/Linux/OCI/ReleaseSet CI, merge only the verified tested tree, and
+   publish its immutable no-rebuild ReleaseSet; then execute the already
+   defined disposable physical acceptance immediately, not another preparation
+   initiative. Never deploy an unmerged Draft as a production authority.
+5. The physical report MUST bind the release digest, source SHA, freshly created
+   disposable VM identity, credential generation/projection/slot, independent
+   endpoint attempts/results, TLS chain/hostname, direct vs WARP public egress
+   identity, reboot proof, negative auth/generation tests and zero-leak cleanup.
+   **Line1 4/4 Hysteria2/Reality** and **Line2 6/6 HTTP/SOCKS5/HTTPS** must each
+   carry authenticated external traffic. A failed endpoint means FAIL, not
+   “partially accepted”. Wrong password, stale generation or malformed
+   certificate must fail closed.
+6. Do not change serving production VM, production DNS, active Windows
+   SCM/TUN/routes/DNS, Cloudflare One, MISH or OKX during N1/N2. In particular,
+   a test hostname/certificate must not be made to work via production DNS
+   cutover. N3 and N4 alone own the separately gated Windows and production
+   handoffs, after isolated physical PASS.
+7. On physical failure, retain the failed exact run evidence, classify the
+   **specific failed boundary**, repair only the same integrated vertical and
+   rerun the full gate. After #348 has merged, a necessary corrective PR is
+   allowed **only** as a single integrated end-to-end repair, never as a helper
+   or a substitute for physical proof. If an external blocker cannot be
+   resolved safely, record BLOCKED with owner and observable exit criterion;
+   do not expand scope or invent a new preparatory stage.
+
+**Finish condition:** one full external, reproducible, independently observable
+4/4 + 6/6 clean-VM install with exact accepted ReleaseSet and safe cleanup.
+Only after this evidence may work advance to N3. Issue #26 alone sets the
+ordered operational steps. Any older Stage 4B historical instructions or
+intermediate CI snapshots must not supersede this delivery lock.
+
 ## 1. One-owner architecture
 
 ```text
@@ -416,6 +536,87 @@ reinstallation green.
 The new stack receives independently generated credential generations.
 
 ### Initial paired Worker-v2 enrollment (not steady-state rotation)
+
+**GitHub operator retry guard:** repeat attempts (`GITHUB_RUN_ATTEMPT != 1`)
+of existing `rotate-application` and `host-bootstrap-converge` requests
+are refused during authorization, before any host or provider mutation.
+A new comment is a new request: GitHub's read-only first-use preflight
+now materializes all Issue #26 comment pages and the Rust owner rejects a
+previous, malformed or displaced credential BEGIN marker. That read-only
+observation is NOT a committed initial attempt. Actual pre-mutation BEGIN
+write/readback and verified dual host-job provenance are still absent;
+initial paired publication therefore remains disabled.
+
+**Provider mutation fail-closed invariant:** a lost ACK for a credential Worker
+secret PATCH is not proof of which opaque bytes were stored, even if the
+latest Worker version advanced. The native rotation owner now reads version
+metadata and stops without deploying or retrying that PATCH. A failed deploy
+may be accepted only if read-only observation proves the exact previously
+returned version is already active; otherwise it stops without a second
+deploy. The initial pair publisher must add a durable pre-mutation journal
+and both host attestations before it gains any mutation authority. No
+cross-Worker atomicity or automatic replay is claimed.
+
+
+**Integrated N1/N2 operator contract (under construction):** a single
+`/credentials initial-pair-preflight <generation> <a|b>` request resolves the
+exact immutable orchestrator through GitHub and checks both Worker identities,
+active/latest versions, fixed A/B layout and independently bound permanent
+Access service-token identities. This step is deliberately **read-only**:
+`initial_publication_authorized=false` until both native host attestations,
+a durable attempt identity and provider-side no-replay/partial-publication
+handling exist. It never generates or publishes a secret. The Windows owner
+provides `edge-console credential-initial-probe --install-root ...`: this
+checks the exact installed activation, refuses any existing/partial local v2
+store or managed runtime state, authenticates to the Windows-specific Worker,
+and proves both exact dummy generations. It does not touch DNS, TUN, SCM,
+proxy selection, or the foreign Cloudflare One adapter. The VM has its own
+separate read-only initial probe. Neither report authorizes a publish by
+itself; worker binding metadata cannot substitute for an authenticated GET.
+
+**Pre-mutation identity and ownership (N1, Draft only):** the single
+native `edge-orchestrator credentials initial-pair-journal-plan` policy
+accepts an exact provider intent, fixed generation/slot, two distinct
+64-character host attestation digests, immutable ReleaseSet and GitHub run
+identity. It constructs a non-secret `BEGIN` comment; it never writes it.
+The read-only `initial-pair-journal-observe` route is now part of the
+existing GitHub credential preflight and rejects any prior/corrupt first
+attempt. Neither command is a credential publisher, and their input digests
+alone cannot authenticate a caller.
+
+Native `edge-agent local credential-initial-attest` and `edge-console
+credential-initial-attest` reuse each local owner's exact clean-state and
+authenticated dummy A/B probe before deriving a shared domain-separated
+SHA-256 evidence identifier. It binds role, first-use generation, slot,
+provider intent, ReleaseSet, and local machine identity; Windows also
+requires the exact installed ReleaseSet. **A hash is not a host signature.**
+The GitHub workflow must independently prove which immutable binaries
+actually ran on each owned *disposable* host and bind those verified outputs
+to the single run before it can write an irreversible BEGIN. The existing
+production VM/Windows root are not clean first-use hosts. Unknown ACK,
+cross-request duplicates and half-published Workers must always stop without
+repeating PATCH/deploy. Source-only acceptance does not prove this barrier.
+
+For the VM, `edge-agent local credential-initial-verify <generation>` is
+the nonmutating next acceptance boundary after initial-apply. It requires
+only the exact unpromoted VM candidate (no active/previous), verifies the
+rendered runtime environment against the protected candidate bytes,
+observes all three running Docker application containers with the native
+Bollard owner, and reuses existing `line2_quality::measure` to perform
+five authenticated HTTP 204 samples through **each** of the six Line2
+HTTP/SOCKS5/HTTPS direct/WARP endpoints. It prints
+`line2_authenticated_endpoints=6` only after all samples pass, while keeping
+external direct-vs-WARP egress identity and external TLS chain `UNPROVEN`;
+these must be checked by independent external clients. It also keeps
+`line1_authenticated_endpoints=UNPROVEN` and
+`credential_pair_committed=false`. Thus a passed VM-local Line2 gate is
+neither a Windows tunnel proof nor permission to promote a credential.
+
+The integrated PR must continue beyond preflight to the **single full initial
+transaction**, staged source-only bundle, distinct host activation and
+isolated authenticated Line1/Line2 acceptance before merge. Do not treat these
+new preflight commands as N1/N2 acceptance, and never run them as a covert
+production or Windows-TUN cutover.
 
 **Initial fixed A/B slot proof (N1, read-only):** Cloudflare secret binding
 metadata never establishes that an A/B slot is unused. The VM's typed
@@ -1243,6 +1444,11 @@ Delete dead behavior before splitting large Rust composition roots.
 
 ## 12. Safety invariants
 
+- Stage N1/N2 is closed only by physical clean-VM installation and **4/4 Line1 + 6/6 Line2 authenticated external traffic**, not by source CI or local READY.
+- No helper PR, extra preparatory stage, new application service/agent/daemon, fallback credential or alternate transport may delay or substitute for that integrated delivery; see **Delivery lock** above.
+- Keep production VM/DNS and stopped Windows TUN unchanged until separately accepted N3/N4 cutover gates; uncertain provider writes are never replayed.
+
+
 - one owner per mutable resource class;
 - no second desired-state store;
 - no blind retries;
@@ -1253,3 +1459,48 @@ Delete dead behavior before splitting large Rust composition roots.
 - generated external config is never first-party authority;
 - no TUN/DNS/default-route/system-proxy ownership before its explicit gate;
 - foreign projects remain no-touch at all times; legacy sing-box ownership changes only inside the explicit issue-#26 handoff gate.
+
+
+### Disposable VM SSH failure visibility (N1/N2)
+
+The existing native Rust `vultr-lifecycle substrate-verify` now reports one
+`disposable_ssh_failure_forensics` observation on strict substrate failure,
+before the existing cleanup. The same typed provider/firewall/controller-egress,
+TCP:22 and strict SSH handshake-stage observer already used for application
+acceptance is reused for the specifically owned `lifecycle-acceptance-1` VM.
+Every other machine/environment, including production, is excluded by typed
+identity. This adds no new command, transport, service, retry, sleep or mutation;
+provider power-ready is not treated as guest SSH-ready. It classifies the next
+physical incident rather than silently retrying instance creation.
+
+
+Disposable Vultr workflow uses stdout redirection only to preserve successful
+structured JSON evidence. If native `substrate-verify` fails at initial,
+no-op, post-start or post-reboot verification, the existing workflow prints the
+captured bounded native failure-forensic evidence before the existing abort and
+cleanup. No second probe, mutation, polling owner or fallback transport is used.
+
+
+For a disposable lifecycle reboot, the existing native `action reboot` first
+requires exact guest Linux boot ID over strict SSH. If that one-shot preflight
+fails, it performs zero reboot mutations and reports the same bounded
+provider/firewall/TCP/SSH phase forensics. After the single authorized reboot,
+failed boot-ID-change proof reports post-observation evidence and refuses any
+mutation replay. The GitHub workflow surfaces both failure results before
+cleanup rather than hiding them in redirected output. Production or mismatched
+VM identities cannot invoke disposable forensics.
+
+
+### Exact initial pair provider intent (N1)
+
+The read-only native initial pair preflight produces
+`initial_pair_provider_intent_sha256`: a non-secret SHA-256 digest over the
+versioned intent schema, desired Cloudflare account, generation and slot,
+plus the independently observed VM and Windows Worker identity, exact
+active/latest version, Access application, service token and client identity.
+The same metadata may be observed repeatedly and yields the same digest.
+Any desired-generation, slot, Worker version or host Access change invalidates
+the digest; active-vs-latest version drift fails closed. The digest is designed
+to bind the future append-only GitHub provider-attempt journal and BOTH real
+host attestations, not to replace either. Current preflight remains read-only,
+does not issue credentials, and prints `initial_publication_authorized=false`.

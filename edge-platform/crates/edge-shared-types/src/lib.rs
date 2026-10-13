@@ -13,6 +13,9 @@ pub mod release {
 }
 
 pub use edge::platform::v1::*;
+
+pub mod initial_credential_attestation;
+pub use initial_credential_attestation::first_use_host_attestation_sha256;
 use prost::Message;
 pub use release::v1::{
     CloudflareRuntime, OciImage, ReleaseSet, SchemaVersions, SingBoxRelease, VmRuntime,
@@ -1374,6 +1377,11 @@ pub fn verify_windows_activation_files(state: &WindowsActivationState) -> Result
     Ok(())
 }
 
+/// Streaming SHA-256 for exact-release host executable verification.
+pub fn file_sha256_lower_hex(path: &Path) -> Result<String, String> {
+    Ok(digest_to_lower_hex(&sha256_file(path)?))
+}
+
 fn sha256_file(path: &Path) -> Result<Vec<u8>, String> {
     let mut file =
         File::open(path).map_err(|err| format!("failed to open {}: {err}", path.display()))?;
@@ -2713,7 +2721,7 @@ mod tests {
         assert_eq!(desired.public_hostname, "miu.alegria.by");
         assert_eq!(
             WindowsDatapathMode::try_from(desired.windows_datapath_mode).unwrap(),
-            WindowsDatapathMode::ManagedTun
+            WindowsDatapathMode::ProxyOnly
         );
         let cloudflare = desired.cloudflare.as_ref().unwrap();
         assert_eq!(

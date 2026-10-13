@@ -168,84 +168,15 @@ Windows/VM Access host identities remain a separate lifecycle. They are canonica
 bootstrap/recovery boundary and never implicitly rotates an installed host identity. Do not add a
 second steady-state host-token rotation transport or custom X25519/HKDF/AEAD handoff.
 
-## 10. Stage 4B managed Windows TUN cutover
+## 10. Current N1/N2 → N3 native Windows modes (2026-10-12)
 
-Stage 4B is split into code proof and one physical cutover. Do not combine the first TUN mutation with
-unfinished renderer/diagnostic/reboot work.
+The sole operator entry is the existing GitHub Issue #1 command inbox. The Windows self-hosted runner is transport only; the sole privileged writer is SCM `EdgePlatformController`, using Git-backed `infra/production/production.textproto` desired `ProxyOnly` or `ManagedTun` and the exact accepted ReleaseSet. Never edit generated sing-box JSON directly or add another service, installer, task or DNS writer.
 
-### Code-proof gate — no live TUN mutation
+**Supported commands on protected main:** `/windows diagnose`, `/windows offline-preflight`, `/windows quality-line1`, `/windows converge`, `/windows start`, `/windows stop`, `/windows restart-controller`, `/windows repair`, `/windows rollback`. This is a command grammar, not a claim all mutations are safe now. There is **no accepted native simple mode-switch command yet**; do not tell operators that `/windows mode proxy` or `/windows mode tun` currently works. The existing guarded stop and ManagedTun→ProxyOnly paths correctly BLOCK when independent recovery is unproven.
 
-Before the external Windows sing-box is touched, protected code must already prove:
+[Physical read-only /windows diagnose #38288078001](https://github.com/iamaman11/sing-box/actions/runs/38288078001): SCM Stopped / AutoStart, managed TUN absent; direct DNS/HTTPS PASS. Cloudflare One TunnelOnly is independent/foreign. No Windows start, converge, repair, rollback, unattended reboot or TUN switch until the new VM's authenticated Line1, exact credential generation and independent no-TUN DNS/control restoration are physically proven. Never mutate Cloudflare One, MISH or OKX to satisfy a sing-box test.
 
-- one typed `PROXY_ONLY` / `MANAGED_TUN` datapath mode in Git-owned `ProductionDesiredState`;
-- no copy of datapath mode in `WindowsRuntimeState`, ReleaseSet Windows fields, activation state or a
-  local/environment marker;
-- one canonical renderer used by initial materialization, credential apply/rollback and SCM startup;
-- Windows candidate identity changes when canonical `infra/production/production.textproto` changes,
-  while the Windows binary still embeds that desired-state file;
-- one bounded local Windows ReleaseSet rollback targets only exact verified `previous.pb`, needs no
-  Git/provider/network access, and restores the previous exact binary/activation; its SCM owner re-renders
-  runtime/config from that binary's embedded desired state;
-- exact pinned sing-box `check` of the managed-TUN candidate in CI;
-- native read-only adapter/route/DNS/TUN diagnostics in the existing diagnostic binary;
-- typed `managed / conflicting external / absent` sing-box process observation before any startup
-  convergence or cutover mutation;
-- SCM `EdgePlatformController` startup convergence so reboot can restore the managed runtime without a
-  Scheduled Task, watchdog or second controller;
-- the existing Windows workflow/router remains the sole permitted physical owner boundary; 4B.1 adds no
-  speculative cutover mutation command. The fixed operation is added in 4B.2 only after read-only proof
-  of the exact external startup owner and bounded restore procedure;
-- exact-head CI + no-rebuild promotion PASS.
-
-The old PowerShell DNS reset is recovery-only legacy behavior. Do not extend it into the new datapath.
-Managed-TUN DNS belongs to sing-box; if failed-runtime cleanup later proves an explicit reset is still
-needed, keep the mutation inside the existing local-runtime owner and implement it with an exact native
-Windows boundary.
-
-### Mandatory PROXY_ONLY operator lifecycle acceptance
-
-Stage 4B.1 is closed, but TUN remains forbidden until ChatGPT proves the complete Windows lifecycle from
-the canonical GitHub boundary on the real host:
-
-1. `/windows diagnose` — read-only exact activation, SCM, process/network evidence and live managed proxy trace;
-2. `/windows converge` — exact accepted protected-main ReleaseSet, no local build, then DIRECT+WARP verification;
-3. `/windows repair` — re-download/rematerialize the same accepted ReleaseSet into the bounded alternate
-   immutable slot, preserve exact `previous.pb`, then DIRECT+WARP verification;
-4. `/windows rollback` — exact verified local `previous.pb` only, stopping only the exact managed process;
-5. `/windows converge` — restore current accepted authority and proxy functionality;
-6. `/windows diagnose` — stable terminal verification.
-
-The working external sing-box must remain byte/process-owner independent and unchanged throughout. No
-operation in this gate may enable TUN or mutate Windows routes, DNS or system proxy. A failure is a STOP,
-not permission to proceed to 4B.2.
-
-### Physical cutover gate
-
-Before any stop/start mutation:
-
-1. resolve the exact accepted ReleaseSet;
-2. run read-only managed diagnostics;
-3. verify the installed managed side has an exact locally verified `PROXY_ONLY` previous activation and
-   that the bounded local ReleaseSet rollback has already passed without touching the external TUN;
-4. identify the currently working external sing-box process/startup owner without reading or copying its
-   secrets;
-5. prove a bounded restore procedure for that exact external owner;
-6. STOP if either rollback path is unproven, if the external owner is ambiguous, or if managed-TUN
-   authority is not exact.
-
-The `PROXY_ONLY` -> `MANAGED_TUN` desired-state flip must first be committed through the normal
-protected Git path, pass exact-head CI and no-rebuild promotion, and produce an exact accepted ReleaseSet.
-Do not mutate Windows from an unaccepted mode-flip revision.
-
-Then one authorized cutover using that exact accepted `MANAGED_TUN` ReleaseSet may stop only the
-pre-observed external owner and start the managed TUN. Acceptance must prove routes,
-endpoint/control-plane bypass, loop prevention, DNS/no-leak behavior,
-DIRECT and WARP egress, managed restart, failed-transition rollback, SCM restart and a real Windows
-reboot/recovery cycle. A failed acceptance restores connectivity through the bounded pre-observed
-cutover rollback path; it must not improvise a new legacy owner.
-
-Only after all checks PASS may the managed runtime be declared the sole Windows datapath owner. Legacy
-Windows startup/config/secret glue is deleted later in Stage 4C from fresh last-consumer proof.
+**N3 acceptance (not an executable command):** the same native SCM controller must switch ProxyOnly → ManagedTun → ProxyOnly → ManagedTun using committed desired mode, with read-only preflight, exact process/route/adapter/DNS ownership, tested local authenticated proxy traffic with zero TUN in ProxyOnly, normal browser/no-proxy Internet over managed TUN, real direct/WARP and Mesh exclusions, reboot and bounded restoration proof. If any safety gate fails, report precise BLOCKED **without host network mutation**. This is not a release rollback or a second runtime owner. Issue #26 alone controls when the switch can be attempted.
 
 ## 11. Recovery
 

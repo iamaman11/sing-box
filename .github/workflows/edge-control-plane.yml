@@ -90,6 +90,11 @@ jobs:
       github.run_attempt == 1 &&
       startsWith(github.event.comment.body, '/vultr ')
     uses: ./.github/workflows/vultr-lifecycle.yml
+    # Exactly this reusable caller may write the one-shot non-secret
+    # BEGIN to Issue #26. Other control-plane routes keep read-only token.
+    permissions:
+      contents: read
+      issues: write
     with:
       command_body: ${{ github.event.comment.body }}
     secrets: inherit

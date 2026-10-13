@@ -1,3 +1,13 @@
+use crate::application_acceptance_command::validate_disposable_acceptance;
+use crate::application_lifecycle_command::{
+    acceptance_stage_initial_policy, load_application_desired,
+};
+use crate::cloudflare_dns_lifecycle_command::{
+    acceptance_create as create_disposable_dns,
+    acceptance_require_clean_room as require_clean_disposable_dns,
+    acceptance_verify_noop as verify_disposable_dns,
+};
+use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
     apply_instance_action, capture_ssh_transport_stage_once, prepare_strict_bootstrap,
@@ -37,7 +47,11 @@ use edge_controller_core::vultr_lifecycle::{
 use edge_orchestrator::OrchestrationContext;
 use edge_provider_vultr::{VultrFirewallRule, VultrInstance};
 use edge_shared_types::agent_service_client::AgentServiceClient;
-use edge_shared_types::{CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, Empty};
+use edge_shared_types::{
+    CANONICAL_PRODUCTION_DESIRED_STATE_BYTES, CredentialDeliverySlot, CredentialProjectionKind,
+    Empty, InitialCredentialHostProbeRequest, InitialVmCredentialRuntimeRequest,
+    InitialVmCredentialRuntimeResponse,
+};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -60,6 +74,11 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-apply" => run_substrate_apply(&args[1..]).await,
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
+        "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
+        "initial-dns-create" => run_initial_dns_create(&args[1..], context).await,
+        "initial-policy-stage" => run_initial_policy_stage(&args[1..], context).await,
+        "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
+        "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
         "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
@@ -578,7 +597,7 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
     let operator_private_key_path = operator_private_key_path_from_env()?;
     verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
     let mut provider = operational_provider_from_env()?;
-    let (observation, authorized) = build_host_substrate_authority(
+    let result = build_host_substrate_authority(
         &mut provider,
         &desired,
         machine,
@@ -588,8 +607,26 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
         &substrate,
         HostSubstrateExecutionPolicy::default(),
     )
-    .await?;
+    .await;
+    let (observation, authorized) = match result {
+        Ok(value) => value,
+        Err(err) => {
+            // Preserve the failure, but capture one existing native, typed,
+            // read-only forensic observation before disposable cleanup.
+            // Never diagnose unrelated production machines through this path.
+            if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+                let forensic =
+                    acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+                println!("disposable_ssh_failure_forensics={forensic}");
+            }
+            return Err(err);
+        }
+    };
     if authorized.plan.action != HostSubstrateAction::Noop {
+        if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+            let forensic = acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+            println!("disposable_ssh_failure_forensics={forensic}");
+        }
         return Err(format!(
             "host substrate verify is BLOCKED; next action is {:?}: {}",
             authorized.plan.action,
@@ -602,6 +639,495 @@ async fn run_substrate_verify(args: &[String]) -> Result<(), String> {
         "observation": observation,
         "plan": authorized.plan,
         "plan_authority": authorized.authority,
+    }))
+}
+
+fn require_disposable_initial_probe_target(spec: &str, machine: &str) -> Result<(), String> {
+    if spec != "infra/vultr/application-acceptance.json" || machine != "application-acceptance-1" {
+        return Err(
+            "initial host proof can only target the fixed disposable application-acceptance VM"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+/// Install the existing dedicated VM Access identity into the freshly staged
+/// disposable host. Host identity is not an application credential and cannot
+/// authorize local secret generation; the only issuer remains Worker-v2.
+/// GitHub-hosted owner sends it once over the existing strict bootstrap SSH
+/// stdin. Never place the token in command arguments, logs or stack policy.
+fn initial_vm_access_identity_payload(
+    client_id: &str,
+    client_secret: &str,
+) -> Result<String, String> {
+    validate_bootstrap_secret("initial VM Access client ID", client_id)?;
+    validate_bootstrap_secret("initial VM Access client secret", client_secret)?;
+    Ok(format!(
+        "CF_ACCESS_CLIENT_ID={client_id}\nCF_ACCESS_CLIENT_SECRET={client_secret}\n"
+    ))
+}
+
+async fn install_disposable_initial_vm_access_identity(
+    vultr_spec_path: &str,
+    machine_id: &str,
+    expected_agent_sha256: &str,
+    payload: &str,
+) -> Result<(), String> {
+    require_disposable_initial_probe_target(vultr_spec_path, machine_id)?;
+    let desired = load_desired_state(Path::new(vultr_spec_path))?;
+    let observed = exact_existing_machine_observation(&desired, machine_id).await?;
+    let target_ip = observed.main_ip.as_deref().ok_or_else(|| {
+        "initial VM Access installation requires observed disposable IPv4".to_owned()
+    })?;
+    let key = operator_private_key_path_from_env()?;
+    let public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key, &public_key)?;
+
+    let agent_sha = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "sha256sum /opt/vultr-edge-stack/bin/edge-agent | cut -d' ' -f1",
+    )?;
+    if agent_sha != expected_agent_sha256 {
+        return Err("initial VM Access installation refuses a non-ReleaseSet agent".to_owned());
+    }
+
+    // Exact fixed file, not a caller-supplied path. An interrupted write leaves
+    // evidence, so a rerun fails closed instead of replacing an unknown token.
+    let presence = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "if sudo test -e /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env || sudo test -L /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then echo PRESENT; else echo ABSENT; fi",
+    )?;
+    if presence != "ABSENT" {
+        return Err(
+            "initial VM Access identity already exists or cannot be safely observed; no replay"
+                .to_owned(),
+        );
+    }
+    let directory = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "if sudo test -e /opt/vultr-edge-stack/runtime-secrets || sudo test -L /opt/vultr-edge-stack/runtime-secrets; then echo PRESENT; else echo ABSENT; fi",
+    )?;
+    if directory != "ABSENT" {
+        return Err(
+            "initial VM Access installation refuses a pre-existing secret directory".to_owned(),
+        );
+    }
+    const INSTALL: &str = "set -eu; sudo -n install -d -o root -g root -m 0700 /opt/vultr-edge-stack/runtime-secrets; sudo -n install -o root -g root -m 0600 /dev/stdin /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env";
+    strict_ssh_run_stdin(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        INSTALL,
+        payload.as_bytes(),
+    )
+    .map_err(|err| format!("initial VM Access write outcome uncertain; do not repeat: {err}"))?;
+    let owner = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &key,
+        &public_key,
+        "sudo stat -c '%u:%g:%a' /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env",
+    )?;
+    if owner != "0:0:600" {
+        return Err("initial VM Access identity ownership is not root:root mode 0600".to_owned());
+    }
+    Ok(())
+}
+
+/// Exact first-install boundary for the disposable N1 VM only. Called after
+/// native Vultr creation/substrate, before initial provider publication.
+async fn run_initial_policy_stage(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 5 {
+        return Err("usage: edge-orchestrator vultr-lifecycle initial-policy-stage <disposable-vultr-spec> <machine-id> <application-spec> <agent-manifest> <agent-artifact>".to_owned());
+    }
+    require_disposable_initial_probe_target(&args[0], &args[1])?;
+    let desired = load_application_desired(Path::new(&args[2]))?;
+    validate_disposable_acceptance(&desired)?;
+    if desired.machine_id != args[1] || desired.vultr_spec_path != args[0] {
+        return Err(
+            "initial policy stage refuses mismatched provider/application target".to_owned(),
+        );
+    }
+    let expected_agent = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_agent, Path::new(&args[4]))?;
+    // Require both existing Cloudflare host identities before ANY VM write.
+    // The immutable provider-approved values are injected only into this
+    // GitHub-hosted lifecycle job, never into a self-hosted runner.
+    let vm_client_id = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
+        .map_err(|_| "initial VM requires existing Cloudflare VM Access client ID".to_owned())?;
+    let vm_client_secret = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET").map_err(|_| {
+        "initial VM requires existing Cloudflare VM Access client secret".to_owned()
+    })?;
+    let access_payload = initial_vm_access_identity_payload(&vm_client_id, &vm_client_secret)?;
+
+    let (bundle_id, digest) = acceptance_stage_initial_policy(
+        context,
+        &desired,
+        Path::new(&args[3]),
+        Path::new(&args[4]),
+    )
+    .await?;
+    install_disposable_initial_vm_access_identity(
+        &args[0],
+        &args[1],
+        &expected_agent.sha256,
+        &access_payload,
+    )
+    .await?;
+    print_json_value(serde_json::json!({
+        "operation": "INITIAL_VM_POLICY_STAGE",
+        "status": "PASS",
+        "machine_id": args[1],
+        "release_set_sha256": context.release().release_set_sha256,
+        "agent_sha256": expected_agent.sha256,
+        "bundle_id": bundle_id,
+        "bundle_digest": digest,
+        "credential_generation": "UNISSUED",
+        "application_containers": "NOT_STARTED",
+        "runtime_credentials": "ABSENT",
+        "vm_access_identity_installed": true,
+        "vm_access_identity_owner": "ROOT_0600",
+        "provider_credential_mutations": 0,
+        "external_line1": "UNPROVEN",
+        "external_line2": "UNPROVEN",
+    }))
+}
+
+// The first install reuses the existing disposable DNS owner rather than
+// adding an alternate record writer. Once the VM exists, one exact DNS
+// CREATE enables ACME name validation and external TLS client probes.
+// On unknown provider ACK, STOP; the canonical cleanup is a separate
+// authorized action after read-only reconciliation, never mutation replay.
+async fn run_initial_dns_create(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 2
+        || args[0] != "infra/cloudflare/application-acceptance-dns.json"
+        || args[1] != "infra/application/disposable-acceptance.json"
+    {
+        return Err("initial DNS requires exact disposable DNS and application specs".to_owned());
+    }
+    context.application_release_authority()?;
+    let application = load_application_desired(Path::new(&args[1]))?;
+    validate_disposable_acceptance(&application)?;
+    require_clean_disposable_dns(Path::new(&args[0])).await?;
+    create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
+    verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
+    print_json_value(serde_json::json!({
+        "operation": "INITIAL_VM_DNS_CREATE",
+        "status": "PASS",
+        "record": "stage2-acceptance.alegria.by",
+        "environment": "application-acceptance",
+        "external_tls": "UNPROVEN",
+        "provider_mutation_replay_allowed": false,
+    }))
+}
+
+async fn run_initial_host_probe(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 8 {
+        return Err("usage: edge-orchestrator vultr-lifecycle initial-host-probe <disposable-vultr-spec> <machine-id> <generation> <slot:a|b> <provider-intent-sha256> <release-set-sha256> <github-run-id> <agent-artifact-path>".to_owned());
+    }
+    require_disposable_initial_probe_target(&args[0], &args[1])?;
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let generation: u64 = args[2]
+        .parse()
+        .map_err(|_| "initial host proof needs numeric generation".to_owned())?;
+    let slot = match args[3].as_str() {
+        "a" => CredentialDeliverySlot::A,
+        "b" => CredentialDeliverySlot::B,
+        _ => return Err("initial host proof requires slot a or b".to_owned()),
+    };
+    let provider_intent = &args[4];
+    let release_set = &args[5];
+    let github_run_id: u64 = args[6]
+        .parse()
+        .map_err(|_| "initial host proof needs GitHub run ID".to_owned())?;
+    let expected_agent = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_agent, Path::new(&args[7]))?;
+    if release_set != &context.release().release_set_sha256 {
+        return Err("initial host proof requires exact immutable ReleaseSet".to_owned());
+    }
+    if generation == 0 || github_run_id == 0 {
+        return Err("initial host proof requires positive generation and run ID".to_owned());
+    }
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(context.release().accepted_revision.as_str())
+    {
+        return Err("initial host proof refuses GitHub source revision drift".to_owned());
+    }
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[6].as_str()) {
+        return Err("initial host proof refuses caller-supplied foreign GitHub run ID".to_owned());
+    }
+    let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| "exact disposable VM has no observed IPv4".to_owned())?;
+    let key_path = operator_private_key_path_from_env()?;
+    let public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key_path, &public_key)?;
+    let remote_sha = strict_ssh_capture(
+        target_ip,
+        &args[1],
+        &key_path,
+        &public_key,
+        "sha256sum /opt/vultr-edge-stack/bin/edge-agent | cut -d' ' -f1",
+    )?;
+    if remote_sha != expected_agent.sha256 {
+        return Err("initial host proof rejects unpinned installed agent binary".to_owned());
+    }
+    let (port, tunnel) = start_strict_agent_tunnel(target_ip, &args[1], &key_path, &public_key)?;
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let mut client = AgentServiceClient::connect(endpoint)
+        .await
+        .map_err(|err| format!("initial VM restricted AgentService connection failed: {err}"))?;
+    let result = client
+        .verify_initial_credential_host(Request::new(InitialCredentialHostProbeRequest {
+            generation,
+            slot: slot as i32,
+            provider_intent_sha256: provider_intent.clone(),
+            release_set_sha256: release_set.clone(),
+            github_run_id,
+            expected_agent_sha256: expected_agent.sha256.clone(),
+        }))
+        .await
+        .map_err(|err| format!("initial VM native host attestation refused: {err}"))?
+        .into_inner();
+    drop(client);
+    drop(tunnel);
+    if result.projection != CredentialProjectionKind::Vm as i32
+        || result.generation != generation
+        || result.slot != slot as i32
+        || result.github_run_id != github_run_id
+        || result.agent_sha256 != expected_agent.sha256
+        || !result.exact_dummy_ab
+        || !result.empty_host
+        || result.attestation_sha256.len() != 64
+        || !result
+            .attestation_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(
+            "initial VM proof returned mismatched or incomplete typed guest identity".to_owned(),
+        );
+    }
+    print_json_value(serde_json::json!({
+        "operation": "CREDENTIAL_INITIAL_HOST_PROBE",
+        "status": "PASS",
+        "machine_id": args[1],
+        "guest_ipv4": target_ip,
+        "agent_sha256": result.agent_sha256,
+        "release_set_sha256": release_set,
+        "provider_intent_sha256": provider_intent,
+        "github_run_id": github_run_id,
+        "credential_generation": generation,
+        "credential_slot": args[3],
+        "credential_projection": "VM",
+        "credential_host_attestation_sha256": result.attestation_sha256,
+        "credential_slot_A": "EXACT_DUMMY",
+        "credential_slot_B": "EXACT_DUMMY",
+        "credential_store_present": false,
+        "credential_runtime_mutations": 0,
+        "credential_provider_mutations": 0,
+    }))
+}
+
+fn require_six_exact_vm_local_line2(
+    response: &InitialVmCredentialRuntimeResponse,
+) -> Result<(), String> {
+    let expected = [
+        ("http-direct", "http", 4128),
+        ("socks5-direct", "socks5h", 4080),
+        ("https-direct", "https", 4443),
+        ("http-warp", "http", 3128),
+        ("socks5-warp", "socks5h", 1080),
+        ("https-warp", "https", 9443),
+    ];
+    if response.vm_local_line2.len() != expected.len() {
+        return Err("initial VM result is missing authenticated Line2 endpoints".to_owned());
+    }
+    for (observed, (name, protocol, port)) in response.vm_local_line2.iter().zip(expected) {
+        if observed.endpoint != name
+            || observed.protocol != protocol
+            || observed.port != port
+            || observed.successful_samples != 5
+            || observed.failed_samples != 0
+            || !observed.negative_auth_rejected
+        {
+            return Err(format!(
+                "initial VM result refuses incomplete Line2 sample for {name}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+// Only the original VM runtime job can apply first-use credentials. A distinct
+// post-reboot job may re-observe the same candidate, but never replay apply.
+fn authorize_initial_runtime_job(job: &str, apply: bool) -> Result<(), String> {
+    if (apply && job == "initial_vm_runtime")
+        || (!apply && matches!(job, "initial_vm_runtime" | "initial_reboot"))
+    {
+        Ok(())
+    } else {
+        Err(
+            "initial VM runtime refuses an unauthorized GitHub mutation or observation job"
+                .to_owned(),
+        )
+    }
+}
+
+async fn run_initial_vm_runtime(
+    args: &[String],
+    context: &OrchestrationContext,
+    apply: bool,
+) -> Result<(), String> {
+    if args.len() != 8 {
+        return Err("usage: edge-orchestrator vultr-lifecycle initial-runtime-apply|initial-runtime-verify <disposable-spec> <machine-id> <generation> <release-set-sha256> <github-run-id> <journal-history-path> <exact-BEGIN-path> <agent-artifact-path>".to_owned());
+    }
+    require_disposable_initial_probe_target(&args[0], &args[1])?;
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_ACTOR_ID", "44100369"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("initial VM runtime refuses untrusted {key}"));
+        }
+    }
+    authorize_initial_runtime_job(
+        &env::var("GITHUB_JOB")
+            .map_err(|_| "initial VM runtime requires GitHub job identity".to_owned())?,
+        apply,
+    )?;
+    let generation: u64 = args[2]
+        .parse()
+        .map_err(|_| "initial VM runtime requires numeric generation".to_owned())?;
+    let run_id: u64 = args[4]
+        .parse()
+        .map_err(|_| "initial VM runtime requires GitHub run ID".to_owned())?;
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(args[4].as_str())
+        || env::var("GITHUB_SHA").ok().as_deref()
+            != Some(context.release().accepted_revision.as_str())
+        || args[3] != context.release().release_set_sha256
+    {
+        return Err("initial VM runtime refuses foreign GitHub run or ReleaseSet".to_owned());
+    }
+    let history = fs::read_to_string(&args[5])
+        .map_err(|err| format!("VM first-use BEGIN journal unreadable: {err}"))?;
+    let exact_begin = fs::read_to_string(&args[6])
+        .map_err(|err| format!("VM first-use exact BEGIN unreadable: {err}"))?;
+    verify_initial_vm_runtime_gate(
+        &history,
+        &exact_begin,
+        generation,
+        &context.release().source_revision,
+        &context.release().release_set_sha256,
+        run_id,
+    )?;
+    let expected_agent = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected_agent, Path::new(&args[7]))?;
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| "initial VM runtime has no observed public IPv4".to_owned())?;
+    let key = operator_private_key_path_from_env()?;
+    let public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key, &public_key)?;
+    let remote_sha = strict_ssh_capture(
+        target_ip,
+        &args[1],
+        &key,
+        &public_key,
+        "sha256sum /opt/vultr-edge-stack/bin/edge-agent | cut -d' ' -f1",
+    )?;
+    if remote_sha != expected_agent.sha256 {
+        return Err("initial VM runtime refuses unexpected installed agent binary".to_owned());
+    }
+    let (port, tunnel) = start_strict_agent_tunnel(target_ip, &args[1], &key, &public_key)?;
+    let mut client = AgentServiceClient::connect(format!("http://127.0.0.1:{port}"))
+        .await
+        .map_err(|err| format!("initial VM runtime restricted RPC unreachable: {err}"))?;
+    let request = Request::new(InitialVmCredentialRuntimeRequest {
+        generation,
+        expected_agent_sha256: expected_agent.sha256.clone(),
+        release_set_sha256: args[3].clone(),
+    });
+    // Never replay the mutation, even if acknowledgement disappears.
+    let response = if apply {
+        client.apply_initial_vm_credential(request).await
+    } else {
+        client.verify_initial_vm_credential(request).await
+    }
+    .map_err(|err| {
+        format!(
+            "initial VM runtime {} unresolved; do not replay: {err}",
+            if apply { "apply" } else { "verify" },
+        )
+    })?
+    .into_inner();
+    drop(client);
+    drop(tunnel);
+    if response.projection != CredentialProjectionKind::Vm as i32
+        || response.generation != generation
+        || !response.candidate_unpromoted
+        || !response.candidate_materialized
+        || response.external_line1_proven
+        || response.external_line2_proven
+        || response.direct_warp_egress_distinct_proven
+    {
+        return Err("initial VM runtime returned invalid candidate or external proof".to_owned());
+    }
+    if apply && !response.vm_local_line2.is_empty() {
+        return Err("initial VM apply falsely claims authenticated network samples".to_owned());
+    }
+    if !apply {
+        require_six_exact_vm_local_line2(&response)?;
+    }
+    print_json_value(serde_json::json!({
+        "operation": if apply { "INITIAL_VM_RUNTIME_APPLY" } else { "INITIAL_VM_RUNTIME_VERIFY" },
+        "status": "PASS",
+        "machine_id": args[1],
+        "release_set_sha256": args[3],
+        "github_run_id": run_id,
+        "generation": generation,
+        "candidate_unpromoted": true,
+        "candidate_materialized": true,
+        "vm_local_line2": response.vm_local_line2.iter().map(|endpoint| serde_json::json!({
+            "name": endpoint.endpoint.as_str(),
+            "protocol": endpoint.protocol.as_str(),
+            "port": endpoint.port,
+            "successful_samples": endpoint.successful_samples,
+            "failed_samples": endpoint.failed_samples,
+            "negative_auth_rejected": endpoint.negative_auth_rejected,
+        })).collect::<Vec<_>>(),
+        "external_line1_4_of_4": "UNPROVEN",
+        "external_line2_6_of_6": "UNPROVEN",
+        "distinct_direct_warp_egress": "UNPROVEN",
+        "provider_mutations": 0,
+        "windows_tun_mutations": 0,
     }))
 }
 
@@ -2222,12 +2748,26 @@ async fn run_action(args: &[String]) -> Result<(), String> {
         let canonical_public_key = read_canonical_ssh_public_key()?;
         let operator_private_key_path = operator_private_key_path_from_env()?;
         verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
-        let boot_id_before = observe_guest_boot_id(
+        // This is the read-only gate *before* reboot. A failed SSH
+        // observation must not cause a reboot or a mutation retry.
+        let boot_id_before = match observe_guest_boot_id(
             &operational.main_ip,
             &args[1],
             &operator_private_key_path,
             &canonical_public_key,
-        )?;
+        ) {
+            Ok(boot_id) => boot_id,
+            Err(err) => {
+                if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+                    let forensic =
+                        acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+                    println!("disposable_reboot_preflight_forensics={forensic}");
+                }
+                return Err(format!(
+                    "reboot rejected before provider mutation: guest boot_id SSH observation failed; {err}"
+                ));
+            }
+        };
         Some((
             canonical_public_key,
             operator_private_key_path,
@@ -2246,28 +2786,43 @@ async fn run_action(args: &[String]) -> Result<(), String> {
     )
     .await?;
 
-    let reboot_observation =
-        if let Some((canonical_public_key, operator_private_key_path, boot_id_before)) =
-            reboot_probe
+    let reboot_observation = if let Some((
+        canonical_public_key,
+        operator_private_key_path,
+        boot_id_before,
+    )) = reboot_probe
+    {
+        let boot_id_after = match wait_for_guest_boot_id_change(
+            &operational.main_ip,
+            &args[1],
+            &operator_private_key_path,
+            &canonical_public_key,
+            &boot_id_before,
+            60,
+            std::time::Duration::from_secs(2),
+        )
+        .await
         {
-            let boot_id_after = wait_for_guest_boot_id_change(
-                &operational.main_ip,
-                &args[1],
-                &operator_private_key_path,
-                &canonical_public_key,
-                &boot_id_before,
-                60,
-                std::time::Duration::from_secs(2),
-            )
-            .await?;
-            Some(serde_json::json!({
-                "boot_id_before": boot_id_before,
-                "boot_id_after": boot_id_after,
-                "boot_id_changed": true,
-            }))
-        } else {
-            None
+            Ok(boot_id) => boot_id,
+            Err(err) => {
+                if is_disposable_ssh_forensic_target(&desired.environment, &args[1]) {
+                    let forensic =
+                        acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1]).await;
+                    println!("disposable_reboot_post_observation_forensics={forensic}");
+                }
+                return Err(format!(
+                    "reboot completion not proven after one provider mutation; no reboot replay: {err}"
+                ));
+            }
         };
+        Some(serde_json::json!({
+            "boot_id_before": boot_id_before,
+            "boot_id_after": boot_id_after,
+            "boot_id_changed": true,
+        }))
+    } else {
+        None
+    };
 
     let next_plan = if matches!(action, InstanceAction::Start | InstanceAction::Halt) {
         let (next, _) = build_instance_action_authority(
@@ -2725,6 +3280,14 @@ pub(crate) async fn acceptance_require_clean_room(
     Ok(())
 }
 
+fn is_disposable_ssh_forensic_target(environment: &str, machine_id: &str) -> bool {
+    matches!(
+        (environment, machine_id),
+        ("application-acceptance", "application-acceptance-1")
+            | ("lifecycle-acceptance", "lifecycle-acceptance-1")
+    )
+}
+
 /// Capture read-only provider/firewall/TCP/SSH phases before the disposable
 /// acceptance coordinator compensates the VM. This function never mutates or
 /// retries an installation. Every diagnostic field is fixed-shape and bounded.
@@ -2743,7 +3306,7 @@ pub(crate) async fn acceptance_ssh_failure_forensics(
         return unavailable();
     };
     // This forensic path must never observe an unrelated production machine.
-    if desired.environment != "application-acceptance" || machine_id != "application-acceptance-1" {
+    if !is_disposable_ssh_forensic_target(&desired.environment, machine_id) {
         return unavailable();
     }
     let Ok(machine) = exact_existing_machine_observation(&desired, machine_id).await else {
@@ -3444,6 +4007,9 @@ fn usage() -> String {
         "  edge-orchestrator vultr-lifecycle substrate-apply <spec-path> <machine-id> <authorized-plan-sha256>",
         "  edge-orchestrator vultr-lifecycle substrate-verify <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle transport-proof <spec-path> <machine-id> <edge-agent-artifact-path>",
+        "  edge-orchestrator vultr-lifecycle initial-host-probe <disposable-vultr-spec> <machine-id> <generation> <slot:a|b> <provider-intent-sha256> <release-set-sha256> <github-run-id> <edge-agent-artifact-path>",
+        "  edge-orchestrator vultr-lifecycle initial-policy-stage <disposable-vultr-spec> <machine-id> <application-spec> <agent-manifest> <agent-artifact>",
+        "  edge-orchestrator vultr-lifecycle initial-runtime-apply|initial-runtime-verify <disposable-vultr-spec> <machine-id> <generation> <release-set-sha256> <github-run-id> <history-path> <exact-BEGIN-path> <edge-agent-artifact-path>",
         "  edge-orchestrator vultr-lifecycle runner-bootstrap <spec-path> <machine-id> <installer-path> <local-owner-artifact-path>",
         "  edge-orchestrator vultr-lifecycle acquire-access-plan <spec-path> <machine-id>",
         "  edge-orchestrator vultr-lifecycle acquire-access <spec-path> <machine-id> <authorized-plan-sha256>",
@@ -3463,6 +4029,114 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_reboot_can_only_reobserve_not_reapply_credentials() {
+        assert!(super::authorize_initial_runtime_job("initial_vm_runtime", true).is_ok());
+        assert!(super::authorize_initial_runtime_job("initial_vm_runtime", false).is_ok());
+        assert!(super::authorize_initial_runtime_job("initial_reboot", false).is_ok());
+        assert!(super::authorize_initial_runtime_job("initial_reboot", true).is_err());
+        assert!(super::authorize_initial_runtime_job("initial_cleanup", false).is_err());
+        assert!(super::authorize_initial_runtime_job("initial_pair_publish", true).is_err());
+    }
+
+    #[test]
+    fn vm_first_use_line2_evidence_refuses_aggregate_and_incomplete_claims() {
+        let mut response = InitialVmCredentialRuntimeResponse::default();
+        response.vm_local_line2 = [
+            ("http-direct", "http", 4128),
+            ("socks5-direct", "socks5h", 4080),
+            ("https-direct", "https", 4443),
+            ("http-warp", "http", 3128),
+            ("socks5-warp", "socks5h", 1080),
+            ("https-warp", "https", 9443),
+        ]
+        .iter()
+        .map(
+            |(name, protocol, port)| edge_shared_types::InitialVmLine2EndpointResult {
+                endpoint: (*name).to_owned(),
+                protocol: (*protocol).to_owned(),
+                port: *port,
+                successful_samples: 5,
+                failed_samples: 0,
+                negative_auth_rejected: true,
+            },
+        )
+        .collect();
+        assert!(require_six_exact_vm_local_line2(&response).is_ok());
+        response.vm_local_line2[2].negative_auth_rejected = false;
+        assert!(require_six_exact_vm_local_line2(&response).is_err());
+        response.vm_local_line2[2].negative_auth_rejected = true;
+        response.vm_local_line2[2].failed_samples = 1;
+        assert!(require_six_exact_vm_local_line2(&response).is_err());
+        response.vm_local_line2.pop();
+        assert!(require_six_exact_vm_local_line2(&response).is_err());
+    }
+
+    #[test]
+    fn initial_vm_access_payload_is_fixed_and_rejects_invalid_secrets() {
+        let payload = initial_vm_access_identity_payload("id-123", "opaque-secret").unwrap();
+        assert_eq!(
+            payload,
+            "CF_ACCESS_CLIENT_ID=id-123\nCF_ACCESS_CLIENT_SECRET=opaque-secret\n"
+        );
+        for (id, secret) in [
+            ("", "valid"),
+            ("valid", ""),
+            ("valid\nCF_ACCESS_CLIENT_ID=forged", "valid"),
+            ("valid", "not\nsafe"),
+            ("has space", "valid"),
+        ] {
+            assert!(initial_vm_access_identity_payload(id, secret).is_err());
+        }
+    }
+
+    #[test]
+    fn initial_native_host_attestation_never_targets_production_or_wrong_vm() {
+        assert!(
+            require_disposable_initial_probe_target(
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1"
+            )
+            .is_ok()
+        );
+        for (spec, machine) in [
+            ("infra/vultr/application-acceptance.json", "production-1"),
+            (
+                "infra/vultr/disposable-acceptance.json",
+                "lifecycle-acceptance-1",
+            ),
+            ("infra/production/production.textproto", "production-1"),
+            ("infra/vultr/application-acceptance.json", "wrong-machine"),
+        ] {
+            assert!(require_disposable_initial_probe_target(spec, machine).is_err());
+        }
+        assert!(usage().contains("vultr-lifecycle initial-host-probe"));
+    }
+
+    #[test]
+    fn disposable_ssh_forensics_never_target_production_or_wrong_machine() {
+        assert!(is_disposable_ssh_forensic_target(
+            "lifecycle-acceptance",
+            "lifecycle-acceptance-1"
+        ));
+        assert!(is_disposable_ssh_forensic_target(
+            "application-acceptance",
+            "application-acceptance-1"
+        ));
+        assert!(!is_disposable_ssh_forensic_target(
+            "production",
+            "production-1"
+        ));
+        assert!(!is_disposable_ssh_forensic_target(
+            "lifecycle-acceptance",
+            "production-1"
+        ));
+        assert!(!is_disposable_ssh_forensic_target(
+            "production",
+            "lifecycle-acceptance-1"
+        ));
+    }
+
     use super::*;
 
     #[test]

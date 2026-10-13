@@ -35,14 +35,17 @@ use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
-    BundleFile, ContainerRuntimeObservation, CredentialProjectionKind, CredentialStateObservation,
-    CredentialTransitionAction, Empty, FileCategory, FilePresence, Ipv4NetworkObservation,
-    LocalCredentialState, MeshContainerDiagnostics, MeshRuntimeConvergeRequest,
-    MeshRuntimeDiagnostics, MeshRuntimeFailureSnapshot, MeshRuntimeState,
-    ReadBundleIdentityRequest, ReadBundleIdentityResponse, ReadRenderedArtifactsRequest,
-    ReadRenderedArtifactsResponse, RollbackBundleRequest, RollbackBundleResponse,
-    RuntimeProbeEvidence, RuntimeProbeStatus, StageCredentialCandidateRequest,
-    VerifyRuntimeRequest, canonical_apply_bundle_digest, parse_credential_transition_action,
+    BundleFile, ContainerRuntimeObservation, CredentialDeliverySlot, CredentialProjectionKind,
+    CredentialStateObservation, CredentialTransitionAction, Empty, FileCategory, FilePresence,
+    InitialCredentialHostProbeRequest, InitialCredentialHostProbeResponse,
+    InitialVmCredentialRuntimeRequest, InitialVmCredentialRuntimeResponse,
+    InitialVmLine2EndpointResult, Ipv4NetworkObservation, LocalCredentialState,
+    MeshContainerDiagnostics, MeshRuntimeConvergeRequest, MeshRuntimeDiagnostics,
+    MeshRuntimeFailureSnapshot, MeshRuntimeState, ReadBundleIdentityRequest,
+    ReadBundleIdentityResponse, ReadRenderedArtifactsRequest, ReadRenderedArtifactsResponse,
+    RollbackBundleRequest, RollbackBundleResponse, RuntimeProbeEvidence, RuntimeProbeStatus,
+    StageCredentialCandidateRequest, VerifyRuntimeRequest, canonical_apply_bundle_digest,
+    parse_credential_transition_action,
 };
 use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
@@ -161,6 +164,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         }
         cli::LocalCommand::QualityLine2 => {
             line2_quality::measure(&stack_dir, read_typed_runtime_environment)
+                .map(|_| ())
                 .map_err(AgentError::Command)
         }
         cli::LocalCommand::Diagnose => {
@@ -214,21 +218,60 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {
-            require_empty_vm_initial_credential_host(&stack_dir).map_err(AgentError::Command)?;
-            let docker = observe_docker().await.map_err(AgentError::Command)?;
-            require_no_vm_application_containers(&docker).map_err(AgentError::Command)?;
-            verify_canonical_dummy_ab_slots(
-                CredentialProjectionKind::Vm,
-                &vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?,
-            )
-            .await
-            .map_err(AgentError::Command)?;
+            verify_initial_vm_dummy_probe(&stack_dir)
+                .await
+                .map_err(AgentError::Command)?;
             println!("operation=CREDENTIAL_INITIAL_PROBE");
             println!("credential_projection=VM");
             println!("credential_slot_A=EXACT_DUMMY");
             println!("credential_slot_B=EXACT_DUMMY");
             println!("credential_store_present=false");
             println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            Ok(())
+        }
+        cli::LocalCommand::CredentialInitialAttest {
+            generation,
+            slot,
+            provider_intent_sha256,
+            release_set_sha256,
+            expected_agent_sha256,
+            run_id,
+        } => {
+            let slot = parse_first_use_slot(&slot).map_err(AgentError::Command)?;
+            let digest = attest_initial_vm_host(
+                &stack_dir,
+                generation,
+                slot,
+                &provider_intent_sha256,
+                &release_set_sha256,
+                &expected_agent_sha256,
+                run_id,
+            )
+            .await
+            .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_ATTEST");
+            println!("credential_projection=VM");
+            println!("credential_generation={generation}");
+            println!("credential_host_attestation_sha256={digest}");
+            println!("credential_github_run_id={run_id}");
+            println!("credential_exact_agent_binary=true");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            Ok(())
+        }
+        cli::LocalCommand::CredentialInitialVerify { generation } => {
+            verify_initial_vm_credential_functional(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_VERIFY");
+            println!("credential_generation={generation}");
+            println!("credential_initial_state=APPLIED_NOT_PROMOTED");
+            println!("line2_authenticated_endpoints=6");
+            println!("line2_egress_identity=UNPROVEN");
+            println!("external_tls_chain=UNPROVEN");
+            println!("line1_authenticated_endpoints=UNPROVEN");
+            println!("credential_pair_committed=false");
             println!("credential_runtime_mutations=0");
             Ok(())
         }
@@ -421,13 +464,9 @@ async fn run_local_bundle_stage_initial(stack_dir: &Path) -> Result<(), AgentErr
     let request = read_local_bundle_request().map_err(AgentError::Command)?;
     let (bundle_id, bundle_digest) =
         validate_digest_bound_bundle_request(&request).map_err(AgentError::Command)?;
-    validate_initial_policy_bundle_request(&request).map_err(AgentError::Command)?;
-    require_empty_vm_initial_credential_host(stack_dir).map_err(AgentError::Command)?;
-    require_empty_vm_initial_bundle_host(stack_dir).map_err(AgentError::Command)?;
-    let docker = observe_docker().await.map_err(AgentError::Command)?;
-    require_no_vm_application_containers(&docker).map_err(AgentError::Command)?;
-    let applied =
-        apply_digest_bound_bundle(stack_dir, request, true).map_err(AgentError::Command)?;
+    let applied = stage_initial_vm_policy_bundle(stack_dir, request)
+        .await
+        .map_err(AgentError::Command)?;
     if applied.active_bundle_id.as_deref() != Some(bundle_id.as_str())
         || applied.active_bundle_digest.as_deref() != Some(bundle_digest.as_str())
         || stack_dir.join(RUNTIME_ENV_FILE).exists()
@@ -443,6 +482,21 @@ async fn run_local_bundle_stage_initial(stack_dir: &Path) -> Result<(), AgentErr
     println!("credential_active_present=false");
     println!("credential_authentication=UNPROVEN");
     Ok(())
+}
+
+// The existing local operator and restricted gRPC owner share this exact
+// fresh-install path. Neither may silently start runtime or promote credentials.
+async fn stage_initial_vm_policy_bundle(
+    stack_dir: &Path,
+    request: ApplyBundleRequest,
+) -> Result<ApplyBundleResponse, String> {
+    validate_digest_bound_bundle_request(&request)?;
+    validate_initial_policy_bundle_request(&request)?;
+    require_empty_vm_initial_credential_host(stack_dir)?;
+    require_empty_vm_initial_bundle_host(stack_dir)?;
+    let docker = observe_docker().await?;
+    require_no_vm_application_containers(&docker)?;
+    apply_digest_bound_bundle(stack_dir, request, true)
 }
 
 async fn run_local_bundle_converge(stack_dir: &Path) -> Result<(), AgentError> {
@@ -606,6 +660,110 @@ fn print_credential_state_evidence(state: Option<&LocalCredentialState>) {
     }
 }
 
+fn verify_initial_agent_binary(expected_sha256: &str) -> Result<(), String> {
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(
+            "VM first-use proof requires an exact SHA-256 from immutable ReleaseSet".to_owned(),
+        );
+    }
+    // Hash the kernel's live executable handle, not its resolved pathname:
+    // the path can be replaced while an old process is still running.
+    let observed = edge_shared_types::file_sha256_lower_hex(Path::new("/proc/self/exe"))?;
+    if observed != expected_sha256 {
+        return Err("VM first-use attestation refuses non-ReleaseSet agent bytes".to_owned());
+    }
+    Ok(())
+}
+
+async fn attest_initial_vm_host(
+    stack_dir: &Path,
+    generation: u64,
+    slot: CredentialDeliverySlot,
+    provider_intent_sha256: &str,
+    release_set_sha256: &str,
+    expected_agent_sha256: &str,
+    run_id: u64,
+) -> Result<String, String> {
+    // The same trusted native owner backs local and restricted-RPC proofs.
+    // Binary SHA is checked against /proc/self/exe, never a replaceable path.
+    verify_initial_agent_binary(expected_agent_sha256)?;
+    verify_initial_vm_dummy_probe(stack_dir).await?;
+    let machine = fs::read_to_string("/etc/machine-id")
+        .map_err(|err| format!("VM machine identity unreadable: {err}"))?;
+    edge_shared_types::first_use_host_attestation_sha256(
+        CredentialProjectionKind::Vm,
+        generation,
+        slot,
+        provider_intent_sha256,
+        release_set_sha256,
+        &machine,
+        run_id,
+    )
+}
+
+fn validate_initial_vm_runtime_request(
+    request: &InitialVmCredentialRuntimeRequest,
+) -> Result<(), String> {
+    if request.generation == 0
+        || request.generation == edge_shared_types::CREDENTIAL_DUMMY_PROBE_GENERATION_A
+        || request.generation == edge_shared_types::CREDENTIAL_DUMMY_PROBE_GENERATION_B
+    {
+        return Err("first-use VM runtime refuses zero or dummy generation".to_owned());
+    }
+    validate_lower_hex("ReleaseSet", &request.release_set_sha256, 64)?;
+    verify_initial_agent_binary(&request.expected_agent_sha256)
+}
+
+fn initial_vm_runtime_response(
+    generation: u64,
+    materialized: bool,
+    endpoints: Vec<line2_quality::EndpointProof>,
+) -> InitialVmCredentialRuntimeResponse {
+    InitialVmCredentialRuntimeResponse {
+        projection: CredentialProjectionKind::Vm as i32,
+        generation,
+        candidate_unpromoted: true,
+        candidate_materialized: materialized,
+        vm_local_line2: endpoints
+            .into_iter()
+            .map(|p| InitialVmLine2EndpointResult {
+                endpoint: p.name.to_owned(),
+                protocol: p.protocol.to_owned(),
+                port: u32::from(p.port),
+                successful_samples: p.successes,
+                failed_samples: p.failures,
+                negative_auth_rejected: p.negative_auth_rejected,
+            })
+            .collect(),
+        external_line1_proven: false,
+        external_line2_proven: false,
+        direct_warp_egress_distinct_proven: false,
+    }
+}
+
+fn parse_first_use_slot(value: &str) -> Result<edge_shared_types::CredentialDeliverySlot, String> {
+    match value {
+        "a" => Ok(edge_shared_types::CredentialDeliverySlot::A),
+        "b" => Ok(edge_shared_types::CredentialDeliverySlot::B),
+        _ => Err("first-use attestation requires slot a or b".to_owned()),
+    }
+}
+
+async fn verify_initial_vm_dummy_probe(stack_dir: &Path) -> Result<(), String> {
+    require_empty_vm_initial_credential_host(stack_dir)?;
+    let docker = observe_docker().await?;
+    require_no_vm_application_containers(&docker)?;
+    verify_canonical_dummy_ab_slots(
+        CredentialProjectionKind::Vm,
+        &vm_credential_access_identity_path(stack_dir)?,
+    )
+    .await
+}
+
 async fn serve_acceptance_rpc(
     addr: SocketAddr,
     stack_dir: PathBuf,
@@ -678,6 +836,74 @@ impl AgentService for AgentServerImpl {
         Ok(Response::new(observation))
     }
 
+    async fn verify_initial_credential_host(
+        &self,
+        request: Request<InitialCredentialHostProbeRequest>,
+    ) -> Result<Response<InitialCredentialHostProbeResponse>, Status> {
+        let request = request.into_inner();
+        let slot = CredentialDeliverySlot::try_from(request.slot)
+            .map_err(|_| Status::invalid_argument("unknown initial credential slot"))?;
+        if !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B) {
+            return Err(Status::invalid_argument(
+                "initial credential slot must be A or B",
+            ));
+        }
+        let digest = attest_initial_vm_host(
+            &self.stack_dir,
+            request.generation,
+            slot,
+            &request.provider_intent_sha256,
+            &request.release_set_sha256,
+            &request.expected_agent_sha256,
+            request.github_run_id,
+        )
+        .await
+        .map_err(Status::failed_precondition)?;
+        Ok(Response::new(InitialCredentialHostProbeResponse {
+            attestation_sha256: digest,
+            github_run_id: request.github_run_id,
+            agent_sha256: request.expected_agent_sha256,
+            projection: CredentialProjectionKind::Vm as i32,
+            generation: request.generation,
+            slot: slot as i32,
+            exact_dummy_ab: true,
+            empty_host: true,
+        }))
+    }
+
+    async fn apply_initial_vm_credential(
+        &self,
+        request: Request<InitialVmCredentialRuntimeRequest>,
+    ) -> Result<Response<InitialVmCredentialRuntimeResponse>, Status> {
+        let request = request.into_inner();
+        validate_initial_vm_runtime_request(&request).map_err(Status::failed_precondition)?;
+        initial_apply_vm_credential(&self.stack_dir, request.generation)
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(initial_vm_runtime_response(
+            request.generation,
+            true,
+            Vec::new(),
+        )))
+    }
+
+    async fn verify_initial_vm_credential(
+        &self,
+        request: Request<InitialVmCredentialRuntimeRequest>,
+    ) -> Result<Response<InitialVmCredentialRuntimeResponse>, Status> {
+        let request = request.into_inner();
+        validate_initial_vm_runtime_request(&request).map_err(Status::failed_precondition)?;
+        let endpoints =
+            verify_initial_vm_credential_functional(&self.stack_dir, request.generation)
+                .await
+                .map_err(Status::failed_precondition)?;
+        Ok(Response::new(initial_vm_runtime_response(
+            request.generation,
+            true,
+            endpoints,
+        )))
+    }
+
     async fn bootstrap_runtime(
         &self,
         request: Request<BootstrapRuntimeRequest>,
@@ -689,6 +915,16 @@ impl AgentService for AgentServerImpl {
         }
 
         Ok(Response::new(run_bootstrap(&self.stack_dir, mode).await))
+    }
+
+    async fn stage_initial_policy_bundle(
+        &self,
+        request: Request<ApplyBundleRequest>,
+    ) -> Result<Response<ApplyBundleResponse>, Status> {
+        let applied = stage_initial_vm_policy_bundle(&self.stack_dir, request.into_inner())
+            .await
+            .map_err(Status::failed_precondition)?;
+        Ok(Response::new(applied))
     }
 
     async fn apply_bundle(
@@ -1077,63 +1313,11 @@ fn apply_bundle(
     stack_dir: &Path,
     request: ApplyBundleRequest,
 ) -> Result<ApplyBundleResponse, String> {
-    match (
-        request.bundle_id.as_deref(),
-        request.bundle_digest.as_deref(),
-    ) {
-        (Some(_), Some(_)) => apply_digest_bound_bundle(stack_dir, request, false),
-        (None, None) => apply_legacy_bundle(stack_dir, request),
-        _ => Err(
-            "bundle_id and bundle_digest must either both be present or both be absent".to_owned(),
-        ),
-    }
-}
-
-fn apply_legacy_bundle(
-    stack_dir: &Path,
-    request: ApplyBundleRequest,
-) -> Result<ApplyBundleResponse, String> {
-    let host_root = stack_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| stack_dir.to_path_buf());
-    let mut written_paths = Vec::new();
-    let mut warnings = Vec::new();
-
-    if request.prune_existing && stack_dir.exists() {
-        fs::remove_dir_all(stack_dir)
-            .map_err(|err| format!("failed to remove {}: {err}", stack_dir.display()))?;
-    }
-    fs::create_dir_all(stack_dir)
-        .map_err(|err| format!("failed to create {}: {err}", stack_dir.display()))?;
-
-    for file in request.stack_files {
-        write_bundle_file(stack_dir, &file, &mut written_paths)?;
-    }
-    for file in request.host_files {
-        write_bundle_file(&host_root, &file, &mut written_paths)?;
-    }
-    if let Some(file) = request.deployment_summary {
-        write_bundle_file(&host_root, &file, &mut written_paths)?;
-    } else {
-        warnings.push("deployment summary was not provided".to_owned());
-    }
-    if let Some(file) = request.agent_env_file {
-        write_bundle_file(&host_root, &file, &mut written_paths)?;
-    } else {
-        warnings.push("edge-agent environment file was not provided".to_owned());
-    }
-
-    Ok(ApplyBundleResponse {
-        success: true,
-        written_paths,
-        stack_dir: Some(stack_dir.display().to_string()),
-        warnings,
-        active_bundle_id: None,
-        active_bundle_digest: None,
-        previous_bundle_id: None,
-        previous_bundle_digest: None,
-    })
+    // One canonical bundle contract for local CLI and AgentService RPC.
+    // In particular a missing digest must NEVER fall back to writing host
+    // paths, certificate files or the agent's execution environment.
+    validate_digest_bound_bundle_request(&request)?;
+    apply_digest_bound_bundle(stack_dir, request, false)
 }
 
 fn validate_digest_bound_bundle_request(
@@ -1598,6 +1782,77 @@ fn require_no_vm_application_containers(observation: &DockerObservation) -> Resu
         }
     }
     Ok(())
+}
+
+fn validate_unpromoted_vm_initial_state(
+    state: &LocalCredentialState,
+    generation: u64,
+) -> Result<(), String> {
+    if generation == 0 || state.active.is_some() || state.previous.is_some() {
+        return Err(
+            "initial VM functional proof refuses active/previous or zero generation".to_owned(),
+        );
+    }
+    let candidate = state.candidate.as_ref().ok_or_else(|| {
+        "initial VM functional proof requires exactly one staged candidate".to_owned()
+    })?;
+    if candidate.generation != generation {
+        return Err("initial VM functional proof refuses candidate generation mismatch".to_owned());
+    }
+    Ok(())
+}
+
+async fn verify_initial_vm_credential_functional(
+    stack_dir: &Path,
+    generation: u64,
+) -> Result<Vec<line2_quality::EndpointProof>, String> {
+    let store = open_vm_credential_store(stack_dir)?;
+    let state = store.read_state()?.ok_or_else(|| {
+        "initial VM functional proof requires a persisted candidate state".to_owned()
+    })?;
+    validate_unpromoted_vm_initial_state(&state, generation)?;
+    let candidate = state
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "initial VM functional proof candidate disappeared".to_owned())?;
+    let bundle = store.read_bundle(candidate)?;
+    verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
+    let docker = observe_docker().await?;
+    if !docker.reachable {
+        return Err("initial VM functional proof cannot observe Docker".to_owned());
+    }
+    let images = read_exact_image_environment(stack_dir)?;
+    let gateway_image = images
+        .get(EDGE_GATEWAY_IMAGE_KEY)
+        .ok_or_else(|| "initial VM functional proof requires pinned gateway image".to_owned())?;
+    let warp_image = images
+        .get(EDGE_WARP_EGRESS_IMAGE_KEY)
+        .ok_or_else(|| "initial VM functional proof requires pinned WARP image".to_owned())?;
+    for (name, expected_image) in [
+        ("vultr-warp-egress", warp_image),
+        ("vultr-line1-gateway", gateway_image),
+        ("vultr-line2-proxy", gateway_image),
+    ] {
+        if !docker.container_exact_image_ready(name, expected_image) {
+            return Err(format!(
+                "initial VM functional proof refuses stopped or non-pinned container {name}"
+            ));
+        }
+    }
+    // Real authenticated 204 through each of six direct/WARP HTTP,
+    // SOCKS5 and HTTPS endpoints. Reuse the existing native quality owner;
+    // no configuration change, pointer promotion, or secret export.
+    let endpoints = line2_quality::measure(stack_dir, read_typed_runtime_environment)?;
+    // A passing network sample is not sufficient if another owner changed the
+    // credential cursor or rendered runtime while the test was in progress.
+    let after_state = store
+        .read_state()?
+        .ok_or_else(|| "initial VM functional proof lost its credential cursor".to_owned())?;
+    if after_state != state {
+        return Err("initial VM functional proof refuses a changed credential cursor".to_owned());
+    }
+    verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
+    Ok(endpoints)
 }
 
 async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Result<(), String> {
@@ -4605,53 +4860,45 @@ mod tests {
     }
 
     #[test]
-    fn applies_bundle_files_to_stack_and_host_roots() {
+    fn application_rpc_refuses_legacy_bundle_and_host_file_writes() {
         let root = unique_test_dir();
         let stack = root.join("stack");
-        fs::create_dir_all(&stack).unwrap();
 
-        let response = apply_bundle(
-            &stack,
-            ApplyBundleRequest {
-                stack_files: vec![BundleFile {
-                    relative_path: "docker-compose.yml".to_owned(),
-                    content: b"services: {}\n".to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }],
-                host_files: vec![BundleFile {
-                    relative_path: "tls/ca.pem".to_owned(),
-                    content: b"ca".to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }],
-                deployment_summary: Some(BundleFile {
-                    relative_path: "deployment-summary.json".to_owned(),
-                    content: br#"{"label":"bundle-a","instance_id":"instance-1"}"#.to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }),
-                agent_env_file: Some(BundleFile {
-                    relative_path: "edge-agent.env".to_owned(),
-                    content: b"EDGE_AGENT_TLS_CA_CERT_PATH=/opt/vultr-edge-stack/tls/ca.pem\n"
-                        .to_vec(),
-                    executable: false,
-                    sensitive: false,
-                }),
-                prune_existing: true,
-                bundle_id: None,
-                bundle_digest: None,
-            },
-        )
-        .unwrap();
+        let legacy = ApplyBundleRequest {
+            stack_files: vec![BundleFile {
+                relative_path: "docker-compose.yml".to_owned(),
+                content: b"services: {}\\n".to_vec(),
+                executable: false,
+                sensitive: false,
+            }],
+            host_files: vec![BundleFile {
+                relative_path: "tls/ca.pem".to_owned(),
+                content: b"ca".to_vec(),
+                executable: false,
+                sensitive: false,
+            }],
+            deployment_summary: None,
+            agent_env_file: None,
+            prune_existing: true,
+            bundle_id: None,
+            bundle_digest: None,
+        };
+        assert!(apply_bundle(&stack, legacy.clone()).is_err());
+        assert!(!stack.exists());
+        assert!(!root.join("tls/ca.pem").exists());
 
-        assert!(response.success);
-        assert!(stack.join("docker-compose.yml").is_file());
-        assert!(root.join("tls/ca.pem").is_file());
-        assert!(root.join("deployment-summary.json").is_file());
-        assert!(root.join("edge-agent.env").is_file());
+        let mut partially_bound = legacy.clone();
+        partially_bound.bundle_id = Some("release-a".to_owned());
+        assert!(apply_bundle(&stack, partially_bound).is_err());
+        assert!(!stack.exists());
 
-        fs::remove_dir_all(root).unwrap();
+        let mut forged = legacy;
+        forged.bundle_id = Some("release-a".to_owned());
+        let digest = canonical_apply_bundle_digest(&forged).unwrap();
+        forged.bundle_digest = Some(digest);
+        assert!(apply_bundle(&stack, forged).is_err());
+        assert!(!stack.exists());
+        assert!(!root.join("tls/ca.pem").exists());
     }
 
     #[test]
@@ -4998,6 +5245,52 @@ mod tests {
             root.join("runtime-secrets/application-v2")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_use_vm_runtime_response_never_claims_external_acceptance() {
+        let response = initial_vm_runtime_response(
+            101,
+            true,
+            vec![line2_quality::EndpointProof {
+                name: "http-direct",
+                protocol: "http",
+                port: 4128,
+                successes: 5,
+                failures: 0,
+                negative_auth_rejected: true,
+            }],
+        );
+        assert!(response.candidate_unpromoted);
+        assert!(response.vm_local_line2[0].negative_auth_rejected);
+        assert!(response.candidate_materialized);
+        assert_eq!(response.vm_local_line2.len(), 1);
+        assert!(!response.external_line1_proven);
+        assert!(!response.external_line2_proven);
+        assert!(!response.direct_warp_egress_distinct_proven);
+    }
+
+    #[test]
+    fn vm_initial_functional_gate_requires_exact_unpromoted_candidate() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        )
+        .unwrap();
+        let empty = LocalCredentialState::default();
+        assert!(validate_unpromoted_vm_initial_state(&empty, 109).is_err());
+        let bundle = vm_test_credential_bundle(109, CredentialDeliverySlot::A);
+        let state = store.stage_delivery_candidate(&bundle).unwrap();
+        assert!(validate_unpromoted_vm_initial_state(&state, 109).is_ok());
+        assert!(validate_unpromoted_vm_initial_state(&state, 110).is_err());
+        assert!(validate_unpromoted_vm_initial_state(&state, 0).is_err());
+        let mut unexpected_active = state.clone();
+        unexpected_active.active = unexpected_active.candidate.take();
+        assert!(validate_unpromoted_vm_initial_state(&unexpected_active, 109).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

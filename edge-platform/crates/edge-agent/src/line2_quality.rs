@@ -9,7 +9,7 @@ const CURL_PATH: &str = "/usr/bin/curl";
 const TARGET: &str = "https://www.gstatic.com/generate_204";
 const SAMPLES: usize = 5;
 const MAX_MS: u64 = 7000;
-const PROXY_PORTS: [(&str, &str, u16); 6] = [
+pub(crate) const PROXY_PORTS: [(&str, &str, u16); 6] = [
     ("http-direct", "http", 4128),
     ("socks5-direct", "socks5h", 4080),
     ("https-direct", "https", 4443),
@@ -17,6 +17,16 @@ const PROXY_PORTS: [(&str, &str, u16); 6] = [
     ("socks5-warp", "socks5h", 1080),
     ("https-warp", "https", 9443),
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EndpointProof {
+    pub(crate) name: &'static str,
+    pub(crate) protocol: &'static str,
+    pub(crate) port: u16,
+    pub(crate) successes: u32,
+    pub(crate) failures: u32,
+    pub(crate) negative_auth_rejected: bool,
+}
 
 fn curl_config_quote(value: &str) -> Result<String, String> {
     if value.is_empty() || value.chars().any(|c| c.is_control()) {
@@ -108,10 +118,90 @@ fn one_sample(proxy: &str, local_resolution: Option<&str>, credentials: &str) ->
     parse_probe_result(std::str::from_utf8(&result.stdout).ok()?)
 }
 
+// A successful authenticated HTTPS 204 alone is not sufficient: an open
+// proxy may yield exactly the same response. Each leaf must also refuse an
+// invalid identity at the proxy, not merely fail because TCP timed out.
+fn negative_auth_rejected(
+    proxy: &str,
+    local_resolution: Option<&str>,
+    protocol: &str,
+    invalid_credentials: &str,
+) -> bool {
+    let mut command = Command::new(CURL_PATH);
+    command.args([
+        "-q",
+        "--config",
+        "-",
+        "--silent",
+        "--fail",
+        "--proto",
+        "=https",
+        "--connect-timeout",
+        "3",
+        "--max-time",
+        "7",
+        "--noproxy",
+        "",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_connect};%{http_code}",
+        "--proxy",
+        proxy,
+    ]);
+    if let Some(resolve) = local_resolution {
+        command.args(["--resolve", resolve]);
+    }
+    command.arg(TARGET);
+    let mut child = match command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(format!("proxy-user = \"{invalid_credentials}\"\n").as_bytes())
+                .ok()
+        })
+        .is_some();
+    match child.wait_with_output() {
+        Ok(output) if wrote => negative_auth_result(
+            protocol,
+            output.status.code(),
+            std::str::from_utf8(&output.stdout).unwrap_or(""),
+        ),
+        _ => false,
+    }
+}
+
+fn negative_auth_result(protocol: &str, exit_code: Option<i32>, output: &str) -> bool {
+    let Some((connect, response)) = output.trim().split_once(';') else {
+        return false;
+    };
+    match protocol {
+        // CONNECT denial by the proxy, not a 407 emitted by the origin.
+        "http" | "https" => {
+            matches!(exit_code, Some(22 | 56))
+                && connect == "407"
+                && (response == "000" || response == "407")
+        }
+        // libcurl SOCKS5 login/handshake denial, not a broken listener.
+        "socks5h" => matches!(exit_code, Some(67 | 97)) && connect == "000" && response == "000",
+        _ => false,
+    }
+}
+
 pub(crate) fn measure(
     stack_dir: &Path,
     read_environment: impl FnOnce(&Path) -> Result<BTreeMap<String, String>, String>,
-) -> Result<(), String> {
+) -> Result<Vec<EndpointProof>, String> {
     let values = read_environment(stack_dir)?;
     let user = values
         .get("PROXY_USERNAME")
@@ -133,6 +223,8 @@ pub(crate) fn measure(
         return Err("Line2 certificate hostname is invalid".to_owned());
     }
     let auth = curl_config_quote(&format!("{user}:{password}"))?;
+    // Both valid and invalid credentials stay on curl stdin only.
+    let invalid_auth = curl_config_quote(&format!("invalid-{user}:{password}"))?;
     if !Path::new(CURL_PATH).is_file() {
         return Err("Line2 fixed system curl executable is unavailable".to_owned());
     }
@@ -144,6 +236,7 @@ pub(crate) fn measure(
     println!("sample_budget_per_proxy={SAMPLES}");
     println!("runtime_mutations=0");
     let mut failures = 0;
+    let mut endpoint_proofs = Vec::with_capacity(PROXY_PORTS.len());
     for (tag, protocol, port) in PROXY_PORTS {
         let proxy = proxy_target(protocol, port, domain);
         let resolution = if protocol == "https" {
@@ -159,7 +252,23 @@ pub(crate) fn measure(
                 None => errors += 1,
             }
         }
+        let rejected = if errors == 0 {
+            negative_auth_rejected(&proxy, resolution.as_deref(), protocol, &invalid_auth)
+        } else {
+            false
+        };
+        if !rejected {
+            failures += 1;
+        }
         failures += errors;
+        endpoint_proofs.push(EndpointProof {
+            name: tag,
+            protocol,
+            port,
+            successes: samples.len() as u32,
+            failures: errors,
+            negative_auth_rejected: rejected,
+        });
         let (min, median, max) = summarize(&samples)
             .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
             .unwrap_or_else(|| {
@@ -170,7 +279,8 @@ pub(crate) fn measure(
                 )
             });
         println!(
-            "proxy={tag} protocol={protocol} port={port} successes={} failures={errors} min_ms={min} median_ms={median} max_ms={max}",
+            "proxy={tag} protocol={protocol} port={port} successes={} failures={errors} negative_auth={} min_ms={min} median_ms={median} max_ms={max}",
+            if rejected { "REJECTED" } else { "NOT_PROVEN" },
             samples.len()
         );
     }
@@ -182,12 +292,22 @@ pub(crate) fn measure(
         ));
     }
     println!("quality_status=PASS");
-    Ok(())
+    Ok(endpoint_proofs)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_proofs_preserve_each_protocol_and_port() {
+        assert_eq!(PROXY_PORTS.len(), 6);
+        for (name, protocol, port) in PROXY_PORTS {
+            assert!(!name.is_empty());
+            assert!(matches!(protocol, "http" | "socks5h" | "https"));
+            assert!(port > 1024);
+        }
+    }
 
     #[test]
     fn six_distinct_fixed_local_proxy_endpoints() {
@@ -217,6 +337,28 @@ mod tests {
             "u:abc\\\\\\\"def"
         );
         assert!(curl_config_quote("u:with\nline").is_err());
+    }
+
+    #[test]
+    fn negative_authentication_requires_exact_proxy_denial() {
+        assert!(negative_auth_result("http", Some(22), "407;000"));
+        assert!(negative_auth_result("http", Some(56), "407;000"));
+        assert!(negative_auth_result("https", Some(22), "407;407"));
+        assert!(negative_auth_result("socks5h", Some(97), "000;000"));
+        assert!(negative_auth_result("socks5h", Some(67), "000;000"));
+        for (protocol, exit, output) in [
+            ("http", Some(0), "200;204"),
+            ("http", Some(22), "000;407"),
+            ("http", Some(28), "000;000"),
+            ("http", Some(0), "407;000"),
+            ("https", Some(22), "200;000"),
+            ("socks5h", Some(7), "000;000"),
+            ("socks5h", Some(28), "000;000"),
+            ("socks5h", Some(97), "000;204"),
+            ("other", Some(97), "000;000"),
+        ] {
+            assert!(!negative_auth_result(protocol, exit, output));
+        }
     }
 
     #[test]

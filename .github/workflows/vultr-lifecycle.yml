@@ -10,6 +10,14 @@ on:
 
 permissions: {}
 
+# One native Vultr transaction can span the first-use VM, both independent
+# host attestations, GitHub BEGIN, paired Workers and two consumers.
+# Share the existing credential workflow's lock so no concurrent rotation
+# can interleave with an irreversible first-use PATCH.
+concurrency:
+  group: credential-transaction-${{ github.repository_id }}
+  cancel-in-progress: false
+
 jobs:
   authorize:
     runs-on: ubuntu-24.04
@@ -47,7 +55,12 @@ jobs:
           destroy_digest = ""
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
-          if tokens == ["/vultr", "acceptance"]:
+          if tokens == ["/vultr", "initial-vm-install"]:
+              fail("INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION: external 10/10 witness, reboot recovery and isolated Windows ProxyOnly consumer are not yet implemented; do not publish one-time credentials")
+              operation = "initial-vm-install"
+              spec_path = "infra/vultr/application-acceptance.json"
+              machine_id = "application-acceptance-1"
+          elif tokens == ["/vultr", "acceptance"]:
               operation = "acceptance"
               spec_path = "infra/vultr/disposable-acceptance.json"
               machine_id = "lifecycle-acceptance-1"
@@ -91,7 +104,7 @@ jobs:
           if operation not in {
               "doctor", "inventory", "plan", "access-release", "action-plan", "apply",
               "runner-bootstrap", "action", "destroy-plan", "destroy-apply",
-              "cleanup-plan", "cleanup", "acceptance",
+              "cleanup-plan", "cleanup", "acceptance", "initial-vm-install",
           }:
               fail("unsupported lifecycle operation")
 
@@ -114,7 +127,7 @@ jobs:
 
           if operation in {
               "apply", "runner-bootstrap", "access-release", "action-plan", "action",
-              "destroy-plan", "destroy-apply"
+              "destroy-plan", "destroy-apply", "initial-vm-install"
           } and not machine_id:
               fail("machine_id is required for targeted operation")
 
@@ -125,6 +138,10 @@ jobs:
               fail("destroy-apply requires a lowercase 64-character digest")
           if operation != "destroy-apply" and destroy_digest:
               fail("destroy_digest is only valid for destroy-apply")
+
+          # This bounded mutation may never be replayed after an uncertain SSH ACK.
+          if operation == "initial-vm-install" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+              fail("initial VM provider/policy/Access installation replay forbidden; reconcile read-only before disposal")
 
           if operation == "acceptance":
               if spec_path != "infra/vultr/disposable-acceptance.json":
@@ -144,7 +161,18 @@ jobs:
           PY
 
   execute:
-    needs: authorize
+    outputs:
+      first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}
+      first_use_create_confirmed: ${{ steps.execute_lifecycle.outputs.first_use_create_confirmed }}
+    # For first-use, verify provider and Windows consumer BEFORE creating a
+    # billable VM or DNS record. All other typed operations remain available
+    # when the initial Windows attestation job is intentionally skipped.
+    needs: [authorize, initial_windows_attest]
+    if: >-
+      always() &&
+      needs.authorize.result == 'success' &&
+      (needs.authorize.outputs.operation != 'initial-vm-install' ||
+       needs.initial_windows_attest.result == 'success')
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
@@ -261,9 +289,16 @@ jobs:
           printf 'EDGE_RUNNER_REGISTRATION_EXPIRES_AT=%s\n' "${expires_at}" >> "${GITHUB_ENV}"
 
       - name: Execute typed lifecycle operation
+        id: execute_lifecycle
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          # Only bounded first-use/bootstrap transport can deliver the
+          # VM host Access identity directly to its root-owned local owner.
+          # The low-privilege self-hosted runner never receives the plaintext.
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID || '' }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET || '' }}
+          CLOUDFLARE_API_TOKEN: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_API_TOKEN || '' }}
         run: |
           set -euo pipefail
           bin="${EDGE_LIFECYCLE_ORCHESTRATOR}"
@@ -324,7 +359,10 @@ jobs:
               echo "host substrate convergence exceeded bounded mutation steps" >&2
               return 1
             }
-            run_lifecycle substrate-verify "${spec}" "${machine}" > "${verify_output}"
+            if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${verify_output}"; then
+              cat "${verify_output}" >&2
+              return 1
+            fi
             jq -e '.status == "PASS" and .plan.action == "NOOP"' "${verify_output}" >/dev/null
           }
           acquire_host_access() {
@@ -377,6 +415,99 @@ jobs:
           }
 
           case "${REQUESTED_OPERATION}" in
+            initial-vm-install)
+              test "${spec}" = "infra/vultr/application-acceptance.json"
+              test "${machine}" = "application-acceptance-1"
+              test -n "${EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID}"
+              test -n "${EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET}"
+              application_spec="infra/application/disposable-acceptance.json"
+              test -f "${application_spec}"
+              agent_manifest="${RUNNER_TEMP}/initial-policy-edge-agent.json"
+              "${bin}" application-lifecycle materialize \
+                "${application_spec}" "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}"
+              chmod 0600 "${agent_manifest}"
+
+              # First-use is a single bounded GitHub-owned operation: clean
+              # disposable provider create -> exact substrate -> policy-only
+              # bundle -> root-only existing VM Access identity. A provider
+              # failure or lost ACK is terminal; never replay by re-running.
+              run_lifecycle inventory "${spec}" > "${RUNNER_TEMP}/initial-vm-inventory.json"
+              jq -e '[.inventory.resources[] | select(.ownership.environment == "application-acceptance")] | length == 0' \
+                "${RUNNER_TEMP}/initial-vm-inventory.json" >/dev/null
+              run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/initial-vm-plan.json"
+              jq -e '.plans | length == 1 and .[0].class == "CREATE"' \
+                "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
+              authority="$(machine_authority "${RUNNER_TEMP}/initial-vm-plan.json")"
+              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+              # Durable same-job boundary: after this point CREATE may have an
+              # unknown ACK. Only this exact run may authorize subsequent
+              # disposal. No cross-run or preflight cleanup is inferred.
+              echo 'first_use_provider_mutation_attempted=true' >> "${GITHUB_OUTPUT}"
+              run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/initial-vm-create.json"
+              jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
+                "${RUNNER_TEMP}/initial-vm-create.json" >/dev/null
+              echo 'first_use_create_confirmed=true' >> "${GITHUB_OUTPUT}"
+
+              # Create exactly one Cloudflare DNS A record through the
+              # existing disposable DNS owner. ACME and independent external
+              # hostname/TLS probes require this exact fresh VM binding.
+              # Unknown DNS ACK is terminal; never create again blindly.
+              test -n "${CLOUDFLARE_API_TOKEN}"
+              run_lifecycle initial-dns-create                 infra/cloudflare/application-acceptance-dns.json                 "${application_spec}" > "${RUNNER_TEMP}/initial-vm-dns.json"
+              jq -e '.operation == "INITIAL_VM_DNS_CREATE" and
+                     .status == "PASS" and
+                     .record == "stage2-acceptance.alegria.by" and
+                     .external_tls == "UNPROVEN" and
+                     .provider_mutation_replay_allowed == false'                      "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
+
+              # No compensation after an uncertain create/apply result. The
+              # exact disposable identity remains available for read-only
+              # reconciliation and separately authorized explicit cleanup.
+
+              # A staged VM must have one strictly bounded SSH owner lease.
+              # The same existing lease-release closes access on all outcomes.
+              acquire_host_access "${spec}" "${machine}" "initial-vm-install"
+              trap 'release_host_access "${spec}" "${machine}" "initial-vm-install-final" >/dev/null 2>&1 || true' EXIT
+              converge_host_substrate "${spec}" "${machine}" "initial-vm-install" "${RUNNER_TEMP}/initial-vm-substrate.json"
+              run_lifecycle initial-policy-stage \
+                "${spec}" "${machine}" "${application_spec}" \
+                "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}" \
+                | tee "${RUNNER_TEMP}/result.json"
+              jq -e '
+                .operation == "INITIAL_VM_POLICY_STAGE" and
+                .status == "PASS" and
+                .machine_id == "application-acceptance-1" and
+                .runtime_credentials == "ABSENT" and
+                .application_containers == "NOT_STARTED" and
+                .vm_access_identity_installed == true and
+                .vm_access_identity_owner == "ROOT_0600" and
+                .provider_credential_mutations == 0 and
+                (.bundle_digest | type == "string")
+              ' "${RUNNER_TEMP}/result.json" >/dev/null
+              release_host_access "${spec}" "${machine}" "initial-vm-install"
+              trap - EXIT
+              cp "${RUNNER_TEMP}/result.json" "${RUNNER_TEMP}/initial-vm-policy.json"
+              jq -n \
+                --slurpfile machine "${RUNNER_TEMP}/initial-vm-create.json" \
+                --slurpfile substrate "${RUNNER_TEMP}/initial-vm-substrate.json" \
+                --slurpfile dns "${RUNNER_TEMP}/initial-vm-dns.json" \
+                --slurpfile policy "${RUNNER_TEMP}/initial-vm-policy.json" \
+                --arg revision "${source_revision}" \
+                '{
+                  operation: "INITIAL_VM_INSTALL",
+                  status: "STAGED_NOT_ACCEPTED",
+                  source_revision: $revision,
+                  provider_id: $machine[0].provider_id,
+                  machine_id: $policy[0].machine_id,
+                  release_set_sha256: $policy[0].release_set_sha256,
+                  host_substrate: $substrate[0],
+                  dns: $dns[0],
+                  staged_policy: $policy[0],
+                  external_line1: "UNPROVEN",
+                  external_line2: "UNPROVEN",
+                  provider_credential_mutations: 0
+                }' | tee "${RUNNER_TEMP}/result.json"
+              ;;
             doctor)
               run_lifecycle doctor "${spec}" | tee "${RUNNER_TEMP}/result.json"
               ;;
@@ -523,7 +654,10 @@ jobs:
               noop_authority="$(machine_authority "${RUNNER_TEMP}/apply-noop-plan.json")"
               run_lifecycle apply "${spec}" "${machine}" "${noop_authority}" > "${RUNNER_TEMP}/apply-noop.json"
               jq -e '.action == "NOOP" and .provider_ready == true' "${RUNNER_TEMP}/apply-noop.json" >/dev/null
-              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-substrate.json"
+              if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/apply-noop-substrate.json"; then
+                cat "${RUNNER_TEMP}/apply-noop-substrate.json" >&2
+                exit 1
+              fi
               jq -e '.status == "PASS" and .plan.action == "NOOP"' "${RUNNER_TEMP}/apply-noop-substrate.json" >/dev/null
 
               run_lifecycle action-plan "${spec}" "${machine}" halt > "${RUNNER_TEMP}/halt-plan.json"
@@ -534,14 +668,23 @@ jobs:
               start_authority="$(plan_authority "${RUNNER_TEMP}/start-plan.json")"
               run_lifecycle action "${spec}" "${machine}" start "${start_authority}" > "${RUNNER_TEMP}/start.json"
               jq -e '.power_status == "running"' "${RUNNER_TEMP}/start.json" >/dev/null
-              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-start-substrate.json"
+              if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-start-substrate.json"; then
+                cat "${RUNNER_TEMP}/post-start-substrate.json" >&2
+                exit 1
+              fi
               jq -e '.status == "PASS" and .plan.action == "NOOP"' \
                 "${RUNNER_TEMP}/post-start-substrate.json" >/dev/null
 
               run_lifecycle action-plan "${spec}" "${machine}" reboot > "${RUNNER_TEMP}/reboot-plan.json"
               reboot_authority="$(plan_authority "${RUNNER_TEMP}/reboot-plan.json")"
-              run_lifecycle action "${spec}" "${machine}" reboot "${reboot_authority}" > "${RUNNER_TEMP}/reboot.json"
-              run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-substrate.json"
+              if ! run_lifecycle action "${spec}" "${machine}" reboot "${reboot_authority}" > "${RUNNER_TEMP}/reboot.json"; then
+                cat "${RUNNER_TEMP}/reboot.json" >&2
+                exit 1
+              fi
+              if ! run_lifecycle substrate-verify "${spec}" "${machine}" > "${RUNNER_TEMP}/post-reboot-substrate.json"; then
+                cat "${RUNNER_TEMP}/post-reboot-substrate.json" >&2
+                exit 1
+              fi
               jq -e '.status == "PASS" and .plan.action == "NOOP"' \
                 "${RUNNER_TEMP}/post-reboot-substrate.json" >/dev/null
 
@@ -649,3 +792,674 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "${EDGE_SSH_PRIVATE_KEY_PATH:-${RUNNER_TEMP}/singbox-vultr-ops}"
+
+# All first-use owners execute inside the SAME authorized issue-comment run.
+  # One CLI command, no separate credential-issuance issue command, no replay.
+  initial_preflight:
+    name: Bind first-use Cloudflare version intent
+    needs: authorize
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      intent: ${{ steps.proof.outputs.intent }}
+      release_set: ${{ steps.proof.outputs.release_set }}
+      generation: ${{ steps.proof.outputs.generation }}
+    steps:
+      - name: Read exact published release and empty GitHub journal
+        id: proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          history="${RUNNER_TEMP}/initial-history.json"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-observe "${history}" > "${RUNNER_TEMP}/journal.txt"
+          grep -Fxq 'credential_initial_journal_empty=true' "${RUNNER_TEMP}/journal.txt"
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          "${owner}" credentials initial-pair-preflight "${GITHUB_RUN_ID}" a > "${RUNNER_TEMP}/preflight.txt"
+          grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/preflight.txt"
+          grep -Fxq 'credential_provider_mutations=0' "${RUNNER_TEMP}/preflight.txt"
+          intent="$(sed -n 's/^initial_pair_provider_intent_sha256=//p' "${RUNNER_TEMP}/preflight.txt")"
+          [[ "${intent}" =~ ^[0-9a-f]{64}$ ]]
+          test "$(grep -c '^initial_pair_provider_intent_sha256=' "${RUNNER_TEMP}/preflight.txt")" -eq 1
+          printf 'intent=%s\nrelease_set=%s\ngeneration=%s\n' \
+            "${intent}" "${EDGE_RELEASE_SET_SHA256}" "${GITHUB_RUN_ID}" >> "${GITHUB_OUTPUT}"
+
+  initial_vm_attest:
+    name: Attest exact disposable VM owner
+    needs: [authorize, execute, initial_preflight]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      attestation: ${{ steps.vm.outputs.attestation }}
+    steps:
+      - name: Authenticate VM binary and genuine dummy A/B slots
+        id: vm
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          INTENT: ${{ needs.initial_preflight.outputs.intent }}
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | cut -d' ' -f1)" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          key="${RUNNER_TEMP}/singbox-vultr-ops"
+          umask 077
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
+          test -s "${key}"
+          export EDGE_SSH_PRIVATE_KEY_PATH="${key}"
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          export EDGE_CONTROLLER_IPV4="${ip}"
+          "${owner}" vultr-lifecycle lease-acquire infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease.json"
+          jq -e '.status == "READY" and .lease_phase == "READY"' "${RUNNER_TEMP}/lease.json" >/dev/null
+          trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
+          "${owner}" vultr-lifecycle initial-host-probe \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" a "${INTENT}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${agent}" \
+            > "${RUNNER_TEMP}/vm-proof.json"
+          jq -e --arg g "${GENERATION}" --arg rel "${RELEASE_SET}" --arg intent "${INTENT}" \
+            '.status == "PASS" and .operation == "CREDENTIAL_INITIAL_HOST_PROBE" and
+             .credential_projection == "VM" and .credential_generation == ($g|tonumber) and
+             .release_set_sha256 == $rel and .provider_intent_sha256 == $intent and
+             .credential_slot_A == "EXACT_DUMMY" and .credential_slot_B == "EXACT_DUMMY" and
+             .credential_store_present == false and .credential_provider_mutations == 0 and
+             .credential_runtime_mutations == 0 and
+             (.credential_host_attestation_sha256|test("^[0-9a-f]{64}$"))' \
+            "${RUNNER_TEMP}/vm-proof.json" >/dev/null
+          attestation="$(jq -er .credential_host_attestation_sha256 "${RUNNER_TEMP}/vm-proof.json")"
+          "${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease-release.json"
+          jq -e '.status == "RELEASED"' "${RUNNER_TEMP}/lease-release.json" >/dev/null
+          trap - EXIT
+          printf 'attestation=%s\n' "${attestation}" >> "${GITHUB_OUTPUT}"
+
+  initial_windows_attest:
+    name: Attest isolated Windows host without TUN or DNS mutation
+    needs: [authorize, initial_preflight]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions: {}
+    outputs:
+      attestation: ${{ steps.windows.outputs.attestation }}
+    env:
+      EDGE_INSTALL_ROOT: C:\sing-box
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+      GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+      INTENT: ${{ needs.initial_preflight.outputs.intent }}
+    steps:
+      - name: Read-only local credential projection and exact release attestation
+        id: windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'First-use attestation replay forbidden' }
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
+          $doctor = @(& $diagnostic doctor $current)
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release doctor failed' }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['release_set_sha256'] -cne $env:RELEASE_SET) {
+            throw 'Windows local binary does not match first-use immutable ReleaseSet'
+          }
+          # Never use the existing ManagedTun production host as the disposable
+          # first-use Windows consumer, even when its local credential store is
+          # absent. The proof must be from an independently installed ProxyOnly
+          # owner, otherwise the paired Cloudflare mutation never starts.
+          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') {
+            throw 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED: installed Windows owner is not ProxyOnly; never stage on ManagedTun production'
+          }
+          $console = [string]$values['console_path']
+          if ([string]::IsNullOrWhiteSpace($console) -or
+              -not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'Immutable installed console missing'
+          }
+          $raw = @(& $console credential-initial-attest $env:GENERATION a $env:INTENT $env:RELEASE_SET $env:GITHUB_RUN_ID --install-root $env:EDGE_INSTALL_ROOT)
+          if ($LASTEXITCODE -ne 0) { throw 'Windows exact dummy A/B attestation failed' }
+          $proof = @{}
+          foreach ($line in $raw) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $proof[$parts[0]] = $parts[1] }
+          }
+          if ([string]$proof['operation'] -cne 'CREDENTIAL_INITIAL_ATTEST' -or
+              [string]$proof['credential_projection'] -cne 'WINDOWS' -or
+              [string]$proof['credential_generation'] -cne $env:GENERATION -or
+              [string]$proof['credential_github_run_id'] -cne $env:GITHUB_RUN_ID -or
+              [string]$proof['credential_provider_mutations'] -cne '0' -or
+              [string]$proof['credential_runtime_mutations'] -cne '0' -or
+              [string]$proof['windows_tun_mutations'] -cne '0' -or
+              [string]$proof['windows_dns_mutations'] -cne '0' -or
+              [string]$proof['credential_host_attestation_sha256'] -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Windows native attestation incomplete or unsafe'
+          }
+          # Prove the existing controller can serve the subsequent privileged
+          # candidate transaction BEFORE any non-replayable Worker PATCH.
+          # This is a read-only RPC: neither SCM, TUN, DNS nor routes change.
+          $state = @(& $console credential-state)
+          if ($LASTEXITCODE -ne 0 -or
+              -not ($state -contains 'credential_state_present=false')) {
+            throw 'First-use Windows controller unavailable or non-empty; refusing Worker publication'
+          }
+          "attestation=$($proof['credential_host_attestation_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
+          Write-Host 'WINDOWS_INITIAL_READONLY_ATTEST=PASS'
+
+  initial_pair_publish:
+    name: One-time GitHub BEGIN then version-fenced paired Worker publication
+    needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Commit exact durable BEGIN once and publish both projections
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+          INTENT: ${{ needs.initial_preflight.outputs.intent }}
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VM_ATTESTATION: ${{ needs.initial_vm_attest.outputs.attestation }}
+          WINDOWS_ATTESTATION: ${{ needs.initial_windows_attest.outputs.attestation }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          [[ "${INTENT}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${VM_ATTESTATION}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${WINDOWS_ATTESTATION}" =~ ^[0-9a-f]{64}$ ]]
+          test "${VM_ATTESTATION}" != "${WINDOWS_ATTESTATION}"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/initial-history.json"
+          exact="${RUNNER_TEMP}/exact-initial-begin.txt"
+          # The pre-write observation must be empty; no duplicate BEGIN,
+          # malformed record, changed intent, or unknown state is repairable.
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-plan "${GENERATION}" a \
+            "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
+            "${history}" "${exact}" > "${RUNNER_TEMP}/journal-plan.txt"
+          grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/journal-plan.txt"
+          test -s "${exact}"
+          # Write ONCE. A failed or missing POST acknowledgement is UNKNOWN.
+          # The workflow NEVER repeats POST, and NEVER PATCHes on UNKNOWN.
+          gh api --method POST "repos/${REPOSITORY}/issues/26/comments" \
+            --raw-field "body=$(cat "${exact}")" > "${RUNNER_TEMP}/begin-post.json"
+          jq -e --arg body "$(cat "${exact}")" \
+            '.body == $body and (.id|type == "number")' "${RUNNER_TEMP}/begin-post.json" >/dev/null
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-readback "${history}" "${exact}" > "${RUNNER_TEMP}/readback.txt"
+          grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
+          # The Rust publisher rechecks the same durable BEGIN, source,
+          # host attestations, Worker versions and identities before mutation.
+          "${owner}" credentials initial-pair-publish "${GENERATION}" a \
+            "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
+            "${history}" "${exact}" | tee "${RUNNER_TEMP}/pair-publish.txt"
+          grep -Fxq 'credential_initial_pair_provider_publish=PASS' "${RUNNER_TEMP}/pair-publish.txt"
+          grep -Fxq 'credential_initial_begin_record=EXACT_READBACK' "${RUNNER_TEMP}/pair-publish.txt"
+          grep -Fxq 'paired_projection_count=2' "${RUNNER_TEMP}/pair-publish.txt"
+          echo 'PAIRED_WORKER_FIRST_USE=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'External Line1 and Line2 remain UNPROVEN until physical acceptance.' >> "${GITHUB_STEP_SUMMARY}"
+
+  initial_vm_runtime:
+    name: Apply once and verify native VM runtime credential consumption
+    needs: [authorize, initial_preflight, initial_pair_publish]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Revalidate original BEGIN before one-time apply then read-only verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | cut -d' ' -f1)" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/initial-history.json"
+          exact="${RUNNER_TEMP}/exact-initial-begin.txt"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          # Reject another or malformed BEGIN; runtime's native journal gate
+          # independently validates exact SHA/release/run/generation.
+          jq -er --arg marker '<!-- sing-box-credential-initial-attempt/v1 -->' \
+            '[.[]|.body|select(startswith($marker))] | if length == 1 then .[0] else error("not exactly one first-use BEGIN") end' \
+            "${history}" > "${exact}"
+          python3 - "${exact}" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          p.write_bytes(p.read_bytes().removesuffix(b"\n"))
+          PY
+          "${owner}" credentials initial-pair-journal-readback "${history}" "${exact}" \
+            > "${RUNNER_TEMP}/readback.txt"
+          grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
+          key="${RUNNER_TEMP}/singbox-vultr-ops"
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
+          test -s "${key}"
+          export EDGE_SSH_PRIVATE_KEY_PATH="${key}"
+          export EDGE_CONTROLLER_IPV4="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          "${owner}" vultr-lifecycle lease-acquire infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease.json"
+          jq -e '.status == "READY" and .lease_phase == "READY"' "${RUNNER_TEMP}/lease.json" >/dev/null
+          trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
+          "${owner}" vultr-lifecycle initial-runtime-apply \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${history}" "${exact}" "${agent}" \
+            > "${RUNNER_TEMP}/runtime-apply.json"
+          jq -e '.status == "PASS" and .operation == "INITIAL_VM_RUNTIME_APPLY" and
+             .candidate_materialized == true and .candidate_unpromoted == true and
+             .external_line1_4_of_4 == "UNPROVEN" and .external_line2_6_of_6 == "UNPROVEN"' \
+            "${RUNNER_TEMP}/runtime-apply.json" >/dev/null
+          "${owner}" vultr-lifecycle initial-runtime-verify \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${history}" "${exact}" "${agent}" \
+            > "${RUNNER_TEMP}/runtime-verify.json"
+          jq -e '.status == "PASS" and .operation == "INITIAL_VM_RUNTIME_VERIFY" and
+             .candidate_unpromoted == true and .candidate_materialized == true and
+             (.vm_local_line2|length == 6) and
+             all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true) and
+             .external_line1_4_of_4 == "UNPROVEN" and .external_line2_6_of_6 == "UNPROVEN"' \
+            "${RUNNER_TEMP}/runtime-verify.json" >/dev/null
+          "${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease-release.json"
+          jq -e '.status == "RELEASED"' "${RUNNER_TEMP}/lease-release.json" >/dev/null
+          trap - EXIT
+          echo 'N1_FIRST_USE_VM_LOCAL_RUNTIME=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+
+  initial_windows_consume:
+    name: Consume and validate Worker-v2 Windows candidate without TUN
+    needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions: {}
+    env:
+      EDGE_INSTALL_ROOT: C:\sing-box
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+      GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+    steps:
+      - name: Stage and validate initial Windows projection, never apply or activate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'First-use Windows delivery replay forbidden' }
+          $diagnostic = Join-Path $env:EDGE_INSTALL_ROOT 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor (Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'))
+          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate cannot prove exact installed release' }
+          $values = @{}
+          foreach ($line in $doctor) {
+            $parts = ([string]$line).Split('=', 2)
+            if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
+          }
+          if ([string]$values['release_set_sha256'] -cne $env:RELEASE_SET) {
+            throw 'Initial Windows credential candidate requires exact accepted ReleaseSet'
+          }
+          if ([string]$values['windows_datapath_mode'] -cne 'ProxyOnly') {
+            throw 'FIRST_USE_WINDOWS_ISOLATION_CHANGED: owner lost ProxyOnly before credential stage; refuse mutation'
+          }
+          $console = [string]$values['console_path']
+          if ([string]::IsNullOrWhiteSpace($console) -or -not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'Initial Windows immutable console missing'
+          }
+          # Host eligibility was independently proven BEFORE paired publish.
+          # No active runtime, candidate or legacy path is ever overwritten.
+          # This is a one-time mutation: no retry after uncertain dispatch ACK.
+          & $console privileged-stage-credential ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows Worker credential stage failed; do not replay' }
+          & $console credential-transition validate-candidate --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate config validation failed; do not replay stage' }
+          $state = @(& $console credential-state)
+          if ($LASTEXITCODE -ne 0 -or
+              -not ($state -contains 'credential_state_present=true') -or
+              -not ($state -contains 'credential_active_present=false') -or
+              -not ($state -contains 'credential_candidate_present=true') -or
+              -not ($state -contains "credential_candidate_generation=$env:GENERATION")) {
+            throw 'First-use Windows candidate is not the exact delivered generation'
+          }
+          Write-Host 'WINDOWS_WORKER_PROJECTION_CONSUMED=PASS'
+          Write-Host 'WINDOWS_CANDIDATE_VALIDATED=PASS'
+          Write-Host 'WINDOWS_TUN_MUTATIONS=0'
+          Write-Host 'WINDOWS_DNS_MUTATIONS=0'
+          Write-Host 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED'
+
+# Candidate and VM-local checks are necessary but never an external PASS.
+  # Keep this native one-command installation fail-closed until the required
+  # independent external witness and reboot/cleanup proof are implemented.
+  initial_acceptance_verdict:
+    name: Final physical 10-endpoint acceptance verdict
+    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume, initial_reboot]
+    if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Refuse candidate-only success without external witness, reboot and cleanup
+        shell: bash
+        env:
+          VM_INSTALL_JOB: ${{ needs.execute.result }}
+          VM_LOCAL_JOB: ${{ needs.initial_vm_runtime.result }}
+          WINDOWS_CANDIDATE_JOB: ${{ needs.initial_windows_consume.result }}
+          VM_ATTEST_JOB: ${{ needs.initial_vm_attest.result }}
+          WINDOWS_ATTEST_JOB: ${{ needs.initial_windows_attest.result }}
+          PAIRED_WORKERS_JOB: ${{ needs.initial_pair_publish.result }}
+          REBOOT_JOB: ${{ needs.initial_reboot.result }}
+        run: |
+          set -euo pipefail
+          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB REBOOT_JOB; do
+            printf '%s=%s\n' "${field}" "${!field}"
+          done
+          echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_EXTERNAL_LINE2_6_OF_6=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PUBLIC_TLS_DIRECT_WARP_REBOOT_CLEANUP=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' >> "${GITHUB_STEP_SUMMARY}"
+          echo '::error title=N1/N2 physical acceptance BLOCKED::No independent external 10/10 traffic, public TLS, reboot and zero-leak disposal witness. Candidate-only PASS cannot close this installation.'
+          exit 1
+
+# One bounded disposable cleanup after the physical verdict, on BOTH PASS
+  # and FAIL. Reuse the exact existing native application-cleanup owner; no
+  # generic shell executor, foreign environment or alternate provider writer.
+  # Only a positively ACKed exact CREATE can authorize auto-disposal.
+  # Unknown CREATE ACK must stop at read-only reconciliation, never blindly
+  # compensate a potentially foreign resource or replay the provider mutation.
+  # A cleanup failure remains DIAGNOSTIC_REQUIRED, never a fake PASS.
+  initial_cleanup:
+    name: Dispose exact first-use VM and prove zero-leak provider state
+    needs: [authorize, execute, initial_acceptance_verdict]
+    if: >-
+      always() &&
+      needs.authorize.result == 'success' &&
+      needs.authorize.outputs.operation == 'initial-vm-install' &&
+      needs.execute.result != 'skipped' &&
+      needs.execute.outputs.first_use_create_confirmed == 'true'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve exact immutable tested cleanup binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_TAG}" = "edge-release-${EDGE_RELEASE_SET_SHA256}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          printf 'EDGE_APPLICATION_ORCHESTRATOR=%s\n' "${owner}" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Validate exact disposable scope before any provider cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(jq -er '.environment' infra/application/disposable-acceptance.json)" = "application-acceptance"
+          test "$(jq -er '.machine_id' infra/application/disposable-acceptance.json)" = "application-acceptance-1"
+          test "$(jq -er '.record_name' infra/cloudflare/application-acceptance-dns.json)" = "stage2-acceptance.alegria.by"
+          test "$(jq -er '.environment' infra/vultr/application-acceptance-vpc.json)" = "application-acceptance"
+          test "$(jq -er '.machine_id' infra/vultr/application-acceptance-vpc.json)" = "application-acceptance-1"
+          if grep -F -n 'miu.alegria.by' \
+              infra/application/disposable-acceptance.json \
+              infra/cloudflare/application-acceptance-dns.json \
+              infra/cloudflare/application-acceptance-mesh.json \
+              infra/vultr/application-acceptance-vpc.json; then
+            echo 'first-use cleanup must not reference production hostname' >&2
+            exit 1
+          fi
+
+      - name: Execute existing typed cleanup once and retain certificate
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="${RUNNER_TEMP}/initial-disposable-cleanup.json"
+          set +e
+          "${EDGE_APPLICATION_ORCHESTRATOR}" application-cleanup \
+            infra/application/disposable-acceptance.json \
+            infra/cloudflare/application-acceptance-dns.json \
+            infra/cloudflare/application-acceptance-mesh.json \
+            infra/vultr/application-acceptance-vpc.json \
+            > "${result}"
+          rc="$?"
+          set -e
+          if [[ -s "${result}" ]]; then
+            {
+              echo '### First-use disposable cleanup certificate'
+              echo '~~~json'
+              cat "${result}"
+              echo '~~~'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          test "${rc}" -eq 0
+          jq -e '.outcome == "PASS" and .zero_leaked_resources == "PASS" and .terminal_stage == "complete"' "${result}" >/dev/null
+          echo 'N1_N2_DISPOSABLE_ZERO_LEAK_CLEANUP=PASS' >> "${GITHUB_STEP_SUMMARY}"
+
+# Single authorized provider reboot after *both* isolated consumers have
+  # validated their initial candidates. Reuse native boot-ID change proof and
+  # native VM read-only candidate observation. Never repeat a lost reboot ACK.
+  initial_reboot:
+    name: One provider reboot and read-only credential recovery proof
+    needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Prove changed guest boot ID and post-reboot six authenticated VM-local proxies
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
+          test "$(sha256sum "${owner}" | awk '{print $1}')" = "${EDGE_ORCHESTRATOR_SHA256}"
+          test "$(sha256sum "${agent}" | awk '{print $1}')" = "${EDGE_AGENT_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/initial-history.json"
+          exact="${RUNNER_TEMP}/exact-initial-begin.txt"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          jq -er --arg marker '<!-- sing-box-credential-initial-attempt/v1 -->' \
+            '[.[]|.body|select(startswith($marker))] | if length == 1 then .[0] else error("not exactly one first-use BEGIN") end' \
+            "${history}" > "${exact}"
+          python3 - "${exact}" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          p.write_bytes(p.read_bytes().removesuffix(b"\n"))
+          PY
+          "${owner}" credentials initial-pair-journal-readback "${history}" "${exact}" > "${RUNNER_TEMP}/readback.txt"
+          grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
+
+          key="${RUNNER_TEMP}/singbox-vultr-ops"
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
+          test -s "${key}"
+          chmod 0600 "${key}"
+          export EDGE_SSH_PRIVATE_KEY_PATH="${key}"
+          export EDGE_CONTROLLER_IPV4="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          "${owner}" vultr-lifecycle lease-acquire infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease.json"
+          jq -e '.status == "READY" and .lease_phase == "READY"' "${RUNNER_TEMP}/lease.json" >/dev/null
+          trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
+
+          "${owner}" vultr-lifecycle action-plan infra/vultr/application-acceptance.json application-acceptance-1 reboot > "${RUNNER_TEMP}/reboot-plan.json"
+          authority="$(jq -er '.plan_authority.authority_digest' "${RUNNER_TEMP}/reboot-plan.json")"
+          [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+          # One authorized provider reboot. On missing acknowledgement, stop.
+          "${owner}" vultr-lifecycle action infra/vultr/application-acceptance.json application-acceptance-1 reboot "${authority}" > "${RUNNER_TEMP}/reboot.json"
+          jq -e '.mutations_performed == 1 and .reboot_observation.boot_id_changed == true and
+                 (.reboot_observation.boot_id_before != .reboot_observation.boot_id_after)' \
+            "${RUNNER_TEMP}/reboot.json" >/dev/null
+          if ! "${owner}" vultr-lifecycle substrate-verify infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/reboot-substrate.json"; then
+            cat "${RUNNER_TEMP}/reboot-substrate.json" >&2
+            exit 1
+          fi
+          jq -e '.status == "PASS" and .plan.action == "NOOP"' "${RUNNER_TEMP}/reboot-substrate.json" >/dev/null
+
+          # Must be a separate READ-ONLY RPC; the first-use apply is never
+          # repeated after reboot, even if candidate runtime did not recover.
+          "${owner}" vultr-lifecycle initial-runtime-verify \
+            infra/vultr/application-acceptance.json application-acceptance-1 \
+            "${GENERATION}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${history}" "${exact}" "${agent}" > "${RUNNER_TEMP}/reboot-runtime.json"
+          jq -e '.operation == "INITIAL_VM_RUNTIME_VERIFY" and .status == "PASS" and
+                 .candidate_materialized == true and .candidate_unpromoted == true and
+                 (.vm_local_line2 | length) == 6 and
+                 all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true) and
+                 .external_line1_4_of_4 == "UNPROVEN" and .external_line2_6_of_6 == "UNPROVEN"' \
+            "${RUNNER_TEMP}/reboot-runtime.json" >/dev/null
+          "${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/lease-release.json"
+          jq -e '.status == "RELEASED"' "${RUNNER_TEMP}/lease-release.json" >/dev/null
+          trap - EXIT
+          echo 'N1_N2_POST_REBOOT_GUEST_BOOT_ID=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_POST_REBOOT_VM_LOCAL_LINE2=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+

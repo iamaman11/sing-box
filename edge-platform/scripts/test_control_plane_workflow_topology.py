@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import json
 import re
+import subprocess
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
@@ -390,11 +392,12 @@ def main() -> None:
         "BundleStageInitial" in vm_agent_cli
         and "run_local_bundle_stage_initial(&stack_dir).await" in vm_agent_runtime
         and "validate_digest_bound_bundle_request(&request)" in initial_bundle
-        and "validate_initial_policy_bundle_request(&request)" in initial_bundle
-        and "require_empty_vm_initial_credential_host(stack_dir)" in initial_bundle
-        and "require_empty_vm_initial_bundle_host(stack_dir)" in initial_bundle
-        and "require_no_vm_application_containers(&docker)" in initial_bundle
-        and "apply_digest_bound_bundle(stack_dir, request, true)" in initial_bundle
+        and "stage_initial_vm_policy_bundle(stack_dir, request)" in initial_bundle
+        and "validate_initial_policy_bundle_request(&request)" in vm_agent_runtime
+        and "require_empty_vm_initial_credential_host(stack_dir)" in vm_agent_runtime
+        and "require_empty_vm_initial_bundle_host(stack_dir)" in vm_agent_runtime
+        and "require_no_vm_application_containers(&docker)" in vm_agent_runtime
+        and "apply_digest_bound_bundle(stack_dir, request, true)" in vm_agent_runtime
         and "application_runtime_started=false" in initial_bundle
         and "credential_authentication=UNPROVEN" in initial_bundle
         and "initial_policy_only: bool" in vm_agent_runtime
@@ -421,11 +424,462 @@ def main() -> None:
         and "if bundle.dummy_non_secret && !allow_dummy_probe" in credential_delivery_client,
         "fresh credential A/B proof must be authenticated, projection-bound, exact dummy only and read-only",
     )
+    require(
+        "CredentialInitialProbe(InstallRootArgs)" in windows_console_cli
+        and "run_windows_initial_credential_probe(Path::new(&args.install_root))" in windows_console
+        and "verify_canonical_dummy_ab_slots(" in windows_console
+        and "CredentialProjectionKind::Windows" in windows_console
+        and "initial_windows_credential_eligibility(" in windows_console
+        and "credential_provider_mutations=0" in windows_console
+        and "windows_dns_mutations=0" in windows_console
+        and "windows_tun_mutations=0" in windows_console,
+        "Windows initial proof must use its own exact Access projection without touching TUN or DNS",
+    )
+    require(
+        "initial-pair-preflight" in credentials
+        and 'needs.authorize.outputs.operation == \'initial-pair-preflight\'' in credentials
+        and "INITIAL_GENERATION" in credentials
+        and "INITIAL_SLOT" in credentials
+        and "credentials initial-pair-preflight" in credentials
+        and "initial_pair_provider_intent_sha256=" in credentials
+        and "grep -Eq '^initial_pair_provider_intent_sha256=[0-9a-f]{64}$'" in credentials
+        and "[0-9a-f]{64}[$]" not in credentials
+        and "test" in credentials
+        and "grep -Fxq 'credential_provider_mutations=0'" in credentials
+        and "credentials initial-pair-publish" not in credentials
+        and "initial_pair_provider_intent_sha256={provider_intent_sha256}" in credential_provider
+        and "release_context.release().source_revision.clone()" in credential_provider
+        and "release_context.release().release_set_sha256.clone()" in credential_provider
+        and 'required_env("EDGE_RELEASE_SET_SHA256")' not in credential_provider
+        and "run_delivery(command, release_context)"
+        in Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(encoding="utf-8")
+        and "initial_pair_provider_intent_sha256(" in credential_provider
+        and 'credential-initial-pair-provider-intent/v1' in credential_provider
+        and "credentials initial-pair-journal-observe" in credentials
+        and "gh api --paginate" in credentials
+        and "issues: read" in credentials
+        and "credential_initial_journal_empty=true" in credentials
+        and "credential_journal_mutations=0" in credentials
+        and "require_empty_initial_history(&history)?" in credential_provider
+        and "return run_readonly_journal(command);" in credential_provider
+        and credential_provider.index("return run_readonly_journal(command);")
+            < credential_provider.index('required_env("CLOUDFLARE_CONTROL_TOKEN")?')
+        and "verify_recorded_initial_attempt(&history, &exact)?" in credential_provider
+        and "initial_publication_authorized=false" in credential_provider
+        and "initial_publication_authorized=false" in credential_provider
+        and "initial_pair_preflight(&control_token" in credential_provider
+        and "validate_initial_pair_provider_observation(" in credential_provider,
+        "hosted initial provider gate must stay read-only and fail closed until both host attestations",
+    )
+    # Execute the actual GNU grep matcher, not just a substring assertion.
+    # A previous passing CI hid a literal-dollar suffix regression.
+    exact_digest_regex = re.search(
+        r"grep -Eq '(\^initial_pair_provider_intent_sha256=\[0-9a-f\]\{64\}\$)'",
+        credentials,
+    )
+    require(
+        exact_digest_regex is not None,
+        "initial pair preflight must use an exact-line 64-digit digest matcher",
+    )
+    valid_digest = "initial_pair_provider_intent_sha256=" + ("a" * 64)
+    invalid_digests = (
+        "initial_pair_provider_intent_sha256=" + ("a" * 63),
+        "initial_pair_provider_intent_sha256=" + ("a" * 65),
+        "initial_pair_provider_intent_sha256=" + ("A" * 64),
+        valid_digest + "$",
+        valid_digest + "tail",
+        "other_initial_pair_provider_intent_sha256=" + ("a" * 64),
+    )
+    for line, expected in ((valid_digest, True), *((item, False) for item in invalid_digests)):
+        outcome = subprocess.run(
+            ["grep", "-Eq", exact_digest_regex.group(1)],
+            input=line + "\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(
+            (outcome.returncode == 0) == expected,
+            "initial pair digest shell validator accepted malformed evidence or rejected valid evidence",
+        )
+    require(
+        'if operation in {"rotate-application", "host-bootstrap-converge"}:' in credentials
+        and 'os.environ.get("GITHUB_RUN_ATTEMPT") != "1"' in credentials
+        and "credential mutation replay forbidden: read-only reconciliation required" in credentials,
+        "GitHub credential mutation must fail closed before host preparation on a run re-attempt",
+    )
+    publish_slot = credential_provider.split(
+        "async fn publish_rotation_slot(", 1
+    )[1].split("pub(crate) async fn verify_credential_plane_invariant(", 1)[0]
+    require(
+        publish_slot.count("cloudflare::patch_latest_worker_version_secrets(") == 1
+        and publish_slot.count("cloudflare::deploy_worker_version(") == 1
+        and "LATEST_VERSION_CHANGED_CONTENT_UNPROVEN" in publish_slot
+        and "stop without replay or deploy" in publish_slot
+        and "stop without replay;" in publish_slot,
+        "ambiguous Cloudflare PATCH/deploy may only reconcile read-only, never retry a mutation",
+    )
+    vm_initial_functional = vm_agent_runtime.split(
+        "async fn verify_initial_vm_credential_functional(", 1
+    )[1].split("async fn initial_apply_vm_credential(", 1)[0]
+    require(
+        re.search(r"CredentialInitialVerify\s*\{\s*generation:\s*u64,?\s*\}", vm_agent_cli) is not None
+        and "verify_initial_vm_credential_functional(&stack_dir, generation)" in vm_agent_runtime
+        and "validate_unpromoted_vm_initial_state(&state, generation)?" in vm_initial_functional
+        and "verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?" in vm_initial_functional
+        and "read_exact_image_environment(stack_dir)?" in vm_initial_functional
+        and "docker.container_exact_image_ready(name, expected_image)"
+        in vm_initial_functional
+        and "line2_quality::measure(stack_dir, read_typed_runtime_environment)?"
+        in vm_initial_functional
+        and "if after_state != state {" in vm_initial_functional
+        and vm_initial_functional.count("verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?") == 2
+        and "promote_candidate" not in vm_initial_functional
+        and "line2_authenticated_endpoints=6" in vm_agent_runtime
+        and "line2_egress_identity=UNPROVEN" in vm_agent_runtime
+        and "external_tls_chain=UNPROVEN" in vm_agent_runtime
+        and "line1_authenticated_endpoints=UNPROVEN" in vm_agent_runtime
+        and "CredentialInitialAttest" in vm_agent_cli
+        and "attest_initial_vm_host(" in vm_agent_runtime
+        and "verify_initial_vm_dummy_probe(stack_dir).await?" in vm_agent_runtime
+        and "first_use_host_attestation_sha256(" in vm_agent_runtime
+        and "expected_agent_sha256" in vm_agent_cli
+        and "verify_initial_agent_binary(expected_agent_sha256)?" in vm_agent_runtime
+        and "async fn verify_initial_credential_host(" in vm_agent_runtime
+        and "request: Request<InitialCredentialHostProbeRequest>" in vm_agent_runtime
+        and "credential_exact_agent_binary=true" in vm_agent_runtime
+        and "file_sha256_lower_hex(" in vm_agent_runtime
+        and 'Path::new("/proc/self/exe")' in vm_agent_runtime
+        and "CredentialInitialAttest" in windows_console_cli
+        and "run_windows_initial_credential_probe(root)" in windows_console
+        and "first_use_host_attestation_sha256(" in windows_console
+        and "windows_tun_mutations=0" in windows_console
+        and "windows_dns_mutations=0" in windows_console
+        and "credential_pair_committed=false" in vm_agent_runtime,
+        "initial VM functional proof must bind exact unpromoted candidate and six real Line2 probes without claiming Line1",
+    )
+    # The canonical GitHub operation must reach the native disposable
+    # policy owner rather than leaving another unused Rust CLI capability.
+    require(
+        "INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION: external 10/10 witness" in vultr
+        and 'fail("INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION:' in vultr
+        and 'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
+        and 'spec_path = "infra/vultr/application-acceptance.json"' in vultr
+        and 'machine_id = "application-acceptance-1"' in vultr
+        and 'run_lifecycle initial-policy-stage' in vultr
+        and 'run_lifecycle apply "${spec}" "${machine}" "${authority}"' in vultr
+        and 'converge_host_substrate "${spec}" "${machine}" "initial-vm-install"' in vultr
+        and '.plans | length == 1 and .[0].class == "CREATE"' in vultr
+        and '"${bin}" application-lifecycle materialize' in vultr
+        and 'runtime_credentials == "ABSENT"' in vultr
+        and 'application_containers == "NOT_STARTED"' in vultr,
+        "one GitHub initial VM install must create a clean disposable host and invoke exact immutable policy owner",
+    )
+    # A clean VM must receive only the existing dedicated Cloudflare host
+    # identity (never an application credential) through the same exact owner.
+    # The SSH lease, root-only file, and first-attempt guard are one operation.
+    vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
+    require(
+        'if operation == "initial-vm-install" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
+        and 'acquire_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
+        and 'release_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
+        and "vm_access_identity_installed == true" in vultr
+        and "vm_access_identity_owner == \"ROOT_0600\"" in vultr
+        and 'operation: "INITIAL_VM_INSTALL"' in vultr
+        and 'status: "STAGED_NOT_ACCEPTED"' in vultr
+        and 'external_line1: "UNPROVEN"' in vultr
+        and 'external_line2: "UNPROVEN"' in vultr
+        and "secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID" in vultr
+        and "secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in vultr
+        and "fn initial_vm_access_identity_payload(" in vultr_lifecycle_command
+        and "strict_ssh_run_stdin(" in vultr_lifecycle_command
+        and "initial VM Access write outcome uncertain; do not repeat" in vultr_lifecycle_command
+        and "initial VM Access installation refuses a pre-existing secret directory" in vultr_lifecycle_command
+        and "vm_access_identity_owner" in vultr_lifecycle_command
+        and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
+        "fresh VM first-use must bind root-only Worker Access identity to the single GitHub lease and reject mutation replay",
+    )
+    require(
+        "group: credential-transaction-${{ github.repository_id }}" in vultr
+        and "group: credential-transaction-${{ github.repository_id }}" in credentials
+        and "group: credential-transaction-${{ github.repository_id }}" in application
+        and "cancel-in-progress: false" in vultr,
+        "Vultr and credential workflows must share one non-cancelling initial-pair transaction lock",
+    )
+    # CI must validate the *actual public network* reachability contract.
+    # Docker port publication is not enough if Vultr blocks the packet.
+    acceptance_firewalls = json.loads(
+        Path("infra/vultr/firewall-profiles.json").read_text(encoding="utf-8")
+    )
+    profile = next(
+        item for item in acceptance_firewalls["profiles"]
+        if item["name"] == "application-acceptance"
+    )
+    external = {
+        (item["protocol"], int(item["port"]))
+        for item in profile["rules"]
+        if item["subnet"] == "0.0.0.0" and item["subnet_size"] == 0
+    }
+    required = {
+        ("tcp", 80), ("tcp", 443), ("tcp", 5443),
+        ("udp", 8443), ("udp", 9444),
+        ("tcp", 4128), ("tcp", 4080), ("tcp", 4443),
+        ("tcp", 3128), ("tcp", 1080), ("tcp", 9443),
+    }
+    require(
+        external == required
+        and all(item["ip_type"] == "v4" for item in profile["rules"]),
+        "disposable VM firewall must expose exact 4 Line1 + 6 Line2 remote ports and ACME HTTP",
+    )
+
+    # A substring-only test missed a real YAML defect: a consumer at column
+    # zero is NOT a GitHub workflow job. Keep first-use owners under jobs:.
+    require(
+        all(
+            re.search(r"(?m)^  " + re.escape(name) + r":\s*$", vultr)
+            for name in (
+                "initial_preflight", "initial_vm_attest",
+                "initial_windows_attest", "initial_pair_publish",
+                "initial_vm_runtime", "initial_windows_consume",
+                "initial_acceptance_verdict", "initial_cleanup", "initial_reboot",
+            )
+        )
+        and not re.search(r"(?m)^initial_(?:preflight|vm_attest|windows_attest|pair_publish|vm_runtime|windows_consume):", vultr),
+        "all first-use jobs must be children of the reusable workflow jobs mapping",
+    )
+
+    # Full first-use cleanup is owned by the existing disposable application
+    # cleanup orchestrator, not a second VM-only destroy or fallback executor.
+    # It runs even when external acceptance fails after VM creation and its
+    # outcome must be an independent zero-leak certificate, never inferred.
+    first_use_cleanup = vultr.split("\n  initial_cleanup:\n", 1)
+    require(
+        len(first_use_cleanup) == 2
+        and 'needs: [authorize, execute, initial_acceptance_verdict]' in first_use_cleanup[1]
+        and 'always() &&' in first_use_cleanup[1]
+        and "needs.execute.result != 'skipped'" in first_use_cleanup[1]
+        and "needs.execute.outputs.first_use_create_confirmed == 'true'"
+            in first_use_cleanup[1]
+        and "first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}" in vultr
+        and "first_use_create_confirmed: ${{ steps.execute_lifecycle.outputs.first_use_create_confirmed }}" in vultr
+        and 'echo \'first_use_create_confirmed=true\' >> "${GITHUB_OUTPUT}"' in vultr
+        and 'echo \'first_use_provider_mutation_attempted=true\' >> "${GITHUB_OUTPUT}"' in vultr
+        and "id: execute_lifecycle" in vultr
+        and 'group: vultr-control-plane-production' in first_use_cleanup[1]
+        and 'application-cleanup \\' in first_use_cleanup[1]
+        and '.zero_leaked_resources == "PASS"' in first_use_cleanup[1]
+        and '.terminal_stage == "complete"' in first_use_cleanup[1]
+        and "N1_N2_DISPOSABLE_ZERO_LEAK_CLEANUP=PASS" in first_use_cleanup[1]
+        and 'infra/cloudflare/application-acceptance-dns.json' in first_use_cleanup[1]
+        and 'infra/vultr/application-acceptance-vpc.json' in first_use_cleanup[1]
+        and 'miu.alegria.by' in first_use_cleanup[1]
+        and '"${EDGE_APPLICATION_ORCHESTRATOR}" application-cleanup' in first_use_cleanup[1]
+        and 'destroy-apply' not in first_use_cleanup[1]
+        and 'vultr-lifecycle cleanup' not in first_use_cleanup[1],
+        "first-use MUST run one exact existing native disposable cleanup after terminal verdict and require zero-leak certificate",
+    )
+
+    # Reboot must be a SINGLE native provider action and its recovery proof
+    # must be a READ-ONLY candidate observation with the same durable BEGIN.
+    reboot_job_parts = vultr.split("\n  initial_reboot:\n", 1)
+    require(
+        len(reboot_job_parts) == 2
+        and 'needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume]'
+            in reboot_job_parts[1]
+        and 'vultr-lifecycle action-plan infra/vultr/application-acceptance.json application-acceptance-1 reboot'
+            in reboot_job_parts[1]
+        and 'vultr-lifecycle action infra/vultr/application-acceptance.json application-acceptance-1 reboot'
+            in reboot_job_parts[1]
+        and '.reboot_observation.boot_id_changed == true' in reboot_job_parts[1]
+        and 'vultr-lifecycle substrate-verify infra/vultr/application-acceptance.json application-acceptance-1'
+            in reboot_job_parts[1]
+        and 'vultr-lifecycle initial-runtime-verify' in reboot_job_parts[1]
+        and 'vultr-lifecycle initial-runtime-apply' not in reboot_job_parts[1]
+        and 'N1_N2_POST_REBOOT_VM_LOCAL_LINE2=PASS' in reboot_job_parts[1]
+        and "initial_reboot" in vultr.split("  initial_acceptance_verdict:", 1)[1].split("  initial_cleanup:", 1)[0]
+        and 'authorize_initial_runtime_job(' in vultr_lifecycle_command
+        and '(!apply && matches!(job, "initial_vm_runtime" | "initial_reboot"))'
+            in vultr_lifecycle_command
+        and 'initial_reboot_can_only_reobserve_not_reapply_credentials' in vultr_lifecycle_command,
+        "one-shot disposable reboot must prove real boot-ID change and same-candidate read-only recovery",
+    )
+
+    # A staging CA certificate cannot pass independent public TLS trust.
+    # Disposable real network acceptance uses a separate hostname and DNS,
+    # never the permanent production hostname, but needs a trusted ACME issuer.
+    disposable_policy = json.loads(
+        Path("infra/application/disposable-acceptance.json").read_text(encoding="utf-8")
+    )
+    require(
+        disposable_policy["runtime_policy"]["line1"]["acme_provider"] == "letsencrypt"
+        and disposable_policy["runtime_policy"]["line1"]["tunnel_domain"]
+            == "stage2-acceptance.alegria.by",
+        "disposable real external TLS acceptance must use public-trust ACME on isolated DNS",
+    )
+
+    # The installed SCM endpoint differs from the CLI's development fallback.
+    # Never hardcode either port in the first-use workflow: the *verified*
+    # immutable console resolves its own installed controller identity.
+    console_source = WINDOWS_CONSOLE.read_text(encoding="utf-8")
+    shared_types = Path(
+        "edge-platform/crates/edge-shared-types/src/lib.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        'WINDOWS_CONTROLLER_ENDPOINT' in shared_types
+        and 'return WINDOWS_CONTROLLER_ENDPOINT;' in console_source
+        and vultr.count('& $console credential-state') == 2
+        and 'credential-state http://' not in vultr
+        and 'credential-state https://' not in vultr,
+        "first-use Windows observation must use verified native installed SCM endpoint, not a hardcoded port",
+    )
+
+    # Single first-use request: new VM, two independent host owners, one
+    # durable BEGIN, paired Workers and the native VM runtime, no replay.
+    initial_flow = vultr.split("  initial_preflight:", 1)[1]
+    require(
+        'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
+        and 'initial_vm_attest:' in initial_flow
+        and 'initial_windows_attest:' in initial_flow
+        and 'initial_pair_publish:' in initial_flow
+        and 'initial_vm_runtime:' in initial_flow
+        and 'initial_windows_consume:' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
+        and 'privileged-stage-credential' in initial_flow
+        and 'credential-transition validate-candidate' in initial_flow
+        and 'First-use Windows controller unavailable or non-empty; refusing Worker publication' in initial_flow
+        and 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED:' in initial_flow
+        and 'FIRST_USE_WINDOWS_ISOLATION_CHANGED:' in initial_flow
+        and initial_flow.count("['windows_datapath_mode'] -cne 'ProxyOnly'") == 2
+        and 'credential_candidate_generation=$env:GENERATION' in initial_flow
+        and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
+        and 'needs: [authorize, execute, initial_preflight]' in initial_flow
+        and 'needs: [authorize, initial_windows_attest]' in vultr
+        and "needs.initial_windows_attest.result == 'success'" in vultr
+        and "always() &&" in vultr
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
+        and 'credential-initial-attest' in initial_flow
+        and 'name: Bind first-use Cloudflare version intent\n    needs: authorize' in vultr
+        and 'name: Attest isolated Windows host without TUN or DNS mutation\n    needs: [authorize, initial_preflight]' in vultr
+        and 'vultr-lifecycle initial-host-probe' in initial_flow
+        and 'credentials initial-pair-journal-plan' in initial_flow
+        and 'credentials initial-pair-journal-readback' in initial_flow
+        and 'credentials initial-pair-publish' in initial_flow
+        and 'gh api --method POST "repos/${REPOSITORY}/issues/26/comments"' in initial_flow
+        and 'issues: write' in initial_flow
+        and 'GITHUB_RUN_ATTEMPT' in initial_flow
+        and 'vultr-lifecycle initial-runtime-apply' in initial_flow
+        and 'vultr-lifecycle initial-runtime-verify' in initial_flow
+        and 'all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true)' in initial_flow
+        and 'vultr-lifecycle initial-dns-create' not in initial_flow
+        and 'run_lifecycle initial-dns-create' in vultr
+        and 'infra/cloudflare/application-acceptance-dns.json' in vultr
+        and 'INITIAL_VM_DNS_CREATE' in vultr
+        and 'provider_mutation_replay_allowed == false' in vultr
+        and 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' in initial_flow
+        and 'initial_acceptance_verdict:' in initial_flow
+        and 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' in initial_flow
+        and 'Refuse candidate-only success without external witness, reboot and cleanup' in initial_flow
+        and 'Final physical 10-endpoint acceptance verdict' in initial_flow
+        and 'initial_publication_authorized=false' in initial_flow
+        and 'windows_tun_mutations' in initial_flow
+        and 'windows_dns_mutations' in initial_flow,
+        "single initial install must bind release and both host attestations to durable BEGIN before paired publication",
+    )
+
+    require(
+        'acceptance_create as create_disposable_dns' in vultr_lifecycle_command
+        and 'require_clean_disposable_dns(Path::new(&args[0])).await?' in vultr_lifecycle_command
+        and 'create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
+        and 'verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
+        and '"initial-dns-create" => run_initial_dns_create' in vultr_lifecycle_command,
+        "initial VM DNS must reuse one exact clean-room Cloudflare owner without mutation retry",
+    )
+
+    # RPC and local bundle paths must reject the retired unbound / host-file
+    # write path rather than silently writing to arbitrary host roots.
+    bundle_entrypoint = vm_agent_runtime.rsplit("fn apply_bundle(", 1)[1].split(
+        "fn validate_digest_bound_bundle_request(", 1
+    )[0]
+    require(
+        "validate_digest_bound_bundle_request(&request)?" in bundle_entrypoint
+        and "apply_digest_bound_bundle(stack_dir, request, false)" in bundle_entrypoint
+        and "apply_legacy_bundle" not in vm_agent_runtime
+        and "fn application_rpc_refuses_legacy_bundle_and_host_file_writes()" in vm_agent,
+        "all application bundle transports must reject legacy unbound host writes",
+    )
+    # First-use policy stage is the only pre-credential installation path.
+    agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
+    vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
+    application_policy_service = Path(
+        "edge-platform/crates/edge-orchestrator/src/application_lifecycle_service.rs"
+    ).read_text(encoding="utf-8")
+    application_policy_command = Path(
+        "edge-platform/crates/edge-orchestrator/src/application_lifecycle_command.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "rpc StageInitialPolicyBundle(ApplyBundleRequest)" in agent_proto
+        and "async fn stage_initial_policy_bundle(" in vm_agent_runtime
+        and "stage_initial_vm_policy_bundle(&self.stack_dir, request.into_inner())" in vm_agent_runtime
+        and "async fn stage_initial_vm_policy_bundle(" in vm_agent_runtime
+        and "require_no_vm_application_containers(&docker)?" in vm_agent_runtime
+        and "stage_initial_application_policy(" in application_policy_service
+        and "stage_initial_policy_bundle(Request::new(prepared.request.clone()))"
+            in application_policy_service
+        and "initial policy stage RPC has uncertain outcome; no mutation replay"
+            in application_policy_service
+        and "acceptance_stage_initial_policy(" in application_policy_command
+        and '"initial-policy-stage" => run_initial_policy_stage' in vultr_lifecycle_command
+        and "validate_disposable_acceptance(&desired)?" in vultr_lifecycle_command
+        and "application_containers" in vultr_lifecycle_command
+        and "runtime_credentials" in vultr_lifecycle_command,
+        "initial disposable VM stage must install exact policy only through one restricted native owner",
+    )
+    # One native owner serves first-use VM apply/verify over the existing
+    # restricted AgentService. Local Line2 results must stay per endpoint;
+    # aggregate VM-local success must never be called external acceptance.
+    # Load these alongside the first-use assertion; later all-workspace
+    # checks also load the same canonical proto and owner files.
+    agent_proto = AGENT_PROTO.read_text(encoding="utf-8")
+    credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
+    vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
+    first_use_journal = Path(
+        "edge-platform/crates/edge-orchestrator/src/credential_initial_journal.rs"
+    ).read_text(encoding="utf-8")
+    line2_quality = Path(
+        "edge-platform/crates/edge-agent/src/line2_quality.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "rpc ApplyInitialVmCredential(InitialVmCredentialRuntimeRequest)" in agent_proto
+        and "rpc VerifyInitialVmCredential(InitialVmCredentialRuntimeRequest)" in agent_proto
+        and "message InitialVmLine2EndpointResult" in credential_proto
+        and "repeated InitialVmLine2EndpointResult vm_local_line2 = 5;" in credential_proto
+        and "async fn apply_initial_vm_credential(" in vm_agent_runtime
+        and "async fn verify_initial_vm_credential(" in vm_agent_runtime
+        and "validate_initial_vm_runtime_request(&request)" in vm_agent_runtime
+        and "initial_apply_vm_credential(&self.stack_dir, request.generation)" in vm_agent_runtime
+        and "verify_initial_vm_credential_functional(" in vm_agent_runtime
+        and "external_line1_proven: false" in vm_agent_runtime
+        and "external_line2_proven: false" in vm_agent_runtime
+        and "direct_warp_egress_distinct_proven: false" in vm_agent_runtime
+        and "pub(crate) struct EndpointProof" in line2_quality
+        and "endpoint_proofs.push(EndpointProof {" in line2_quality
+        and "fn verify_initial_vm_runtime_gate(" in first_use_journal
+        and "verify_recorded_initial_attempt(history, exact_record)?" in first_use_journal
+        and '"initial-runtime-apply" => run_initial_vm_runtime' in vultr_lifecycle_command
+        and '"initial-runtime-verify" => run_initial_vm_runtime' in vultr_lifecycle_command
+        and "verify_initial_vm_runtime_gate(" in vultr_lifecycle_command
+        and "require_six_exact_vm_local_line2(&response)?" in vultr_lifecycle_command
+        and "do not replay" in vultr_lifecycle_command
+        and "require_disposable_initial_probe_target(&args[0], &args[1])?" in vultr_lifecycle_command,
+        "VM first-use must use typed restricted owner and exact BEGIN with six "
+        "individual local Line2 results, never an external acceptance shortcut",
+    )
     initial_vm_apply = vm_agent_runtime.split("async fn initial_apply_vm_credential(", 1)[1].split(
         "async fn fetch_and_stage_vm_credential_candidate(", 1
     )[0]
     require(
-        "CredentialInitialApply { generation: u64 }" in vm_agent_cli
+        re.search(r"CredentialInitialApply\s*\{\s*generation:\s*u64,?\s*\}", vm_agent_cli) is not None
         and "initial_apply_vm_credential(&stack_dir, generation)" in vm_agent_runtime
         and "require_initial_vm_policy_bundle_ready(stack_dir)?" in initial_vm_apply
         and "require_empty_vm_initial_credential_host(stack_dir)?" in initial_vm_apply
@@ -494,37 +948,49 @@ def main() -> None:
         and "one explicit legacy-to-managed handoff" in architecture
         and "Stage 4B datapath convergence" in local_architecture
         and "Generated `runtime\\\\sing-box.json` never chooses the mode" in local_architecture
-        and "Stage 4B managed Windows TUN cutover" in runbook
+        and "## 10. Current N1/N2 → N3 native Windows modes (2026-10-12)" in runbook
         and "`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover" in architecture
         and "Shared-host foreign-project isolation" in architecture
         and "Sing-box configuration, protocol selection and quality authority" in architecture
-        and "Do not mutate Windows from an unaccepted mode-flip revision" in runbook
+        and "No Windows start, converge, repair, rollback, unattended reboot or TUN switch" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
-        and "Stage 3 and Stage 4A are closed" in readme
-        and "Windows `ManagedTun` has exactly one SCM `EdgePlatformController` runtime owner" in readme
-        and "**Stage 4B.2-C had historical physical acceptance on the previous server/runtime generation, not the currently rebuilt server**" in readme
-        and "**ACTIVE P0" in readme
-        and "No start/converge/repair/restart-controller/rollback or unattended reboot" in readme
+        and "**ACTIVE N1/N2 → N3 → N4 (2026-10-12).**" in readme
+        and "the sole execution cursor" in readme
+        and "same existing normal VM lifecycle" in readme
+        and "The former production VM" not in readme
+        and "The old production VM was deleted" in readme
+        and "EdgePlatformController` is **Stopped / AutoStart**" in readme
+        and "do not start or mutate Windows WARP/MISH/OKX" in readme
         and "The accepted proxy-only runtime is the starting point" not in readme
         and "currently working external Windows sing-box" not in readme
-        and "The routine production surface is `/production converge|verify|diagnose|rollback`" in readme
-        and "class-scoped application rotation" in readme
+        and "bounded local owner" in readme
+        and "Independent authenticated 10/10 direct/WARP" in readme
         and "/production rollback" in runbook
         and "/credentials rotate tunnel-auth" in runbook
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "**Stage 4B.2-C was physically accepted for the previous server/runtime generation (historical scope only):**" in root_readme
-        and "**ACTIVE P0" in root_readme
-        and "Do not dispatch `/windows converge|start|repair|rollback|restart-controller`" in root_readme
-        and "Mandatory before Stage 4B.5 Android Mesh" in root_readme
+        and "> **ACTIVE N1/N2 — native VM install and external network acceptance (2026-10-12).**" in root_readme
+        and "**One delivery order:** N1/N2" in root_readme
+        and "Never start/restart/converge/repair/rollback TUN merely to retest" in root_readme
+        and "An acceptance VM is disposable" not in root_readme
+        and "First-use credentials require a durable journal" in root_readme
         and "The currently working external Windows sing-box/TUN" not in root_readme
         and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
         and "`/production rollback` uses the same" in application_readme
         and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
         and "strict SSH local-forward" not in vultr_stack_readme
         and "currently #169" not in runbook,
-        "operator documentation must reflect accepted ManagedTun D/E/F and the still-unproven independent no-TUN recovery contract",
+        "operator docs must reflect sole Issue #26 N1/N2→N3→N4 and enforce stopped TUN/no-TUN recovery safety",
+    )
+    image_build_section = edge_platform_ci.split("# VM_RUNTIME_BUILD_CONTRACT_BEGIN", 1)[1].split("# VM_RUNTIME_BUILD_CONTRACT_END", 1)[0]
+    require(
+        image_build_section.count("docker buildx build --platform linux/amd64 --provenance=false --sbom=false --push") == 2
+        and "docker push" not in image_build_section
+        and 'evidence_image="${gateway_ref}"' in edge_platform_ci
+        and 'docker pull "${evidence_image}" >/dev/null' in edge_platform_ci
+        and 'docker buildx imagetools inspect "${gateway_ref}"' in edge_platform_ci,
+        "OCI candidate must publish once via Buildx and re-read immutable GHCR digests before attestations",
     )
     require(
         "PRE_MUTATION_TUN_TEARDOWN_BLOCKED" in windows_physical
@@ -696,9 +1162,9 @@ def main() -> None:
     )
     require(
         "schema_version: 6" in production_desired
-        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN" in production_desired
-        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" not in production_desired,
-        "Stage 4B.2-C operator acceptance must keep canonical production Windows datapath explicitly MANAGED_TUN",
+        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" in production_desired
+        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN" not in production_desired,
+        "First Windows installation must embed canonical ProxyOnly mode and never seize host TUN, routes or DNS",
     )
     require(
         'repo_root / "infra" / "production" / "production.textproto"' in windows_input,
@@ -1411,8 +1877,10 @@ def main() -> None:
     )
 
     require(
-        vultr.count("group: vultr-control-plane-production") == 1,
-        "Vultr backend must serialize its execute mutation job",
+        vultr.count("group: vultr-control-plane-production") == 2
+        and "initial_cleanup:" in vultr
+        and "needs: [authorize, execute, initial_acceptance_verdict]" in vultr,
+        "Vultr execute and first-use disposable cleanup must share the exact single-owner lock",
     )
     require(
         "runs-on:" in windows_physical
@@ -1529,6 +1997,26 @@ def main() -> None:
         and "CLOUDFLARE_API_TOKEN" not in windows_runner_bootstrap,
         "physical Windows runner bootstrap must not install build toolchains or provider authority",
     )
+    runner_cli_args = credential_cli.split(
+        "pub(crate) struct VultrRunnerBootstrapArgs {", 1
+    )[1].split("}", 1)[0]
+    runner_cli_transport = credential_cli.split(
+        "Self::RunnerBootstrap(args) => vec![", 1
+    )[1].split("],", 1)[0]
+    runner_native_handler = vultr_lifecycle_command.split(
+        "async fn run_runner_bootstrap(", 1
+    )[1].split("pub(crate) async fn bootstrap_production_runner(", 1)[0]
+    require(
+        "pub local_owner_artifact_path: PathBuf" in runner_cli_args
+        and "path(args.local_owner_artifact_path)" in runner_cli_transport
+        and "if args.len() != 4" in runner_native_handler
+        and "Path::new(&args[3])" in runner_native_handler
+        and 'run_lifecycle runner-bootstrap "${spec}" "${machine}"' in vultr
+        and '"${RUNNER_TEMP}/edge-platform-release/edge-agent-linux-amd64"' in vultr
+        and "needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID" in vultr
+        and "needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in vultr,
+        "runner bootstrap must match the 4-argument typed owner and deliver VM Access identity only during bounded native enrollment",
+    )
     require(
         'verb == "runner-bootstrap" and len(tokens) == 4' in vultr
         and '"runner-bootstrap"' in vultr
@@ -1549,6 +2037,43 @@ def main() -> None:
         and 'action-plan)' in vultr
         and 'run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"' in vultr,
         "Vultr backend must expose the existing typed read-only instance action plan through the sole router",
+    )
+    require(
+        vultr.count('cat "${RUNNER_TEMP}/post-start-substrate.json" >&2') == 1
+        and vultr.count('cat "${RUNNER_TEMP}/post-reboot-substrate.json" >&2') == 1
+        and vultr.count('cat "${RUNNER_TEMP}/apply-noop-substrate.json" >&2') == 1
+        and vultr.count('cat "${verify_output}" >&2') == 1
+        and "if ! run_lifecycle substrate-verify" in vultr,
+        "native disposable substrate failure evidence must reach GH Actions before cleanup without retry",
+    )
+    reboot_observation = vultr_lifecycle_command.split(
+        "let reboot_probe = if action == InstanceAction::Reboot {", 1
+    )[1].split("let next_plan = if matches!", 1)[0]
+    require(
+        "disposable_reboot_preflight_forensics=" in reboot_observation
+        and "disposable_reboot_post_observation_forensics=" in reboot_observation
+        and reboot_observation.count("acceptance_ssh_failure_forensics(") == 2
+        and "reboot rejected before provider mutation" in reboot_observation
+        and "no reboot replay" in reboot_observation
+        and vultr.count('cat "${RUNNER_TEMP}/reboot.json" >&2') == 1,
+        "disposable reboot must surface native pre/post SSH evidence and never replay ambiguous mutation",
+    )
+    substrate_verify = vultr_lifecycle_command.split(
+        "async fn run_substrate_verify(", 1
+    )[1].split("async fn run_transport_proof(", 1)[0]
+    require(
+        "is_disposable_ssh_forensic_target(&desired.environment, &args[1])"
+        in substrate_verify
+        and "acceptance_ssh_failure_forensics(Path::new(&args[0]), &args[1])"
+        in substrate_verify
+        and substrate_verify.count("disposable_ssh_failure_forensics=") == 2
+        and "is_disposable_ssh_forensic_target(environment: &str, machine_id: &str)"
+        in vultr_lifecycle_command
+        and '("lifecycle-acceptance", "lifecycle-acceptance-1")'
+        in vultr_lifecycle_command
+        and "mutations_performed" in vultr_lifecycle_command
+        and "capture_ssh_transport_stage_once(" in vultr_lifecycle_command,
+        "disposable lifecycle SSH failure must expose native typed read-only phase evidence before cleanup",
     )
     require(
         vpc.count("group: vultr-control-plane-production") == 1,
@@ -1733,11 +2258,22 @@ def main() -> None:
         "production provider plane must remain GitHub-hosted, verify the promoted ReleaseSet and export only exact immutable bundle identity",
     )
     require(
+        'tokens in (["/application", "vm-diagnose"], ["/application", "vm-quality-line2"])' in application
+        and 'command_family = "acceptance_vm"' in application
+        and 'runtime_machine = "application-acceptance-1"' in application
+        and 'runtime_machine = "production-1"' in application
+        and "needs.authorize.outputs.command_family == 'acceptance_vm'" in production_runtime
+        and 'VM_RUNTIME_MACHINE: ${{ needs.authorize.outputs.runtime_machine }}' in production_runtime
+        and 'production-1|application-acceptance-1)' in production_runtime
+        and 'vm_runtime_target=BLOCKED_UNKNOWN_OWNER' in production_runtime,
+        "GitHub VM runtime diagnose and quality must use only exact owned self-hosted runners and fixed local owner",
+    )
+    require(
         "- self-hosted" in production_runtime
         and "- Linux" in production_runtime
         and "- X64" in production_runtime
         and "- sing-box-production-vm" in production_runtime
-        and "- production-1" in production_runtime
+        and "- ${{ needs.authorize.outputs.runtime_machine }}" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
         and "PROVIDER_APPLICATION_BUNDLE_SHA256" in production_runtime
         and "PROVIDER_APPLICATION_BUNDLE_ASSET_ID" in production_runtime

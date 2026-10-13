@@ -196,9 +196,51 @@ impl CredentialDeliverySlotArg {
     }
 }
 
-#[derive(Debug, Clone, Copy, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
+    // Strictly read-only provider half of an initial paired transaction.
+    InitialPairPreflight {
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+    },
+    // Non-mutating plan; requires separately authenticated host evidence.
+    // Never opens the Cloudflare write capability or commits the GitHub journal.
+    // Read-only inspection of the complete GitHub Issue #26 attempt history.
+    InitialPairJournalObserve {
+        journal_history_path: std::path::PathBuf,
+    },
+    // Strictly read-only reconciliation AFTER durable GitHub comment write.
+    InitialPairJournalReadback {
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
+    InitialPairJournalPlan {
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        provider_intent_sha256: String,
+        vm_attestation_sha256: String,
+        windows_attestation_sha256: String,
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    // Single-use initial provider mutation, reachable only from the same-run
+    // canonical VM installation workflow after BOTH authenticated host
+    // origins and the exact durable GitHub BEGIN have been proven.
+    InitialPairPublish {
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        provider_intent_sha256: String,
+        vm_attestation_sha256: String,
+        windows_attestation_sha256: String,
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
     HostBootstrapConverge,
     RotateApplication {
         #[arg(value_enum)]
@@ -330,6 +372,7 @@ pub(crate) struct VultrRunnerBootstrapArgs {
     pub spec_path: PathBuf,
     pub machine_id: String,
     pub installer_path: PathBuf,
+    pub local_owner_artifact_path: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -394,6 +437,7 @@ impl VultrLifecycleCommand {
                 path(args.spec_path),
                 args.machine_id,
                 path(args.installer_path),
+                path(args.local_owner_artifact_path),
             ],
             Self::AcquireAccessPlan(args) => machine("acquire-access-plan", args),
             Self::AcquireAccess(args) => vec![
@@ -519,6 +563,35 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn initial_pair_preflight_rejects_missing_or_invalid_parameters() {
+        for args in [
+            vec!["edge-orchestrator", "credentials", "initial-pair-preflight"],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-preflight",
+                "101",
+            ],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-preflight",
+                "101",
+                "other",
+            ],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-publish",
+                "101",
+                "a",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
     fn parses_typed_orchestrator_commands() {
         let digest = "a".repeat(64);
         let cases = [
@@ -543,6 +616,13 @@ mod tests {
                 &digest,
             ],
             vec!["edge-orchestrator", "credentials", "contract-verify"],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-preflight",
+                "101",
+                "a",
+            ],
             vec![
                 "edge-orchestrator",
                 "credentials",
@@ -591,6 +671,7 @@ mod tests {
                 "infra/vultr/disposable-acceptance.json",
                 "lifecycle-acceptance-1",
                 "edge-platform/scripts/install-vultr-production-runner.sh",
+                "/tmp/edge-agent-linux-amd64",
             ],
             vec![
                 "edge-orchestrator",
@@ -671,6 +752,21 @@ mod tests {
                 &digest,
             ],
         ];
+
+        // The normal GitHub self-hosted runner bootstrap passes the exact
+        // accepted local-owner artifact as a fourth positional argument.
+        // Reject the historical three-argument CLI before provider mutation.
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "runner-bootstrap",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "edge-platform/scripts/install-vultr-production-runner.sh",
+            ])
+            .is_err()
+        );
 
         for args in cases {
             assert!(
