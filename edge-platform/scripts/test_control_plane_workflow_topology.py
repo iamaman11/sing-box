@@ -784,14 +784,22 @@ def main() -> None:
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
         and 'credential-initial-attest' in initial_flow
-        and 'name: Bind first-use Cloudflare version intent\n    needs: authorize' in vultr
+        and 'name: Bind first-use Cloudflare version intent\n    needs: [authorize, initial_worker_proof_upgrade]' in vultr
+        and 'initial_worker_proof_upgrade:' in vultr
+        and 'credentials initial-worker-proof-plan' in vultr
+        and 'credentials initial-worker-proof-upgrade' in vultr
+        and 'worker_proof_durable_begin=EXACT_READBACK' in vultr
+        and 'worker_secret_patch_mutations=0' in vultr
+        and 'credential_selected_slot_exact_dummy == true' in initial_flow
+        and '.credential_slot_B == "EXACT_CANONICAL_DUMMY"' in initial_flow
         and 'name: Attest isolated Windows host without TUN or DNS mutation\n    needs: [authorize, initial_preflight]' in vultr
         and 'vultr-lifecycle initial-host-probe' in initial_flow
         and 'credentials initial-pair-journal-plan' in initial_flow
         and 'credentials initial-pair-journal-readback' in initial_flow
         and 'credentials initial-pair-publish' in initial_flow
         and 'gh api --method POST "repos/${REPOSITORY}/issues/26/comments"' in initial_flow
-        and 'issues: write' not in initial_flow
+        and vultr.count('issues: write') == 2
+        and "needs: [authorize, initial_worker_proof_upgrade]" in vultr
         and 'GITHUB_RUN_ATTEMPT' in initial_flow
         and 'vultr-lifecycle initial-runtime-apply' in initial_flow
         and 'vultr-lifecycle initial-runtime-verify' in initial_flow
