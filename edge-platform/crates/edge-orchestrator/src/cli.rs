@@ -756,14 +756,17 @@ mod tests {
         // The normal GitHub self-hosted runner bootstrap passes the exact
         // accepted local-owner artifact as a fourth positional argument.
         // Reject the historical three-argument CLI before provider mutation.
-        assert!(Cli::try_parse_from([
-            "edge-orchestrator",
-            "vultr-lifecycle",
-            "runner-bootstrap",
-            "infra/vultr/application-acceptance.json",
-            "application-acceptance-1",
-            "edge-platform/scripts/install-vultr-production-runner.sh",
-        ]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "runner-bootstrap",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "edge-platform/scripts/install-vultr-production-runner.sh",
+            ])
+            .is_err()
+        );
 
         for args in cases {
             assert!(
