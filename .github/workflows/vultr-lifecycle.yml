@@ -1094,7 +1094,7 @@ jobs:
     outputs:
       attestation: ${{ steps.windows.outputs.attestation }}
     env:
-      EDGE_INSTALL_ROOT: C:\sing-box
+      EDGE_INSTALL_ROOT: C:\sing-box-acceptance
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
       GENERATION: ${{ needs.initial_preflight.outputs.generation }}
       INTENT: ${{ needs.initial_preflight.outputs.intent }}
@@ -1149,13 +1149,13 @@ jobs:
               [string]$proof['credential_host_attestation_sha256'] -cnotmatch '^[0-9a-f]{64}$') {
             throw 'Windows native attestation incomplete or unsafe'
           }
-          # Prove the existing controller can serve the subsequent privileged
-          # candidate transaction BEFORE any non-replayable Worker PATCH.
-          # This is a read-only RPC: neither SCM, TUN, DNS nor routes change.
-          $state = @(& $console credential-state)
-          if ($LASTEXITCODE -ne 0 -or
-              -not ($state -contains 'credential_state_present=false')) {
-            throw 'First-use Windows controller unavailable or non-empty; refusing Worker publication'
+          # The acceptance consumer is independent of the intentionally
+          # stopped serving Windows SCM. Check only the isolated local cursor.
+          if (Test-Path -LiteralPath (Join-Path $env:EDGE_INSTALL_ROOT 'state\secrets\application-v2')) {
+            throw 'First-use isolated Windows credential cursor already exists'
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:EDGE_INSTALL_ROOT '.first-use-run'))) {
+            throw 'Windows acceptance owner sentinel absent'
           }
           "attestation=$($proof['credential_host_attestation_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
           Write-Host 'WINDOWS_INITIAL_READONLY_ATTEST=PASS'
@@ -1339,7 +1339,7 @@ jobs:
       cancel-in-progress: false
     permissions: {}
     env:
-      EDGE_INSTALL_ROOT: C:\sing-box
+      EDGE_INSTALL_ROOT: C:\sing-box-acceptance
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
       GENERATION: ${{ needs.initial_preflight.outputs.generation }}
     steps:
@@ -1369,23 +1369,27 @@ jobs:
           # Host eligibility was independently proven BEFORE paired publish.
           # No active runtime, candidate or legacy path is ever overwritten.
           # This is a one-time mutation: no retry after uncertain dispatch ACK.
-          & $console privileged-stage-credential ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows Worker credential stage failed; do not replay' }
+          & $console credential-initial-acceptance-stage ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows Worker candidate stage failed; do not replay' }
           & $console credential-transition validate-candidate --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate config validation failed; do not replay stage' }
-          $state = @(& $console credential-state)
-          if ($LASTEXITCODE -ne 0 -or
-              -not ($state -contains 'credential_state_present=true') -or
-              -not ($state -contains 'credential_active_present=false') -or
-              -not ($state -contains 'credential_candidate_present=true') -or
-              -not ($state -contains "credential_candidate_generation=$env:GENERATION")) {
-            throw 'First-use Windows candidate is not the exact delivered generation'
+          # Read-back and native sing-box check are performed by the
+          # existing credential-transition validate-candidate owner. No
+          # activation, controller RPC or secret output is required.
+          $external = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT)
+          if ($LASTEXITCODE -ne 0 -or -not ($external -contains 'line1_external_4_of_4=PASS') -or
+              -not ($external -contains 'line1_direct_warp_egress_distinct=true') -or
+              -not ($external -contains 'windows_tun_mutations=0') -or
+              -not ($external -contains 'windows_scm_mutations=0')) {
+            throw 'Independent authenticated Line1 direct/WARP 4/4 external witness failed'
           }
+          Write-Host 'N2_EXTERNAL_LINE1_4_OF_4=PASS'
           Write-Host 'WINDOWS_WORKER_PROJECTION_CONSUMED=PASS'
           Write-Host 'WINDOWS_CANDIDATE_VALIDATED=PASS'
           Write-Host 'WINDOWS_TUN_MUTATIONS=0'
           Write-Host 'WINDOWS_DNS_MUTATIONS=0'
           Write-Host 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
 
 # Candidate and VM-local checks are necessary but never an external PASS.
   # Keep this native one-command installation fail-closed until the required
