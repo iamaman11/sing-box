@@ -2275,9 +2275,9 @@ def main() -> None:
     # Run the actual Github authorization parser read-only against the
     # canonical manifest, plus rejects for missing specs and unsafe grammar.
     authorizer = application.split(
-        "      - name: Parse and authorize typed request\\n", 1
-    )[1].split("          python3 <<'PY'\\n", 1)[1].split("\\n          PY", 1)[0]
-    authorizer = "\\n".join(
+        "      - name: Parse and authorize typed request\n", 1
+    )[1].split("          python3 <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    authorizer = "\n".join(
         line[10:] if line.startswith("          ") else line
         for line in authorizer.splitlines()
     )
@@ -2305,8 +2305,8 @@ def main() -> None:
             if should_pass:
                 source = Path(output.name).read_text(encoding="utf-8")
                 require(
-                    "command_family=vm\\n" in source
-                    and "runtime_machine=application-acceptance-1\\n" in source,
+                    "command_family=vm\n" in source
+                    and "runtime_machine=application-acceptance-1\n" in source,
                     "canonical application spec must select exactly its Git-owned machine",
                 )
     require(
