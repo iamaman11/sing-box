@@ -547,7 +547,10 @@ def main() -> None:
         and "line1_authenticated_endpoints=UNPROVEN" in vm_agent_runtime
         and "CredentialInitialAttest" in vm_agent_cli
         and "attest_initial_vm_host(" in vm_agent_runtime
-        and "verify_initial_vm_dummy_probe(stack_dir).await?" in vm_agent_runtime
+        and "verify_initial_vm_selected_dummy_probe(stack_dir, slot).await?" in vm_agent_runtime
+        and "selected_slot_exact_dummy: true" in vm_agent_runtime
+        and "slot_a_observation: proof.slot_a_observation.to_owned()" in vm_agent_runtime
+        and "slot_b_observation: proof.slot_b_observation.to_owned()" in vm_agent_runtime
         and "first_use_host_attestation_sha256(" in vm_agent_runtime
         and "expected_agent_sha256" in vm_agent_cli
         and "verify_initial_agent_binary(expected_agent_sha256)?" in vm_agent_runtime
@@ -557,7 +560,9 @@ def main() -> None:
         and "file_sha256_lower_hex(" in vm_agent_runtime
         and 'Path::new("/proc/self/exe")' in vm_agent_runtime
         and "CredentialInitialAttest" in windows_console_cli
-        and "run_windows_initial_credential_probe(root)" in windows_console
+        and "require_initial_windows_credential_host(root)" in windows_console
+        and "verify_initial_selected_dummy_slot(" in windows_console
+        and "credential_selected_slot_exact_dummy=true" in windows_console
         and "first_use_host_attestation_sha256(" in windows_console
         and "windows_tun_mutations=0" in windows_console
         and "windows_dns_mutations=0" in windows_console
