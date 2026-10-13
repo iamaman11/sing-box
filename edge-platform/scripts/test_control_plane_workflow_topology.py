@@ -561,7 +561,9 @@ def main() -> None:
     # The canonical GitHub operation must reach the native disposable
     # policy owner rather than leaving another unused Rust CLI capability.
     require(
-        'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
+        "INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION: external 10/10 witness" in vultr
+        and 'fail("INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION:' in vultr
+        and 'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
         and 'spec_path = "infra/vultr/application-acceptance.json"' in vultr
         and 'machine_id = "application-acceptance-1"' in vultr
         and 'run_lifecycle initial-policy-stage' in vultr

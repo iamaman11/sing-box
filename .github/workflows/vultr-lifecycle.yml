@@ -56,6 +56,7 @@ jobs:
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
           if tokens == ["/vultr", "initial-vm-install"]:
+              fail("INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION: external 10/10 witness, reboot recovery and isolated Windows ProxyOnly consumer are not yet implemented; do not publish one-time credentials")
               operation = "initial-vm-install"
               spec_path = "infra/vultr/application-acceptance.json"
               machine_id = "application-acceptance-1"
