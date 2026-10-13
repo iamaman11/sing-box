@@ -2,7 +2,9 @@
 //! No SCM, TUN, DNS, route, system-proxy or controller mutation is permitted.
 use edge_controller_core::windows_credential_store_path;
 use edge_secrets::{
-    CredentialStore, windows_runtime_state_from_canonical_production_bundle, write_atomic_private,
+    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
+    windows_runtime_state_from_canonical_production_bundle, write_access_service_identity,
+    write_atomic_private,
 };
 use edge_shared_types::{CredentialProjectionKind, WindowsRuntimeState};
 use edge_singbox::render_windows_config;
@@ -215,6 +217,71 @@ fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, S
     Ok(address)
 }
 
+pub(crate) fn require_isolated_root(root: &Path) -> Result<(), String> {
+    if !root.to_string_lossy().eq_ignore_ascii_case(r"C:\sing-box-acceptance") {
+        return Err("only isolated Windows acceptance install root may use this owner".to_owned());
+    }
+    Ok(())
+}
+
+/// One first-use Access bootstrap for the already-existing Windows Access
+/// identity. Secret input comes only from protected GitHub environment scope.
+pub(crate) fn bootstrap_access(root: &Path) -> Result<(), String> {
+    require_isolated_root(root)?;
+    let identity_path = root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME);
+    if identity_path.exists() || windows_credential_store_path(root).exists() {
+        return Err("isolated Access bootstrap refuses existing or partial credentials".to_owned());
+    }
+    let client = std::env::var("EDGE_WINDOWS_ACCESS_CLIENT_ID")
+        .map_err(|_| "isolated Windows Access client ID unavailable".to_owned())?;
+    let secret = std::env::var("EDGE_WINDOWS_ACCESS_CLIENT_SECRET")
+        .map_err(|_| "isolated Windows Access client secret unavailable".to_owned())?;
+    let text = format!("CF_ACCESS_CLIENT_ID={client}\nCF_ACCESS_CLIENT_SECRET={secret}\n");
+    write_access_service_identity(&identity_path, &text)?;
+    println!("operation=CREDENTIAL_INITIAL_ISOLATED_WINDOWS_ACCESS_BOOTSTRAP");
+    println!("credential_access_identity_source=GITHUB_WINDOWS_BOOTSTRAP");
+    println!("credential_worker_mutations=0");
+    println!("windows_scm_mutations=0");
+    println!("windows_tun_mutations=0");
+    Ok(())
+}
+
+/// A single local consumer of the canonical Worker. It never dispatches to
+/// the serving SCM owner. An uncertain store write is never replayed.
+pub(crate) async fn stage_from_worker(root: &Path, generation: u64) -> Result<(), String> {
+    require_isolated_root(root)?;
+    if generation == 0 {
+        return Err("isolated Windows stage requires nonzero generation".to_owned());
+    }
+    let path = windows_credential_store_path(root);
+    if path.exists() {
+        return Err("isolated Windows first-use stage is already attempted".to_owned());
+    }
+    let identity = root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME);
+    let bundle = fetch_canonical_credential_bundle(
+        CredentialProjectionKind::Windows,
+        generation,
+        &identity,
+    )
+    .await?;
+    let store = CredentialStore::new(path, CredentialProjectionKind::Windows)?;
+    let state = store.stage_delivery_candidate(&bundle)?;
+    if state.active.is_some() || state.previous.is_some() {
+        return Err("isolated Windows candidate unexpectedly activated runtime".to_owned());
+    }
+    if state.candidate.as_ref().map(|cursor| cursor.generation) != Some(generation) {
+        return Err("isolated Windows candidate generation mismatch".to_owned());
+    }
+    println!("operation=CREDENTIAL_INITIAL_ISOLATED_WINDOWS_STAGE");
+    println!("credential_candidate_generation={generation}");
+    println!("credential_active_present=false");
+    println!("credential_candidate_present=true");
+    println!("windows_scm_mutations=0");
+    println!("windows_tun_mutations=0");
+    println!("windows_dns_mutations=0");
+    Ok(())
+}
+
 pub(crate) fn run(
     install_root: &Path,
     singbox_binary: &Path,
@@ -224,9 +291,7 @@ pub(crate) fn run(
         return Err("Line1 witness requires nonzero credential generation".to_owned());
     }
     // Never launch a second client from the serving C:\sing-box tree.
-    if !install_root.to_string_lossy().eq_ignore_ascii_case(r"C:\sing-box-acceptance") {
-        return Err("Line1 witness accepts only isolated Windows acceptance install root".to_owned());
-    }
+    require_isolated_root(install_root)?;
     if !singbox_binary.is_file() {
         return Err("Line1 witness exact installed sing-box binary missing".to_owned());
     }
