@@ -427,38 +427,75 @@ jobs:
                 "${application_spec}" "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}"
               chmod 0600 "${agent_manifest}"
 
-              # First-use is a single bounded GitHub-owned operation: clean
-              # disposable provider create -> exact substrate -> policy-only
-              # bundle -> root-only existing VM Access identity. A provider
-              # failure or lost ACK is terminal; never replay by re-running.
+              # One native lifecycle for both a new disposable VM and an
+              # already-owned acceptance VM. NEVER create a second VM when
+              # the Git-owned provider plan is NOOP. Refuse UPDATE/DELETE/DRIFT
+              # and ambiguous observations before acquiring host authority.
               run_lifecycle inventory "${spec}" > "${RUNNER_TEMP}/initial-vm-inventory.json"
-              jq -e '[.inventory.resources[] | select(.ownership.environment == "application-acceptance")] | length == 0' \
-                "${RUNNER_TEMP}/initial-vm-inventory.json" >/dev/null
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/initial-vm-plan.json"
-              jq -e '.plans | length == 1 and .[0].class == "CREATE"' \
+              jq -e '.plans | length == 1 and
+                     (. [0].class == "CREATE" or .[0].class == "NOOP")' \
                 "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
-              authority="$(machine_authority "${RUNNER_TEMP}/initial-vm-plan.json")"
-              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
-              # Durable same-job boundary: after this point CREATE may have an
-              # unknown ACK. Only this exact run may authorize subsequent
-              # disposal. No cross-run or preflight cleanup is inferred.
-              echo 'first_use_provider_mutation_attempted=true' >> "${GITHUB_OUTPUT}"
-              run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/initial-vm-create.json"
-              jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
-                "${RUNNER_TEMP}/initial-vm-create.json" >/dev/null
-              echo 'first_use_create_confirmed=true' >> "${GITHUB_OUTPUT}"
+              machine_class="$(jq -er '.plans[0].class' "${RUNNER_TEMP}/initial-vm-plan.json")"
+              existing_owned_count="$(jq -er '[.inventory.resources[] | select(.ownership.environment == "application-acceptance")] | length' \
+                "${RUNNER_TEMP}/initial-vm-inventory.json")"
+              case "${machine_class}" in
+                NOOP)
+                  test "${existing_owned_count}" = "1"
+                  # Reusing an existing exact owned VM is a read-only provider
+                  # decision, not another CREATE attempt. It is never eligible
+                  # for this run's automatic destructive cleanup.
+                  jq -e '.plans[0].provider_id | type == "string" and length > 0' \
+                    "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
+                  jq -n --slurpfile plan "${RUNNER_TEMP}/initial-vm-plan.json" \
+                    '{action:"REUSED_OWNED",provider_id:$plan[0].plans[0].provider_id,
+                      provider_mutations:0,host_substrate_required:true}' \
+                    > "${RUNNER_TEMP}/initial-vm-create.json"
+                  ;;
+                CREATE)
+                  test "${existing_owned_count}" = "0"
+                  authority="$(machine_authority "${RUNNER_TEMP}/initial-vm-plan.json")"
+                  [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+                  # A lost CREATE ACK is terminal, no automatic retry or
+                  # resource adoption from guessed IP/hostname.
+                  echo 'first_use_provider_mutation_attempted=true' >> "${GITHUB_OUTPUT}"
+                  run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/initial-vm-create.json"
+                  jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
+                    "${RUNNER_TEMP}/initial-vm-create.json" >/dev/null
+                  echo 'first_use_create_confirmed=true' >> "${GITHUB_OUTPUT}"
+                  ;;
+              esac
 
-              # Create exactly one Cloudflare DNS A record through the
-              # existing disposable DNS owner. ACME and independent external
-              # hostname/TLS probes require this exact fresh VM binding.
-              # Unknown DNS ACK is terminal; never create again blindly.
+              # The EXISTING Cloudflare DNS owner decides whether a record is
+              # absent or exactly correct. There is no create-on-error/upsert
+              # fallback and no write to a record owned by another generation.
               test -n "${CLOUDFLARE_API_TOKEN}"
-              run_lifecycle initial-dns-create                 infra/cloudflare/application-acceptance-dns.json                 "${application_spec}" > "${RUNNER_TEMP}/initial-vm-dns.json"
-              jq -e '.operation == "INITIAL_VM_DNS_CREATE" and
-                     .status == "PASS" and
-                     .record == "stage2-acceptance.alegria.by" and
-                     .external_tls == "UNPROVEN" and
-                     .provider_mutation_replay_allowed == false'                      "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
+              case "${machine_class}" in
+                NOOP)
+                  run_lifecycle initial-dns-verify \
+                    infra/cloudflare/application-acceptance-dns.json "${application_spec}" \
+                    > "${RUNNER_TEMP}/initial-vm-dns.json"
+                  jq -e '.operation == "INITIAL_VM_DNS_VERIFY" and
+                         .status == "PASS" and .provider_mutations == 0 and
+                         .record == "stage2-acceptance.alegria.by" and
+                         .external_tls == "UNPROVEN" and
+                         .provider_mutation_replay_allowed == false' \
+                    "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
+                  ;;
+                CREATE)
+                  # Only an exact confirmed CREATE can authorize fresh DNS
+                  # CREATE. Never attempt on an existing VM or repeat UNKNOWN.
+                  run_lifecycle initial-dns-create \
+                    infra/cloudflare/application-acceptance-dns.json "${application_spec}" \
+                    > "${RUNNER_TEMP}/initial-vm-dns.json"
+                  jq -e '.operation == "INITIAL_VM_DNS_CREATE" and
+                         .status == "PASS" and
+                         .record == "stage2-acceptance.alegria.by" and
+                         .external_tls == "UNPROVEN" and
+                         .provider_mutation_replay_allowed == false' \
+                    "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
+                  ;;
+              esac
 
               # No compensation after an uncertain create/apply result. The
               # exact disposable identity remains available for read-only
