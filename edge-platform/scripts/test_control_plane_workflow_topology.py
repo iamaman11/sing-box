@@ -715,7 +715,7 @@ def main() -> None:
     reboot_job_parts = vultr.split("\n  initial_reboot:\n", 1)
     require(
         len(reboot_job_parts) == 2
-        and 'needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume]'
+        and 'needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume, initial_line2_external]'
             in reboot_job_parts[1]
         and 'vultr-lifecycle action-plan infra/vultr/application-acceptance.json application-acceptance-1 reboot'
             in reboot_job_parts[1]
@@ -832,9 +832,18 @@ def main() -> None:
         and 'provider_mutation_replay_allowed == false' in vultr
         and 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' in initial_flow
         and 'initial_acceptance_verdict:' in initial_flow
-        and 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' in initial_flow
-        and 'Refuse candidate-only success without external witness, reboot and cleanup' in initial_flow
-        and 'Final physical 10-endpoint acceptance verdict' in initial_flow
+        and 'N1_N2_PRE_CLEANUP_TRAFFIC=PASS' in initial_flow
+        and 'N1_N2_PHYSICAL_ACCEPTANCE=PASS' in initial_flow
+        and 'initial_line2_external:' in initial_flow
+        and 'initial_windows_post_reboot:' in initial_flow
+        and 'initial_acceptance_final:' in initial_flow
+        and "needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]" in initial_flow
+        and 'line2_external_6_of_6=PASS' in initial_flow
+        and 'N2_POST_REBOOT_EXTERNAL_LINE2_6_OF_6=PASS' in initial_flow
+        and 'N2_POST_REBOOT_EXTERNAL_LINE1_4_OF_4=PASS' in initial_flow
+        and 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED' in initial_flow
+        and 'FIRST_USE_CREATE_CONFIRMED' in initial_flow
+        and 'N1_N2_REUSED_OWNED_VM=PRESERVED_NOT_DISPOSED' in initial_flow
         and 'initial_publication_authorized=false' in initial_flow
         and 'windows_tun_mutations' in initial_flow
         and 'windows_dns_mutations' in initial_flow,
