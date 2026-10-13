@@ -230,7 +230,10 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             let proof = verify_initial_selected_dummy_slot(
                 edge_shared_types::CredentialProjectionKind::Windows,
                 slot,
-                &root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME),
+                &root
+                    .join("state")
+                    .join("secrets")
+                    .join(ACCESS_IDENTITY_FILE_NAME),
             )
             .await
             .map_err(ConsoleError::Command)?;
