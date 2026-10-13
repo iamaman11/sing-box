@@ -679,6 +679,88 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn every_first_use_workflow_command_is_reachable_through_typed_cli() {
+        // This is the public Clap entrypoint invoked by GitHub Actions. The
+        // private native handler alone is not proof the binary accepts it.
+        let cases = vec![
+            vec![
+                "initial-dns-converge",
+                "infra/cloudflare/application-acceptance-dns.json",
+                "infra/application/disposable-acceptance.json",
+            ],
+            vec![
+                "initial-policy-stage",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "infra/application/disposable-acceptance.json",
+                "policy.json",
+                "edge-agent",
+            ],
+            vec![
+                "initial-host-probe",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "b",
+                "intent",
+                "release",
+                "1234",
+                "edge-agent",
+            ],
+            vec![
+                "initial-runtime-apply",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "release",
+                "1234",
+                "history.json",
+                "exact-begin.txt",
+                "edge-agent",
+            ],
+            vec![
+                "initial-runtime-verify",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "release",
+                "1234",
+                "history.json",
+                "exact-begin.txt",
+                "edge-agent",
+            ],
+        ];
+        for args in cases {
+            let mut argv = vec!["edge-orchestrator", "vultr-lifecycle"];
+            argv.extend(&args);
+            let parsed = Cli::try_parse_from(argv)
+                .expect("first-use workflow must reach public typed orchestrator CLI");
+            let Command::VultrLifecycle { command } = parsed.command else {
+                panic!("expected exact Vultr lifecycle command owner");
+            };
+            let encoded = command.into_legacy_args();
+            assert_eq!(encoded, args, "native argument order must not drift");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "initial-host-probe",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "invalid-slot",
+                "intent",
+                "release",
+                "1234",
+                "edge-agent",
+            ])
+            .is_err(),
+            "the initial credential slot must be a typed exact a/b"
+        );
+    }
+
+    #[test]
     fn initial_pair_preflight_rejects_missing_or_invalid_parameters() {
         for args in [
             vec!["edge-orchestrator", "credentials", "initial-pair-preflight"],
