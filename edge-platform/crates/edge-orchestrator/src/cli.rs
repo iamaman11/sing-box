@@ -199,6 +199,10 @@ impl CredentialDeliverySlotArg {
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
+    // One non-replayable, code-only migration of existing Workers; preserves
+    // opaque A/B secret bindings and enables exact fixed-slot proof.
+    // Restricted to the original first-use GitHub job and immutable ReleaseSet.
+    InitialWorkerProofUpgrade,
     // Strictly read-only provider half of an initial paired transaction.
     InitialPairPreflight {
         generation: u64,
