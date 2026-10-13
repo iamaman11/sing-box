@@ -444,6 +444,13 @@ jobs:
                   # for this run's automatic destructive cleanup.
                   jq -e '.plans[0].provider_id | type == "string" and length > 0' \
                     "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
+                  provider_id="$(jq -er '.plans[0].provider_id' "${RUNNER_TEMP}/initial-vm-plan.json")"
+                  jq -e --arg id "${provider_id}" '
+                    [.inventory.resources[] | select(.provider_id == $id and
+                       .ownership.environment == "application-acceptance" and
+                       .ownership.logical_id == "application-acceptance-1")] | length == 1
+                  ' "${RUNNER_TEMP}/initial-vm-inventory.json" >/dev/null
+                  echo 'first_use_create_confirmed=false' >> "${GITHUB_OUTPUT}"
                   jq -n --slurpfile plan "${RUNNER_TEMP}/initial-vm-plan.json" \
                     '{action:"REUSED_OWNED",provider_id:$plan[0].plans[0].provider_id,
                       provider_mutations:0,host_substrate_required:true}' \
