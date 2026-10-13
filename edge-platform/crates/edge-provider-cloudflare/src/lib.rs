@@ -480,9 +480,7 @@ pub async fn patch_latest_worker_version_secrets(
 /// fence the latest active version and never retry after uncertain ACK.
 /// Cloudflare's strict binding inheritance rejects missing/ambiguous bindings
 /// instead of silently dropping them.
-fn exact_binding_inherit_metadata(
-    version_tag: &str,
-) -> Result<serde_json::Value, String> {
+fn exact_binding_inherit_metadata(version_tag: &str) -> Result<serde_json::Value, String> {
     require_non_empty("Worker proof version tag", version_tag)?;
     Ok(serde_json::json!({
         "main_module": "index.mjs",
@@ -2470,8 +2468,7 @@ mod tests {
 
     #[test]
     fn worker_code_only_upload_inherits_only_exact_fixed_bindings() {
-        let metadata =
-            exact_binding_inherit_metadata("sing-box-phase6-ab-vm-exact-proof").unwrap();
+        let metadata = exact_binding_inherit_metadata("sing-box-phase6-ab-vm-exact-proof").unwrap();
         assert_eq!(metadata["main_module"], "index.mjs");
         assert_eq!(
             metadata["annotations"]["workers/tag"],
