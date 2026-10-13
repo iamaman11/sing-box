@@ -29,6 +29,7 @@ pub(crate) enum Command {
     // Read-only first-enrollment proof; never applies credentials or changes TUN.
     CredentialInitialProbe(InstallRootArgs),
     CredentialInitialAttest(InitialCredentialAttestArgs),
+    CredentialInitialLine1Witness(InitialLine1WitnessArgs),
     SmokeRuntime,
     Stage2Preflight,
     ProvisionRuntimeState(InstallRootArgs),
@@ -79,6 +80,7 @@ impl Command {
             Self::CredentialState(_) => "credential-state",
             Self::CredentialInitialProbe(_) => "credential-initial-probe",
             Self::CredentialInitialAttest(_) => "credential-initial-attest",
+            Self::CredentialInitialLine1Witness(_) => "credential-initial-line1-witness",
             Self::SmokeRuntime => "smoke-runtime",
             Self::Stage2Preflight => "stage2-preflight",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
@@ -147,6 +149,13 @@ pub(crate) struct InitialCredentialAttestArgs {
     pub release_set_sha256: String,
     pub run_id: u64,
     #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InitialLine1WitnessArgs {
+    pub generation: u64,
+    #[arg(long, default_value = r"C:\sing-box-acceptance")]
     pub install_root: String,
 }
 
