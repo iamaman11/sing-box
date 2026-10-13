@@ -917,8 +917,23 @@ async fn run_initial_host_probe(
         || result.slot != slot as i32
         || result.github_run_id != github_run_id
         || result.agent_sha256 != expected_agent.sha256
-        || !result.exact_dummy_ab
+        || !result.selected_slot_exact_dummy
         || !result.empty_host
+        || !matches!(
+            result.slot_a_observation.as_str(),
+            "EXACT_CANONICAL_DUMMY" | "NOT_FOUND_OR_OTHER_GENERATION" | "NONCANONICAL_PAYLOAD"
+        )
+        || !matches!(
+            result.slot_b_observation.as_str(),
+            "EXACT_CANONICAL_DUMMY" | "NOT_FOUND_OR_OTHER_GENERATION" | "NONCANONICAL_PAYLOAD"
+        )
+        || result.exact_dummy_ab
+            != (result.slot_a_observation == "EXACT_CANONICAL_DUMMY"
+                && result.slot_b_observation == "EXACT_CANONICAL_DUMMY")
+        || (slot == CredentialDeliverySlot::A
+            && result.slot_a_observation != "EXACT_CANONICAL_DUMMY")
+        || (slot == CredentialDeliverySlot::B
+            && result.slot_b_observation != "EXACT_CANONICAL_DUMMY")
         || result.attestation_sha256.len() != 64
         || !result
             .attestation_sha256
@@ -942,8 +957,10 @@ async fn run_initial_host_probe(
         "credential_slot": args[3],
         "credential_projection": "VM",
         "credential_host_attestation_sha256": result.attestation_sha256,
-        "credential_slot_A": "EXACT_DUMMY",
-        "credential_slot_B": "EXACT_DUMMY",
+        "credential_slot_A": result.slot_a_observation,
+        "credential_slot_B": result.slot_b_observation,
+        "credential_selected_slot_exact_dummy": result.selected_slot_exact_dummy,
+        "credential_peer_slot_overwrite_authorized": false,
         "credential_store_present": false,
         "credential_runtime_mutations": 0,
         "credential_provider_mutations": 0,
