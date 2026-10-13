@@ -605,7 +605,10 @@ async fn initial_worker_proof_plan(
         .iter()
         .map(|projection| projection_delivery_state(desired, projection, &before))
         .collect::<Result<Vec<_>, _>>()?;
-    if states.iter().all(|state| *state == ProjectionDeliveryState::FixedAb) {
+    if states
+        .iter()
+        .all(|state| *state == ProjectionDeliveryState::FixedAb)
+    {
         // Repeat installation may reuse already deployed *code* without a
         // second Cloudflare mutation or BEGIN. But require the earlier exact
         // journal record: never silently trust a foreign code migration.
