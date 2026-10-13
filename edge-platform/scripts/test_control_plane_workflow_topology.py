@@ -1682,10 +1682,12 @@ def main() -> None:
 
     require(
         "issues: read" not in vultr
-        and "issues: write" not in vultr
+        and vultr.count("issues: write") == 2
         and "issues: read" not in credentials
-        and "issues: write" not in credentials,
-        "called workflows must not request issues scopes absent from the router's contents-only GITHUB_TOKEN",
+        and "issues: write" not in credentials
+        and "  vultr:" in router
+        and "    permissions:\n      contents: read\n      issues: write" in router,
+        "Issue #26 BEGIN may be written only by the authorized Vultr route and its two bounded initial jobs",
     )
     require(
         "startsWith(github.event.comment.body, '/vm ')" in router
