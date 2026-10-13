@@ -2010,8 +2010,10 @@ def main() -> None:
         and "if args.len() != 4" in runner_native_handler
         and "Path::new(&args[3])" in runner_native_handler
         and 'run_lifecycle runner-bootstrap "${spec}" "${machine}"' in vultr
-        and '"${RUNNER_TEMP}/edge-platform-release/edge-agent-linux-amd64"' in vultr,
-        "runner bootstrap CLI, GitHub workflow and native handler must agree on exact 4-argument local owner artifact",
+        and '"${RUNNER_TEMP}/edge-platform-release/edge-agent-linux-amd64"' in vultr
+        and "needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID" in vultr
+        and "needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET" in vultr,
+        "runner bootstrap must match the 4-argument typed owner and deliver VM Access identity only during bounded native enrollment",
     )
     require(
         'verb == "runner-bootstrap" and len(tokens) == 4' in vultr
