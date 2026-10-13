@@ -434,7 +434,7 @@ jobs:
               run_lifecycle inventory "${spec}" > "${RUNNER_TEMP}/initial-vm-inventory.json"
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/initial-vm-plan.json"
               jq -e '.plans | length == 1 and
-                     (. [0].class == "CREATE" or .[0].class == "NOOP")' \
+                     (.[0].class == "CREATE" or .[0].class == "NOOP")' \
                 "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
               machine_class="$(jq -er '.plans[0].class' "${RUNNER_TEMP}/initial-vm-plan.json")"
               existing_owned_count="$(jq -er '[.inventory.resources[] | select(.ownership.environment == "application-acceptance")] | length' \
