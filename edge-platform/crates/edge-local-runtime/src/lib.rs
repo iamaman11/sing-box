@@ -1168,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_managed_tun_disallows_external_coexistence() {
+    fn canonical_datapath_controls_external_coexistence() {
         let root = std::env::temp_dir().join("edge-managed-tun-no-coexistence");
         let paths = LocalRuntimePaths {
             singbox_binary_path: root.join("sing-box.exe"),
@@ -1176,7 +1176,12 @@ mod tests {
             state_path: root.join("runtime-state.pb"),
             runtime_root: root,
         };
-        assert!(!proxy_only_external_coexistence_allowed(&paths).unwrap());
+        let desired = canonical_production_desired_state().unwrap();
+        let proxy_only = desired.windows_datapath_mode == WindowsDatapathMode::ProxyOnly as i32;
+        assert_eq!(
+            proxy_only_external_coexistence_allowed(&paths).unwrap(),
+            proxy_only
+        );
 
         let legacy = LocalRuntimePaths {
             state_path: PathBuf::from("legacy-runtime.json"),
