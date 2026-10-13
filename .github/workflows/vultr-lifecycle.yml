@@ -164,15 +164,12 @@ jobs:
     outputs:
       first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}
       first_use_create_confirmed: ${{ steps.execute_lifecycle.outputs.first_use_create_confirmed }}
-    # For first-use, verify provider and Windows consumer BEFORE creating a
-    # billable VM or DNS record. All other typed operations remain available
-    # when the initial Windows attestation job is intentionally skipped.
-    needs: [authorize, initial_windows_attest]
-    if: >-
-      always() &&
-      needs.authorize.result == 'success' &&
-      (needs.authorize.outputs.operation != 'initial-vm-install' ||
-       needs.initial_windows_attest.result == 'success')
+    # A reusable VM's provider/substrate and policy-only installation is
+    # independent of Windows. N1 may stage an empty owned VM without touching
+    # Windows SCM/TUN/DNS or publishing credentials. Later paired first-use
+    # publication remains gated on BOTH independent host attestations.
+    needs: authorize
+    if: needs.authorize.result == 'success'
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
