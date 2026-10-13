@@ -300,7 +300,10 @@ pub async fn verify_canonical_dummy_ab_slots(
             projection, generation, &identity, true,
         )
         .await?;
-        findings.push((slot, classify_dummy_slot(observed.as_ref(), projection, generation)));
+        findings.push((
+            slot,
+            classify_dummy_slot(observed.as_ref(), projection, generation),
+        ));
     }
     if findings
         .iter()
