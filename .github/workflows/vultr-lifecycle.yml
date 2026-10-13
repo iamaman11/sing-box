@@ -795,9 +795,75 @@ jobs:
 
 # All first-use owners execute inside the SAME authorized issue-comment run.
   # One CLI command, no separate credential-issuance issue command, no replay.
+  initial_worker_proof_upgrade:
+    name: Bind exact Worker slot proof without changing opaque secrets
+    needs: authorize
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Persist proof-code BEGIN and migrate exact Worker code once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/proof-upgrade-history.json"
+          exact="${RUNNER_TEMP}/proof-upgrade-begin.txt"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" |
+            jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-observe "${history}" > "${RUNNER_TEMP}/first-use-empty.txt"
+          grep -Fxq 'credential_initial_journal_empty=true' "${RUNNER_TEMP}/first-use-empty.txt"
+          "${owner}" credentials initial-worker-proof-plan "${GITHUB_RUN_ID}" \
+            "${history}" "${exact}" > "${RUNNER_TEMP}/proof-plan.txt"
+          grep -Fxq 'worker_provider_mutations=0' "${RUNNER_TEMP}/proof-plan.txt"
+          test -s "${exact}"
+          # Write BEGIN only once; an unknown POST ACK can never be replayed.
+          gh api --method POST "repos/${REPOSITORY}/issues/26/comments" \
+            --raw-field "body=$(cat "${exact}")" > "${RUNNER_TEMP}/proof-begin-ack.json"
+          jq -e --arg body "$(cat "${exact}")" \
+            '.body == $body and (.id|type == "number")' "${RUNNER_TEMP}/proof-begin-ack.json" >/dev/null
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" |
+            jq -s 'add' > "${history}"
+          "${owner}" credentials initial-worker-proof-upgrade "${GITHUB_RUN_ID}" \
+            "${history}" "${exact}" > "${RUNNER_TEMP}/proof-upgrade.txt"
+          grep -Fxq 'worker_proof_durable_begin=EXACT_READBACK' "${RUNNER_TEMP}/proof-upgrade.txt"
+          grep -Fxq 'worker_secret_patch_mutations=0' "${RUNNER_TEMP}/proof-upgrade.txt"
+          grep -Fxq 'worker_actual_binding_dummy=UNPROVEN_BY_PROVIDER_METADATA' "${RUNNER_TEMP}/proof-upgrade.txt"
+          echo 'WORKER_EXACT_SLOT_PROOF_CODE=DEPLOYED_VERSION_FENCED' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'WORKER_A_B_SECRET_CONTENTS=UNPROVEN_UNTIL_HOST_ATTEST' >> "${GITHUB_STEP_SUMMARY}"
+
   initial_preflight:
     name: Bind first-use Cloudflare version intent
-    needs: authorize
+    needs: [authorize, initial_worker_proof_upgrade]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     environment:
