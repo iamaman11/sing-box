@@ -407,6 +407,9 @@ def main() -> None:
         and "materialize_vm_owned_runtime_environment(&staging)?" in vm_agent_runtime,
         "fresh policy-only bundle staging must be exact, single-owner, and never start runtime",
     )
+    cloudflare_native_provider = Path(
+        "edge-platform/crates/edge-provider-cloudflare/src/lib.rs"
+    ).read_text(encoding="utf-8")
     credential_delivery_client = Path(
         "edge-platform/crates/edge-secrets/src/credential_delivery.rs"
     ).read_text(encoding="utf-8")
@@ -427,8 +430,13 @@ def main() -> None:
         and "StatusCode::NO_CONTENT" in credential_delivery_client
         and "StatusCode::CONFLICT" in credential_delivery_client
         and "crypto.subtle.digest" in credential_provider
+        and "bindings_inherit=strict" in cloudflare_native_provider
+        and "upload_worker_slot_proof_version(" in cloudflare_native_provider
+        and '"type": "inherit"' in cloudflare_native_provider
         and '"/v1/proof-slot"' in credential_provider
         and 'sha256_hex(&slots[0].payload)' in credential_provider
+        and "previous_fixed_ab_version_tag(" in credential_provider
+        and "ProjectionDeliveryState::FixedAbProofUpgradeRequired" in credential_provider
         and "slot_A={}; slot_B={}" in credential_delivery_client
         and "publication_authorized=false" in credential_delivery_client
         and "DummySlotObservation::MissingOrOtherGeneration" in credential_delivery_client
