@@ -806,15 +806,16 @@ def main() -> None:
         and 'vultr-lifecycle initial-runtime-apply' in initial_flow
         and 'vultr-lifecycle initial-runtime-verify' in initial_flow
         and 'all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true)' in initial_flow
-        and 'vultr-lifecycle initial-dns-create' not in initial_flow
-        and 'run_lifecycle initial-dns-create' in vultr
-        and 'run_lifecycle initial-dns-verify' in vultr
+        and 'vultr-lifecycle initial-dns-converge' not in initial_flow
+        and 'run_lifecycle initial-dns-converge' in vultr
+        and 'INITIAL_VM_DNS_CONVERGE' in vultr
+        and 'REUSED_OWNED' in vultr
         and 'machine_class=' in vultr
         and 'REUSED_OWNED' in vultr
         and 'first_use_create_confirmed=true' in vultr
         and 'first_use_create_confirmed=true' not in vultr.split('NOOP)')[1].split('CREATE)')[0]
         and 'infra/cloudflare/application-acceptance-dns.json' in vultr
-        and 'INITIAL_VM_DNS_CREATE' in vultr
+        and 'INITIAL_VM_DNS_CONVERGE' in vultr
         and 'provider_mutation_replay_allowed == false' in vultr
         and 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' in initial_flow
         and 'initial_acceptance_verdict:' in initial_flow
@@ -832,7 +833,7 @@ def main() -> None:
         and 'require_clean_disposable_dns(Path::new(&args[0])).await?' in vultr_lifecycle_command
         and 'create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
         and 'verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
-        and '"initial-dns-create" => run_initial_dns_create' in vultr_lifecycle_command,
+        and '"initial-dns-converge" => run_initial_dns_converge' in vultr_lifecycle_command,
         "initial VM DNS must reuse one exact clean-room Cloudflare owner without mutation retry",
     )
 
