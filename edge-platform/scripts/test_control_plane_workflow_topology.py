@@ -1995,6 +1995,24 @@ def main() -> None:
         and "CLOUDFLARE_API_TOKEN" not in windows_runner_bootstrap,
         "physical Windows runner bootstrap must not install build toolchains or provider authority",
     )
+    runner_cli_args = credential_cli.split(
+        "pub(crate) struct VultrRunnerBootstrapArgs {", 1
+    )[1].split("}", 1)[0]
+    runner_cli_transport = credential_cli.split(
+        "Self::RunnerBootstrap(args) => vec![", 1
+    )[1].split("],", 1)[0]
+    runner_native_handler = vultr_lifecycle_command.split(
+        "async fn run_runner_bootstrap(", 1
+    )[1].split("pub(crate) async fn bootstrap_production_runner(", 1)[0]
+    require(
+        "pub local_owner_artifact_path: PathBuf" in runner_cli_args
+        and "path(args.local_owner_artifact_path)" in runner_cli_transport
+        and "if args.len() != 4" in runner_native_handler
+        and "Path::new(&args[3])" in runner_native_handler
+        and 'run_lifecycle runner-bootstrap "${spec}" "${machine}"' in vultr
+        and '"${RUNNER_TEMP}/edge-platform-release/edge-agent-linux-amd64"' in vultr,
+        "runner bootstrap CLI, GitHub workflow and native handler must agree on exact 4-argument local owner artifact",
+    )
     require(
         'verb == "runner-bootstrap" and len(tokens) == 4' in vultr
         and '"runner-bootstrap"' in vultr
