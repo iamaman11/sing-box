@@ -835,12 +835,13 @@ def main() -> None:
     )
 
     require(
-        'acceptance_create as create_disposable_dns' in vultr_lifecycle_command
-        and 'require_clean_disposable_dns(Path::new(&args[0])).await?' in vultr_lifecycle_command
-        and 'create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
-        and 'verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
-        and '"initial-dns-converge" => run_initial_dns_converge' in vultr_lifecycle_command,
-        "initial VM DNS must reuse one exact clean-room Cloudflare owner without mutation retry",
+        'acceptance_create_or_reuse as converge_initial_disposable_dns' in vultr_lifecycle_command
+        and 'converge_initial_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
+        and '"initial-dns-converge" => run_initial_dns_converge' in vultr_lifecycle_command
+        and '"provider_mutations": if outcome == "CREATED" { 1 } else { 0 }' in vultr_lifecycle_command
+        and 'INITIAL_VM_DNS_CONVERGE' in vultr
+        and '.outcome == "REUSED_OWNED" and .provider_mutations == 0' in vultr,
+        "initial VM DNS must use one exact CREATE-or-NOOP native owner with no foreign update or replay",
     )
 
     # RPC and local bundle paths must reject the retired unbound / host-file
