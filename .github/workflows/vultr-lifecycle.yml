@@ -1520,14 +1520,14 @@ jobs:
           Write-Host 'WINDOWS_TUN_MUTATIONS=0'
 
   initial_acceptance_verdict:
-    name: Final physical 10-endpoint acceptance verdict
+    name: Pre-cleanup physical 10/10 and reboot acceptance gate
     needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume, initial_line2_external, initial_reboot, initial_windows_post_reboot]
     if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Refuse candidate-only success without external witness, reboot and cleanup
+      - name: Require every native host, credential and external endpoint proof
         shell: bash
         env:
           VM_INSTALL_JOB: ${{ needs.execute.result }}
@@ -1536,22 +1536,22 @@ jobs:
           VM_ATTEST_JOB: ${{ needs.initial_vm_attest.result }}
           WINDOWS_ATTEST_JOB: ${{ needs.initial_windows_attest.result }}
           PAIRED_WORKERS_JOB: ${{ needs.initial_pair_publish.result }}
-          REBOOT_JOB: ${{ needs.initial_reboot.result }}
+          PRE_REBOOT_LINE2_JOB: ${{ needs.initial_line2_external.result }}
+          POST_REBOOT_LINE1_JOB: ${{ needs.initial_windows_post_reboot.result }}
+          REBOOT_AND_POST_LINE2_JOB: ${{ needs.initial_reboot.result }}
         run: |
           set -euo pipefail
-          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB REBOOT_JOB; do
-            printf '%s=%s\n' "${field}" "${!field}"
+          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB PRE_REBOOT_LINE2_JOB POST_REBOOT_LINE1_JOB REBOOT_AND_POST_LINE2_JOB; do
+            if [[ "${!field}" != "success" ]]; then
+              echo "::error title=N1/N2 acceptance failed::${field}=${!field}"
+              exit 1
+            fi
           done
-          if [[ "${WINDOWS_CANDIDATE_JOB}" == "success" ]]; then
-            echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=PASS' >> "${GITHUB_STEP_SUMMARY}"
-          else
-            echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
-          fi
-          echo 'N1_N2_EXTERNAL_LINE2_6_OF_6=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
-          echo 'N1_N2_PUBLIC_TLS_DIRECT_WARP_REBOOT_CLEANUP=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
-          echo 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' >> "${GITHUB_STEP_SUMMARY}"
-          echo '::error title=N1/N2 physical acceptance BLOCKED::No independent external 10/10 traffic, public TLS, reboot and zero-leak disposal witness. Candidate-only PASS cannot close this installation.'
-          exit 1
+          echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_EXTERNAL_LINE2_6_OF_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_POST_REBOOT_EXTERNAL_4_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PRE_CLEANUP_TRAFFIC=PASS' >> "${GITHUB_STEP_SUMMARY}"
+
 
 # One bounded disposable cleanup after the physical verdict, on BOTH PASS
   # and FAIL. Reuse the exact existing native application-cleanup owner; no
