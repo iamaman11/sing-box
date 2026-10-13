@@ -126,11 +126,21 @@ pub async fn run_delivery(
     // Independent Github-runner network probe. It has Worker VM read
     // identity only, never a Cloudflare provider mutation token.
     if let CredentialDeliveryCommand::InitialLine2ExternalWitness {
-        generation, vm_ipv4, tls_domain, username, vm_access_identity_path,
-    } = &command {
+        generation,
+        vm_ipv4,
+        tls_domain,
+        username,
+        vm_access_identity_path,
+    } = &command
+    {
         return crate::line2_external_witness::witness(
-            *generation, vm_ipv4, tls_domain, username, vm_access_identity_path,
-        ).await;
+            *generation,
+            vm_ipv4,
+            tls_domain,
+            username,
+            vm_access_identity_path,
+        )
+        .await;
     }
     let control_token = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
@@ -149,7 +159,7 @@ pub async fn run_delivery(
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
         CredentialDeliveryCommand::InitialLine2ExternalWitness { .. } => {
             unreachable!("independent witness is dispatched before provider authority")
-        },
+        }
         CredentialDeliveryCommand::InitialWorkerProofPlan {
             run_id,
             journal_history_path,
