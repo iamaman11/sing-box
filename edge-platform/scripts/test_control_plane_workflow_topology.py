@@ -594,11 +594,17 @@ def main() -> None:
         and 'run_lifecycle initial-policy-stage' in vultr
         and 'run_lifecycle apply "${spec}" "${machine}" "${authority}"' in vultr
         and 'converge_host_substrate "${spec}" "${machine}" "initial-vm-install"' in vultr
-        and '.plans | length == 1 and .[0].class == "CREATE"' in vultr
+        and '(. [0].class == "CREATE"' not in vultr
+        and '(.[0].class == "CREATE" or .[0].class == "NOOP")' in vultr
+        and 'machine_class="$(jq -er' in vultr
+        and 'existing_owned_count=' in vultr
+        and 'REUSED_OWNED' in vultr
+        and 'initial-dns-converge' in vultr
+        and "needs: authorize" in vultr
         and '"${bin}" application-lifecycle materialize' in vultr
         and 'runtime_credentials == "ABSENT"' in vultr
         and 'application_containers == "NOT_STARTED"' in vultr,
-        "one GitHub initial VM install must create a clean disposable host and invoke exact immutable policy owner",
+        "one GitHub initial VM install must CREATE or reuse exact owned NOOP and invoke immutable policy owner",
     )
     # A clean VM must receive only the existing dedicated Cloudflare host
     # identity (never an application credential) through the same exact owner.
