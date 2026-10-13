@@ -2103,13 +2103,34 @@ mod tests {
             reverted, accepted,
             "offline experiment changed another field"
         );
+        // The historical ManagedTun DNS experiment must compare only against
+        // its explicit ManagedTun renderer. The current first-install desired
+        // state is ProxyOnly and must never silently inherit a TUN inbound.
+        let managed: Value = serde_json::from_slice(
+            &render_windows_config_for_mode(
+                &stage2_runtime_state(),
+                WindowsDatapathMode::ManagedTun,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(managed, accepted, "offline ManagedTun candidate drifted");
         let authoritative: Value =
             serde_json::from_slice(&render_windows_config(&stage2_runtime_state()).unwrap())
                 .unwrap();
-        assert_eq!(
-            authoritative, accepted,
-            "offline experiment must not alter canonical production rendering"
-        );
+        let desired = canonical_production_desired_state().unwrap();
+        if desired.windows_datapath_mode == WindowsDatapathMode::ProxyOnly as i32 {
+            assert!(
+                authoritative["inbounds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|inbound| inbound.get("tag").and_then(Value::as_str)
+                        != Some("managed-tun-in"))
+            );
+        } else {
+            assert_eq!(authoritative, accepted);
+        }
     }
 
     #[test]
