@@ -596,11 +596,34 @@ async fn initial_worker_proof_plan(
     }
     let history = fs::read_to_string(journal_history_path)
         .map_err(|_| "Worker proof plan cannot read complete issue history".to_owned())?;
-    worker_proof_record(&history, None)?;
     // Initial credentials must not have been attempted. An uncertain earlier
     // BEGIN prevents migration from covertly enabling another issuance.
     require_empty_initial_history(&history)?;
     let before = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    let states = projections(desired)
+        .iter()
+        .map(|projection| projection_delivery_state(desired, projection, &before))
+        .collect::<Result<Vec<_>, _>>()?;
+    if states.iter().all(|state| *state == ProjectionDeliveryState::FixedAb) {
+        // Repeat installation may reuse already deployed *code* without a
+        // second Cloudflare mutation or BEGIN. But require the earlier exact
+        // journal record: never silently trust a foreign code migration.
+        let marked = worker_proof_comments(&history)?
+            .into_iter()
+            .filter(|body| body.contains(WORKER_PROOF_MARKER_FAMILY))
+            .collect::<Vec<_>>();
+        if marked.len() != 1 {
+            return Err("already-upgraded Workers require one prior exact GitHub BEGIN".to_owned());
+        }
+        worker_proof_record(&history, Some(&marked[0]))?;
+        println!("operation=CREDENTIAL_INITIAL_WORKER_PROOF_PLAN");
+        println!("worker_proof_upgrade_required=false");
+        println!("worker_proof_code_verified=EXACT_TWO_ACTIVE");
+        println!("worker_provider_mutations=0");
+        return Ok(());
+    }
+    worker_proof_record(&history, None)?;
     let digest = worker_proof_baseline_sha256(desired, &before, context, run_id)?;
     let confirmed = observe(control_token, desired).await?;
     if digest != worker_proof_baseline_sha256(desired, &confirmed, context, run_id)? {
@@ -635,6 +658,7 @@ async fn initial_worker_proof_plan(
     println!("operation=CREDENTIAL_INITIAL_WORKER_PROOF_PLAN");
     println!("worker_proof_baseline_sha256={}", attempt.baseline_sha256);
     println!("worker_proof_begin_prepared=true");
+    println!("worker_proof_upgrade_required=true");
     println!("worker_provider_mutations=0");
     Ok(())
 }
