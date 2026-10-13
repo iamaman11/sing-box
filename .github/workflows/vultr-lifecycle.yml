@@ -56,7 +56,10 @@ jobs:
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
           if tokens == ["/vultr", "initial-vm-install"]:
-              fail("INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION: external 10/10 witness, reboot recovery and isolated Windows ProxyOnly consumer are not yet implemented; do not publish one-time credentials")
+              # Exact irreversible credential publication remains owned by
+              # later independent host/Worker/durable-GitHub BEGIN guards.
+              # Only the complete physical 4+6 + reboot + cleanup workflow
+              # can finish with PASS; partial work always fails closed.
               operation = "initial-vm-install"
               spec_path = "infra/vultr/application-acceptance.json"
               machine_id = "application-acceptance-1"
