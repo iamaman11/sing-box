@@ -1160,9 +1160,9 @@ def main() -> None:
     )
     require(
         "schema_version: 6" in production_desired
-        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN" in production_desired
-        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" not in production_desired,
-        "Stage 4B.2-C operator acceptance must keep canonical production Windows datapath explicitly MANAGED_TUN",
+        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY" in production_desired
+        and "windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN" not in production_desired,
+        "First Windows installation must embed canonical ProxyOnly mode and never seize host TUN, routes or DNS",
     )
     require(
         'repo_root / "infra" / "production" / "production.textproto"' in windows_input,
