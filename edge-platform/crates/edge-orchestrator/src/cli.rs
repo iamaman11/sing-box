@@ -396,6 +396,56 @@ pub(crate) struct VultrRunnerBootstrapArgs {
     pub local_owner_artifact_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum InitialVmCredentialSlotArg {
+    A,
+    B,
+}
+impl InitialVmCredentialSlotArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+        }
+    }
+}
+#[derive(Debug, Args, Clone)]
+pub(crate) struct InitialVmDnsArgs {
+    pub dns_spec_path: PathBuf,
+    pub application_spec_path: PathBuf,
+}
+#[derive(Debug, Args, Clone)]
+pub(crate) struct InitialVmPolicyArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub application_spec_path: PathBuf,
+    pub agent_manifest_path: PathBuf,
+    pub agent_artifact_path: PathBuf,
+}
+#[derive(Debug, Args, Clone)]
+pub(crate) struct InitialVmHostProbeArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub generation: u64,
+    #[arg(value_enum)]
+    pub slot: InitialVmCredentialSlotArg,
+    pub provider_intent_sha256: String,
+    pub release_set_sha256: String,
+    pub github_run_id: u64,
+    pub agent_artifact_path: PathBuf,
+}
+#[derive(Debug, Args, Clone)]
+pub(crate) struct InitialVmRuntimeArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub generation: u64,
+    pub release_set_sha256: String,
+    pub github_run_id: u64,
+    pub journal_history_path: PathBuf,
+    pub exact_begin_path: PathBuf,
+    pub agent_artifact_path: PathBuf,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum VultrLifecycleCommand {
     Doctor(SpecArgs),
@@ -406,6 +456,11 @@ pub(crate) enum VultrLifecycleCommand {
     SubstrateApply(VultrAuthorizedMachineArgs),
     SubstrateVerify(VultrMachineArgs),
     TransportProof(VultrTransportProofArgs),
+    InitialDnsConverge(InitialVmDnsArgs),
+    InitialPolicyStage(InitialVmPolicyArgs),
+    InitialHostProbe(InitialVmHostProbeArgs),
+    InitialRuntimeApply(InitialVmRuntimeArgs),
+    InitialRuntimeVerify(InitialVmRuntimeArgs),
     RunnerBootstrap(VultrRunnerBootstrapArgs),
     AcquireAccessPlan(VultrMachineArgs),
     AcquireAccess(VultrAuthorizedMachineArgs),
@@ -453,6 +508,34 @@ impl VultrLifecycleCommand {
                 args.machine_id,
                 path(args.agent_artifact_path),
             ],
+            Self::InitialDnsConverge(args) => vec![
+                "initial-dns-converge".to_owned(),
+                path(args.dns_spec_path),
+                path(args.application_spec_path),
+            ],
+            Self::InitialPolicyStage(args) => vec![
+                "initial-policy-stage".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                path(args.application_spec_path),
+                path(args.agent_manifest_path),
+                path(args.agent_artifact_path),
+            ],
+            Self::InitialHostProbe(args) => vec![
+                "initial-host-probe".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.generation.to_string(),
+                args.slot.as_str().to_owned(),
+                args.provider_intent_sha256,
+                args.release_set_sha256,
+                args.github_run_id.to_string(),
+                path(args.agent_artifact_path),
+            ],
+            Self::InitialRuntimeApply(args) => initial_runtime_args("initial-runtime-apply", args),
+            Self::InitialRuntimeVerify(args) => {
+                initial_runtime_args("initial-runtime-verify", args)
+            }
             Self::RunnerBootstrap(args) => vec![
                 "runner-bootstrap".to_owned(),
                 path(args.spec_path),
@@ -536,6 +619,20 @@ impl VultrVpcCommand {
     }
 }
 
+fn initial_runtime_args(operation: &str, args: InitialVmRuntimeArgs) -> Vec<String> {
+    vec![
+        operation.to_owned(),
+        path(args.spec_path),
+        args.machine_id,
+        args.generation.to_string(),
+        args.release_set_sha256,
+        args.github_run_id.to_string(),
+        path(args.journal_history_path),
+        path(args.exact_begin_path),
+        path(args.agent_artifact_path),
+    ]
+}
+
 fn one(operation: &str, args: SpecArgs) -> Vec<String> {
     vec![operation.to_owned(), path(args.spec_path)]
 }
@@ -582,6 +679,88 @@ fn non_blank(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn every_first_use_workflow_command_is_reachable_through_typed_cli() {
+        // This is the public Clap entrypoint invoked by GitHub Actions. The
+        // private native handler alone is not proof the binary accepts it.
+        let cases = vec![
+            vec![
+                "initial-dns-converge",
+                "infra/cloudflare/application-acceptance-dns.json",
+                "infra/application/disposable-acceptance.json",
+            ],
+            vec![
+                "initial-policy-stage",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "infra/application/disposable-acceptance.json",
+                "policy.json",
+                "edge-agent",
+            ],
+            vec![
+                "initial-host-probe",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "b",
+                "intent",
+                "release",
+                "1234",
+                "edge-agent",
+            ],
+            vec![
+                "initial-runtime-apply",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "release",
+                "1234",
+                "history.json",
+                "exact-begin.txt",
+                "edge-agent",
+            ],
+            vec![
+                "initial-runtime-verify",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "release",
+                "1234",
+                "history.json",
+                "exact-begin.txt",
+                "edge-agent",
+            ],
+        ];
+        for args in cases {
+            let mut argv = vec!["edge-orchestrator", "vultr-lifecycle"];
+            argv.extend(&args);
+            let parsed = Cli::try_parse_from(argv)
+                .expect("first-use workflow must reach public typed orchestrator CLI");
+            let Command::VultrLifecycle { command } = parsed.command else {
+                panic!("expected exact Vultr lifecycle command owner");
+            };
+            let encoded = command.into_legacy_args();
+            assert_eq!(encoded, args, "native argument order must not drift");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "initial-host-probe",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "101",
+                "invalid-slot",
+                "intent",
+                "release",
+                "1234",
+                "edge-agent",
+            ])
+            .is_err(),
+            "the initial credential slot must be a typed exact a/b"
+        );
+    }
 
     #[test]
     fn initial_pair_preflight_rejects_missing_or_invalid_parameters() {
