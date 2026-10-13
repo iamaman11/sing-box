@@ -202,7 +202,16 @@ pub(crate) enum CredentialDeliveryCommand {
     // One non-replayable, code-only migration of existing Workers; preserves
     // opaque A/B secret bindings and enables exact fixed-slot proof.
     // Restricted to the original first-use GitHub job and immutable ReleaseSet.
-    InitialWorkerProofUpgrade,
+    InitialWorkerProofPlan {
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    InitialWorkerProofUpgrade {
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
     // Strictly read-only provider half of an initial paired transaction.
     InitialPairPreflight {
         generation: u64,
