@@ -838,6 +838,18 @@ def main() -> None:
         and "runtime_credentials" in vultr_lifecycle_command,
         "initial disposable VM stage must install exact policy only through one restricted native owner",
     )
+    # Docker substrate state must be independently observed, even when the
+    # application bundle has never been staged onto a new VM.
+    vm_inspect = vm_agent_runtime.split(
+        "async fn inspect_runtime(", 1
+    )[1].split("fn inspect_bundle_artifacts(", 1)[0]
+    require(
+        vm_inspect.index("let docker = observe_docker()")
+        < vm_inspect.index("let Some(compose) =")
+        and vm_inspect.index("state.docker_reachable = docker.reachable")
+        < vm_inspect.index("let Some(compose) ="),
+        "VM diagnostics must observe Docker substrate before any Compose-missing early return",
+    )
     # One native owner serves first-use VM apply/verify over the existing
     # restricted AgentService. Local Line2 results must stay per endpoint;
     # aggregate VM-local success must never be called external acceptance.
