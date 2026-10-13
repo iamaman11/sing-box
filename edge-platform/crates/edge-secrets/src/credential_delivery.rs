@@ -282,6 +282,80 @@ fn classify_dummy_slot(
     }
 }
 
+/// A non-sensitive host witness for a selected first-use slot. In particular,
+/// an unrecognized generation in the other slot is *not* treated as empty or
+/// safe to overwrite. Only the selected slot can become write-eligible after
+/// the separate host, provider, release, and GitHub BEGIN barriers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialDummySlotProof {
+    pub slot_a_observation: &'static str,
+    pub slot_b_observation: &'static str,
+    pub exact_dummy_ab: bool,
+}
+
+fn require_selected_dummy(
+    slot: CredentialDeliverySlot,
+    a: DummySlotObservation,
+    b: DummySlotObservation,
+) -> Result<InitialDummySlotProof, String> {
+    let selected = match slot {
+        CredentialDeliverySlot::A => a,
+        CredentialDeliverySlot::B => b,
+        CredentialDeliverySlot::Unspecified => {
+            return Err("initial slot witness refuses unspecified slot".to_owned());
+        }
+    };
+    if selected != DummySlotObservation::ExactCanonical {
+        return Err(format!(
+            "initial selected Worker slot BLOCKED: selected={}; slot_A={}; slot_B={};              publication_authorized=false; other_slot_overwrite_authorized=false",
+            match slot {
+                CredentialDeliverySlot::A => "A",
+                CredentialDeliverySlot::B => "B",
+                CredentialDeliverySlot::Unspecified => unreachable!(),
+            },
+            a.as_str(),
+            b.as_str()
+        ));
+    }
+    Ok(InitialDummySlotProof {
+        slot_a_observation: a.as_str(),
+        slot_b_observation: b.as_str(),
+        exact_dummy_ab: a == DummySlotObservation::ExactCanonical
+            && b == DummySlotObservation::ExactCanonical,
+    })
+}
+
+/// Authenticate the EXACT intended fixed slot for initial enrollment. Both
+/// generation-specific GETs are read-only; the other slot is observed but not
+/// required to contain dummy bytes, and is never selected for overwrite.
+/// This proof alone must never authorize publication or a fresh issuance.
+pub async fn verify_initial_selected_dummy_slot(
+    projection: CredentialProjectionKind,
+    slot: CredentialDeliverySlot,
+    identity_path: &Path,
+) -> Result<InitialDummySlotProof, String> {
+    if !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B) {
+        return Err("initial Worker witness requires slot A or B".to_owned());
+    }
+    let identity = read_access_service_identity(identity_path)?;
+    let mut findings = Vec::with_capacity(2);
+    for generation in [
+        CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+        CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+    ] {
+        let observed = observe_canonical_credential_bundle_with_identity(
+            projection, generation, &identity, true,
+        )
+        .await?;
+        findings.push(classify_dummy_slot(
+            observed.as_ref(),
+            projection,
+            generation,
+        ));
+    }
+    require_selected_dummy(slot, findings[0], findings[1])
+}
+
 /// Read-only proof that BOTH fixed A/B Worker slots still carry the canonical
 /// non-secret probe. A Worker binding name, version tag, or 404 cannot prove
 /// emptiness. Inspect both known dummy generations before deciding. Never
@@ -419,6 +493,44 @@ mod tests {
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
         );
         assert!(wrong_schema_result.is_err());
+    }
+
+    #[test]
+    fn first_use_b_witness_preserves_unknown_a_and_rejects_unproven_target() {
+        use DummySlotObservation::{ExactCanonical, MissingOrOtherGeneration, Noncanonical};
+        let proof = require_selected_dummy(
+            CredentialDeliverySlot::B,
+            MissingOrOtherGeneration,
+            ExactCanonical,
+        ).unwrap();
+        assert_eq!(proof.slot_a_observation, "NOT_FOUND_OR_OTHER_GENERATION");
+        assert_eq!(proof.slot_b_observation, "EXACT_CANONICAL_DUMMY");
+        assert!(!proof.exact_dummy_ab);
+        assert!(require_selected_dummy(
+            CredentialDeliverySlot::A,
+            MissingOrOtherGeneration,
+            ExactCanonical,
+        ).is_err());
+        assert!(require_selected_dummy(
+            CredentialDeliverySlot::B,
+            ExactCanonical,
+            Noncanonical,
+        ).is_err());
+        assert!(require_selected_dummy(
+            CredentialDeliverySlot::Unspecified,
+            ExactCanonical,
+            ExactCanonical,
+        ).is_err());
+        assert!(require_selected_dummy(
+            CredentialDeliverySlot::B,
+            Noncanonical,
+            ExactCanonical,
+        ).is_ok());
+        assert!(require_selected_dummy(
+            CredentialDeliverySlot::B,
+            ExactCanonical,
+            ExactCanonical,
+        ).unwrap().exact_dummy_ab);
     }
 
     #[test]
