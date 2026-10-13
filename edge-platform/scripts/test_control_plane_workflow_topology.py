@@ -422,8 +422,11 @@ def main() -> None:
         and "credential_runtime_mutations=0" in vm_agent_runtime
         and "CREDENTIAL_DUMMY_PROBE_GENERATION_A" in credential_provider
         and "CREDENTIAL_DUMMY_PROBE_GENERATION_B" in credential_provider
-        and "verify_canonical_dummy_ab_probe(&observed, projection, generation)?"
-        in credential_delivery_client
+        and "classify_dummy_slot(observed.as_ref(), projection, generation)" in credential_delivery_client
+        and "slot_A={}; slot_B={}" in credential_delivery_client
+        and "publication_authorized=false" in credential_delivery_client
+        and "DummySlotObservation::MissingOrOtherGeneration" in credential_delivery_client
+        and "DummySlotObservation::Noncanonical" in credential_delivery_client
         and "if bundle.dummy_non_secret && !allow_dummy_probe" in credential_delivery_client,
         "fresh credential A/B proof must be authenticated, projection-bound, exact dummy only and read-only",
     )
