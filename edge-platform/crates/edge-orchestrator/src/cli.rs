@@ -372,6 +372,7 @@ pub(crate) struct VultrRunnerBootstrapArgs {
     pub spec_path: PathBuf,
     pub machine_id: String,
     pub installer_path: PathBuf,
+    pub local_owner_artifact_path: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -436,6 +437,7 @@ impl VultrLifecycleCommand {
                 path(args.spec_path),
                 args.machine_id,
                 path(args.installer_path),
+                path(args.local_owner_artifact_path),
             ],
             Self::AcquireAccessPlan(args) => machine("acquire-access-plan", args),
             Self::AcquireAccess(args) => vec![
@@ -669,6 +671,7 @@ mod tests {
                 "infra/vultr/disposable-acceptance.json",
                 "lifecycle-acceptance-1",
                 "edge-platform/scripts/install-vultr-production-runner.sh",
+                "/tmp/edge-agent-linux-amd64",
             ],
             vec![
                 "edge-orchestrator",
@@ -749,6 +752,18 @@ mod tests {
                 &digest,
             ],
         ];
+
+        // The normal GitHub self-hosted runner bootstrap passes the exact
+        // accepted local-owner artifact as a fourth positional argument.
+        // Reject the historical three-argument CLI before provider mutation.
+        assert!(Cli::try_parse_from([
+            "edge-orchestrator",
+            "vultr-lifecycle",
+            "runner-bootstrap",
+            "infra/vultr/application-acceptance.json",
+            "application-acceptance-1",
+            "edge-platform/scripts/install-vultr-production-runner.sh",
+        ]).is_err());
 
         for args in cases {
             assert!(
