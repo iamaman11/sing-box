@@ -758,10 +758,12 @@ def main() -> None:
     require(
         'WINDOWS_CONTROLLER_ENDPOINT' in shared_types
         and 'return WINDOWS_CONTROLLER_ENDPOINT;' in console_source
-        and vultr.count('& $console credential-state') == 2
+        and vultr.count('& $console credential-state') == 0
+        and 'credential-initial-acceptance-stage' in vultr
+        and 'credential-initial-line1-witness' in vultr
         and 'credential-state http://' not in vultr
         and 'credential-state https://' not in vultr,
-        "first-use Windows observation must use verified native installed SCM endpoint, not a hardcoded port",
+        "first-use Windows acceptance must not depend on the serving SCM endpoint or a hardcoded port",
     )
 
     # Single first-use request: new VM, two independent host owners, one
@@ -771,17 +773,22 @@ def main() -> None:
         'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
         and 'initial_vm_attest:' in initial_flow
         and 'initial_windows_attest:' in initial_flow
+        and 'initial_windows_isolate:' in vultr
+        and 'initial_windows_cleanup:' in initial_flow
+        and 'C:\\sing-box-acceptance' in vultr
+        and 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED' in vultr
         and 'initial_pair_publish:' in initial_flow
         and 'initial_vm_runtime:' in initial_flow
         and 'initial_windows_consume:' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
-        and 'privileged-stage-credential' in initial_flow
+        and 'credential-initial-acceptance-stage' in initial_flow
+        and 'credential-initial-line1-witness' in initial_flow
         and 'credential-transition validate-candidate' in initial_flow
-        and 'First-use Windows controller unavailable or non-empty; refusing Worker publication' in initial_flow
+        and 'First-use isolated Windows credential cursor already exists' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED:' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_CHANGED:' in initial_flow
         and initial_flow.count("['windows_datapath_mode'] -cne 'ProxyOnly'") == 2
-        and 'credential_candidate_generation=$env:GENERATION' in initial_flow
+        and 'N2_EXTERNAL_LINE1_4_OF_4=PASS' in initial_flow
         and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
         and 'needs: [authorize, execute, initial_preflight]' in initial_flow
         and 'needs: [authorize, initial_windows_attest]' not in vultr
@@ -800,7 +807,7 @@ def main() -> None:
         and 'worker_secret_patch_mutations=0' in vultr
         and 'credential_selected_slot_exact_dummy == true' in initial_flow
         and '.credential_slot_B == "EXACT_CANONICAL_DUMMY"' in initial_flow
-        and 'name: Attest isolated Windows host without TUN or DNS mutation\n    needs: [authorize, initial_preflight]' in vultr
+        and 'name: Attest isolated Windows host without TUN or DNS mutation\n    needs: [authorize, initial_preflight, initial_windows_isolate]' in vultr
         and 'vultr-lifecycle initial-host-probe' in initial_flow
         and 'credentials initial-pair-journal-plan' in initial_flow
         and 'credentials initial-pair-journal-readback' in initial_flow
