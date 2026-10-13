@@ -349,10 +349,10 @@ async fn observe_fixed_dummy_binding(
         }
     };
     let runtime_url = canonical_credential_worker_url(projection, generation)?;
-    let proof_url = runtime_url.replace(
-        "/v1/credentials?generation=",
-        "/v1/proof-slot?generation=",
-    ) + "&slot=" + slot_param;
+    let proof_url = runtime_url
+        .replace("/v1/credentials?generation=", "/v1/proof-slot?generation=")
+        + "&slot="
+        + slot_param;
     let client = credential_worker_client(identity)?;
     let response = send_credential_worker_get(&client, &proof_url).await?;
     match response.status() {
