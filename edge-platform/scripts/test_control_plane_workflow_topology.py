@@ -422,7 +422,13 @@ def main() -> None:
         and "credential_runtime_mutations=0" in vm_agent_runtime
         and "CREDENTIAL_DUMMY_PROBE_GENERATION_A" in credential_provider
         and "CREDENTIAL_DUMMY_PROBE_GENERATION_B" in credential_provider
-        and "classify_dummy_slot(observed.as_ref(), projection, generation)" in credential_delivery_client
+        and "observe_fixed_dummy_binding(" in credential_delivery_client
+        and "/v1/proof-slot?generation=" in credential_delivery_client
+        and "StatusCode::NO_CONTENT" in credential_delivery_client
+        and "StatusCode::CONFLICT" in credential_delivery_client
+        and "crypto.subtle.digest" in credential_provider
+        and '"/v1/proof-slot"' in credential_provider
+        and 'sha256_hex(&slots[0].payload)' in credential_provider
         and "slot_A={}; slot_B={}" in credential_delivery_client
         and "publication_authorized=false" in credential_delivery_client
         and "DummySlotObservation::MissingOrOtherGeneration" in credential_delivery_client
