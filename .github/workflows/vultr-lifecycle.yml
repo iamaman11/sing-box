@@ -806,7 +806,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      issues: read
     outputs:
       intent: ${{ steps.proof.outputs.intent }}
       release_set: ${{ steps.proof.outputs.release_set }}
@@ -1011,7 +1010,6 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
-      issues: write
     steps:
       - name: Commit exact durable BEGIN once and publish both projections
         shell: bash
@@ -1090,7 +1088,6 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
-      issues: read
     steps:
       - name: Revalidate original BEGIN before one-time apply then read-only verify
         shell: bash
@@ -1374,7 +1371,6 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
-      issues: read
     steps:
       - name: Prove changed guest boot ID and post-reboot six authenticated VM-local proxies
         shell: bash
