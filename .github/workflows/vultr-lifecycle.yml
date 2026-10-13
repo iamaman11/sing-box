@@ -907,7 +907,7 @@ jobs:
           "${owner}" credentials initial-pair-journal-observe "${history}" > "${RUNNER_TEMP}/journal.txt"
           grep -Fxq 'credential_initial_journal_empty=true' "${RUNNER_TEMP}/journal.txt"
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          "${owner}" credentials initial-pair-preflight "${GITHUB_RUN_ID}" a > "${RUNNER_TEMP}/preflight.txt"
+          "${owner}" credentials initial-pair-preflight "${GITHUB_RUN_ID}" b > "${RUNNER_TEMP}/preflight.txt"
           grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/preflight.txt"
           grep -Fxq 'credential_provider_mutations=0' "${RUNNER_TEMP}/preflight.txt"
           intent="$(sed -n 's/^initial_pair_provider_intent_sha256=//p' "${RUNNER_TEMP}/preflight.txt")"
@@ -971,13 +971,16 @@ jobs:
           trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
           "${owner}" vultr-lifecycle initial-host-probe \
             infra/vultr/application-acceptance.json application-acceptance-1 \
-            "${GENERATION}" a "${INTENT}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${agent}" \
+            "${GENERATION}" b "${INTENT}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${agent}" \
             > "${RUNNER_TEMP}/vm-proof.json"
           jq -e --arg g "${GENERATION}" --arg rel "${RELEASE_SET}" --arg intent "${INTENT}" \
             '.status == "PASS" and .operation == "CREDENTIAL_INITIAL_HOST_PROBE" and
              .credential_projection == "VM" and .credential_generation == ($g|tonumber) and
              .release_set_sha256 == $rel and .provider_intent_sha256 == $intent and
-             .credential_slot_A == "EXACT_DUMMY" and .credential_slot_B == "EXACT_DUMMY" and
+             .credential_slot == "b" and
+             .credential_slot_B == "EXACT_CANONICAL_DUMMY" and
+             .credential_selected_slot_exact_dummy == true and
+             .credential_peer_slot_overwrite_authorized == false and
              .credential_store_present == false and .credential_provider_mutations == 0 and
              .credential_runtime_mutations == 0 and
              (.credential_host_attestation_sha256|test("^[0-9a-f]{64}$"))' \
@@ -1036,7 +1039,7 @@ jobs:
               -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable installed console missing'
           }
-          $raw = @(& $console credential-initial-attest $env:GENERATION a $env:INTENT $env:RELEASE_SET $env:GITHUB_RUN_ID --install-root $env:EDGE_INSTALL_ROOT)
+          $raw = @(& $console credential-initial-attest $env:GENERATION b $env:INTENT $env:RELEASE_SET $env:GITHUB_RUN_ID --install-root $env:EDGE_INSTALL_ROOT)
           if ($LASTEXITCODE -ne 0) { throw 'Windows exact dummy A/B attestation failed' }
           $proof = @{}
           foreach ($line in $raw) {
@@ -1047,6 +1050,8 @@ jobs:
               [string]$proof['credential_projection'] -cne 'WINDOWS' -or
               [string]$proof['credential_generation'] -cne $env:GENERATION -or
               [string]$proof['credential_github_run_id'] -cne $env:GITHUB_RUN_ID -or
+              [string]$proof['credential_slot_B'] -cne 'EXACT_CANONICAL_DUMMY' -or
+              [string]$proof['credential_selected_slot_exact_dummy'] -cne 'true' -or
               [string]$proof['credential_provider_mutations'] -cne '0' -or
               [string]$proof['credential_runtime_mutations'] -cne '0' -or
               [string]$proof['windows_tun_mutations'] -cne '0' -or
@@ -1076,6 +1081,7 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+      issues: write
     steps:
       - name: Commit exact durable BEGIN once and publish both projections
         shell: bash
@@ -1118,7 +1124,7 @@ jobs:
           # The pre-write observation must be empty; no duplicate BEGIN,
           # malformed record, changed intent, or unknown state is repairable.
           gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
-          "${owner}" credentials initial-pair-journal-plan "${GENERATION}" a \
+          "${owner}" credentials initial-pair-journal-plan "${GENERATION}" b \
             "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
             "${history}" "${exact}" > "${RUNNER_TEMP}/journal-plan.txt"
           grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/journal-plan.txt"
@@ -1134,7 +1140,7 @@ jobs:
           grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
           # The Rust publisher rechecks the same durable BEGIN, source,
           # host attestations, Worker versions and identities before mutation.
-          "${owner}" credentials initial-pair-publish "${GENERATION}" a \
+          "${owner}" credentials initial-pair-publish "${GENERATION}" b \
             "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
             "${history}" "${exact}" | tee "${RUNNER_TEMP}/pair-publish.txt"
           grep -Fxq 'credential_initial_pair_provider_publish=PASS' "${RUNNER_TEMP}/pair-publish.txt"
