@@ -422,6 +422,7 @@ dependencies = [
  "edge-provider-cloudflare",
  "edge-provider-vultr",
  "edge-shared-types",
+ "edge-secrets",
  "prost",
  "rand_core 0.6.4",
  "ring",
