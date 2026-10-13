@@ -1407,8 +1407,10 @@ jobs:
           umask 077
           printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
             "${VM_ACCESS_CLIENT_ID}" "${VM_ACCESS_CLIENT_SECRET}" > "${identity}"
-          trap 'rm -f "${identity}"' EXIT
-          "${owner}" credentials initial-line2-external-witness \
+          sudo chown root:root "${identity}"
+          sudo chmod 0600 "${identity}"
+          trap 'sudo rm -f "${identity}"' EXIT
+          sudo env EDGE_RELEASE_CONTEXT_PATH="${EDGE_RELEASE_CONTEXT_PATH}" "${owner}" credentials initial-line2-external-witness \
             "${GENERATION}" "${vm_ipv4}" "${domain}" "${username}" "${identity}" \
             > "${RUNNER_TEMP}/line2-external.txt"
           grep -Fxq 'line2_external_6_of_6=PASS' "${RUNNER_TEMP}/line2-external.txt"
@@ -1831,8 +1833,10 @@ jobs:
           umask 077
           printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
             "${VM_ACCESS_CLIENT_ID}" "${VM_ACCESS_CLIENT_SECRET}" > "${identity}"
-          trap 'rm -f "${identity}"' EXIT
-          "${owner}" credentials initial-line2-external-witness \
+          sudo chown root:root "${identity}"
+          sudo chmod 0600 "${identity}"
+          trap 'sudo rm -f "${identity}"' EXIT
+          sudo env EDGE_RELEASE_CONTEXT_PATH="${EDGE_RELEASE_CONTEXT_PATH}" "${owner}" credentials initial-line2-external-witness \
             "${GENERATION}" "${VM_PUBLIC_IPV4}" "${VM_TLS_DOMAIN}" "${VM_PROXY_USERNAME}" "${identity}" \
             > "${RUNNER_TEMP}/line2-reboot-external.txt"
           grep -Fxq 'line2_external_6_of_6=PASS' "${RUNNER_TEMP}/line2-reboot-external.txt"
