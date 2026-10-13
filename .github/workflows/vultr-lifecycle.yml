@@ -1017,9 +1017,73 @@ jobs:
           trap - EXIT
           printf 'attestation=%s\n' "${attestation}" >> "${GITHUB_OUTPUT}"
 
+  initial_windows_isolate:
+    name: Install separate exact Windows ProxyOnly acceptance consumer, no SCM
+    needs: [authorize, initial_preflight]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      EDGE_INSTALL_ROOT: C:\sing-box-acceptance
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+      EDGE_GITHUB_TOKEN: ${{ github.token }}
+      EDGE_WINDOWS_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID }}
+      EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Materialize isolated release from accepted immutable ReleaseSet
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'Windows acceptance installation replay forbidden' }
+          if ($env:GITHUB_REPOSITORY -cne 'iamaman11/sing-box' -or $env:GITHUB_REPOSITORY_ID -cne '1221750822') {
+            throw 'Windows isolated acceptance refuses foreign repository'
+          }
+          if (-not $env:EDGE_WINDOWS_ACCESS_CLIENT_ID -or -not $env:EDGE_WINDOWS_ACCESS_CLIENT_SECRET) {
+            throw 'Windows Access bootstrap unavailable; never borrow serving local credentials'
+          }
+          $root = $env:EDGE_INSTALL_ROOT
+          if ($root -cne 'C:\sing-box-acceptance') { throw 'Only isolated acceptance root is permitted' }
+          if (Test-Path -LiteralPath $root) { throw 'Existing Windows acceptance root: reconcile read-only, never overwrite' }
+          New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
+          # The disposable tree must be accessible only to its exact runner
+          # identity, built-in Administrators and SYSTEM, not ordinary users.
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & icacls.exe $root '/inheritance:r' '/grant:r' "*${sid}:(OI)(CI)F" 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Windows acceptance ACL confinement failed' }
+          $sentinel = Join-Path $root '.first-use-run'
+          [IO.File]::WriteAllText($sentinel, "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}")
+          $installer = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\install-windows-release.ps1'
+          & $installer -Repository 'iamaman11/sing-box' -ReleaseSetSha256 $env:RELEASE_SET -AcceptedRevision $env:GITHUB_SHA -InstallRoot $root -GitHubToken $env:EDGE_GITHUB_TOKEN
+          if ($LASTEXITCODE -ne 0) { throw 'Windows exact isolated release installation failed' }
+          $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor (Join-Path $root 'current.pb'))
+          if ($LASTEXITCODE -ne 0 -or -not ($doctor -contains 'windows_datapath_mode=ProxyOnly') -or -not ($doctor -contains "release_set_sha256=$env:RELEASE_SET")) {
+            throw 'Windows installed acceptance release does not prove exact ProxyOnly'
+          }
+          $console = Join-Path $root 'bin\edge-console.exe'
+          & $console credential-initial-acceptance-bootstrap --install-root $root
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows Access bootstrap failed; do not retry' }
+          Write-Host 'WINDOWS_ISOLATED_EXACT_RELEASE=PASS'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+          Write-Host 'WINDOWS_TUN_MUTATIONS=0'
+          Write-Host 'WINDOWS_DNS_MUTATIONS=0'
+          Write-Host 'WINDOWS_SCM_MUTATIONS=0'
+
   initial_windows_attest:
     name: Attest isolated Windows host without TUN or DNS mutation
-    needs: [authorize, initial_preflight]
+    needs: [authorize, initial_preflight, initial_windows_isolate]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
     timeout-minutes: 15
