@@ -82,7 +82,9 @@ impl Command {
             Self::CredentialState(_) => "credential-state",
             Self::CredentialInitialProbe(_) => "credential-initial-probe",
             Self::CredentialInitialAttest(_) => "credential-initial-attest",
-            Self::CredentialInitialAcceptanceBootstrap(_) => "credential-initial-acceptance-bootstrap",
+            Self::CredentialInitialAcceptanceBootstrap(_) => {
+                "credential-initial-acceptance-bootstrap"
+            }
             Self::CredentialInitialAcceptanceStage(_) => "credential-initial-acceptance-stage",
             Self::CredentialInitialLine1Witness(_) => "credential-initial-line1-witness",
             Self::SmokeRuntime => "smoke-runtime",
