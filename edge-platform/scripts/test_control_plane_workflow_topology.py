@@ -778,8 +778,10 @@ def main() -> None:
         and 'credential_candidate_generation=$env:GENERATION' in initial_flow
         and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
         and 'needs: [authorize, execute, initial_preflight]' in initial_flow
-        and 'needs: [authorize, initial_windows_attest]' in vultr
-        and "needs.initial_windows_attest.result == 'success'" in vultr
+        and 'needs: [authorize, initial_windows_attest]' not in vultr
+        and "needs.initial_windows_attest.result == 'success'" not in vultr
+        and 'N1 may stage an empty owned VM' in vultr
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and "always() &&" in vultr
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
@@ -806,6 +808,11 @@ def main() -> None:
         and 'all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true)' in initial_flow
         and 'vultr-lifecycle initial-dns-create' not in initial_flow
         and 'run_lifecycle initial-dns-create' in vultr
+        and 'run_lifecycle initial-dns-verify' in vultr
+        and 'machine_class=' in vultr
+        and 'REUSED_OWNED' in vultr
+        and 'first_use_create_confirmed=true' in vultr
+        and 'first_use_create_confirmed=true' not in vultr.split('NOOP)')[1].split('CREATE)')[0]
         and 'infra/cloudflare/application-acceptance-dns.json' in vultr
         and 'INITIAL_VM_DNS_CREATE' in vultr
         and 'provider_mutation_replay_allowed == false' in vultr
