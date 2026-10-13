@@ -18,7 +18,7 @@ use edge_shared_types::{
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
@@ -137,8 +137,35 @@ pub async fn run_delivery(
 
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
-        CredentialDeliveryCommand::InitialWorkerProofUpgrade => {
-            initial_worker_proof_upgrade(&control_token, &desired, release_context).await
+        CredentialDeliveryCommand::InitialWorkerProofPlan {
+            run_id,
+            journal_history_path,
+            record_output_path,
+        } => {
+            initial_worker_proof_plan(
+                &control_token,
+                &desired,
+                release_context,
+                run_id,
+                &journal_history_path,
+                &record_output_path,
+            )
+            .await
+        }
+        CredentialDeliveryCommand::InitialWorkerProofUpgrade {
+            run_id,
+            journal_history_path,
+            exact_record_path,
+        } => {
+            initial_worker_proof_upgrade(
+                &control_token,
+                &desired,
+                release_context,
+                run_id,
+                &journal_history_path,
+                &exact_record_path,
+            )
+            .await
         }
         CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
             initial_pair_preflight(&control_token, &desired, generation, slot).await
@@ -424,6 +451,186 @@ fn initial_pair_provider_intent_sha256(
     Ok(sha256_hex(&bytes))
 }
 
+const WORKER_PROOF_MARKER: &str = "<!-- sing-box-worker-proof-upgrade/v1 -->";
+const WORKER_PROOF_MARKER_FAMILY: &str = "<!-- sing-box-worker-proof-upgrade/";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerProofAttempt {
+    schema: String,
+    phase: String,
+    github_run_id: u64,
+    source_revision: String,
+    release_set_sha256: String,
+    baseline_sha256: String,
+}
+
+fn worker_proof_comments(history: &str) -> Result<Vec<String>, String> {
+    let comments: Vec<serde_json::Value> = serde_json::from_str(history)
+        .map_err(|_| "Worker proof journal requires complete GitHub JSON history".to_owned())?;
+    comments
+        .iter()
+        .map(|v| {
+            v.get("body")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| "Worker proof journal refuses malformed or empty comment".to_owned())
+        })
+        .collect()
+}
+
+fn worker_proof_record(
+    history: &str,
+    expected: Option<&str>,
+) -> Result<Option<WorkerProofAttempt>, String> {
+    let comments = worker_proof_comments(history)?;
+    let marked = comments
+        .iter()
+        .filter(|body| body.contains(WORKER_PROOF_MARKER_FAMILY))
+        .collect::<Vec<_>>();
+    if let Some(exact) = expected {
+        if marked.len() != 1 || marked[0].as_str() != exact {
+            return Err("Worker proof migration requires one exact durable GitHub BEGIN".to_owned());
+        }
+        let body = exact
+            .strip_prefix(WORKER_PROOF_MARKER)
+            .ok_or_else(|| "Worker proof BEGIN marker is displaced".to_owned())?;
+        let parsed: WorkerProofAttempt = serde_json::from_str(body.trim())
+            .map_err(|_| "Worker proof BEGIN has malformed JSON".to_owned())?;
+        if parsed.schema != "sing-box.worker-proof-upgrade/v1"
+            || parsed.phase != "BEGIN"
+            || parsed.github_run_id == 0
+            || parsed.source_revision.len() != 40
+            || parsed.release_set_sha256.len() != 64
+            || parsed.baseline_sha256.len() != 64
+            || ![
+                parsed.source_revision.as_str(),
+                parsed.release_set_sha256.as_str(),
+                parsed.baseline_sha256.as_str(),
+            ]
+            .iter()
+            .all(|v| v.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        {
+            return Err("Worker proof BEGIN is not a canonical non-secret record".to_owned());
+        }
+        return Ok(Some(parsed));
+    }
+    if !marked.is_empty() {
+        return Err(
+            "Worker proof migration already has a durable BEGIN; no second initial attempt"
+                .to_owned(),
+        );
+    }
+    Ok(None)
+}
+
+fn worker_proof_baseline_sha256(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    context: &edge_orchestrator::OrchestrationContext,
+    run_id: u64,
+) -> Result<String, String> {
+    if run_id == 0 {
+        return Err("Worker proof baseline requires valid GitHub run ID".to_owned());
+    }
+    validate_access_boundary(desired, observed)?;
+    let mut workers = Vec::new();
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, observed)?
+            != ProjectionDeliveryState::FixedAbProofUpgradeRequired
+        {
+            return Err(format!(
+                "{} Worker must have an exact old active code baseline before BEGIN",
+                projection.projection
+            ));
+        }
+        let current = projection_observation(observed, &projection.projection)?;
+        let latest = current.worker_latest_version_id.as_deref().ok_or_else(|| {
+            "Worker proof baseline requires latest version ID".to_owned()
+        })?;
+        if current.worker_active_version_ids.as_slice() != [latest] {
+            return Err(format!(
+                "{} Worker proof baseline requires exact active latest version",
+                projection.projection
+            ));
+        }
+        workers.push(serde_json::json!({
+            "projection": projection.projection,
+            "worker_id": current.worker_id,
+            "version_id": latest,
+            "version_tag": current.worker_latest_version_tag,
+            "access_app_id": current.access_application_id,
+        }));
+    }
+    let identity = serde_json::json!({
+        "schema": "sing-box.worker-proof-baseline/v1",
+        "github_run_id": run_id,
+        "source_revision": context.release().source_revision,
+        "release_set_sha256": context.release().release_set_sha256,
+        "account_id": desired.target_account_id,
+        "workers": workers,
+    });
+    let bytes = serde_json::to_vec(&identity)
+        .map_err(|_| "Worker proof baseline cannot serialize typed intent".to_owned())?;
+    Ok(sha256_hex(&bytes))
+}
+
+async fn initial_worker_proof_plan(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    context: &edge_orchestrator::OrchestrationContext,
+    run_id: u64,
+    journal_history_path: &Path,
+    record_output_path: &Path,
+) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(run_id.to_string().as_str()) {
+        return Err("Worker proof plan refuses foreign GitHub run".to_owned());
+    }
+    let history = fs::read_to_string(journal_history_path)
+        .map_err(|_| "Worker proof plan cannot read complete issue history".to_owned())?;
+    worker_proof_record(&history, None)?;
+    // Initial credentials must not have been attempted. An uncertain earlier
+    // BEGIN prevents migration from covertly enabling another issuance.
+    require_empty_initial_history(&history)?;
+    let before = observe(control_token, desired).await?;
+    let digest = worker_proof_baseline_sha256(desired, &before, context, run_id)?;
+    let confirmed = observe(control_token, desired).await?;
+    if digest != worker_proof_baseline_sha256(desired, &confirmed, context, run_id)? {
+        return Err("Worker proof baseline drifted between read-only observations".to_owned());
+    }
+    let attempt = WorkerProofAttempt {
+        schema: "sing-box.worker-proof-upgrade/v1".to_owned(),
+        phase: "BEGIN".to_owned(),
+        github_run_id: run_id,
+        source_revision: context.release().source_revision.clone(),
+        release_set_sha256: context.release().release_set_sha256.clone(),
+        baseline_sha256: digest,
+    };
+    let body = format!(
+        "{WORKER_PROOF_MARKER}\n{}",
+        serde_json::to_string(&attempt).map_err(|_| "cannot encode Worker proof BEGIN".to_owned())?
+    );
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(record_output_path)
+        .map_err(|_| "Worker proof plan refuses to replace existing BEGIN file".to_owned())?;
+    file.write_all(body.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "Worker proof BEGIN local fsync failed".to_owned())?;
+    println!("operation=CREDENTIAL_INITIAL_WORKER_PROOF_PLAN");
+    println!("worker_proof_baseline_sha256={}", attempt.baseline_sha256);
+    println!("worker_proof_begin_prepared=true");
+    println!("worker_provider_mutations=0");
+    Ok(())
+}
+
 /// A code-only compatibility update *within the same* canonical initial VM
 /// operation, before the first-use credential BEGIN. Neither secret values nor
 /// new credential material are generated by this operation. Unknown Cloudflare
@@ -432,7 +639,25 @@ async fn initial_worker_proof_upgrade(
     control_token: &str,
     desired: &ProductionCredentialPlaneOwnership,
     release_context: &edge_orchestrator::OrchestrationContext,
+    run_id: u64,
+    journal_history_path: &Path,
+    exact_record_path: &Path,
 ) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(run_id.to_string().as_str()) {
+        return Err("Worker proof mutation refuses foreign GitHub run".to_owned());
+    }
+    let history = fs::read_to_string(journal_history_path)
+        .map_err(|_| "Worker proof mutation cannot read complete issue history".to_owned())?;
+    let exact = fs::read_to_string(exact_record_path)
+        .map_err(|_| "Worker proof mutation cannot read exact BEGIN".to_owned())?;
+    let record = worker_proof_record(&history, Some(&exact))?
+        .ok_or_else(|| "Worker proof mutation has no durable BEGIN".to_owned())?;
+    if record.github_run_id != run_id
+        || record.source_revision != release_context.release().source_revision
+        || record.release_set_sha256 != release_context.release().release_set_sha256
+    {
+        return Err("Worker proof BEGIN differs from run or ReleaseSet".to_owned());
+    }
     for (key, expected) in [
         ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
         ("GITHUB_REPOSITORY_ID", "1221750822"),
@@ -451,6 +676,10 @@ async fn initial_worker_proof_upgrade(
     }
     let first = observe(control_token, desired).await?;
     validate_access_boundary(desired, &first)?;
+    let intended = worker_proof_baseline_sha256(desired, &first, release_context, run_id)?;
+    if intended != record.baseline_sha256 {
+        return Err("Worker proof baseline differs from durable GitHub BEGIN".to_owned());
+    }
     // Full read-only preflight before the FIRST provider mutation. An
     // unexpected pending version or a foreign tag in EITHER Worker blocks both.
     for projection in projections(desired) {
@@ -573,6 +802,7 @@ async fn initial_worker_proof_upgrade(
         }
     }
     println!("operation=CREDENTIAL_INITIAL_WORKER_PROOF_UPGRADE");
+    println!("worker_proof_durable_begin=EXACT_READBACK");
     println!("worker_code_only_mutations={changed}");
     println!("worker_secret_bindings_inherited_strict=true");
     println!("worker_secret_patch_mutations=0");
