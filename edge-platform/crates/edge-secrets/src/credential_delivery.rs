@@ -502,35 +502,40 @@ mod tests {
             CredentialDeliverySlot::B,
             MissingOrOtherGeneration,
             ExactCanonical,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(proof.slot_a_observation, "NOT_FOUND_OR_OTHER_GENERATION");
         assert_eq!(proof.slot_b_observation, "EXACT_CANONICAL_DUMMY");
         assert!(!proof.exact_dummy_ab);
-        assert!(require_selected_dummy(
-            CredentialDeliverySlot::A,
-            MissingOrOtherGeneration,
-            ExactCanonical,
-        ).is_err());
-        assert!(require_selected_dummy(
-            CredentialDeliverySlot::B,
-            ExactCanonical,
-            Noncanonical,
-        ).is_err());
-        assert!(require_selected_dummy(
-            CredentialDeliverySlot::Unspecified,
-            ExactCanonical,
-            ExactCanonical,
-        ).is_err());
-        assert!(require_selected_dummy(
-            CredentialDeliverySlot::B,
-            Noncanonical,
-            ExactCanonical,
-        ).is_ok());
-        assert!(require_selected_dummy(
-            CredentialDeliverySlot::B,
-            ExactCanonical,
-            ExactCanonical,
-        ).unwrap().exact_dummy_ab);
+        assert!(
+            require_selected_dummy(
+                CredentialDeliverySlot::A,
+                MissingOrOtherGeneration,
+                ExactCanonical,
+            )
+            .is_err()
+        );
+        assert!(
+            require_selected_dummy(CredentialDeliverySlot::B, ExactCanonical, Noncanonical,)
+                .is_err()
+        );
+        assert!(
+            require_selected_dummy(
+                CredentialDeliverySlot::Unspecified,
+                ExactCanonical,
+                ExactCanonical,
+            )
+            .is_err()
+        );
+        assert!(
+            require_selected_dummy(CredentialDeliverySlot::B, Noncanonical, ExactCanonical,)
+                .is_ok()
+        );
+        assert!(
+            require_selected_dummy(CredentialDeliverySlot::B, ExactCanonical, ExactCanonical,)
+                .unwrap()
+                .exact_dummy_ab
+        );
     }
 
     #[test]
