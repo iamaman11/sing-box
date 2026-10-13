@@ -76,6 +76,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "transport-proof" => run_transport_proof(&args[1..], context).await,
         "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
         "initial-dns-create" => run_initial_dns_create(&args[1..], context).await,
+        "initial-dns-verify" => run_initial_dns_verify(&args[1..], context).await,
         "initial-policy-stage" => run_initial_policy_stage(&args[1..], context).await,
         "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
         "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
@@ -834,6 +835,33 @@ async fn run_initial_dns_create(
         "record": "stage2-acceptance.alegria.by",
         "environment": "application-acceptance",
         "external_tls": "UNPROVEN",
+        "provider_mutation_replay_allowed": false,
+    }))
+}
+
+// Existing acceptance DNS has one owner: a read-only NOOP check. Never
+// replace, create, or adopt a DNS record based only on a hostname match.
+async fn run_initial_dns_verify(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 2
+        || args[0] != "infra/cloudflare/application-acceptance-dns.json"
+        || args[1] != "infra/application/disposable-acceptance.json"
+    {
+        return Err("initial DNS verify requires the exact owned disposable specs".to_owned());
+    }
+    context.application_release_authority()?;
+    let application = load_application_desired(Path::new(&args[1]))?;
+    validate_disposable_acceptance(&application)?;
+    verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
+    print_json_value(serde_json::json!({
+        "operation": "INITIAL_VM_DNS_VERIFY",
+        "status": "PASS",
+        "record": "stage2-acceptance.alegria.by",
+        "environment": "application-acceptance",
+        "external_tls": "UNPROVEN",
+        "provider_mutations": 0,
         "provider_mutation_replay_allowed": false,
     }))
 }
