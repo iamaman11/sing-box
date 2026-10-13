@@ -463,36 +463,21 @@ jobs:
                   ;;
               esac
 
-              # The EXISTING Cloudflare DNS owner decides whether a record is
-              # absent or exactly correct. There is no create-on-error/upsert
-              # fallback and no write to a record owned by another generation.
+              # One exact native DNS convergence: CREATE only if absent,
+              # else accept a matching owned NOOP. Never UPDATE, never upsert,
+              # never retry an unknown provider ACK.
               test -n "${CLOUDFLARE_API_TOKEN}"
-              case "${machine_class}" in
-                NOOP)
-                  run_lifecycle initial-dns-verify \
-                    infra/cloudflare/application-acceptance-dns.json "${application_spec}" \
-                    > "${RUNNER_TEMP}/initial-vm-dns.json"
-                  jq -e '.operation == "INITIAL_VM_DNS_VERIFY" and
-                         .status == "PASS" and .provider_mutations == 0 and
-                         .record == "stage2-acceptance.alegria.by" and
-                         .external_tls == "UNPROVEN" and
-                         .provider_mutation_replay_allowed == false' \
-                    "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
-                  ;;
-                CREATE)
-                  # Only an exact confirmed CREATE can authorize fresh DNS
-                  # CREATE. Never attempt on an existing VM or repeat UNKNOWN.
-                  run_lifecycle initial-dns-create \
-                    infra/cloudflare/application-acceptance-dns.json "${application_spec}" \
-                    > "${RUNNER_TEMP}/initial-vm-dns.json"
-                  jq -e '.operation == "INITIAL_VM_DNS_CREATE" and
-                         .status == "PASS" and
-                         .record == "stage2-acceptance.alegria.by" and
-                         .external_tls == "UNPROVEN" and
-                         .provider_mutation_replay_allowed == false' \
-                    "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
-                  ;;
-              esac
+              run_lifecycle initial-dns-converge \
+                infra/cloudflare/application-acceptance-dns.json "${application_spec}" \
+                > "${RUNNER_TEMP}/initial-vm-dns.json"
+              jq -e '.operation == "INITIAL_VM_DNS_CONVERGE" and
+                     .status == "PASS" and
+                     .record == "stage2-acceptance.alegria.by" and
+                     .external_tls == "UNPROVEN" and
+                     .provider_mutation_replay_allowed == false and
+                     ((.outcome == "CREATED" and .provider_mutations == 1) or
+                      (.outcome == "REUSED_OWNED" and .provider_mutations == 0))' \
+                "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
 
               # No compensation after an uncertain create/apply result. The
               # exact disposable identity remains available for read-only
