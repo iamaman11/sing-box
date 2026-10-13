@@ -845,20 +845,27 @@ jobs:
           "${owner}" credentials initial-worker-proof-plan "${GITHUB_RUN_ID}" \
             "${history}" "${exact}" > "${RUNNER_TEMP}/proof-plan.txt"
           grep -Fxq 'worker_provider_mutations=0' "${RUNNER_TEMP}/proof-plan.txt"
-          test -s "${exact}"
-          # Write BEGIN only once; an unknown POST ACK can never be replayed.
-          gh api --method POST "repos/${REPOSITORY}/issues/26/comments" \
-            --raw-field "body=$(cat "${exact}")" > "${RUNNER_TEMP}/proof-begin-ack.json"
-          jq -e --arg body "$(cat "${exact}")" \
-            '.body == $body and (.id|type == "number")' "${RUNNER_TEMP}/proof-begin-ack.json" >/dev/null
-          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" |
-            jq -s 'add' > "${history}"
-          "${owner}" credentials initial-worker-proof-upgrade "${GITHUB_RUN_ID}" \
-            "${history}" "${exact}" > "${RUNNER_TEMP}/proof-upgrade.txt"
-          grep -Fxq 'worker_proof_durable_begin=EXACT_READBACK' "${RUNNER_TEMP}/proof-upgrade.txt"
-          grep -Fxq 'worker_secret_patch_mutations=0' "${RUNNER_TEMP}/proof-upgrade.txt"
-          grep -Fxq 'worker_actual_binding_dummy=UNPROVEN_BY_PROVIDER_METADATA' "${RUNNER_TEMP}/proof-upgrade.txt"
-          echo 'WORKER_EXACT_SLOT_PROOF_CODE=DEPLOYED_VERSION_FENCED' >> "${GITHUB_STEP_SUMMARY}"
+          if grep -Fxq 'worker_proof_upgrade_required=false' "${RUNNER_TEMP}/proof-plan.txt"; then
+            test ! -e "${exact}"
+            grep -Fxq 'worker_proof_code_verified=EXACT_TWO_ACTIVE' "${RUNNER_TEMP}/proof-plan.txt"
+            echo 'WORKER_EXACT_SLOT_PROOF_CODE=ALREADY_EXACT_READ_ONLY' >> "${GITHUB_STEP_SUMMARY}"
+          else
+            grep -Fxq 'worker_proof_upgrade_required=true' "${RUNNER_TEMP}/proof-plan.txt"
+            test -s "${exact}"
+            # Write BEGIN only once; an unknown POST ACK can never be replayed.
+            gh api --method POST "repos/${REPOSITORY}/issues/26/comments" \
+              --raw-field "body=$(cat "${exact}")" > "${RUNNER_TEMP}/proof-begin-ack.json"
+            jq -e --arg body "$(cat "${exact}")" \
+              '.body == $body and (.id|type == "number")' "${RUNNER_TEMP}/proof-begin-ack.json" >/dev/null
+            gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" |
+              jq -s 'add' > "${history}"
+            "${owner}" credentials initial-worker-proof-upgrade "${GITHUB_RUN_ID}" \
+              "${history}" "${exact}" > "${RUNNER_TEMP}/proof-upgrade.txt"
+            grep -Fxq 'worker_proof_durable_begin=EXACT_READBACK' "${RUNNER_TEMP}/proof-upgrade.txt"
+            grep -Fxq 'worker_secret_patch_mutations=0' "${RUNNER_TEMP}/proof-upgrade.txt"
+            grep -Fxq 'worker_actual_binding_dummy=UNPROVEN_BY_PROVIDER_METADATA' "${RUNNER_TEMP}/proof-upgrade.txt"
+            echo 'WORKER_EXACT_SLOT_PROOF_CODE=DEPLOYED_VERSION_FENCED' >> "${GITHUB_STEP_SUMMARY}"
+          fi
           echo 'WORKER_A_B_SECRET_CONTENTS=UNPROVEN_UNTIL_HOST_ATTEST' >> "${GITHUB_STEP_SUMMARY}"
 
   initial_preflight:
