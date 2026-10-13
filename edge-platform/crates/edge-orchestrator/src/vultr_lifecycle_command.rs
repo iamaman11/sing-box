@@ -2,11 +2,7 @@ use crate::application_acceptance_command::validate_disposable_acceptance;
 use crate::application_lifecycle_command::{
     acceptance_stage_initial_policy, load_application_desired,
 };
-use crate::cloudflare_dns_lifecycle_command::{
-    acceptance_create as create_disposable_dns,
-    acceptance_require_clean_room as require_clean_disposable_dns,
-    acceptance_verify_noop as verify_disposable_dns,
-};
+use crate::cloudflare_dns_lifecycle_command::acceptance_create_or_reuse as converge_initial_disposable_dns;
 use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
@@ -75,7 +71,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
         "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
-        "initial-dns-create" => run_initial_dns_create(&args[1..], context).await,
+        "initial-dns-converge" => run_initial_dns_converge(&args[1..], context).await,
         "initial-policy-stage" => run_initial_policy_stage(&args[1..], context).await,
         "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
         "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
@@ -812,7 +808,9 @@ async fn run_initial_policy_stage(
 // CREATE enables ACME name validation and external TLS client probes.
 // On unknown provider ACK, STOP; the canonical cleanup is a separate
 // authorized action after read-only reconciliation, never mutation replay.
-async fn run_initial_dns_create(
+/// Exact native first-use DNS state: one owned CREATE, or read-only NOOP.
+/// An existing nonmatching/foreign DNS record is never updated or adopted.
+async fn run_initial_dns_converge(
     args: &[String],
     context: &OrchestrationContext,
 ) -> Result<(), String> {
@@ -820,20 +818,20 @@ async fn run_initial_dns_create(
         || args[0] != "infra/cloudflare/application-acceptance-dns.json"
         || args[1] != "infra/application/disposable-acceptance.json"
     {
-        return Err("initial DNS requires exact disposable DNS and application specs".to_owned());
+        return Err("initial DNS requires exact owned disposable specs".to_owned());
     }
     context.application_release_authority()?;
     let application = load_application_desired(Path::new(&args[1]))?;
     validate_disposable_acceptance(&application)?;
-    require_clean_disposable_dns(Path::new(&args[0])).await?;
-    create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
-    verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
+    let outcome = converge_initial_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
     print_json_value(serde_json::json!({
-        "operation": "INITIAL_VM_DNS_CREATE",
+        "operation": "INITIAL_VM_DNS_CONVERGE",
         "status": "PASS",
+        "outcome": outcome,
         "record": "stage2-acceptance.alegria.by",
         "environment": "application-acceptance",
         "external_tls": "UNPROVEN",
+        "provider_mutations": if outcome == "CREATED" { 1 } else { 0 },
         "provider_mutation_replay_allowed": false,
     }))
 }
@@ -917,8 +915,23 @@ async fn run_initial_host_probe(
         || result.slot != slot as i32
         || result.github_run_id != github_run_id
         || result.agent_sha256 != expected_agent.sha256
-        || !result.exact_dummy_ab
+        || !result.selected_slot_exact_dummy
         || !result.empty_host
+        || !matches!(
+            result.slot_a_observation.as_str(),
+            "EXACT_CANONICAL_DUMMY" | "NOT_FOUND_OR_OTHER_GENERATION" | "NONCANONICAL_PAYLOAD"
+        )
+        || !matches!(
+            result.slot_b_observation.as_str(),
+            "EXACT_CANONICAL_DUMMY" | "NOT_FOUND_OR_OTHER_GENERATION" | "NONCANONICAL_PAYLOAD"
+        )
+        || result.exact_dummy_ab
+            != (result.slot_a_observation == "EXACT_CANONICAL_DUMMY"
+                && result.slot_b_observation == "EXACT_CANONICAL_DUMMY")
+        || (slot == CredentialDeliverySlot::A
+            && result.slot_a_observation != "EXACT_CANONICAL_DUMMY")
+        || (slot == CredentialDeliverySlot::B
+            && result.slot_b_observation != "EXACT_CANONICAL_DUMMY")
         || result.attestation_sha256.len() != 64
         || !result
             .attestation_sha256
@@ -942,8 +955,10 @@ async fn run_initial_host_probe(
         "credential_slot": args[3],
         "credential_projection": "VM",
         "credential_host_attestation_sha256": result.attestation_sha256,
-        "credential_slot_A": "EXACT_DUMMY",
-        "credential_slot_B": "EXACT_DUMMY",
+        "credential_slot_A": result.slot_a_observation,
+        "credential_slot_B": result.slot_b_observation,
+        "credential_selected_slot_exact_dummy": result.selected_slot_exact_dummy,
+        "credential_peer_slot_overwrite_authorized": false,
         "credential_store_present": false,
         "credential_runtime_mutations": 0,
         "credential_provider_mutations": 0,

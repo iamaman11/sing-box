@@ -28,8 +28,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore,
+    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore, InitialDummySlotProof,
     fetch_canonical_credential_bundle, verify_canonical_dummy_ab_slots,
+    verify_initial_selected_dummy_slot,
 };
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
@@ -239,7 +240,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             run_id,
         } => {
             let slot = parse_first_use_slot(&slot).map_err(AgentError::Command)?;
-            let digest = attest_initial_vm_host(
+            let (digest, proof) = attest_initial_vm_host(
                 &stack_dir,
                 generation,
                 slot,
@@ -254,6 +255,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("credential_projection=VM");
             println!("credential_generation={generation}");
             println!("credential_host_attestation_sha256={digest}");
+            println!("credential_slot_A={}", proof.slot_a_observation);
+            println!("credential_slot_B={}", proof.slot_b_observation);
+            println!("credential_selected_slot_exact_dummy=true");
             println!("credential_github_run_id={run_id}");
             println!("credential_exact_agent_binary=true");
             println!("credential_provider_mutations=0");
@@ -687,14 +691,14 @@ async fn attest_initial_vm_host(
     release_set_sha256: &str,
     expected_agent_sha256: &str,
     run_id: u64,
-) -> Result<String, String> {
-    // The same trusted native owner backs local and restricted-RPC proofs.
-    // Binary SHA is checked against /proc/self/exe, never a replaceable path.
+) -> Result<(String, InitialDummySlotProof), String> {
+    // The same native owner checks exact binary and selected Worker slot.
+    // Unknown contents of the OTHER slot never become overwrite authority.
     verify_initial_agent_binary(expected_agent_sha256)?;
-    verify_initial_vm_dummy_probe(stack_dir).await?;
+    let proof = verify_initial_vm_selected_dummy_probe(stack_dir, slot).await?;
     let machine = fs::read_to_string("/etc/machine-id")
         .map_err(|err| format!("VM machine identity unreadable: {err}"))?;
-    edge_shared_types::first_use_host_attestation_sha256(
+    let digest = edge_shared_types::first_use_host_attestation_sha256(
         CredentialProjectionKind::Vm,
         generation,
         slot,
@@ -702,7 +706,8 @@ async fn attest_initial_vm_host(
         release_set_sha256,
         &machine,
         run_id,
-    )
+    )?;
+    Ok((digest, proof))
 }
 
 fn validate_initial_vm_runtime_request(
@@ -751,6 +756,21 @@ fn parse_first_use_slot(value: &str) -> Result<edge_shared_types::CredentialDeli
         "b" => Ok(edge_shared_types::CredentialDeliverySlot::B),
         _ => Err("first-use attestation requires slot a or b".to_owned()),
     }
+}
+
+async fn verify_initial_vm_selected_dummy_probe(
+    stack_dir: &Path,
+    slot: CredentialDeliverySlot,
+) -> Result<InitialDummySlotProof, String> {
+    require_empty_vm_initial_credential_host(stack_dir)?;
+    let docker = observe_docker().await?;
+    require_no_vm_application_containers(&docker)?;
+    verify_initial_selected_dummy_slot(
+        CredentialProjectionKind::Vm,
+        slot,
+        &vm_credential_access_identity_path(stack_dir)?,
+    )
+    .await
 }
 
 async fn verify_initial_vm_dummy_probe(stack_dir: &Path) -> Result<(), String> {
@@ -848,7 +868,7 @@ impl AgentService for AgentServerImpl {
                 "initial credential slot must be A or B",
             ));
         }
-        let digest = attest_initial_vm_host(
+        let (digest, proof) = attest_initial_vm_host(
             &self.stack_dir,
             request.generation,
             slot,
@@ -866,8 +886,11 @@ impl AgentService for AgentServerImpl {
             projection: CredentialProjectionKind::Vm as i32,
             generation: request.generation,
             slot: slot as i32,
-            exact_dummy_ab: true,
+            exact_dummy_ab: proof.exact_dummy_ab,
             empty_host: true,
+            selected_slot_exact_dummy: true,
+            slot_a_observation: proof.slot_a_observation.to_owned(),
+            slot_b_observation: proof.slot_b_observation.to_owned(),
         }))
     }
 

@@ -18,7 +18,8 @@ use edge_shared_types::{
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
@@ -81,6 +82,7 @@ enum CredentialDeliveryAction {
     InstallDummyAbContract { projection: String },
     RestoreFixedAbVersionTag { projection: String },
     RestoreFixedAbBaseline { projection: String },
+    UpgradeSlotProofCode { projection: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +90,7 @@ enum ProjectionDeliveryState {
     LegacyLocked,
     FixedAbVersionTagMissing,
     FixedAbLatestPendingDeployment,
+    FixedAbProofUpgradeRequired,
     FixedAb,
 }
 
@@ -120,6 +123,25 @@ pub async fn run_delivery(
     ) {
         return run_readonly_journal(command);
     }
+    // Independent Github-runner network probe. It has Worker VM read
+    // identity only, never a Cloudflare provider mutation token.
+    if let CredentialDeliveryCommand::InitialLine2ExternalWitness {
+        generation,
+        vm_ipv4,
+        tls_domain,
+        username,
+        vm_access_identity_path,
+    } = &command
+    {
+        return crate::line2_external_witness::witness(
+            *generation,
+            vm_ipv4,
+            tls_domain,
+            username,
+            vm_access_identity_path,
+        )
+        .await;
+    }
     let control_token = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let desired = production.cloudflare.credential_plane.clone();
@@ -135,6 +157,39 @@ pub async fn run_delivery(
 
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
+        CredentialDeliveryCommand::InitialLine2ExternalWitness { .. } => {
+            unreachable!("independent witness is dispatched before provider authority")
+        }
+        CredentialDeliveryCommand::InitialWorkerProofPlan {
+            run_id,
+            journal_history_path,
+            record_output_path,
+        } => {
+            initial_worker_proof_plan(
+                &control_token,
+                &desired,
+                release_context,
+                run_id,
+                &journal_history_path,
+                &record_output_path,
+            )
+            .await
+        }
+        CredentialDeliveryCommand::InitialWorkerProofUpgrade {
+            run_id,
+            journal_history_path,
+            exact_record_path,
+        } => {
+            initial_worker_proof_upgrade(
+                &control_token,
+                &desired,
+                release_context,
+                run_id,
+                &journal_history_path,
+                &exact_record_path,
+            )
+            .await
+        }
         CredentialDeliveryCommand::InitialPairPreflight { generation, slot } => {
             initial_pair_preflight(&control_token, &desired, generation, slot).await
         }
@@ -417,6 +472,415 @@ fn initial_pair_provider_intent_sha256(
     let bytes = serde_json::to_vec(&identity)
         .map_err(|err| format!("failed to encode initial provider intent: {err}"))?;
     Ok(sha256_hex(&bytes))
+}
+
+const WORKER_PROOF_MARKER: &str = "<!-- sing-box-worker-proof-upgrade/v1 -->";
+const WORKER_PROOF_MARKER_FAMILY: &str = "<!-- sing-box-worker-proof-upgrade/";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerProofAttempt {
+    schema: String,
+    phase: String,
+    github_run_id: u64,
+    source_revision: String,
+    release_set_sha256: String,
+    baseline_sha256: String,
+}
+
+fn worker_proof_comments(history: &str) -> Result<Vec<String>, String> {
+    let comments: Vec<serde_json::Value> = serde_json::from_str(history)
+        .map_err(|_| "Worker proof journal requires complete GitHub JSON history".to_owned())?;
+    comments
+        .iter()
+        .map(|v| {
+            v.get("body")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| "Worker proof journal refuses malformed or empty comment".to_owned())
+        })
+        .collect()
+}
+
+fn worker_proof_record(
+    history: &str,
+    expected: Option<&str>,
+) -> Result<Option<WorkerProofAttempt>, String> {
+    let comments = worker_proof_comments(history)?;
+    let marked = comments
+        .iter()
+        .filter(|body| body.contains(WORKER_PROOF_MARKER_FAMILY))
+        .collect::<Vec<_>>();
+    if let Some(exact) = expected {
+        if marked.len() != 1 || marked[0].as_str() != exact {
+            return Err(
+                "Worker proof migration requires one exact durable GitHub BEGIN".to_owned(),
+            );
+        }
+        let body = exact
+            .strip_prefix(WORKER_PROOF_MARKER)
+            .ok_or_else(|| "Worker proof BEGIN marker is displaced".to_owned())?;
+        let parsed: WorkerProofAttempt = serde_json::from_str(body.trim())
+            .map_err(|_| "Worker proof BEGIN has malformed JSON".to_owned())?;
+        if parsed.schema != "sing-box.worker-proof-upgrade/v1"
+            || parsed.phase != "BEGIN"
+            || parsed.github_run_id == 0
+            || parsed.source_revision.len() != 40
+            || parsed.release_set_sha256.len() != 64
+            || parsed.baseline_sha256.len() != 64
+            || ![
+                parsed.source_revision.as_str(),
+                parsed.release_set_sha256.as_str(),
+                parsed.baseline_sha256.as_str(),
+            ]
+            .iter()
+            .all(|v| {
+                v.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+        {
+            return Err("Worker proof BEGIN is not a canonical non-secret record".to_owned());
+        }
+        return Ok(Some(parsed));
+    }
+    if !marked.is_empty() {
+        return Err(
+            "Worker proof migration already has a durable BEGIN; no second initial attempt"
+                .to_owned(),
+        );
+    }
+    Ok(None)
+}
+
+fn worker_proof_baseline_sha256(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+    context: &edge_orchestrator::OrchestrationContext,
+    run_id: u64,
+) -> Result<String, String> {
+    if run_id == 0 {
+        return Err("Worker proof baseline requires valid GitHub run ID".to_owned());
+    }
+    validate_access_boundary(desired, observed)?;
+    let mut workers = Vec::new();
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, observed)?
+            != ProjectionDeliveryState::FixedAbProofUpgradeRequired
+        {
+            return Err(format!(
+                "{} Worker must have an exact old active code baseline before BEGIN",
+                projection.projection
+            ));
+        }
+        let current = projection_observation(observed, &projection.projection)?;
+        let latest = current
+            .worker_latest_version_id
+            .as_deref()
+            .ok_or_else(|| "Worker proof baseline requires latest version ID".to_owned())?;
+        if current.worker_active_version_ids.as_slice() != [latest] {
+            return Err(format!(
+                "{} Worker proof baseline requires exact active latest version",
+                projection.projection
+            ));
+        }
+        workers.push(serde_json::json!({
+            "projection": projection.projection,
+            "worker_id": current.worker_id,
+            "version_id": latest,
+            "version_tag": current.worker_latest_version_tag,
+            "access_app_id": current.access_application_id,
+        }));
+    }
+    let identity = serde_json::json!({
+        "schema": "sing-box.worker-proof-baseline/v1",
+        "github_run_id": run_id,
+        "source_revision": context.release().source_revision,
+        "release_set_sha256": context.release().release_set_sha256,
+        "account_id": desired.target_account_id,
+        "workers": workers,
+    });
+    let bytes = serde_json::to_vec(&identity)
+        .map_err(|_| "Worker proof baseline cannot serialize typed intent".to_owned())?;
+    Ok(sha256_hex(&bytes))
+}
+
+async fn initial_worker_proof_plan(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    context: &edge_orchestrator::OrchestrationContext,
+    run_id: u64,
+    journal_history_path: &Path,
+    record_output_path: &Path,
+) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(run_id.to_string().as_str()) {
+        return Err("Worker proof plan refuses foreign GitHub run".to_owned());
+    }
+    let history = fs::read_to_string(journal_history_path)
+        .map_err(|_| "Worker proof plan cannot read complete issue history".to_owned())?;
+    // Initial credentials must not have been attempted. An uncertain earlier
+    // BEGIN prevents migration from covertly enabling another issuance.
+    require_empty_initial_history(&history)?;
+    let before = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    let states = projections(desired)
+        .iter()
+        .map(|projection| projection_delivery_state(desired, projection, &before))
+        .collect::<Result<Vec<_>, _>>()?;
+    if states
+        .iter()
+        .all(|state| *state == ProjectionDeliveryState::FixedAb)
+    {
+        // Repeat installation may reuse already deployed *code* without a
+        // second Cloudflare mutation or BEGIN. But require the earlier exact
+        // journal record: never silently trust a foreign code migration.
+        let marked = worker_proof_comments(&history)?
+            .into_iter()
+            .filter(|body| body.contains(WORKER_PROOF_MARKER_FAMILY))
+            .collect::<Vec<_>>();
+        if marked.len() != 1 {
+            return Err("already-upgraded Workers require one prior exact GitHub BEGIN".to_owned());
+        }
+        worker_proof_record(&history, Some(&marked[0]))?;
+        println!("operation=CREDENTIAL_INITIAL_WORKER_PROOF_PLAN");
+        println!("worker_proof_upgrade_required=false");
+        println!("worker_proof_code_verified=EXACT_TWO_ACTIVE");
+        println!("worker_provider_mutations=0");
+        return Ok(());
+    }
+    worker_proof_record(&history, None)?;
+    let digest = worker_proof_baseline_sha256(desired, &before, context, run_id)?;
+    let confirmed = observe(control_token, desired).await?;
+    if digest != worker_proof_baseline_sha256(desired, &confirmed, context, run_id)? {
+        return Err("Worker proof baseline drifted between read-only observations".to_owned());
+    }
+    let attempt = WorkerProofAttempt {
+        schema: "sing-box.worker-proof-upgrade/v1".to_owned(),
+        phase: "BEGIN".to_owned(),
+        github_run_id: run_id,
+        source_revision: context.release().source_revision.clone(),
+        release_set_sha256: context.release().release_set_sha256.clone(),
+        baseline_sha256: digest,
+    };
+    let body = format!(
+        "{WORKER_PROOF_MARKER}\n{}",
+        serde_json::to_string(&attempt)
+            .map_err(|_| "cannot encode Worker proof BEGIN".to_owned())?
+    );
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(record_output_path)
+        .map_err(|_| "Worker proof plan refuses to replace existing BEGIN file".to_owned())?;
+    file.write_all(body.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "Worker proof BEGIN local fsync failed".to_owned())?;
+    println!("operation=CREDENTIAL_INITIAL_WORKER_PROOF_PLAN");
+    println!("worker_proof_baseline_sha256={}", attempt.baseline_sha256);
+    println!("worker_proof_begin_prepared=true");
+    println!("worker_proof_upgrade_required=true");
+    println!("worker_provider_mutations=0");
+    Ok(())
+}
+
+/// A code-only compatibility update *within the same* canonical initial VM
+/// operation, before the first-use credential BEGIN. Neither secret values nor
+/// new credential material are generated by this operation. Unknown Cloudflare
+/// upload/deploy ACKs always end the run without replay.
+async fn initial_worker_proof_upgrade(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    release_context: &edge_orchestrator::OrchestrationContext,
+    run_id: u64,
+    journal_history_path: &Path,
+    exact_record_path: &Path,
+) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ID").ok().as_deref() != Some(run_id.to_string().as_str()) {
+        return Err("Worker proof mutation refuses foreign GitHub run".to_owned());
+    }
+    let history = fs::read_to_string(journal_history_path)
+        .map_err(|_| "Worker proof mutation cannot read complete issue history".to_owned())?;
+    let exact = fs::read_to_string(exact_record_path)
+        .map_err(|_| "Worker proof mutation cannot read exact BEGIN".to_owned())?;
+    let record = worker_proof_record(&history, Some(&exact))?
+        .ok_or_else(|| "Worker proof mutation has no durable BEGIN".to_owned())?;
+    if record.github_run_id != run_id
+        || record.source_revision != release_context.release().source_revision
+        || record.release_set_sha256 != release_context.release().release_set_sha256
+    {
+        return Err("Worker proof BEGIN differs from run or ReleaseSet".to_owned());
+    }
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_JOB", "initial_worker_proof_upgrade"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("Worker proof migration refuses untrusted {key}"));
+        }
+    }
+    if env::var("GITHUB_SHA").ok().as_deref()
+        != Some(release_context.release().accepted_revision.as_str())
+    {
+        return Err("Worker proof migration requires exact accepted GitHub release".to_owned());
+    }
+    let first = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &first)?;
+    let intended = worker_proof_baseline_sha256(desired, &first, release_context, run_id)?;
+    if intended != record.baseline_sha256 {
+        return Err("Worker proof baseline differs from durable GitHub BEGIN".to_owned());
+    }
+    // Full read-only preflight before the FIRST provider mutation. An
+    // unexpected pending version or a foreign tag in EITHER Worker blocks both.
+    for projection in projections(desired) {
+        let state = projection_delivery_state(desired, &projection, &first)?;
+        if !matches!(
+            state,
+            ProjectionDeliveryState::FixedAbProofUpgradeRequired | ProjectionDeliveryState::FixedAb
+        ) {
+            return Err(format!(
+                "{} Worker proof migration rejects nonterminal baseline",
+                projection.projection
+            ));
+        }
+        let obs = projection_observation(&first, &projection.projection)?;
+        if obs.worker_latest_version_id.is_none()
+            || obs.worker_active_version_ids.as_slice()
+                != [obs.worker_latest_version_id.as_deref().unwrap_or("")]
+        {
+            return Err(format!(
+                "{} Worker proof migration requires exactly one active latest version",
+                projection.projection
+            ));
+        }
+    }
+    let rotation_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let mutation_identity = cloudflare::verify_api_token(&rotation_token).await?;
+    if mutation_identity.status != "active"
+        || mutation_identity.id == first.control_token_identity.id
+    {
+        return Err(
+            "Worker code migration requires distinct active least-privilege write identity"
+                .to_owned(),
+        );
+    }
+    let mut changed = 0u32;
+    let mut exact_uploaded_versions: BTreeMap<String, String> = BTreeMap::new();
+    for projection in projections(desired) {
+        let current = observe(control_token, desired).await?;
+        // Re-check BOTH Workers before every write, never trust the initial
+        // observation if another owner modified version or bindings.
+        validate_access_boundary(desired, &current)?;
+        for p in projections(desired) {
+            let state = projection_delivery_state(desired, &p, &current)?;
+            if !matches!(
+                state,
+                ProjectionDeliveryState::FixedAbProofUpgradeRequired
+                    | ProjectionDeliveryState::FixedAb
+            ) {
+                return Err(format!(
+                    "{} unexpected Worker state before code-only upgrade",
+                    p.projection
+                ));
+            }
+            let observed = projection_observation(&current, &p.projection)?;
+            if let Some(expected) = exact_uploaded_versions.get(&p.projection) {
+                verify_exact_active_worker_version(observed, expected)?;
+                if state != ProjectionDeliveryState::FixedAb {
+                    return Err(format!("{} Worker lost upgraded proof code", p.projection));
+                }
+            } else if observed != projection_observation(&first, &p.projection)? {
+                return Err(format!(
+                    "{} Worker version, bindings or Access identity drifted from durable BEGIN; STOP",
+                    p.projection
+                ));
+            }
+        }
+        let state = projection_delivery_state(desired, &projection, &current)?;
+        if state == ProjectionDeliveryState::FixedAb {
+            continue;
+        }
+        if state != ProjectionDeliveryState::FixedAbProofUpgradeRequired {
+            return Err("Worker code-only migration has an ambiguous baseline".to_owned());
+        }
+        let old = projection_observation(&current, &projection.projection)?;
+        let material = delivery_worker_material(&projection.projection)?;
+        let version_id = cloudflare::upload_worker_slot_proof_version(
+            &rotation_token,
+            &desired.target_account_id,
+            &projection.worker_name,
+            &material.version_tag,
+            &material.source,
+        )
+        .await
+        .map_err(|_| format!(
+            "{} code-only upload result uncertain: STOP without retry,              inspect exact latest Worker version and A/B metadata",
+            projection.projection
+        ))?;
+        changed += 1;
+        let pending_observation = observe(control_token, desired).await?;
+        let pending = projection_observation(&pending_observation, &projection.projection)?;
+        verify_exact_pending_worker_version(old, pending, &version_id)?;
+        if pending.worker_latest_version_tag.as_deref() != Some(&material.version_tag) {
+            return Err(format!(
+                "{} new proof version tag is not exact; do not deploy",
+                projection.projection
+            ));
+        }
+        let deployment = cloudflare::deploy_worker_version(
+            &rotation_token,
+            &desired.target_account_id,
+            &projection.worker_name,
+            &version_id,
+        )
+        .await;
+        let deployed = observe(control_token, desired).await?;
+        let active = projection_observation(&deployed, &projection.projection)?;
+        if verify_exact_active_worker_version(active, &version_id).is_err()
+            || projection_delivery_state(desired, &projection, &deployed)?
+                != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} code-only deployment not exactly confirmed;                  STOP without replay; uncertain_ack={}",
+                projection.projection,
+                deployment.is_err()
+            ));
+        }
+        if deployment.is_err() {
+            return Err(format!(
+                "{} Worker code-only deployment ACK uncertain but exact active version observed;                  stop for read-only reconciliation before any further provider mutation",
+                projection.projection
+            ));
+        }
+        exact_uploaded_versions.insert(projection.projection.clone(), version_id);
+    }
+    let after = observe(control_token, desired).await?;
+    for projection in projections(desired) {
+        if projection_delivery_state(desired, &projection, &after)?
+            != ProjectionDeliveryState::FixedAb
+        {
+            return Err(format!(
+                "{} Worker proof migration did not converge to exact A/B contract",
+                projection.projection
+            ));
+        }
+    }
+    println!("operation=CREDENTIAL_INITIAL_WORKER_PROOF_UPGRADE");
+    println!("worker_proof_durable_begin=EXACT_READBACK");
+    println!("worker_code_only_mutations={changed}");
+    println!("worker_secret_bindings_inherited_strict=true");
+    println!("worker_secret_patch_mutations=0");
+    println!("worker_actual_binding_dummy=UNPROVEN_BY_PROVIDER_METADATA");
+    println!("host_exact_binding_attestations=REQUIRED");
+    println!("first_use_credential_publication_authorized=false");
+    Ok(())
 }
 
 async fn initial_pair_preflight(
@@ -1229,10 +1693,26 @@ fn plan(
                     projection: projection.projection,
                 });
             }
+            ProjectionDeliveryState::FixedAbProofUpgradeRequired => {
+                return Ok(CredentialDeliveryAction::UpgradeSlotProofCode {
+                    projection: projection.projection,
+                });
+            }
             ProjectionDeliveryState::FixedAb => {}
         }
     }
     Ok(CredentialDeliveryAction::Noop)
+}
+
+// Immutable source-proven tags from the last accepted generation-search-only
+// Worker scripts, observed through the live provider before this source change.
+// They are NOT proof of the physical A/B secret binding values.
+fn previous_fixed_ab_version_tag(projection: &str) -> Result<&'static str, String> {
+    match projection {
+        "windows" => Ok("sing-box-phase6-ab-windows-6924f2f0655f58f9"),
+        "vm" => Ok("sing-box-phase6-ab-vm-371edd1d8616c67b"),
+        _ => Err("unknown previous Worker projection".to_owned()),
+    }
 }
 
 fn projection_delivery_state(
@@ -1263,6 +1743,16 @@ fn projection_delivery_state(
                 });
         let settings_tag = current.worker_version_tag.as_deref();
         let latest_tag = current.worker_latest_version_tag.as_deref();
+        let previous_tag = previous_fixed_ab_version_tag(&projection.projection)?;
+        if latest_is_only_active
+            && settings_tag == Some(previous_tag)
+            && latest_tag == Some(previous_tag)
+        {
+            // No script or secret change is authorized here. Exact binding
+            // inheritance and version fencing are still required to upgrade
+            // the code so hosts can prove which slot physically holds dummy.
+            return Ok(ProjectionDeliveryState::FixedAbProofUpgradeRequired);
+        }
         if latest_is_only_active
             && settings_tag == Some(material.version_tag.as_str())
             && latest_tag == Some(material.version_tag.as_str())
@@ -1788,11 +2278,25 @@ fn delivery_worker_material(projection: &str) -> Result<DeliveryWorkerMaterial, 
 
     let source = r#"const S=["EDGE_CREDENTIAL_BUNDLE_A","EDGE_CREDENTIAL_BUNDLE_B"];
 const P=__PROJECTION__;
+const D=["__DUMMY_A_DIGEST__","__DUMMY_B_DIGEST__"];
+const Q=["__DUMMY_A_GENERATION__","__DUMMY_B_GENERATION__"];
 function H(v){if(typeof v!=="string"||v.length===0||v.length%2||!/^[0-9a-f]+$/.test(v))return null;const b=new Uint8Array(v.length/2);for(let i=0;i<b.length;i++)b[i]=parseInt(v.slice(i*2,i*2+2),16);return b}
 function V(b,p){let v=0n,s=0n;for(let i=0;i<10;i++){if(p>=b.length)return null;const x=BigInt(b[p++]);v|=(x&127n)<<s;if((x&128n)===0n)return[v,p];s+=7n}return null}
 function G(b){let p=0,z=null,g=null,r=null;while(p<b.length){const k=V(b,p);if(!k)return null;const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];if(!f)return null;if(w===0){const x=V(b,p);if(!x)return null;p=x[1];if(f===1)z=Number(x[0]);else if(f===2)g=x[0];else if(f===3)r=Number(x[0]);continue}if(w===1){if(p+8>b.length)return null;p+=8;continue}if(w===2){const x=V(b,p);if(!x||x[0]>BigInt(b.length))return null;p=x[1];const n=Number(x[0]);if(p+n>b.length)return null;p+=n;continue}if(w===5){if(p+4>b.length)return null;p+=4;continue}return null}return z===1&&g!==null&&r===P?g:null}
-export default{async fetch(q,e){const u=new URL(q.url),x=u.searchParams.get("generation");if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
-        .replace("__PROJECTION__", &(projection_kind as i32).to_string());
+export default{async fetch(q,e){const u=new URL(q.url),x=u.searchParams.get("generation");
+if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
+if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
+        .replace("__PROJECTION__", &(projection_kind as i32).to_string())
+        .replace("__DUMMY_A_DIGEST__", &sha256_hex(&slots[0].payload))
+        .replace("__DUMMY_B_DIGEST__", &sha256_hex(&slots[1].payload))
+        .replace(
+            "__DUMMY_A_GENERATION__",
+            &CREDENTIAL_DUMMY_PROBE_GENERATION_A.to_string(),
+        )
+        .replace(
+            "__DUMMY_B_GENERATION__",
+            &CREDENTIAL_DUMMY_PROBE_GENERATION_B.to_string(),
+        );
     let version_tag = format!(
         "sing-box-phase6-ab-{projection}-{}",
         &sha256_hex(source.as_bytes())[..16]
@@ -1910,6 +2414,7 @@ fn action_name(action: &CredentialDeliveryAction) -> &'static str {
             "RESTORE_FIXED_A_B_VERSION_TAG"
         }
         CredentialDeliveryAction::RestoreFixedAbBaseline { .. } => "RESTORE_FIXED_A_B_BASELINE",
+        CredentialDeliveryAction::UpgradeSlotProofCode { .. } => "UPGRADE_SLOT_PROOF_CODE",
     }
 }
 
@@ -2418,8 +2923,100 @@ mod tests {
         }
         assert!(windows.source.contains(SLOT_A));
         assert!(windows.source.contains(SLOT_B));
+        for worker in [&windows, &vm] {
+            assert!(worker.source.contains("/v1/proof-slot"));
+            assert!(
+                worker
+                    .source
+                    .contains("crypto.subtle.digest(\"SHA-256\",b)")
+            );
+            assert!(!worker.source.contains("__DUMMY_A_DIGEST__"));
+            assert!(!worker.source.contains("__DUMMY_B_DIGEST__"));
+            for slot in &worker.slots {
+                assert!(worker.source.contains(&sha256_hex(&slot.payload)));
+                assert!(!worker.source.contains(&slot.secret_text));
+            }
+        }
         assert!(!windows.source.contains("private_key"));
         assert!(!windows.source.contains("password"));
+    }
+
+    #[test]
+    fn worker_proof_begin_is_exact_one_shot_and_rejects_unknown_history() {
+        let record = WorkerProofAttempt {
+            schema: "sing-box.worker-proof-upgrade/v1".to_owned(),
+            phase: "BEGIN".to_owned(),
+            github_run_id: 42,
+            source_revision: "a".repeat(40),
+            release_set_sha256: "b".repeat(64),
+            baseline_sha256: "c".repeat(64),
+        };
+        let exact = format!(
+            "{WORKER_PROOF_MARKER}\n{}",
+            serde_json::to_string(&record).unwrap()
+        );
+        let history = serde_json::json!([{"body": exact}]).to_string();
+        assert!(worker_proof_record("[]", None).unwrap().is_none());
+        assert!(worker_proof_record(&history, None).is_err());
+        assert_eq!(
+            worker_proof_record(&history, Some(&exact))
+                .unwrap()
+                .unwrap()
+                .github_run_id,
+            42
+        );
+        assert!(worker_proof_record(&history, Some("wrong")).is_err());
+        assert!(
+            worker_proof_record(
+                &serde_json::json!([{"body": exact}, {"body": exact}]).to_string(),
+                Some(&exact)
+            )
+            .is_err()
+        );
+        assert!(
+            worker_proof_record(
+                &serde_json::json!([{"body": format!("prefix {exact}")}]).to_string(),
+                Some(&exact)
+            )
+            .is_err()
+        );
+        assert!(worker_proof_record("truncated-json", None).is_err());
+        assert!(worker_proof_record("[{}]", None).is_err());
+    }
+
+    #[test]
+    fn old_generation_search_worker_requires_explicit_code_only_migration() {
+        let desired = desired();
+        let mut observed = observation(&desired);
+        make_terminal(&mut observed, "vm");
+        make_terminal(&mut observed, "windows");
+        for projection in ["windows", "vm"] {
+            let old = previous_fixed_ab_version_tag(projection)
+                .unwrap()
+                .to_owned();
+            let current = observed
+                .projections
+                .iter_mut()
+                .find(|value| value.projection == projection)
+                .unwrap();
+            current.worker_version_tag = Some(old.clone());
+            current.worker_latest_version_tag = Some(old);
+        }
+        assert_eq!(
+            plan(&desired, &observed).unwrap(),
+            CredentialDeliveryAction::UpgradeSlotProofCode {
+                projection: "windows".to_owned(),
+            }
+        );
+        assert!(
+            validate_initial_pair_provider_observation(
+                &desired,
+                &observed,
+                207,
+                CredentialDeliverySlotArg::B,
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -182,13 +182,7 @@ pub async fn observe_canonical_credential_bundle(
         .await
 }
 
-async fn observe_canonical_credential_bundle_with_identity(
-    projection: CredentialProjectionKind,
-    generation: u64,
-    identity: &AccessServiceIdentity,
-    allow_dummy_probe: bool,
-) -> Result<Option<CredentialDeliveryBundle>, String> {
-    let url = canonical_credential_worker_url(projection, generation)?;
+fn credential_worker_client(identity: &AccessServiceIdentity) -> Result<Client, String> {
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("cf-access-client-id"),
@@ -200,12 +194,22 @@ async fn observe_canonical_credential_bundle_with_identity(
         HeaderValue::from_str(&identity.client_secret)
             .map_err(|_| "credential Access client secret is not a valid HTTP header".to_owned())?,
     );
-    let client = Client::builder()
+    Client::builder()
         .redirect(Policy::none())
         .default_headers(headers)
         .timeout(CREDENTIAL_WORKER_REQUEST_TIMEOUT)
         .build()
-        .map_err(|err| format!("failed to construct credential Worker client: {err}"))?;
+        .map_err(|err| format!("failed to construct credential Worker client: {err}"))
+}
+
+async fn observe_canonical_credential_bundle_with_identity(
+    projection: CredentialProjectionKind,
+    generation: u64,
+    identity: &AccessServiceIdentity,
+    allow_dummy_probe: bool,
+) -> Result<Option<CredentialDeliveryBundle>, String> {
+    let url = canonical_credential_worker_url(projection, generation)?;
+    let client = credential_worker_client(identity)?;
     let response = send_credential_worker_get(&client, &url).await?;
     if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
@@ -282,41 +286,127 @@ fn classify_dummy_slot(
     }
 }
 
-/// Read-only proof that BOTH fixed A/B Worker slots still carry the canonical
-/// non-secret probe. A Worker binding name, version tag, or 404 cannot prove
-/// emptiness. Inspect both known dummy generations before deciding. Never
-/// returns payload bytes, actual unknown generations, or Access credentials.
+/// An exact fixed-binding attestation; generation-only GET cannot identify
+/// which Worker A/B binding contained the bytes. This type is only returned
+/// after the Worker proves the selected binding against its canonical dummy
+/// bytes without returning either the binding value or live credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialDummySlotProof {
+    pub slot_a_observation: &'static str,
+    pub slot_b_observation: &'static str,
+    pub exact_dummy_ab: bool,
+}
+
+fn require_selected_dummy(
+    slot: CredentialDeliverySlot,
+    a: DummySlotObservation,
+    b: DummySlotObservation,
+) -> Result<InitialDummySlotProof, String> {
+    let selected = match slot {
+        CredentialDeliverySlot::A => a,
+        CredentialDeliverySlot::B => b,
+        CredentialDeliverySlot::Unspecified => {
+            return Err("initial slot witness refuses unspecified slot".to_owned());
+        }
+    };
+    if selected != DummySlotObservation::ExactCanonical {
+        return Err(format!(
+            "initial selected Worker slot BLOCKED: selected={}; slot_A={}; slot_B={}; \
+             publication_authorized=false; other_slot_overwrite_authorized=false",
+            match slot {
+                CredentialDeliverySlot::A => "A",
+                CredentialDeliverySlot::B => "B",
+                CredentialDeliverySlot::Unspecified => unreachable!(),
+            },
+            a.as_str(),
+            b.as_str()
+        ));
+    }
+    Ok(InitialDummySlotProof {
+        slot_a_observation: a.as_str(),
+        slot_b_observation: b.as_str(),
+        exact_dummy_ab: a == DummySlotObservation::ExactCanonical
+            && b == DummySlotObservation::ExactCanonical,
+    })
+}
+
+/// Cloudflare Access-authenticated, bounded GET for a SPECIFIC Worker binding.
+/// HTTP 204 is only valid with the Worker script's exact A/B binding comparison.
+/// The legacy generation-search endpoint cannot supply such a witness: it
+/// searches both slots and may return a B generation stored in A.
+/// HTTP 404 also covers a not-yet-upgraded Worker: fail closed, never assume
+/// that a binding is empty or try a different generation.
+async fn observe_fixed_dummy_binding(
+    projection: CredentialProjectionKind,
+    slot: CredentialDeliverySlot,
+    identity: &AccessServiceIdentity,
+) -> Result<DummySlotObservation, String> {
+    let (generation, slot_param) = match slot {
+        CredentialDeliverySlot::A => (CREDENTIAL_DUMMY_PROBE_GENERATION_A, "a"),
+        CredentialDeliverySlot::B => (CREDENTIAL_DUMMY_PROBE_GENERATION_B, "b"),
+        CredentialDeliverySlot::Unspecified => {
+            return Err("fixed Worker proof requires slot A or B".to_owned());
+        }
+    };
+    let runtime_url = canonical_credential_worker_url(projection, generation)?;
+    let proof_url = runtime_url
+        .replace("/v1/credentials?generation=", "/v1/proof-slot?generation=")
+        + "&slot="
+        + slot_param;
+    let client = credential_worker_client(identity)?;
+    let response = send_credential_worker_get(&client, &proof_url).await?;
+    match response.status() {
+        StatusCode::NO_CONTENT => Ok(DummySlotObservation::ExactCanonical),
+        StatusCode::CONFLICT => Ok(DummySlotObservation::Noncanonical),
+        StatusCode::NOT_FOUND => Err(format!(
+            "fixed Worker binding proof unavailable for slot {slot_param}: \
+             deployed Worker lacks exact-slot attestation or rejected the generation; \
+             publication_authorized=false"
+        )),
+        _ => Err(format!(
+            "fixed Worker binding proof returned unexpected HTTP status {}; \
+             publication_authorized=false",
+            response.status().as_u16()
+        )),
+    }
+}
+
+/// First-use attestation permits only the *selected* exact canonical dummy.
+/// The peer may be unknown, but is NEVER read as overwrite authority.
+/// An old Worker script or metadata-only proof is explicitly insufficient.
+pub async fn verify_initial_selected_dummy_slot(
+    projection: CredentialProjectionKind,
+    slot: CredentialDeliverySlot,
+    identity_path: &Path,
+) -> Result<InitialDummySlotProof, String> {
+    if !matches!(slot, CredentialDeliverySlot::A | CredentialDeliverySlot::B) {
+        return Err("initial Worker witness requires slot A or B".to_owned());
+    }
+    let identity = read_access_service_identity(identity_path)?;
+    let a = observe_fixed_dummy_binding(projection, CredentialDeliverySlot::A, &identity).await?;
+    let b = observe_fixed_dummy_binding(projection, CredentialDeliverySlot::B, &identity).await?;
+    require_selected_dummy(slot, a, b)
+}
+
+/// Strict first-use A/B proof. Unlike generation-only GET, this proves that
+/// each exact binding contains its own canonical dummy, under the host's
+/// Cloudflare Access identity. Both observations remain secret-safe.
 pub async fn verify_canonical_dummy_ab_slots(
     projection: CredentialProjectionKind,
     identity_path: &Path,
 ) -> Result<(), String> {
     let identity = read_access_service_identity(identity_path)?;
-    let mut findings = Vec::with_capacity(2);
-    for (slot, generation) in [
-        ("A", CREDENTIAL_DUMMY_PROBE_GENERATION_A),
-        ("B", CREDENTIAL_DUMMY_PROBE_GENERATION_B),
-    ] {
-        let observed = observe_canonical_credential_bundle_with_identity(
-            projection, generation, &identity, true,
-        )
-        .await?;
-        findings.push((
-            slot,
-            classify_dummy_slot(observed.as_ref(), projection, generation),
-        ));
-    }
-    if findings
-        .iter()
-        .all(|(_, status)| *status == DummySlotObservation::ExactCanonical)
-    {
+    let a = observe_fixed_dummy_binding(projection, CredentialDeliverySlot::A, &identity).await?;
+    let b = observe_fixed_dummy_binding(projection, CredentialDeliverySlot::B, &identity).await?;
+    if a == DummySlotObservation::ExactCanonical && b == DummySlotObservation::ExactCanonical {
         return Ok(());
     }
     Err(format!(
         "initial Worker-v2 fixed A/B dummy proof BLOCKED: slot_A={}; slot_B={}; \
          publication_authorized=false; provider_secret_contents=UNREADABLE; \
          no conclusion about occupied slot generations or safe overwrite",
-        findings[0].1.as_str(),
-        findings[1].1.as_str()
+        a.as_str(),
+        b.as_str()
     ))
 }
 
@@ -419,6 +509,49 @@ mod tests {
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
         );
         assert!(wrong_schema_result.is_err());
+    }
+
+    #[test]
+    fn first_use_b_witness_preserves_unknown_a_and_rejects_unproven_target() {
+        use DummySlotObservation::{ExactCanonical, MissingOrOtherGeneration, Noncanonical};
+        let proof = require_selected_dummy(
+            CredentialDeliverySlot::B,
+            MissingOrOtherGeneration,
+            ExactCanonical,
+        )
+        .unwrap();
+        assert_eq!(proof.slot_a_observation, "NOT_FOUND_OR_OTHER_GENERATION");
+        assert_eq!(proof.slot_b_observation, "EXACT_CANONICAL_DUMMY");
+        assert!(!proof.exact_dummy_ab);
+        assert!(
+            require_selected_dummy(
+                CredentialDeliverySlot::A,
+                MissingOrOtherGeneration,
+                ExactCanonical,
+            )
+            .is_err()
+        );
+        assert!(
+            require_selected_dummy(CredentialDeliverySlot::B, ExactCanonical, Noncanonical,)
+                .is_err()
+        );
+        assert!(
+            require_selected_dummy(
+                CredentialDeliverySlot::Unspecified,
+                ExactCanonical,
+                ExactCanonical,
+            )
+            .is_err()
+        );
+        assert!(
+            require_selected_dummy(CredentialDeliverySlot::B, Noncanonical, ExactCanonical,)
+                .is_ok()
+        );
+        assert!(
+            require_selected_dummy(CredentialDeliverySlot::B, ExactCanonical, ExactCanonical,)
+                .unwrap()
+                .exact_dummy_ab
+        );
     }
 
     #[test]

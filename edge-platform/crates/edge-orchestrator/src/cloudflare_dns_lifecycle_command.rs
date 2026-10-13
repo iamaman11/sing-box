@@ -54,6 +54,39 @@ pub(crate) async fn production_converge(
     Ok(())
 }
 
+// Initial acceptance DNS has one state machine. Exact provider NOOP is
+// read-only; exact CREATE is a single fenced write. UPDATE/DELETE/foreign
+// record and any uncertain CREATE acknowledgement are terminal, never
+// converted into an upsert or replayed on a second observation.
+pub(crate) async fn acceptance_create_or_reuse(
+    spec_path: &Path,
+    application_spec_path: &Path,
+) -> Result<&'static str, String> {
+    let desired = load_desired(spec_path)?;
+    let derived = derive_target_from_application(application_spec_path).await?;
+    let mut provider = provider_from_env()?;
+    let (observed, plan) = plan_dns_apply(&mut provider, &desired, &derived.target_ipv4).await?;
+    match plan.action.clone() {
+        ApplyAction::Noop => Ok("REUSED_OWNED"),
+        ApplyAction::Create { .. } => {
+            let authorized = authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
+            let report = apply_dns_once(
+                &mut provider,
+                &desired,
+                &derived.target_ipv4,
+                &authorized.authority.authority_digest,
+                DnsExecutionPolicy::default(),
+            )
+            .await?;
+            if !matches!(report.next_plan.action, ApplyAction::Noop) {
+                return Err("initial DNS exact CREATE did not converge to NOOP".to_owned());
+            }
+            Ok("CREATED")
+        }
+        _ => Err("initial DNS refuses mutation of existing nonmatching records".to_owned()),
+    }
+}
+
 pub(crate) async fn acceptance_create(
     spec_path: &Path,
     application_spec_path: &Path,

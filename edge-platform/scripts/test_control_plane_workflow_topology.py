@@ -407,6 +407,9 @@ def main() -> None:
         and "materialize_vm_owned_runtime_environment(&staging)?" in vm_agent_runtime,
         "fresh policy-only bundle staging must be exact, single-owner, and never start runtime",
     )
+    cloudflare_native_provider = Path(
+        "edge-platform/crates/edge-provider-cloudflare/src/lib.rs"
+    ).read_text(encoding="utf-8")
     credential_delivery_client = Path(
         "edge-platform/crates/edge-secrets/src/credential_delivery.rs"
     ).read_text(encoding="utf-8")
@@ -422,7 +425,18 @@ def main() -> None:
         and "credential_runtime_mutations=0" in vm_agent_runtime
         and "CREDENTIAL_DUMMY_PROBE_GENERATION_A" in credential_provider
         and "CREDENTIAL_DUMMY_PROBE_GENERATION_B" in credential_provider
-        and "classify_dummy_slot(observed.as_ref(), projection, generation)" in credential_delivery_client
+        and "observe_fixed_dummy_binding(" in credential_delivery_client
+        and "/v1/proof-slot?generation=" in credential_delivery_client
+        and "StatusCode::NO_CONTENT" in credential_delivery_client
+        and "StatusCode::CONFLICT" in credential_delivery_client
+        and "crypto.subtle.digest" in credential_provider
+        and "bindings_inherit=strict" in cloudflare_native_provider
+        and "upload_worker_slot_proof_version(" in cloudflare_native_provider
+        and '"type": "inherit"' in cloudflare_native_provider
+        and '"/v1/proof-slot"' in credential_provider
+        and 'sha256_hex(&slots[0].payload)' in credential_provider
+        and "previous_fixed_ab_version_tag(" in credential_provider
+        and "ProjectionDeliveryState::FixedAbProofUpgradeRequired" in credential_provider
         and "slot_A={}; slot_B={}" in credential_delivery_client
         and "publication_authorized=false" in credential_delivery_client
         and "DummySlotObservation::MissingOrOtherGeneration" in credential_delivery_client
@@ -547,7 +561,10 @@ def main() -> None:
         and "line1_authenticated_endpoints=UNPROVEN" in vm_agent_runtime
         and "CredentialInitialAttest" in vm_agent_cli
         and "attest_initial_vm_host(" in vm_agent_runtime
-        and "verify_initial_vm_dummy_probe(stack_dir).await?" in vm_agent_runtime
+        and "verify_initial_vm_selected_dummy_probe(stack_dir, slot).await?" in vm_agent_runtime
+        and "selected_slot_exact_dummy: true" in vm_agent_runtime
+        and "slot_a_observation: proof.slot_a_observation.to_owned()" in vm_agent_runtime
+        and "slot_b_observation: proof.slot_b_observation.to_owned()" in vm_agent_runtime
         and "first_use_host_attestation_sha256(" in vm_agent_runtime
         and "expected_agent_sha256" in vm_agent_cli
         and "verify_initial_agent_binary(expected_agent_sha256)?" in vm_agent_runtime
@@ -557,7 +574,9 @@ def main() -> None:
         and "file_sha256_lower_hex(" in vm_agent_runtime
         and 'Path::new("/proc/self/exe")' in vm_agent_runtime
         and "CredentialInitialAttest" in windows_console_cli
-        and "run_windows_initial_credential_probe(root)" in windows_console
+        and "require_initial_windows_credential_host(root)" in windows_console
+        and "verify_initial_selected_dummy_slot(" in windows_console
+        and "credential_selected_slot_exact_dummy=true" in windows_console
         and "first_use_host_attestation_sha256(" in windows_console
         and "windows_tun_mutations=0" in windows_console
         and "windows_dns_mutations=0" in windows_console
@@ -567,19 +586,29 @@ def main() -> None:
     # The canonical GitHub operation must reach the native disposable
     # policy owner rather than leaving another unused Rust CLI capability.
     require(
-        "INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION: external 10/10 witness" in vultr
-        and 'fail("INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION:' in vultr
+        "INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION" not in vultr
+        and 'operation = "initial-vm-install"' in vultr
+        and 'initial_acceptance_final:' in vultr
+        and 'N1_N2_PHYSICAL_ACCEPTANCE=PASS' in vultr
         and 'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
         and 'spec_path = "infra/vultr/application-acceptance.json"' in vultr
         and 'machine_id = "application-acceptance-1"' in vultr
         and 'run_lifecycle initial-policy-stage' in vultr
         and 'run_lifecycle apply "${spec}" "${machine}" "${authority}"' in vultr
         and 'converge_host_substrate "${spec}" "${machine}" "initial-vm-install"' in vultr
-        and '.plans | length == 1 and .[0].class == "CREATE"' in vultr
+        and '(. [0].class == "CREATE"' not in vultr
+        and '(.[0].class == "CREATE" or .[0].class == "NOOP")' in vultr
+        and 'machine_class="$(jq -er' in vultr
+        and 'existing_owned_count=' in vultr
+        and 'REUSED_OWNED' in vultr
+        and "echo 'first_use_create_confirmed=false'" in vultr
+        and '.ownership.logical_id == "application-acceptance-1"' in vultr
+        and 'initial-dns-converge' in vultr
+        and "needs: authorize" in vultr
         and '"${bin}" application-lifecycle materialize' in vultr
         and 'runtime_credentials == "ABSENT"' in vultr
         and 'application_containers == "NOT_STARTED"' in vultr,
-        "one GitHub initial VM install must create a clean disposable host and invoke exact immutable policy owner",
+        "one GitHub initial VM install must CREATE or reuse exact owned NOOP and invoke immutable policy owner",
     )
     # A clean VM must receive only the existing dedicated Cloudflare host
     # identity (never an application credential) through the same exact owner.
@@ -690,7 +719,7 @@ def main() -> None:
     reboot_job_parts = vultr.split("\n  initial_reboot:\n", 1)
     require(
         len(reboot_job_parts) == 2
-        and 'needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume]'
+        and 'needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume, initial_line2_external]'
             in reboot_job_parts[1]
         and 'vultr-lifecycle action-plan infra/vultr/application-acceptance.json application-acceptance-1 reboot'
             in reboot_job_parts[1]
@@ -733,10 +762,12 @@ def main() -> None:
     require(
         'WINDOWS_CONTROLLER_ENDPOINT' in shared_types
         and 'return WINDOWS_CONTROLLER_ENDPOINT;' in console_source
-        and vultr.count('& $console credential-state') == 2
+        and vultr.count('& $console credential-state') == 0
+        and 'credential-initial-acceptance-stage' in vultr
+        and 'credential-initial-line1-witness' in vultr
         and 'credential-state http://' not in vultr
         and 'credential-state https://' not in vultr,
-        "first-use Windows observation must use verified native installed SCM endpoint, not a hardcoded port",
+        "first-use Windows acceptance must not depend on the serving SCM endpoint or a hardcoded port",
     )
 
     # Single first-use request: new VM, two independent host owners, one
@@ -746,47 +777,77 @@ def main() -> None:
         'if tokens == ["/vultr", "initial-vm-install"]:' in vultr
         and 'initial_vm_attest:' in initial_flow
         and 'initial_windows_attest:' in initial_flow
+        and 'initial_windows_isolate:' in vultr
+        and 'initial_windows_cleanup:' in initial_flow
+        and 'C:\\sing-box-acceptance' in vultr
+        and 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED' in vultr
         and 'initial_pair_publish:' in initial_flow
         and 'initial_vm_runtime:' in initial_flow
         and 'initial_windows_consume:' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
-        and 'privileged-stage-credential' in initial_flow
+        and 'credential-initial-acceptance-stage' in initial_flow
+        and 'credential-initial-line1-witness' in initial_flow
         and 'credential-transition validate-candidate' in initial_flow
-        and 'First-use Windows controller unavailable or non-empty; refusing Worker publication' in initial_flow
+        and 'First-use isolated Windows credential cursor already exists' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED:' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_CHANGED:' in initial_flow
         and initial_flow.count("['windows_datapath_mode'] -cne 'ProxyOnly'") == 2
-        and 'credential_candidate_generation=$env:GENERATION' in initial_flow
+        and 'N2_EXTERNAL_LINE1_4_OF_4=PASS' in initial_flow
         and 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED' in initial_flow
         and 'needs: [authorize, execute, initial_preflight]' in initial_flow
-        and 'needs: [authorize, initial_windows_attest]' in vultr
-        and "needs.initial_windows_attest.result == 'success'" in vultr
+        and 'needs: [authorize, initial_windows_attest]' not in vultr
+        and "needs.initial_windows_attest.result == 'success'" not in vultr
+        and 'N1 may stage an empty owned VM' in vultr
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and "always() &&" in vultr
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
         and 'credential-initial-attest' in initial_flow
-        and 'name: Bind first-use Cloudflare version intent\n    needs: authorize' in vultr
-        and 'name: Attest isolated Windows host without TUN or DNS mutation\n    needs: [authorize, initial_preflight]' in vultr
+        and 'name: Bind first-use Cloudflare version intent\n    needs: [authorize, initial_worker_proof_upgrade]' in vultr
+        and 'initial_worker_proof_upgrade:' in vultr
+        and 'credentials initial-worker-proof-plan' in vultr
+        and 'credentials initial-worker-proof-upgrade' in vultr
+        and 'worker_proof_durable_begin=EXACT_READBACK' in vultr
+        and 'worker_secret_patch_mutations=0' in vultr
+        and 'credential_selected_slot_exact_dummy == true' in initial_flow
+        and '.credential_slot_B == "EXACT_CANONICAL_DUMMY"' in initial_flow
+        and 'name: Attest isolated Windows host without TUN or DNS mutation\n    needs: [authorize, initial_preflight, initial_windows_isolate]' in vultr
         and 'vultr-lifecycle initial-host-probe' in initial_flow
         and 'credentials initial-pair-journal-plan' in initial_flow
         and 'credentials initial-pair-journal-readback' in initial_flow
         and 'credentials initial-pair-publish' in initial_flow
         and 'gh api --method POST "repos/${REPOSITORY}/issues/26/comments"' in initial_flow
-        and 'issues: write' not in initial_flow
+        and vultr.count('issues: write') == 2
+        and "needs: [authorize, initial_worker_proof_upgrade]" in vultr
         and 'GITHUB_RUN_ATTEMPT' in initial_flow
         and 'vultr-lifecycle initial-runtime-apply' in initial_flow
         and 'vultr-lifecycle initial-runtime-verify' in initial_flow
         and 'all(.vm_local_line2[]; .successful_samples == 5 and .failed_samples == 0 and .negative_auth_rejected == true)' in initial_flow
-        and 'vultr-lifecycle initial-dns-create' not in initial_flow
-        and 'run_lifecycle initial-dns-create' in vultr
+        and 'vultr-lifecycle initial-dns-converge' not in initial_flow
+        and 'run_lifecycle initial-dns-converge' in vultr
+        and 'INITIAL_VM_DNS_CONVERGE' in vultr
+        and 'REUSED_OWNED' in vultr
+        and 'machine_class=' in vultr
+        and 'REUSED_OWNED' in vultr
+        and 'first_use_create_confirmed=true' in vultr
+        and 'first_use_create_confirmed=true' not in vultr.split('NOOP)')[1].split('CREATE)')[0]
         and 'infra/cloudflare/application-acceptance-dns.json' in vultr
-        and 'INITIAL_VM_DNS_CREATE' in vultr
+        and 'INITIAL_VM_DNS_CONVERGE' in vultr
         and 'provider_mutation_replay_allowed == false' in vultr
         and 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' in initial_flow
         and 'initial_acceptance_verdict:' in initial_flow
-        and 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' in initial_flow
-        and 'Refuse candidate-only success without external witness, reboot and cleanup' in initial_flow
-        and 'Final physical 10-endpoint acceptance verdict' in initial_flow
+        and 'N1_N2_PRE_CLEANUP_TRAFFIC=PASS' in initial_flow
+        and 'N1_N2_PHYSICAL_ACCEPTANCE=PASS' in initial_flow
+        and 'initial_line2_external:' in initial_flow
+        and 'initial_windows_post_reboot:' in initial_flow
+        and 'initial_acceptance_final:' in initial_flow
+        and "needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]" in initial_flow
+        and 'line2_external_6_of_6=PASS' in initial_flow
+        and 'N2_POST_REBOOT_EXTERNAL_LINE2_6_OF_6=PASS' in initial_flow
+        and 'N2_POST_REBOOT_EXTERNAL_LINE1_4_OF_4=PASS' in initial_flow
+        and 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED' in initial_flow
+        and 'FIRST_USE_CREATE_CONFIRMED' in initial_flow
+        and 'N1_N2_REUSED_OWNED_VM=PRESERVED_NOT_DISPOSED' in initial_flow
         and 'initial_publication_authorized=false' in initial_flow
         and 'windows_tun_mutations' in initial_flow
         and 'windows_dns_mutations' in initial_flow,
@@ -794,12 +855,13 @@ def main() -> None:
     )
 
     require(
-        'acceptance_create as create_disposable_dns' in vultr_lifecycle_command
-        and 'require_clean_disposable_dns(Path::new(&args[0])).await?' in vultr_lifecycle_command
-        and 'create_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
-        and 'verify_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
-        and '"initial-dns-create" => run_initial_dns_create' in vultr_lifecycle_command,
-        "initial VM DNS must reuse one exact clean-room Cloudflare owner without mutation retry",
+        'acceptance_create_or_reuse as converge_initial_disposable_dns' in vultr_lifecycle_command
+        and 'converge_initial_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?' in vultr_lifecycle_command
+        and '"initial-dns-converge" => run_initial_dns_converge' in vultr_lifecycle_command
+        and '"provider_mutations": if outcome == "CREATED" { 1 } else { 0 }' in vultr_lifecycle_command
+        and 'INITIAL_VM_DNS_CONVERGE' in vultr
+        and '.outcome == "REUSED_OWNED" and .provider_mutations == 0' in vultr,
+        "initial VM DNS must use one exact CREATE-or-NOOP native owner with no foreign update or replay",
     )
 
     # RPC and local bundle paths must reject the retired unbound / host-file
@@ -1655,10 +1717,12 @@ def main() -> None:
 
     require(
         "issues: read" not in vultr
-        and "issues: write" not in vultr
+        and vultr.count("issues: write") == 2
         and "issues: read" not in credentials
-        and "issues: write" not in credentials,
-        "called workflows must not request issues scopes absent from the router's contents-only GITHUB_TOKEN",
+        and "issues: write" not in credentials
+        and "  vultr:" in router
+        and "    permissions:\n      contents: read\n      issues: write" in router,
+        "Issue #26 BEGIN may be written only by the authorized Vultr route and its two bounded initial jobs",
     )
     require(
         "startsWith(github.event.comment.body, '/vm ')" in router

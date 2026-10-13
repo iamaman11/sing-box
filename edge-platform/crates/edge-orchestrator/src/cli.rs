@@ -199,6 +199,27 @@ impl CredentialDeliverySlotArg {
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
+    /// Bounded independent GitHub-runner vantage; public VM port probes only.
+    InitialLine2ExternalWitness {
+        generation: u64,
+        vm_ipv4: String,
+        tls_domain: String,
+        username: String,
+        vm_access_identity_path: std::path::PathBuf,
+    },
+    // One non-replayable, code-only migration of existing Workers; preserves
+    // opaque A/B secret bindings and enables exact fixed-slot proof.
+    // Restricted to the original first-use GitHub job and immutable ReleaseSet.
+    InitialWorkerProofPlan {
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    InitialWorkerProofUpgrade {
+        run_id: u64,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
     // Strictly read-only provider half of an initial paired transaction.
     InitialPairPreflight {
         generation: u64,

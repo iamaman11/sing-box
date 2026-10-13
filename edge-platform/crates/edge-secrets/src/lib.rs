@@ -1,8 +1,10 @@
 mod credential_delivery;
 pub use credential_delivery::{
-    ACCESS_IDENTITY_FILE_NAME, AccessServiceIdentity, canonical_credential_worker_url,
-    fetch_canonical_credential_bundle, observe_canonical_credential_bundle,
-    read_access_service_identity, verify_canonical_dummy_ab_slots, write_access_service_identity,
+    ACCESS_IDENTITY_FILE_NAME, AccessServiceIdentity, InitialDummySlotProof,
+    canonical_credential_worker_url, fetch_canonical_credential_bundle,
+    observe_canonical_credential_bundle, read_access_service_identity,
+    verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
+    write_access_service_identity,
 };
 
 mod credential_store;

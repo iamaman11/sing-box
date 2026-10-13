@@ -56,7 +56,10 @@ jobs:
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
           if tokens == ["/vultr", "initial-vm-install"]:
-              fail("INITIAL_VM_INSTALL_BLOCKED_PRE_MUTATION: external 10/10 witness, reboot recovery and isolated Windows ProxyOnly consumer are not yet implemented; do not publish one-time credentials")
+              # Exact irreversible credential publication remains owned by
+              # later independent host/Worker/durable-GitHub BEGIN guards.
+              # Only the complete physical 4+6 + reboot + cleanup workflow
+              # can finish with PASS; partial work always fails closed.
               operation = "initial-vm-install"
               spec_path = "infra/vultr/application-acceptance.json"
               machine_id = "application-acceptance-1"
@@ -164,15 +167,12 @@ jobs:
     outputs:
       first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}
       first_use_create_confirmed: ${{ steps.execute_lifecycle.outputs.first_use_create_confirmed }}
-    # For first-use, verify provider and Windows consumer BEFORE creating a
-    # billable VM or DNS record. All other typed operations remain available
-    # when the initial Windows attestation job is intentionally skipped.
-    needs: [authorize, initial_windows_attest]
-    if: >-
-      always() &&
-      needs.authorize.result == 'success' &&
-      (needs.authorize.outputs.operation != 'initial-vm-install' ||
-       needs.initial_windows_attest.result == 'success')
+    # A reusable VM's provider/substrate and policy-only installation is
+    # independent of Windows. N1 may stage an empty owned VM without touching
+    # Windows SCM/TUN/DNS or publishing credentials. Later paired first-use
+    # publication remains gated on BOTH independent host attestations.
+    needs: authorize
+    if: needs.authorize.result == 'success'
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
@@ -427,38 +427,67 @@ jobs:
                 "${application_spec}" "${agent_manifest}" "${EDGE_LIFECYCLE_AGENT}"
               chmod 0600 "${agent_manifest}"
 
-              # First-use is a single bounded GitHub-owned operation: clean
-              # disposable provider create -> exact substrate -> policy-only
-              # bundle -> root-only existing VM Access identity. A provider
-              # failure or lost ACK is terminal; never replay by re-running.
+              # One native lifecycle for both a new disposable VM and an
+              # already-owned acceptance VM. NEVER create a second VM when
+              # the Git-owned provider plan is NOOP. Refuse UPDATE/DELETE/DRIFT
+              # and ambiguous observations before acquiring host authority.
               run_lifecycle inventory "${spec}" > "${RUNNER_TEMP}/initial-vm-inventory.json"
-              jq -e '[.inventory.resources[] | select(.ownership.environment == "application-acceptance")] | length == 0' \
-                "${RUNNER_TEMP}/initial-vm-inventory.json" >/dev/null
               run_lifecycle plan "${spec}" "${machine}" > "${RUNNER_TEMP}/initial-vm-plan.json"
-              jq -e '.plans | length == 1 and .[0].class == "CREATE"' \
+              jq -e '.plans | length == 1 and
+                     (.[0].class == "CREATE" or .[0].class == "NOOP")' \
                 "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
-              authority="$(machine_authority "${RUNNER_TEMP}/initial-vm-plan.json")"
-              [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
-              # Durable same-job boundary: after this point CREATE may have an
-              # unknown ACK. Only this exact run may authorize subsequent
-              # disposal. No cross-run or preflight cleanup is inferred.
-              echo 'first_use_provider_mutation_attempted=true' >> "${GITHUB_OUTPUT}"
-              run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/initial-vm-create.json"
-              jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
-                "${RUNNER_TEMP}/initial-vm-create.json" >/dev/null
-              echo 'first_use_create_confirmed=true' >> "${GITHUB_OUTPUT}"
+              machine_class="$(jq -er '.plans[0].class' "${RUNNER_TEMP}/initial-vm-plan.json")"
+              existing_owned_count="$(jq -er '[.inventory.resources[] | select(.ownership.environment == "application-acceptance")] | length' \
+                "${RUNNER_TEMP}/initial-vm-inventory.json")"
+              case "${machine_class}" in
+                NOOP)
+                  test "${existing_owned_count}" = "1"
+                  # Reusing an existing exact owned VM is a read-only provider
+                  # decision, not another CREATE attempt. It is never eligible
+                  # for this run's automatic destructive cleanup.
+                  jq -e '.plans[0].provider_id | type == "string" and length > 0' \
+                    "${RUNNER_TEMP}/initial-vm-plan.json" >/dev/null
+                  provider_id="$(jq -er '.plans[0].provider_id' "${RUNNER_TEMP}/initial-vm-plan.json")"
+                  jq -e --arg id "${provider_id}" '
+                    [.inventory.resources[] | select(.provider_id == $id and
+                       .ownership.environment == "application-acceptance" and
+                       .ownership.logical_id == "application-acceptance-1")] | length == 1
+                  ' "${RUNNER_TEMP}/initial-vm-inventory.json" >/dev/null
+                  echo 'first_use_create_confirmed=false' >> "${GITHUB_OUTPUT}"
+                  jq -n --slurpfile plan "${RUNNER_TEMP}/initial-vm-plan.json" \
+                    '{action:"REUSED_OWNED",provider_id:$plan[0].plans[0].provider_id,
+                      provider_mutations:0,host_substrate_required:true}' \
+                    > "${RUNNER_TEMP}/initial-vm-create.json"
+                  ;;
+                CREATE)
+                  test "${existing_owned_count}" = "0"
+                  authority="$(machine_authority "${RUNNER_TEMP}/initial-vm-plan.json")"
+                  [[ "${authority}" =~ ^[0-9a-f]{64}$ ]]
+                  # A lost CREATE ACK is terminal, no automatic retry or
+                  # resource adoption from guessed IP/hostname.
+                  echo 'first_use_provider_mutation_attempted=true' >> "${GITHUB_OUTPUT}"
+                  run_lifecycle apply "${spec}" "${machine}" "${authority}" > "${RUNNER_TEMP}/initial-vm-create.json"
+                  jq -e '.action == "CREATED" and .provider_ready == true and .host_substrate_required == true' \
+                    "${RUNNER_TEMP}/initial-vm-create.json" >/dev/null
+                  echo 'first_use_create_confirmed=true' >> "${GITHUB_OUTPUT}"
+                  ;;
+              esac
 
-              # Create exactly one Cloudflare DNS A record through the
-              # existing disposable DNS owner. ACME and independent external
-              # hostname/TLS probes require this exact fresh VM binding.
-              # Unknown DNS ACK is terminal; never create again blindly.
+              # One exact native DNS convergence: CREATE only if absent,
+              # else accept a matching owned NOOP. Never UPDATE, never upsert,
+              # never retry an unknown provider ACK.
               test -n "${CLOUDFLARE_API_TOKEN}"
-              run_lifecycle initial-dns-create                 infra/cloudflare/application-acceptance-dns.json                 "${application_spec}" > "${RUNNER_TEMP}/initial-vm-dns.json"
-              jq -e '.operation == "INITIAL_VM_DNS_CREATE" and
+              run_lifecycle initial-dns-converge \
+                infra/cloudflare/application-acceptance-dns.json "${application_spec}" \
+                > "${RUNNER_TEMP}/initial-vm-dns.json"
+              jq -e '.operation == "INITIAL_VM_DNS_CONVERGE" and
                      .status == "PASS" and
                      .record == "stage2-acceptance.alegria.by" and
                      .external_tls == "UNPROVEN" and
-                     .provider_mutation_replay_allowed == false'                      "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
+                     .provider_mutation_replay_allowed == false and
+                     ((.outcome == "CREATED" and .provider_mutations == 1) or
+                      (.outcome == "REUSED_OWNED" and .provider_mutations == 0))' \
+                "${RUNNER_TEMP}/initial-vm-dns.json" >/dev/null
 
               # No compensation after an uncertain create/apply result. The
               # exact disposable identity remains available for read-only
@@ -795,9 +824,82 @@ jobs:
 
 # All first-use owners execute inside the SAME authorized issue-comment run.
   # One CLI command, no separate credential-issuance issue command, no replay.
+  initial_worker_proof_upgrade:
+    name: Bind exact Worker slot proof without changing opaque secrets
+    needs: authorize
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Persist proof-code BEGIN and migrate exact Worker code once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          umask 077
+          history="${RUNNER_TEMP}/proof-upgrade-history.json"
+          exact="${RUNNER_TEMP}/proof-upgrade-begin.txt"
+          gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" |
+            jq -s 'add' > "${history}"
+          "${owner}" credentials initial-pair-journal-observe "${history}" > "${RUNNER_TEMP}/first-use-empty.txt"
+          grep -Fxq 'credential_initial_journal_empty=true' "${RUNNER_TEMP}/first-use-empty.txt"
+          "${owner}" credentials initial-worker-proof-plan "${GITHUB_RUN_ID}" \
+            "${history}" "${exact}" > "${RUNNER_TEMP}/proof-plan.txt"
+          grep -Fxq 'worker_provider_mutations=0' "${RUNNER_TEMP}/proof-plan.txt"
+          if grep -Fxq 'worker_proof_upgrade_required=false' "${RUNNER_TEMP}/proof-plan.txt"; then
+            test ! -e "${exact}"
+            grep -Fxq 'worker_proof_code_verified=EXACT_TWO_ACTIVE' "${RUNNER_TEMP}/proof-plan.txt"
+            echo 'WORKER_EXACT_SLOT_PROOF_CODE=ALREADY_EXACT_READ_ONLY' >> "${GITHUB_STEP_SUMMARY}"
+          else
+            grep -Fxq 'worker_proof_upgrade_required=true' "${RUNNER_TEMP}/proof-plan.txt"
+            test -s "${exact}"
+            # Write BEGIN only once; an unknown POST ACK can never be replayed.
+            gh api --method POST "repos/${REPOSITORY}/issues/26/comments" \
+              --raw-field "body=$(cat "${exact}")" > "${RUNNER_TEMP}/proof-begin-ack.json"
+            jq -e --arg body "$(cat "${exact}")" \
+              '.body == $body and (.id|type == "number")' "${RUNNER_TEMP}/proof-begin-ack.json" >/dev/null
+            gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" |
+              jq -s 'add' > "${history}"
+            "${owner}" credentials initial-worker-proof-upgrade "${GITHUB_RUN_ID}" \
+              "${history}" "${exact}" > "${RUNNER_TEMP}/proof-upgrade.txt"
+            grep -Fxq 'worker_proof_durable_begin=EXACT_READBACK' "${RUNNER_TEMP}/proof-upgrade.txt"
+            grep -Fxq 'worker_secret_patch_mutations=0' "${RUNNER_TEMP}/proof-upgrade.txt"
+            grep -Fxq 'worker_actual_binding_dummy=UNPROVEN_BY_PROVIDER_METADATA' "${RUNNER_TEMP}/proof-upgrade.txt"
+            echo 'WORKER_EXACT_SLOT_PROOF_CODE=DEPLOYED_VERSION_FENCED' >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          echo 'WORKER_A_B_SECRET_CONTENTS=UNPROVEN_UNTIL_HOST_ATTEST' >> "${GITHUB_STEP_SUMMARY}"
+
   initial_preflight:
     name: Bind first-use Cloudflare version intent
-    needs: authorize
+    needs: [authorize, initial_worker_proof_upgrade]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     environment:
@@ -841,7 +943,7 @@ jobs:
           "${owner}" credentials initial-pair-journal-observe "${history}" > "${RUNNER_TEMP}/journal.txt"
           grep -Fxq 'credential_initial_journal_empty=true' "${RUNNER_TEMP}/journal.txt"
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          "${owner}" credentials initial-pair-preflight "${GITHUB_RUN_ID}" a > "${RUNNER_TEMP}/preflight.txt"
+          "${owner}" credentials initial-pair-preflight "${GITHUB_RUN_ID}" b > "${RUNNER_TEMP}/preflight.txt"
           grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/preflight.txt"
           grep -Fxq 'credential_provider_mutations=0' "${RUNNER_TEMP}/preflight.txt"
           intent="$(sed -n 's/^initial_pair_provider_intent_sha256=//p' "${RUNNER_TEMP}/preflight.txt")"
@@ -905,13 +1007,16 @@ jobs:
           trap '"${owner}" vultr-lifecycle lease-release infra/vultr/application-acceptance.json application-acceptance-1 >/dev/null 2>&1 || true' EXIT
           "${owner}" vultr-lifecycle initial-host-probe \
             infra/vultr/application-acceptance.json application-acceptance-1 \
-            "${GENERATION}" a "${INTENT}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${agent}" \
+            "${GENERATION}" b "${INTENT}" "${RELEASE_SET}" "${GITHUB_RUN_ID}" "${agent}" \
             > "${RUNNER_TEMP}/vm-proof.json"
           jq -e --arg g "${GENERATION}" --arg rel "${RELEASE_SET}" --arg intent "${INTENT}" \
             '.status == "PASS" and .operation == "CREDENTIAL_INITIAL_HOST_PROBE" and
              .credential_projection == "VM" and .credential_generation == ($g|tonumber) and
              .release_set_sha256 == $rel and .provider_intent_sha256 == $intent and
-             .credential_slot_A == "EXACT_DUMMY" and .credential_slot_B == "EXACT_DUMMY" and
+             .credential_slot == "b" and
+             .credential_slot_B == "EXACT_CANONICAL_DUMMY" and
+             .credential_selected_slot_exact_dummy == true and
+             .credential_peer_slot_overwrite_authorized == false and
              .credential_store_present == false and .credential_provider_mutations == 0 and
              .credential_runtime_mutations == 0 and
              (.credential_host_attestation_sha256|test("^[0-9a-f]{64}$"))' \
@@ -922,9 +1027,73 @@ jobs:
           trap - EXIT
           printf 'attestation=%s\n' "${attestation}" >> "${GITHUB_OUTPUT}"
 
+  initial_windows_isolate:
+    name: Install separate exact Windows ProxyOnly acceptance consumer, no SCM
+    needs: [authorize, initial_preflight]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 25
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      EDGE_INSTALL_ROOT: C:\sing-box-acceptance
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+      EDGE_GITHUB_TOKEN: ${{ github.token }}
+      EDGE_WINDOWS_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID }}
+      EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Materialize isolated release from accepted immutable ReleaseSet
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'Windows acceptance installation replay forbidden' }
+          if ($env:GITHUB_REPOSITORY -cne 'iamaman11/sing-box' -or $env:GITHUB_REPOSITORY_ID -cne '1221750822') {
+            throw 'Windows isolated acceptance refuses foreign repository'
+          }
+          if (-not $env:EDGE_WINDOWS_ACCESS_CLIENT_ID -or -not $env:EDGE_WINDOWS_ACCESS_CLIENT_SECRET) {
+            throw 'Windows Access bootstrap unavailable; never borrow serving local credentials'
+          }
+          $root = $env:EDGE_INSTALL_ROOT
+          if ($root -cne 'C:\sing-box-acceptance') { throw 'Only isolated acceptance root is permitted' }
+          if (Test-Path -LiteralPath $root) { throw 'Existing Windows acceptance root: reconcile read-only, never overwrite' }
+          New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
+          # The disposable tree must be accessible only to its exact runner
+          # identity, built-in Administrators and SYSTEM, not ordinary users.
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & icacls.exe $root '/inheritance:r' '/grant:r' "*${sid}:(OI)(CI)F" 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Windows acceptance ACL confinement failed' }
+          $sentinel = Join-Path $root '.first-use-run'
+          [IO.File]::WriteAllText($sentinel, "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}")
+          $installer = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\install-windows-release.ps1'
+          & $installer -Repository 'iamaman11/sing-box' -ReleaseSetSha256 $env:RELEASE_SET -AcceptedRevision $env:GITHUB_SHA -InstallRoot $root -GitHubToken $env:EDGE_GITHUB_TOKEN
+          if ($LASTEXITCODE -ne 0) { throw 'Windows exact isolated release installation failed' }
+          $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor (Join-Path $root 'current.pb'))
+          if ($LASTEXITCODE -ne 0 -or -not ($doctor -contains 'windows_datapath_mode=ProxyOnly') -or -not ($doctor -contains "release_set_sha256=$env:RELEASE_SET")) {
+            throw 'Windows installed acceptance release does not prove exact ProxyOnly'
+          }
+          $console = Join-Path $root 'bin\edge-console.exe'
+          & $console credential-initial-acceptance-bootstrap --install-root $root
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows Access bootstrap failed; do not retry' }
+          Write-Host 'WINDOWS_ISOLATED_EXACT_RELEASE=PASS'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+          Write-Host 'WINDOWS_TUN_MUTATIONS=0'
+          Write-Host 'WINDOWS_DNS_MUTATIONS=0'
+          Write-Host 'WINDOWS_SCM_MUTATIONS=0'
+
   initial_windows_attest:
     name: Attest isolated Windows host without TUN or DNS mutation
-    needs: [authorize, initial_preflight]
+    needs: [authorize, initial_preflight, initial_windows_isolate]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
     timeout-minutes: 15
@@ -935,7 +1104,7 @@ jobs:
     outputs:
       attestation: ${{ steps.windows.outputs.attestation }}
     env:
-      EDGE_INSTALL_ROOT: C:\sing-box
+      EDGE_INSTALL_ROOT: C:\sing-box-acceptance
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
       GENERATION: ${{ needs.initial_preflight.outputs.generation }}
       INTENT: ${{ needs.initial_preflight.outputs.intent }}
@@ -970,7 +1139,7 @@ jobs:
               -not (Test-Path -LiteralPath $console -PathType Leaf)) {
             throw 'Immutable installed console missing'
           }
-          $raw = @(& $console credential-initial-attest $env:GENERATION a $env:INTENT $env:RELEASE_SET $env:GITHUB_RUN_ID --install-root $env:EDGE_INSTALL_ROOT)
+          $raw = @(& $console credential-initial-attest $env:GENERATION b $env:INTENT $env:RELEASE_SET $env:GITHUB_RUN_ID --install-root $env:EDGE_INSTALL_ROOT)
           if ($LASTEXITCODE -ne 0) { throw 'Windows exact dummy A/B attestation failed' }
           $proof = @{}
           foreach ($line in $raw) {
@@ -981,6 +1150,8 @@ jobs:
               [string]$proof['credential_projection'] -cne 'WINDOWS' -or
               [string]$proof['credential_generation'] -cne $env:GENERATION -or
               [string]$proof['credential_github_run_id'] -cne $env:GITHUB_RUN_ID -or
+              [string]$proof['credential_slot_B'] -cne 'EXACT_CANONICAL_DUMMY' -or
+              [string]$proof['credential_selected_slot_exact_dummy'] -cne 'true' -or
               [string]$proof['credential_provider_mutations'] -cne '0' -or
               [string]$proof['credential_runtime_mutations'] -cne '0' -or
               [string]$proof['windows_tun_mutations'] -cne '0' -or
@@ -988,13 +1159,13 @@ jobs:
               [string]$proof['credential_host_attestation_sha256'] -cnotmatch '^[0-9a-f]{64}$') {
             throw 'Windows native attestation incomplete or unsafe'
           }
-          # Prove the existing controller can serve the subsequent privileged
-          # candidate transaction BEFORE any non-replayable Worker PATCH.
-          # This is a read-only RPC: neither SCM, TUN, DNS nor routes change.
-          $state = @(& $console credential-state)
-          if ($LASTEXITCODE -ne 0 -or
-              -not ($state -contains 'credential_state_present=false')) {
-            throw 'First-use Windows controller unavailable or non-empty; refusing Worker publication'
+          # The acceptance consumer is independent of the intentionally
+          # stopped serving Windows SCM. Check only the isolated local cursor.
+          if (Test-Path -LiteralPath (Join-Path $env:EDGE_INSTALL_ROOT 'state\secrets\application-v2')) {
+            throw 'First-use isolated Windows credential cursor already exists'
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:EDGE_INSTALL_ROOT '.first-use-run'))) {
+            throw 'Windows acceptance owner sentinel absent'
           }
           "attestation=$($proof['credential_host_attestation_sha256'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_OUTPUT
           Write-Host 'WINDOWS_INITIAL_READONLY_ATTEST=PASS'
@@ -1010,6 +1181,7 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+      issues: write
     steps:
       - name: Commit exact durable BEGIN once and publish both projections
         shell: bash
@@ -1052,7 +1224,7 @@ jobs:
           # The pre-write observation must be empty; no duplicate BEGIN,
           # malformed record, changed intent, or unknown state is repairable.
           gh api --paginate "repos/${REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
-          "${owner}" credentials initial-pair-journal-plan "${GENERATION}" a \
+          "${owner}" credentials initial-pair-journal-plan "${GENERATION}" b \
             "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
             "${history}" "${exact}" > "${RUNNER_TEMP}/journal-plan.txt"
           grep -Fxq 'initial_publication_authorized=false' "${RUNNER_TEMP}/journal-plan.txt"
@@ -1068,7 +1240,7 @@ jobs:
           grep -Fxq 'credential_initial_journal_exact_begin=true' "${RUNNER_TEMP}/readback.txt"
           # The Rust publisher rechecks the same durable BEGIN, source,
           # host attestations, Worker versions and identities before mutation.
-          "${owner}" credentials initial-pair-publish "${GENERATION}" a \
+          "${owner}" credentials initial-pair-publish "${GENERATION}" b \
             "${INTENT}" "${VM_ATTESTATION}" "${WINDOWS_ATTESTATION}" "${GITHUB_RUN_ID}" \
             "${history}" "${exact}" | tee "${RUNNER_TEMP}/pair-publish.txt"
           grep -Fxq 'credential_initial_pair_provider_publish=PASS' "${RUNNER_TEMP}/pair-publish.txt"
@@ -1166,6 +1338,88 @@ jobs:
           echo 'N1_FIRST_USE_VM_LOCAL_RUNTIME=PASS' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
 
+  initial_line2_external:
+    name: Independent public-port Line2 six-proxy HTTPS/TLS/auth witness
+    needs: [authorize, initial_preflight, initial_pair_publish, initial_vm_runtime]
+    outputs:
+      vm_ipv4: ${{ steps.external.outputs.vm_ipv4 }}
+      provider_id: ${{ steps.external.outputs.provider_id }}
+      tls_domain: ${{ steps.external.outputs.tls_domain }}
+      username: ${{ steps.external.outputs.username }}
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Verify exact VM ownership, then prove six external proxy ports
+        id: external
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+          GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VM_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          VM_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${VM_ACCESS_CLIENT_ID}"
+          test -n "${VM_ACCESS_CLIENT_SECRET}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          "${owner}" vultr-lifecycle plan infra/vultr/application-acceptance.json application-acceptance-1 > "${RUNNER_TEMP}/external-plan.json"
+          provider_id="$(jq -er '
+            if (.plans|length)==1 and .plans[0].machine_id=="application-acceptance-1" and
+               .plans[0].class=="NOOP" and (.plans[0].provider_id|type)=="string"
+            then .plans[0].provider_id else error("external witness requires exact owned NOOP VM") end
+          ' "${RUNNER_TEMP}/external-plan.json")"
+          "${owner}" vultr-lifecycle inventory infra/vultr/application-acceptance.json > "${RUNNER_TEMP}/external-inventory.json"
+          vm_ipv4="$(jq -er --arg id "${provider_id}" '
+            [.inventory.resources[]|select(.provider_id==$id)] |
+            if length==1 and (.[0].main_ip|type)=="string"
+            then .[0].main_ip else error("external witness provider IP ambiguous") end
+          ' "${RUNNER_TEMP}/external-inventory.json")"
+          spec="infra/application/disposable-acceptance.json"
+          test "$(jq -er .environment "${spec}")" = "application-acceptance"
+          test "$(jq -er .machine_id "${spec}")" = "application-acceptance-1"
+          domain="$(jq -er '.runtime_policy.line1.tunnel_domain' "${spec}")"
+          username="$(jq -er '.runtime_policy.line2.proxy_username' "${spec}")"
+          test "$(jq -er '.runtime_policy.line2.proxy_cert_cn' "${spec}")" = "${domain}"
+          identity="${RUNNER_TEMP}/vm-worker-access.env"
+          umask 077
+          printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
+            "${VM_ACCESS_CLIENT_ID}" "${VM_ACCESS_CLIENT_SECRET}" > "${identity}"
+          sudo chown root:root "${identity}"
+          sudo chmod 0600 "${identity}"
+          trap 'sudo rm -f "${identity}"' EXIT
+          sudo env EDGE_RELEASE_CONTEXT_PATH="${EDGE_RELEASE_CONTEXT_PATH}" "${owner}" credentials initial-line2-external-witness \
+            "${GENERATION}" "${vm_ipv4}" "${domain}" "${username}" "${identity}" \
+            > "${RUNNER_TEMP}/line2-external.txt"
+          grep -Fxq 'line2_external_6_of_6=PASS' "${RUNNER_TEMP}/line2-external.txt"
+          grep -Fxq 'line2_direct_warp_egress_distinct=true' "${RUNNER_TEMP}/line2-external.txt"
+          grep -Fxq 'vm_runtime_mutations=0' "${RUNNER_TEMP}/line2-external.txt"
+          test "$(grep -c '^line2_external_endpoint=' "${RUNNER_TEMP}/line2-external.txt")" -eq 6
+          echo 'N2_EXTERNAL_LINE2_6_OF_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          printf 'vm_ipv4=%s\nprovider_id=%s\ntls_domain=%s\nusername=%s\n' "${vm_ipv4}" "${provider_id}" "${domain}" "${username}" >> "${GITHUB_OUTPUT}"
+
   initial_windows_consume:
     name: Consume and validate Worker-v2 Windows candidate without TUN
     needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]
@@ -1177,7 +1431,7 @@ jobs:
       cancel-in-progress: false
     permissions: {}
     env:
-      EDGE_INSTALL_ROOT: C:\sing-box
+      EDGE_INSTALL_ROOT: C:\sing-box-acceptance
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
       GENERATION: ${{ needs.initial_preflight.outputs.generation }}
     steps:
@@ -1207,36 +1461,85 @@ jobs:
           # Host eligibility was independently proven BEFORE paired publish.
           # No active runtime, candidate or legacy path is ever overwritten.
           # This is a one-time mutation: no retry after uncertain dispatch ACK.
-          & $console privileged-stage-credential ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows Worker credential stage failed; do not replay' }
+          & $console credential-initial-acceptance-stage ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows Worker candidate stage failed; do not replay' }
           & $console credential-transition validate-candidate --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate config validation failed; do not replay stage' }
-          $state = @(& $console credential-state)
-          if ($LASTEXITCODE -ne 0 -or
-              -not ($state -contains 'credential_state_present=true') -or
-              -not ($state -contains 'credential_active_present=false') -or
-              -not ($state -contains 'credential_candidate_present=true') -or
-              -not ($state -contains "credential_candidate_generation=$env:GENERATION")) {
-            throw 'First-use Windows candidate is not the exact delivered generation'
+          # Read-back and native sing-box check are performed by the
+          # existing credential-transition validate-candidate owner. No
+          # activation, controller RPC or secret output is required.
+          $external = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT)
+          if ($LASTEXITCODE -ne 0 -or -not ($external -contains 'line1_external_4_of_4=PASS') -or
+              -not ($external -contains 'line1_direct_warp_egress_distinct=true') -or
+              -not ($external -contains 'windows_tun_mutations=0') -or
+              -not ($external -contains 'windows_scm_mutations=0')) {
+            throw 'Independent authenticated Line1 direct/WARP 4/4 external witness failed'
           }
+          Write-Host 'N2_EXTERNAL_LINE1_4_OF_4=PASS'
           Write-Host 'WINDOWS_WORKER_PROJECTION_CONSUMED=PASS'
           Write-Host 'WINDOWS_CANDIDATE_VALIDATED=PASS'
           Write-Host 'WINDOWS_TUN_MUTATIONS=0'
           Write-Host 'WINDOWS_DNS_MUTATIONS=0'
           Write-Host 'WINDOWS_ACTIVE_CREDENTIAL_PROMOTION=NOT_PERFORMED'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
 
 # Candidate and VM-local checks are necessary but never an external PASS.
   # Keep this native one-command installation fail-closed until the required
   # independent external witness and reboot/cleanup proof are implemented.
+  initial_windows_post_reboot:
+    name: Repeat independent external 4/4 Line1 after real VM reboot
+    needs: [authorize, initial_preflight, initial_windows_consume, initial_reboot]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions: {}
+    env:
+      GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+    steps:
+      - name: Reuse only exact isolated candidate; prove public 4/4 after reboot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'External reboot proof cannot replay first-use mutations' }
+          $root = 'C:\sing-box-acceptance'
+          $sentinel = Join-Path $root '.first-use-run'
+          if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf) -or
+              [IO.File]::ReadAllText($sentinel) -cne "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}") {
+            throw 'Post-reboot Line1 witness refuses unowned acceptance root'
+          }
+          $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor (Join-Path $root 'current.pb'))
+          if ($LASTEXITCODE -ne 0 -or -not ($doctor -contains "release_set_sha256=$env:RELEASE_SET") -or
+              -not ($doctor -contains 'windows_datapath_mode=ProxyOnly')) {
+            throw 'Post-reboot Line1 witness requires exact immutable ProxyOnly ReleaseSet'
+          }
+          $console = Join-Path $root 'bin\edge-console.exe'
+          $proof = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+          if ($LASTEXITCODE -ne 0 -or
+              -not ($proof -contains 'line1_external_4_of_4=PASS') -or
+              -not ($proof -contains 'line1_direct_warp_egress_distinct=true') -or
+              -not ($proof -contains 'windows_tun_mutations=0') -or
+              -not ($proof -contains 'windows_scm_mutations=0')) {
+            throw 'Post-reboot independent authenticated Line1 external 4/4 failed'
+          }
+          Write-Host 'N2_POST_REBOOT_EXTERNAL_LINE1_4_OF_4=PASS'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+          Write-Host 'WINDOWS_TUN_MUTATIONS=0'
+
   initial_acceptance_verdict:
-    name: Final physical 10-endpoint acceptance verdict
-    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume, initial_reboot]
+    name: Pre-cleanup physical 10/10 and reboot acceptance gate
+    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume, initial_line2_external, initial_reboot, initial_windows_post_reboot]
     if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Refuse candidate-only success without external witness, reboot and cleanup
+      - name: Require every native host, credential and external endpoint proof
         shell: bash
         env:
           VM_INSTALL_JOB: ${{ needs.execute.result }}
@@ -1245,18 +1548,22 @@ jobs:
           VM_ATTEST_JOB: ${{ needs.initial_vm_attest.result }}
           WINDOWS_ATTEST_JOB: ${{ needs.initial_windows_attest.result }}
           PAIRED_WORKERS_JOB: ${{ needs.initial_pair_publish.result }}
-          REBOOT_JOB: ${{ needs.initial_reboot.result }}
+          PRE_REBOOT_LINE2_JOB: ${{ needs.initial_line2_external.result }}
+          POST_REBOOT_LINE1_JOB: ${{ needs.initial_windows_post_reboot.result }}
+          REBOOT_AND_POST_LINE2_JOB: ${{ needs.initial_reboot.result }}
         run: |
           set -euo pipefail
-          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB REBOOT_JOB; do
-            printf '%s=%s\n' "${field}" "${!field}"
+          for field in VM_INSTALL_JOB VM_LOCAL_JOB WINDOWS_CANDIDATE_JOB VM_ATTEST_JOB WINDOWS_ATTEST_JOB PAIRED_WORKERS_JOB PRE_REBOOT_LINE2_JOB POST_REBOOT_LINE1_JOB REBOOT_AND_POST_LINE2_JOB; do
+            if [[ "${!field}" != "success" ]]; then
+              echo "::error title=N1/N2 acceptance failed::${field}=${!field}"
+              exit 1
+            fi
           done
-          echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
-          echo 'N1_N2_EXTERNAL_LINE2_6_OF_6=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
-          echo 'N1_N2_PUBLIC_TLS_DIRECT_WARP_REBOOT_CLEANUP=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
-          echo 'N1_N2_PHYSICAL_ACCEPTANCE=BLOCKED_NOT_ACCEPTED' >> "${GITHUB_STEP_SUMMARY}"
-          echo '::error title=N1/N2 physical acceptance BLOCKED::No independent external 10/10 traffic, public TLS, reboot and zero-leak disposal witness. Candidate-only PASS cannot close this installation.'
-          exit 1
+          echo 'N1_N2_EXTERNAL_LINE1_4_OF_4=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_EXTERNAL_LINE2_6_OF_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_POST_REBOOT_EXTERNAL_4_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PRE_CLEANUP_TRAFFIC=PASS' >> "${GITHUB_STEP_SUMMARY}"
+
 
 # One bounded disposable cleanup after the physical verdict, on BOTH PASS
   # and FAIL. Reuse the exact existing native application-cleanup owner; no
@@ -1265,6 +1572,55 @@ jobs:
   # Unknown CREATE ACK must stop at read-only reconciliation, never blindly
   # compensate a potentially foreign resource or replay the provider mutation.
   # A cleanup failure remains DIAGNOSTIC_REQUIRED, never a fake PASS.
+  initial_windows_cleanup:
+    name: Destroy only this run's isolated Windows acceptance tree
+    needs: [authorize, initial_preflight, initial_windows_isolate, initial_acceptance_verdict]
+    if: >-
+      always() &&
+      needs.authorize.outputs.operation == 'initial-vm-install' &&
+      needs.initial_windows_isolate.result != 'skipped'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+    steps:
+      - name: Refuse unknown scope; remove only exact owned acceptance root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $root = 'C:\sing-box-acceptance'
+          if (-not (Test-Path -LiteralPath $root)) {
+            Write-Host 'WINDOWS_ISOLATED_CLEANUP=ALREADY_ABSENT'
+            exit 0
+          }
+          $item = Get-Item -LiteralPath $root -Force
+          if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Windows acceptance cleanup refuses foreign or symlinked root'
+          }
+          $sentinel = Join-Path $root '.first-use-run'
+          if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
+            throw 'Windows acceptance cleanup refuses root lacking durable run sentinel'
+          }
+          $expected = "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}"
+          if ([IO.File]::ReadAllText($sentinel) -cne $expected) {
+            throw 'Windows acceptance cleanup refuses unknown owner or ReleaseSet'
+          }
+          if (Get-ChildItem -LiteralPath $root -Recurse -Force |
+              Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) {
+            throw 'Windows acceptance cleanup refuses link to foreign project state'
+          }
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+          if (Test-Path -LiteralPath $root) {
+            throw 'Windows acceptance root cleanup unconfirmed, no blind retry'
+          }
+          Write-Host 'WINDOWS_ISOLATED_OWNED_CLEANUP=PASS'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+
   initial_cleanup:
     name: Dispose exact first-use VM and prove zero-leak provider state
     needs: [authorize, execute, initial_acceptance_verdict]
@@ -1362,7 +1718,7 @@ jobs:
   # native VM read-only candidate observation. Never repeat a lost reboot ACK.
   initial_reboot:
     name: One provider reboot and read-only credential recovery proof
-    needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume]
+    needs: [authorize, initial_preflight, initial_vm_runtime, initial_windows_consume, initial_line2_external]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     environment:
@@ -1383,6 +1739,12 @@ jobs:
           GENERATION: ${{ needs.initial_preflight.outputs.generation }}
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
           VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+          VM_PUBLIC_IPV4: ${{ needs.initial_line2_external.outputs.vm_ipv4 }}
+          VM_PROVIDER_ID: ${{ needs.initial_line2_external.outputs.provider_id }}
+          VM_TLS_DOMAIN: ${{ needs.initial_line2_external.outputs.tls_domain }}
+          VM_PROXY_USERNAME: ${{ needs.initial_line2_external.outputs.username }}
+          VM_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          VM_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = "1"
@@ -1457,5 +1819,66 @@ jobs:
           trap - EXIT
           echo 'N1_N2_POST_REBOOT_GUEST_BOOT_ID=PASS' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N1_N2_POST_REBOOT_VM_LOCAL_LINE2=PASS' >> "${GITHUB_STEP_SUMMARY}"
-          echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          # Independent PUBLIC endpoint test after the guest boot ID change.
+          # Validate the same provider and IP again instead of trusting stale
+          # pre-reboot address metadata or a VM-local loopback result.
+          "${owner}" vultr-lifecycle inventory infra/vultr/application-acceptance.json > "${RUNNER_TEMP}/reboot-inventory.json"
+          jq -e --arg id "${VM_PROVIDER_ID}" --arg ip "${VM_PUBLIC_IPV4}" '
+            [.inventory.resources[]|select(.provider_id==$id)] |
+            length==1 and .[0].main_ip==$ip
+          ' "${RUNNER_TEMP}/reboot-inventory.json" >/dev/null
+          identity="${RUNNER_TEMP}/post-reboot-vm-worker-access.env"
+          test -n "${VM_ACCESS_CLIENT_ID}"
+          test -n "${VM_ACCESS_CLIENT_SECRET}"
+          umask 077
+          printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
+            "${VM_ACCESS_CLIENT_ID}" "${VM_ACCESS_CLIENT_SECRET}" > "${identity}"
+          sudo chown root:root "${identity}"
+          sudo chmod 0600 "${identity}"
+          trap 'sudo rm -f "${identity}"' EXIT
+          sudo env EDGE_RELEASE_CONTEXT_PATH="${EDGE_RELEASE_CONTEXT_PATH}" "${owner}" credentials initial-line2-external-witness \
+            "${GENERATION}" "${VM_PUBLIC_IPV4}" "${VM_TLS_DOMAIN}" "${VM_PROXY_USERNAME}" "${identity}" \
+            > "${RUNNER_TEMP}/line2-reboot-external.txt"
+          grep -Fxq 'line2_external_6_of_6=PASS' "${RUNNER_TEMP}/line2-reboot-external.txt"
+          grep -Fxq 'line2_direct_warp_egress_distinct=true' "${RUNNER_TEMP}/line2-reboot-external.txt"
+          test "$(grep -c '^line2_external_endpoint=' "${RUNNER_TEMP}/line2-reboot-external.txt")" -eq 6
+          echo 'N2_POST_REBOOT_EXTERNAL_LINE2_6_OF_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+
+  initial_acceptance_final:
+    name: Final N1/N2 physical result after exact scoped cleanup
+    needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]
+    if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require accepted 10/10 traffic, Windows cleanup and safe VM ownership
+        shell: bash
+        env:
+          TRAFFIC: ${{ needs.initial_acceptance_verdict.result }}
+          WINDOWS_CLEANUP: ${{ needs.initial_windows_cleanup.result }}
+          VM_CLEANUP: ${{ needs.initial_cleanup.result }}
+          FIRST_USE_CREATE_CONFIRMED: ${{ needs.execute.outputs.first_use_create_confirmed }}
+        run: |
+          set -euo pipefail
+          if [[ "${TRAFFIC}" != "success" || "${WINDOWS_CLEANUP}" != "success" ]]; then
+            echo "::error title=N1/N2 NOT_ACCEPTED::Transport or isolated Windows cleanup failed"
+            exit 1
+          fi
+          if [[ "${FIRST_USE_CREATE_CONFIRMED}" == "true" ]]; then
+            if [[ "${VM_CLEANUP}" != "success" ]]; then
+              echo "::error title=N1/N2 NOT_ACCEPTED::New disposable VM cleanup failed"
+              exit 1
+            fi
+            echo 'N1_N2_OWNED_NEW_VM_ZERO_LEAK=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          else
+            if [[ "${FIRST_USE_CREATE_CONFIRMED}" != "false" || "${VM_CLEANUP}" != "skipped" ]]; then
+              echo "::error title=N1/N2 NOT_ACCEPTED::Unknown VM creation/cleanup state"
+              exit 1
+            fi
+            echo 'N1_N2_REUSED_OWNED_VM=PRESERVED_NOT_DISPOSED' >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          echo 'N1_N2_ISOLATED_WINDOWS_CLEANUP=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_EXTERNAL_PRE_AND_POST_REBOOT_4_PLUS_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PHYSICAL_ACCEPTANCE=PASS' >> "${GITHUB_STEP_SUMMARY}"
 

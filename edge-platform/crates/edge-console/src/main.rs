@@ -2,6 +2,7 @@ mod cli;
 mod credential_access_bootstrap;
 mod credential_transition;
 mod error;
+mod initial_line1_witness;
 
 use clap::Parser;
 use edge_controller_core::{
@@ -14,7 +15,7 @@ use edge_local_runtime::{
 use edge_observability::init as init_observability;
 use edge_secrets::{
     ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
-    verify_canonical_dummy_ab_slots,
+    verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
 };
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
@@ -207,9 +208,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::CredentialInitialAttest(args) => {
             let root = Path::new(&args.install_root);
-            run_windows_initial_credential_probe(root)
-                .await
-                .map_err(ConsoleError::Command)?;
+            require_initial_windows_credential_host(root).map_err(ConsoleError::Command)?;
             let activation = load_verified_activation(root).map_err(|err| {
                 ConsoleError::Command(format!(
                     "Windows first-use attestation release is unverified: {err}"
@@ -229,6 +228,16 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     ));
                 }
             };
+            let proof = verify_initial_selected_dummy_slot(
+                edge_shared_types::CredentialProjectionKind::Windows,
+                slot,
+                &root
+                    .join("state")
+                    .join("secrets")
+                    .join(ACCESS_IDENTITY_FILE_NAME),
+            )
+            .await
+            .map_err(ConsoleError::Command)?;
             let machine = env::var("COMPUTERNAME").map_err(|_| {
                 ConsoleError::Command("Windows machine identity unavailable".to_owned())
             })?;
@@ -246,11 +255,41 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("credential_projection=WINDOWS");
             println!("credential_generation={}", args.generation);
             println!("credential_host_attestation_sha256={digest}");
+            println!("credential_slot_A={}", proof.slot_a_observation);
+            println!("credential_slot_B={}", proof.slot_b_observation);
+            println!("credential_selected_slot_exact_dummy=true");
             println!("credential_github_run_id={}", args.run_id);
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");
             println!("windows_tun_mutations=0");
             println!("windows_dns_mutations=0");
+            Ok(())
+        }
+        Command::CredentialInitialAcceptanceBootstrap(args) => {
+            let root = Path::new(&args.install_root);
+            load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!("isolated Windows release unverified: {err}"))
+            })?;
+            initial_line1_witness::bootstrap_access(root).map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        Command::CredentialInitialAcceptanceStage(args) => {
+            let root = Path::new(&args.install_root);
+            load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!("isolated Windows release unverified: {err}"))
+            })?;
+            initial_line1_witness::stage_from_worker(root, args.generation)
+                .await
+                .map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        Command::CredentialInitialLine1Witness(args) => {
+            let root = Path::new(&args.install_root);
+            let activation = load_verified_activation(root).map_err(|err| {
+                ConsoleError::Command(format!("Line1 witness release is unverified: {err}"))
+            })?;
+            initial_line1_witness::run(root, Path::new(&activation.sing_box_path), args.generation)
+                .map_err(ConsoleError::Command)?;
             Ok(())
         }
         Command::CredentialState(args) => {
