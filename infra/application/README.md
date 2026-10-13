@@ -101,6 +101,9 @@ Target an **exact canonical application manifest** instead of a hardcoded VM nam
 ```text
 /vm diagnose infra/application/disposable-acceptance.json
 /vm quality-line2 infra/application/disposable-acceptance.json
+/vm credential-initial-probe infra/application/disposable-acceptance.json
 ```
 
 The protected GitHub revision supplies `machine_id`, `vultr_spec_path`, application profile, and runner selection. The workflow rejects missing, ambiguous, or inconsistent declarations before scheduling a self-hosted runner and requires its observed identity to match the Git-owned machine. The same syntax applies to every VM with a canonical application manifest; it does not discover/operate unmanaged hosts. Both commands are read-only and never install containers or publish credentials. Credential-bearing converge/rollback require a **per-target immutable ReleaseSet bundle and verified provider ownership** and are deliberately not exposed by this read-only interface yet.
+
+The initial credential probe is read-only. The existing root-owned edge-agent proves the exact canonical dummy A/B Worker deliveries using its VM-only Cloudflare Access identity and requires an empty local credential store, no application containers and a reachable Docker daemon. It does not stage, publish or promote credentials.

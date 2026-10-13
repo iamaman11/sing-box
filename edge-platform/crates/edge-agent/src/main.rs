@@ -1111,6 +1111,22 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
 
     inspect_bundle_artifacts(stack_dir, &mut state);
 
+    // The host engine is an independent substrate observation. Do not return
+    // a false "Docker unavailable" just because the application Compose file
+    // has not been installed yet. This is essential on first-use VM hosts.
+    let docker = observe_docker()
+        .await
+        .unwrap_or_else(|_| DockerObservation::unreachable());
+    state.docker_reachable = docker.reachable;
+    state.running_containers = docker.running_containers.clone();
+    state.listening_tcp_ports = docker.listening_tcp_ports.clone();
+    state.listening_udp_ports = docker.listening_udp_ports.clone();
+    if !docker.reachable {
+        state
+            .degraded_reasons
+            .push("docker runtime is not reachable from edge-agent".to_owned());
+    }
+
     let compose_path = stack_dir.join("docker-compose.yml");
     let enabled_profiles = enabled_application_profiles(stack_dir);
     let line2_enabled = line2_runtime_enabled(stack_dir);
@@ -1120,14 +1136,6 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         state.healthy = false;
         return state;
     };
-
-    let docker = observe_docker()
-        .await
-        .unwrap_or_else(|_| DockerObservation::unreachable());
-    state.docker_reachable = docker.reachable;
-    state.running_containers = docker.running_containers.clone();
-    state.listening_tcp_ports = docker.listening_tcp_ports.clone();
-    state.listening_udp_ports = docker.listening_udp_ports.clone();
 
     state.missing_containers = compose
         .expected_containers
@@ -1141,11 +1149,6 @@ async fn inspect_runtime(stack_dir: &Path, mode: AgentMode) -> AgentState {
         .cloned()
         .collect();
 
-    if !docker.reachable {
-        state
-            .degraded_reasons
-            .push("docker runtime is not reachable from edge-agent".to_owned());
-    }
     if !state.missing_containers.is_empty() {
         state.degraded_reasons.push(format!(
             "expected containers are not running: {}",
