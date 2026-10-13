@@ -533,7 +533,9 @@ impl VultrLifecycleCommand {
                 path(args.agent_artifact_path),
             ],
             Self::InitialRuntimeApply(args) => initial_runtime_args("initial-runtime-apply", args),
-            Self::InitialRuntimeVerify(args) => initial_runtime_args("initial-runtime-verify", args),
+            Self::InitialRuntimeVerify(args) => {
+                initial_runtime_args("initial-runtime-verify", args)
+            }
             Self::RunnerBootstrap(args) => vec![
                 "runner-bootstrap".to_owned(),
                 path(args.spec_path),
