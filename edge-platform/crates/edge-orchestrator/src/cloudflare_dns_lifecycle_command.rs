@@ -69,8 +69,7 @@ pub(crate) async fn acceptance_create_or_reuse(
     match plan.action.clone() {
         ApplyAction::Noop => Ok("REUSED_OWNED"),
         ApplyAction::Create { .. } => {
-            let authorized =
-                authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
+            let authorized = authorize_dns_apply(&desired, &derived.target_ipv4, &observed, plan)?;
             let report = apply_dns_once(
                 &mut provider,
                 &desired,
