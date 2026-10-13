@@ -2296,6 +2296,7 @@ def main() -> None:
     for command, should_pass in [
         ("/vm diagnose infra/application/disposable-acceptance.json", True),
         ("/vm quality-line2 infra/application/disposable-acceptance.json", True),
+        ("/vm credential-initial-probe infra/application/disposable-acceptance.json", True),
         ("/vm diagnose infra/application/unknown.json", False),
         ("/vm diagnose infra/application/../vultr/application-acceptance.json", False),
         ("/vm converge infra/application/disposable-acceptance.json", False),
@@ -2329,6 +2330,10 @@ def main() -> None:
         and 'desired.get("application_profile") not in machine.get("application_profiles", [])' in application
         and 'len([m for m in machines if isinstance(m, dict) and m.get("id") == runtime_machine]) != 1' in application
         and 'git checkout --detach FETCH_HEAD' in application
+        and '"credential-initial-probe",' in application
+        and "needs.authorize.outputs.operation == 'credential-initial-probe'" in production_runtime
+        and 'local_operation="credential-initial-probe"' in production_runtime
+        and 'local credential-initial-probe' in PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8")
         and "needs.authorize.outputs.command_family == 'vm'" in production_runtime
         and 'VM_RUNTIME_MACHINE: ${{ needs.authorize.outputs.runtime_machine }}' in production_runtime
         and 'vm_runtime_target=BLOCKED_INVALID_GIT_IDENTITY' in production_runtime
