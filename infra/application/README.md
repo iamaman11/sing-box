@@ -109,3 +109,23 @@ The protected GitHub revision supplies `machine_id`, `vultr_spec_path`, applicat
 The initial credential probe is read-only. The existing root-owned edge-agent proves the exact canonical dummy A/B Worker deliveries using its VM-only Cloudflare Access identity and requires an empty local credential store, no application containers and a reachable Docker daemon. It does not stage, publish or promote credentials.
 
 The VM credential preflight inspects **both** reserved dummy generations through its own Cloudflare Access identity. A 404 at the exact dummy generation is reported as `NOT_FOUND_OR_OTHER_GENERATION`, **not** as an empty Worker slot or permission to publish. A syntactically valid non-dummy payload is reported only as `NONCANONICAL_PAYLOAD`; secret bytes and discovered generations are never logged. Any such result fails closed; provider metadata alone cannot resolve it. The active initial-pair journal, Worker version fences and no-replay ownership remain mandatory before any first-use write.
+
+## Fixed Worker-slot evidence, 2026-10-13
+
+The legacy `GET /v1/credentials?generation=N` searches **both** opaque
+`EDGE_CREDENTIAL_BUNDLE_A/B` bindings. Receiving the canonical dummy for
+generation 9000002 therefore does **not** identify which binding contains it.
+The historical physical VM output `slot_B=EXACT_CANONICAL_DUMMY` is a
+generation-only observation and cannot authorize a write to B.
+
+A true first-use selected-slot witness requires the same Access-protected
+Worker's fixed-binding `GET /v1/proof-slot` operation, which compares a
+public canonical dummy digest inside the Worker and reveals **only** an exact
+status (204), noncanonical binding (409), or unsupported/rejected operation
+(404). A 404 is never proof of an empty slot. The new contract is only source
+until an exact accepted release and a code-only Worker version update with
+strict A/B secret binding inheritance is physically verified. The original
+credential GET continues unchanged. No unknown slot may be reset/rewritten.
+
+Source work in Draft PR #353 does not mean Cloudflare Workers, the acceptance
+VM or Windows have been changed, and it is not the N1/N2 10/10 acceptance.
