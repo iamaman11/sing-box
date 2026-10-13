@@ -247,26 +247,74 @@ async fn observe_canonical_credential_bundle_with_identity(
     Ok(Some(bundle))
 }
 
+/// Read-only, bounded diagnostics: never expose the returned protobuf bytes,
+/// credential values, or the contents of an occupied slot. HTTP 404 from a
+/// generation-specific Worker endpoint proves neither an empty binding nor
+/// that it is safe to overwrite the binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DummySlotObservation {
+    ExactCanonical,
+    MissingOrOtherGeneration,
+    Noncanonical,
+}
+
+impl DummySlotObservation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactCanonical => "EXACT_CANONICAL_DUMMY",
+            Self::MissingOrOtherGeneration => "NOT_FOUND_OR_OTHER_GENERATION",
+            Self::Noncanonical => "NONCANONICAL_PAYLOAD",
+        }
+    }
+}
+
+fn classify_dummy_slot(
+    observed: Option<&CredentialDeliveryBundle>,
+    projection: CredentialProjectionKind,
+    generation: u64,
+) -> DummySlotObservation {
+    match observed {
+        None => DummySlotObservation::MissingOrOtherGeneration,
+        Some(bundle) if verify_canonical_dummy_ab_probe(bundle, projection, generation).is_ok() => {
+            DummySlotObservation::ExactCanonical
+        }
+        Some(_) => DummySlotObservation::Noncanonical,
+    }
+}
+
 /// Read-only proof that BOTH fixed A/B Worker slots still carry the canonical
 /// non-secret probe. A Worker binding name, version tag, or 404 cannot prove
-/// emptiness. Never returns payload bytes or Access credentials to the caller.
+/// emptiness. Inspect both known dummy generations before deciding. Never
+/// returns payload bytes, actual unknown generations, or Access credentials.
 pub async fn verify_canonical_dummy_ab_slots(
     projection: CredentialProjectionKind,
     identity_path: &Path,
 ) -> Result<(), String> {
     let identity = read_access_service_identity(identity_path)?;
-    for generation in [
-        CREDENTIAL_DUMMY_PROBE_GENERATION_A,
-        CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+    let mut findings = Vec::with_capacity(2);
+    for (slot, generation) in [
+        ("A", CREDENTIAL_DUMMY_PROBE_GENERATION_A),
+        ("B", CREDENTIAL_DUMMY_PROBE_GENERATION_B),
     ] {
         let observed = observe_canonical_credential_bundle_with_identity(
             projection, generation, &identity, true,
         )
-        .await?
-        .ok_or_else(|| "initial Worker-v2 proof requires both canonical dummy slots".to_owned())?;
-        verify_canonical_dummy_ab_probe(&observed, projection, generation)?;
+        .await?;
+        findings.push((slot, classify_dummy_slot(observed.as_ref(), projection, generation)));
     }
-    Ok(())
+    if findings
+        .iter()
+        .all(|(_, status)| *status == DummySlotObservation::ExactCanonical)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "initial Worker-v2 fixed A/B dummy proof BLOCKED: slot_A={}; slot_B={}; \
+         publication_authorized=false; provider_secret_contents=UNREADABLE; \
+         no conclusion about occupied slot generations or safe overwrite",
+        findings[0].1.as_str(),
+        findings[1].1.as_str()
+    ))
 }
 
 fn verify_canonical_dummy_ab_probe(
@@ -368,6 +416,54 @@ mod tests {
             CREDENTIAL_DUMMY_PROBE_GENERATION_A,
         );
         assert!(wrong_schema_result.is_err());
+    }
+
+    #[test]
+    fn worker_dummy_slot_diagnostics_distinguish_both_without_secret_disclosure() {
+        let exact = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: None,
+        };
+        assert_eq!(
+            classify_dummy_slot(
+                Some(&exact),
+                CredentialProjectionKind::Vm,
+                CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            ),
+            DummySlotObservation::ExactCanonical,
+        );
+        assert_eq!(
+            classify_dummy_slot(
+                None,
+                CredentialProjectionKind::Vm,
+                CREDENTIAL_DUMMY_PROBE_GENERATION_B,
+            ),
+            DummySlotObservation::MissingOrOtherGeneration,
+        );
+        let mut noncanonical = exact;
+        noncanonical.dummy_non_secret = false;
+        assert_eq!(
+            classify_dummy_slot(
+                Some(&noncanonical),
+                CredentialProjectionKind::Vm,
+                CREDENTIAL_DUMMY_PROBE_GENERATION_A,
+            ),
+            DummySlotObservation::Noncanonical,
+        );
+        for value in [
+            DummySlotObservation::ExactCanonical,
+            DummySlotObservation::MissingOrOtherGeneration,
+            DummySlotObservation::Noncanonical,
+        ] {
+            let result = value.as_str();
+            assert!(!result.contains("secret"));
+            assert!(!result.contains("client"));
+            assert!(!result.contains("9_000_"));
+        }
     }
 
     #[test]
