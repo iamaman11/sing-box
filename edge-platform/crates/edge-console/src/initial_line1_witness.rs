@@ -167,7 +167,7 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
     let text = String::from_utf8(output.stdout)
         .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())?;
     let (body, status) = text
-        .rsplit_once("\\nCODE:")
+        .rsplit_once("\nCODE:")
         .ok_or("Line1 curl did not report HTTP status")?;
     if !matches!(status, "200" | "204") {
         return Err("Line1 external HTTPS returned unexpected status".to_owned());
