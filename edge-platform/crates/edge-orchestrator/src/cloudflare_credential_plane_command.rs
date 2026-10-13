@@ -491,7 +491,9 @@ fn worker_proof_record(
         .collect::<Vec<_>>();
     if let Some(exact) = expected {
         if marked.len() != 1 || marked[0].as_str() != exact {
-            return Err("Worker proof migration requires one exact durable GitHub BEGIN".to_owned());
+            return Err(
+                "Worker proof migration requires one exact durable GitHub BEGIN".to_owned(),
+            );
         }
         let body = exact
             .strip_prefix(WORKER_PROOF_MARKER)
@@ -510,7 +512,10 @@ fn worker_proof_record(
                 parsed.baseline_sha256.as_str(),
             ]
             .iter()
-            .all(|v| v.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+            .all(|v| {
+                v.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
         {
             return Err("Worker proof BEGIN is not a canonical non-secret record".to_owned());
         }
@@ -546,9 +551,10 @@ fn worker_proof_baseline_sha256(
             ));
         }
         let current = projection_observation(observed, &projection.projection)?;
-        let latest = current.worker_latest_version_id.as_deref().ok_or_else(|| {
-            "Worker proof baseline requires latest version ID".to_owned()
-        })?;
+        let latest = current
+            .worker_latest_version_id
+            .as_deref()
+            .ok_or_else(|| "Worker proof baseline requires latest version ID".to_owned())?;
         if current.worker_active_version_ids.as_slice() != [latest] {
             return Err(format!(
                 "{} Worker proof baseline requires exact active latest version",
@@ -609,7 +615,8 @@ async fn initial_worker_proof_plan(
     };
     let body = format!(
         "{WORKER_PROOF_MARKER}\n{}",
-        serde_json::to_string(&attempt).map_err(|_| "cannot encode Worker proof BEGIN".to_owned())?
+        serde_json::to_string(&attempt)
+            .map_err(|_| "cannot encode Worker proof BEGIN".to_owned())?
     );
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
