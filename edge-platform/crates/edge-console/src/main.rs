@@ -265,6 +265,22 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("windows_dns_mutations=0");
             Ok(())
         }
+        Command::CredentialInitialAcceptanceBootstrap(args) => {
+            let root = Path::new(&args.install_root);
+            load_verified_activation(root)
+                .map_err(|err| ConsoleError::Command(format!("isolated Windows release unverified: {err}")))?;
+            initial_line1_witness::bootstrap_access(root).map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        Command::CredentialInitialAcceptanceStage(args) => {
+            let root = Path::new(&args.install_root);
+            load_verified_activation(root)
+                .map_err(|err| ConsoleError::Command(format!("isolated Windows release unverified: {err}")))?;
+            initial_line1_witness::stage_from_worker(root, args.generation)
+                .await
+                .map_err(ConsoleError::Command)?;
+            Ok(())
+        }
         Command::CredentialInitialLine1Witness(args) => {
             let root = Path::new(&args.install_root);
             let activation = load_verified_activation(root)
