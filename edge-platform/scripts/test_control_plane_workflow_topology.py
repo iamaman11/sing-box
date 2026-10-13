@@ -457,7 +457,7 @@ def main() -> None:
         and 'credential-initial-pair-provider-intent/v1' in credential_provider
         and "credentials initial-pair-journal-observe" in credentials
         and "gh api --paginate" in credentials
-        and "issues: read" in credentials
+        and "issues: read" not in credentials
         and "credential_initial_journal_empty=true" in credentials
         and "credential_journal_mutations=0" in credentials
         and "require_empty_initial_history(&history)?" in credential_provider
@@ -766,7 +766,7 @@ def main() -> None:
         and 'credentials initial-pair-journal-readback' in initial_flow
         and 'credentials initial-pair-publish' in initial_flow
         and 'gh api --method POST "repos/${REPOSITORY}/issues/26/comments"' in initial_flow
-        and 'issues: write' in initial_flow
+        and 'issues: write' not in initial_flow
         and 'GITHUB_RUN_ATTEMPT' in initial_flow
         and 'vultr-lifecycle initial-runtime-apply' in initial_flow
         and 'vultr-lifecycle initial-runtime-verify' in initial_flow
@@ -1635,6 +1635,13 @@ def main() -> None:
         "router and skipped comments must never occupy production concurrency",
     )
 
+    require(
+        "issues: read" not in vultr
+        and "issues: write" not in vultr
+        and "issues: read" not in credentials
+        and "issues: write" not in credentials,
+        "called workflows must not request issues scopes absent from the router's contents-only GITHUB_TOKEN",
+    )
     require(
         "permissions:\n  contents: read\n" in router,
         "router must grant only read-only contents permission required by reusable backends",
