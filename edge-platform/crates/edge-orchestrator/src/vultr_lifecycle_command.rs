@@ -2,9 +2,7 @@ use crate::application_acceptance_command::validate_disposable_acceptance;
 use crate::application_lifecycle_command::{
     acceptance_stage_initial_policy, load_application_desired,
 };
-use crate::cloudflare_dns_lifecycle_command::{
-    acceptance_create_or_reuse as converge_initial_disposable_dns,
-};
+use crate::cloudflare_dns_lifecycle_command::acceptance_create_or_reuse as converge_initial_disposable_dns;
 use crate::credential_initial_journal::verify_initial_vm_runtime_gate;
 use crate::vultr_host_bootstrap::{
     HostSubstrateVersions, InstanceAction, OperationalProvider, VultrOperationalApiProvider,
@@ -825,8 +823,7 @@ async fn run_initial_dns_converge(
     context.application_release_authority()?;
     let application = load_application_desired(Path::new(&args[1]))?;
     validate_disposable_acceptance(&application)?;
-    let outcome =
-        converge_initial_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
+    let outcome = converge_initial_disposable_dns(Path::new(&args[0]), Path::new(&args[1])).await?;
     print_json_value(serde_json::json!({
         "operation": "INITIAL_VM_DNS_CONVERGE",
         "status": "PASS",
