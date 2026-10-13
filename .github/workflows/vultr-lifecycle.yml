@@ -292,10 +292,11 @@ jobs:
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
-          # Only the first-install operation can receive existing host Access
-          # identity, never a regular lifecycle/production/runner operation.
-          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID || '' }}
-          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET || '' }}
+          # Only bounded first-use/bootstrap transport can deliver the
+          # VM host Access identity directly to its root-owned local owner.
+          # The low-privilege self-hosted runner never receives the plaintext.
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID || '' }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET || '' }}
           CLOUDFLARE_API_TOKEN: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_API_TOKEN || '' }}
         run: |
           set -euo pipefail
