@@ -121,14 +121,15 @@ fn isolated_config(state: &WindowsRuntimeState, ports: &[u16]) -> Result<Vec<u8>
     config["inbounds"] = json!(inbounds);
     config["outbounds"] = json!(positive);
     config["route"] = json!({"rules": rules, "final": "direct", "auto_detect_interface": true});
-    config.as_object_mut()
+    config
+        .as_object_mut()
         .ok_or("Line1 canonical config must be an object")?
         .remove("experimental");
     if config["inbounds"].as_array().is_none_or(|entries| {
         entries.len() != 8
-            || entries.iter().any(|item| {
-                item["type"] != "mixed" || item["listen"] != "127.0.0.1"
-            })
+            || entries
+                .iter()
+                .any(|item| item["type"] != "mixed" || item["listen"] != "127.0.0.1")
     }) {
         return Err("Line1 isolated witness would expose non-local or TUN inbound".to_owned());
     }
@@ -181,18 +182,16 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
 // ranges. Never accept local, documentation or CGNAT egress as public WARP.
 fn globally_routable(address: Ipv4Addr) -> bool {
     let [a, b, c, _] = address.octets();
-    !(
-        a == 0
-            || a == 10
-            || a == 127
-            || a >= 224
-            || (a == 100 && (64..=127).contains(&b))
-            || (a == 169 && b == 254)
-            || (a == 172 && (16..=31).contains(&b))
-            || (a == 192 && (b == 0 || (b == 168) || (b == 88 && c == 99)))
-            || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
-            || (a == 203 && b == 0 && c == 113)
-    )
+    !(a == 0
+        || a == 10
+        || a == 127
+        || a >= 224
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && (b == 0 || (b == 168) || (b == 88 && c == 99)))
+        || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
+        || (a == 203 && b == 0 && c == 113))
 }
 
 fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, String> {
@@ -207,9 +206,13 @@ fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, S
     }
     let (egress, status) = curl_through(port, EGRESS_PROBE)?;
     if status != "200" {
-        return Err(format!("{tag} external egress service returned non-200 HTTP"));
+        return Err(format!(
+            "{tag} external egress service returned non-200 HTTP"
+        ));
     }
-    let address = egress.trim().parse::<Ipv4Addr>()
+    let address = egress
+        .trim()
+        .parse::<Ipv4Addr>()
         .map_err(|_| format!("{tag} external public IPv4 witness invalid"))?;
     if !globally_routable(address) {
         return Err(format!("{tag} external egress address is not global"));
@@ -218,7 +221,10 @@ fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, S
 }
 
 pub(crate) fn require_isolated_root(root: &Path) -> Result<(), String> {
-    if !root.to_string_lossy().eq_ignore_ascii_case(r"C:\sing-box-acceptance") {
+    if !root
+        .to_string_lossy()
+        .eq_ignore_ascii_case(r"C:\sing-box-acceptance")
+    {
         return Err("only isolated Windows acceptance install root may use this owner".to_owned());
     }
     Ok(())
@@ -228,7 +234,10 @@ pub(crate) fn require_isolated_root(root: &Path) -> Result<(), String> {
 /// identity. Secret input comes only from protected GitHub environment scope.
 pub(crate) fn bootstrap_access(root: &Path) -> Result<(), String> {
     require_isolated_root(root)?;
-    let identity_path = root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME);
+    let identity_path = root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
     if identity_path.exists() || windows_credential_store_path(root).exists() {
         return Err("isolated Access bootstrap refuses existing or partial credentials".to_owned());
     }
@@ -257,13 +266,13 @@ pub(crate) async fn stage_from_worker(root: &Path, generation: u64) -> Result<()
     if path.exists() {
         return Err("isolated Windows first-use stage is already attempted".to_owned());
     }
-    let identity = root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME);
-    let bundle = fetch_canonical_credential_bundle(
-        CredentialProjectionKind::Windows,
-        generation,
-        &identity,
-    )
-    .await?;
+    let identity = root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
+    let bundle =
+        fetch_canonical_credential_bundle(CredentialProjectionKind::Windows, generation, &identity)
+            .await?;
     let store = CredentialStore::new(path, CredentialProjectionKind::Windows)?;
     let state = store.stage_delivery_candidate(&bundle)?;
     if state.active.is_some() || state.previous.is_some() {
@@ -300,11 +309,16 @@ pub(crate) fn run(
         CredentialProjectionKind::Windows,
     )?
     .ok_or("Line1 isolated credential store missing")?;
-    let state = store.read_state()?.ok_or("Line1 credential cursor absent")?;
+    let state = store
+        .read_state()?
+        .ok_or("Line1 credential cursor absent")?;
     if state.active.is_some() || state.previous.is_some() {
         return Err("Line1 witness refuses active or previous runtime generations".to_owned());
     }
-    let candidate = state.candidate.as_ref().ok_or("Line1 staged candidate absent")?;
+    let candidate = state
+        .candidate
+        .as_ref()
+        .ok_or("Line1 staged candidate absent")?;
     if candidate.generation != generation {
         return Err("Line1 witness refuses different credential generation".to_owned());
     }
@@ -346,7 +360,12 @@ pub(crate) fn run(
     let mut owner = OwnedChild(child);
     let mut ips = Vec::with_capacity(4);
     for (i, tag) in TAGS.iter().enumerate() {
-        if owner.0.try_wait().map_err(|_| "Line1 process wait failed")?.is_some() {
+        if owner
+            .0
+            .try_wait()
+            .map_err(|_| "Line1 process wait failed")?
+            .is_some()
+        {
             return Err("Line1 isolated sing-box exited before external acceptance".to_owned());
         }
         let ip = check_endpoint(ports[i], ports[i + 4], tag)?;
