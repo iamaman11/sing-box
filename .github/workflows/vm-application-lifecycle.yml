@@ -29,6 +29,19 @@ jobs:
       runtime_machine: ${{ steps.parse.outputs.runtime_machine }}
 
     steps:
+      - name: Checkout exact canonical VM inventory before selecting any runner
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+
       - name: Parse and authorize typed request
         id: parse
         shell: bash
@@ -38,6 +51,9 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           import os
+          import json
+          import re
+          from pathlib import Path
 
           def fail(message):
               raise SystemExit(message)
@@ -61,11 +77,40 @@ jobs:
               operation = tokens[1]
               spec_path = "infra/production/production.textproto"
               runtime_machine = "production-1"
-          elif tokens in (["/application", "vm-diagnose"], ["/application", "vm-quality-line2"]):
-              command_family = "acceptance_vm"
-              operation = "diagnose" if tokens[1] == "vm-diagnose" else "quality-line2"
-              spec_path = "infra/vultr/application-acceptance.json"
-              runtime_machine = "application-acceptance-1"
+          elif len(tokens) == 3 and tokens[0] == "/vm" and tokens[1] in {
+              "diagnose", "quality-line2",
+          }:
+              # Git chooses the machine; no caller-controlled IP, runner label,
+              # shell, or second authority source.
+              spec_path = tokens[2]
+              if not re.fullmatch(r"infra/application/[a-z0-9][a-z0-9_-]*\\.json", spec_path):
+                  fail("VM target must be an existing exact Git-owned application manifest")
+              desired = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+              if (desired.get("schema") != 2 or
+                  desired.get("runtime_env_required") is not True or
+                  desired.get("bundle_root") != "win/vultr-waw/stack"):
+                  fail("VM application manifest has an unsupported typed schema/owner")
+              runtime_machine = desired.get("machine_id", "")
+              if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", runtime_machine):
+                  fail("VM application machine identity is malformed")
+              provider_spec = desired.get("vultr_spec_path", "")
+              if not isinstance(provider_spec, str) or not re.fullmatch(
+                  r"infra/vultr/[a-z0-9][a-z0-9_-]*\\.json", provider_spec
+              ):
+                  fail("VM manifest has an invalid Git-owned Vultr spec reference")
+              inventory = json.loads(Path(provider_spec).read_text(encoding="utf-8"))
+              machines = inventory.get("machines", [])
+              if (inventory.get("schema") != 1 or
+                  not isinstance(machines, list) or
+                  len([m for m in machines if isinstance(m, dict) and m.get("id") == runtime_machine]) != 1):
+                  fail("VM machine is not uniquely declared in the referenced Git Vultr inventory")
+              machine = next(m for m in machines if m["id"] == runtime_machine)
+              if (desired.get("environment") != inventory.get("environment") or
+                  desired.get("application_profile") not in machine.get("application_profiles", []) or
+                  machine.get("bootstrap_profile") != "singbox-host-v2"):
+                  fail("VM application policy and provider inventory disagree on machine ownership")
+              command_family = "vm"
+              operation = tokens[1]
           elif len(tokens) == 2 and tokens[0] == "/application" and tokens[1] in {
               "mesh-profile-plan", "mesh-profile-verify",
           }:
@@ -93,7 +138,7 @@ jobs:
                   "unsupported command grammar; steady-state production uses "
                   "/production enroll-runtime|converge|verify|diagnose|quality-line2|rollback, provider-only target-plane commands, "
                   "or /application mesh-profile-plan|mesh-profile-verify|mesh-profile-apply <authority>, " 
-                  "or /application vm-diagnose|vm-quality-line2 for the exact acceptance VM, "
+                  "or /vm diagnose|quality-line2 infra/application/<git-owned-manifest>.json, "
                   "or disposable /application acceptance|cleanup"
               )
 
@@ -540,7 +585,7 @@ jobs:
       needs.authorize.result == 'success' &&
       (
         (
-          needs.authorize.outputs.command_family == 'acceptance_vm' &&
+          needs.authorize.outputs.command_family == 'vm' &&
           (
             needs.authorize.outputs.operation == 'diagnose' ||
             needs.authorize.outputs.operation == 'quality-line2'
@@ -616,10 +661,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "${VM_RUNTIME_MACHINE}" in
-            production-1|application-acceptance-1) ;;
-            *) echo 'vm_runtime_target=BLOCKED_UNKNOWN_OWNER' >&2; exit 1 ;;
-          esac
+          if [[ ! "${VM_RUNTIME_MACHINE}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+            echo 'vm_runtime_target=BLOCKED_INVALID_GIT_IDENTITY' >&2
+            exit 1
+          fi
+          if [[ "${RUNNER_NAME}" != "sing-box-production-${VM_RUNTIME_MACHINE}" ]]; then
+            echo 'vm_runtime_target=BLOCKED_RUNNER_IDENTITY_MISMATCH' >&2
+            exit 1
+          fi
           owner="/usr/local/libexec/sing-box/edge-agent"
           if [[ ! -x "${owner}" || -L "${owner}" ]]; then
             echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_PATH' >&2

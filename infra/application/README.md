@@ -92,3 +92,15 @@ Rules:
 
 Disposable acceptance may keep legacy JSON inputs until its path is deliberately migrated.
 It must remain isolated from permanent production state and must leave zero leaked resources.
+
+
+### Universal, read-only VM checks (GitHub operator)
+
+Target an **exact canonical application manifest** instead of a hardcoded VM name:
+
+```text
+/vm diagnose infra/application/disposable-acceptance.json
+/vm quality-line2 infra/application/disposable-acceptance.json
+```
+
+The protected GitHub revision supplies `machine_id`, `vultr_spec_path`, application profile, and runner selection. The workflow rejects missing, ambiguous, or inconsistent declarations before scheduling a self-hosted runner and requires its observed identity to match the Git-owned machine. The same syntax applies to every VM with a canonical application manifest; it does not discover/operate unmanaged hosts. Both commands are read-only and never install containers or publish credentials. Credential-bearing converge/rollback require a **per-target immutable ReleaseSet bundle and verified provider ownership** and are deliberately not exposed by this read-only interface yet.
