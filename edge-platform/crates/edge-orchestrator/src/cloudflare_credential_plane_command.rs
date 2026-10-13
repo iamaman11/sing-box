@@ -19,6 +19,7 @@ use edge_shared_types::{
 use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
@@ -722,6 +723,7 @@ async fn initial_worker_proof_upgrade(
         );
     }
     let mut changed = 0u32;
+    let mut exact_uploaded_versions: BTreeMap<String, String> = BTreeMap::new();
     for projection in projections(desired) {
         let current = observe(control_token, desired).await?;
         // Re-check BOTH Workers before every write, never trust the initial
@@ -736,6 +738,18 @@ async fn initial_worker_proof_upgrade(
             ) {
                 return Err(format!(
                     "{} unexpected Worker state before code-only upgrade",
+                    p.projection
+                ));
+            }
+            let observed = projection_observation(&current, &p.projection)?;
+            if let Some(expected) = exact_uploaded_versions.get(&p.projection) {
+                verify_exact_active_worker_version(observed, expected)?;
+                if state != ProjectionDeliveryState::FixedAb {
+                    return Err(format!("{} Worker lost upgraded proof code", p.projection));
+                }
+            } else if observed != projection_observation(&first, &p.projection)? {
+                return Err(format!(
+                    "{} Worker version, bindings or Access identity drifted from durable BEGIN; STOP",
                     p.projection
                 ));
             }
@@ -796,6 +810,7 @@ async fn initial_worker_proof_upgrade(
                 projection.projection
             ));
         }
+        exact_uploaded_versions.insert(projection.projection.clone(), version_id);
     }
     let after = observe(control_token, desired).await?;
     for projection in projections(desired) {
@@ -2875,6 +2890,49 @@ mod tests {
         }
         assert!(!windows.source.contains("private_key"));
         assert!(!windows.source.contains("password"));
+    }
+
+    #[test]
+    fn worker_proof_begin_is_exact_one_shot_and_rejects_unknown_history() {
+        let record = WorkerProofAttempt {
+            schema: "sing-box.worker-proof-upgrade/v1".to_owned(),
+            phase: "BEGIN".to_owned(),
+            github_run_id: 42,
+            source_revision: "a".repeat(40),
+            release_set_sha256: "b".repeat(64),
+            baseline_sha256: "c".repeat(64),
+        };
+        let exact = format!(
+            "{WORKER_PROOF_MARKER}\\n{}",
+            serde_json::to_string(&record).unwrap()
+        );
+        let history = serde_json::json!([{"body": exact}]).to_string();
+        assert!(worker_proof_record("[]", None).unwrap().is_none());
+        assert!(worker_proof_record(&history, None).is_err());
+        assert_eq!(
+            worker_proof_record(&history, Some(&exact))
+                .unwrap()
+                .unwrap()
+                .github_run_id,
+            42
+        );
+        assert!(worker_proof_record(&history, Some("wrong")).is_err());
+        assert!(
+            worker_proof_record(
+                &serde_json::json!([{"body": exact}, {"body": exact}]).to_string(),
+                Some(&exact)
+            )
+            .is_err()
+        );
+        assert!(
+            worker_proof_record(
+                &serde_json::json!([{"body": format!("prefix {exact}")}]).to_string(),
+                Some(&exact)
+            )
+            .is_err()
+        );
+        assert!(worker_proof_record("truncated-json", None).is_err());
+        assert!(worker_proof_record("[{}]", None).is_err());
     }
 
     #[test]
