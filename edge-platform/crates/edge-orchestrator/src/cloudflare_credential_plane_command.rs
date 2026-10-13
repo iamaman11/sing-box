@@ -2903,7 +2903,7 @@ mod tests {
             baseline_sha256: "c".repeat(64),
         };
         let exact = format!(
-            "{WORKER_PROOF_MARKER}\\n{}",
+            "{WORKER_PROOF_MARKER}\n{}",
             serde_json::to_string(&record).unwrap()
         );
         let history = serde_json::json!([{"body": exact}]).to_string();
