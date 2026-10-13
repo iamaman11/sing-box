@@ -1,5 +1,5 @@
 //! Bounded external Line1 proof by an isolated, disposable ProxyOnly consumer.
- //! No SCM, TUN, DNS, route, system-proxy or controller mutation is permitted.
+//! No SCM, TUN, DNS, route, system-proxy or controller mutation is permitted.
 use edge_controller_core::windows_credential_store_path;
 use edge_secrets::{
     CredentialStore, windows_runtime_state_from_canonical_production_bundle, write_atomic_private,
@@ -102,7 +102,8 @@ fn isolated_config(state: &WindowsRuntimeState, ports: &[u16]) -> Result<Vec<u8>
     let mut inbounds = Vec::with_capacity(8);
     let mut rules = Vec::with_capacity(8);
     for (idx, tag) in TAGS.iter().enumerate() {
-        for (offset, output) in [(0, *tag), (4, &format!("{tag}-invalid")[..])] {
+        let invalid_tag = format!("{tag}-invalid");
+        for (offset, output) in [(0, *tag), (4, invalid_tag.as_str())] {
             let listener = format!("line1-witness-{}", idx + offset);
             inbounds.push(json!({
                 "type": "mixed",
@@ -133,7 +134,7 @@ fn isolated_config(state: &WindowsRuntimeState, ports: &[u16]) -> Result<Vec<u8>
         .map_err(|_| "failed to serialize isolated Line1 witness config".to_owned())
 }
 
-fn curl_through(port: u16, target: &str) -> Result<String, String> {
+fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
     // A system curl directly supplied by Windows. No shell invocation; no
     // issued credential appears in argv or environment or output.
     let output = Command::new(r"C:\Windows\System32\curl.exe")
@@ -141,7 +142,6 @@ fn curl_through(port: u16, target: &str) -> Result<String, String> {
             "--silent",
             "--show-error",
             "--fail",
-            "--location-trusted",
             "--proto",
             "=https",
             "--connect-timeout",
@@ -154,6 +154,8 @@ fn curl_through(port: u16, target: &str) -> Result<String, String> {
             &format!("http://127.0.0.1:{port}"),
             "--output",
             "-",
+            "--write-out",
+            "\\nCODE:%{http_code}",
             target,
         ])
         .stderr(Stdio::null())
@@ -162,13 +164,38 @@ fn curl_through(port: u16, target: &str) -> Result<String, String> {
     if !output.status.success() {
         return Err("Line1 external HTTPS request failed".to_owned());
     }
-    String::from_utf8(output.stdout)
-        .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())?;
+    let (body, status) = text
+        .rsplit_once("\\nCODE:")
+        .ok_or("Line1 curl did not report HTTP status")?;
+    if !matches!(status, "200" | "204") {
+        return Err("Line1 external HTTPS returned unexpected status".to_owned());
+    }
+    Ok((body.to_owned(), status.to_owned()))
+}
+
+// Conservative exclusion of non-public, special-purpose and reserved IPv4
+// ranges. Never accept local, documentation or CGNAT egress as public WARP.
+fn globally_routable(address: Ipv4Addr) -> bool {
+    let [a, b, c, _] = address.octets();
+    !(
+        a == 0
+            || a == 10
+            || a == 127
+            || a >= 224
+            || (a == 100 && (64..=127).contains(&b))
+            || (a == 169 && b == 254)
+            || (a == 172 && (16..=31).contains(&b))
+            || (a == 192 && (b == 0 || (b == 168) || (b == 88 && c == 99)))
+            || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
+            || (a == 203 && b == 0 && c == 113)
+    )
 }
 
 fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, String> {
-    let positive = curl_through(port, HTTPS_PROBE)?;
-    if !positive.is_empty() {
+    let (positive, status) = curl_through(port, HTTPS_PROBE)?;
+    if status != "204" || !positive.is_empty() {
         return Err(format!("{tag} external HTTPS 204 body was not empty"));
     }
     // The invalid request must fail. Positive connectivity is proven first
@@ -176,11 +203,13 @@ fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, S
     if curl_through(invalid_port, HTTPS_PROBE).is_ok() {
         return Err(format!("{tag} accepted an invalid tunnel credential"));
     }
-    let address = curl_through(port, EGRESS_PROBE)?
-        .trim()
-        .parse::<Ipv4Addr>()
+    let (egress, status) = curl_through(port, EGRESS_PROBE)?;
+    if status != "200" {
+        return Err(format!("{tag} external egress service returned non-200 HTTP"));
+    }
+    let address = egress.trim().parse::<Ipv4Addr>()
         .map_err(|_| format!("{tag} external public IPv4 witness invalid"))?;
-    if !address.is_global() {
+    if !globally_routable(address) {
         return Err(format!("{tag} external egress address is not global"));
     }
     Ok(address)
