@@ -1830,3 +1830,41 @@ jobs:
           test "$(grep -c '^line2_external_endpoint=' "${RUNNER_TEMP}/line2-reboot-external.txt")" -eq 6
           echo 'N2_POST_REBOOT_EXTERNAL_LINE2_6_OF_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
 
+  initial_acceptance_final:
+    name: Final N1/N2 physical result after exact scoped cleanup
+    needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]
+    if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require accepted 10/10 traffic, Windows cleanup and safe VM ownership
+        shell: bash
+        env:
+          TRAFFIC: ${{ needs.initial_acceptance_verdict.result }}
+          WINDOWS_CLEANUP: ${{ needs.initial_windows_cleanup.result }}
+          VM_CLEANUP: ${{ needs.initial_cleanup.result }}
+          FIRST_USE_CREATE_CONFIRMED: ${{ needs.execute.outputs.first_use_create_confirmed }}
+        run: |
+          set -euo pipefail
+          if [[ "${TRAFFIC}" != "success" || "${WINDOWS_CLEANUP}" != "success" ]]; then
+            echo "::error title=N1/N2 NOT_ACCEPTED::Transport or isolated Windows cleanup failed"
+            exit 1
+          fi
+          if [[ "${FIRST_USE_CREATE_CONFIRMED}" == "true" ]]; then
+            if [[ "${VM_CLEANUP}" != "success" ]]; then
+              echo "::error title=N1/N2 NOT_ACCEPTED::New disposable VM cleanup failed"
+              exit 1
+            fi
+            echo 'N1_N2_OWNED_NEW_VM_ZERO_LEAK=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          else
+            if [[ "${FIRST_USE_CREATE_CONFIRMED}" != "false" || "${VM_CLEANUP}" != "skipped" ]]; then
+              echo "::error title=N1/N2 NOT_ACCEPTED::Unknown VM creation/cleanup state"
+              exit 1
+            fi
+            echo 'N1_N2_REUSED_OWNED_VM=PRESERVED_NOT_DISPOSED' >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          echo 'N1_N2_ISOLATED_WINDOWS_CLEANUP=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_EXTERNAL_PRE_AND_POST_REBOOT_4_PLUS_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'N1_N2_PHYSICAL_ACCEPTANCE=PASS' >> "${GITHUB_STEP_SUMMARY}"
+
