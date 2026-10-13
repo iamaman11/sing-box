@@ -1,6 +1,7 @@
 mod cli;
 mod credential_access_bootstrap;
 mod credential_transition;
+mod initial_line1_witness;
 mod error;
 
 use clap::Parser;
@@ -262,6 +263,18 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             println!("credential_runtime_mutations=0");
             println!("windows_tun_mutations=0");
             println!("windows_dns_mutations=0");
+            Ok(())
+        }
+        Command::CredentialInitialLine1Witness(args) => {
+            let root = Path::new(&args.install_root);
+            let activation = load_verified_activation(root)
+                .map_err(|err| ConsoleError::Command(format!("Line1 witness release is unverified: {err}")))?;
+            initial_line1_witness::run(
+                root,
+                Path::new(&activation.sing_box_path),
+                args.generation,
+            )
+            .map_err(ConsoleError::Command)?;
             Ok(())
         }
         Command::CredentialState(args) => {
