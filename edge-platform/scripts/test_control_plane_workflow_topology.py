@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
@@ -2269,6 +2272,43 @@ def main() -> None:
         and "actions/upload-artifact" not in production_provider,
         "production provider plane must remain GitHub-hosted, verify the promoted ReleaseSet and export only exact immutable bundle identity",
     )
+    # Run the actual Github authorization parser read-only against the
+    # canonical manifest, plus rejects for missing specs and unsafe grammar.
+    authorizer = application.split(
+        "      - name: Parse and authorize typed request\\n", 1
+    )[1].split("          python3 <<'PY'\\n", 1)[1].split("\\n          PY", 1)[0]
+    authorizer = "\\n".join(
+        line[10:] if line.startswith("          ") else line
+        for line in authorizer.splitlines()
+    )
+    for command, should_pass in [
+        ("/vm diagnose infra/application/disposable-acceptance.json", True),
+        ("/vm quality-line2 infra/application/disposable-acceptance.json", True),
+        ("/vm diagnose infra/application/unknown.json", False),
+        ("/vm diagnose infra/application/../vultr/application-acceptance.json", False),
+        ("/vm converge infra/application/disposable-acceptance.json", False),
+    ]:
+        with tempfile.NamedTemporaryFile() as output:
+            env = dict(
+                os.environ,
+                COMMENT_BODY=command,
+                GITHUB_OUTPUT=output.name,
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", authorizer],
+                env=env, text=True, capture_output=True, timeout=10, check=False,
+            )
+            require(
+                (result.returncode == 0) == should_pass,
+                f"Git VM authorization unexpected result for {command}: {result.stderr}",
+            )
+            if should_pass:
+                source = Path(output.name).read_text(encoding="utf-8")
+                require(
+                    "command_family=vm\\n" in source
+                    and "runtime_machine=application-acceptance-1\\n" in source,
+                    "canonical application spec must select exactly its Git-owned machine",
+                )
     require(
         'len(tokens) == 3 and tokens[0] == "/vm"' in application
         and 'command_family = "vm"' in application
