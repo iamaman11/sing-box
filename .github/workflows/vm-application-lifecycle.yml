@@ -26,6 +26,7 @@ jobs:
       operation: ${{ steps.parse.outputs.operation }}
       spec_path: ${{ steps.parse.outputs.spec_path }}
       authorized_digest: ${{ steps.parse.outputs.authorized_digest }}
+      runtime_machine: ${{ steps.parse.outputs.runtime_machine }}
 
     steps:
       - name: Parse and authorize typed request
@@ -46,6 +47,7 @@ jobs:
           operation = ""
           spec_path = ""
           authorized_digest = ""
+          runtime_machine = ""
 
           if len(tokens) == 2 and tokens[0] == "/production" and tokens[1] in {
               "enroll-runtime",
@@ -58,6 +60,12 @@ jobs:
               command_family = "production"
               operation = tokens[1]
               spec_path = "infra/production/production.textproto"
+              runtime_machine = "production-1"
+          elif tokens in (["/application", "vm-diagnose"], ["/application", "vm-quality-line2"]):
+              command_family = "acceptance_vm"
+              operation = "diagnose" if tokens[1] == "vm-diagnose" else "quality-line2"
+              spec_path = "infra/vultr/application-acceptance.json"
+              runtime_machine = "application-acceptance-1"
           elif len(tokens) == 2 and tokens[0] == "/application" and tokens[1] in {
               "mesh-profile-plan", "mesh-profile-verify",
           }:
@@ -85,6 +93,7 @@ jobs:
                   "unsupported command grammar; steady-state production uses "
                   "/production enroll-runtime|converge|verify|diagnose|quality-line2|rollback, provider-only target-plane commands, "
                   "or /application mesh-profile-plan|mesh-profile-verify|mesh-profile-apply <authority>, " 
+                  "or /application vm-diagnose|vm-quality-line2 for the exact acceptance VM, "
                   "or disposable /application acceptance|cleanup"
               )
 
@@ -93,6 +102,7 @@ jobs:
               handle.write(f"operation={operation}\n")
               handle.write(f"spec_path={spec_path}\n")
               handle.write(f"authorized_digest={authorized_digest}\n")
+              handle.write(f"runtime_machine={runtime_machine}\n")
           PY
 
   mesh_profile:
@@ -528,17 +538,28 @@ jobs:
     if: >-
       always() &&
       needs.authorize.result == 'success' &&
-      needs.authorize.outputs.command_family == 'production' &&
       (
-        needs.authorize.outputs.operation == 'diagnose' ||
-        needs.authorize.outputs.operation == 'quality-line2' ||
         (
+          needs.authorize.outputs.command_family == 'acceptance_vm' &&
           (
-            needs.authorize.outputs.operation == 'converge' ||
-            needs.authorize.outputs.operation == 'verify' ||
-            needs.authorize.outputs.operation == 'rollback'
-          ) &&
-          needs.production_provider.result == 'success'
+            needs.authorize.outputs.operation == 'diagnose' ||
+            needs.authorize.outputs.operation == 'quality-line2'
+          )
+        ) ||
+        (
+          needs.authorize.outputs.command_family == 'production' &&
+          (
+            needs.authorize.outputs.operation == 'diagnose' ||
+            needs.authorize.outputs.operation == 'quality-line2' ||
+            (
+              (
+                needs.authorize.outputs.operation == 'converge' ||
+                needs.authorize.outputs.operation == 'verify' ||
+                needs.authorize.outputs.operation == 'rollback'
+              ) &&
+              needs.production_provider.result == 'success'
+            )
+          )
         )
       )
     concurrency:
@@ -549,12 +570,13 @@ jobs:
       - Linux
       - X64
       - sing-box-production-vm
-      - production-1
+      - ${{ needs.authorize.outputs.runtime_machine }}
     timeout-minutes: 30
     permissions:
       contents: read
     env:
       REQUESTED_OPERATION: ${{ needs.authorize.outputs.operation }}
+      VM_RUNTIME_MACHINE: ${{ needs.authorize.outputs.runtime_machine }}
       PROVIDER_ACCEPTED_REVISION: ${{ needs.production_provider.outputs.accepted_revision }}
       PROVIDER_RELEASE_SET_SHA256: ${{ needs.production_provider.outputs.release_set_sha256 }}
       PROVIDER_AGENT_SHA256: ${{ needs.production_provider.outputs.agent_sha256 }}
@@ -594,6 +616,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          case "${VM_RUNTIME_MACHINE}" in
+            production-1|application-acceptance-1) ;;
+            *) echo 'vm_runtime_target=BLOCKED_UNKNOWN_OWNER' >&2; exit 1 ;;
+          esac
           owner="/usr/local/libexec/sing-box/edge-agent"
           if [[ ! -x "${owner}" || -L "${owner}" ]]; then
             echo 'vm_owner_identity=BLOCKED_INSTALLED_OWNER_PATH' >&2
@@ -722,7 +748,7 @@ jobs:
           fi
 
           {
-            echo '### Production VM runtime plane'
+            echo "### VM runtime plane: ${VM_RUNTIME_MACHINE}"
             echo
             printf 'Operation: `%s` -> local owner `%s`\n' "${REQUESTED_OPERATION}" "${local_operation}"
             echo

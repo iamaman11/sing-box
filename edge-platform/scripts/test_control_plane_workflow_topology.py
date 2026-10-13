@@ -2256,11 +2256,22 @@ def main() -> None:
         "production provider plane must remain GitHub-hosted, verify the promoted ReleaseSet and export only exact immutable bundle identity",
     )
     require(
+        'tokens in (["/application", "vm-diagnose"], ["/application", "vm-quality-line2"])' in application
+        and 'command_family = "acceptance_vm"' in application
+        and 'runtime_machine = "application-acceptance-1"' in application
+        and 'runtime_machine = "production-1"' in application
+        and "needs.authorize.outputs.command_family == 'acceptance_vm'" in production_runtime
+        and 'VM_RUNTIME_MACHINE: ${{ needs.authorize.outputs.runtime_machine }}' in production_runtime
+        and 'production-1|application-acceptance-1)' in production_runtime
+        and 'vm_runtime_target=BLOCKED_UNKNOWN_OWNER' in production_runtime,
+        "GitHub VM runtime diagnose and quality must use only exact owned self-hosted runners and fixed local owner",
+    )
+    require(
         "- self-hosted" in production_runtime
         and "- Linux" in production_runtime
         and "- X64" in production_runtime
         and "- sing-box-production-vm" in production_runtime
-        and "- production-1" in production_runtime
+        and "- ${{ needs.authorize.outputs.runtime_machine }}" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
         and "PROVIDER_APPLICATION_BUNDLE_SHA256" in production_runtime
         and "PROVIDER_APPLICATION_BUNDLE_ASSET_ID" in production_runtime
