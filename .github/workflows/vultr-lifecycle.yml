@@ -1682,6 +1682,12 @@ jobs:
           GENERATION: ${{ needs.initial_preflight.outputs.generation }}
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
           VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+          VM_PUBLIC_IPV4: ${{ needs.initial_line2_external.outputs.vm_ipv4 }}
+          VM_PROVIDER_ID: ${{ needs.initial_line2_external.outputs.provider_id }}
+          VM_TLS_DOMAIN: ${{ needs.initial_line2_external.outputs.tls_domain }}
+          VM_PROXY_USERNAME: ${{ needs.initial_line2_external.outputs.username }}
+          VM_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          VM_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = "1"
@@ -1756,5 +1762,26 @@ jobs:
           trap - EXIT
           echo 'N1_N2_POST_REBOOT_GUEST_BOOT_ID=PASS' >> "${GITHUB_STEP_SUMMARY}"
           echo 'N1_N2_POST_REBOOT_VM_LOCAL_LINE2=PASS' >> "${GITHUB_STEP_SUMMARY}"
-          echo 'N2_EXTERNAL_TEN_ENDPOINTS=UNPROVEN' >> "${GITHUB_STEP_SUMMARY}"
+          # Independent PUBLIC endpoint test after the guest boot ID change.
+          # Validate the same provider and IP again instead of trusting stale
+          # pre-reboot address metadata or a VM-local loopback result.
+          "${owner}" vultr-lifecycle inventory infra/vultr/application-acceptance.json > "${RUNNER_TEMP}/reboot-inventory.json"
+          jq -e --arg id "${VM_PROVIDER_ID}" --arg ip "${VM_PUBLIC_IPV4}" '
+            [.inventory.resources[]|select(.provider_id==$id)] |
+            length==1 and .[0].main_ip==$ip
+          ' "${RUNNER_TEMP}/reboot-inventory.json" >/dev/null
+          identity="${RUNNER_TEMP}/post-reboot-vm-worker-access.env"
+          test -n "${VM_ACCESS_CLIENT_ID}"
+          test -n "${VM_ACCESS_CLIENT_SECRET}"
+          umask 077
+          printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
+            "${VM_ACCESS_CLIENT_ID}" "${VM_ACCESS_CLIENT_SECRET}" > "${identity}"
+          trap 'rm -f "${identity}"' EXIT
+          "${owner}" credentials initial-line2-external-witness \
+            "${GENERATION}" "${VM_PUBLIC_IPV4}" "${VM_TLS_DOMAIN}" "${VM_PROXY_USERNAME}" "${identity}" \
+            > "${RUNNER_TEMP}/line2-reboot-external.txt"
+          grep -Fxq 'line2_external_6_of_6=PASS' "${RUNNER_TEMP}/line2-reboot-external.txt"
+          grep -Fxq 'line2_direct_warp_egress_distinct=true' "${RUNNER_TEMP}/line2-reboot-external.txt"
+          test "$(grep -c '^line2_external_endpoint=' "${RUNNER_TEMP}/line2-reboot-external.txt")" -eq 6
+          echo 'N2_POST_REBOOT_EXTERNAL_LINE2_6_OF_6=PASS' >> "${GITHUB_STEP_SUMMARY}"
 
