@@ -1474,9 +1474,54 @@ jobs:
 # Candidate and VM-local checks are necessary but never an external PASS.
   # Keep this native one-command installation fail-closed until the required
   # independent external witness and reboot/cleanup proof are implemented.
+  initial_windows_post_reboot:
+    name: Repeat independent external 4/4 Line1 after real VM reboot
+    needs: [authorize, initial_preflight, initial_windows_consume, initial_reboot]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions: {}
+    env:
+      GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+      RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
+    steps:
+      - name: Reuse only exact isolated candidate; prove public 4/4 after reboot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'External reboot proof cannot replay first-use mutations' }
+          $root = 'C:\sing-box-acceptance'
+          $sentinel = Join-Path $root '.first-use-run'
+          if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf) -or
+              [IO.File]::ReadAllText($sentinel) -cne "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}") {
+            throw 'Post-reboot Line1 witness refuses unowned acceptance root'
+          }
+          $diagnostic = Join-Path $root 'bin\edge-diagnostic.exe'
+          $doctor = @(& $diagnostic doctor (Join-Path $root 'current.pb'))
+          if ($LASTEXITCODE -ne 0 -or -not ($doctor -contains "release_set_sha256=$env:RELEASE_SET") -or
+              -not ($doctor -contains 'windows_datapath_mode=ProxyOnly')) {
+            throw 'Post-reboot Line1 witness requires exact immutable ProxyOnly ReleaseSet'
+          }
+          $console = Join-Path $root 'bin\edge-console.exe'
+          $proof = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+          if ($LASTEXITCODE -ne 0 -or
+              -not ($proof -contains 'line1_external_4_of_4=PASS') -or
+              -not ($proof -contains 'line1_direct_warp_egress_distinct=true') -or
+              -not ($proof -contains 'windows_tun_mutations=0') -or
+              -not ($proof -contains 'windows_scm_mutations=0')) {
+            throw 'Post-reboot independent authenticated Line1 external 4/4 failed'
+          }
+          Write-Host 'N2_POST_REBOOT_EXTERNAL_LINE1_4_OF_4=PASS'
+          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+          Write-Host 'WINDOWS_TUN_MUTATIONS=0'
+
   initial_acceptance_verdict:
     name: Final physical 10-endpoint acceptance verdict
-    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume, initial_reboot]
+    needs: [authorize, execute, initial_vm_attest, initial_windows_attest, initial_pair_publish, initial_vm_runtime, initial_windows_consume, initial_line2_external, initial_reboot, initial_windows_post_reboot]
     if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
