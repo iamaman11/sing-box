@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
@@ -1643,6 +1646,11 @@ def main() -> None:
         "called workflows must not request issues scopes absent from the router's contents-only GITHUB_TOKEN",
     )
     require(
+        "startsWith(github.event.comment.body, '/vm ')" in router
+        and "issues: write" not in router.split("  application:\n", 1)[1].split("\n  production:", 1)[0],
+        "universal Git VM route must preserve caller, comment and least-privilege gates",
+    )
+    require(
         "permissions:\n  contents: read\n" in router,
         "router must grant only read-only contents permission required by reusable backends",
     )
@@ -2264,16 +2272,60 @@ def main() -> None:
         and "actions/upload-artifact" not in production_provider,
         "production provider plane must remain GitHub-hosted, verify the promoted ReleaseSet and export only exact immutable bundle identity",
     )
+    # Run the actual Github authorization parser read-only against the
+    # canonical manifest, plus rejects for missing specs and unsafe grammar.
+    authorizer = application.split(
+        "      - name: Parse and authorize typed request\n", 1
+    )[1].split("          python3 <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    authorizer = "\n".join(
+        line[10:] if line.startswith("          ") else line
+        for line in authorizer.splitlines()
+    )
+    for command, should_pass in [
+        ("/vm diagnose infra/application/disposable-acceptance.json", True),
+        ("/vm quality-line2 infra/application/disposable-acceptance.json", True),
+        ("/vm diagnose infra/application/unknown.json", False),
+        ("/vm diagnose infra/application/../vultr/application-acceptance.json", False),
+        ("/vm converge infra/application/disposable-acceptance.json", False),
+    ]:
+        with tempfile.NamedTemporaryFile() as output:
+            env = dict(
+                os.environ,
+                COMMENT_BODY=command,
+                GITHUB_OUTPUT=output.name,
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", authorizer],
+                env=env, text=True, capture_output=True, timeout=10, check=False,
+            )
+            require(
+                (result.returncode == 0) == should_pass,
+                f"Git VM authorization unexpected result for {command}: {result.stderr}",
+            )
+            if should_pass:
+                source = Path(output.name).read_text(encoding="utf-8")
+                require(
+                    "command_family=vm\n" in source
+                    and "runtime_machine=application-acceptance-1\n" in source,
+                    "canonical application spec must select exactly its Git-owned machine",
+                )
     require(
-        'tokens in (["/application", "vm-diagnose"], ["/application", "vm-quality-line2"])' in application
-        and 'command_family = "acceptance_vm"' in application
-        and 'runtime_machine = "application-acceptance-1"' in application
-        and 'runtime_machine = "production-1"' in application
-        and "needs.authorize.outputs.command_family == 'acceptance_vm'" in production_runtime
+        'len(tokens) == 3 and tokens[0] == "/vm"' in application
+        and 'command_family = "vm"' in application
+        and 'desired.get("machine_id", "")' in application
+        and 'desired.get("vultr_spec_path", "")' in application
+        and 'desired.get("application_profile") not in machine.get("application_profiles", [])' in application
+        and 'len([m for m in machines if isinstance(m, dict) and m.get("id") == runtime_machine]) != 1' in application
+        and 'git checkout --detach FETCH_HEAD' in application
+        and "needs.authorize.outputs.command_family == 'vm'" in production_runtime
         and 'VM_RUNTIME_MACHINE: ${{ needs.authorize.outputs.runtime_machine }}' in production_runtime
-        and 'production-1|application-acceptance-1)' in production_runtime
-        and 'vm_runtime_target=BLOCKED_UNKNOWN_OWNER' in production_runtime,
-        "GitHub VM runtime diagnose and quality must use only exact owned self-hosted runners and fixed local owner",
+        and 'vm_runtime_target=BLOCKED_INVALID_GIT_IDENTITY' in production_runtime
+        and 'vm_runtime_target=BLOCKED_RUNNER_IDENTITY_MISMATCH' in production_runtime
+        and 'RUNNER_NAME' in production_runtime
+        and "production-1|application-acceptance-1)" not in production_runtime
+        and 'command_family = "acceptance_vm"' not in application
+        and 'runtime_machine = "application-acceptance-1"' not in application,
+        "VM diagnostics must resolve any exact typed Git-owned resource and reject runner/provider identity drift",
     )
     require(
         "- self-hosted" in production_runtime
