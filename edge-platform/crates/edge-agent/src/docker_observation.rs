@@ -503,6 +503,8 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn bollard_inspect_string_mount_type_is_exactly_bind_without_debug_quotes() {
         use bollard::models::MountPoint;
@@ -512,36 +514,38 @@ mod tests {
             rw: Some(false),
             ..Default::default()
         };
-        assert!(require_exact_readonly_config_bind(
+        let positive = require_exact_readonly_config_bind(
             "vultr-line1-gateway",
             real_readonly_mount.typ.as_deref(),
             real_readonly_mount.rw,
-        ).is_ok());
-        // Old Debug-based comparison emitted a quoted String and rejected it.
+        );
+        assert_eq!(positive, Ok(()));
+        // The previous Debug-based comparison quoted this String.
         assert_ne!(format!("{:?}", "bind"), "bind");
 
         for kind in [None, Some("volume"), Some("tmpfs"), Some("BIND"), Some("")] {
-            assert!(require_exact_readonly_config_bind(
+            let result = require_exact_readonly_config_bind(
                 "vultr-line1-gateway",
                 kind,
                 Some(false),
-            ).is_err());
+            );
+            assert!(result.is_err());
         }
         for writable in [Some(true), None] {
-            assert!(require_exact_readonly_config_bind(
+            let result = require_exact_readonly_config_bind(
                 "vultr-line2-proxy",
                 Some("bind"),
                 writable,
-            ).is_err());
+            );
+            assert!(result.is_err());
         }
-        assert!(require_exact_readonly_config_bind(
+        let positive = require_exact_readonly_config_bind(
             "vultr-line2-proxy",
             Some("bind"),
             Some(false),
-        ).is_ok());
+        );
+        assert_eq!(positive, Ok(()));
     }
-
-    use super::*;
 
     fn container_summary(
         name: &str,
