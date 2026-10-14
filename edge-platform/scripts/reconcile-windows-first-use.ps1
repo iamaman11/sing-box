@@ -11,7 +11,11 @@ param(
   [ValidatePattern('^[0-9a-f]{64}$')]
   [string]$ReleaseSetSha256,
 
-  [switch]$RemoveOwned
+  [switch]$RemoveOwned,
+
+  # Only a GH-verified failed first-use materialization may authorize this.
+  # An absent sentinel is recoverable solely when the isolated root is empty.
+  [switch]$RecoverEmptyPreMarker
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,17 +38,36 @@ if (-not $item.PSIsContainer -or
   throw 'FIRST_USE_SCOPE_UNKNOWN: non-directory or reparse root'
 }
 $sentinel = Join-Path $root '.first-use-run'
+$preMarkerEmpty = $false
 if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
-  throw 'FIRST_USE_SCOPE_UNKNOWN: durable owner marker missing'
-}
-$markerItem = Get-Item -LiteralPath $sentinel -Force
-if ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-  throw 'FIRST_USE_SCOPE_UNKNOWN: marker is a reparse point'
-}
-$actual = [IO.File]::ReadAllText($sentinel)
-$expected = "$SourceRunId|$ReleaseSetSha256"
-if ($actual -cne $expected) {
-  throw 'FIRST_USE_SCOPE_UNKNOWN: run/ReleaseSet identity mismatch'
+  if (-not $RecoverEmptyPreMarker -or -not $RemoveOwned) {
+    throw 'FIRST_USE_SCOPE_UNKNOWN: durable owner marker missing'
+  }
+  # No ownership can be inferred from directory name alone. The caller must
+  # independently authorize the exact failed GitHub run and materialize step.
+  # Before deletion, prove an empty, non-reparse directory owned by the
+  # current runner identity, SYSTEM, or the built-in Administrators SID.
+  $entries = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop)
+  if ($entries.Count -ne 0) {
+    throw 'FIRST_USE_PREMARKER_UNKNOWN: unmarked directory is not empty'
+  }
+  $ownerSid = (Get-Acl -LiteralPath $root -ErrorAction Stop).GetOwner(
+    [Security.Principal.SecurityIdentifier]).Value
+  $runnerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  if ($ownerSid -notin @($runnerSid, 'S-1-5-18', 'S-1-5-32-544')) {
+    throw 'FIRST_USE_PREMARKER_UNKNOWN: unmarked directory owner is foreign'
+  }
+  $preMarkerEmpty = $true
+} else {
+  $markerItem = Get-Item -LiteralPath $sentinel -Force
+  if ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'FIRST_USE_SCOPE_UNKNOWN: marker is a reparse point'
+  }
+  $actual = [IO.File]::ReadAllText($sentinel)
+  $expected = "$SourceRunId|$ReleaseSetSha256"
+  if ($actual -cne $expected) {
+    throw 'FIRST_USE_SCOPE_UNKNOWN: run/ReleaseSet identity mismatch'
+  }
 }
 if (@(Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction Stop |
     Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -ne 0) {
@@ -61,6 +84,25 @@ if (Get-NetAdapter -Name 'sing-box-tun' -ErrorAction SilentlyContinue) {
 $singBoxProcesses = @(Get-CimInstance Win32_Process -Filter "name='sing-box.exe'" -ErrorAction Stop)
 if ($singBoxProcesses.Count -ne 0) {
   throw 'FIRST_USE_RUNTIME_BUSY: sing-box process still running'
+}
+if ($preMarkerEmpty) {
+  Write-Host 'WINDOWS_FIRST_USE_ROOT=EXACT_EMPTY_PREMARKER'
+  Write-Host "WINDOWS_FIRST_USE_SOURCE_RUN=$SourceRunId"
+  Write-Host "WINDOWS_FIRST_USE_RELEASE=$ReleaseSetSha256"
+  Write-Host 'WINDOWS_SERVING_OWNER=STOPPED_NO_TUN'
+  # .NET nonrecursive delete fails if anything appears in the directory,
+  # rather than risking removal of a newly created foreign file.
+  [IO.Directory]::Delete($root, $false)
+  if (Test-Path -LiteralPath $root) {
+    throw 'FIRST_USE_PREMARKER_REMOVE_UNKNOWN: root still exists; no retry'
+  }
+  Write-Host 'WINDOWS_ISOLATED_EMPTY_PREMARKER_CLEANUP=PASS'
+  Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+  Write-Host 'WINDOWS_SCM_MUTATIONS=0'
+  Write-Host 'WINDOWS_TUN_MUTATIONS=0'
+  Write-Host 'WINDOWS_DNS_MUTATIONS=0'
+  Write-Host 'WINDOWS_CREDENTIAL_MUTATIONS=0'
+  return
 }
 Write-Host 'WINDOWS_FIRST_USE_ROOT=EXACT_OWNED'
 Write-Host "WINDOWS_FIRST_USE_SOURCE_RUN=$SourceRunId"
