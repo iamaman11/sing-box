@@ -370,7 +370,8 @@ fn acceptance_window_policy(
         .find(|p| p.projection == "windows")
         .ok_or("Windows acceptance projection not canonical")?;
     if window.host_service_token_enabled != Some(true)
-        || window.host_service_token_duration.as_deref() != Some(desired.host_service_token_duration.as_str())
+        || window.host_service_token_duration.as_deref()
+            != Some(desired.host_service_token_duration.as_str())
         || window.access_application_type.as_deref() != Some("self_hosted")
         || window.access_service_auth_401_redirect != Some(true)
         || window.access_destination_type.as_deref() != Some("public")
@@ -381,12 +382,14 @@ fn acceptance_window_policy(
     {
         return Err("Windows acceptance refuses drifted permanent Access application".to_owned());
     }
-    let host = window.host_service_token_id.clone().ok_or(
-        "Windows acceptance missing permanent host service token ID"
-    )?;
-    let app = window.access_application_id.clone().ok_or(
-        "Windows acceptance missing exact Access application ID"
-    )?;
+    let host = window
+        .host_service_token_id
+        .clone()
+        .ok_or("Windows acceptance missing permanent host service token ID")?;
+    let app = window
+        .access_application_id
+        .clone()
+        .ok_or("Windows acceptance missing exact Access application ID")?;
     if window.access_policies.len() != 1 {
         return Err("Windows acceptance requires exactly one existing Access policy".to_owned());
     }
@@ -408,8 +411,12 @@ async fn initial_windows_acceptance_issue(
     let before = observe(control_token, desired).await?;
     validate_access_boundary(desired, &before)?;
     let name = initial_acceptance_token_name(run_id)?;
-    let tokens = cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
-    if tokens.iter().any(|t| t.name.as_deref() == Some(name.as_str())) {
+    let tokens =
+        cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
+    if tokens
+        .iter()
+        .any(|t| t.name.as_deref() == Some(name.as_str()))
+    {
         return Err("run-scoped Windows acceptance token exists; do not reissue".to_owned());
     }
     let (host, app, policy_id, policy_name) = acceptance_window_policy(desired, &before)?;
@@ -481,8 +488,10 @@ async fn initial_windows_acceptance_cleanup(
     let name = initial_acceptance_token_name(run_id)?;
     let before = observe(control_token, desired).await?;
     let (host, app, policy_id, policy_name) = acceptance_window_policy(desired, &before)?;
-    let tokens = cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
-    let exact: Vec<_> = tokens.iter()
+    let tokens =
+        cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
+    let exact: Vec<_> = tokens
+        .iter()
         .filter(|token| token.name.as_deref() == Some(name.as_str()))
         .collect();
     if exact.len() > 1 {
