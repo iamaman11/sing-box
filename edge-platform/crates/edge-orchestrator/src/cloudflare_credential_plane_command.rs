@@ -279,9 +279,13 @@ pub async fn run_delivery(
             token_id_output_path,
         } => {
             initial_windows_acceptance_issue(
-                &control_token, &desired, run_id,
-                &private_output_path, &token_id_output_path,
-            ).await
+                &control_token,
+                &desired,
+                run_id,
+                &private_output_path,
+                &token_id_output_path,
+            )
+            .await
         }
         CredentialDeliveryCommand::InitialWindowsAcceptanceCleanup { run_id } => {
             initial_windows_acceptance_cleanup(&control_token, &desired, run_id).await
@@ -415,8 +419,14 @@ async fn initial_windows_acceptance_issue(
         return Err("Windows acceptance escrow file already exists, no overwrite".to_owned());
     }
     let token = cloudflare::create_access_service_token(
-        control_token, &desired.target_account_id, &name, "1h", true,
-    ).await.map_err(|e| format!("Windows acceptance issuance ACK unknown; no replay: {e}"))?;
+        control_token,
+        &desired.target_account_id,
+        &name,
+        "1h",
+        true,
+    )
+    .await
+    .map_err(|e| format!("Windows acceptance issuance ACK unknown; no replay: {e}"))?;
     if token.name.as_deref() != Some(name.as_str())
         || token.enabled != Some(true)
         || token.client_id.is_empty()
@@ -436,17 +446,23 @@ async fn initial_windows_acceptance_issue(
     write_private_bootstrap_file(public_output, token.id.as_bytes())?;
 
     cloudflare::update_access_service_policy_tokens(
-        control_token, &desired.target_account_id, &app, &policy_id,
-        &policy_name, &[host.clone(), token.id.clone()],
-    ).await.map_err(|e| format!("Windows acceptance policy mutation ACK unknown; reconcile, never replay: {e}"))?;
+        control_token,
+        &desired.target_account_id,
+        &app,
+        &policy_id,
+        &policy_name,
+        &[host.clone(), token.id.clone()],
+    )
+    .await
+    .map_err(|e| {
+        format!("Windows acceptance policy mutation ACK unknown; reconcile, never replay: {e}")
+    })?;
     let after = observe(control_token, desired).await?;
     let window_after = projection_observation(&after, "windows")?;
     if window_after.access_policies.len() != 1 {
         return Err("Windows acceptance policy readback cardinality drifted".to_owned());
     }
-    exact_service_auth_ids(
-        &window_after.access_policies[0], &[host, token.id.clone()]
-    )?;
+    exact_service_auth_ids(&window_after.access_policies[0], &[host, token.id.clone()])?;
     println!("operation=INITIAL_WINDOWS_ACCEPTANCE_ACCESS_ISSUE");
     println!("acceptance_access_run_id={run_id}");
     println!("acceptance_access_token_id={}", token.id);
@@ -477,9 +493,17 @@ async fn initial_windows_acceptance_cleanup(
     if let Some(expected) = expected_with_temp {
         if exact_service_auth_ids(policy, &expected).is_ok() {
             cloudflare::update_access_service_policy_tokens(
-                control_token, &desired.target_account_id, &app, &policy_id,
-                &policy_name, &[host.clone()],
-            ).await.map_err(|e| format!("Windows Access rollback ACK uncertain; observe before any retry: {e}"))?;
+                control_token,
+                &desired.target_account_id,
+                &app,
+                &policy_id,
+                &policy_name,
+                &[host.clone()],
+            )
+            .await
+            .map_err(|e| {
+                format!("Windows Access rollback ACK uncertain; observe before any retry: {e}")
+            })?;
             let proof = observe(control_token, desired).await?;
             let window = projection_observation(&proof, "windows")?;
             if window.access_policies.len() != 1 {
@@ -491,10 +515,21 @@ async fn initial_windows_acceptance_cleanup(
         }
         let token_id = &exact[0].id;
         cloudflare::delete_access_service_token(
-            control_token, &desired.target_account_id, token_id,
-        ).await.map_err(|e| format!("Windows Access revoke ACK uncertain; observe before any retry: {e}"))?;
-        let remaining = cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
-        if remaining.iter().any(|t| t.name.as_deref() == Some(name.as_str()) || t.id == *token_id) {
+            control_token,
+            &desired.target_account_id,
+            token_id,
+        )
+        .await
+        .map_err(|e| {
+            format!("Windows Access revoke ACK uncertain; observe before any retry: {e}")
+        })?;
+        let remaining =
+            cloudflare::list_access_service_tokens(control_token, &desired.target_account_id)
+                .await?;
+        if remaining
+            .iter()
+            .any(|t| t.name.as_deref() == Some(name.as_str()) || t.id == *token_id)
+        {
             return Err("Windows acceptance Access token revocation unproven".to_owned());
         }
     } else {
