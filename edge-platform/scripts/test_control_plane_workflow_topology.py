@@ -1820,12 +1820,14 @@ def main() -> None:
 
     require(
         "issues: read" not in vultr
-        and vultr.count("issues: write") == 2
+        and vultr.count("issues: write") == 3
         and "issues: read" not in credentials
         and "issues: write" not in credentials
         and "  vultr:" in router
-        and "    permissions:\n      contents: read\n      issues: write" in router,
-        "Issue #26 BEGIN may be written only by the authorized Vultr route and its two bounded initial jobs",
+        and "    permissions:\n      contents: read\n      actions: read\n      issues: write" in router
+        and "    uses: ./.github/workflows/vultr-acceptance-resume.yml" in vultr
+        and "      actions: read" in vultr,
+        "Issue #26 BEGIN and reboot may be written only by scoped authorized Vultr initial/resume owners",
     )
     require(
         "startsWith(github.event.comment.body, '/vm ')" in router
