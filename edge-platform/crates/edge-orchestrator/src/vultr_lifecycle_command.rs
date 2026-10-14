@@ -55,6 +55,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tonic::Request;
 
+#[path = "vm_owner_upgrade.rs"]
+mod vm_owner_upgrade;
+
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
 const FIREWALL_PROFILES_PATH: &str = "infra/vultr/firewall-profiles.json";
@@ -76,6 +79,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
         "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
         "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
+        "owner-upgrade" => vm_owner_upgrade::run(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
         "lease-acquire" => run_lease_acquire(&args[1..]).await,
