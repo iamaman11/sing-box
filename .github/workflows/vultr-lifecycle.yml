@@ -29,6 +29,7 @@ jobs:
       instance_action: ${{ steps.parse.outputs.instance_action }}
       destroy_digest: ${{ steps.parse.outputs.destroy_digest }}
       resume_source_run_id: ${{ steps.parse.outputs.resume_source_run_id }}
+      owner_previous_sha: ${{ steps.parse.outputs.owner_previous_sha }}
 
     steps:
       - name: Parse and authorize typed request
@@ -55,6 +56,7 @@ jobs:
           action = ""
           destroy_digest = ""
           resume_source_run_id = ""
+          owner_previous_sha = ""
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
           if tokens == ["/vultr", "initial-vm-install"]:
@@ -96,6 +98,10 @@ jobs:
                   operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
               elif verb == "runner-bootstrap" and len(tokens) == 4:
                   operation, spec_path, machine_id = "runner-bootstrap", tokens[2], tokens[3]
+              elif verb == "owner-upgrade" and len(tokens) == 5:
+                  operation, spec_path, machine_id, owner_previous_sha = (
+                      "owner-upgrade", tokens[2], tokens[3], tokens[4]
+                  )
               elif verb in {"start", "halt", "reboot"} and len(tokens) == 4:
                   operation, action, spec_path, machine_id = "action", verb, tokens[2], tokens[3]
               elif verb == "destroy-plan" and len(tokens) == 4:
@@ -114,7 +120,7 @@ jobs:
 
           if operation not in {
               "doctor", "inventory", "plan", "access-release", "action-plan", "apply",
-              "runner-bootstrap", "action", "destroy-plan", "destroy-apply",
+              "runner-bootstrap", "owner-upgrade", "action", "destroy-plan", "destroy-apply",
               "cleanup-plan", "cleanup", "acceptance", "initial-vm-install",
               "initial-acceptance-resume",
           }:
@@ -138,7 +144,7 @@ jobs:
               fail("invalid machine_id")
 
           if operation in {
-              "apply", "runner-bootstrap", "access-release", "action-plan", "action",
+              "apply", "runner-bootstrap", "owner-upgrade", "access-release", "action-plan", "action",
               "destroy-plan", "destroy-apply", "initial-vm-install",
               "initial-acceptance-resume"
           } and not machine_id:
@@ -146,6 +152,11 @@ jobs:
 
           if operation in {"action-plan", "action"} and action not in {"start", "halt", "reboot"}:
               fail("invalid instance action")
+
+          if operation == "owner-upgrade" and not digest_re.fullmatch(owner_previous_sha):
+              fail("owner-upgrade requires observed installed SHA-256")
+          if operation != "owner-upgrade" and owner_previous_sha:
+              fail("owner previous digest is only valid for owner-upgrade")
 
           if operation == "destroy-apply" and not digest_re.fullmatch(destroy_digest):
               fail("destroy-apply requires a lowercase 64-character digest")
@@ -172,6 +183,7 @@ jobs:
               handle.write(f"instance_action={action}\n")
               handle.write(f"destroy_digest={destroy_digest}\n")
               handle.write(f"resume_source_run_id={resume_source_run_id}\n")
+              handle.write(f"owner_previous_sha={owner_previous_sha}\n")
           PY
 
   # Re-attest the ONE immutable published first-use generation. This is a
@@ -218,6 +230,7 @@ jobs:
       MACHINE_ID: ${{ needs.authorize.outputs.machine_id }}
       INSTANCE_ACTION: ${{ needs.authorize.outputs.instance_action }}
       DESTROY_DIGEST: ${{ needs.authorize.outputs.destroy_digest }}
+      OWNER_PREVIOUS_SHA: ${{ needs.authorize.outputs.owner_previous_sha }}
 
     steps:
       - name: Checkout exact canonical revision
