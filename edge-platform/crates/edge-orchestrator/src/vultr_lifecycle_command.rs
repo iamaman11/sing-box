@@ -676,9 +676,15 @@ fn validate_initial_vm_existing_identity(
         return Err("existing VM Access identity owner/mode mismatch; no replay".to_owned());
     }
     let expected = ring::digest::digest(&ring::digest::SHA256, expected_payload);
-    let expected_hex: String = expected.as_ref().iter().map(|x| format!("{x:02x}")).collect();
+    let expected_hex: String = expected
+        .as_ref()
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect();
     if observed_sha256 != expected_hex {
-        return Err("existing VM Access identity differs from authorized escrow; no replay".to_owned());
+        return Err(
+            "existing VM Access identity differs from authorized escrow; no replay".to_owned(),
+        );
     }
     Ok(())
 }
@@ -735,15 +741,24 @@ async fn install_disposable_initial_vm_access_identity(
             return Err("initial VM Access existing secret has unknown directory owner".to_owned());
         }
         let directory_owner = strict_ssh_capture(
-            target_ip, machine_id, &key, &public_key,
+            target_ip,
+            machine_id,
+            &key,
+            &public_key,
             "sudo stat -c '%u:%g:%a' /opt/vultr-edge-stack/runtime-secrets",
         )?;
         let file_owner = strict_ssh_capture(
-            target_ip, machine_id, &key, &public_key,
+            target_ip,
+            machine_id,
+            &key,
+            &public_key,
             "if sudo test -L /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then echo LINK; elif sudo test -f /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then sudo stat -c '%u:%g:%a' /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; else echo FOREIGN; fi",
         )?;
         let observed_hash = strict_ssh_capture(
-            target_ip, machine_id, &key, &public_key,
+            target_ip,
+            machine_id,
+            &key,
+            &public_key,
             "sudo sha256sum /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env | cut -d' ' -f1",
         )?;
         validate_initial_vm_existing_identity(
@@ -755,7 +770,9 @@ async fn install_disposable_initial_vm_access_identity(
         return Ok("REUSED_EXACT");
     }
     if presence != "ABSENT" || directory != "ABSENT" {
-        return Err("initial VM Access identity scope is unknown; do not replay or overwrite".to_owned());
+        return Err(
+            "initial VM Access identity scope is unknown; do not replay or overwrite".to_owned(),
+        );
     }
     const INSTALL: &str = "set -eu; sudo -n install -d -o root -g root -m 0700 /opt/vultr-edge-stack/runtime-secrets; sudo -n install -o root -g root -m 0600 /dev/stdin /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env";
     strict_ssh_run_stdin(
@@ -4132,7 +4149,10 @@ mod tests {
         let payload = initial_vm_access_identity_payload("client-id", "protected-secret").unwrap();
         let hash = ring::digest::digest(&ring::digest::SHA256, payload.as_bytes());
         let sha: String = hash.as_ref().iter().map(|x| format!("{x:02x}")).collect();
-        assert!(validate_initial_vm_existing_identity("0:0:700", "0:0:600", &sha, payload.as_bytes()).is_ok());
+        assert!(
+            validate_initial_vm_existing_identity("0:0:700", "0:0:600", &sha, payload.as_bytes())
+                .is_ok()
+        );
         for (dir, file, observed, bytes) in [
             ("0:0:755", "0:0:600", sha.as_str(), payload.as_bytes()),
             ("0:0:700", "1000:1000:600", sha.as_str(), payload.as_bytes()),
