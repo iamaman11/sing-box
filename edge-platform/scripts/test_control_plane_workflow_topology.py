@@ -633,6 +633,8 @@ def main() -> None:
         and "initial VM Access identity scope is unknown; do not replay or overwrite" in vultr_lifecycle_command
         and "existing VM Access identity differs from authorized escrow; no replay" in vultr_lifecycle_command
         and "vm_access_identity_state" in vultr_lifecycle_command
+        and "needs: [authorize, initial_windows_isolate]" in vultr
+        and "needs.initial_windows_isolate.result == 'success'" in vultr
         and "vm_access_identity_owner" in vultr_lifecycle_command
         and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
         "first-use must either stage exact root-only VM Access identity once or re-attest existing bytes without replay",
