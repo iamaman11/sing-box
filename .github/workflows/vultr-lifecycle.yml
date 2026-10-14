@@ -622,6 +622,22 @@ jobs:
               release_host_access "${spec}" "${machine}" "runner-bootstrap"
               trap - EXIT
               ;;
+            owner-upgrade)
+              test "${GITHUB_RUN_ATTEMPT}" = "1"
+              [[ "${OWNER_PREVIOUS_SHA}" =~ ^[0-9a-f]{64}$ ]]
+              acquire_host_access "${spec}" "${machine}" "owner-upgrade"
+              trap 'release_host_access "${spec}" "${machine}" "owner-upgrade-emergency" >/dev/null 2>&1 || true' EXIT
+              run_lifecycle owner-upgrade "${spec}" "${machine}" "${EDGE_LIFECYCLE_AGENT}" "${OWNER_PREVIOUS_SHA}" \
+                > "${RUNNER_TEMP}/result.json"
+              jq -e '
+                .status == "PASS" and
+                (.action == "OWNER_UPGRADED_ONCE" or .action == "NOOP_EXACT_OWNER") and
+                .runner_mutations == 0 and .container_mutations == 0 and
+                .credential_mutations == 0
+              ' "${RUNNER_TEMP}/result.json" >/dev/null
+              release_host_access "${spec}" "${machine}" "owner-upgrade"
+              trap - EXIT
+              ;;
             action-plan)
               run_lifecycle action-plan "${spec}" "${machine}" "${INSTANCE_ACTION}" | tee "${RUNNER_TEMP}/result.json"
               ;;
