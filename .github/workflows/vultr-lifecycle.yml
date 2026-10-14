@@ -1584,42 +1584,27 @@ jobs:
       group: sing-box-windows-physical
       cancel-in-progress: false
     timeout-minutes: 10
-    permissions: {}
+    permissions:
+      contents: read
     env:
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
     steps:
+      - name: Checkout exact first-use cleanup owner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
       - name: Refuse unknown scope; remove only exact owned acceptance root
         shell: pwsh
+        env:
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
-          $root = 'C:\sing-box-acceptance'
-          if (-not (Test-Path -LiteralPath $root)) {
-            Write-Host 'WINDOWS_ISOLATED_CLEANUP=ALREADY_ABSENT'
-            exit 0
-          }
-          $item = Get-Item -LiteralPath $root -Force
-          if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw 'Windows acceptance cleanup refuses foreign or symlinked root'
-          }
-          $sentinel = Join-Path $root '.first-use-run'
-          if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
-            throw 'Windows acceptance cleanup refuses root lacking durable run sentinel'
-          }
-          $expected = "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}"
-          if ([IO.File]::ReadAllText($sentinel) -cne $expected) {
-            throw 'Windows acceptance cleanup refuses unknown owner or ReleaseSet'
-          }
-          if (Get-ChildItem -LiteralPath $root -Recurse -Force |
-              Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) {
-            throw 'Windows acceptance cleanup refuses link to foreign project state'
-          }
-          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
-          if (Test-Path -LiteralPath $root) {
-            throw 'Windows acceptance root cleanup unconfirmed, no blind retry'
-          }
-          Write-Host 'WINDOWS_ISOLATED_OWNED_CLEANUP=PASS'
-          Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\reconcile-windows-first-use.ps1'
+          & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:RELEASE_SET -RemoveOwned
+          if (-not $?) { throw 'First-use Windows cleanup not completed' }
 
   initial_cleanup:
     name: Dispose exact first-use VM and prove zero-leak provider state

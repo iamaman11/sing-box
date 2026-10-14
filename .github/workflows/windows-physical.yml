@@ -15,10 +15,13 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      actions: read
     outputs:
       accepted_revision: ${{ steps.auth.outputs.accepted_revision }}
       operation: ${{ steps.auth.outputs.operation }}
       readonly_purpose: ${{ steps.auth.outputs.readonly_purpose }}
+      source_run_id: ${{ steps.auth.outputs.source_run_id }}
+      source_release_sha256: ${{ steps.auth.outputs.source_release_sha256 }}
       release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
       expected_mode: ${{ steps.mode.outputs.expected_mode }}
     steps:
@@ -42,6 +45,16 @@ jobs:
             "/windows restart-controller") operation="restart-controller" ;;
             "/windows repair") operation="repair" ;;
             "/windows rollback") operation="rollback" ;;
+            "/windows acceptance-reconcile "*)
+              remainder="${COMMAND_BODY#/windows acceptance-reconcile }"
+              if [[ "$remainder" =~ ^([1-9][0-9]{7,18})[[:space:]]([0-9a-f]{64})$ ]]; then
+                operation="acceptance-reconcile"
+                source_run_id="${BASH_REMATCH[1]}"
+                source_release_sha256="${BASH_REMATCH[2]}"
+              else
+                echo "Malformed exact aborted-run identity" >&2
+                exit 2
+              fi ;;
             *) exit 2 ;;
           esac
           test "$CONTROL_REF" = "refs/heads/main"
@@ -50,6 +63,28 @@ jobs:
           printf 'accepted_revision=%s\n' "$CONTROL_SHA" >> "$GITHUB_OUTPUT"
           printf 'operation=%s\n' "$operation" >> "$GITHUB_OUTPUT"
           printf 'readonly_purpose=%s\n' "${readonly_purpose:-none}" >> "$GITHUB_OUTPUT"
+          printf 'source_run_id=%s\n' "${source_run_id:-}" >> "$GITHUB_OUTPUT"
+          printf 'source_release_sha256=%s\n' "${source_release_sha256:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Require terminal failed initial attempt for an exact source run
+        if: steps.auth.outputs.operation == 'acceptance-reconcile'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ steps.auth.outputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > "${RUNNER_TEMP}/first-use-source.json"
+          jq -e --argjson id "$SOURCE_RUN_ID" '
+            .id == $id and .event == "issue_comment" and .name == "/vultr initial-vm-install" and
+            .path == ".github/workflows/edge-control-plane.yml" and
+            .status == "completed" and (.conclusion | IN("failure", "cancelled", "skipped")) and
+            .repository.id == 1221750822
+          ' "${RUNNER_TEMP}/first-use-source.json" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/attempts/1" > "${RUNNER_TEMP}/first-use-attempt.json"
+          jq -e '.status == "completed" and (.conclusion | IN("failure", "cancelled"))' \
+            "${RUNNER_TEMP}/first-use-attempt.json" >/dev/null
+          echo "Aborted first-use source verified read-only: ${SOURCE_RUN_ID}"
 
       - name: Checkout exact accepted control
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -89,7 +124,37 @@ jobs:
           . "${OUTPUT_DIR}/resolved.env"
           printf 'release_set_sha256=%s\n' "$EDGE_RELEASE_SET_SHA256" >> "$GITHUB_OUTPUT"
 
+  reconcile_first_use:
+    name: Windows / reconcile exact aborted first-use root
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'acceptance-reconcile'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 15
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact protected main (script only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.accepted_revision }}
+          persist-credentials: false
+          clean: true
+      - name: Reconcile only original run sentinel and remove exact owned tree
+        shell: pwsh
+        env:
+          SOURCE_RUN_ID: ${{ needs.resolve.outputs.source_run_id }}
+          SOURCE_RELEASE_SHA256: ${{ needs.resolve.outputs.source_release_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\reconcile-windows-first-use.ps1'
+          & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:SOURCE_RELEASE_SHA256 -RemoveOwned
+          if (-not $?) { throw 'Windows first-use reconciliation did not finish' }
+
   physical:
+    if: needs.resolve.outputs.operation != 'acceptance-reconcile'
     name: Windows / ${{ needs.resolve.outputs.operation }}
     needs: resolve
     runs-on:
