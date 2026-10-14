@@ -77,6 +77,9 @@ jobs:
         github.event.comment.body == '/windows rollback' ||
         startsWith(github.event.comment.body, '/windows acceptance-reconcile ')
       )
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/windows-physical.yml
     with:
       command_body: ${{ github.event.comment.body }}
