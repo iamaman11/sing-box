@@ -1702,7 +1702,9 @@ def main() -> None:
         and 'running container restarted during config-source attestation' in vm_docker_observation
         and '"credential-runtime-source", "credential-initial-probe",' in application
         and 'diagnose|quality-line2|credential-runtime-source|credential-initial-probe)' in application
-        and 'local_operation="credential-runtime-source"' in application
+        and 'local_operation="diagnose"' in application
+        and "grep -Fxq 'credential_runtime_proof=PASS_PROCESS_VISIBLE_FILES'" in application
+        and 'if let Err(err) = attest_vm_running_config_source(&stack_dir).await {' in vm_agent_runtime
         and 'candidate_rendered_configs_must_equal_exact_template_projection' in vm_agent
         and "credential_state_mutations=0" in vm_agent_runtime,
         "VM read-only mounted-source attestation must reject false loaded claims, stale candidates and untrusted mount paths",
