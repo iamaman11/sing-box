@@ -909,7 +909,10 @@ def main() -> None:
         and 'credentials initial-pair-journal-readback' in initial_flow
         and 'credentials initial-pair-publish' in initial_flow
         and 'gh api --method POST "repos/${REPOSITORY}/issues/26/comments"' in initial_flow
-        and vultr.count('issues: write') == 2
+        and vultr.count('issues: write') == 3
+        and 'resume_acceptance:' in vultr
+        and 'uses: ./.github/workflows/vultr-acceptance-resume.yml' in vultr
+        and 'actions: read' in vultr
         and "needs: [authorize, initial_worker_proof_upgrade]" in vultr
         and 'GITHUB_RUN_ATTEMPT' in initial_flow
         and 'vultr-lifecycle initial-runtime-apply' in initial_flow
