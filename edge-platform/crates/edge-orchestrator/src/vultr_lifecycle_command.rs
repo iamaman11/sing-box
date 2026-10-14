@@ -664,12 +664,31 @@ fn initial_vm_access_identity_payload(
     ))
 }
 
+/// Accept existing VM Access material only with exact bytes, root ownership,
+/// root-confined directory and no link. No mutation or secret disclosure.
+fn validate_initial_vm_existing_identity(
+    directory_owner: &str,
+    file_owner: &str,
+    observed_sha256: &str,
+    expected_payload: &[u8],
+) -> Result<(), String> {
+    if directory_owner != "0:0:700" || file_owner != "0:0:600" {
+        return Err("existing VM Access identity owner/mode mismatch; no replay".to_owned());
+    }
+    let expected = ring::digest::digest(&ring::digest::SHA256, expected_payload);
+    let expected_hex: String = expected.as_ref().iter().map(|x| format!("{x:02x}")).collect();
+    if observed_sha256 != expected_hex {
+        return Err("existing VM Access identity differs from authorized escrow; no replay".to_owned());
+    }
+    Ok(())
+}
+
 async fn install_disposable_initial_vm_access_identity(
     vultr_spec_path: &str,
     machine_id: &str,
     expected_agent_sha256: &str,
     payload: &str,
-) -> Result<(), String> {
+) -> Result<&'static str, String> {
     require_disposable_initial_probe_target(vultr_spec_path, machine_id)?;
     let desired = load_desired_state(Path::new(vultr_spec_path))?;
     let observed = exact_existing_machine_observation(&desired, machine_id).await?;
@@ -700,23 +719,43 @@ async fn install_disposable_initial_vm_access_identity(
         &public_key,
         "if sudo test -e /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env || sudo test -L /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then echo PRESENT; else echo ABSENT; fi",
     )?;
-    if presence != "ABSENT" {
-        return Err(
-            "initial VM Access identity already exists or cannot be safely observed; no replay"
-                .to_owned(),
-        );
-    }
+    // Existing exact owned VM is a valid NOOP only if the stored secret bytes,
+    // root ownership and directory confinement equal the host identity already
+    // supplied by the authorized GitHub environment. A stale, unreadable,
+    // symlinked or differently provisioned identity must NEVER be overwritten.
     let directory = strict_ssh_capture(
         target_ip,
         machine_id,
         &key,
         &public_key,
-        "if sudo test -e /opt/vultr-edge-stack/runtime-secrets || sudo test -L /opt/vultr-edge-stack/runtime-secrets; then echo PRESENT; else echo ABSENT; fi",
+        "if sudo test -L /opt/vultr-edge-stack/runtime-secrets; then echo LINK; elif sudo test -d /opt/vultr-edge-stack/runtime-secrets; then echo PRESENT; elif sudo test -e /opt/vultr-edge-stack/runtime-secrets; then echo FOREIGN; else echo ABSENT; fi",
     )?;
-    if directory != "ABSENT" {
-        return Err(
-            "initial VM Access installation refuses a pre-existing secret directory".to_owned(),
-        );
+    if presence == "PRESENT" {
+        if directory != "PRESENT" {
+            return Err("initial VM Access existing secret has unknown directory owner".to_owned());
+        }
+        let directory_owner = strict_ssh_capture(
+            target_ip, machine_id, &key, &public_key,
+            "sudo stat -c '%u:%g:%a' /opt/vultr-edge-stack/runtime-secrets",
+        )?;
+        let file_owner = strict_ssh_capture(
+            target_ip, machine_id, &key, &public_key,
+            "if sudo test -L /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then echo LINK; elif sudo test -f /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; then sudo stat -c '%u:%g:%a' /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env; else echo FOREIGN; fi",
+        )?;
+        let observed_hash = strict_ssh_capture(
+            target_ip, machine_id, &key, &public_key,
+            "sudo sha256sum /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env | cut -d' ' -f1",
+        )?;
+        validate_initial_vm_existing_identity(
+            &directory_owner,
+            &file_owner,
+            &observed_hash,
+            payload.as_bytes(),
+        )?;
+        return Ok("REUSED_EXACT");
+    }
+    if presence != "ABSENT" || directory != "ABSENT" {
+        return Err("initial VM Access identity scope is unknown; do not replay or overwrite".to_owned());
     }
     const INSTALL: &str = "set -eu; sudo -n install -d -o root -g root -m 0700 /opt/vultr-edge-stack/runtime-secrets; sudo -n install -o root -g root -m 0600 /dev/stdin /opt/vultr-edge-stack/runtime-secrets/credential-access-v1.env";
     strict_ssh_run_stdin(
@@ -738,7 +777,7 @@ async fn install_disposable_initial_vm_access_identity(
     if owner != "0:0:600" {
         return Err("initial VM Access identity ownership is not root:root mode 0600".to_owned());
     }
-    Ok(())
+    Ok("CREATED_ONCE")
 }
 
 /// Exact first-install boundary for the disposable N1 VM only. Called after
@@ -777,7 +816,7 @@ async fn run_initial_policy_stage(
         Path::new(&args[4]),
     )
     .await?;
-    install_disposable_initial_vm_access_identity(
+    let access_state = install_disposable_initial_vm_access_identity(
         &args[0],
         &args[1],
         &expected_agent.sha256,
@@ -797,6 +836,7 @@ async fn run_initial_policy_stage(
         "runtime_credentials": "ABSENT",
         "vm_access_identity_installed": true,
         "vm_access_identity_owner": "ROOT_0600",
+        "vm_access_identity_state": access_state,
         "provider_credential_mutations": 0,
         "external_line1": "UNPROVEN",
         "external_line2": "UNPROVEN",
@@ -4085,6 +4125,25 @@ mod tests {
         assert!(require_six_exact_vm_local_line2(&response).is_err());
         response.vm_local_line2.pop();
         assert!(require_six_exact_vm_local_line2(&response).is_err());
+    }
+
+    #[test]
+    fn initial_vm_existing_access_reuse_demands_exact_bytes_and_root_owner() {
+        let payload = initial_vm_access_identity_payload("client-id", "protected-secret").unwrap();
+        let hash = ring::digest::digest(&ring::digest::SHA256, payload.as_bytes());
+        let sha: String = hash.as_ref().iter().map(|x| format!("{x:02x}")).collect();
+        assert!(validate_initial_vm_existing_identity("0:0:700", "0:0:600", &sha, payload.as_bytes()).is_ok());
+        for (dir, file, observed, bytes) in [
+            ("0:0:755", "0:0:600", sha.as_str(), payload.as_bytes()),
+            ("0:0:700", "1000:1000:600", sha.as_str(), payload.as_bytes()),
+            ("0:0:700", "0:0:644", sha.as_str(), payload.as_bytes()),
+            ("LINK", "0:0:600", sha.as_str(), payload.as_bytes()),
+            ("0:0:700", "LINK", sha.as_str(), payload.as_bytes()),
+            ("0:0:700", "0:0:600", "a", payload.as_bytes()),
+            ("0:0:700", "0:0:600", sha.as_str(), b"other"),
+        ] {
+            assert!(validate_initial_vm_existing_identity(dir, file, observed, bytes).is_err());
+        }
     }
 
     #[test]
