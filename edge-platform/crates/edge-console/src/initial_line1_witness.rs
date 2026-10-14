@@ -149,9 +149,9 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
             "--proto",
             "=https",
             "--connect-timeout",
-            "3",
+            "8",
             "--max-time",
-            "9",
+            "18",
             "--noproxy",
             "",
             "--proxy",
@@ -159,28 +159,38 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
             "--output",
             "-",
             "--write-out",
-            "\\nCODE:%{http_code}",
+            "\\nCODE:%{http_code};CONNECT:%{http_connect}",
             target,
         ])
         .stderr(Stdio::null())
         .output()
         .map_err(|_| "Line1 external witness curl executable unavailable".to_owned())?;
+    // Curl's HTTP-CONNECT status is evidence of the *local* proxy's remote
+    // dial progress. It does not prove tunnel authentication or HTTPS success.
+    // The trailer contains only fixed numeric fields, never a URL or secret.
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())?;
+    let meta = text.rsplit_once("\nCODE:").and_then(|(body, trailer)| {
+        let (status, connect) = trailer.split_once(";CONNECT:")?;
+        if status.len() != 3 || connect.len() != 3
+            || !status.bytes().all(|b| b.is_ascii_digit())
+            || !connect.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        Some((body, status, connect))
+    });
     if !output.status.success() {
-        // Exit code is non-sensitive and distinguishes DNS/TLS/refused/timeout.
-        // Never print curl stderr, URLs, secrets or the rendered sing-box JSON.
         let code = output
             .status
             .code()
             .map_or_else(|| "UNKNOWN".to_owned(), |value| value.to_string());
+        let connect = meta.map_or("UNKNOWN", |(_, _, value)| value);
         return Err(format!(
-            "Line1 external HTTPS request failed curl_exit={code}"
+            "Line1 external HTTPS request failed curl_exit={code} proxy_connect={connect}"
         ));
     }
-    let text = String::from_utf8(output.stdout)
-        .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())?;
-    let (body, status) = text
-        .rsplit_once("\nCODE:")
-        .ok_or("Line1 curl did not report HTTP status")?;
+    let (body, status, _) = meta.ok_or("Line1 curl did not report safe HTTP statuses")?;
     if !matches!(status, "200" | "204") {
         return Err("Line1 external HTTPS returned unexpected status".to_owned());
     }
@@ -206,10 +216,15 @@ fn globally_routable(address: Ipv4Addr) -> bool {
 // A timeout, a blocked loopback port, or a DNS failure cannot demonstrate
 // rejection by a remote tunnel. Distinguish handshake failures conservatively.
 fn negative_handshake_rejected(reason: &str) -> bool {
-    matches!(
-        reason.strip_prefix("Line1 external HTTPS request failed curl_exit="),
-        Some("35" | "52" | "55" | "56")
-    )
+    let Some((code, connect)) = reason
+        .strip_prefix("Line1 external HTTPS request failed curl_exit=")
+        .and_then(|value| value.split_once(" proxy_connect="))
+    else {
+        return false;
+    };
+    // The proxy must explicitly confirm CONNECT before a disconnect can be
+    // treated as remote rejection. Without this, 52/56 may mean network loss.
+    connect == "200" && matches!(code, "35" | "52" | "55" | "56")
 }
 
 fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, String> {
@@ -251,6 +266,35 @@ fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, S
         return Err(format!("{tag} external egress address is not global"));
     }
     Ok(address)
+}
+
+// Probe all four protocols even if one fails. Otherwise an early QUIC timeout
+// hides working Reality TCP and prevents attribution to UDP versus the whole VM.
+// Only the fixed endpoint names and bounded non-secret error classes are logged.
+fn probe_all_endpoints<F>(mut probe: F) -> Result<[Ipv4Addr; 4], String>
+where
+    F: FnMut(usize, &str) -> Result<Ipv4Addr, String>,
+{
+    let mut ips = [None; 4];
+    let mut failures = 0_usize;
+    for (idx, tag) in TAGS.iter().enumerate() {
+        match probe(idx, tag) {
+            Ok(ip) => {
+                ips[idx] = Some(ip);
+                println!("line1_endpoint={tag} HTTPS=PASS AUTH_NEGATIVE=REJECTED TLS=VERIFIED");
+            }
+            Err(reason) => {
+                failures += 1;
+                println!("line1_probe_failure={reason}");
+            }
+        }
+    }
+    if failures != 0 {
+        return Err(format!(
+            "Line1 external NOT_ACCEPTED: {failures}/4 endpoints failed; inspect bounded per-endpoint failures"
+        ));
+    }
+    Ok(ips.map(|ip| ip.expect("all endpoints must have passed")))
 }
 
 pub(crate) fn require_isolated_root(root: &Path) -> Result<(), String> {
@@ -391,20 +435,17 @@ pub(crate) fn run(
         .spawn()
         .map_err(|_| "Line1 isolated process start failed")?;
     let mut owner = OwnedChild(child);
-    let mut ips = Vec::with_capacity(4);
-    for (i, tag) in TAGS.iter().enumerate() {
+    let ips = probe_all_endpoints(|i, tag| {
         if owner
             .0
             .try_wait()
             .map_err(|_| "Line1 process wait failed")?
             .is_some()
         {
-            return Err("Line1 isolated sing-box exited before external acceptance".to_owned());
+            return Err(format!("Line1 endpoint={tag} process_exited_before_network_probe"));
         }
-        let ip = check_endpoint(ports[i], ports[i + 4], tag)?;
-        ips.push(ip);
-        println!("line1_endpoint={tag} HTTPS=PASS AUTH_NEGATIVE=REJECTED TLS=VERIFIED");
-    }
+        check_endpoint(ports[i], ports[i + 4], tag)
+    })?;
     if ips[0] == ips[2] || ips[1] == ips[3] {
         return Err("Line1 direct and WARP have the same observed external IPv4".to_owned());
     }
@@ -436,12 +477,15 @@ mod tests {
     fn negative_auth_rejects_timeout_and_unreachable_as_inconclusive() {
         for exit in ["5", "7", "22", "28", "47", "60", "UNKNOWN"] {
             assert!(!negative_handshake_rejected(&format!(
-                "Line1 external HTTPS request failed curl_exit={exit}"
+                "Line1 external HTTPS request failed curl_exit={exit} proxy_connect=000"
             )));
         }
         for exit in ["35", "52", "55", "56"] {
             assert!(negative_handshake_rejected(&format!(
-                "Line1 external HTTPS request failed curl_exit={exit}"
+                "Line1 external HTTPS request failed curl_exit={exit} proxy_connect=200"
+            )));
+            assert!(!negative_handshake_rejected(&format!(
+                "Line1 external HTTPS request failed curl_exit={exit} proxy_connect=000"
             )));
         }
         assert!(!negative_handshake_rejected(
@@ -450,12 +494,38 @@ mod tests {
     }
 
     #[test]
+    fn bounded_witness_checks_all_four_even_if_first_times_out() {
+        let mut visited = Vec::new();
+        let error = probe_all_endpoints(|i, tag| {
+            visited.push(tag.to_owned());
+            if i == 0 {
+                Err(format!(
+                    "Line1 endpoint={tag} phase=https204 Line1 external HTTPS request failed curl_exit=28 proxy_connect=000"
+                ))
+            } else {
+                Ok(Ipv4Addr::new(1, 1, 1, i as u8 + 1))
+            }
+        })
+        .unwrap_err();
+        assert_eq!(visited, TAGS.iter().map(|tag| tag.to_string()).collect::<Vec<_>>());
+        assert!(error.contains("1/4 endpoints failed"));
+    }
+
+    #[test]
+    fn fully_successful_witness_retains_protocol_order() {
+        let result = probe_all_endpoints(|i, _| Ok(Ipv4Addr::new(8, 8, 4, i as u8 + 1)))
+            .unwrap();
+        assert_eq!(result[0], Ipv4Addr::new(8, 8, 4, 1));
+        assert_eq!(result[3], Ipv4Addr::new(8, 8, 4, 4));
+    }
+
+    #[test]
     fn witness_failure_reports_only_named_endpoint_and_safe_curl_code() {
-        let cause = "Line1 external HTTPS request failed curl_exit=28";
+        let cause = "Line1 external HTTPS request failed curl_exit=28 proxy_connect=000";
         let annotated = format!("Line1 endpoint={} phase=https204 {cause}", TAGS[0]);
         assert_eq!(
             annotated,
-            "Line1 endpoint=hysteria2-direct phase=https204 Line1 external HTTPS request failed curl_exit=28"
+            "Line1 endpoint=hysteria2-direct phase=https204 Line1 external HTTPS request failed curl_exit=28 proxy_connect=000"
         );
         assert!(!annotated.contains("https://"));
     }

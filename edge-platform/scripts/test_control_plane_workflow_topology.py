@@ -775,6 +775,22 @@ def main() -> None:
         "first-use Windows acceptance must not depend on the serving SCM endpoint or a hardcoded port",
     )
 
+    # First-use Line1 must distinguish UDP from TCP on the same physical run,
+    # not stop after the first QUIC timeout and misreport remaining endpoints.
+    line1_witness = Path(
+        "edge-platform/crates/edge-console/src/initial_line1_witness.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        'let ips = probe_all_endpoints(|i, tag|' in line1_witness
+        and 'line1_probe_failure={reason}' in line1_witness
+        and 'Line1 external NOT_ACCEPTED: {failures}/4 endpoints failed' in line1_witness
+        and 'proxy_connect={connect}' in line1_witness
+        and 'proxy_connect=000' in line1_witness
+        and 'connect == "200"' in line1_witness
+        and 'fn bounded_witness_checks_all_four_even_if_first_times_out()' in line1_witness,
+        "Line1 witness must test all four external endpoints and classify safe CONNECT/timeout evidence",
+    )
+
     # Locale-independent Windows ACLs, and an authenticated failed
     # materialization step before any recovery of an empty unmarked root.
     windows_first_use_reconcile = Path(
