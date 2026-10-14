@@ -137,7 +137,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.source.outputs.accepted }}
           persist-credentials: false
       - name: Install ORIGINAL immutable ProxyOnly release and prove real Line1 4 of 4, no privileged task
         shell: pwsh
@@ -155,7 +154,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows isolated ACL failure' }
           [IO.File]::WriteAllText((Join-Path $root '.first-use-run'), "$env:GITHUB_RUN_ID|$env:SOURCE_RELEASE")
           $installer=Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\install-windows-release.ps1'
-          & $installer -Repository 'iamaman11/sing-box' -ReleaseSetSha256 $env:SOURCE_RELEASE -AcceptedRevision $env:SOURCE_ACCEPTED -InstallRoot $root -GitHubToken $env:EDGE_GITHUB_TOKEN
+          & $installer -Repository 'iamaman11/sing-box' -ReleaseSetSha256 $env:SOURCE_RELEASE -AcceptedRevision $env:SOURCE_ACCEPTED -InstallRoot $root -GitHubToken $env:EDGE_GITHUB_TOKEN -ArchivedAcceptanceSourceRunId ([UInt64]$env:GENERATION)
           if ($LASTEXITCODE -ne 0) { throw 'Original release install failed' }
           $doctor=@(& (Join-Path $root 'bin\edge-diagnostic.exe') doctor (Join-Path $root 'current.pb'))
           if ($LASTEXITCODE -ne 0 -or -not ($doctor -contains 'windows_datapath_mode=ProxyOnly') -or -not ($doctor -contains "release_set_sha256=$env:SOURCE_RELEASE")) { throw 'Wrong Windows release or mode' }
