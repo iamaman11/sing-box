@@ -429,7 +429,7 @@ async fn initial_windows_acceptance_issue(
         control_token,
         &desired.target_account_id,
         &name,
-        "1h",
+        "4h",
         true,
     )
     .await
