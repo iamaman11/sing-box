@@ -2060,8 +2060,7 @@ enum VmRenderedCredentialSource {
 fn observed_vm_credential_generations(
     bundle: &edge_shared_types::CredentialDeliveryBundle,
 ) -> Option<(u64, u64, u64, u64)> {
-    let edge_shared_types::credential_delivery_bundle::Payload::Vm(vm) =
-        bundle.payload.as_ref()?
+    let edge_shared_types::credential_delivery_bundle::Payload::Vm(vm) = bundle.payload.as_ref()?
     else {
         return None;
     };
@@ -2090,8 +2089,7 @@ fn observe_vm_rendered_credential_source(stack_dir: &Path) -> VmRenderedCredenti
     ) {
         Ok(Some(store)) => store,
         Ok(None) => {
-            return if legacy_vm_runtime_secret_path(stack_dir).is_ok_and(|path| path.is_file())
-            {
+            return if legacy_vm_runtime_secret_path(stack_dir).is_ok_and(|path| path.is_file()) {
                 VmRenderedCredentialSource::LegacyStorePresent
             } else {
                 VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
@@ -2183,9 +2181,8 @@ fn vm_application_operational_verdict(
     match credential_source {
         VmRenderedCredentialSource::V2Active { .. } => "READY_RUNTIME_CREDENTIAL_SOURCE_UNPROVEN",
         VmRenderedCredentialSource::V2Candidate { .. } => "NETWORK_READY_INITIAL_CUTOVER_PENDING",
-        VmRenderedCredentialSource::LegacyStorePresent | VmRenderedCredentialSource::Unproven(_) => {
-            "BLOCKED_CREDENTIAL_SOURCE_UNPROVEN"
-        }
+        VmRenderedCredentialSource::LegacyStorePresent
+        | VmRenderedCredentialSource::Unproven(_) => "BLOCKED_CREDENTIAL_SOURCE_UNPROVEN",
     }
 }
 
