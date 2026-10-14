@@ -3397,6 +3397,23 @@ fn render_runtime_template(
     values: &BTreeMap<String, String>,
     required_keys: &[&str],
 ) -> Result<(), String> {
+    let rendered = expand_runtime_template(stack_dir, template_relative, values, required_keys)?;
+    let target = stack_dir.join(target_relative);
+    fs::write(&target, rendered.as_bytes()).map_err(|err| {
+        format!(
+            "failed to write rendered runtime {}: {err}",
+            target.display()
+        )
+    })?;
+    set_bundle_file_permissions(&target, false, true)
+}
+
+fn expand_runtime_template(
+    stack_dir: &Path,
+    template_relative: &str,
+    values: &BTreeMap<String, String>,
+    required_keys: &[&str],
+) -> Result<String, String> {
     let template_path = stack_dir.join(template_relative);
     let mut rendered = fs::read_to_string(&template_path).map_err(|err| {
         format!(
@@ -3424,14 +3441,7 @@ fn render_runtime_template(
         ));
     }
 
-    let target = stack_dir.join(target_relative);
-    fs::write(&target, rendered.as_bytes()).map_err(|err| {
-        format!(
-            "failed to write rendered runtime {}: {err}",
-            target.display()
-        )
-    })?;
-    set_bundle_file_permissions(&target, false, true)
+    Ok(rendered)
 }
 
 fn line2_certificate_container_paths(
