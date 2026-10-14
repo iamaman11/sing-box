@@ -8,6 +8,8 @@ const PREVIOUS: &str = "/usr/local/libexec/sing-box/edge-agent.previous";
 const NEXT: &str = "/usr/local/libexec/sing-box/.edge-agent.next";
 const JOURNAL: &str = "/usr/local/libexec/sing-box/.edge-agent-upgrade-begin";
 const STAGED: &str = "/tmp/singbox-owner-upgrade-next";
+const ROLLBACK_BEGIN: &str = "/usr/local/libexec/sing-box/.edge-agent-rollback-begin";
+const FAILED: &str = "/usr/local/libexec/sing-box/edge-agent.failed";
 
 fn exact_sha(value: &str) -> bool {
     value.len() == 64
@@ -150,6 +152,102 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
     Ok(())
 }
 
+
+fn bound_rollback_preflight(
+    current: &str,
+    expected_current: &str,
+    previous: &str,
+    expected_previous: &str,
+    journal: &str,
+) -> Result<(), String> {
+    if !exact_sha(current)
+        || !exact_sha(expected_current)
+        || !exact_sha(previous)
+        || !exact_sha(expected_previous)
+    {
+        return Err("VM owner rollback SHA256 arguments are invalid".to_owned());
+    }
+    if current != expected_current || previous != expected_previous {
+        return Err("VM owner rollback refuses installed/backup digest drift".to_owned());
+    }
+    if current == previous || journal != format!("{previous} {current}") {
+        return Err("VM owner rollback refuses missing or unrelated upgrade BEGIN".to_owned());
+    }
+    Ok(())
+}
+
+/// Explicit once-only recovery of a proven exact prior binary. This is never
+/// run automatically when an SSH acknowledgement is uncertain.
+pub(super) async fn rollback(
+    args: &[String],
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if args.len() != 4 || !exact_sha(&args[2]) || !exact_sha(&args[3]) {
+        return Err("usage: vultr-lifecycle owner-rollback <git-owned-vultr-spec> <machine-id> <observed-current-sha256> <observed-previous-sha256>".to_owned());
+    }
+    if env::var("GITHUB_RUN_ATTEMPT").ok().as_deref() != Some("1") {
+        return Err("VM owner rollback requires one non-replayed GitHub attempt".to_owned());
+    }
+    context.application_release_authority()?;
+    let expected = context.expected_application_artifact()?;
+    if expected.sha256 != args[2] {
+        return Err("rollback requires the exact accepted ReleaseSet currently installed owner".to_owned());
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| "exact rollback target has no observed IPv4".to_owned())?;
+    let key = operator_private_key_path_from_env()?;
+    let public_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key, &public_key)?;
+    let capture = |script: &str| strict_ssh_capture(target_ip, &args[1], &key, &public_key, script);
+    let owner_stat = capture(&format!(
+        "set -eu; test -f {OWNER}; test ! -L {OWNER}; stat -c '%u:%g:%a' {OWNER}"
+    ))?;
+    let backup_stat = capture(&format!(
+        "set -eu; test -f {PREVIOUS}; test ! -L {PREVIOUS}; stat -c '%u:%g:%a' {PREVIOUS}"
+    ))?;
+    if owner_stat != "0:0:755" || backup_stat != "0:0:755" {
+        return Err("owner rollback requires exact root:root 0755 binaries".to_owned());
+    }
+    let current = capture(&format!("sha256sum {OWNER} | cut -d' ' -f1"))?;
+    let previous = capture(&format!("sha256sum {PREVIOUS} | cut -d' ' -f1"))?;
+    let journal = capture(&format!("sudo -n cat {JOURNAL}"))?;
+    bound_rollback_preflight(&current, &args[2], &previous, &args[3], &journal)?;
+    let absent = capture(&format!(
+        "set -eu; test ! -e {FAILED}; test ! -L {FAILED}; test ! -e {ROLLBACK_BEGIN}; test ! -L {ROLLBACK_BEGIN}; echo PASS"
+    ))?;
+    if absent != "PASS" {
+        return Err("prior rollback may have committed; STOP without replay".to_owned());
+    }
+    let boot_before = capture("cat /proc/sys/kernel/random/boot_id")?;
+    let remote = format!(
+        "set -eu; test ! -e {FAILED}; test ! -e {ROLLBACK_BEGIN};          test \"$(sha256sum {OWNER} | cut -d' ' -f1)\" = {current};          test \"$(sha256sum {PREVIOUS} | cut -d' ' -f1)\" = {previous};          test \"$(sudo -n cat {JOURNAL})\" = '{previous} {current}';          printf '%s\\n' '{previous} {current}' | sudo -n tee {ROLLBACK_BEGIN} >/dev/null;          sudo -n chmod 0600 {ROLLBACK_BEGIN};          sudo -n ln {OWNER} {FAILED}; sudo -n mv -T {PREVIOUS} {OWNER}"
+    );
+    strict_ssh_run(target_ip, &args[1], &key, &public_key, &remote)?;
+    let installed = capture(&format!("sha256sum {OWNER} | cut -d' ' -f1"))?;
+    if installed != previous || capture("cat /proc/sys/kernel/random/boot_id")? != boot_before {
+        return Err("owner rollback outcome not proven; reconcile read-only without retry".to_owned());
+    }
+    let bounded = capture(&format!(
+        "sudo -u github-runner sudo -n {OWNER} local status >/dev/null && echo PASS"
+    ))?;
+    if bounded != "PASS" {
+        return Err("restored VM owner failed existing bounded dispatch".to_owned());
+    }
+    print_json_value(serde_json::json!({
+        "status": "PASS", "action": "OWNER_ROLLED_BACK_ONCE",
+        "machine_id": args[1], "installed_sha256": installed,
+        "failed_binary_sha256": current, "durable_nonreplay_begin": true,
+        "failed_binary_retained": true, "runner_mutations": 0,
+        "container_mutations": 0, "credential_mutations": 0,
+        "reboot_mutations": 0, "next_safe_action": "READ_ONLY_VM_DIAGNOSE",
+    }));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +263,16 @@ mod tests {
         assert!(bound_upgrade_preflight(&old, &format!("{}x", old), &new).is_err());
         assert!(bound_upgrade_preflight(&old, &old.to_uppercase(), &new).is_err());
         assert!(!exact_sha(&"Z".repeat(64)));
+    }
+
+    #[test]
+    fn rollback_is_bound_to_exact_previous_and_durable_upgrade_journal() {
+        let old = "a".repeat(64);
+        let new = "b".repeat(64);
+        assert!(bound_rollback_preflight(&new, &new, &old, &old, &format!("{old} {new}")).is_ok());
+        assert!(bound_rollback_preflight(&new, &new, &old, &old, "").is_err());
+        assert!(bound_rollback_preflight(&new, &old, &old, &old, &format!("{old} {new}")).is_err());
+        assert!(bound_rollback_preflight(&new, &new, &new, &old, &format!("{old} {new}")).is_err());
     }
 
     #[test]
