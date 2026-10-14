@@ -803,9 +803,9 @@ def main() -> None:
         and 'needs: [authorize, initial_windows_attest]' not in vultr
         and "needs.initial_windows_attest.result == 'success'" not in vultr
         and 'needs: [authorize, initial_windows_isolate]' in vultr
-        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest, initial_windows_access_issue]' in initial_flow
         and "always() &&" in vultr
-        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest, initial_windows_access_issue]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
         and 'credential-initial-attest' in initial_flow
         and 'name: Bind first-use Cloudflare version intent\n    needs: [authorize, initial_worker_proof_upgrade]' in vultr
@@ -846,7 +846,15 @@ def main() -> None:
         and 'initial_line2_external:' in initial_flow
         and 'initial_windows_post_reboot:' in initial_flow
         and 'initial_acceptance_final:' in initial_flow
-        and "needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]" in initial_flow
+        and "needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_windows_access_cleanup, initial_cleanup]" in initial_flow
+        and 'initial_windows_access_issue:' in initial_flow
+        and 'initial_windows_access_cleanup:' in initial_flow
+        and 'credentials initial-windows-acceptance-issue' in initial_flow
+        and 'credentials initial-windows-acceptance-cleanup' in initial_flow
+        and 'WINDOWS_ACCESS_CLEANUP' in initial_flow
+        and 'CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET' in initial_flow
+        and 'EDGE_INITIAL_WINDOWS_ACCEPTANCE_TOKEN_ID' in initial_flow
+        and 'WINDOWS_ACCEPTANCE_ACCESS_REVOKE=PASS' in initial_flow
         and 'line2_external_6_of_6=PASS' in initial_flow
         and 'N2_POST_REBOOT_EXTERNAL_LINE2_6_OF_6=PASS' in initial_flow
         and 'N2_POST_REBOOT_EXTERNAL_LINE1_4_OF_4=PASS' in initial_flow
