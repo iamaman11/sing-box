@@ -229,13 +229,12 @@ pub(crate) async fn observe_container_runtime(
         .unwrap_or_default()
         .into_iter()
         .map(|mount| {
-            let kind = mount
-                .typ
-                .as_ref()
-                .map(|kind| format!("{kind:?}"))
-                .unwrap_or_else(|| "UNKNOWN".to_owned());
+            let kind = mount.typ.unwrap_or_else(|| "UNKNOWN".to_owned());
             let destination = mount.destination.unwrap_or_else(|| "<unknown>".to_owned());
-            let rw = mount.rw.unwrap_or(false);
+            let rw = mount
+                .rw
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "UNKNOWN".to_owned());
             format!("{kind}:{destination}:rw={rw}")
         })
         .collect::<Vec<_>>();
