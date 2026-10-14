@@ -276,6 +276,39 @@ pub(crate) async fn observe_container_runtime(
     })
 }
 
+// Bollard 0.21.1 models Docker inspect MountPoint.Type as Option<String>,
+// not MountPointTypeEnum. Debug-formatting it adds quotes (\x22bind\x22) and
+// therefore falsely rejects a genuine read-only bind. Check the exact wire
+// representation directly, and keep missing/writable evidence fail-closed.
+fn require_exact_readonly_config_bind(
+    container: &str,
+    kind: Option<&str>,
+    writable: Option<bool>,
+) -> Result<(), String> {
+    match kind {
+        Some("bind") => {}
+        Some(_) => {
+            return Err(format!(
+                "runtime config proof {container} config mount type=NON_BIND"
+            ));
+        }
+        None => {
+            return Err(format!(
+                "runtime config proof {container} config mount type=UNAVAILABLE"
+            ));
+        }
+    }
+    match writable {
+        Some(false) => Ok(()),
+        Some(true) => Err(format!(
+            "runtime config proof {container} config mount writable=TRUE"
+        )),
+        None => Err(format!(
+            "runtime config proof {container} config mount writable=UNAVAILABLE"
+        )),
+    }
+}
+
 /// Read-only proof of the *file visible to the running process*. This does
 /// not claim that sing-box reloaded that file into its in-memory configuration.
 /// Authentication is an independent network-level proof.
@@ -320,14 +353,7 @@ pub(crate) async fn verify_running_container_config_binding(
         return Err("runtime config proof requires exactly one config bind mount".to_owned());
     }
     let mount = config_mounts[0];
-    if mount.rw != Some(false)
-        || !mount
-            .typ
-            .as_ref()
-            .is_some_and(|kind| format!("{kind:?}").eq_ignore_ascii_case("bind"))
-    {
-        return Err("runtime config proof refuses a non-read-only file bind".to_owned());
-    }
+    require_exact_readonly_config_bind(name, mount.typ.as_deref(), mount.rw)?;
     let expected = fs::canonicalize(expected_host_file)
         .map_err(|_| "runtime config proof cannot resolve expected host file".to_owned())?;
     let bound = mount
@@ -478,6 +504,44 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bollard_inspect_string_mount_type_is_exactly_bind_without_debug_quotes() {
+        use bollard::models::MountPoint;
+
+        let real_readonly_mount = MountPoint {
+            typ: Some("bind".to_owned()),
+            rw: Some(false),
+            ..Default::default()
+        };
+        assert!(require_exact_readonly_config_bind(
+            "vultr-line1-gateway",
+            real_readonly_mount.typ.as_deref(),
+            real_readonly_mount.rw,
+        ).is_ok());
+        // Old Debug-based comparison emitted a quoted String and rejected it.
+        assert_ne!(format!("{:?}", "bind"), "bind");
+
+        for kind in [None, Some("volume"), Some("tmpfs"), Some("BIND"), Some("")] {
+            assert!(require_exact_readonly_config_bind(
+                "vultr-line1-gateway",
+                kind,
+                Some(false),
+            ).is_err());
+        }
+        for writable in [Some(true), None] {
+            assert!(require_exact_readonly_config_bind(
+                "vultr-line2-proxy",
+                Some("bind"),
+                writable,
+            ).is_err());
+        }
+        assert!(require_exact_readonly_config_bind(
+            "vultr-line2-proxy",
+            Some("bind"),
+            Some(false),
+        ).is_ok());
+    }
+
     use super::*;
 
     fn container_summary(
