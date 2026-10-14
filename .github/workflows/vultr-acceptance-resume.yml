@@ -18,6 +18,8 @@ jobs:
       accepted: ${{ steps.proof.outputs.accepted }}
       release: ${{ steps.proof.outputs.release }}
       generation: ${{ steps.proof.outputs.generation }}
+      control_accepted: ${{ steps.proof.outputs.control_accepted }}
+      control_release: ${{ steps.proof.outputs.control_release }}
     steps:
       - name: Read-only attest one original publication, physical proofs and immutable ReleaseSet
         id: proof
@@ -65,6 +67,17 @@ jobs:
           test "$EDGE_RELEASE_SET_SHA256" = "$release"
           test "$EDGE_CANDIDATE_REVISION" = "$(jq -er .release_source_revision "$RUNNER_TEMP/begin.json")"
           printf 'accepted=%s\nrelease=%s\ngeneration=%s\n' "$ACCEPTED_REVISION" "$release" "$SOURCE_RUN" >> "$GITHUB_OUTPUT"
+          # Historical credential origin remains pinned above. All live owner
+          # commands must use the currently accepted, hashed control ReleaseSet.
+          # Never falsify GITHUB_SHA or weaken OrchestrationContext authority.
+          git fetch -q --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+          unset EXPECTED_RELEASE_TAG
+          export OUTPUT_DIR="$RUNNER_TEMP/current-control-release"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          . "$OUTPUT_DIR/resolved.env"
+          test "$EDGE_ACCEPTED_REVISION" = "$GITHUB_SHA"
+          printf 'control_accepted=%s\ncontrol_release=%s\n' "$EDGE_ACCEPTED_REVISION" "$EDGE_RELEASE_SET_SHA256" >> "$GITHUB_OUTPUT"
           echo 'N1_N2_ORIGINAL_WORKER_AND_VM_PROOFS=REUSED_EXACT' >> "$GITHUB_STEP_SUMMARY"
 
   access:
@@ -128,8 +141,8 @@ jobs:
     permissions:
       contents: read
     env:
-      SOURCE_ACCEPTED: ${{ needs.source.outputs.accepted }}
-      SOURCE_RELEASE: ${{ needs.source.outputs.release }}
+      SOURCE_ACCEPTED: ${{ needs.source.outputs.control_accepted }}
+      SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}
       GENERATION: ${{ needs.source.outputs.generation }}
       EDGE_GITHUB_TOKEN: ${{ github.token }}
       EDGE_WINDOWS_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID }}
@@ -154,7 +167,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows isolated ACL failure' }
           [IO.File]::WriteAllText((Join-Path $root '.first-use-run'), "$env:GITHUB_RUN_ID|$env:SOURCE_RELEASE")
           $installer=Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\install-windows-release.ps1'
-          & $installer -Repository 'iamaman11/sing-box' -ReleaseSetSha256 $env:SOURCE_RELEASE -AcceptedRevision $env:SOURCE_ACCEPTED -InstallRoot $root -GitHubToken $env:EDGE_GITHUB_TOKEN -ArchivedAcceptanceSourceRunId ([UInt64]$env:GENERATION)
+          & $installer -Repository 'iamaman11/sing-box' -ReleaseSetSha256 $env:SOURCE_RELEASE -AcceptedRevision $env:SOURCE_ACCEPTED -InstallRoot $root -GitHubToken $env:EDGE_GITHUB_TOKEN
           if ($LASTEXITCODE -ne 0) { throw 'Original release install failed' }
           $doctor=@(& (Join-Path $root 'bin\edge-diagnostic.exe') doctor (Join-Path $root 'current.pb'))
           if ($LASTEXITCODE -ne 0 -or -not ($doctor -contains 'windows_datapath_mode=ProxyOnly') -or -not ($doctor -contains "release_set_sha256=$env:SOURCE_RELEASE")) { throw 'Wrong Windows release or mode' }
@@ -192,9 +205,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ needs.source.outputs.accepted }}
+          ACCEPTED_REVISION: ${{ needs.source.outputs.control_accepted }}
           OUTPUT_DIR: ${{ runner.temp }}/vm-original-release
           RELEASE_SET: ${{ needs.source.outputs.release }}
+          CONTROL_RELEASE: ${{ needs.source.outputs.control_release }}
           GENERATION: ${{ needs.source.outputs.generation }}
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
           VM_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
@@ -207,10 +221,11 @@ jobs:
           git remote add origin "https://github.com/$REPOSITORY.git"
           git fetch -q --no-tags --depth=1 origin "$ACCEPTED_REVISION"
           git checkout -q --detach FETCH_HEAD
-          export EXPECTED_RELEASE_TAG="edge-release-$RELEASE_SET"
+          export EXPECTED_RELEASE_TAG="edge-release-$CONTROL_RELEASE"
           bash edge-platform/scripts/resolve_durable_release.sh
           . "$OUTPUT_DIR/resolved.env"
-          test "$EDGE_RELEASE_SET_SHA256" = "$RELEASE_SET"
+          test "$EDGE_RELEASE_SET_SHA256" = "$CONTROL_RELEASE"
+          test "$EDGE_ACCEPTED_REVISION" = "$ACCEPTED_REVISION"
           owner="$OUTPUT_DIR/edge-orchestrator-linux-amd64"
           test "$(sha256sum "$owner"|cut -d' ' -f1)" = "$EDGE_ORCHESTRATOR_SHA256"
           chmod 755 "$owner"
@@ -251,10 +266,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ needs.source.outputs.accepted }}
+          ACCEPTED_REVISION: ${{ needs.source.outputs.control_accepted }}
           OUTPUT_DIR: ${{ runner.temp }}/reboot-original-release
           SOURCE_RUN: ${{ inputs.source_run_id }}
           RELEASE_SET: ${{ needs.source.outputs.release }}
+          CONTROL_RELEASE: ${{ needs.source.outputs.control_release }}
           GENERATION: ${{ needs.source.outputs.generation }}
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
           VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
@@ -271,10 +287,11 @@ jobs:
           git remote add origin "https://github.com/$REPOSITORY.git"
           git fetch -q --no-tags --depth=1 origin "$ACCEPTED_REVISION"
           git checkout -q --detach FETCH_HEAD
-          export EXPECTED_RELEASE_TAG="edge-release-$RELEASE_SET"
+          export EXPECTED_RELEASE_TAG="edge-release-$CONTROL_RELEASE"
           bash edge-platform/scripts/resolve_durable_release.sh
           . "$OUTPUT_DIR/resolved.env"
-          test "$EDGE_RELEASE_SET_SHA256" = "$RELEASE_SET"
+          test "$EDGE_RELEASE_SET_SHA256" = "$CONTROL_RELEASE"
+          test "$EDGE_ACCEPTED_REVISION" = "$ACCEPTED_REVISION"
           export EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION
           owner="$OUTPUT_DIR/edge-orchestrator-linux-amd64"
           test "$(sha256sum "$owner"|cut -d' ' -f1)" = "$EDGE_ORCHESTRATOR_SHA256"
@@ -334,7 +351,7 @@ jobs:
     permissions: {}
     env:
       GENERATION: ${{ needs.source.outputs.generation }}
-      SOURCE_RELEASE: ${{ needs.source.outputs.release }}
+      SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}
     steps:
       - name: Independently re-prove Line1 4 of 4 after actual VM reboot
         shell: pwsh
@@ -366,7 +383,7 @@ jobs:
       - name: Remove exact isolated root, never serving Windows application
         shell: pwsh
         env:
-          SOURCE_RELEASE: ${{ needs.source.outputs.release }}
+          SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}
         run: |
           $ErrorActionPreference='Stop'
           $script=Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\reconcile-windows-first-use.ps1'
