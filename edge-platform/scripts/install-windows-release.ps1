@@ -8,6 +8,9 @@ param(
     [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [switch]$ForceRematerialize,
+    # Historical ReleaseSet is permitted ONLY for one already-published
+    # first-use acceptance, never for the installed serving application.
+    [UInt64]$ArchivedAcceptanceSourceRunId = 0,
     [switch]$Offline
 )
 
@@ -144,14 +147,40 @@ function Assert-LowerHexRevision {
 function Assert-AcceptedReleaseAuthority {
     param(
         [Parameter(Mandatory)] [string]$AcceptedRevision,
-        [Parameter(Mandatory)] [string]$Tag
+        [Parameter(Mandatory)] [string]$Tag,
+        [UInt64]$ArchivedAcceptanceSourceRunId = 0
     )
     Assert-LowerHexRevision -Value $AcceptedRevision -Name "AcceptedRevision"
 
     $branchUri = "https://api.github.com/repos/$Repository/branches/main"
     $branch = Invoke-GitHubJsonGet -Uri $branchUri
     if ([string]$branch.commit.sha -ne $AcceptedRevision) {
-        throw "AcceptedRevision is not the current canonical main"
+        if ($ArchivedAcceptanceSourceRunId -lt 10000000) {
+            throw "AcceptedRevision is not the current canonical main"
+        }
+        # The only permitted exception is an independently journal-attested
+        # first-use release within a disposable, isolated Windows root.
+        if ([IO.Path]::GetFullPath($InstallRoot).TrimEnd('\') -cne 'C:\sing-box-acceptance' -or
+            $env:GITHUB_EVENT_NAME -cne 'issue_comment' -or
+            $env:GITHUB_RUN_ATTEMPT -cne '1' -or
+            $env:GITHUB_REPOSITORY -cne 'iamaman11/sing-box' -or
+            $env:GITHUB_REPOSITORY_ID -cne '1221750822') {
+            throw 'ARCHIVED_ACCEPTANCE_BLOCKED: foreign Windows owner or non-isolated root'
+        }
+        $original = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/actions/runs/$ArchivedAcceptanceSourceRunId"
+        if ([UInt64]$original.id -ne $ArchivedAcceptanceSourceRunId -or
+            [string]$original.head_sha -cne $AcceptedRevision -or
+            [string]$original.status -cne 'completed' -or
+            [string]$original.conclusion -cne 'failure' -or
+            [string]$original.event -cne 'issue_comment' -or
+            [UInt64]$original.run_attempt -ne 1 -or
+            [UInt64]$original.actor.id -ne 44100369) {
+            throw 'ARCHIVED_ACCEPTANCE_BLOCKED: exact original GitHub run is not proved'
+        }
+        $compare = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/compare/$AcceptedRevision...main"
+        if ([string]$compare.status -notin @('ahead', 'identical')) {
+            throw 'ARCHIVED_ACCEPTANCE_BLOCKED: original accepted revision is not a canonical main ancestor'
+        }
     }
     if (-not [bool]$branch.protected) {
         throw "Canonical main is not protected; refusing Windows release activation"
@@ -334,7 +363,7 @@ New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
 
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
-Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag
+Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag -ArchivedAcceptanceSourceRunId $ArchivedAcceptanceSourceRunId
 $canonicalReleaseDir = Join-Path $releasesDir $ReleaseSetSha256
 $repairReleaseDir = Join-Path $releasesDir ($ReleaseSetSha256 + ".repair")
 $releaseDir = $canonicalReleaseDir
