@@ -321,9 +321,10 @@ pub(crate) async fn verify_running_container_config_binding(
     }
     let mount = config_mounts[0];
     if mount.rw != Some(false)
-        || !mount.typ.as_ref().is_some_and(|kind| {
-            format!("{kind:?}").eq_ignore_ascii_case("bind")
-        })
+        || !mount
+            .typ
+            .as_ref()
+            .is_some_and(|kind| format!("{kind:?}").eq_ignore_ascii_case("bind"))
     {
         return Err("runtime config proof refuses a non-read-only file bind".to_owned());
     }
@@ -345,11 +346,13 @@ pub(crate) async fn verify_running_container_config_binding(
     let in_container = fs::read(&visible)
         .map_err(|_| "runtime config proof cannot read running process mount view".to_owned())?;
     if in_container.len() as u64 != metadata.len()
-        || in_container != fs::read(&expected).map_err(|_| {
-            "runtime config proof cannot re-read expected host file".to_owned()
-        })?
+        || in_container
+            != fs::read(&expected)
+                .map_err(|_| "runtime config proof cannot re-read expected host file".to_owned())?
     {
-        return Err("running process sees different config bytes than the exact host bind".to_owned());
+        return Err(
+            "running process sees different config bytes than the exact host bind".to_owned(),
+        );
     }
     let after = docker
         .inspect_container(name, None)
