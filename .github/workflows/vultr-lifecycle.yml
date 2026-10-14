@@ -1548,7 +1548,7 @@ jobs:
 
   initial_windows_consume:
     name: Consume and validate Worker-v2 Windows candidate without TUN
-    needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]
+    needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish, initial_line2_external]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
     timeout-minutes: 15
@@ -1560,6 +1560,8 @@ jobs:
       EDGE_INSTALL_ROOT: C:\sing-box-acceptance
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
       GENERATION: ${{ needs.initial_preflight.outputs.generation }}
+      TARGET_IPV4: ${{ needs.initial_line2_external.outputs.vm_ipv4 }}
+      TARGET_DOMAIN: ${{ needs.initial_line2_external.outputs.tls_domain }}
     steps:
       - name: Stage and validate initial Windows projection, never apply or activate
         shell: powershell
@@ -1595,7 +1597,12 @@ jobs:
           # The native isolated witness below performs exact candidate readback,
           # sing-box check, HTTPS response and wrong-auth rejection for all four.
           # No second dispatcher, service, TUN, credential mutation or fallback.
-          $external = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT)
+          $external = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT --target-ipv4 $env:TARGET_IPV4 --target-domain $env:TARGET_DOMAIN)
+          foreach ($line in $external) {
+            $bounded=[string]$line
+            if ($bounded.Length -le 260 -and $bounded -cmatch '^line1_(endpoint|probe_failure)=' -and
+                $bounded -cmatch '^[A-Za-z0-9 _=:/;.-]+$') { Write-Host $bounded }
+          }
           if ($LASTEXITCODE -ne 0 -or -not ($external -contains 'line1_external_4_of_4=PASS') -or
               -not ($external -contains 'line1_direct_warp_egress_distinct=true') -or
               -not ($external -contains 'windows_tun_mutations=0') -or

@@ -31,7 +31,7 @@ pub(crate) enum Command {
     CredentialInitialAttest(InitialCredentialAttestArgs),
     CredentialInitialAcceptanceBootstrap(IsolatedAcceptanceRootArgs),
     CredentialInitialAcceptanceStage(InitialLine1WitnessArgs),
-    CredentialInitialLine1Witness(InitialLine1WitnessArgs),
+    CredentialInitialLine1Witness(AttestedLine1WitnessArgs),
     SmokeRuntime,
     Stage2Preflight,
     ProvisionRuntimeState(InstallRootArgs),
@@ -169,6 +169,19 @@ pub(crate) struct InitialLine1WitnessArgs {
     pub generation: u64,
     #[arg(long, default_value = r"C:\sing-box-acceptance")]
     pub install_root: String,
+}
+
+// The witness may only connect to the VM already independently attested by
+// the GitHub VM job; it must not resolve a production hostname by default.
+#[derive(Debug, Args)]
+pub(crate) struct AttestedLine1WitnessArgs {
+    pub generation: u64,
+    #[arg(long, default_value = r"C:\sing-box-acceptance")]
+    pub install_root: String,
+    #[arg(long)]
+    pub target_ipv4: std::net::Ipv4Addr,
+    #[arg(long)]
+    pub target_domain: String,
 }
 
 #[derive(Debug, Args)]

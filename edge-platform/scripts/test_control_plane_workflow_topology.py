@@ -865,6 +865,34 @@ def main() -> None:
         "Line1 witness failure must print bounded four-endpoint evidence before failing",
     )
 
+    # The acceptance VM has its own independently attested address and TLS
+    # hostname. Never use production DNS to target that VM's credentials.
+    witness_cli = Path(
+        "edge-platform/crates/edge-console/src/cli.rs"
+    ).read_text(encoding="utf-8")
+    witness_impl = Path(
+        "edge-platform/crates/edge-console/src/initial_line1_witness.rs"
+    ).read_text(encoding="utf-8")
+    witness_secrets = Path(
+        "edge-platform/crates/edge-secrets/src/runtime.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "CredentialInitialLine1Witness(AttestedLine1WitnessArgs)" in witness_cli
+        and "pub target_ipv4: std::net::Ipv4Addr" in witness_cli
+        and "windows_runtime_state_from_attested_vm_bundle" in witness_impl
+        and "windows_runtime_state_from_canonical_production_bundle(&bundle)" not in witness_impl
+        and "windows_runtime_state_from_target_bundle(bundle, Some((target_ip, target_domain)))" in witness_secrets
+        and "needs: [source, access, vm]" in resume
+        and "needs: [source, vm, windows, reboot]" in resume
+        and resume.count("--target-ipv4 $env:TARGET_IPV4 --target-domain $env:TARGET_DOMAIN") == 2
+        and "needs.vm.outputs.ip" in resume
+        and "needs.vm.outputs.domain" in resume
+        and "initial_line2_external.outputs.vm_ipv4" in vultr
+        and "initial_line2_external.outputs.tls_domain" in vultr
+        and "--target-ipv4 $env:TARGET_IPV4 --target-domain $env:TARGET_DOMAIN" in vultr,
+        "isolated Line1 must use the exact VM attested IP and hostname, never production DNS",
+    )
+
     # The only legal continuation after one irreversible paired Worker BEGIN
     # is a source-run-bound read-only acceptance. A distinct resume command
     # must never fall through to generic VM execute, republish credentials,
@@ -927,7 +955,7 @@ def main() -> None:
         and 'initial_pair_publish:' in initial_flow
         and 'initial_vm_runtime:' in initial_flow
         and 'initial_windows_consume:' in initial_flow
-        and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish, initial_line2_external]' in initial_flow
         and 'credential-initial-acceptance-stage' in initial_flow
         and 'credential-initial-line1-witness' in initial_flow
         and 'credential-transition validate-candidate' not in initial_flow

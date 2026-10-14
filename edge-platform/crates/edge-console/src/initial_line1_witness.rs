@@ -3,7 +3,7 @@
 use edge_controller_core::windows_credential_store_path;
 use edge_secrets::{
     ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
-    windows_runtime_state_from_canonical_production_bundle, write_access_service_identity,
+    windows_runtime_state_from_attested_vm_bundle, write_access_service_identity,
     write_atomic_private,
 };
 use edge_shared_types::{CredentialProjectionKind, WindowsRuntimeState};
@@ -373,7 +373,12 @@ pub(crate) fn run(
     install_root: &Path,
     singbox_binary: &Path,
     generation: u64,
+    target_ipv4: Ipv4Addr,
+    target_domain: &str,
 ) -> Result<(), String> {
+    if !globally_routable(target_ipv4) {
+        return Err("Line1 attested VM target must have a public IPv4".to_owned());
+    }
     if generation == 0 {
         return Err("Line1 witness requires nonzero credential generation".to_owned());
     }
@@ -401,7 +406,8 @@ pub(crate) fn run(
         return Err("Line1 witness refuses different credential generation".to_owned());
     }
     let bundle = store.read_bundle(candidate)?;
-    let runtime = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+    let runtime =
+        windows_runtime_state_from_attested_vm_bundle(&bundle, target_ipv4, target_domain)?;
     let ports = allocate_loopback_ports(8)?;
     let config = isolated_config(&runtime, &ports)?;
     let ns = SystemTime::now()
