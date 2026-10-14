@@ -1115,6 +1115,21 @@ def main() -> None:
         < vm_inspect.index("let Some(compose) ="),
         "VM diagnostics must observe Docker substrate before any Compose-missing early return",
     )
+    # Public Clap command is a separate authorization boundary from the
+    # Rust dispatch. A missing Clap variant passed CI in PR #366 but failed
+    # the real /vultr owner-upgrade before host mutation.
+    vultr_cli = Path("edge-platform/crates/edge-orchestrator/src/cli.rs").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "OwnerUpgrade(VultrOwnerUpgradeArgs)" in vultr_cli
+        and "OwnerRollback(VultrOwnerRollbackArgs)" in vultr_cli
+        and 'Self::OwnerUpgrade(args) => vec![' in vultr_cli
+        and 'Self::OwnerRollback(args) => vec![' in vultr_cli
+        and "fn owner_transition_workflow_commands_reach_exact_public_clap_dispatch()" in vultr_cli,
+        "VM owner transitions must parse through actual orchestrator Clap CLI before access lease",
+    )
+
     # First trusted VM owner upgrade must never bootstrap/re-register the runner,
     # republish credentials, mutate Docker, or accept a blind replay after an
     # uncertain SSH acknowledgement. All target IDs come from Git inventory.
