@@ -1658,6 +1658,66 @@ jobs:
   # Unknown CREATE ACK must stop at read-only reconciliation, never blindly
   # compensate a potentially foreign resource or replay the provider mutation.
   # A cleanup failure remains DIAGNOSTIC_REQUIRED, never a fake PASS.
+  initial_windows_access_cleanup:
+    name: Revoke run-scoped Access token and remove temporary GitHub escrow
+    needs: [authorize, initial_windows_access_issue, initial_acceptance_verdict]
+    if: >-
+      always() &&
+      needs.authorize.outputs.operation == 'initial-vm-install' &&
+      needs.initial_windows_access_issue.result != 'skipped'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Restore exact Cloudflare host-only Access policy and revoke token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          . "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "$(sha256sum "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" credentials initial-windows-acceptance-cleanup             "${GITHUB_RUN_ID}" > "${RUNNER_TEMP}/access-cleanup.txt"
+          grep -Fxq 'acceptance_access_status=REVOKED_OR_ABSENT' "${RUNNER_TEMP}/access-cleanup.txt"
+          grep -Fxq 'windows_access_policy=EXACT_HOST_ONLY' "${RUNNER_TEMP}/access-cleanup.txt"
+          echo 'WINDOWS_ACCEPTANCE_ACCESS_REVOKE=PASS' >> "${GITHUB_STEP_SUMMARY}"
+      - name: Remove only ephemeral GitHub Windows acceptance escrow
+        if: always()
+        shell: bash
+        env:
+          CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CONTROL_PLANE_TOKEN}"
+          for name in CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET; do
+            names="$(GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret list --repo "${REPOSITORY}" --env production-vultr --json name --jq '.[].name')"
+            if grep -Fxq "${name}" <<<"${names}"; then
+              GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret delete "${name}" --repo "${REPOSITORY}" --env production-vultr
+            fi
+          done
+          echo 'WINDOWS_ACCEPTANCE_GITHUB_ESCROW=DELETED' >> "${GITHUB_STEP_SUMMARY}"
+
   initial_windows_cleanup:
     name: Destroy only this run's isolated Windows acceptance tree
     needs: [authorize, initial_preflight, initial_windows_isolate, initial_acceptance_verdict]
@@ -1917,7 +1977,7 @@ jobs:
 
   initial_acceptance_final:
     name: Final N1/N2 physical result after exact scoped cleanup
-    needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]
+    needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_windows_access_cleanup, initial_cleanup]
     if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1928,11 +1988,12 @@ jobs:
         env:
           TRAFFIC: ${{ needs.initial_acceptance_verdict.result }}
           WINDOWS_CLEANUP: ${{ needs.initial_windows_cleanup.result }}
+          WINDOWS_ACCESS_CLEANUP: ${{ needs.initial_windows_access_cleanup.result }}
           VM_CLEANUP: ${{ needs.initial_cleanup.result }}
           FIRST_USE_CREATE_CONFIRMED: ${{ needs.execute.outputs.first_use_create_confirmed }}
         run: |
           set -euo pipefail
-          if [[ "${TRAFFIC}" != "success" || "${WINDOWS_CLEANUP}" != "success" ]]; then
+          if [[ "${TRAFFIC}" != "success" || "${WINDOWS_CLEANUP}" != "success" || "${WINDOWS_ACCESS_CLEANUP}" != "success" ]]; then
             echo "::error title=N1/N2 NOT_ACCEPTED::Transport or isolated Windows cleanup failed"
             exit 1
           fi
