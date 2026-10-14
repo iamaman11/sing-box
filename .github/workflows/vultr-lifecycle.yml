@@ -1563,11 +1563,12 @@ jobs:
           # This is a one-time mutation: no retry after uncertain dispatch ACK.
           & $console credential-initial-acceptance-stage ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows Worker candidate stage failed; do not replay' }
-          & $console credential-transition validate-candidate --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate config validation failed; do not replay stage' }
-          # Read-back and native sing-box check are performed by the
-          # existing credential-transition validate-candidate owner. No
-          # activation, controller RPC or secret output is required.
+          # The isolated Windows root deliberately has NO privileged SCM/task
+          # owner. The serving EdgePlatformPrivilegedDispatch only owns C:\sing-box;
+          # invoking credential-transition here causes an unacknowledged request.
+          # The native isolated witness below performs exact candidate readback,
+          # sing-box check, HTTPS response and wrong-auth rejection for all four.
+          # No second dispatcher, service, TUN, credential mutation or fallback.
           $external = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT)
           if ($LASTEXITCODE -ne 0 -or -not ($external -contains 'line1_external_4_of_4=PASS') -or
               -not ($external -contains 'line1_direct_warp_egress_distinct=true') -or
