@@ -288,7 +288,13 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             let activation = load_verified_activation(root).map_err(|err| {
                 ConsoleError::Command(format!("Line1 witness release is unverified: {err}"))
             })?;
-            initial_line1_witness::run(root, Path::new(&activation.sing_box_path), args.generation)
+            initial_line1_witness::run(
+                root,
+                Path::new(&activation.sing_box_path),
+                args.generation,
+                args.target_ipv4,
+                &args.target_domain,
+            )
                 .map_err(ConsoleError::Command)?;
             Ok(())
         }

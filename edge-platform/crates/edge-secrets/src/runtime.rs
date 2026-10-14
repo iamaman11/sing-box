@@ -1,7 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand_core::{OsRng, RngCore};
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::ToSocketAddrs;
+use std::net::{Ipv4Addr, ToSocketAddrs};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use edge_shared_types::{
@@ -170,8 +170,40 @@ impl ApplicationRuntimeSecrets {
     }
 }
 
+// The production endpoint is not an acceptance VM. Never silently resolve
+// production DNS while consuming a separately attested acceptance VM target.
 pub fn windows_runtime_state_from_canonical_production_bundle(
     bundle: &CredentialDeliveryBundle,
+) -> Result<WindowsRuntimeState, String> {
+    windows_runtime_state_from_target_bundle(bundle, None)
+}
+
+fn valid_public_fqdn(value: &str) -> bool {
+    value.len() <= 253
+        && value.split('.').count() >= 2
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        })
+}
+
+pub fn windows_runtime_state_from_attested_vm_bundle(
+    bundle: &CredentialDeliveryBundle,
+    target_ip: Ipv4Addr,
+    target_domain: &str,
+) -> Result<WindowsRuntimeState, String> {
+    if !valid_public_fqdn(target_domain) {
+        return Err("attested VM target TLS domain is not a valid DNS hostname".to_owned());
+    }
+    windows_runtime_state_from_target_bundle(bundle, Some((target_ip, target_domain)))
+}
+
+fn windows_runtime_state_from_target_bundle(
+    bundle: &CredentialDeliveryBundle,
+    attested_vm: Option<(Ipv4Addr, &str)>,
 ) -> Result<WindowsRuntimeState, String> {
     let desired = canonical_production_desired_state()?;
     let application = desired
@@ -201,30 +233,45 @@ pub fn windows_runtime_state_from_canonical_production_bundle(
         })
     };
 
-    let server_ip = (desired.public_hostname.as_str(), 443u16)
-        .to_socket_addrs()
-        .map_err(|err| {
-            format!(
-                "failed to resolve canonical production hostname {}: {err}",
-                desired.public_hostname
-            )
-        })?
-        .find(|address| address.is_ipv4())
-        .map(|address| address.ip().to_string())
-        .ok_or_else(|| {
-            format!(
-                "canonical production hostname {} has no IPv4 address",
-                desired.public_hostname
-            )
-        })?;
+    let server_ip = if let Some((address, _)) = attested_vm {
+        address.to_string()
+    } else {
+        (desired.public_hostname.as_str(), 443u16)
+            .to_socket_addrs()
+            .map_err(|err| {
+                format!(
+                    "failed to resolve canonical production hostname {}: {err}",
+                    desired.public_hostname
+                )
+            })?
+            .find(|address| address.is_ipv4())
+            .map(|address| address.ip().to_string())
+            .ok_or_else(|| {
+                format!(
+                    "canonical production hostname {} has no IPv4 address",
+                    desired.public_hostname
+                )
+            })?
+    };
+    let tunnel_domain = attested_vm
+        .map(|(_, domain)| domain.to_owned())
+        .unwrap_or_else(|| line1.tunnel_domain.clone());
 
     let topology = WindowsRuntimeState {
         schema_version: 1,
-        deployment_label: Some(desired.environment),
-        instance_id: desired.machine_id,
+        deployment_label: Some(if attested_vm.is_some() {
+            "application-acceptance".to_owned()
+        } else {
+            desired.environment
+        }),
+        instance_id: if attested_vm.is_some() {
+            "attested-line1-target".to_owned()
+        } else {
+            desired.machine_id
+        },
         server_ip,
         direct: Some(WindowsTunnelBinding {
-            domain: line1.tunnel_domain.clone(),
+            domain: tunnel_domain.clone(),
             hy2_port: port(ProductionTransportProtocol::Udp, "Line 1 Hysteria2 direct")?,
             hy2_password: String::new(),
             vless_port: port(
@@ -236,7 +283,7 @@ pub fn windows_runtime_state_from_canonical_production_bundle(
             reality_short_id: String::new(),
         }),
         warp: Some(WindowsTunnelBinding {
-            domain: line1.tunnel_domain.clone(),
+            domain: tunnel_domain.clone(),
             hy2_port: port(ProductionTransportProtocol::Udp, "Line 1 Hysteria2 WARP")?,
             hy2_password: String::new(),
             vless_port: port(
@@ -468,6 +515,15 @@ fn validate_key(label: &str, value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attested_vm_domain_is_closed_and_cannot_be_url_or_localhost() {
+        assert!(valid_public_fqdn("stage2-acceptance.alegria.by"));
+        for invalid in ["", "localhost", "bad..example.com", "-a.example.com",
+            "a-.example.com", "https://example.com", "example.com:8443"] {
+            assert!(!valid_public_fqdn(invalid), "{invalid}");
+        }
+    }
 
     #[test]
     fn generated_secrets_round_trip() {

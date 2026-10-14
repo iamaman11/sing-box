@@ -131,7 +131,7 @@ jobs:
           rm -f "$RUNNER_TEMP/temp-id.env" "$RUNNER_TEMP/token-id"
 
   windows:
-    needs: [source, access]
+    needs: [source, access, vm]
     runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
     environment:
       name: production-vultr
@@ -146,6 +146,8 @@ jobs:
       SOURCE_ACCEPTED: ${{ needs.source.outputs.control_accepted }}
       SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}
       GENERATION: ${{ needs.source.outputs.generation }}
+      TARGET_IPV4: ${{ needs.vm.outputs.ip }}
+      TARGET_DOMAIN: ${{ needs.vm.outputs.domain }}
       EDGE_GITHUB_TOKEN: ${{ github.token }}
       EDGE_WINDOWS_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID }}
       EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET }}
@@ -184,7 +186,7 @@ jobs:
           # Preserve bounded endpoint evidence when the witness exits nonzero.
           $PSNativeCommandUseErrorActionPreference = $false
           try {
-            $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+            $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root --target-ipv4 $env:TARGET_IPV4 --target-domain $env:TARGET_DOMAIN)
             $witnessExit=$LASTEXITCODE
           } finally {
             $PSNativeCommandUseErrorActionPreference = $true
@@ -357,7 +359,7 @@ jobs:
           echo 'N1_N2_REBOOT_AND_LINE2_6_OF_6=PASS' >> "$GITHUB_STEP_SUMMARY"
 
   post_windows:
-    needs: [source, windows, reboot]
+    needs: [source, vm, windows, reboot]
     runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
     concurrency:
       group: sing-box-windows-physical
@@ -367,6 +369,8 @@ jobs:
     env:
       GENERATION: ${{ needs.source.outputs.generation }}
       SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}
+      TARGET_IPV4: ${{ needs.vm.outputs.ip }}
+      TARGET_DOMAIN: ${{ needs.vm.outputs.domain }}
     steps:
       - name: Independently re-prove Line1 4 of 4 after actual VM reboot
         shell: pwsh
@@ -380,7 +384,7 @@ jobs:
           # Preserve bounded endpoint evidence when the witness exits nonzero.
           $PSNativeCommandUseErrorActionPreference = $false
           try {
-            $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+            $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root --target-ipv4 $env:TARGET_IPV4 --target-domain $env:TARGET_DOMAIN)
             $witnessExit=$LASTEXITCODE
           } finally {
             $PSNativeCommandUseErrorActionPreference = $true

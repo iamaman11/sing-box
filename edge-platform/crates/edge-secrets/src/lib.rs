@@ -14,6 +14,7 @@ mod runtime;
 pub use runtime::{
     APPLICATION_RUNTIME_SECRET_KEYS, ApplicationRuntimeSecrets, windows_runtime_state_from_bundle,
     windows_runtime_state_from_canonical_production_bundle,
+    windows_runtime_state_from_attested_vm_bundle,
 };
 
 use std::env;
