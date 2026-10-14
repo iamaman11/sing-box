@@ -1215,7 +1215,7 @@ def main() -> None:
         if "issue_comment:" in path.read_text(encoding="utf-8")
     )
     require(
-        "Stage 3 and Stage 4A are closed" in architecture
+        "Stage 3 and Stage 4A remain closed" in architecture
         and "Stage 4A exit decision — CLOSED" in architecture
         and "Managed TUN is now permitted only inside the explicit Stage 4B cutover" in architecture
         and "Stage 4B entry contract — managed Windows TUN" in architecture
@@ -1225,7 +1225,7 @@ def main() -> None:
         and "typed Windows process observation distinguishes managed / conflicting external / absent ownership" in architecture
         and "`infra/production/production.textproto` in Windows candidate input identity" in architecture
         and "exact locally verified `previous.pb`" in architecture
-        and "one explicit legacy-to-managed handoff" in architecture
+        and "Windows bidirectional mode changes remain N3" in architecture
         and "Stage 4B datapath convergence" in local_architecture
         and "Generated `runtime\\\\sing-box.json` never chooses the mode" in local_architecture
         and "## 10. Current N1/N2 → N3 native Windows modes (2026-10-12)" in runbook
