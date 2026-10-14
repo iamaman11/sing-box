@@ -775,6 +775,21 @@ def main() -> None:
         "first-use Windows acceptance must not depend on the serving SCM endpoint or a hardcoded port",
     )
 
+    # VM diagnostics must distinguish exactly rendered first-use candidate from
+    # active generation, while never declaring container credential provenance
+    # based on .env.runtime equality or green Docker readiness alone.
+    vm_owner = Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+    require(
+        'VmRenderedCredentialSource::V2Candidate' in vm_owner
+        and 'credential_rendered_source=V2_CANDIDATE_RENDERED' in vm_owner
+        and 'credential_lifecycle_verdict=STAGED_FIRST_USE_NOT_CUT_OVER' in vm_owner
+        and 'credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF' in vm_owner
+        and 'application_operational_verdict=' in vm_owner
+        and 'fn first_use_candidate_rendered_is_proven_on_disk_but_not_active_or_running()' in vm_owner
+        and 'fn rotated_candidate_does_not_override_active_render_authority()' in vm_owner,
+        "VM diagnosis must make first-use cursor/rendered/loaded credential boundaries explicit",
+    )
+
     # First-use Line1 must distinguish UDP from TCP on the same physical run,
     # not stop after the first QUIC timeout and misreport remaining endpoints.
     line1_witness = Path(

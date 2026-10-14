@@ -179,7 +179,12 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("network_route_count={}", network.routes.len());
             let mesh = inspect_mesh_runtime(&stack_dir, MeshDiagnosticDepth::Deep).await;
             print_mesh_state_evidence(&mesh);
-            print_vm_rendered_credential_source(&stack_dir);
+            let credential_source = observe_vm_rendered_credential_source(&stack_dir);
+            print_vm_rendered_credential_source(&credential_source);
+            println!(
+                "application_operational_verdict={}",
+                vm_application_operational_verdict(state.ready, &credential_source)
+            );
             Ok(())
         }
         cli::LocalCommand::BootstrapBase => {
@@ -2030,10 +2035,10 @@ fn legacy_vm_runtime_secret_path(stack_dir: &Path) -> Result<PathBuf, String> {
     Ok(parent.join(RUNTIME_SECRET_DIR).join(RUNTIME_SECRET_FILE))
 }
 
-// Observe what the on-disk runtime configuration actually contains, not just
-// whether a Cloudflare Worker or a local credential pointer exists.
-// This is read-only and never prints secret values, digests, or full env content.
-// A matching rendered file does not prove the running container loaded it.
+// Observe what the on-disk runtime actually contains, not just whether the
+// Worker issued a generation. Candidate-only is a legitimate first-use state,
+// *not* evidence of an active/local cutover. No credential bytes, hashes,
+// rendered env values, or private file paths may appear in stdout.
 #[derive(Debug, PartialEq, Eq)]
 enum VmRenderedCredentialSource {
     V2Active {
@@ -2042,8 +2047,30 @@ enum VmRenderedCredentialSource {
         reality_generation: u64,
         line2_generation: u64,
     },
+    V2Candidate {
+        delivery_generation: u64,
+        tunnel_auth_generation: u64,
+        reality_generation: u64,
+        line2_generation: u64,
+    },
     LegacyStorePresent,
     Unproven(&'static str),
+}
+
+fn observed_vm_credential_generations(
+    bundle: &edge_shared_types::CredentialDeliveryBundle,
+) -> Option<(u64, u64, u64, u64)> {
+    let edge_shared_types::credential_delivery_bundle::Payload::Vm(vm) =
+        bundle.payload.as_ref()?
+    else {
+        return None;
+    };
+    Some((
+        bundle.generation,
+        vm.tunnel_auth.as_ref()?.generation,
+        vm.reality_identity.as_ref()?.generation,
+        vm.line2_proxy.as_ref()?.generation,
+    ))
 }
 
 fn observe_vm_rendered_credential_source(stack_dir: &Path) -> VmRenderedCredentialSource {
@@ -2054,46 +2081,116 @@ fn observe_vm_rendered_credential_source(stack_dir: &Path) -> VmRenderedCredenti
         }
         Err(_) => return VmRenderedCredentialSource::Unproven("RUNTIME_ENV_UNREADABLE"),
     };
-
-    let active = match active_vm_credential_bundle(stack_dir) {
-        Ok(value) => value,
+    let store = match CredentialStore::open_existing(
+        match vm_credential_store_root(stack_dir) {
+            Ok(root) => root,
+            Err(_) => return VmRenderedCredentialSource::Unproven("V2_STATE_INVALID"),
+        },
+        CredentialProjectionKind::Vm,
+    ) {
+        Ok(Some(store)) => store,
+        Ok(None) => {
+            return if legacy_vm_runtime_secret_path(stack_dir).is_ok_and(|path| path.is_file())
+            {
+                VmRenderedCredentialSource::LegacyStorePresent
+            } else {
+                VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
+            };
+        }
         Err(_) => return VmRenderedCredentialSource::Unproven("V2_STATE_INVALID"),
     };
-    if let Some(bundle) = active.as_ref() {
-        let secrets = match ApplicationRuntimeSecrets::from_vm_bundle(bundle) {
-            Ok(value) => value,
+    let state = match store.read_state() {
+        Ok(Some(state)) => state,
+        Ok(None) => return VmRenderedCredentialSource::Unproven("V2_STATE_ABSENT"),
+        Err(_) => return VmRenderedCredentialSource::Unproven("V2_STATE_INVALID"),
+    };
+
+    // Active always has priority. A different staged candidate must not be
+    // adopted as the current source while the previous active pointer exists.
+    if let Some(active) = state.active.as_ref() {
+        let bundle = match store.read_bundle(active) {
+            Ok(bundle) => bundle,
             Err(_) => return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID"),
         };
-        if vm_runtime_environment(stack_dir, &secrets).is_ok_and(|expected| expected == rendered) {
-            if let Some(edge_shared_types::credential_delivery_bundle::Payload::Vm(vm)) =
-                bundle.payload.as_ref()
+        let Ok(secrets) = ApplicationRuntimeSecrets::from_vm_bundle(&bundle) else {
+            return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID");
+        };
+        if vm_runtime_environment(stack_dir, &secrets).is_ok_and(|value| value == rendered) {
+            if let Some((
+                delivery_generation,
+                tunnel_auth_generation,
+                reality_generation,
+                line2_generation,
+            )) = observed_vm_credential_generations(&bundle)
             {
-                if let (Some(tunnel), Some(reality), Some(line2)) = (
-                    vm.tunnel_auth.as_ref(),
-                    vm.reality_identity.as_ref(),
-                    vm.line2_proxy.as_ref(),
-                ) {
-                    return VmRenderedCredentialSource::V2Active {
-                        delivery_generation: bundle.generation,
-                        tunnel_auth_generation: tunnel.generation,
-                        reality_generation: reality.generation,
-                        line2_generation: line2.generation,
-                    };
-                }
+                return VmRenderedCredentialSource::V2Active {
+                    delivery_generation,
+                    tunnel_auth_generation,
+                    reality_generation,
+                    line2_generation,
+                };
             }
             return VmRenderedCredentialSource::Unproven("V2_ACTIVE_INVALID");
         }
+        return VmRenderedCredentialSource::Unproven("V2_ACTIVE_RENDER_MISMATCH");
     }
 
+    // The only permitted candidate-only reconciliation is exactly one
+    // generation with neither an active nor previous bundle. It is read-only.
+    if state.previous.is_some() {
+        return VmRenderedCredentialSource::Unproven("V2_CURSOR_INCONSISTENT");
+    }
+    if let Some(candidate) = state.candidate.as_ref() {
+        let bundle = match store.read_bundle(candidate) {
+            Ok(bundle) => bundle,
+            Err(_) => return VmRenderedCredentialSource::Unproven("V2_CANDIDATE_INVALID"),
+        };
+        let Ok(secrets) = ApplicationRuntimeSecrets::from_vm_bundle(&bundle) else {
+            return VmRenderedCredentialSource::Unproven("V2_CANDIDATE_INVALID");
+        };
+        if !vm_runtime_environment(stack_dir, &secrets).is_ok_and(|value| value == rendered) {
+            return VmRenderedCredentialSource::Unproven("V2_CANDIDATE_RENDER_MISMATCH");
+        }
+        if let Some((
+            delivery_generation,
+            tunnel_auth_generation,
+            reality_generation,
+            line2_generation,
+        )) = observed_vm_credential_generations(&bundle)
+        {
+            return VmRenderedCredentialSource::V2Candidate {
+                delivery_generation,
+                tunnel_auth_generation,
+                reality_generation,
+                line2_generation,
+            };
+        }
+        return VmRenderedCredentialSource::Unproven("V2_CANDIDATE_INVALID");
+    }
     if legacy_vm_runtime_secret_path(stack_dir).is_ok_and(|path| path.is_file()) {
-        // The legacy file is migration evidence only, never runtime authority.
         return VmRenderedCredentialSource::LegacyStorePresent;
     }
     VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
 }
 
-fn print_vm_rendered_credential_source(stack_dir: &Path) {
-    match observe_vm_rendered_credential_source(stack_dir) {
+fn vm_application_operational_verdict(
+    runtime_ready: bool,
+    credential_source: &VmRenderedCredentialSource,
+) -> &'static str {
+    if !runtime_ready {
+        return "BLOCKED_RUNTIME_NOT_READY";
+    }
+    match credential_source {
+        VmRenderedCredentialSource::V2Active { .. } => "READY_RUNTIME_CREDENTIAL_SOURCE_UNPROVEN",
+        VmRenderedCredentialSource::V2Candidate { .. } => "NETWORK_READY_INITIAL_CUTOVER_PENDING",
+        VmRenderedCredentialSource::LegacyStorePresent | VmRenderedCredentialSource::Unproven(_) => {
+            "BLOCKED_CREDENTIAL_SOURCE_UNPROVEN"
+        }
+    }
+}
+
+fn print_vm_rendered_credential_source(source: &VmRenderedCredentialSource) {
+    match source {
         VmRenderedCredentialSource::V2Active {
             delivery_generation,
             tunnel_auth_generation,
@@ -2105,16 +2202,38 @@ fn print_vm_rendered_credential_source(stack_dir: &Path) {
             println!("credential_tunnel_auth_generation={tunnel_auth_generation}");
             println!("credential_reality_generation={reality_generation}");
             println!("credential_line2_generation={line2_generation}");
+            println!("credential_lifecycle_verdict=ACTIVE_RENDERED_RUNNING_UNPROVEN");
+            println!("credential_next_safe_action=VERIFY_CONTAINER_RUNTIME_SOURCE");
+        }
+        VmRenderedCredentialSource::V2Candidate {
+            delivery_generation,
+            tunnel_auth_generation,
+            reality_generation,
+            line2_generation,
+        } => {
+            println!("credential_rendered_source=V2_CANDIDATE_RENDERED");
+            println!("credential_delivery_generation={delivery_generation}");
+            println!("credential_tunnel_auth_generation={tunnel_auth_generation}");
+            println!("credential_reality_generation={reality_generation}");
+            println!("credential_line2_generation={line2_generation}");
+            println!("credential_lifecycle_verdict=STAGED_FIRST_USE_NOT_CUT_OVER");
+            println!("credential_next_safe_action=RECONCILE_PAIRED_FIRST_USE");
         }
         VmRenderedCredentialSource::LegacyStorePresent => {
             println!("credential_rendered_source=UNPROVEN");
             println!("credential_rendered_reason=LEGACY_STORE_PRESENT_NO_V2_MATCH");
+            println!("credential_lifecycle_verdict=BLOCKED_LEGACY_SOURCE");
+            println!("credential_next_safe_action=READ_ONLY_RECONCILIATION");
         }
         VmRenderedCredentialSource::Unproven(reason) => {
             println!("credential_rendered_source=UNPROVEN");
             println!("credential_rendered_reason={reason}");
+            println!("credential_lifecycle_verdict=BLOCKED_UNPROVEN_SOURCE");
+            println!("credential_next_safe_action=READ_ONLY_RECONCILIATION");
         }
     }
+    // A matching .env.runtime is only disk evidence. Verifying that already
+    // running containers loaded it is a distinct runtime/protocol proof.
     println!("credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF");
 }
 
@@ -6302,10 +6421,11 @@ mod tests {
         store.stage_candidate(&delivery).unwrap();
         store.promote_candidate().unwrap();
 
-        // A pointer update alone cannot claim the rendered runtime has switched.
+        // A pointer update alone cannot claim the rendered runtime has switched,
+        // even with an unrelated legacy store still present as evidence.
         assert_eq!(
             observe_vm_rendered_credential_source(&stack),
-            VmRenderedCredentialSource::LegacyStorePresent
+            VmRenderedCredentialSource::Unproven("V2_ACTIVE_RENDER_MISMATCH")
         );
 
         let v2 = ApplicationRuntimeSecrets::from_vm_bundle(&delivery).unwrap();
@@ -6327,6 +6447,118 @@ mod tests {
             VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
         );
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn application_verdict_never_conflates_runtime_ready_with_active_credentials() {
+        assert_eq!(
+            vm_application_operational_verdict(
+                true,
+                &VmRenderedCredentialSource::V2Candidate {
+                    delivery_generation: 101,
+                    tunnel_auth_generation: 2,
+                    reality_generation: 3,
+                    line2_generation: 4,
+                }
+            ),
+            "NETWORK_READY_INITIAL_CUTOVER_PENDING"
+        );
+        assert_eq!(
+            vm_application_operational_verdict(
+                false,
+                &VmRenderedCredentialSource::Unproven("RUNTIME_ENV_ABSENT")
+            ),
+            "BLOCKED_RUNTIME_NOT_READY"
+        );
+        assert_eq!(
+            vm_application_operational_verdict(
+                true,
+                &VmRenderedCredentialSource::Unproven("V2_ACTIVE_RENDER_MISMATCH")
+            ),
+            "BLOCKED_CREDENTIAL_SOURCE_UNPROVEN"
+        );
+    }
+
+    #[test]
+    fn first_use_candidate_rendered_is_proven_on_disk_but_not_active_or_running() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\\nPROXY_CERT_CN=acceptance.local\\n",
+        )
+        .unwrap();
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        )
+        .unwrap();
+        let candidate = vm_test_credential_bundle(38_503_639_351, CredentialDeliverySlot::B);
+        store.stage_candidate(&candidate).unwrap();
+        let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&candidate).unwrap();
+        write_vm_runtime_environment(&stack, &secrets).unwrap();
+
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::V2Candidate {
+                delivery_generation: 38_503_639_351,
+                tunnel_auth_generation: 7,
+                reality_generation: 3,
+                line2_generation: 2,
+            }
+        );
+        let state = store.read_state().unwrap().unwrap();
+        assert!(state.active.is_none());
+        assert_eq!(state.candidate.unwrap().generation, 38_503_639_351);
+
+        fs::write(stack.join(RUNTIME_ENV_FILE), "UNRELATED=source\\n").unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::Unproven("V2_CANDIDATE_RENDER_MISMATCH")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rotated_candidate_does_not_override_active_render_authority() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        fs::create_dir_all(&stack).unwrap();
+        fs::write(
+            stack.join(RUNTIME_POLICY_FILE),
+            "PROXY_USERNAME=acceptance\\nPROXY_CERT_CN=acceptance.local\\n",
+        )
+        .unwrap();
+        let store = CredentialStore::new(
+            vm_credential_store_root(&stack).unwrap(),
+            CredentialProjectionKind::Vm,
+        )
+        .unwrap();
+        let active = vm_test_credential_bundle(100, CredentialDeliverySlot::A);
+        store.stage_candidate(&active).unwrap();
+        store.promote_candidate().unwrap();
+        let mut candidate = vm_test_credential_bundle(101, CredentialDeliverySlot::B);
+        let edge_shared_types::credential_delivery_bundle::Payload::Vm(vm) =
+            candidate.payload.as_mut().unwrap()
+        else {
+            unreachable!()
+        };
+        vm.tunnel_auth
+            .as_mut()
+            .unwrap()
+            .direct
+            .as_mut()
+            .unwrap()
+            .hysteria2_password = "f".repeat(64);
+        store.stage_candidate(&candidate).unwrap();
+        let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&candidate).unwrap();
+        write_vm_runtime_environment(&stack, &secrets).unwrap();
+        assert_eq!(
+            observe_vm_rendered_credential_source(&stack),
+            VmRenderedCredentialSource::Unproven("V2_ACTIVE_RENDER_MISMATCH")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
