@@ -826,7 +826,7 @@ def main() -> None:
     # Read-only Windows observation is independent of the current release
     # resolver. Mutation and offline handoff still require ReleaseSet authority.
     require(
-        "if: steps.auth.outputs.operation != 'diagnose' || steps.auth.outputs.readonly_purpose == 'offline-preflight'"
+        "if: (steps.auth.outputs.operation != 'diagnose' && steps.auth.outputs.operation != 'quality-line1') || steps.auth.outputs.readonly_purpose == 'offline-preflight'"
         in windows_physical
         and "if ($env:EDGE_OPERATION -in @('converge','repair') -and" in windows_physical
         and "line1_quality_source=INSTALLED_VERIFIED_RELEASE" in windows_physical
@@ -1176,7 +1176,8 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "> **ACTIVE N1/N2 — native VM install and external network acceptance (2026-10-12).**" in root_readme
+        and "> **ACTIVE N1/N2 — Line1 authentication and recovery still NOT_ACCEPTED.**" in root_readme
+        and "The first-use credential generation from run 38503639351 was already published exactly once" in root_readme
         and "**One delivery order:** N1/N2" in root_readme
         and "Never start/restart/converge/repair/rollback TUN merely to retest" in root_readme
         and "An acceptance VM is disposable" not in root_readme

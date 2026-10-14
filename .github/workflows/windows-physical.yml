@@ -130,7 +130,7 @@ jobs:
       # Read-only observation uses the installed verified binary; no release needed.
       - name: Resolve exact durable ReleaseSet for mutations and offline handoff
         id: release
-        if: steps.auth.outputs.operation != 'diagnose' || steps.auth.outputs.readonly_purpose == 'offline-preflight'
+        if: (steps.auth.outputs.operation != 'diagnose' && steps.auth.outputs.operation != 'quality-line1') || steps.auth.outputs.readonly_purpose == 'offline-preflight'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
