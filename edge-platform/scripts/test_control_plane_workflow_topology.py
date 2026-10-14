@@ -1125,6 +1125,12 @@ def main() -> None:
         '"owner-upgrade" => vm_owner_upgrade::run(&args[1..], context).await'
             in vultr_lifecycle_command
         and 'mod vm_owner_upgrade;' in vultr_lifecycle_command
+        and '"owner-rollback" => vm_owner_upgrade::rollback(&args[1..], context).await' in vultr_lifecycle_command
+        and 'elif verb == "owner-rollback" and len(tokens) == 6:' in vultr
+        and 'run_lifecycle owner-rollback "${spec}" "${machine}" "${OWNER_CURRENT_SHA}" "${OWNER_PREVIOUS_SHA}"' in vultr
+        and 'bound_rollback_preflight(&current, &args[2], &previous, &args[3], &journal)?;' in vm_owner_upgrade
+        and 'sudo -n ln {OWNER} {FAILED}' in vm_owner_upgrade
+        and 'sudo -n mv -T {PREVIOUS} {OWNER}' in vm_owner_upgrade
         and 'elif verb == "owner-upgrade" and len(tokens) == 5:' in vultr
         and 'OWNER_PREVIOUS_SHA: ${{ needs.authorize.outputs.owner_previous_sha }}' in vultr
         and 'run_lifecycle owner-upgrade "${spec}" "${machine}" "${EDGE_LIFECYCLE_AGENT}" "${OWNER_PREVIOUS_SHA}"'
