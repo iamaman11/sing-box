@@ -1126,7 +1126,9 @@ def main() -> None:
         and "OwnerRollback(VultrOwnerRollbackArgs)" in vultr_cli
         and 'Self::OwnerUpgrade(args) => vec![' in vultr_cli
         and 'Self::OwnerRollback(args) => vec![' in vultr_cli
-        and "fn owner_transition_workflow_commands_reach_exact_public_clap_dispatch()" in vultr_cli,
+        and "fn owner_transition_workflow_commands_reach_exact_public_clap_dispatch()" in vultr_cli
+        and vultr.index('"${bin}" vultr-lifecycle owner-upgrade --help >/dev/null') < vultr.index('acquire_host_access "${spec}" "${machine}" "owner-upgrade"')
+        and vultr.index('"${bin}" vultr-lifecycle owner-rollback --help >/dev/null') < vultr.index('acquire_host_access "${spec}" "${machine}" "owner-rollback"'),
         "VM owner transitions must parse through actual orchestrator Clap CLI before access lease",
     )
 
