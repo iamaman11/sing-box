@@ -28,6 +28,7 @@ jobs:
       machine_id: ${{ steps.parse.outputs.machine_id }}
       instance_action: ${{ steps.parse.outputs.instance_action }}
       destroy_digest: ${{ steps.parse.outputs.destroy_digest }}
+      resume_source_run_id: ${{ steps.parse.outputs.resume_source_run_id }}
 
     steps:
       - name: Parse and authorize typed request
@@ -53,6 +54,7 @@ jobs:
           machine_id = ""
           action = ""
           destroy_digest = ""
+          resume_source_run_id = ""
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
           if tokens == ["/vultr", "initial-vm-install"]:
@@ -63,6 +65,12 @@ jobs:
               operation = "initial-vm-install"
               spec_path = "infra/vultr/application-acceptance.json"
               machine_id = "application-acceptance-1"
+          elif (len(tokens) == 3 and tokens[:2] == ["/vultr", "initial-acceptance-resume"]
+                and re.fullmatch(r"[1-9][0-9]{7,}", tokens[2])):
+              operation = "initial-acceptance-resume"
+              spec_path = "infra/vultr/application-acceptance.json"
+              machine_id = "application-acceptance-1"
+              resume_source_run_id = tokens[2]
           elif tokens == ["/vultr", "acceptance"]:
               operation = "acceptance"
               spec_path = "infra/vultr/disposable-acceptance.json"
@@ -108,6 +116,7 @@ jobs:
               "doctor", "inventory", "plan", "access-release", "action-plan", "apply",
               "runner-bootstrap", "action", "destroy-plan", "destroy-apply",
               "cleanup-plan", "cleanup", "acceptance", "initial-vm-install",
+              "initial-acceptance-resume",
           }:
               fail("unsupported lifecycle operation")
 
@@ -130,7 +139,8 @@ jobs:
 
           if operation in {
               "apply", "runner-bootstrap", "access-release", "action-plan", "action",
-              "destroy-plan", "destroy-apply", "initial-vm-install"
+              "destroy-plan", "destroy-apply", "initial-vm-install",
+              "initial-acceptance-resume"
           } and not machine_id:
               fail("machine_id is required for targeted operation")
 
@@ -143,7 +153,7 @@ jobs:
               fail("destroy_digest is only valid for destroy-apply")
 
           # This bounded mutation may never be replayed after an uncertain SSH ACK.
-          if operation == "initial-vm-install" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+          if operation in {"initial-vm-install", "initial-acceptance-resume"} and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
               fail("initial VM provider/policy/Access installation replay forbidden; reconcile read-only before disposal")
 
           if operation == "acceptance":
@@ -161,7 +171,22 @@ jobs:
               handle.write(f"machine_id={machine_id}\n")
               handle.write(f"instance_action={action}\n")
               handle.write(f"destroy_digest={destroy_digest}\n")
+              handle.write(f"resume_source_run_id={resume_source_run_id}\n")
           PY
+
+  # Re-attest the ONE immutable published first-use generation. This is a
+  # continuation, not a second credential issuance or a parallel owner.
+  resume_acceptance:
+    needs: authorize
+    if: needs.authorize.outputs.operation == 'initial-acceptance-resume'
+    uses: ./.github/workflows/vultr-acceptance-resume.yml
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    with:
+      source_run_id: ${{ needs.authorize.outputs.resume_source_run_id }}
+    secrets: inherit
 
   execute:
     outputs:
@@ -174,6 +199,7 @@ jobs:
     if: >-
       always() &&
       needs.authorize.result == 'success' &&
+      needs.authorize.outputs.operation != 'initial-acceptance-resume' &&
       (needs.authorize.outputs.operation != 'initial-vm-install' ||
        needs.initial_windows_isolate.result == 'success')
     concurrency:
@@ -1563,11 +1589,12 @@ jobs:
           # This is a one-time mutation: no retry after uncertain dispatch ACK.
           & $console credential-initial-acceptance-stage ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT
           if ($LASTEXITCODE -ne 0) { throw 'Isolated Windows Worker candidate stage failed; do not replay' }
-          & $console credential-transition validate-candidate --install-root $env:EDGE_INSTALL_ROOT
-          if ($LASTEXITCODE -ne 0) { throw 'Initial Windows candidate config validation failed; do not replay stage' }
-          # Read-back and native sing-box check are performed by the
-          # existing credential-transition validate-candidate owner. No
-          # activation, controller RPC or secret output is required.
+          # The isolated Windows root deliberately has NO privileged SCM/task
+          # owner. The serving EdgePlatformPrivilegedDispatch only owns C:\sing-box;
+          # invoking credential-transition here causes an unacknowledged request.
+          # The native isolated witness below performs exact candidate readback,
+          # sing-box check, HTTPS response and wrong-auth rejection for all four.
+          # No second dispatcher, service, TUN, credential mutation or fallback.
           $external = @(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $env:EDGE_INSTALL_ROOT)
           if ($LASTEXITCODE -ne 0 -or -not ($external -contains 'line1_external_4_of_4=PASS') -or
               -not ($external -contains 'line1_direct_warp_egress_distinct=true') -or

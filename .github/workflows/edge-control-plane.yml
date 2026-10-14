@@ -99,6 +99,7 @@ jobs:
     # BEGIN to Issue #26. Other control-plane routes keep read-only token.
     permissions:
       contents: read
+      actions: read
       issues: write
     with:
       command_body: ${{ github.event.comment.body }}

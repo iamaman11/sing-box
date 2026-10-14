@@ -615,7 +615,7 @@ def main() -> None:
     # The SSH lease, root-only file, and first-attempt guard are one operation.
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     require(
-        'if operation == "initial-vm-install" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
+        'if operation in {"initial-vm-install", "initial-acceptance-resume"} and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
         and 'acquire_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
         and 'release_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
         and "vm_access_identity_installed == true" in vultr
@@ -823,6 +823,42 @@ def main() -> None:
             f"{step} must pass all three immutable ReleaseSet substrate versions before typed support-access lease",
         )
 
+    # The only legal continuation after one irreversible paired Worker BEGIN
+    # is a source-run-bound read-only acceptance. A distinct resume command
+    # must never fall through to generic VM execute, republish credentials,
+    # or create a second Windows privileged task / SCM owner.
+    resume = (WORKFLOWS / "vultr-acceptance-resume.yml").read_text(encoding="utf-8")
+    require(
+        '"/vultr", "initial-acceptance-resume"' in vultr
+        and "initial-acceptance-resume'" in vultr
+        and "resume_source_run_id:" in vultr
+        and "uses: ./.github/workflows/vultr-acceptance-resume.yml" in vultr
+        and "needs.authorize.outputs.operation != 'initial-acceptance-resume'" in vultr
+        and 'source_run_id:' in resume
+        and 'sing-box-credential-initial-attempt/v1' in resume
+        and 'sing-box-initial-resume-reboot/v1' in resume
+        and "resolve_durable_release.sh" in resume
+        and 'N1_N2_ORIGINAL_PAIRED_CREDENTIALS_REUSED_NO_REPLAY=PASS' in resume
+        and "initial-pair-publish" not in resume
+        and "initial-runtime-apply" not in resume
+        and "credential-transition validate-candidate" not in resume
+        and "privileged-dispatch" not in resume
+        and "credential-initial-line1-witness" in resume
+        and "credential-initial-acceptance-stage" in resume
+        and "initial-line2-external-witness" in resume
+        and "line1_external_4_of_4=PASS" in resume
+        and "line2_external_6_of_6=PASS" in resume
+        and "reboot_observation.boot_id_changed==true" in resume
+        and "initial-windows-acceptance-cleanup" in resume
+        and "reconcile-windows-first-use.ps1" in resume
+        and "N1_N2_ACCEPTANCE=PASS" in resume
+        and "ARCHIVED_ACCEPTANCE_BLOCKED" in windows_installer
+        and "ArchivedAcceptanceSourceRunId" in windows_installer
+        and "if ($ArchivedAcceptanceSourceRunId -lt 10000000)" in windows_installer
+        and "C:\\sing-box-acceptance" in windows_installer,
+        "initial resume must reuse exact first-use publication, prove external 10/10 and one reboot, and reject serving privilege",
+    )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
@@ -840,7 +876,10 @@ def main() -> None:
         and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
         and 'credential-initial-acceptance-stage' in initial_flow
         and 'credential-initial-line1-witness' in initial_flow
-        and 'credential-transition validate-candidate' in initial_flow
+        and 'credential-transition validate-candidate' not in initial_flow
+        and 'The isolated Windows root deliberately has NO privileged SCM/task' in initial_flow
+        and 'The native isolated witness below performs exact candidate readback' in initial_flow
+        and 'credential-initial-line1-witness' in initial_flow
         and 'First-use isolated Windows credential cursor already exists' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED:' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_CHANGED:' in initial_flow
@@ -870,7 +909,10 @@ def main() -> None:
         and 'credentials initial-pair-journal-readback' in initial_flow
         and 'credentials initial-pair-publish' in initial_flow
         and 'gh api --method POST "repos/${REPOSITORY}/issues/26/comments"' in initial_flow
-        and vultr.count('issues: write') == 2
+        and vultr.count('issues: write') == 3
+        and 'resume_acceptance:' in vultr
+        and 'uses: ./.github/workflows/vultr-acceptance-resume.yml' in vultr
+        and 'actions: read' in vultr
         and "needs: [authorize, initial_worker_proof_upgrade]" in vultr
         and 'GITHUB_RUN_ATTEMPT' in initial_flow
         and 'vultr-lifecycle initial-runtime-apply' in initial_flow
@@ -1778,12 +1820,14 @@ def main() -> None:
 
     require(
         "issues: read" not in vultr
-        and vultr.count("issues: write") == 2
+        and vultr.count("issues: write") == 3
         and "issues: read" not in credentials
         and "issues: write" not in credentials
         and "  vultr:" in router
-        and "    permissions:\n      contents: read\n      issues: write" in router,
-        "Issue #26 BEGIN may be written only by the authorized Vultr route and its two bounded initial jobs",
+        and "    permissions:\n      contents: read\n      actions: read\n      issues: write" in router
+        and "    uses: ./.github/workflows/vultr-acceptance-resume.yml" in vultr
+        and "      actions: read" in vultr,
+        "Issue #26 BEGIN and reboot may be written only by scoped authorized Vultr initial/resume owners",
     )
     require(
         "startsWith(github.event.comment.body, '/vm ')" in router
