@@ -44,6 +44,8 @@ pub(crate) enum LocalCommand {
     Verify,
     Diagnose,
     QualityLine2,
+    // Read-only binding of Worker-v2 projection to actual running file mounts.
+    CredentialRuntimeSource,
     BootstrapBase,
     BootstrapTunnel,
     BootstrapFull,
@@ -87,6 +89,7 @@ impl LocalCommand {
             Self::Verify => "local-verify",
             Self::Diagnose => "local-diagnose",
             Self::QualityLine2 => "local-quality-line2",
+            Self::CredentialRuntimeSource => "local-credential-runtime-source",
             Self::BootstrapBase => "local-bootstrap-base",
             Self::BootstrapTunnel => "local-bootstrap-tunnel",
             Self::BootstrapFull => "local-bootstrap-full",
@@ -144,6 +147,7 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "quality-line2"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "credential-runtime-source"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-converge"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bundle-stage-initial"]).is_ok());
