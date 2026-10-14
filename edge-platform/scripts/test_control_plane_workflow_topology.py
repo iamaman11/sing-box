@@ -851,6 +851,18 @@ def main() -> None:
         "read-only diagnostics must use installed verified binaries without a new release",
     )
 
+    # PowerShell 7 must preserve all four bounded stdout observations even if
+    # the immutable native witness returns nonzero. Never replay on failure.
+    require(
+        resume.count('$PSNativeCommandUseErrorActionPreference = $false') == 2
+        and resume.count('try {\\n            $raw=@(& $console credential-initial-line1-witness') == 2
+        and resume.count('$witnessExit=$LASTEXITCODE') == 2
+        and resume.count('line1_(endpoint|probe_failure)') == 2
+        and resume.count('if ($witnessExit -ne 0) { throw') == 2
+        and resume.count('$PSNativeCommandUseErrorActionPreference = $true') == 3,
+        "Line1 witness failure must print bounded four-endpoint evidence before failing",
+    )
+
     # The only legal continuation after one irreversible paired Worker BEGIN
     # is a source-run-bound read-only acceptance. A distinct resume command
     # must never fall through to generic VM execute, republish credentials,
