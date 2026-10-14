@@ -394,10 +394,15 @@ fn validate_exact_unpublished_initial_bundle(
     expected_agent_sha256: &str,
 ) -> Result<(), String> {
     if staged.bundle_id != expected_id || staged.bundle_digest != expected_digest {
-        return Err("pre-existing VM application bundle differs from exact staged intent; no replay".to_owned());
+        return Err(
+            "pre-existing VM application bundle differs from exact staged intent; no replay"
+                .to_owned(),
+        );
     }
     if installed_agent_sha256 != Some(expected_agent_sha256) {
-        return Err("pre-existing VM application agent differs from exact ReleaseSet; no replay".to_owned());
+        return Err(
+            "pre-existing VM application agent differs from exact ReleaseSet; no replay".to_owned(),
+        );
     }
     Ok(())
 }
@@ -415,15 +420,22 @@ pub(crate) async fn stage_initial_application_policy(
     // release or a merely similar bundle.
     let existing_stage = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
     if read_control_state(authority)?.is_some() {
-        return Err("initial policy stage refuses already published application release".to_owned());
+        return Err(
+            "initial policy stage refuses already published application release".to_owned(),
+        );
     }
     if let Some(existing) = existing_stage {
-        let expected_id = prepared.request.bundle_id.as_deref().ok_or(
-            "initial policy stage requires a canonical bundle ID"
-        )?;
+        let expected_id = prepared
+            .request
+            .bundle_id
+            .as_deref()
+            .ok_or("initial policy stage requires a canonical bundle ID")?;
         validate_exact_unpublished_initial_bundle(
-            &existing, expected_id, &prepared.release.bundle_digest,
-            remote_file_sha(authority, REMOTE_AGENT)?.as_deref(), &artifact.sha256,
+            &existing,
+            expected_id,
+            &prepared.release.bundle_digest,
+            remote_file_sha(authority, REMOTE_AGENT)?.as_deref(),
+            &artifact.sha256,
         )?;
         let runtime_present = strict_ssh_capture(
             &authority.target_ip,
@@ -433,7 +445,9 @@ pub(crate) async fn stage_initial_application_policy(
             "if sudo test -e /opt/vultr-edge-stack/stack/.env.runtime; then printf present; else printf absent; fi",
         )?;
         if runtime_present != "absent" {
-            return Err("initial policy reattestation refuses existing runtime credentials".to_owned());
+            return Err(
+                "initial policy reattestation refuses existing runtime credentials".to_owned(),
+            );
         }
         return Ok((existing.bundle_id, existing.bundle_digest));
     }
@@ -1953,18 +1967,26 @@ mod tests {
             bundle_digest: "accepted-digest".to_owned(),
             ..Default::default()
         };
-        assert!(validate_exact_unpublished_initial_bundle(
-            &staged, "owned-stage", "accepted-digest", Some("agent-sha"), "agent-sha",
-        ).is_ok());
+        assert!(
+            validate_exact_unpublished_initial_bundle(
+                &staged,
+                "owned-stage",
+                "accepted-digest",
+                Some("agent-sha"),
+                "agent-sha",
+            )
+            .is_ok()
+        );
         for (id, digest, agent) in [
             ("foreign-stage", "accepted-digest", Some("agent-sha")),
             ("owned-stage", "foreign-digest", Some("agent-sha")),
             ("owned-stage", "accepted-digest", Some("foreign-agent")),
             ("owned-stage", "accepted-digest", None),
         ] {
-            assert!(validate_exact_unpublished_initial_bundle(
-                &staged, id, digest, agent, "agent-sha",
-            ).is_err());
+            assert!(
+                validate_exact_unpublished_initial_bundle(&staged, id, digest, agent, "agent-sha",)
+                    .is_err()
+            );
         }
     }
 
