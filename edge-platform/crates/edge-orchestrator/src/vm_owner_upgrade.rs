@@ -24,10 +24,7 @@ fn exact_sha(value: &str) -> bool {
 /// One recorded previous upgrade is admissible only if the current binary
 /// is exactly the successor named by the durable record and the predecessor
 /// hardlink has the exact SHA. A missing/partial record is UNKNOWN, not FIRST.
-fn bound_existing_owner_chain(
-    record: &str,
-    current: &str,
-) -> Result<Option<String>, String> {
+fn bound_existing_owner_chain(record: &str, current: &str) -> Result<Option<String>, String> {
     if !exact_sha(current) {
         return Err("owner chain requires exact current SHA256".to_owned());
     }
@@ -41,7 +38,9 @@ fn bound_existing_owner_chain(
         .split_once(':')
         .ok_or_else(|| "existing owner journal observation is incomplete".to_owned())?;
     if !exact_sha(previous) || journal != format!("{previous} {current}") {
-        return Err("existing owner journal does not prove the installed predecessor chain".to_owned());
+        return Err(
+            "existing owner journal does not prove the installed predecessor chain".to_owned(),
+        );
     }
     if previous == current {
         return Err("existing owner journal refuses identical predecessor and current".to_owned());
@@ -177,9 +176,7 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
              sudo -n install -d -o root -g root -m 0700 {HISTORY}; \
              sudo -n ln {JOURNAL} {archive}; sudo -n sync {HISTORY};"
         ),
-        None => format!(
-            "test ! -e {JOURNAL}; test ! -e {PREVIOUS};"
-        ),
+        None => format!("test ! -e {JOURNAL}; test ! -e {PREVIOUS};"),
     };
     let remote = format!(
         "set -eu; \
@@ -211,7 +208,10 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
     let current_record = capture(&format!("sudo -n cat {JOURNAL}"))?;
     let rollback_sha = capture(&format!("sha256sum {PREVIOUS} | cut -d' ' -f1"))?;
     if current_record != format!("{current} {}", expected.sha256) || rollback_sha != current {
-        return Err("VM installed owner rollback chain is not exact after swap; STOP without replay".to_owned());
+        return Err(
+            "VM installed owner rollback chain is not exact after swap; STOP without replay"
+                .to_owned(),
+        );
     }
     if capture("cat /proc/sys/kernel/random/boot_id")? != boot_before {
         return Err(
