@@ -298,6 +298,13 @@ jobs:
           jq -e --argjson source "$SOURCE_RUN" --arg release "$RELEASE_SET" --arg marker '<!-- sing-box-credential-initial-attempt/v1 -->' '[.[]|.body|select(startswith($marker))]|length==1 and (.[0]|split("\n")[1]|fromjson|.github_run_id)==$source and (.[0]|split("\n")[1]|fromjson|.release_set_sha256)==$release' "$RUNNER_TEMP/history.json" >/dev/null
           body="$(jq -nc --argjson src "$SOURCE_RUN" --argjson run "$GITHUB_RUN_ID" --arg release "$RELEASE_SET" --arg authority "$authority" '{schema:"sing-box.initial-resume-reboot/v1",source_run_id:$src,resume_run_id:$run,release_set_sha256:$release,authority_digest:$authority,phase:"BEGIN"}')"
           gh issue comment 26 --repo "$REPOSITORY" --body "$(printf '<!-- sing-box-initial-resume-reboot/v1 -->\n%s' "$body")"
+          # The GitHub BEGIN itself must be independently read back exactly
+          # before the irreversible provider reboot. No blind ACK replay.
+          gh api --paginate "repos/$REPOSITORY/issues/26/comments?per_page=100" | jq -s add > "$RUNNER_TEMP/reboot-journal.json"
+          jq -e --arg expected "$(printf '<!-- sing-box-initial-resume-reboot/v1 -->\n%s' "$body")" --arg marker '<!-- sing-box-initial-resume-reboot/v1 -->' '
+            [.[]|.body|select(startswith($marker))] |
+            length==1 and .[0]==$expected
+          ' "$RUNNER_TEMP/reboot-journal.json" >/dev/null
           # Single provider mutation; missing ACK remains UNKNOWN and forbids replay.
           "$owner" vultr-lifecycle action infra/vultr/application-acceptance.json application-acceptance-1 reboot "$authority" > "$RUNNER_TEMP/reboot.json"
           jq -e '.mutations_performed==1 and .reboot_observation.boot_id_changed==true and .reboot_observation.boot_id_before!=.reboot_observation.boot_id_after' "$RUNNER_TEMP/reboot.json" >/dev/null
