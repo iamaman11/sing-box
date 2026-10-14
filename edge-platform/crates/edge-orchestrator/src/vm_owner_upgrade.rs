@@ -11,7 +11,9 @@ const STAGED: &str = "/tmp/singbox-owner-upgrade-next";
 
 fn exact_sha(value: &str) -> bool {
     value.len() == 64
-        && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn bound_upgrade_preflight(current: &str, old: &str, next: &str) -> Result<bool, String> {
@@ -22,7 +24,10 @@ fn bound_upgrade_preflight(current: &str, old: &str, next: &str) -> Result<bool,
         return Ok(false);
     }
     if current != old {
-        return Err("VM owner drift: installed digest is not authorized previous ReleaseSet owner".to_owned());
+        return Err(
+            "VM owner drift: installed digest is not authorized previous ReleaseSet owner"
+                .to_owned(),
+        );
     }
     if old == next {
         return Err("owner upgrade requires different installed and candidate SHA256".to_owned());
@@ -30,10 +35,7 @@ fn bound_upgrade_preflight(current: &str, old: &str, next: &str) -> Result<bool,
     Ok(true)
 }
 
-pub(super) async fn run(
-    args: &[String],
-    context: &OrchestrationContext,
-) -> Result<(), String> {
+pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
     if args.len() != 4 || !exact_sha(&args[3]) {
         return Err("usage: vultr-lifecycle owner-upgrade <git-owned-vultr-spec> <machine-id> <exact-release-agent> <observed-previous-sha256>".to_owned());
     }
@@ -48,15 +50,14 @@ pub(super) async fn run(
         return Err("immutable ReleaseSet agent SHA256 is invalid".to_owned());
     }
     let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
-    let target_ip = observed.main_ip.as_deref().ok_or_else(|| {
-        "exact owned VM has no observed public IPv4".to_owned()
-    })?;
+    let target_ip = observed
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| "exact owned VM has no observed public IPv4".to_owned())?;
     let key = operator_private_key_path_from_env()?;
     let public_key = read_canonical_ssh_public_key()?;
     verify_operator_key_matches(&key, &public_key)?;
-    let capture = |script: &str| {
-        strict_ssh_capture(target_ip, &args[1], &key, &public_key, script)
-    };
+    let capture = |script: &str| strict_ssh_capture(target_ip, &args[1], &key, &public_key, script);
 
     let owner_stat = capture(&format!(
         "set -eu; test -f {OWNER}; test ! -L {OWNER}; stat -c '%u:%g:%a' {OWNER}"
@@ -83,7 +84,10 @@ pub(super) async fn run(
         "set -eu; test ! -e {JOURNAL}; test ! -L {JOURNAL};          test ! -e {PREVIOUS}; test ! -L {PREVIOUS};          test ! -e {NEXT}; test ! -L {NEXT};          test ! -e {STAGED}; test ! -L {STAGED}; echo PASS"
     ))?;
     if empty != "PASS" {
-        return Err("VM owner upgrade already staged or uncertain; read-only reconciliation required".to_owned());
+        return Err(
+            "VM owner upgrade already staged or uncertain; read-only reconciliation required"
+                .to_owned(),
+        );
     }
     let boot_before = capture("cat /proc/sys/kernel/random/boot_id")?;
     strict_scp_upload(
@@ -98,7 +102,10 @@ pub(super) async fn run(
         "set -eu; test -f {STAGED}; test ! -L {STAGED}; sha256sum {STAGED} | cut -d' ' -f1"
     ))?;
     if staged_sha != expected.sha256 {
-        return Err("VM staged owner digest differs from exact ReleaseSet; no privileged mutation".to_owned());
+        return Err(
+            "VM staged owner digest differs from exact ReleaseSet; no privileged mutation"
+                .to_owned(),
+        );
     }
 
     // All paths are fixed source constants and both interpolated digests passed
@@ -111,16 +118,24 @@ pub(super) async fn run(
     strict_ssh_run(target_ip, &args[1], &key, &public_key, &remote)?;
     let new_sha = capture(&format!("sha256sum {OWNER} | cut -d' ' -f1"))?;
     if new_sha != expected.sha256 {
-        return Err("VM owner swap acknowledged but installed digest mismatched; STOP without replay".to_owned());
+        return Err(
+            "VM owner swap acknowledged but installed digest mismatched; STOP without replay"
+                .to_owned(),
+        );
     }
     if capture("cat /proc/sys/kernel/random/boot_id")? != boot_before {
-        return Err("VM boot identity changed during owner upgrade; STOP without replay".to_owned());
+        return Err(
+            "VM boot identity changed during owner upgrade; STOP without replay".to_owned(),
+        );
     }
     let bounded = capture(&format!(
         "sudo -u github-runner sudo -n {OWNER} local status >/dev/null && echo PASS"
     ))?;
     if bounded != "PASS" {
-        return Err("new VM owner not executable through existing bounded dispatch; STOP without replay".to_owned());
+        return Err(
+            "new VM owner not executable through existing bounded dispatch; STOP without replay"
+                .to_owned(),
+        );
     }
     print_json_value(serde_json::json!({
         "status": "PASS", "action": "OWNER_UPGRADED_ONCE",
