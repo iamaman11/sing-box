@@ -802,7 +802,7 @@ def main() -> None:
         and 'needs: [authorize, execute, initial_preflight]' in initial_flow
         and 'needs: [authorize, initial_windows_attest]' not in vultr
         and "needs.initial_windows_attest.result == 'success'" not in vultr
-        and 'N1 may stage an empty owned VM' in vultr
+        and 'needs: [authorize, initial_windows_isolate]' in vultr
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
         and "always() &&" in vultr
         and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
