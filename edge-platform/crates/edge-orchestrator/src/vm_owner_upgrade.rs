@@ -22,6 +22,9 @@ fn bound_upgrade_preflight(current: &str, old: &str, next: &str) -> Result<bool,
     if !exact_sha(current) || !exact_sha(old) || !exact_sha(next) {
         return Err("VM owner digest is not an exact lowercase SHA256".to_owned());
     }
+    if old == next {
+        return Err("owner upgrade requires different installed and candidate SHA256".to_owned());
+    }
     if current == next {
         return Ok(false);
     }
@@ -30,9 +33,6 @@ fn bound_upgrade_preflight(current: &str, old: &str, next: &str) -> Result<bool,
             "VM owner drift: installed digest is not authorized previous ReleaseSet owner"
                 .to_owned(),
         );
-    }
-    if old == next {
-        return Err("owner upgrade requires different installed and candidate SHA256".to_owned());
     }
     Ok(true)
 }
