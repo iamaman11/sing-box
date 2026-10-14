@@ -637,6 +637,7 @@ jobs:
             owner-upgrade)
               test "${GITHUB_RUN_ATTEMPT}" = "1"
               [[ "${OWNER_PREVIOUS_SHA}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" vultr-lifecycle owner-upgrade --help >/dev/null
               acquire_host_access "${spec}" "${machine}" "owner-upgrade"
               trap 'release_host_access "${spec}" "${machine}" "owner-upgrade-emergency" >/dev/null 2>&1 || true' EXIT
               run_lifecycle owner-upgrade "${spec}" "${machine}" "${EDGE_LIFECYCLE_AGENT}" "${OWNER_PREVIOUS_SHA}" \
@@ -654,6 +655,7 @@ jobs:
               test "${GITHUB_RUN_ATTEMPT}" = "1"
               [[ "${OWNER_CURRENT_SHA}" =~ ^[0-9a-f]{64}$ ]]
               [[ "${OWNER_PREVIOUS_SHA}" =~ ^[0-9a-f]{64}$ ]]
+              "${bin}" vultr-lifecycle owner-rollback --help >/dev/null
               acquire_host_access "${spec}" "${machine}" "owner-rollback"
               trap 'release_host_access "${spec}" "${machine}" "owner-rollback-emergency" >/dev/null 2>&1 || true' EXIT
               run_lifecycle owner-rollback "${spec}" "${machine}" "${OWNER_CURRENT_SHA}" "${OWNER_PREVIOUS_SHA}" \
