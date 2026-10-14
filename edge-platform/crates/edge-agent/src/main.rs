@@ -6525,6 +6525,7 @@ mod tests {
             runtime.insert(key.to_owned(), "value".to_owned());
         }
         runtime.insert("TUNNEL_DOMAIN".to_owned(), "example.com".to_owned());
+        runtime.insert("ACME_PROVIDER".to_owned(), "letsencrypt".to_owned());
         runtime.insert("PROXY_CERT_CN".to_owned(), "example.com".to_owned());
         for (part, keys) in [
             ("line1-gateway", LINE1_RUNTIME_TEMPLATE_KEYS.as_slice()),
