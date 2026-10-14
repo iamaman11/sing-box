@@ -775,6 +775,21 @@ def main() -> None:
         "first-use Windows acceptance must not depend on the serving SCM endpoint or a hardcoded port",
     )
 
+    # VM diagnostics must distinguish exactly rendered first-use candidate from
+    # active generation, while never declaring container credential provenance
+    # based on .env.runtime equality or green Docker readiness alone.
+    vm_owner = Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+    require(
+        'VmRenderedCredentialSource::V2Candidate' in vm_owner
+        and 'credential_rendered_source=V2_CANDIDATE_RENDERED' in vm_owner
+        and 'credential_lifecycle_verdict=STAGED_FIRST_USE_NOT_CUT_OVER' in vm_owner
+        and 'credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF' in vm_owner
+        and 'application_operational_verdict=' in vm_owner
+        and 'fn first_use_candidate_rendered_is_proven_on_disk_but_not_active_or_running()' in vm_owner
+        and 'fn rotated_candidate_does_not_override_active_render_authority()' in vm_owner,
+        "VM diagnosis must make first-use cursor/rendered/loaded credential boundaries explicit",
+    )
+
     # First-use Line1 must distinguish UDP from TCP on the same physical run,
     # not stop after the first QUIC timeout and misreport remaining endpoints.
     line1_witness = Path(
@@ -1200,7 +1215,7 @@ def main() -> None:
         if "issue_comment:" in path.read_text(encoding="utf-8")
     )
     require(
-        "Stage 3 and Stage 4A are closed" in architecture
+        "Stage 3 and Stage 4A remain closed" in architecture
         and "Stage 4A exit decision — CLOSED" in architecture
         and "Managed TUN is now permitted only inside the explicit Stage 4B cutover" in architecture
         and "Stage 4B entry contract — managed Windows TUN" in architecture
@@ -1210,7 +1225,7 @@ def main() -> None:
         and "typed Windows process observation distinguishes managed / conflicting external / absent ownership" in architecture
         and "`infra/production/production.textproto` in Windows candidate input identity" in architecture
         and "exact locally verified `previous.pb`" in architecture
-        and "one explicit legacy-to-managed handoff" in architecture
+        and "Windows bidirectional mode changes remain N3" in architecture
         and "Stage 4B datapath convergence" in local_architecture
         and "Generated `runtime\\\\sing-box.json` never chooses the mode" in local_architecture
         and "## 10. Current N1/N2 → N3 native Windows modes (2026-10-12)" in runbook
@@ -1235,8 +1250,9 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "> **ACTIVE N1/N2 — Line1 authentication and recovery still NOT_ACCEPTED.**" in root_readme
-        and "The first-use credential generation from run 38503639351 was already published exactly once" in root_readme
+        and "> **N1/N2 physical network 10/10 + reboot: ACCEPTED." in root_readme
+        and "Original Worker credentials generation `38503639351`" in root_readme
+        and "The already-owned acceptance VM was retained" in root_readme
         and "**One delivery order:** N1/N2" in root_readme
         and "Never start/restart/converge/repair/rollback TUN merely to retest" in root_readme
         and "An acceptance VM is disposable" not in root_readme
