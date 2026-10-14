@@ -357,9 +357,26 @@ fn exact_service_auth_ids(
 }
 
 fn acceptance_window_policy(
+    desired: &ProductionCredentialPlaneOwnership,
     observed: &CredentialPlaneObservation,
 ) -> Result<(String, String, String, String), String> {
     let window = projection_observation(observed, "windows")?;
+    let production = projections(desired)
+        .into_iter()
+        .find(|p| p.projection == "windows")
+        .ok_or("Windows acceptance projection not canonical")?;
+    if window.host_service_token_enabled != Some(true)
+        || window.host_service_token_duration.as_deref() != Some(desired.host_service_token_duration.as_str())
+        || window.access_application_type.as_deref() != Some("self_hosted")
+        || window.access_service_auth_401_redirect != Some(true)
+        || window.access_destination_type.as_deref() != Some("public")
+        || window.access_destination_uri.as_deref()
+            != Some(workers_dev_hostname(desired, &production).as_str())
+        || window.access_destination_worker_id.is_some()
+        || window.access_destination_has_overrides != Some(false)
+    {
+        return Err("Windows acceptance refuses drifted permanent Access application".to_owned());
+    }
     let host = window.host_service_token_id.clone().ok_or(
         "Windows acceptance missing permanent host service token ID"
     )?;
@@ -370,6 +387,9 @@ fn acceptance_window_policy(
         return Err("Windows acceptance requires exactly one existing Access policy".to_owned());
     }
     let policy = &window.access_policies[0];
+    if policy.name != production.access_policy_name || policy.id.is_empty() {
+        return Err("Windows acceptance refuses unknown policy identity".to_owned());
+    }
     Ok((host, app, policy.id.clone(), policy.name.clone()))
 }
 
@@ -388,7 +408,7 @@ async fn initial_windows_acceptance_issue(
     if tokens.iter().any(|t| t.name.as_deref() == Some(name.as_str())) {
         return Err("run-scoped Windows acceptance token exists; do not reissue".to_owned());
     }
-    let (host, app, policy_id, policy_name) = acceptance_window_policy(&before)?;
+    let (host, app, policy_id, policy_name) = acceptance_window_policy(desired, &before)?;
     let window = projection_observation(&before, "windows")?;
     exact_service_auth_ids(&window.access_policies[0], &[host.clone()])?;
     if private_output.exists() || public_output.exists() {
@@ -444,7 +464,7 @@ async fn initial_windows_acceptance_cleanup(
     check_initial_acceptance_github_owner(run_id, "CLEANUP")?;
     let name = initial_acceptance_token_name(run_id)?;
     let before = observe(control_token, desired).await?;
-    let (host, app, policy_id, policy_name) = acceptance_window_policy(&before)?;
+    let (host, app, policy_id, policy_name) = acceptance_window_policy(desired, &before)?;
     let tokens = cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
     let exact: Vec<_> = tokens.iter()
         .filter(|token| token.name.as_deref() == Some(name.as_str()))
