@@ -172,7 +172,8 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
         .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())?;
     let meta = text.rsplit_once("\nCODE:").and_then(|(body, trailer)| {
         let (status, connect) = trailer.split_once(";CONNECT:")?;
-        if status.len() != 3 || connect.len() != 3
+        if status.len() != 3
+            || connect.len() != 3
             || !status.bytes().all(|b| b.is_ascii_digit())
             || !connect.bytes().all(|b| b.is_ascii_digit())
         {
@@ -442,7 +443,9 @@ pub(crate) fn run(
             .map_err(|_| "Line1 process wait failed")?
             .is_some()
         {
-            return Err(format!("Line1 endpoint={tag} process_exited_before_network_probe"));
+            return Err(format!(
+                "Line1 endpoint={tag} process_exited_before_network_probe"
+            ));
         }
         check_endpoint(ports[i], ports[i + 4], tag)
     })?;
@@ -507,14 +510,16 @@ mod tests {
             }
         })
         .unwrap_err();
-        assert_eq!(visited, TAGS.iter().map(|tag| tag.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            visited,
+            TAGS.iter().map(|tag| tag.to_string()).collect::<Vec<_>>()
+        );
         assert!(error.contains("1/4 endpoints failed"));
     }
 
     #[test]
     fn fully_successful_witness_retains_protocol_order() {
-        let result = probe_all_endpoints(|i, _| Ok(Ipv4Addr::new(8, 8, 4, i as u8 + 1)))
-            .unwrap();
+        let result = probe_all_endpoints(|i, _| Ok(Ipv4Addr::new(8, 8, 4, i as u8 + 1))).unwrap();
         assert_eq!(result[0], Ipv4Addr::new(8, 8, 4, 1));
         assert_eq!(result[3], Ipv4Addr::new(8, 8, 4, 4));
     }
