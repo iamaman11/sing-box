@@ -167,12 +167,15 @@ jobs:
     outputs:
       first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}
       first_use_create_confirmed: ${{ steps.execute_lifecycle.outputs.first_use_create_confirmed }}
-    # A reusable VM's provider/substrate and policy-only installation is
-    # independent of Windows. N1 may stage an empty owned VM without touching
-    # Windows SCM/TUN/DNS or publishing credentials. Later paired first-use
-    # publication remains gated on BOTH independent host attestations.
-    needs: authorize
-    if: needs.authorize.result == 'success'
+    # First-use MUST first prove an independently enrolled isolated Windows
+    # identity. Missing/deleted Access escrow cannot leave a half-staged VM.
+    # Other Vultr commands retain their existing independent owner.
+    needs: [authorize, initial_windows_isolate]
+    if: >-
+      always() &&
+      needs.authorize.result == 'success' &&
+      (needs.authorize.outputs.operation != 'initial-vm-install' ||
+       needs.initial_windows_isolate.result == 'success')
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
