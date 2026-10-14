@@ -641,6 +641,26 @@ pub async fn create_access_service_token(
     access_service_credential_from_value(payload.result, None)
 }
 
+/// Revoke a run-scoped Cloudflare Access token only after the exact policy
+/// has been restored to host-only. Callers must verify name/id by fresh read.
+pub async fn delete_access_service_token(
+    api_token: &str,
+    account_id: &str,
+    token_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access service token ID", token_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .delete(format!(
+            "{API_ROOT}/accounts/{account_id}/access/service_tokens/{token_id}"
+        ))
+        .send()
+        .await
+        .map_err(|err| format!("failed to revoke Cloudflare Access service token: {err}"))?;
+    ensure_success(response).await
+}
+
 pub async fn update_access_service_policy_tokens(
     api_token: &str,
     account_id: &str,

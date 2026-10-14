@@ -629,10 +629,15 @@ def main() -> None:
         and "fn initial_vm_access_identity_payload(" in vultr_lifecycle_command
         and "strict_ssh_run_stdin(" in vultr_lifecycle_command
         and "initial VM Access write outcome uncertain; do not repeat" in vultr_lifecycle_command
-        and "initial VM Access installation refuses a pre-existing secret directory" in vultr_lifecycle_command
+        and "validate_initial_vm_existing_identity(" in vultr_lifecycle_command
+        and "initial VM Access identity scope is unknown; do not replay or overwrite" in vultr_lifecycle_command
+        and "existing VM Access identity differs from authorized escrow; no replay" in vultr_lifecycle_command
+        and "vm_access_identity_state" in vultr_lifecycle_command
+        and "needs: [authorize, initial_windows_isolate]" in vultr
+        and "needs.initial_windows_isolate.result == 'success'" in vultr
         and "vm_access_identity_owner" in vultr_lifecycle_command
         and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
-        "fresh VM first-use must bind root-only Worker Access identity to the single GitHub lease and reject mutation replay",
+        "first-use must either stage exact root-only VM Access identity once or re-attest existing bytes without replay",
     )
     require(
         "group: credential-transaction-${{ github.repository_id }}" in vultr
@@ -797,10 +802,10 @@ def main() -> None:
         and 'needs: [authorize, execute, initial_preflight]' in initial_flow
         and 'needs: [authorize, initial_windows_attest]' not in vultr
         and "needs.initial_windows_attest.result == 'success'" not in vultr
-        and 'N1 may stage an empty owned VM' in vultr
-        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
+        and 'needs: [authorize, initial_windows_isolate]' in vultr
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest, initial_windows_access_issue]' in initial_flow
         and "always() &&" in vultr
-        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest, initial_windows_access_issue]' in initial_flow
         and 'needs: [authorize, initial_preflight, initial_pair_publish]' in initial_flow
         and 'credential-initial-attest' in initial_flow
         and 'name: Bind first-use Cloudflare version intent\n    needs: [authorize, initial_worker_proof_upgrade]' in vultr
@@ -841,7 +846,15 @@ def main() -> None:
         and 'initial_line2_external:' in initial_flow
         and 'initial_windows_post_reboot:' in initial_flow
         and 'initial_acceptance_final:' in initial_flow
-        and "needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]" in initial_flow
+        and "needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_windows_access_cleanup, initial_cleanup]" in initial_flow
+        and 'initial_windows_access_issue:' in initial_flow
+        and 'initial_windows_access_cleanup:' in initial_flow
+        and 'credentials initial-windows-acceptance-issue' in initial_flow
+        and 'credentials initial-windows-acceptance-cleanup' in initial_flow
+        and 'WINDOWS_ACCESS_CLEANUP' in initial_flow
+        and 'CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET' in initial_flow
+        and 'EDGE_INITIAL_WINDOWS_ACCEPTANCE_TOKEN_ID' in initial_flow
+        and 'WINDOWS_ACCEPTANCE_ACCESS_REVOKE=PASS' in initial_flow
         and 'line2_external_6_of_6=PASS' in initial_flow
         and 'N2_POST_REBOOT_EXTERNAL_LINE2_6_OF_6=PASS' in initial_flow
         and 'N2_POST_REBOOT_EXTERNAL_LINE1_4_OF_4=PASS' in initial_flow
@@ -1807,7 +1820,9 @@ def main() -> None:
         and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
         and '"retire-proof-tokens"' not in credentials
         and "RetireProofTokens" not in credential_cli
-        and "delete_access_service_token" not in credential_command
+        and "initial_windows_acceptance_cleanup" in credential_command
+        and 'cloudflare::delete_access_service_token(' in credential_command
+        and "RetireProofTokens" not in credential_command
         and "credentials rotate-application" in credentials
         and "credential-transition drop-previous" in credentials
         and "credential-transition apply-candidate" in credentials
@@ -1830,7 +1845,7 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential operator workflow must expose only steady-state rotation/verify/bootstrap after Stage-3 proof-token retirement plumbing is physically deleted",
+        "credential operator must retain no Stage-3 proof-token retirement; only run-scoped first-use acceptance revoke is allowed",
     )
 
     rotation_workflow = credentials.split("  rotate_release:\n", 1)[1].split(

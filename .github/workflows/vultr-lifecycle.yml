@@ -167,12 +167,15 @@ jobs:
     outputs:
       first_use_provider_mutation_attempted: ${{ steps.execute_lifecycle.outputs.first_use_provider_mutation_attempted }}
       first_use_create_confirmed: ${{ steps.execute_lifecycle.outputs.first_use_create_confirmed }}
-    # A reusable VM's provider/substrate and policy-only installation is
-    # independent of Windows. N1 may stage an empty owned VM without touching
-    # Windows SCM/TUN/DNS or publishing credentials. Later paired first-use
-    # publication remains gated on BOTH independent host attestations.
-    needs: authorize
-    if: needs.authorize.result == 'success'
+    # First-use MUST first prove an independently enrolled isolated Windows
+    # identity. Missing/deleted Access escrow cannot leave a half-staged VM.
+    # Other Vultr commands retain their existing independent owner.
+    needs: [authorize, initial_windows_isolate]
+    if: >-
+      always() &&
+      needs.authorize.result == 'success' &&
+      (needs.authorize.outputs.operation != 'initial-vm-install' ||
+       needs.initial_windows_isolate.result == 'success')
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
@@ -1027,9 +1030,90 @@ jobs:
           trap - EXIT
           printf 'attestation=%s\n' "${attestation}" >> "${GITHUB_OUTPUT}"
 
+  # The existing Cloudflare credential owner is the ONLY issuer. This
+  # second Access principal is run-scoped, never the serving Windows host
+  # identity, and never a new agent or transport. An always-run owner revokes it.
+  initial_windows_access_issue:
+    name: Issue one independent Windows acceptance Access principal
+    needs: [authorize, initial_preflight]
+    if: needs.authorize.outputs.operation == 'initial-vm-install'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      token_id: ${{ steps.issue.outputs.token_id }}
+    steps:
+      - name: Resolve verified credential owner and require empty escrow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CONTROL_PLANE_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          . "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "$(sha256sum "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          printf 'EDGE_CREDENTIAL_ORCHESTRATOR=%s\n' "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" >> "${GITHUB_ENV}"
+          printf 'EDGE_RELEASE_CONTEXT_PATH=%s\n' "${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
+          names="$(GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret list --repo "${REPOSITORY}" --env production-vultr --json name --jq '.[].name')"
+          if grep -Eq '^CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_(ID|SECRET)$' <<<"${names}"; then
+            echo 'Stale Windows acceptance escrow exists: reconcile before any new mint' >&2
+            exit 1
+          fi
+
+      - name: Mint exact once and escrow separately from serving identity
+        id: issue
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          test -n "${CONTROL_PLANE_TOKEN}"
+          umask 077
+          private="${RUNNER_TEMP}/windows-acceptance-identity.env"
+          tokenid="${RUNNER_TEMP}/windows-acceptance-token-id"
+          "${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials initial-windows-acceptance-issue             "${GITHUB_RUN_ID}" "${private}" "${tokenid}" > "${RUNNER_TEMP}/windows-acceptance-issue.txt"
+          grep -Fxq 'permanent_host_identity_mutated=false' "${RUNNER_TEMP}/windows-acceptance-issue.txt"
+          grep -Fxq 'acceptance_access_policy=HOST_PLUS_EXACT_ONE_RUN_SCOPED' "${RUNNER_TEMP}/windows-acceptance-issue.txt"
+          test -s "${private}"
+          test -s "${tokenid}"
+          id="$(cat "${tokenid}")"
+          test -n "${id}"
+          client="$(sed -n 's/^CF_ACCESS_CLIENT_ID=//p' "${private}")"
+          secret="$(sed -n 's/^CF_ACCESS_CLIENT_SECRET=//p' "${private}")"
+          test -n "${client}"
+          test -n "${secret}"
+          echo "::add-mask::${client}"
+          echo "::add-mask::${secret}"
+          printf '%s' "${client}" | GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret set CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID --repo "${REPOSITORY}" --env production-vultr
+          printf '%s' "${secret}" | GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret set CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET --repo "${REPOSITORY}" --env production-vultr
+          rm -f "${private}" "${tokenid}"
+          printf 'token_id=%s\n' "${id}" >> "${GITHUB_OUTPUT}"
+          echo 'WINDOWS_ISOLATED_HOST_ACCESS=INDEPENDENT_PER_RUN'
+
   initial_windows_isolate:
     name: Install separate exact Windows ProxyOnly acceptance consumer, no SCM
-    needs: [authorize, initial_preflight]
+    needs: [authorize, initial_preflight, initial_windows_access_issue]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
     environment:
@@ -1045,8 +1129,8 @@ jobs:
       EDGE_INSTALL_ROOT: C:\sing-box-acceptance
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
       EDGE_GITHUB_TOKEN: ${{ github.token }}
-      EDGE_WINDOWS_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID }}
-      EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET }}
+      EDGE_WINDOWS_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID }}
+      EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1172,7 +1256,7 @@ jobs:
 
   initial_pair_publish:
     name: One-time GitHub BEGIN then version-fenced paired Worker publication
-    needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest]
+    needs: [authorize, initial_preflight, initial_vm_attest, initial_windows_attest, initial_windows_access_issue]
     if: needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     environment:
@@ -1191,6 +1275,8 @@ jobs:
           ACCEPTED_REVISION: ${{ github.sha }}
           OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          EDGE_INITIAL_WINDOWS_ACCEPTANCE_TOKEN_ID: ${{ needs.initial_windows_access_issue.outputs.token_id }}
+          EDGE_INITIAL_WINDOWS_ACCEPTANCE_RUN_ID: ${{ github.run_id }}
           CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
           INTENT: ${{ needs.initial_preflight.outputs.intent }}
           RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
@@ -1572,6 +1658,71 @@ jobs:
   # Unknown CREATE ACK must stop at read-only reconciliation, never blindly
   # compensate a potentially foreign resource or replay the provider mutation.
   # A cleanup failure remains DIAGNOSTIC_REQUIRED, never a fake PASS.
+  initial_windows_access_cleanup:
+    name: Revoke run-scoped Access token and remove temporary GitHub escrow
+    needs: [authorize, initial_windows_access_issue, initial_acceptance_verdict]
+    if: >-
+      always() &&
+      needs.authorize.outputs.operation == 'initial-vm-install' &&
+      needs.initial_windows_access_issue.result != 'skipped'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Restore exact Cloudflare host-only Access policy and revoke token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          OUTPUT_DIR: ${{ runner.temp }}/edge-platform-release
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          . "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          test "$(sha256sum "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" credentials initial-windows-acceptance-cleanup             "${GITHUB_RUN_ID}" > "${RUNNER_TEMP}/access-cleanup.txt"
+          grep -Fxq 'acceptance_access_status=REVOKED_OR_ABSENT' "${RUNNER_TEMP}/access-cleanup.txt"
+          grep -Fxq 'windows_access_policy=EXACT_HOST_ONLY' "${RUNNER_TEMP}/access-cleanup.txt"
+          echo 'WINDOWS_ACCEPTANCE_ACCESS_REVOKE=PASS' >> "${GITHUB_STEP_SUMMARY}"
+      - name: Remove only positively issued GitHub Windows acceptance escrow
+        if: always() && needs.initial_windows_access_issue.result == 'success'
+        shell: bash
+        env:
+          CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test -n "${CONTROL_PLANE_TOKEN}"
+          for name in CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET; do
+            names="$(GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret list --repo "${REPOSITORY}" --env production-vultr --json name --jq '.[].name')"
+            if grep -Fxq "${name}" <<<"${names}"; then
+              GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret delete "${name}" --repo "${REPOSITORY}" --env production-vultr
+            fi
+          done
+          after="$(GH_TOKEN="${CONTROL_PLANE_TOKEN}" gh secret list --repo "${REPOSITORY}" --env production-vultr --json name --jq '.[].name')"
+          if grep -Eq '^CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_(ID|SECRET)$' <<<"${after}"; then
+            echo 'Windows acceptance escrow deletion cannot be proven' >&2
+            exit 1
+          fi
+          echo 'WINDOWS_ACCEPTANCE_GITHUB_ESCROW=DELETED' >> "${GITHUB_STEP_SUMMARY}"
+
   initial_windows_cleanup:
     name: Destroy only this run's isolated Windows acceptance tree
     needs: [authorize, initial_preflight, initial_windows_isolate, initial_acceptance_verdict]
@@ -1831,7 +1982,7 @@ jobs:
 
   initial_acceptance_final:
     name: Final N1/N2 physical result after exact scoped cleanup
-    needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_cleanup]
+    needs: [authorize, execute, initial_acceptance_verdict, initial_windows_cleanup, initial_windows_access_cleanup, initial_cleanup]
     if: always() && needs.authorize.outputs.operation == 'initial-vm-install'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1842,11 +1993,12 @@ jobs:
         env:
           TRAFFIC: ${{ needs.initial_acceptance_verdict.result }}
           WINDOWS_CLEANUP: ${{ needs.initial_windows_cleanup.result }}
+          WINDOWS_ACCESS_CLEANUP: ${{ needs.initial_windows_access_cleanup.result }}
           VM_CLEANUP: ${{ needs.initial_cleanup.result }}
           FIRST_USE_CREATE_CONFIRMED: ${{ needs.execute.outputs.first_use_create_confirmed }}
         run: |
           set -euo pipefail
-          if [[ "${TRAFFIC}" != "success" || "${WINDOWS_CLEANUP}" != "success" ]]; then
+          if [[ "${TRAFFIC}" != "success" || "${WINDOWS_CLEANUP}" != "success" || "${WINDOWS_ACCESS_CLEANUP}" != "success" ]]; then
             echo "::error title=N1/N2 NOT_ACCEPTED::Transport or isolated Windows cleanup failed"
             exit 1
           fi

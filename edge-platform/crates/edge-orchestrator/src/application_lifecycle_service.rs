@@ -386,6 +386,27 @@ pub(crate) async fn observe_application(
 /// Unlike execute_desired this never bootstraps Compose, promotes a release,
 /// or activates credentials. Uncertain RPC results are reconciled only by
 /// exact readback and never replayed.
+fn validate_exact_unpublished_initial_bundle(
+    staged: &BundleReleaseView,
+    expected_id: &str,
+    expected_digest: &str,
+    installed_agent_sha256: Option<&str>,
+    expected_agent_sha256: &str,
+) -> Result<(), String> {
+    if staged.bundle_id != expected_id || staged.bundle_digest != expected_digest {
+        return Err(
+            "pre-existing VM application bundle differs from exact staged intent; no replay"
+                .to_owned(),
+        );
+    }
+    if installed_agent_sha256 != Some(expected_agent_sha256) {
+        return Err(
+            "pre-existing VM application agent differs from exact ReleaseSet; no replay".to_owned(),
+        );
+    }
+    Ok(())
+}
+
 pub(crate) async fn stage_initial_application_policy(
     authority: &ApplicationAuthority,
     artifact: &AgentArtifactManifest,
@@ -393,10 +414,42 @@ pub(crate) async fn stage_initial_application_policy(
     prepared: &PreparedApplicationBundle,
 ) -> Result<(String, String), String> {
     verify_exact_agent_artifact(artifact, artifact_path)?;
-    if read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?.is_some()
-        || read_control_state(authority)?.is_some()
-    {
-        return Err("initial policy stage refuses existing application release".to_owned());
+    // A prior first-use attempt may have staged the exact unpublished
+    // bundle before a later host Access failure. Re-attest its immutable
+    // identity instead of replaying the stage RPC. Never adopt a published
+    // release or a merely similar bundle.
+    let existing_stage = read_remote_bundle_release(authority, REMOTE_STACK_RELEASE)?;
+    if read_control_state(authority)?.is_some() {
+        return Err(
+            "initial policy stage refuses already published application release".to_owned(),
+        );
+    }
+    if let Some(existing) = existing_stage {
+        let expected_id = prepared
+            .request
+            .bundle_id
+            .as_deref()
+            .ok_or("initial policy stage requires a canonical bundle ID")?;
+        validate_exact_unpublished_initial_bundle(
+            &existing,
+            expected_id,
+            &prepared.release.bundle_digest,
+            remote_file_sha(authority, REMOTE_AGENT)?.as_deref(),
+            &artifact.sha256,
+        )?;
+        let runtime_present = strict_ssh_capture(
+            &authority.target_ip,
+            &authority.logical_hostname,
+            &authority.operator_private_key_path,
+            &authority.canonical_operator_public_key,
+            "if sudo test -e /opt/vultr-edge-stack/stack/.env.runtime; then printf present; else printf absent; fi",
+        )?;
+        if runtime_present != "absent" {
+            return Err(
+                "initial policy reattestation refuses existing runtime credentials".to_owned(),
+            );
+        }
+        return Ok((existing.bundle_id, existing.bundle_digest));
     }
     let agent_sha = remote_file_sha(authority, REMOTE_AGENT)?;
     if let Some(existing) = agent_sha {
@@ -1904,6 +1957,37 @@ mod tests {
             None,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
+    }
+
+    #[test]
+    fn initial_staged_application_reuse_is_exact_or_fails_closed() {
+        let staged = BundleReleaseView {
+            schema_version: 1,
+            bundle_id: "owned-stage".to_owned(),
+            bundle_digest: "accepted-digest".to_owned(),
+            ..Default::default()
+        };
+        assert!(
+            validate_exact_unpublished_initial_bundle(
+                &staged,
+                "owned-stage",
+                "accepted-digest",
+                Some("agent-sha"),
+                "agent-sha",
+            )
+            .is_ok()
+        );
+        for (id, digest, agent) in [
+            ("foreign-stage", "accepted-digest", Some("agent-sha")),
+            ("owned-stage", "foreign-digest", Some("agent-sha")),
+            ("owned-stage", "accepted-digest", Some("foreign-agent")),
+            ("owned-stage", "accepted-digest", None),
+        ] {
+            assert!(
+                validate_exact_unpublished_initial_bundle(&staged, id, digest, agent, "agent-sha",)
+                    .is_err()
+            );
+        }
     }
 
     #[test]
