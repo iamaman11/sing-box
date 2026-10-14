@@ -1115,6 +1115,42 @@ def main() -> None:
         < vm_inspect.index("let Some(compose) ="),
         "VM diagnostics must observe Docker substrate before any Compose-missing early return",
     )
+    # First trusted VM owner upgrade must never bootstrap/re-register the runner,
+    # republish credentials, mutate Docker, or accept a blind replay after an
+    # uncertain SSH acknowledgement. All target IDs come from Git inventory.
+    vm_owner_upgrade = Path(
+        "edge-platform/crates/edge-orchestrator/src/vm_owner_upgrade.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        '"owner-upgrade" => vm_owner_upgrade::run(&args[1..], context).await'
+            in vultr_lifecycle_command
+        and 'mod vm_owner_upgrade;' in vultr_lifecycle_command
+        and 'elif verb == "owner-upgrade" and len(tokens) == 5:' in vultr
+        and 'OWNER_PREVIOUS_SHA: ${{ needs.authorize.outputs.owner_previous_sha }}' in vultr
+        and 'run_lifecycle owner-upgrade "${spec}" "${machine}" "${EDGE_LIFECYCLE_AGENT}" "${OWNER_PREVIOUS_SHA}"'
+            in vultr
+        and 'test "${GITHUB_RUN_ATTEMPT}" = "1"' in vultr
+        and 'acquire_host_access "${spec}" "${machine}" "owner-upgrade"' in vultr
+        and 'release_host_access "${spec}" "${machine}" "owner-upgrade"' in vultr
+        and 'context.validate_application_artifact(&expected, Path::new(&args[2]))?;'
+            in vm_owner_upgrade
+        and 'exact_existing_machine_observation(&desired, &args[1]).await?'
+            in vm_owner_upgrade
+        and 'bound_upgrade_preflight(&current, &args[3], &expected.sha256)?'
+            in vm_owner_upgrade
+        and 'durable_nonreplay_begin' in vm_owner_upgrade
+        and 'sudo -n ln {OWNER} {PREVIOUS}' in vm_owner_upgrade
+        and 'sudo -n mv -T {NEXT} {OWNER}' in vm_owner_upgrade
+        and 'let boot_before = capture("cat /proc/sys/kernel/random/boot_id")?;' in vm_owner_upgrade
+        and 'runner_mutations": 0' in vm_owner_upgrade
+        and 'container_mutations": 0' in vm_owner_upgrade
+        and 'credential_mutations": 0' in vm_owner_upgrade
+        and 'bootstrap_production_runner(' not in vm_owner_upgrade
+        and 'apply_vm_credential_runtime(' not in vm_owner_upgrade
+        and 'systemctl restart' not in vm_owner_upgrade,
+        "VM owner update must preserve bounded exact-release identity and no-replay/runtime isolation",
+    )
+
     # One native owner serves first-use VM apply/verify over the existing
     # restricted AgentService. Local Line2 results must stay per endpoint;
     # aggregate VM-local success must never be called external acceptance.
