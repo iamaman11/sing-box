@@ -208,6 +208,11 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
                 .to_owned(),
         );
     }
+    let current_record = capture(&format!("sudo -n cat {JOURNAL}"))?;
+    let rollback_sha = capture(&format!("sha256sum {PREVIOUS} | cut -d' ' -f1"))?;
+    if current_record != format!("{current} {}", expected.sha256) || rollback_sha != current {
+        return Err("VM installed owner rollback chain is not exact after swap; STOP without replay".to_owned());
+    }
     if capture("cat /proc/sys/kernel/random/boot_id")? != boot_before {
         return Err(
             "VM boot identity changed during owner upgrade; STOP without replay".to_owned(),
@@ -349,6 +354,32 @@ mod tests {
         assert!(bound_upgrade_preflight(&old, &format!("{}x", old), &new).is_err());
         assert!(bound_upgrade_preflight(&old, &old.to_uppercase(), &new).is_err());
         assert!(!exact_sha(&"Z".repeat(64)));
+    }
+
+    #[test]
+    fn repeated_owner_upgrade_requires_exact_existing_chain_not_an_empty_replay() {
+        let old = "a".repeat(64);
+        let current = "b".repeat(64);
+        let next = "c".repeat(64);
+        assert_eq!(bound_existing_owner_chain("FIRST", &old), Ok(None));
+        assert_eq!(
+            bound_existing_owner_chain(&format!("PRIOR:{old}:{old} {current}"), &current),
+            Ok(Some(old.clone()))
+        );
+        assert_eq!(bound_upgrade_preflight(&current, &current, &next), Ok(true));
+        for invalid in [
+            format!("PRIOR:{old}:{old} {old}"),
+            format!("PRIOR:{old}:{current} {old}"),
+            format!("PRIOR:{current}:{current} {current}"),
+            format!("PRIOR:garbage:{old} {current}"),
+            format!("PRIOR:{old}:{old} {current} extra"),
+            "PARTIAL".to_owned(),
+        ] {
+            assert!(bound_existing_owner_chain(&invalid, &current).is_err());
+        }
+        assert!(bound_existing_owner_chain("FIRST", "bogus").is_err());
+        assert_ne!(JOURNAL, JOURNAL_NEXT);
+        assert_ne!(PREVIOUS, PREVIOUS_NEXT);
     }
 
     #[test]
