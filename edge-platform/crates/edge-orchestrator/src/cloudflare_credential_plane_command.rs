@@ -273,6 +273,19 @@ pub async fn run_delivery(
             )
             .await
         }
+        CredentialDeliveryCommand::InitialWindowsAcceptanceIssue {
+            run_id,
+            private_output_path,
+            token_id_output_path,
+        } => {
+            initial_windows_acceptance_issue(
+                &control_token, &desired, run_id,
+                &private_output_path, &token_id_output_path,
+            ).await
+        }
+        CredentialDeliveryCommand::InitialWindowsAcceptanceCleanup { run_id } => {
+            initial_windows_acceptance_cleanup(&control_token, &desired, run_id).await
+        }
         CredentialDeliveryCommand::HostBootstrapConverge => {
             host_bootstrap_converge(&control_token, &desired).await
         }
@@ -293,6 +306,187 @@ pub async fn run_delivery(
             .await
         }
     }
+}
+
+// A second, run-scoped Access principal is issued only for isolated Windows
+// acceptance. The permanent Windows service token is never exported, read,
+// rotated or reused. The only Access policy mutation is a fenced temporary
+// addition; after the experiment it must be restored before revoking the token.
+fn initial_acceptance_token_name(run_id: u64) -> Result<String, String> {
+    if run_id < 10_000_000 {
+        return Err("acceptance run ID is not a real GitHub Actions run".to_owned());
+    }
+    Ok(format!("sing-box-first-use-windows-{run_id}"))
+}
+
+fn check_initial_acceptance_github_owner(run_id: u64, phase: &str) -> Result<(), String> {
+    let actual_run = required_env("GITHUB_RUN_ID")?;
+    let attempt = required_env("GITHUB_RUN_ATTEMPT")?;
+    let repository = required_env("GITHUB_REPOSITORY")?;
+    let event = required_env("GITHUB_EVENT_NAME")?;
+    if actual_run != run_id.to_string()
+        || attempt != "1"
+        || repository != "iamaman11/sing-box"
+        || event != "issue_comment"
+        || !matches!(phase, "ISSUE" | "CLEANUP")
+    {
+        return Err("Windows acceptance Access owner/run mismatch, refusing mutation".to_owned());
+    }
+    initial_acceptance_token_name(run_id)?;
+    Ok(())
+}
+
+fn exact_service_auth_ids(
+    actual: &cloudflare::CloudflareAccessPolicy,
+    expected: &[String],
+) -> Result<(), String> {
+    if actual.decision.as_deref() != Some("non_identity")
+        || actual.has_extra_rules
+        || actual.include_service_token_ids.len() != expected.len()
+    {
+        return Err("Windows acceptance Access service-auth policy drifted".to_owned());
+    }
+    let mut actual_ids = actual.include_service_token_ids.clone();
+    actual_ids.sort();
+    let mut expected_ids = expected.to_vec();
+    expected_ids.sort();
+    if actual_ids != expected_ids || actual_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("Windows acceptance Access token IDs differ from exact policy".to_owned());
+    }
+    Ok(())
+}
+
+fn acceptance_window_policy(
+    observed: &CredentialPlaneObservation,
+) -> Result<(String, String, String, String), String> {
+    let window = projection_observation(observed, "windows")?;
+    let host = window.host_service_token_id.clone().ok_or(
+        "Windows acceptance missing permanent host service token ID"
+    )?;
+    let app = window.access_application_id.clone().ok_or(
+        "Windows acceptance missing exact Access application ID"
+    )?;
+    if window.access_policies.len() != 1 {
+        return Err("Windows acceptance requires exactly one existing Access policy".to_owned());
+    }
+    let policy = &window.access_policies[0];
+    Ok((host, app, policy.id.clone(), policy.name.clone()))
+}
+
+async fn initial_windows_acceptance_issue(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    run_id: u64,
+    private_output: &Path,
+    public_output: &Path,
+) -> Result<(), String> {
+    check_initial_acceptance_github_owner(run_id, "ISSUE")?;
+    let before = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    let name = initial_acceptance_token_name(run_id)?;
+    let tokens = cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
+    if tokens.iter().any(|t| t.name.as_deref() == Some(name.as_str())) {
+        return Err("run-scoped Windows acceptance token exists; do not reissue".to_owned());
+    }
+    let (host, app, policy_id, policy_name) = acceptance_window_policy(&before)?;
+    let window = projection_observation(&before, "windows")?;
+    exact_service_auth_ids(&window.access_policies[0], &[host.clone()])?;
+    if private_output.exists() || public_output.exists() {
+        return Err("Windows acceptance escrow file already exists, no overwrite".to_owned());
+    }
+    let token = cloudflare::create_access_service_token(
+        control_token, &desired.target_account_id, &name, "1h", true,
+    ).await.map_err(|e| format!("Windows acceptance issuance ACK unknown; no replay: {e}"))?;
+    if token.name.as_deref() != Some(name.as_str())
+        || token.enabled != Some(true)
+        || token.client_id.is_empty()
+        || token.client_secret.is_empty()
+        || token.id.is_empty()
+    {
+        return Err("Windows acceptance issued token response is not exact; no retry".to_owned());
+    }
+    // Immediately persist a private delivery file before the policy mutation.
+    // This file remains only on GitHub-hosted trusted acceptance owner and
+    // is sent to the Windows runner via protected GH environment secret.
+    let private = format!(
+        "CF_ACCESS_CLIENT_ID={}\nCF_ACCESS_CLIENT_SECRET={}\n",
+        token.client_id, token.client_secret,
+    );
+    write_private_bootstrap_file(private_output, private.as_bytes())?;
+    write_private_bootstrap_file(public_output, token.id.as_bytes())?;
+
+    cloudflare::update_access_service_policy_tokens(
+        control_token, &desired.target_account_id, &app, &policy_id,
+        &policy_name, &[host.clone(), token.id.clone()],
+    ).await.map_err(|e| format!("Windows acceptance policy mutation ACK unknown; reconcile, never replay: {e}"))?;
+    let after = observe(control_token, desired).await?;
+    let window_after = projection_observation(&after, "windows")?;
+    if window_after.access_policies.len() != 1 {
+        return Err("Windows acceptance policy readback cardinality drifted".to_owned());
+    }
+    exact_service_auth_ids(
+        &window_after.access_policies[0], &[host, token.id.clone()]
+    )?;
+    println!("operation=INITIAL_WINDOWS_ACCEPTANCE_ACCESS_ISSUE");
+    println!("acceptance_access_run_id={run_id}");
+    println!("acceptance_access_token_id={}", token.id);
+    println!("acceptance_access_secret_delivery=GITHUB_ENVIRONMENT_ESCROW_ONLY");
+    println!("acceptance_access_policy=HOST_PLUS_EXACT_ONE_RUN_SCOPED");
+    println!("permanent_host_identity_mutated=false");
+    Ok(())
+}
+
+async fn initial_windows_acceptance_cleanup(
+    control_token: &str,
+    desired: &ProductionCredentialPlaneOwnership,
+    run_id: u64,
+) -> Result<(), String> {
+    check_initial_acceptance_github_owner(run_id, "CLEANUP")?;
+    let name = initial_acceptance_token_name(run_id)?;
+    let before = observe(control_token, desired).await?;
+    let (host, app, policy_id, policy_name) = acceptance_window_policy(&before)?;
+    let tokens = cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
+    let exact: Vec<_> = tokens.iter()
+        .filter(|token| token.name.as_deref() == Some(name.as_str()))
+        .collect();
+    if exact.len() > 1 {
+        return Err("duplicate Windows acceptance tokens; refusing ambiguous cleanup".to_owned());
+    }
+    let policy = &projection_observation(&before, "windows")?.access_policies[0];
+    let expected_with_temp = exact.first().map(|t| vec![host.clone(), t.id.clone()]);
+    if let Some(expected) = expected_with_temp {
+        if exact_service_auth_ids(policy, &expected).is_ok() {
+            cloudflare::update_access_service_policy_tokens(
+                control_token, &desired.target_account_id, &app, &policy_id,
+                &policy_name, &[host.clone()],
+            ).await.map_err(|e| format!("Windows Access rollback ACK uncertain; observe before any retry: {e}"))?;
+            let proof = observe(control_token, desired).await?;
+            let window = projection_observation(&proof, "windows")?;
+            if window.access_policies.len() != 1 {
+                return Err("Windows Access rollback did not prove exactly one policy".to_owned());
+            }
+            exact_service_auth_ids(&window.access_policies[0], &[host.clone()])?;
+        } else {
+            exact_service_auth_ids(policy, &[host.clone()])?;
+        }
+        let token_id = &exact[0].id;
+        cloudflare::delete_access_service_token(
+            control_token, &desired.target_account_id, token_id,
+        ).await.map_err(|e| format!("Windows Access revoke ACK uncertain; observe before any retry: {e}"))?;
+        let remaining = cloudflare::list_access_service_tokens(control_token, &desired.target_account_id).await?;
+        if remaining.iter().any(|t| t.name.as_deref() == Some(name.as_str()) || t.id == *token_id) {
+            return Err("Windows acceptance Access token revocation unproven".to_owned());
+        }
+    } else {
+        exact_service_auth_ids(policy, &[host.clone()])?;
+    }
+    let after = observe(control_token, desired).await?;
+    validate_access_boundary(desired, &after)?;
+    println!("operation=INITIAL_WINDOWS_ACCEPTANCE_ACCESS_CLEANUP");
+    println!("acceptance_access_status=REVOKED_OR_ABSENT");
+    println!("windows_access_policy=EXACT_HOST_ONLY");
+    println!("permanent_host_identity_mutated=false");
+    Ok(())
 }
 
 fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
@@ -1922,6 +2116,21 @@ fn validate_access_boundary(
         let mut observed_service_token_ids = policy.include_service_token_ids.clone();
         observed_service_token_ids.sort();
         let mut expected_host_only = vec![host_token_id.to_owned()];
+        // This narrow exception exists only during a single authorized
+        // initial publication while the Windows acceptance token is live.
+        // All ordinary production diagnostics still require host-only.
+        if projection.projection == "windows" {
+            if let Ok(temp_id) = env::var("EDGE_INITIAL_WINDOWS_ACCEPTANCE_TOKEN_ID") {
+                let run_id = required_env("EDGE_INITIAL_WINDOWS_ACCEPTANCE_RUN_ID")?
+                    .parse::<u64>()
+                    .map_err(|_| "invalid acceptance run ID".to_owned())?;
+                check_initial_acceptance_github_owner(run_id, "ISSUE")?;
+                if temp_id.is_empty() || temp_id == host_token_id {
+                    return Err("invalid independent Windows acceptance token ID".to_owned());
+                }
+                expected_host_only.push(temp_id);
+            }
+        }
         expected_host_only.sort();
         if observed_service_token_ids != expected_host_only {
             return Err(format!(
