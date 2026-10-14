@@ -992,6 +992,14 @@ jobs:
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
           test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
+          # The signed ReleaseSet resolver defines immutable substrate versions,
+          # but 'source' does not export shell variables to the typed Rust owner.
+          # Both the support-access lease and host proof must use these exact
+          # pinned versions; no local defaults, fallback or new authority.
+          test -n "${EDGE_DOCKER_ENGINE_VERSION}"
+          test -n "${EDGE_CONTAINERD_VERSION}"
+          test -n "${EDGE_COMPOSE_VERSION}"
+          export EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION
           owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
           test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
@@ -1367,6 +1375,12 @@ jobs:
           git checkout --detach FETCH_HEAD
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
+          # Each lease-acquire executes the same typed substrate owner.
+          # Inherit only immutable ReleaseSet package pins, never defaults.
+          test -n "${EDGE_DOCKER_ENGINE_VERSION}"
+          test -n "${EDGE_CONTAINERD_VERSION}"
+          test -n "${EDGE_COMPOSE_VERSION}"
+          export EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION
           test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
           owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
@@ -1891,6 +1905,12 @@ jobs:
           test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
+          # Each lease-acquire executes the same typed substrate owner.
+          # Inherit only immutable ReleaseSet package pins, never defaults.
+          test -n "${EDGE_DOCKER_ENGINE_VERSION}"
+          test -n "${EDGE_CONTAINERD_VERSION}"
+          test -n "${EDGE_COMPOSE_VERSION}"
+          export EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
           owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"

@@ -801,6 +801,28 @@ def main() -> None:
         "Windows acceptance requires locale-free ACL SIDs and fail-closed empty premarker recovery",
     )
 
+    # Every independent VM first-use job which acquires a support-access
+    # lease must export Docker/containerd/Compose versions from the already
+    # authenticated ReleaseSet. Otherwise the first one may pass, then later
+    # runtime/reboot jobs fail with the same missing Rust environment input.
+    for step, following in [
+        ("initial_vm_attest", "initial_windows_access_issue"),
+        ("initial_vm_runtime", "initial_line2_external"),
+        ("initial_reboot", "initial_acceptance_final"),
+    ]:
+        scoped_owner = vultr.split(f"  {step}:\n", 1)[1].split(
+            f"\n  {following}:", 1
+        )[0]
+        require(
+            'source "${OUTPUT_DIR}/resolved.env"' in scoped_owner
+            and 'test -n "${EDGE_DOCKER_ENGINE_VERSION}"' in scoped_owner
+            and 'test -n "${EDGE_CONTAINERD_VERSION}"' in scoped_owner
+            and 'test -n "${EDGE_COMPOSE_VERSION}"' in scoped_owner
+            and "export EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION" in scoped_owner
+            and '"${owner}" vultr-lifecycle lease-acquire' in scoped_owner,
+            f"{step} must pass all three immutable ReleaseSet substrate versions before typed support-access lease",
+        )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
