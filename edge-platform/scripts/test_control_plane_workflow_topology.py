@@ -840,7 +840,10 @@ def main() -> None:
         and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
         and 'credential-initial-acceptance-stage' in initial_flow
         and 'credential-initial-line1-witness' in initial_flow
-        and 'credential-transition validate-candidate' in initial_flow
+        and 'credential-transition validate-candidate' not in initial_flow
+        and 'The isolated Windows root deliberately has NO privileged SCM/task' in initial_flow
+        and 'The native isolated witness below performs exact candidate readback' in initial_flow
+        and 'credential-initial-line1-witness' in initial_flow
         and 'First-use isolated Windows credential cursor already exists' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_BLOCKED:' in initial_flow
         and 'FIRST_USE_WINDOWS_ISOLATION_CHANGED:' in initial_flow
