@@ -2765,7 +2765,7 @@ def main() -> None:
         and 'echo "vm_owner_observed_sha256=${observed}"' in owner_preflight
         and "for path in /usr /usr/local /usr/local/libexec" in owner_preflight
         and 'if [[ ! -x "${owner}" || -L "${owner}" ]]; then' in owner_preflight
-        and "diagnose|quality-line2|credential-initial-probe)" in owner_preflight
+        and "diagnose|quality-line2|credential-runtime-source|credential-initial-probe)" in owner_preflight
         and "converge|verify|rollback)" in owner_preflight
         and owner_preflight.index("vm_owner_identity=PASS_NATIVE_INSTALLED_READONLY")
         < owner_preflight.index("converge|verify|rollback)")
