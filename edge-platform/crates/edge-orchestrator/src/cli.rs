@@ -726,6 +726,58 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn owner_transition_workflow_commands_reach_exact_public_clap_dispatch() {
+        let old = "b".repeat(64);
+        let new = "a".repeat(64);
+        let cases = [
+            vec![
+                "owner-upgrade",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "edge-agent-linux-amd64",
+                &old,
+            ],
+            vec![
+                "owner-rollback",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                &new,
+                &old,
+            ],
+        ];
+        for args in cases {
+            let mut argv = vec!["edge-orchestrator", "vultr-lifecycle"];
+            argv.extend(args.iter().copied());
+            let parsed = Cli::try_parse_from(argv)
+                .expect("every owner transition GitHub workflow command must reach public Clap");
+            let Command::VultrLifecycle { command } = parsed.command else {
+                panic!("expected Vultr lifecycle owner");
+            };
+            assert_eq!(command.into_legacy_args(), args);
+        }
+        for args in [
+            vec![
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "owner-upgrade",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "edge-agent-linux-amd64",
+            ],
+            vec![
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "owner-rollback",
+                "infra/vultr/application-acceptance.json",
+                "application-acceptance-1",
+                "old-hash",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
     fn every_first_use_workflow_command_is_reachable_through_typed_cli() {
         // This is the public Clap entrypoint invoked by GitHub Actions. The
         // private native handler alone is not proof the binary accepts it.
