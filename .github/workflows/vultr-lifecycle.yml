@@ -1584,7 +1584,8 @@ jobs:
       group: sing-box-windows-physical
       cancel-in-progress: false
     timeout-minutes: 10
-    permissions: {}
+    permissions:
+      contents: read
     env:
       RELEASE_SET: ${{ needs.initial_preflight.outputs.release_set }}
     steps:
