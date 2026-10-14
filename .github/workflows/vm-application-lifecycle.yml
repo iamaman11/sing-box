@@ -78,7 +78,7 @@ jobs:
               spec_path = "infra/production/production.textproto"
               runtime_machine = "production-1"
           elif len(tokens) == 3 and tokens[0] == "/vm" and tokens[1] in {
-              "diagnose", "quality-line2", "credential-initial-probe",
+              "diagnose", "quality-line2", "credential-runtime-source", "credential-initial-probe",
           }:
               # Git chooses the machine; no caller-controlled IP, runner label,
               # shell, or second authority source.
@@ -140,7 +140,7 @@ jobs:
                   "unsupported command grammar; steady-state production uses "
                   "/production enroll-runtime|converge|verify|diagnose|quality-line2|rollback, provider-only target-plane commands, "
                   "or /application mesh-profile-plan|mesh-profile-verify|mesh-profile-apply <authority>, " 
-                  "or /vm diagnose|quality-line2|credential-initial-probe infra/application/<git-owned-manifest>.json, "
+                  "or /vm diagnose|quality-line2|credential-runtime-source|credential-initial-probe infra/application/<git-owned-manifest>.json, "
                   "or disposable /application acceptance|cleanup"
               )
 
@@ -591,6 +591,7 @@ jobs:
           (
             needs.authorize.outputs.operation == 'diagnose' ||
             needs.authorize.outputs.operation == 'quality-line2' ||
+            needs.authorize.outputs.operation == 'credential-runtime-source' ||
             needs.authorize.outputs.operation == 'credential-initial-probe'
           )
         ) ||
@@ -707,7 +708,7 @@ jobs:
           echo "vm_owner_desired_revision=${GITHUB_SHA}"
 
           case "${REQUESTED_OPERATION}" in
-            diagnose|quality-line2|credential-initial-probe)
+            diagnose|quality-line2|credential-runtime-source|credential-initial-probe)
               # Read existing VM state using its installed, root-owned Rust owner.
               # Desired ReleaseSet drift must not blind read-only diagnostics.
               echo 'vm_owner_identity=PASS_NATIVE_INSTALLED_READONLY'
@@ -770,6 +771,9 @@ jobs:
               ;;
             quality-line2)
               local_operation="quality-line2"
+              ;;
+            credential-runtime-source)
+              local_operation="credential-runtime-source"
               ;;
             credential-initial-probe)
               local_operation="credential-initial-probe"
