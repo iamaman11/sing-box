@@ -73,6 +73,8 @@ jobs:
           git fetch -q --no-tags --depth=1 origin "$GITHUB_SHA"
           git checkout -q --detach FETCH_HEAD
           unset EXPECTED_RELEASE_TAG
+          # The original BEGIN is only evidence, never the current resolver input.
+          export ACCEPTED_REVISION="$GITHUB_SHA"
           export OUTPUT_DIR="$RUNNER_TEMP/current-control-release"
           bash edge-platform/scripts/resolve_durable_release.sh
           . "$OUTPUT_DIR/resolved.env"
