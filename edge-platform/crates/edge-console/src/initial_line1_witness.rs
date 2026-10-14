@@ -406,11 +406,8 @@ pub(crate) fn run(
         return Err("Line1 witness refuses different credential generation".to_owned());
     }
     let bundle = store.read_bundle(candidate)?;
-    let runtime = windows_runtime_state_from_attested_vm_bundle(
-        &bundle,
-        target_ipv4,
-        target_domain,
-    )?;
+    let runtime =
+        windows_runtime_state_from_attested_vm_bundle(&bundle, target_ipv4, target_domain)?;
     let ports = allocate_loopback_ports(8)?;
     let config = isolated_config(&runtime, &ports)?;
     let ns = SystemTime::now()

@@ -186,7 +186,9 @@ fn valid_public_fqdn(value: &str) -> bool {
                 && label.len() <= 63
                 && !label.starts_with('-')
                 && !label.ends_with('-')
-                && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                && label
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-')
         })
 }
 
@@ -519,8 +521,15 @@ mod tests {
     #[test]
     fn attested_vm_domain_is_closed_and_cannot_be_url_or_localhost() {
         assert!(valid_public_fqdn("stage2-acceptance.alegria.by"));
-        for invalid in ["", "localhost", "bad..example.com", "-a.example.com",
-            "a-.example.com", "https://example.com", "example.com:8443"] {
+        for invalid in [
+            "",
+            "localhost",
+            "bad..example.com",
+            "-a.example.com",
+            "a-.example.com",
+            "https://example.com",
+            "example.com:8443",
+        ] {
             assert!(!valid_public_fqdn(invalid), "{invalid}");
         }
     }

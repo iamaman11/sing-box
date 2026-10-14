@@ -295,7 +295,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 args.target_ipv4,
                 &args.target_domain,
             )
-                .map_err(ConsoleError::Command)?;
+            .map_err(ConsoleError::Command)?;
             Ok(())
         }
         Command::CredentialState(args) => {
