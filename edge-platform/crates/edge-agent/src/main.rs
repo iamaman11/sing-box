@@ -6532,7 +6532,7 @@ mod tests {
         ] {
             let template = keys
                 .iter()
-                .map(|key| format!("\${{{key}}}"))
+                .map(|key| format!("${{{key}}}"))
                 .collect::<Vec<_>>()
                 .join(",");
             fs::write(stack.join(part).join("config.template.json"), template).unwrap();
