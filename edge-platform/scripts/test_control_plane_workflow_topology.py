@@ -855,6 +855,8 @@ def main() -> None:
         and "control_accepted: ${{ steps.proof.outputs.control_accepted }}" in resume
         and "control_release: ${{ steps.proof.outputs.control_release }}" in resume
         and 'git fetch -q --no-tags --depth=1 origin "$GITHUB_SHA"' in resume
+        and 'unset EXPECTED_RELEASE_TAG\n          # The original BEGIN is only evidence, never the current resolver input.\n          export ACCEPTED_REVISION="$GITHUB_SHA"\n          export OUTPUT_DIR=' in resume
+        and resume.count('export ACCEPTED_REVISION="$GITHUB_SHA"') == 1
         and 'test "$EDGE_ACCEPTED_REVISION" = "$GITHUB_SHA"' in resume
         and resume.count("ACCEPTED_REVISION: ${{ needs.source.outputs.control_accepted }}") == 2
         and resume.count("SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}") == 3
