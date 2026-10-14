@@ -990,7 +990,14 @@ jobs:
           git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
           git checkout --detach FETCH_HEAD
           bash edge-platform/scripts/resolve_durable_release.sh
+          # Use the exact immutable ReleaseSet as the only package-pin owner.
+          # Export Docker/containerd/Compose pins to the native host lease.
+          set -a
           source "${OUTPUT_DIR}/resolved.env"
+          set +a
+          for pin in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do
+            test -n "${!pin}" || { echo "Missing ReleaseSet host pin: ${pin}" >&2; exit 1; }
+          done
           test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
           owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
@@ -1366,7 +1373,14 @@ jobs:
           git fetch --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
           git checkout --detach FETCH_HEAD
           bash edge-platform/scripts/resolve_durable_release.sh
+          # Use the exact immutable ReleaseSet as the only package-pin owner.
+          # Export Docker/containerd/Compose pins to the native host lease.
+          set -a
           source "${OUTPUT_DIR}/resolved.env"
+          set +a
+          for pin in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do
+            test -n "${!pin}" || { echo "Missing ReleaseSet host pin: ${pin}" >&2; exit 1; }
+          done
           test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
           owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           agent="${OUTPUT_DIR}/edge-agent-linux-amd64"
@@ -1890,7 +1904,14 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
           bash edge-platform/scripts/resolve_durable_release.sh
+          # Use the exact immutable ReleaseSet as the only package-pin owner.
+          # Export Docker/containerd/Compose pins to the native host lease.
+          set -a
           source "${OUTPUT_DIR}/resolved.env"
+          set +a
+          for pin in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do
+            test -n "${!pin}" || { echo "Missing ReleaseSet host pin: ${pin}" >&2; exit 1; }
+          done
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"
           owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
