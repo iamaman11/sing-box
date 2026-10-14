@@ -823,6 +823,42 @@ def main() -> None:
             f"{step} must pass all three immutable ReleaseSet substrate versions before typed support-access lease",
         )
 
+    # The only legal continuation after one irreversible paired Worker BEGIN
+    # is a source-run-bound read-only acceptance. A distinct resume command
+    # must never fall through to generic VM execute, republish credentials,
+    # or create a second Windows privileged task / SCM owner.
+    resume = (WORKFLOWS / "vultr-acceptance-resume.yml").read_text(encoding="utf-8")
+    require(
+        '"/vultr", "initial-acceptance-resume"' in vultr
+        and "initial-acceptance-resume'" in vultr
+        and "resume_source_run_id:" in vultr
+        and "uses: ./.github/workflows/vultr-acceptance-resume.yml" in vultr
+        and "needs.authorize.outputs.operation != 'initial-acceptance-resume'" in vultr
+        and 'source_run_id:' in resume
+        and 'sing-box-credential-initial-attempt/v1' in resume
+        and 'sing-box-initial-resume-reboot/v1' in resume
+        and "resolve_durable_release.sh" in resume
+        and 'ORIGINAL_PAIRED' not in resume
+        and "initial-pair-publish" not in resume
+        and "initial-runtime-apply" not in resume
+        and "credential-transition validate-candidate" not in resume
+        and "privileged-dispatch" not in resume
+        and "credential-initial-line1-witness" in resume
+        and "credential-initial-acceptance-stage" in resume
+        and "initial-line2-external-witness" in resume
+        and "line1_external_4_of_4=PASS" in resume
+        and "line2_external_6_of_6=PASS" in resume
+        and "reboot_observation.boot_id_changed==true" in resume
+        and "initial-windows-acceptance-cleanup" in resume
+        and "reconcile-windows-first-use.ps1" in resume
+        and "N1_N2_ACCEPTANCE=PASS" in resume
+        and "ARCHIVED_ACCEPTANCE_BLOCKED" in windows_installer
+        and "ArchivedAcceptanceSourceRunId" in windows_installer
+        and "if (\$ArchivedAcceptanceSourceRunId -lt 10000000)" in windows_installer
+        and "C:\\sing-box-acceptance" in windows_installer,
+        "initial resume must reuse exact first-use publication, prove external 10/10 and one reboot, and reject serving privilege",
+    )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
