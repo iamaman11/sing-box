@@ -407,6 +407,24 @@ pub(crate) struct VultrRunnerBootstrapArgs {
     pub local_owner_artifact_path: PathBuf,
 }
 
+// Immutable ReleaseSet owner installation is distinct from runner enrollment.
+// Public Clap grammar must match the typed workflow, not merely the Rust dispatch.
+#[derive(Debug, Args, Clone)]
+pub(crate) struct VultrOwnerUpgradeArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub agent_artifact_path: PathBuf,
+    pub observed_previous_sha256: String,
+}
+
+#[derive(Debug, Args, Clone)]
+pub(crate) struct VultrOwnerRollbackArgs {
+    pub spec_path: PathBuf,
+    pub machine_id: String,
+    pub observed_current_sha256: String,
+    pub observed_previous_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum InitialVmCredentialSlotArg {
     A,
@@ -473,6 +491,8 @@ pub(crate) enum VultrLifecycleCommand {
     InitialRuntimeApply(InitialVmRuntimeArgs),
     InitialRuntimeVerify(InitialVmRuntimeArgs),
     RunnerBootstrap(VultrRunnerBootstrapArgs),
+    OwnerUpgrade(VultrOwnerUpgradeArgs),
+    OwnerRollback(VultrOwnerRollbackArgs),
     AcquireAccessPlan(VultrMachineArgs),
     AcquireAccess(VultrAuthorizedMachineArgs),
     LeaseAcquire(VultrMachineArgs),
@@ -553,6 +573,20 @@ impl VultrLifecycleCommand {
                 args.machine_id,
                 path(args.installer_path),
                 path(args.local_owner_artifact_path),
+            ],
+            Self::OwnerUpgrade(args) => vec![
+                "owner-upgrade".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                path(args.agent_artifact_path),
+                args.observed_previous_sha256,
+            ],
+            Self::OwnerRollback(args) => vec![
+                "owner-rollback".to_owned(),
+                path(args.spec_path),
+                args.machine_id,
+                args.observed_current_sha256,
+                args.observed_previous_sha256,
             ],
             Self::AcquireAccessPlan(args) => machine("acquire-access-plan", args),
             Self::AcquireAccess(args) => vec![
