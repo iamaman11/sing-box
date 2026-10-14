@@ -838,7 +838,7 @@ def main() -> None:
         and 'sing-box-credential-initial-attempt/v1' in resume
         and 'sing-box-initial-resume-reboot/v1' in resume
         and "resolve_durable_release.sh" in resume
-        and 'ORIGINAL_PAIRED' not in resume
+        and 'N1_N2_ORIGINAL_PAIRED_CREDENTIALS_REUSED_NO_REPLAY=PASS' in resume
         and "initial-pair-publish" not in resume
         and "initial-runtime-apply" not in resume
         and "credential-transition validate-candidate" not in resume
