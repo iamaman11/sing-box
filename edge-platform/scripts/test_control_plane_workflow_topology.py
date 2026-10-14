@@ -629,10 +629,13 @@ def main() -> None:
         and "fn initial_vm_access_identity_payload(" in vultr_lifecycle_command
         and "strict_ssh_run_stdin(" in vultr_lifecycle_command
         and "initial VM Access write outcome uncertain; do not repeat" in vultr_lifecycle_command
-        and "initial VM Access installation refuses a pre-existing secret directory" in vultr_lifecycle_command
+        and "validate_initial_vm_existing_identity(" in vultr_lifecycle_command
+        and "initial VM Access identity scope is unknown; do not replay or overwrite" in vultr_lifecycle_command
+        and "existing VM Access identity differs from authorized escrow; no replay" in vultr_lifecycle_command
+        and "vm_access_identity_state" in vultr_lifecycle_command
         and "vm_access_identity_owner" in vultr_lifecycle_command
         and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
-        "fresh VM first-use must bind root-only Worker Access identity to the single GitHub lease and reject mutation replay",
+        "first-use must either stage exact root-only VM Access identity once or re-attest existing bytes without replay",
     )
     require(
         "group: credential-transaction-${{ github.repository_id }}" in vultr
