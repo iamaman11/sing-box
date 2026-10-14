@@ -181,7 +181,20 @@ jobs:
           # The existing native witness reads candidate, checks sing-box,
           # sends HTTPS traffic and rejects four sets of wrong credentials.
           # The isolated root has NO privileged dispatcher or serving SCM.
-          $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+          # Preserve bounded endpoint evidence when the witness exits nonzero.
+          $PSNativeCommandUseErrorActionPreference = $false
+          try {
+            $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+            $witnessExit=$LASTEXITCODE
+          } finally {
+            $PSNativeCommandUseErrorActionPreference = $true
+          }
+          foreach ($resultLine in $raw) {
+            $bounded=[string]$resultLine
+            if ($bounded.Length -le 260 -and $bounded -cmatch '^line1_(endpoint|probe_failure)=' -and
+                $bounded -cmatch '^[A-Za-z0-9 _=:/;.-]+$') { Write-Host $bounded }
+          }
+          if ($witnessExit -ne 0) { throw "Line1 E2E witness returned NOT_ACCEPTED exit=$witnessExit" }
           if ($LASTEXITCODE -ne 0 -or -not ($raw -contains 'line1_external_4_of_4=PASS') -or -not ($raw -contains 'line1_direct_warp_egress_distinct=true') -or -not ($raw -contains 'windows_tun_mutations=0') -or -not ($raw -contains 'windows_scm_mutations=0')) { throw 'External Line1 not 4/4' }
           Write-Host 'N2_RESUME_EXTERNAL_LINE1_4_OF_4=PASS'
           Write-Host 'WINDOWS_SERVING_INSTALL_ROOT=UNTOUCHED'
@@ -364,7 +377,20 @@ jobs:
           $doctor=@(& (Join-Path $root 'bin\edge-diagnostic.exe') doctor (Join-Path $root 'current.pb'))
           if ($LASTEXITCODE -ne 0 -or -not ($doctor -contains "release_set_sha256=$env:SOURCE_RELEASE") -or -not ($doctor -contains 'windows_datapath_mode=ProxyOnly')) { throw 'Windows acceptance release mismatch' }
           $console=Join-Path $root 'bin\edge-console.exe'
-          $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+          # Preserve bounded endpoint evidence when the witness exits nonzero.
+          $PSNativeCommandUseErrorActionPreference = $false
+          try {
+            $raw=@(& $console credential-initial-line1-witness ([UInt64]$env:GENERATION) --install-root $root)
+            $witnessExit=$LASTEXITCODE
+          } finally {
+            $PSNativeCommandUseErrorActionPreference = $true
+          }
+          foreach ($resultLine in $raw) {
+            $bounded=[string]$resultLine
+            if ($bounded.Length -le 260 -and $bounded -cmatch '^line1_(endpoint|probe_failure)=' -and
+                $bounded -cmatch '^[A-Za-z0-9 _=:/;.-]+$') { Write-Host $bounded }
+          }
+          if ($witnessExit -ne 0) { throw "Line1 E2E witness returned NOT_ACCEPTED exit=$witnessExit" }
           if ($LASTEXITCODE -ne 0 -or -not ($raw -contains 'line1_external_4_of_4=PASS') -or -not ($raw -contains 'line1_direct_warp_egress_distinct=true') -or -not ($raw -contains 'windows_tun_mutations=0') -or -not ($raw -contains 'windows_scm_mutations=0')) { throw 'Post-reboot Line1 external witness failed' }
           Write-Host 'N1_N2_POST_REBOOT_LINE1_4_OF_4=PASS'
 
