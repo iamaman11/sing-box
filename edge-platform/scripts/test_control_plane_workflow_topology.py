@@ -955,7 +955,7 @@ def main() -> None:
         and 'initial_pair_publish:' in initial_flow
         and 'initial_vm_runtime:' in initial_flow
         and 'initial_windows_consume:' in initial_flow
-        and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish]' in initial_flow
+        and 'needs: [authorize, initial_preflight, initial_windows_attest, initial_pair_publish, initial_line2_external]' in initial_flow
         and 'credential-initial-acceptance-stage' in initial_flow
         and 'credential-initial-line1-witness' in initial_flow
         and 'credential-transition validate-candidate' not in initial_flow
