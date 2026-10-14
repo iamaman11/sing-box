@@ -114,7 +114,7 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
     // exact lowercase SHA256 validation. Write durable BEGIN BEFORE atomic swap.
     // A missing response is UNKNOWN and must be reconciled, never retried.
     let remote = format!(
-        "set -eu;          test ! -e {JOURNAL}; test ! -e {PREVIOUS}; test ! -e {NEXT};          test \"$(sha256sum {OWNER} | cut -d' ' -f1)\" = {current};          test \"$(sha256sum {STAGED} | cut -d' ' -f1)\" = {next};          sudo -n install -o root -g root -m 0755 {STAGED} {NEXT};          test \"$(sha256sum {NEXT} | cut -d' ' -f1)\" = {next};          printf '%s\\n' '{current} {next}' | sudo -n tee {JOURNAL} >/dev/null;          sudo -n chmod 0600 {JOURNAL};          sudo -n ln {OWNER} {PREVIOUS};          sudo -n mv -T {NEXT} {OWNER};          rm -f {STAGED}",
+        "set -eu;          test ! -e {JOURNAL}; test ! -e {PREVIOUS}; test ! -e {NEXT};          test \"$(sha256sum {OWNER} | cut -d' ' -f1)\" = {current};          test \"$(sha256sum {STAGED} | cut -d' ' -f1)\" = {next};          sudo -n install -o root -g root -m 0755 {STAGED} {NEXT};          test \"$(sha256sum {NEXT} | cut -d' ' -f1)\" = {next};          printf '%s\\n' '{current} {next}' | sudo -n tee {JOURNAL} >/dev/null;          sudo -n chmod 0600 {JOURNAL};          sudo -n sync {JOURNAL}; sudo -n sync /usr/local/libexec/sing-box;          sudo -n ln {OWNER} {PREVIOUS};          sudo -n mv -T {NEXT} {OWNER};          rm -f {STAGED}",
         next = expected.sha256
     );
     strict_ssh_run(target_ip, &args[1], &key, &public_key, &remote)?;
@@ -225,7 +225,7 @@ pub(super) async fn rollback(
     }
     let boot_before = capture("cat /proc/sys/kernel/random/boot_id")?;
     let remote = format!(
-        "set -eu; test ! -e {FAILED}; test ! -e {ROLLBACK_BEGIN};          test \"$(sha256sum {OWNER} | cut -d' ' -f1)\" = {current};          test \"$(sha256sum {PREVIOUS} | cut -d' ' -f1)\" = {previous};          test \"$(sudo -n cat {JOURNAL})\" = '{previous} {current}';          printf '%s\\n' '{previous} {current}' | sudo -n tee {ROLLBACK_BEGIN} >/dev/null;          sudo -n chmod 0600 {ROLLBACK_BEGIN};          sudo -n ln {OWNER} {FAILED}; sudo -n mv -T {PREVIOUS} {OWNER}"
+        "set -eu; test ! -e {FAILED}; test ! -e {ROLLBACK_BEGIN};          test \"$(sha256sum {OWNER} | cut -d' ' -f1)\" = {current};          test \"$(sha256sum {PREVIOUS} | cut -d' ' -f1)\" = {previous};          test \"$(sudo -n cat {JOURNAL})\" = '{previous} {current}';          printf '%s\\n' '{previous} {current}' | sudo -n tee {ROLLBACK_BEGIN} >/dev/null;          sudo -n chmod 0600 {ROLLBACK_BEGIN};          sudo -n sync {ROLLBACK_BEGIN}; sudo -n sync /usr/local/libexec/sing-box;          sudo -n ln {OWNER} {FAILED}; sudo -n mv -T {PREVIOUS} {OWNER}"
     );
     strict_ssh_run(target_ip, &args[1], &key, &public_key, &remote)?;
     let installed = capture(&format!("sha256sum {OWNER} | cut -d' ' -f1"))?;
