@@ -801,6 +801,24 @@ def main() -> None:
         "Windows acceptance requires locale-free ACL SIDs and fail-closed empty premarker recovery",
     )
 
+    # The host lease/attestation, runtime and post-reboot owners are separate
+    # GitHub jobs. Each must export the exact immutable ReleaseSet package
+    # pins before its first native Vultr operation; source-only shell locals
+    # cannot reach edge-orchestrator and must never fall back to host defaults.
+    for owner_job in ("initial_vm_attest", "initial_vm_runtime", "initial_reboot"):
+        owner_match = re.search(
+            rf"(?ms)^  {owner_job}:\\n(?P<body>.*?)(?=^  [a-z][a-z0-9_]*:\\s*$|\\Z)",
+            vultr,
+        )
+        require(
+            owner_match is not None
+            and 'set -a\\n          source "${OUTPUT_DIR}/resolved.env"\\n          set +a' in owner_match.group("body")
+            and "for pin in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION" in owner_match.group("body")
+            and 'test -n "${!pin}"' in owner_match.group("body")
+            and '"${owner}" vultr-lifecycle lease-acquire' in owner_match.group("body"),
+            f"first-use {owner_job} must export three immutable ReleaseSet host pins before native VM lease",
+        )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
