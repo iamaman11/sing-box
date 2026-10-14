@@ -22,6 +22,7 @@ jobs:
       readonly_purpose: ${{ steps.auth.outputs.readonly_purpose }}
       source_run_id: ${{ steps.auth.outputs.source_run_id }}
       source_release_sha256: ${{ steps.auth.outputs.source_release_sha256 }}
+      premarker_authorized: ${{ steps.source.outputs.premarker_authorized }}
       release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
       expected_mode: ${{ steps.mode.outputs.expected_mode }}
     steps:
@@ -67,6 +68,7 @@ jobs:
           printf 'source_release_sha256=%s\n' "${source_release_sha256:-}" >> "$GITHUB_OUTPUT"
 
       - name: Require terminal failed initial attempt for an exact source run
+        id: source
         if: steps.auth.outputs.operation == 'acceptance-reconcile'
         shell: bash
         env:
@@ -84,6 +86,21 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/attempts/1" > "${RUNNER_TEMP}/first-use-attempt.json"
           jq -e '.status == "completed" and (.conclusion | IN("failure", "cancelled"))' \
             "${RUNNER_TEMP}/first-use-attempt.json" >/dev/null
+          # Only a failed materialization step of the exact first-use Windows
+          # job may authorize empty, pre-sentinel root reconciliation.
+          # A generic failed run cannot authorize removing an unmarked path.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100" > "${RUNNER_TEMP}/first-use-source-jobs.json"
+          jq -e '
+            [.jobs[] | select(
+              .name == "vultr / Install separate exact Windows ProxyOnly acceptance consumer, no SCM" and
+              .conclusion == "failure" and
+              ([.steps[] | select(
+                .name == "Materialize isolated release from accepted immutable ReleaseSet" and
+                .conclusion == "failure"
+              )] | length == 1)
+            )] | length == 1
+          ' "${RUNNER_TEMP}/first-use-source-jobs.json" >/dev/null &&
+            echo 'premarker_authorized=true' >> "${GITHUB_OUTPUT}"
           echo "Aborted first-use source verified read-only: ${SOURCE_RUN_ID}"
 
       - name: Checkout exact accepted control
@@ -147,10 +164,15 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ needs.resolve.outputs.source_run_id }}
           SOURCE_RELEASE_SHA256: ${{ needs.resolve.outputs.source_release_sha256 }}
+          PREMARKER_AUTHORIZED: ${{ needs.resolve.outputs.premarker_authorized }}
         run: |
           $ErrorActionPreference = 'Stop'
           $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\reconcile-windows-first-use.ps1'
-          & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:SOURCE_RELEASE_SHA256 -RemoveOwned
+          if ($env:PREMARKER_AUTHORIZED -ceq 'true') {
+            & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:SOURCE_RELEASE_SHA256 -RemoveOwned -RecoverEmptyPreMarker
+          } else {
+            & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:SOURCE_RELEASE_SHA256 -RemoveOwned
+          }
           if (-not $?) { throw 'Windows first-use reconciliation did not finish' }
 
   physical:
