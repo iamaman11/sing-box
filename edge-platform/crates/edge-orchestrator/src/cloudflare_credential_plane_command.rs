@@ -2990,6 +2990,38 @@ mod tests {
     }
 
     #[test]
+    fn temporary_access_identity_requires_exact_distinct_run_and_policy_set() {
+        assert!(initial_acceptance_token_name(0).is_err());
+        assert!(initial_acceptance_token_name(12).is_err());
+        assert_eq!(
+            initial_acceptance_token_name(38491677249).unwrap(),
+            "sing-box-first-use-windows-38491677249"
+        );
+        let mut policy = cloudflare::CloudflareAccessPolicy {
+            id: "policy-id".to_owned(),
+            name: "windows-host-policy".to_owned(),
+            decision: Some("non_identity".to_owned()),
+            include_service_token_ids: vec!["host".to_owned(), "acceptance".to_owned()],
+            has_extra_rules: false,
+            precedence: None,
+            reusable: None,
+            app_count: None,
+        };
+        let expected = vec!["host".to_owned(), "acceptance".to_owned()];
+        assert!(exact_service_auth_ids(&policy, &expected).is_ok());
+        policy.include_service_token_ids.push("foreign".to_owned());
+        assert!(exact_service_auth_ids(&policy, &expected).is_err());
+        policy.include_service_token_ids = vec!["host".to_owned(), "host".to_owned()];
+        assert!(exact_service_auth_ids(&policy, &["host".to_owned(), "host".to_owned()]).is_err());
+        policy.include_service_token_ids = expected.clone();
+        policy.has_extra_rules = true;
+        assert!(exact_service_auth_ids(&policy, &expected).is_err());
+        policy.has_extra_rules = false;
+        policy.decision = Some("allow".to_owned());
+        assert!(exact_service_auth_ids(&policy, &expected).is_err());
+    }
+
+    #[test]
     fn host_bootstrap_policy_allows_only_exact_host_or_empty_create_once_state() {
         let host = "host-token-id";
         assert!(bootstrap_policy_is_safe(Some(host), &[host.to_owned()],));
