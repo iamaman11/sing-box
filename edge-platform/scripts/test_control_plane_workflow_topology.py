@@ -854,7 +854,7 @@ def main() -> None:
         and "N1_N2_ACCEPTANCE=PASS" in resume
         and "ARCHIVED_ACCEPTANCE_BLOCKED" in windows_installer
         and "ArchivedAcceptanceSourceRunId" in windows_installer
-        and "if (\$ArchivedAcceptanceSourceRunId -lt 10000000)" in windows_installer
+        and "if ($ArchivedAcceptanceSourceRunId -lt 10000000)" in windows_installer
         and "C:\\sing-box-acceptance" in windows_installer,
         "initial resume must reuse exact first-use publication, prove external 10/10 and one reboot, and reject serving privilege",
     )
