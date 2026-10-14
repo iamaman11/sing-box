@@ -838,6 +838,17 @@ def main() -> None:
         and 'sing-box-credential-initial-attempt/v1' in resume
         and 'sing-box-initial-resume-reboot/v1' in resume
         and "resolve_durable_release.sh" in resume
+        # The original issued generation stays immutable, while current binary
+        # authority is independently resolved from the protected main commit.
+        and "control_accepted: ${{ steps.proof.outputs.control_accepted }}" in resume
+        and "control_release: ${{ steps.proof.outputs.control_release }}" in resume
+        and 'git fetch -q --no-tags --depth=1 origin "$GITHUB_SHA"' in resume
+        and 'test "$EDGE_ACCEPTED_REVISION" = "$GITHUB_SHA"' in resume
+        and resume.count("ACCEPTED_REVISION: ${{ needs.source.outputs.control_accepted }}") == 2
+        and resume.count("SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}") == 3
+        and resume.count('export EXPECTED_RELEASE_TAG="edge-release-$CONTROL_RELEASE"') == 2
+        and resume.count('test "$EDGE_RELEASE_SET_SHA256" = "$CONTROL_RELEASE"') == 2
+        and "-ArchivedAcceptanceSourceRunId ([UInt64]$env:GENERATION)" not in resume
         and 'N1_N2_ORIGINAL_PAIRED_CREDENTIALS_REUSED_NO_REPLAY=PASS' in resume
         and "initial-pair-publish" not in resume
         and "initial-runtime-apply" not in resume
