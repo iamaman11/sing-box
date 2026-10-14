@@ -773,7 +773,9 @@ jobs:
               local_operation="quality-line2"
               ;;
             credential-runtime-source)
-              local_operation="credential-runtime-source"
+              # Installed sudoers grants exact local diagnose, not arbitrary
+              # future subcommands. Diagnose owns this read-only attestation.
+              local_operation="diagnose"
               ;;
             credential-initial-probe)
               local_operation="credential-initial-probe"
@@ -790,6 +792,12 @@ jobs:
             sudo -n "${owner}" local "${local_operation}" < "${EDGE_LOCAL_APPLICATION_BUNDLE}" | tee "${result}"
           else
             sudo -n "${owner}" local "${local_operation}" | tee "${result}"
+          fi
+          if [[ "${REQUESTED_OPERATION}" == "credential-runtime-source" ]]; then
+            grep -Fxq 'credential_runtime_proof=PASS_PROCESS_VISIBLE_FILES' "${result}" || {
+              echo 'VM credential-source evidence incomplete; no promotion authorization' >&2
+              exit 1
+            }
           fi
           if [[ "${REQUESTED_OPERATION}" == "diagnose" ]]; then
             # The existing root-owned typed read API exposes generation metadata;
