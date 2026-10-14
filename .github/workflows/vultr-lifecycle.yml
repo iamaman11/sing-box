@@ -1154,7 +1154,7 @@ jobs:
           # The disposable tree must be accessible only to its exact runner
           # identity, built-in Administrators and SYSTEM, not ordinary users.
           $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          & icacls.exe $root '/inheritance:r' '/grant:r' "*${sid}:(OI)(CI)F" 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+          & icacls.exe $root '/inheritance:r' '/grant:r' "*${sid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'Windows acceptance ACL confinement failed' }
           $sentinel = Join-Path $root '.first-use-run'
           [IO.File]::WriteAllText($sentinel, "${env:GITHUB_RUN_ID}|${env:RELEASE_SET}")
@@ -1754,7 +1754,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\reconcile-windows-first-use.ps1'
-          & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:RELEASE_SET -RemoveOwned
+          & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:RELEASE_SET -RemoveOwned -RecoverEmptyPreMarker
           if (-not $?) { throw 'First-use Windows cleanup not completed' }
 
   initial_cleanup:

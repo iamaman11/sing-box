@@ -775,6 +775,32 @@ def main() -> None:
         "first-use Windows acceptance must not depend on the serving SCM endpoint or a hardcoded port",
     )
 
+    # Locale-independent Windows ACLs, and an authenticated failed
+    # materialization step before any recovery of an empty unmarked root.
+    windows_first_use_reconcile = Path(
+        "edge-platform/scripts/reconcile-windows-first-use.ps1"
+    ).read_text(encoding="utf-8")
+    require(
+        "'*S-1-5-18:(OI)(CI)F'" in vultr
+        and "'*S-1-5-32-544:(OI)(CI)F'" in vultr
+        and "'Administrators:(OI)(CI)F'" not in vultr
+        and "'SYSTEM:(OI)(CI)F'" not in vultr
+        and "initial_windows_cleanup:" in vultr
+        and " -RemoveOwned -RecoverEmptyPreMarker" in vultr
+        and "premarker_authorized:" in windows_physical
+        and "id: source" in windows_physical
+        and 'Materialize isolated release from accepted immutable ReleaseSet' in windows_physical
+        and "PREMARKER_AUTHORIZED" in windows_physical
+        and " -RecoverEmptyPreMarker" in windows_physical
+        and "RecoverEmptyPreMarker" in windows_first_use_reconcile
+        and "FIRST_USE_PREMARKER_UNKNOWN: unmarked directory is not empty" in windows_first_use_reconcile
+        and "FIRST_USE_PREMARKER_UNKNOWN: unmarked directory owner is foreign" in windows_first_use_reconcile
+        and "[IO.Directory]::Delete($root, $false)" in windows_first_use_reconcile
+        and "FIRST_USE_SERVING_OWNER_CHANGED" in windows_first_use_reconcile
+        and "FIRST_USE_RUNTIME_BUSY" in windows_first_use_reconcile,
+        "Windows acceptance requires locale-free ACL SIDs and fail-closed empty premarker recovery",
+    )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
