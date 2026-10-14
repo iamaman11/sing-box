@@ -801,6 +801,25 @@ def main() -> None:
         "Windows acceptance requires locale-free ACL SIDs and fail-closed empty premarker recovery",
     )
 
+    # The initial VM host proof acquires bounded SSH support access.
+    # That typed owner requires the exact substrate package versions. They
+    # must be inherited from the immutable ReleaseSet, not guessed from the
+    # runner image or silently defaulted during a no-op VM reattachment.
+    initial_vm_host_owner = vultr.split("  initial_vm_attest:\n", 1)[1].split(
+        "\n  initial_windows_access_issue:", 1
+    )[0]
+    require(
+        'source "${OUTPUT_DIR}/resolved.env"' in initial_vm_host_owner
+        and 'test "${EDGE_RELEASE_SET_SHA256}" = "${RELEASE_SET}"' in initial_vm_host_owner
+        and 'test -n "${EDGE_DOCKER_ENGINE_VERSION}"' in initial_vm_host_owner
+        and 'test -n "${EDGE_CONTAINERD_VERSION}"' in initial_vm_host_owner
+        and 'test -n "${EDGE_COMPOSE_VERSION}"' in initial_vm_host_owner
+        and "export EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION" in initial_vm_host_owner
+        and '"${owner}" vultr-lifecycle lease-acquire' in initial_vm_host_owner
+        and '"${owner}" vultr-lifecycle initial-host-probe' in initial_vm_host_owner,
+        "VM first-use host attestation must export all exact pinned substrate versions before obtaining support access",
+    )
+
     # Single first-use request: new VM, two independent host owners, one
     # durable BEGIN, paired Workers and the native VM runtime, no replay.
     initial_flow = vultr.split("  initial_preflight:", 1)[1]
