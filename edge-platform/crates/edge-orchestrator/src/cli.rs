@@ -262,6 +262,17 @@ pub(crate) enum CredentialDeliveryCommand {
         journal_history_path: std::path::PathBuf,
         exact_record_path: std::path::PathBuf,
     },
+    // Bounded independent Windows first-use host Access credential.
+    // Mint once, publish only to GitHub's short-lived environment escrow,
+    // then revoke on the exact same authorized run (including failure).
+    InitialWindowsAcceptanceIssue {
+        run_id: u64,
+        private_output_path: std::path::PathBuf,
+        token_id_output_path: std::path::PathBuf,
+    },
+    InitialWindowsAcceptanceCleanup {
+        run_id: u64,
+    },
     HostBootstrapConverge,
     RotateApplication {
         #[arg(value_enum)]
