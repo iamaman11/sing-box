@@ -152,7 +152,6 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
     Ok(())
 }
 
-
 fn bound_rollback_preflight(
     current: &str,
     expected_current: &str,
@@ -191,7 +190,9 @@ pub(super) async fn rollback(
     context.application_release_authority()?;
     let expected = context.expected_application_artifact()?;
     if expected.sha256 != args[2] {
-        return Err("rollback requires the exact accepted ReleaseSet currently installed owner".to_owned());
+        return Err(
+            "rollback requires the exact accepted ReleaseSet currently installed owner".to_owned(),
+        );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
     let observed = exact_existing_machine_observation(&desired, &args[1]).await?;
@@ -229,7 +230,9 @@ pub(super) async fn rollback(
     strict_ssh_run(target_ip, &args[1], &key, &public_key, &remote)?;
     let installed = capture(&format!("sha256sum {OWNER} | cut -d' ' -f1"))?;
     if installed != previous || capture("cat /proc/sys/kernel/random/boot_id")? != boot_before {
-        return Err("owner rollback outcome not proven; reconcile read-only without retry".to_owned());
+        return Err(
+            "owner rollback outcome not proven; reconcile read-only without retry".to_owned(),
+        );
     }
     let bounded = capture(&format!(
         "sudo -u github-runner sudo -n {OWNER} local status >/dev/null && echo PASS"
