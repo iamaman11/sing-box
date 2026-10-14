@@ -823,6 +823,18 @@ def main() -> None:
             f"{step} must pass all three immutable ReleaseSet substrate versions before typed support-access lease",
         )
 
+    # Read-only Windows observation is independent of the current release
+    # resolver. Mutation and offline handoff still require ReleaseSet authority.
+    require(
+        "if: (steps.auth.outputs.operation != 'diagnose' && steps.auth.outputs.operation != 'quality-line1') || steps.auth.outputs.readonly_purpose == 'offline-preflight'"
+        in windows_physical
+        and "if ($env:EDGE_OPERATION -in @('converge','repair') -and" in windows_physical
+        and "line1_quality_source=INSTALLED_VERIFIED_RELEASE" in windows_physical
+        and "Line1 quality requires the exact accepted installed ReleaseSet" not in windows_physical
+        and '".github/workflows/vultr-acceptance-resume.yml"' in edge_platform_ci,
+        "read-only diagnostics must use installed verified binaries without a new release",
+    )
+
     # The only legal continuation after one irreversible paired Worker BEGIN
     # is a source-run-bound read-only acceptance. A distinct resume command
     # must never fall through to generic VM execute, republish credentials,
@@ -838,6 +850,17 @@ def main() -> None:
         and 'sing-box-credential-initial-attempt/v1' in resume
         and 'sing-box-initial-resume-reboot/v1' in resume
         and "resolve_durable_release.sh" in resume
+        # The original issued generation stays immutable, while current binary
+        # authority is independently resolved from the protected main commit.
+        and "control_accepted: ${{ steps.proof.outputs.control_accepted }}" in resume
+        and "control_release: ${{ steps.proof.outputs.control_release }}" in resume
+        and 'git fetch -q --no-tags --depth=1 origin "$GITHUB_SHA"' in resume
+        and 'test "$EDGE_ACCEPTED_REVISION" = "$GITHUB_SHA"' in resume
+        and resume.count("ACCEPTED_REVISION: ${{ needs.source.outputs.control_accepted }}") == 2
+        and resume.count("SOURCE_RELEASE: ${{ needs.source.outputs.control_release }}") == 3
+        and resume.count('export EXPECTED_RELEASE_TAG="edge-release-$CONTROL_RELEASE"') == 2
+        and resume.count('test "$EDGE_RELEASE_SET_SHA256" = "$CONTROL_RELEASE"') == 2
+        and "-ArchivedAcceptanceSourceRunId ([UInt64]$env:GENERATION)" not in resume
         and 'N1_N2_ORIGINAL_PAIRED_CREDENTIALS_REUSED_NO_REPLAY=PASS' in resume
         and "initial-pair-publish" not in resume
         and "initial-runtime-apply" not in resume
@@ -1153,7 +1176,8 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "> **ACTIVE N1/N2 — native VM install and external network acceptance (2026-10-12).**" in root_readme
+        and "> **ACTIVE N1/N2 — Line1 authentication and recovery still NOT_ACCEPTED.**" in root_readme
+        and "The first-use credential generation from run 38503639351 was already published exactly once" in root_readme
         and "**One delivery order:** N1/N2" in root_readme
         and "Never start/restart/converge/repair/rollback TUN merely to retest" in root_readme
         and "An acceptance VM is disposable" not in root_readme
