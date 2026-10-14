@@ -1700,8 +1700,8 @@ jobs:
           grep -Fxq 'acceptance_access_status=REVOKED_OR_ABSENT' "${RUNNER_TEMP}/access-cleanup.txt"
           grep -Fxq 'windows_access_policy=EXACT_HOST_ONLY' "${RUNNER_TEMP}/access-cleanup.txt"
           echo 'WINDOWS_ACCEPTANCE_ACCESS_REVOKE=PASS' >> "${GITHUB_STEP_SUMMARY}"
-      - name: Remove only ephemeral GitHub Windows acceptance escrow
-        if: always()
+      - name: Remove only positively issued GitHub Windows acceptance escrow
+        if: always() && needs.initial_windows_access_issue.result == 'success'
         shell: bash
         env:
           CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
