@@ -168,11 +168,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 .map(|_| ())
                 .map_err(AgentError::Command)
         }
-        cli::LocalCommand::CredentialRuntimeSource => {
-            attest_vm_running_config_source(&stack_dir)
-                .await
-                .map_err(AgentError::Command)
-        }
+        cli::LocalCommand::CredentialRuntimeSource => attest_vm_running_config_source(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
         cli::LocalCommand::Diagnose => {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("DIAGNOSE", &state);
@@ -2280,10 +2278,7 @@ fn verify_rendered_config_matches_vm_projection(
         &line2_values,
         &LINE2_RUNTIME_TEMPLATE_KEYS,
     )?;
-    for (name, expected) in [
-        ("line1-gateway.json", line1),
-        ("line2-proxy.json", line2),
-    ] {
+    for (name, expected) in [("line1-gateway.json", line1), ("line2-proxy.json", line2)] {
         let observed = fs::read(stack_dir.join("rendered").join(name))
             .map_err(|_| "runtime proof cannot read the rendered config".to_owned())?;
         if observed != expected.as_bytes() {
@@ -2316,7 +2311,9 @@ async fn attest_vm_running_config_source(stack_dir: &Path) -> Result<(), String>
         .ok_or_else(|| "runtime source proof requires durable VM credential state".to_owned())?;
     let reference = if candidate_only {
         if state.active.is_some() || state.previous.is_some() {
-            return Err("runtime source proof refuses ambiguous initial candidate state".to_owned());
+            return Err(
+                "runtime source proof refuses ambiguous initial candidate state".to_owned(),
+            );
         }
         state.candidate.as_ref()
     } else {
@@ -2355,7 +2352,11 @@ async fn attest_vm_running_config_source(stack_dir: &Path) -> Result<(), String>
     println!("credential_selected_generation={}", reference.generation);
     println!(
         "credential_selected_role={}",
-        if candidate_only { "CANDIDATE" } else { "ACTIVE" }
+        if candidate_only {
+            "CANDIDATE"
+        } else {
+            "ACTIVE"
+        }
     );
     println!("line1_config_source=WORKER_V2_PROCESS_BIND_EXACT");
     println!("line2_config_source=WORKER_V2_PROCESS_BIND_EXACT");
