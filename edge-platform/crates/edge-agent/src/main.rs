@@ -3342,6 +3342,27 @@ fn require_tunnel_policy(runtime: &BTreeMap<String, String>) -> Result<(), Strin
     Ok(())
 }
 
+const LINE1_RUNTIME_TEMPLATE_KEYS: [&str; 12] = [
+    "VLESS_UUID",
+    "HY2_PASSWORD",
+    "REALITY_SERVER_NAME",
+    "REALITY_PRIVATE_KEY",
+    "REALITY_SHORT_ID",
+    "VLESS_WARP_UUID",
+    "HY2_WARP_PASSWORD",
+    "REALITY_WARP_PRIVATE_KEY",
+    "REALITY_WARP_SHORT_ID",
+    "TUNNEL_DOMAIN",
+    "ACME_EMAIL",
+    "ACME_PROVIDER",
+];
+const LINE2_RUNTIME_TEMPLATE_KEYS: [&str; 4] = [
+    "PROXY_USERNAME",
+    "PROXY_PASSWORD",
+    "PROXY_CERT_PATH",
+    "PROXY_KEY_PATH",
+];
+
 fn render_line1_runtime(
     stack_dir: &Path,
     runtime: &BTreeMap<String, String>,
@@ -3351,20 +3372,7 @@ fn render_line1_runtime(
         "line1-gateway/config.template.json",
         "rendered/line1-gateway.json",
         runtime,
-        &[
-            "VLESS_UUID",
-            "HY2_PASSWORD",
-            "REALITY_SERVER_NAME",
-            "REALITY_PRIVATE_KEY",
-            "REALITY_SHORT_ID",
-            "VLESS_WARP_UUID",
-            "HY2_WARP_PASSWORD",
-            "REALITY_WARP_PRIVATE_KEY",
-            "REALITY_WARP_SHORT_ID",
-            "TUNNEL_DOMAIN",
-            "ACME_EMAIL",
-            "ACME_PROVIDER",
-        ],
+        &LINE1_RUNTIME_TEMPLATE_KEYS,
     )
 }
 
@@ -3381,12 +3389,7 @@ fn render_line2_runtime(
         "line2-proxy/config.template.json",
         "rendered/line2-proxy.json",
         &values,
-        &[
-            "PROXY_USERNAME",
-            "PROXY_PASSWORD",
-            "PROXY_CERT_PATH",
-            "PROXY_KEY_PATH",
-        ],
+        &LINE2_RUNTIME_TEMPLATE_KEYS,
     )
 }
 
