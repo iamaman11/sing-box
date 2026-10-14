@@ -7,6 +7,9 @@ const OWNER: &str = "/usr/local/libexec/sing-box/edge-agent";
 const PREVIOUS: &str = "/usr/local/libexec/sing-box/edge-agent.previous";
 const NEXT: &str = "/usr/local/libexec/sing-box/.edge-agent.next";
 const JOURNAL: &str = "/usr/local/libexec/sing-box/.edge-agent-upgrade-begin";
+const JOURNAL_NEXT: &str = "/usr/local/libexec/sing-box/.edge-agent-upgrade-next-begin";
+const PREVIOUS_NEXT: &str = "/usr/local/libexec/sing-box/.edge-agent-previous-next";
+const HISTORY: &str = "/usr/local/libexec/sing-box/.edge-agent-upgrade-history";
 const STAGED: &str = "/tmp/singbox-owner-upgrade-next";
 const ROLLBACK_BEGIN: &str = "/usr/local/libexec/sing-box/.edge-agent-rollback-begin";
 const FAILED: &str = "/usr/local/libexec/sing-box/edge-agent.failed";
@@ -16,6 +19,34 @@ fn exact_sha(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// One recorded previous upgrade is admissible only if the current binary
+/// is exactly the successor named by the durable record and the predecessor
+/// hardlink has the exact SHA. A missing/partial record is UNKNOWN, not FIRST.
+fn bound_existing_owner_chain(
+    record: &str,
+    current: &str,
+) -> Result<Option<String>, String> {
+    if !exact_sha(current) {
+        return Err("owner chain requires exact current SHA256".to_owned());
+    }
+    if record == "FIRST" {
+        return Ok(None);
+    }
+    let pair = record
+        .strip_prefix("PRIOR:")
+        .ok_or_else(|| "existing owner journal observation is malformed".to_owned())?;
+    let (previous, journal) = pair
+        .split_once(':')
+        .ok_or_else(|| "existing owner journal observation is incomplete".to_owned())?;
+    if !exact_sha(previous) || journal != format!("{previous} {current}") {
+        return Err("existing owner journal does not prove the installed predecessor chain".to_owned());
+    }
+    if previous == current {
+        return Err("existing owner journal refuses identical predecessor and current".to_owned());
+    }
+    Ok(Some(previous.to_owned()))
 }
 
 fn bound_upgrade_preflight(current: &str, old: &str, next: &str) -> Result<bool, String> {
