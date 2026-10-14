@@ -6511,6 +6511,60 @@ mod tests {
     }
 
     #[test]
+    fn candidate_rendered_configs_must_equal_exact_template_projection() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        for part in ["line1-gateway", "line2-proxy", "rendered"] {
+            fs::create_dir_all(stack.join(part)).unwrap();
+        }
+        let mut runtime = BTreeMap::new();
+        for key in LINE1_RUNTIME_TEMPLATE_KEYS {
+            runtime.insert(key.to_owned(), "value".to_owned());
+        }
+        for key in LINE2_RUNTIME_TEMPLATE_KEYS {
+            runtime.insert(key.to_owned(), "value".to_owned());
+        }
+        runtime.insert("TUNNEL_DOMAIN".to_owned(), "example.com".to_owned());
+        runtime.insert("PROXY_CERT_CN".to_owned(), "example.com".to_owned());
+        for (part, keys) in [
+            ("line1-gateway", LINE1_RUNTIME_TEMPLATE_KEYS.as_slice()),
+            ("line2-proxy", LINE2_RUNTIME_TEMPLATE_KEYS.as_slice()),
+        ] {
+            let template = keys
+                .iter()
+                .map(|key| format!("\${{{key}}}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            fs::write(stack.join(part).join("config.template.json"), template).unwrap();
+        }
+        let line1 = expand_runtime_template(
+            &stack,
+            "line1-gateway/config.template.json",
+            &runtime,
+            &LINE1_RUNTIME_TEMPLATE_KEYS,
+        )
+        .unwrap();
+        let (cert, key) = line2_certificate_container_paths(&runtime).unwrap();
+        let mut line2_env = runtime.clone();
+        line2_env.insert("PROXY_CERT_PATH".to_owned(), cert);
+        line2_env.insert("PROXY_KEY_PATH".to_owned(), key);
+        let line2 = expand_runtime_template(
+            &stack,
+            "line2-proxy/config.template.json",
+            &line2_env,
+            &LINE2_RUNTIME_TEMPLATE_KEYS,
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), line1).unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), line2).unwrap();
+        assert!(verify_rendered_config_matches_vm_projection(&stack, &runtime).is_ok());
+
+        fs::write(stack.join("rendered/line1-gateway.json"), "stale").unwrap();
+        assert!(verify_rendered_config_matches_vm_projection(&stack, &runtime).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn read_only_credential_origin_distinguishes_legacy_v2_and_unproven() {
         let root = unique_test_dir();
         let stack = root.join("stack");
