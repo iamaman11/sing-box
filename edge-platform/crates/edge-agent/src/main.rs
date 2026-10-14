@@ -168,6 +168,11 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 .map(|_| ())
                 .map_err(AgentError::Command)
         }
+        cli::LocalCommand::CredentialRuntimeSource => {
+            attest_vm_running_config_source(&stack_dir)
+                .await
+                .map_err(AgentError::Command)
+        }
         cli::LocalCommand::Diagnose => {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("DIAGNOSE", &state);
@@ -2249,6 +2254,115 @@ fn verify_vm_candidate_runtime_materialized(
                 .to_owned(),
         );
     }
+    Ok(())
+}
+
+// This is only a *process-visible file* attestation. It cannot establish
+// whether sing-box has parsed those bytes or whether remote Line1 credentials
+// are accepted. Those need independent authenticated protocol witnesses.
+fn verify_rendered_config_matches_vm_projection(
+    stack_dir: &Path,
+    runtime: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let line1 = expand_runtime_template(
+        stack_dir,
+        "line1-gateway/config.template.json",
+        runtime,
+        &LINE1_RUNTIME_TEMPLATE_KEYS,
+    )?;
+    let mut line2_values = runtime.clone();
+    let (certificate, key) = line2_certificate_container_paths(runtime)?;
+    line2_values.insert("PROXY_CERT_PATH".to_owned(), certificate);
+    line2_values.insert("PROXY_KEY_PATH".to_owned(), key);
+    let line2 = expand_runtime_template(
+        stack_dir,
+        "line2-proxy/config.template.json",
+        &line2_values,
+        &LINE2_RUNTIME_TEMPLATE_KEYS,
+    )?;
+    for (name, expected) in [
+        ("line1-gateway.json", line1),
+        ("line2-proxy.json", line2),
+    ] {
+        let observed = fs::read(stack_dir.join("rendered").join(name))
+            .map_err(|_| "runtime proof cannot read the rendered config".to_owned())?;
+        if observed != expected.as_bytes() {
+            return Err(
+                "runtime proof refuses a rendered config that differs from Worker-v2 projection"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn attest_vm_running_config_source(stack_dir: &Path) -> Result<(), String> {
+    use crate::docker_observation::verify_running_container_config_binding;
+
+    let origin = observe_vm_rendered_credential_source(stack_dir);
+    let candidate_only = match origin {
+        VmRenderedCredentialSource::V2Candidate { .. } => true,
+        VmRenderedCredentialSource::V2Active { .. } => false,
+        _ => {
+            return Err(
+                "running credential source refuses unknown, legacy or mismatched rendered owner"
+                    .to_owned(),
+            );
+        }
+    };
+    let store = open_vm_credential_store(stack_dir)?;
+    let state = store
+        .read_state()?
+        .ok_or_else(|| "runtime source proof requires durable VM credential state".to_owned())?;
+    let reference = if candidate_only {
+        if state.active.is_some() || state.previous.is_some() {
+            return Err("runtime source proof refuses ambiguous initial candidate state".to_owned());
+        }
+        state.candidate.as_ref()
+    } else {
+        state.active.as_ref()
+    }
+    .ok_or_else(|| "runtime source proof has no exact selected credential generation".to_owned())?;
+    let bundle = store.read_bundle(reference)?;
+    let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+    let expected_env = vm_runtime_environment(stack_dir, &secrets)?;
+    if fs::read(stack_dir.join(RUNTIME_ENV_FILE))
+        .map_err(|_| "runtime source proof cannot read rendered environment".to_owned())?
+        != expected_env.as_bytes()
+    {
+        return Err("runtime source proof detected a different credential projection".to_owned());
+    }
+    let runtime = read_typed_runtime_environment(stack_dir)?;
+    verify_rendered_config_matches_vm_projection(stack_dir, &runtime)?;
+    for (container, path) in [
+        (LINE1_CONTAINER, "rendered/line1-gateway.json"),
+        (LINE2_CONTAINER, "rendered/line2-proxy.json"),
+    ] {
+        verify_running_container_config_binding(container, &stack_dir.join(path)).await?;
+    }
+    // Require an unchanged credential cursor and exactly reproduced rendering
+    // after the external Docker observations; never print secret bytes/hashes.
+    if store.read_state()?.as_ref() != Some(&state)
+        || observe_vm_rendered_credential_source(stack_dir) != origin
+    {
+        return Err("runtime source proof refuses a concurrent credential transition".to_owned());
+    }
+    verify_rendered_config_matches_vm_projection(
+        stack_dir,
+        &read_typed_runtime_environment(stack_dir)?,
+    )?;
+    println!("credential_runtime_proof=PASS_PROCESS_VISIBLE_FILES");
+    println!("credential_selected_generation={}", reference.generation);
+    println!(
+        "credential_selected_role={}",
+        if candidate_only { "CANDIDATE" } else { "ACTIVE" }
+    );
+    println!("line1_config_source=WORKER_V2_PROCESS_BIND_EXACT");
+    println!("line2_config_source=WORKER_V2_PROCESS_BIND_EXACT");
+    println!("credential_running_source=CONFIG_VISIBLE_LOADED_UNPROVEN");
+    println!("line1_authenticated_generation=UNPROVEN_WITHOUT_EXTERNAL_WITNESS");
+    println!("credential_state_mutations=0");
+    println!("container_mutations=0");
     Ok(())
 }
 
