@@ -188,6 +188,15 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 "application_operational_verdict={}",
                 vm_application_operational_verdict(state.ready, &credential_source)
             );
+            // The installed production runner already has a bounded sudo
+            // allowlist for local diagnose. Do not expand it or bootstrap a
+            // second owner just to observe live process-visible credentials.
+            // General diagnose remains read-only and reports an unproven gate
+            // instead of failing the entire VM inventory on missing evidence.
+            if let Err(err) = attest_vm_running_config_source(&stack_dir).await {
+                println!("credential_runtime_proof=UNPROVEN");
+                println!("credential_runtime_proof_reason={err}");
+            }
             Ok(())
         }
         cli::LocalCommand::BootstrapBase => {
