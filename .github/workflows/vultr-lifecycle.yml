@@ -180,6 +180,10 @@ jobs:
     needs: authorize
     if: needs.authorize.outputs.operation == 'initial-acceptance-resume'
     uses: ./.github/workflows/vultr-acceptance-resume.yml
+    permissions:
+      contents: read
+      actions: read
+      issues: write
     with:
       source_run_id: ${{ needs.authorize.outputs.resume_source_run_id }}
     secrets: inherit
