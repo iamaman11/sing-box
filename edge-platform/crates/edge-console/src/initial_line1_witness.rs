@@ -232,7 +232,9 @@ fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, S
     let (control_body, control_status) = curl_through(port, HTTPS_PROBE)
         .map_err(|err| format!("Line1 endpoint={tag} phase=control_after_negative {err}"))?;
     if control_status != "204" || !control_body.is_empty() {
-        return Err(format!("{tag} valid credential control changed after negative probe"));
+        return Err(format!(
+            "{tag} valid credential control changed after negative probe"
+        ));
     }
     let (egress, status) = curl_through(port, EGRESS_PROBE)
         .map_err(|err| format!("Line1 endpoint={tag} phase=public_egress {err}"))?;
