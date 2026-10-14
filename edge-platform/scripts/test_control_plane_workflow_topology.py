@@ -1820,7 +1820,9 @@ def main() -> None:
         and '"${EDGE_CREDENTIAL_ORCHESTRATOR}" credentials contract-verify' in credentials
         and '"retire-proof-tokens"' not in credentials
         and "RetireProofTokens" not in credential_cli
-        and "delete_access_service_token" not in credential_command
+        and "initial_windows_acceptance_cleanup" in credential_command
+        and 'cloudflare::delete_access_service_token(' in credential_command
+        and "RetireProofTokens" not in credential_command
         and "credentials rotate-application" in credentials
         and "credential-transition drop-previous" in credentials
         and "credential-transition apply-candidate" in credentials
@@ -1843,7 +1845,7 @@ def main() -> None:
         and "lease-release" not in credentials
         and "actions/upload-artifact" not in credentials
         and "actions/cache" not in credentials,
-        "credential operator workflow must expose only steady-state rotation/verify/bootstrap after Stage-3 proof-token retirement plumbing is physically deleted",
+        "credential operator must retain no Stage-3 proof-token retirement; only run-scoped first-use acceptance revoke is allowed",
     )
 
     rotation_workflow = credentials.split("  rotate_release:\n", 1)[1].split(
