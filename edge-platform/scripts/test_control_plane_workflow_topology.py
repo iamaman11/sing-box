@@ -1250,8 +1250,9 @@ def main() -> None:
         and "canonical permanent" in runbook
         and "custom X25519/HKDF/AEAD handoff" in runbook
         and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "> **ACTIVE N1/N2 — Line1 authentication and recovery still NOT_ACCEPTED.**" in root_readme
-        and "The first-use credential generation from run 38503639351 was already published exactly once" in root_readme
+        and "> **N1/N2 physical network 10/10 + reboot: ACCEPTED.**" in root_readme
+        and "Original Worker credentials generation `38503639351`" in root_readme
+        and "The already-owned acceptance VM was retained" in root_readme
         and "**One delivery order:** N1/N2" in root_readme
         and "Never start/restart/converge/repair/rollback TUN merely to retest" in root_readme
         and "An acceptance VM is disposable" not in root_readme
