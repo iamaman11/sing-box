@@ -1,4 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use bollard::{
     API_DEFAULT_VERSION, Docker,
@@ -272,6 +274,96 @@ pub(crate) async fn observe_container_runtime(
         published_ports,
         mounts,
     })
+}
+
+/// Read-only proof of the *file visible to the running process*. This does
+/// not claim that sing-box reloaded that file into its in-memory configuration.
+/// Authentication is an independent network-level proof.
+pub(crate) async fn verify_running_container_config_binding(
+    name: &str,
+    expected_host_file: &Path,
+) -> Result<(), String> {
+    const CONTAINER_CONFIG: &str = "/etc/sing-box/config.json";
+    const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+    if !matches!(name, "vultr-line1-gateway" | "vultr-line2-proxy") {
+        return Err("runtime credential proof refuses an unknown container".to_owned());
+    }
+    let docker = docker_connection().await?;
+    let before = docker
+        .inspect_container(name, None)
+        .await
+        .map_err(|_| "runtime config proof cannot inspect the named container".to_owned())?;
+    let state = before
+        .state
+        .as_ref()
+        .ok_or("runtime config proof requires observed container state")?;
+    if state.running != Some(true) {
+        return Err("runtime config proof refuses a non-running container".to_owned());
+    }
+    let pid = state
+        .pid
+        .filter(|pid| *pid > 1)
+        .ok_or("runtime config proof requires exact running Linux process PID")?;
+    let started_at = state
+        .started_at
+        .clone()
+        .ok_or("runtime config proof requires Docker process start identity")?;
+
+    let config_mounts = before
+        .mounts
+        .as_ref()
+        .ok_or("runtime config proof requires Docker bind mount evidence")?
+        .iter()
+        .filter(|mount| mount.destination.as_deref() == Some(CONTAINER_CONFIG))
+        .collect::<Vec<_>>();
+    if config_mounts.len() != 1 {
+        return Err("runtime config proof requires exactly one config bind mount".to_owned());
+    }
+    let mount = config_mounts[0];
+    if mount.rw != Some(false)
+        || !mount.typ.as_ref().is_some_and(|kind| {
+            format!("{kind:?}").eq_ignore_ascii_case("bind")
+        })
+    {
+        return Err("runtime config proof refuses a non-read-only file bind".to_owned());
+    }
+    let expected = fs::canonicalize(expected_host_file)
+        .map_err(|_| "runtime config proof cannot resolve expected host file".to_owned())?;
+    let bound = mount
+        .source
+        .as_deref()
+        .ok_or("runtime config proof has no Docker source path")?;
+    if fs::canonicalize(bound).ok().as_deref() != Some(expected.as_path()) {
+        return Err("runtime config proof refuses a different bind source".to_owned());
+    }
+    let metadata = fs::metadata(&expected)
+        .map_err(|_| "runtime config proof cannot stat expected file".to_owned())?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_CONFIG_BYTES {
+        return Err("runtime config proof refuses a missing or oversized config".to_owned());
+    }
+    let visible = PathBuf::from(format!("/proc/{pid}/root{CONTAINER_CONFIG}"));
+    let in_container = fs::read(&visible)
+        .map_err(|_| "runtime config proof cannot read running process mount view".to_owned())?;
+    if in_container.len() as u64 != metadata.len()
+        || in_container != fs::read(&expected).map_err(|_| {
+            "runtime config proof cannot re-read expected host file".to_owned()
+        })?
+    {
+        return Err("running process sees different config bytes than the exact host bind".to_owned());
+    }
+    let after = docker
+        .inspect_container(name, None)
+        .await
+        .map_err(|_| "runtime config proof cannot re-inspect the named container".to_owned())?;
+    let stable = after.state.as_ref().is_some_and(|state| {
+        state.running == Some(true)
+            && state.pid == Some(pid)
+            && state.started_at.as_ref() == Some(&started_at)
+    });
+    if !stable {
+        return Err("running container restarted during config-source attestation".to_owned());
+    }
+    Ok(())
 }
 
 fn bounded_redacted_log_tail<I>(lines: I) -> Vec<String>
