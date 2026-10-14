@@ -1162,7 +1162,12 @@ def main() -> None:
         and 'bound_upgrade_preflight(&current, &args[3], &expected.sha256)?'
             in vm_owner_upgrade
         and 'durable_nonreplay_begin' in vm_owner_upgrade
-        and 'sudo -n ln {OWNER} {PREVIOUS}' in vm_owner_upgrade
+        and 'sudo -n ln {OWNER} {PREVIOUS_NEXT}' in vm_owner_upgrade
+        and 'bound_existing_owner_chain(&prior, &current)?' in vm_owner_upgrade
+        and 'sudo -n sync {JOURNAL_NEXT}' in vm_owner_upgrade
+        and 'sudo -n ln {JOURNAL} {archive}' in vm_owner_upgrade
+        and 'sudo -n mv -Tf {JOURNAL_NEXT} {JOURNAL}' in vm_owner_upgrade
+        and 'repeated_owner_upgrade_requires_exact_existing_chain_not_an_empty_replay' in vm_owner_upgrade
         and 'sudo -n mv -T {NEXT} {OWNER}' in vm_owner_upgrade
         and 'let boot_before = capture("cat /proc/sys/kernel/random/boot_id")?;' in vm_owner_upgrade
         and 'runner_mutations": 0' in vm_owner_upgrade
