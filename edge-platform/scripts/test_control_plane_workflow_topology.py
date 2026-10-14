@@ -1682,6 +1682,32 @@ def main() -> None:
         "VM runtime credentials must be Worker-v2-only and fail closed, without local generator or legacy rollback",
     )
 
+    # A Worker-v2 candidate matching .env.runtime is not proof that a live
+    # container sees the same exact rendered bytes, and even a mounted file
+    # match is not proof of sing-box's in-memory credential state.
+    vm_docker_observation = Path(
+        "edge-platform/crates/edge-agent/src/docker_observation.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        'CredentialRuntimeSource' in vm_agent_cli
+        and 'local-credential-runtime-source' in vm_agent_cli
+        and 'attest_vm_running_config_source(&stack_dir)' in vm_agent_runtime
+        and 'verify_rendered_config_matches_vm_projection(' in vm_agent_runtime
+        and 'verify_running_container_config_binding(container, &stack_dir.join(path)).await?' in vm_agent_runtime
+        and 'credential_running_source=CONFIG_VISIBLE_LOADED_UNPROVEN' in vm_agent_runtime
+        and 'line1_authenticated_generation=UNPROVEN_WITHOUT_EXTERNAL_WITNESS' in vm_agent_runtime
+        and 'fn verify_running_container_config_binding(' in vm_docker_observation
+        and '/proc/{pid}/root{CONTAINER_CONFIG}' in vm_docker_observation
+        and 'mount.rw != Some(false)' in vm_docker_observation
+        and 'running container restarted during config-source attestation' in vm_docker_observation
+        and '"credential-runtime-source", "credential-initial-probe",' in application
+        and 'diagnose|quality-line2|credential-runtime-source|credential-initial-probe)' in application
+        and 'local_operation="credential-runtime-source"' in application
+        and 'candidate_rendered_configs_must_equal_exact_template_projection' in vm_agent
+        and "credential_state_mutations=0" in vm_agent_runtime,
+        "VM read-only mounted-source attestation must reject false loaded claims, stale candidates and untrusted mount paths",
+    )
+
     # A new generation cannot be declared active merely because a local
     # candidate pointer exists. Both owners prove exact applied artifacts;
     # VM also requires a verified READY runtime before moving the cursor.
