@@ -823,6 +823,18 @@ def main() -> None:
             f"{step} must pass all three immutable ReleaseSet substrate versions before typed support-access lease",
         )
 
+    # Read-only Windows observation is independent of the current release
+    # resolver. Mutation and offline handoff still require ReleaseSet authority.
+    require(
+        "if: steps.auth.outputs.operation != 'diagnose' || steps.auth.outputs.readonly_purpose == 'offline-preflight'"
+        in windows_physical
+        and "if ($env:EDGE_OPERATION -in @('converge','repair') -and" in windows_physical
+        and "line1_quality_source=INSTALLED_VERIFIED_RELEASE" in windows_physical
+        and "Line1 quality requires the exact accepted installed ReleaseSet" not in windows_physical
+        and '".github/workflows/vultr-acceptance-resume.yml"' in edge_platform_ci,
+        "read-only diagnostics must use installed verified binaries without a new release",
+    )
+
     # The only legal continuation after one irreversible paired Worker BEGIN
     # is a source-run-bound read-only acceptance. A distinct resume command
     # must never fall through to generic VM execute, republish credentials,

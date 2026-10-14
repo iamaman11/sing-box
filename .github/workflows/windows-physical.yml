@@ -127,8 +127,10 @@ jobs:
           fi
           printf 'expected_mode=%s\n' "$expected_mode" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve exact durable ReleaseSet
+      # Read-only observation uses the installed verified binary; no release needed.
+      - name: Resolve exact durable ReleaseSet for mutations and offline handoff
         id: release
+        if: steps.auth.outputs.operation != 'diagnose' || steps.auth.outputs.readonly_purpose == 'offline-preflight'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -579,9 +581,6 @@ jobs:
           if ($env:EDGE_OPERATION -eq 'repair' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Repair target must equal the exact current ReleaseSet before runtime stop'
           }
-          if ($env:EDGE_OPERATION -eq 'quality-line1' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
-            throw 'Line1 quality requires the exact accepted installed ReleaseSet; never probe an older binary'
-          }
           $currentMode = [string]$values['windows_datapath_mode']
           $currentTun = if ($runningLegacyDiagnosticRecovery) { 'true' } else { [string]$values['managed_tun_present'] }
           # Independent ProxyOnly/no-TUN teardown remains unsupported. A strictly
@@ -632,7 +631,7 @@ jobs:
             }
             default { throw "Unsupported installed Windows datapath mode: $currentMode" }
           }
-          if ($env:EDGE_OPERATION -in @('diagnose','quality-line1') -and $currentMode -cne $env:EDGE_EXPECTED_MODE) {
+          if ($env:EDGE_OPERATION -eq 'diagnose' -and $currentMode -cne $env:EDGE_EXPECTED_MODE) {
             throw "Installed datapath mode $currentMode does not match accepted desired mode $env:EDGE_EXPECTED_MODE"
           }
           "EDGE_BEFORE_MODE=$currentMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -846,7 +845,7 @@ jobs:
             }
             default { throw "Unsupported active Windows datapath mode: $afterMode" }
           }
-          if (($env:EDGE_OPERATION -in @('converge','repair') -or $env:EDGE_OPERATION -eq 'quality-line1') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
+          if ($env:EDGE_OPERATION -in @('converge','repair') -and [string]$values['release_set_sha256'] -cne $env:EDGE_RELEASE_SET_SHA256) {
             throw 'Accepted ReleaseSet is not active'
           }
           if ($env:EDGE_OPERATION -in @('start','stop','restart-controller') -and [string]$values['release_set_sha256'] -cne $env:EDGE_BEFORE_RELEASE) {
@@ -933,8 +932,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:EDGE_EXPECTED_MODE -cne 'ManagedTun' -or $env:EDGE_BEFORE_MODE -cne 'ManagedTun') {
-            throw 'Line1 quality requires healthy accepted ManagedTun'
+          if ($env:EDGE_BEFORE_MODE -cne 'ManagedTun') {
+            throw 'Line1 quality requires installed, running ManagedTun; no mode change is permitted'
           }
           $diagnostic = $env:EDGE_CURRENT_EXACT_DIAGNOSTIC
           $current = Join-Path $env:EDGE_INSTALL_ROOT 'current.pb'
@@ -948,6 +947,9 @@ jobs:
           if ($managedBefore.Count -ne 1 -or $scmBefore.Count -ne 1) {
             throw 'Native quality requires exactly one independently observed SCM and sing-box process'
           }
+          Write-Host 'line1_quality_source=INSTALLED_VERIFIED_RELEASE'
+          Write-Host "line1_quality_installed_release=$env:EDGE_BEFORE_RELEASE"
+          Write-Host "line1_quality_target_mode=$env:EDGE_EXPECTED_MODE"
           $result = @(& $env:EDGE_CURRENT_CONSOLE quality-line1)
           $qualityExit = $LASTEXITCODE
           $result | Write-Host

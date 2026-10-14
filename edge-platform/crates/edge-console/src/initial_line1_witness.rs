@@ -203,16 +203,36 @@ fn globally_routable(address: Ipv4Addr) -> bool {
         || (a == 203 && b == 0 && c == 113))
 }
 
+// A timeout, a blocked loopback port, or a DNS failure cannot demonstrate
+// rejection by a remote tunnel. Distinguish handshake failures conservatively.
+fn negative_handshake_rejected(reason: &str) -> bool {
+    matches!(
+        reason.strip_prefix("Line1 external HTTPS request failed curl_exit="),
+        Some("35" | "52" | "55" | "56")
+    )
+}
+
 fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, String> {
     let (positive, status) = curl_through(port, HTTPS_PROBE)
         .map_err(|err| format!("Line1 endpoint={tag} phase=https204 {err}"))?;
     if status != "204" || !positive.is_empty() {
         return Err(format!("{tag} external HTTPS 204 body was not empty"));
     }
-    // The invalid request must fail. Positive connectivity is proven first
-    // on the same protocol/server, so a generic network outage cannot pass.
-    if curl_through(invalid_port, HTTPS_PROBE).is_ok() {
-        return Err(format!("{tag} accepted an invalid tunnel credential"));
+    // Re-prove positive connectivity on both sides of the negative probe.
+    // A generic timeout or transport outage must remain INCONCLUSIVE.
+    match curl_through(invalid_port, HTTPS_PROBE) {
+        Ok(_) => return Err(format!("{tag} accepted an invalid tunnel credential")),
+        Err(reason) if !negative_handshake_rejected(&reason) => {
+            return Err(format!(
+                "Line1 endpoint={tag} phase=invalid_credential result=INCONCLUSIVE {reason}"
+            ));
+        }
+        Err(_) => {}
+    }
+    let (control_body, control_status) = curl_through(port, HTTPS_PROBE)
+        .map_err(|err| format!("Line1 endpoint={tag} phase=control_after_negative {err}"))?;
+    if control_status != "204" || !control_body.is_empty() {
+        return Err(format!("{tag} valid credential control changed after negative probe"));
     }
     let (egress, status) = curl_through(port, EGRESS_PROBE)
         .map_err(|err| format!("Line1 endpoint={tag} phase=public_egress {err}"))?;
@@ -408,6 +428,23 @@ mod tests {
         let invalid = vec![1080u16; 8];
         assert_eq!(invalid.iter().copied().collect::<BTreeSet<_>>().len(), 1);
         assert!(allocate_loopback_ports(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn negative_auth_rejects_timeout_and_unreachable_as_inconclusive() {
+        for exit in ["5", "7", "22", "28", "47", "60", "UNKNOWN"] {
+            assert!(!negative_handshake_rejected(&format!(
+                "Line1 external HTTPS request failed curl_exit={exit}"
+            )));
+        }
+        for exit in ["35", "52", "55", "56"] {
+            assert!(negative_handshake_rejected(&format!(
+                "Line1 external HTTPS request failed curl_exit={exit}"
+            )));
+        }
+        assert!(!negative_handshake_rejected(
+            "Line1 external witness curl executable unavailable"
+        ));
     }
 
     #[test]

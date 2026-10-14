@@ -16,6 +16,7 @@ on:
       - ".github/workflows/credential-lifecycle.yml"
       - ".github/workflows/windows-physical.yml"
       - ".github/workflows/vultr-lifecycle.yml"
+      - ".github/workflows/vultr-acceptance-resume.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
   push:
     branches: [main]
@@ -31,6 +32,7 @@ on:
       - ".github/workflows/credential-lifecycle.yml"
       - ".github/workflows/windows-physical.yml"
       - ".github/workflows/vultr-lifecycle.yml"
+      - ".github/workflows/vultr-acceptance-resume.yml"
       - ".github/workflows/vm-application-lifecycle.yml"
 
 permissions:
