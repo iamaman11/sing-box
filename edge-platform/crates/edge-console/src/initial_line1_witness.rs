@@ -168,11 +168,13 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
     if !output.status.success() {
         // Exit code is non-sensitive and distinguishes DNS/TLS/refused/timeout.
         // Never print curl stderr, URLs, secrets or the rendered sing-box JSON.
-        let code = output.status.code().map_or_else(
-            || "UNKNOWN".to_owned(),
-            |value| value.to_string(),
-        );
-        return Err(format!("Line1 external HTTPS request failed curl_exit={code}"));
+        let code = output
+            .status
+            .code()
+            .map_or_else(|| "UNKNOWN".to_owned(), |value| value.to_string());
+        return Err(format!(
+            "Line1 external HTTPS request failed curl_exit={code}"
+        ));
     }
     let text = String::from_utf8(output.stdout)
         .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())?;
@@ -412,7 +414,10 @@ mod tests {
     fn witness_failure_reports_only_named_endpoint_and_safe_curl_code() {
         let cause = "Line1 external HTTPS request failed curl_exit=28";
         let annotated = format!("Line1 endpoint={} phase=https204 {cause}", TAGS[0]);
-        assert_eq!(annotated, "Line1 endpoint=hysteria2-direct phase=https204 Line1 external HTTPS request failed curl_exit=28");
+        assert_eq!(
+            annotated,
+            "Line1 endpoint=hysteria2-direct phase=https204 Line1 external HTTPS request failed curl_exit=28"
+        );
         assert!(!annotated.contains("https://"));
     }
 
