@@ -615,7 +615,7 @@ def main() -> None:
     # The SSH lease, root-only file, and first-attempt guard are one operation.
     vultr_lifecycle_command = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
     require(
-        'if operation == "initial-vm-install" and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
+        'if operation in {"initial-vm-install", "initial-acceptance-resume"} and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":' in vultr
         and 'acquire_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
         and 'release_host_access "${spec}" "${machine}" "initial-vm-install"' in vultr
         and "vm_access_identity_installed == true" in vultr
