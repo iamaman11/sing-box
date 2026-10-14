@@ -80,6 +80,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
         "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
         "owner-upgrade" => vm_owner_upgrade::run(&args[1..], context).await,
+        "owner-rollback" => vm_owner_upgrade::rollback(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
         "acquire-access" => run_acquire_access(&args[1..]).await,
         "lease-acquire" => run_lease_acquire(&args[1..]).await,
