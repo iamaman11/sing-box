@@ -1162,7 +1162,12 @@ def main() -> None:
         and 'bound_upgrade_preflight(&current, &args[3], &expected.sha256)?'
             in vm_owner_upgrade
         and 'durable_nonreplay_begin' in vm_owner_upgrade
-        and 'sudo -n ln {OWNER} {PREVIOUS}' in vm_owner_upgrade
+        and 'sudo -n ln {OWNER} {PREVIOUS_NEXT}' in vm_owner_upgrade
+        and 'bound_existing_owner_chain(&prior, &current)?' in vm_owner_upgrade
+        and 'sudo -n sync {JOURNAL_NEXT}' in vm_owner_upgrade
+        and 'sudo -n ln {JOURNAL} {archive}' in vm_owner_upgrade
+        and 'sudo -n mv -Tf {JOURNAL_NEXT} {JOURNAL}' in vm_owner_upgrade
+        and 'repeated_owner_upgrade_requires_exact_existing_chain_not_an_empty_replay' in vm_owner_upgrade
         and 'sudo -n mv -T {NEXT} {OWNER}' in vm_owner_upgrade
         and 'let boot_before = capture("cat /proc/sys/kernel/random/boot_id")?;' in vm_owner_upgrade
         and 'runner_mutations": 0' in vm_owner_upgrade
@@ -1680,6 +1685,34 @@ def main() -> None:
         and 'vm_runtime_materialization_refuses_legacy_and_requires_explicit_active_v2'
         in vm_agent,
         "VM runtime credentials must be Worker-v2-only and fail closed, without local generator or legacy rollback",
+    )
+
+    # A Worker-v2 candidate matching .env.runtime is not proof that a live
+    # container sees the same exact rendered bytes, and even a mounted file
+    # match is not proof of sing-box's in-memory credential state.
+    vm_docker_observation = Path(
+        "edge-platform/crates/edge-agent/src/docker_observation.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        'CredentialRuntimeSource' in vm_agent_cli
+        and 'local-credential-runtime-source' in vm_agent_cli
+        and 'attest_vm_running_config_source(&stack_dir)' in vm_agent_runtime
+        and 'verify_rendered_config_matches_vm_projection(' in vm_agent_runtime
+        and 'verify_running_container_config_binding(container, &stack_dir.join(path)).await?' in vm_agent_runtime
+        and 'credential_running_source=CONFIG_VISIBLE_LOADED_UNPROVEN' in vm_agent_runtime
+        and 'line1_authenticated_generation=UNPROVEN_WITHOUT_EXTERNAL_WITNESS' in vm_agent_runtime
+        and 'fn verify_running_container_config_binding(' in vm_docker_observation
+        and '/proc/{pid}/root{CONTAINER_CONFIG}' in vm_docker_observation
+        and 'mount.rw != Some(false)' in vm_docker_observation
+        and 'running container restarted during config-source attestation' in vm_docker_observation
+        and '"credential-runtime-source", "credential-initial-probe",' in application
+        and 'diagnose|quality-line2|credential-runtime-source|credential-initial-probe)' in application
+        and 'local_operation="diagnose"' in application
+        and "grep -Fxq 'credential_runtime_proof=PASS_PROCESS_VISIBLE_FILES'" in application
+        and 'if let Err(err) = attest_vm_running_config_source(&stack_dir).await {' in vm_agent_runtime
+        and 'candidate_rendered_configs_must_equal_exact_template_projection' in vm_agent
+        and "credential_state_mutations=0" in vm_agent_runtime,
+        "VM read-only mounted-source attestation must reject false loaded claims, stale candidates and untrusted mount paths",
     )
 
     # A new generation cannot be declared active merely because a local
@@ -2739,7 +2772,7 @@ def main() -> None:
         and 'echo "vm_owner_observed_sha256=${observed}"' in owner_preflight
         and "for path in /usr /usr/local /usr/local/libexec" in owner_preflight
         and 'if [[ ! -x "${owner}" || -L "${owner}" ]]; then' in owner_preflight
-        and "diagnose|quality-line2|credential-initial-probe)" in owner_preflight
+        and "diagnose|quality-line2|credential-runtime-source|credential-initial-probe)" in owner_preflight
         and "converge|verify|rollback)" in owner_preflight
         and owner_preflight.index("vm_owner_identity=PASS_NATIVE_INSTALLED_READONLY")
         < owner_preflight.index("converge|verify|rollback)")

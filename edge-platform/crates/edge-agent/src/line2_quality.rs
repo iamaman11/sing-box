@@ -280,8 +280,8 @@ pub(crate) fn measure(
             });
         println!(
             "proxy={tag} protocol={protocol} port={port} successes={} failures={errors} negative_auth={} min_ms={min} median_ms={median} max_ms={max}",
-            if rejected { "REJECTED" } else { "NOT_PROVEN" },
-            samples.len()
+            samples.len(),
+            if rejected { "REJECTED" } else { "NOT_PROVEN" }
         );
     }
     if failures > 0 {

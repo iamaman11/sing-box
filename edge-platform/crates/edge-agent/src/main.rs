@@ -168,6 +168,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 .map(|_| ())
                 .map_err(AgentError::Command)
         }
+        cli::LocalCommand::CredentialRuntimeSource => attest_vm_running_config_source(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
         cli::LocalCommand::Diagnose => {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("DIAGNOSE", &state);
@@ -185,6 +188,15 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 "application_operational_verdict={}",
                 vm_application_operational_verdict(state.ready, &credential_source)
             );
+            // The installed production runner already has a bounded sudo
+            // allowlist for local diagnose. Do not expand it or bootstrap a
+            // second owner just to observe live process-visible credentials.
+            // General diagnose remains read-only and reports an unproven gate
+            // instead of failing the entire VM inventory on missing evidence.
+            if let Err(err) = attest_vm_running_config_source(&stack_dir).await {
+                println!("credential_runtime_proof=UNPROVEN");
+                println!("credential_runtime_proof_reason={err}");
+            }
             Ok(())
         }
         cli::LocalCommand::BootstrapBase => {
@@ -2252,6 +2264,118 @@ fn verify_vm_candidate_runtime_materialized(
     Ok(())
 }
 
+// This is only a *process-visible file* attestation. It cannot establish
+// whether sing-box has parsed those bytes or whether remote Line1 credentials
+// are accepted. Those need independent authenticated protocol witnesses.
+fn verify_rendered_config_matches_vm_projection(
+    stack_dir: &Path,
+    runtime: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let line1 = expand_runtime_template(
+        stack_dir,
+        "line1-gateway/config.template.json",
+        runtime,
+        &LINE1_RUNTIME_TEMPLATE_KEYS,
+    )?;
+    let mut line2_values = runtime.clone();
+    let (certificate, key) = line2_certificate_container_paths(runtime)?;
+    line2_values.insert("PROXY_CERT_PATH".to_owned(), certificate);
+    line2_values.insert("PROXY_KEY_PATH".to_owned(), key);
+    let line2 = expand_runtime_template(
+        stack_dir,
+        "line2-proxy/config.template.json",
+        &line2_values,
+        &LINE2_RUNTIME_TEMPLATE_KEYS,
+    )?;
+    for (name, expected) in [("line1-gateway.json", line1), ("line2-proxy.json", line2)] {
+        let observed = fs::read(stack_dir.join("rendered").join(name))
+            .map_err(|_| "runtime proof cannot read the rendered config".to_owned())?;
+        if observed != expected.as_bytes() {
+            return Err(
+                "runtime proof refuses a rendered config that differs from Worker-v2 projection"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn attest_vm_running_config_source(stack_dir: &Path) -> Result<(), String> {
+    use crate::docker_observation::verify_running_container_config_binding;
+
+    let origin = observe_vm_rendered_credential_source(stack_dir);
+    let candidate_only = match origin {
+        VmRenderedCredentialSource::V2Candidate { .. } => true,
+        VmRenderedCredentialSource::V2Active { .. } => false,
+        _ => {
+            return Err(
+                "running credential source refuses unknown, legacy or mismatched rendered owner"
+                    .to_owned(),
+            );
+        }
+    };
+    let store = open_vm_credential_store(stack_dir)?;
+    let state = store
+        .read_state()?
+        .ok_or_else(|| "runtime source proof requires durable VM credential state".to_owned())?;
+    let reference = if candidate_only {
+        if state.active.is_some() || state.previous.is_some() {
+            return Err(
+                "runtime source proof refuses ambiguous initial candidate state".to_owned(),
+            );
+        }
+        state.candidate.as_ref()
+    } else {
+        state.active.as_ref()
+    }
+    .ok_or_else(|| "runtime source proof has no exact selected credential generation".to_owned())?;
+    let bundle = store.read_bundle(reference)?;
+    let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+    let expected_env = vm_runtime_environment(stack_dir, &secrets)?;
+    if fs::read(stack_dir.join(RUNTIME_ENV_FILE))
+        .map_err(|_| "runtime source proof cannot read rendered environment".to_owned())?
+        != expected_env.as_bytes()
+    {
+        return Err("runtime source proof detected a different credential projection".to_owned());
+    }
+    let runtime = read_typed_runtime_environment(stack_dir)?;
+    verify_rendered_config_matches_vm_projection(stack_dir, &runtime)?;
+    for (container, path) in [
+        (LINE1_CONTAINER, "rendered/line1-gateway.json"),
+        (LINE2_CONTAINER, "rendered/line2-proxy.json"),
+    ] {
+        verify_running_container_config_binding(container, &stack_dir.join(path)).await?;
+    }
+    // Require an unchanged credential cursor and exactly reproduced rendering
+    // after the external Docker observations; never print secret bytes/hashes.
+    if store.read_state()?.as_ref() != Some(&state)
+        || observe_vm_rendered_credential_source(stack_dir) != origin
+    {
+        return Err("runtime source proof refuses a concurrent credential transition".to_owned());
+    }
+    verify_rendered_config_matches_vm_projection(
+        stack_dir,
+        &read_typed_runtime_environment(stack_dir)?,
+    )?;
+    println!("credential_runtime_proof=PASS_PROCESS_VISIBLE_FILES");
+    println!("credential_selected_generation={}", reference.generation);
+    println!(
+        "credential_selected_role={}",
+        if candidate_only {
+            "CANDIDATE"
+        } else {
+            "ACTIVE"
+        }
+    );
+    println!("line1_config_source=WORKER_V2_PROCESS_BIND_EXACT");
+    println!("line2_config_source=WORKER_V2_PROCESS_BIND_EXACT");
+    println!("credential_running_source=CONFIG_VISIBLE_LOADED_UNPROVEN");
+    println!("line1_authenticated_generation=UNPROVEN_WITHOUT_EXTERNAL_WITNESS");
+    println!("credential_state_mutations=0");
+    println!("container_mutations=0");
+    Ok(())
+}
+
 async fn apply_vm_credential_runtime(
     stack_dir: &Path,
     secrets: &ApplicationRuntimeSecrets,
@@ -3342,6 +3466,27 @@ fn require_tunnel_policy(runtime: &BTreeMap<String, String>) -> Result<(), Strin
     Ok(())
 }
 
+const LINE1_RUNTIME_TEMPLATE_KEYS: [&str; 12] = [
+    "VLESS_UUID",
+    "HY2_PASSWORD",
+    "REALITY_SERVER_NAME",
+    "REALITY_PRIVATE_KEY",
+    "REALITY_SHORT_ID",
+    "VLESS_WARP_UUID",
+    "HY2_WARP_PASSWORD",
+    "REALITY_WARP_PRIVATE_KEY",
+    "REALITY_WARP_SHORT_ID",
+    "TUNNEL_DOMAIN",
+    "ACME_EMAIL",
+    "ACME_PROVIDER",
+];
+const LINE2_RUNTIME_TEMPLATE_KEYS: [&str; 4] = [
+    "PROXY_USERNAME",
+    "PROXY_PASSWORD",
+    "PROXY_CERT_PATH",
+    "PROXY_KEY_PATH",
+];
+
 fn render_line1_runtime(
     stack_dir: &Path,
     runtime: &BTreeMap<String, String>,
@@ -3351,20 +3496,7 @@ fn render_line1_runtime(
         "line1-gateway/config.template.json",
         "rendered/line1-gateway.json",
         runtime,
-        &[
-            "VLESS_UUID",
-            "HY2_PASSWORD",
-            "REALITY_SERVER_NAME",
-            "REALITY_PRIVATE_KEY",
-            "REALITY_SHORT_ID",
-            "VLESS_WARP_UUID",
-            "HY2_WARP_PASSWORD",
-            "REALITY_WARP_PRIVATE_KEY",
-            "REALITY_WARP_SHORT_ID",
-            "TUNNEL_DOMAIN",
-            "ACME_EMAIL",
-            "ACME_PROVIDER",
-        ],
+        &LINE1_RUNTIME_TEMPLATE_KEYS,
     )
 }
 
@@ -3381,12 +3513,7 @@ fn render_line2_runtime(
         "line2-proxy/config.template.json",
         "rendered/line2-proxy.json",
         &values,
-        &[
-            "PROXY_USERNAME",
-            "PROXY_PASSWORD",
-            "PROXY_CERT_PATH",
-            "PROXY_KEY_PATH",
-        ],
+        &LINE2_RUNTIME_TEMPLATE_KEYS,
     )
 }
 
@@ -3397,6 +3524,23 @@ fn render_runtime_template(
     values: &BTreeMap<String, String>,
     required_keys: &[&str],
 ) -> Result<(), String> {
+    let rendered = expand_runtime_template(stack_dir, template_relative, values, required_keys)?;
+    let target = stack_dir.join(target_relative);
+    fs::write(&target, rendered.as_bytes()).map_err(|err| {
+        format!(
+            "failed to write rendered runtime {}: {err}",
+            target.display()
+        )
+    })?;
+    set_bundle_file_permissions(&target, false, true)
+}
+
+fn expand_runtime_template(
+    stack_dir: &Path,
+    template_relative: &str,
+    values: &BTreeMap<String, String>,
+    required_keys: &[&str],
+) -> Result<String, String> {
     let template_path = stack_dir.join(template_relative);
     let mut rendered = fs::read_to_string(&template_path).map_err(|err| {
         format!(
@@ -3424,14 +3568,7 @@ fn render_runtime_template(
         ));
     }
 
-    let target = stack_dir.join(target_relative);
-    fs::write(&target, rendered.as_bytes()).map_err(|err| {
-        format!(
-            "failed to write rendered runtime {}: {err}",
-            target.display()
-        )
-    })?;
-    set_bundle_file_permissions(&target, false, true)
+    Ok(rendered)
 }
 
 fn line2_certificate_container_paths(
@@ -6380,6 +6517,61 @@ mod tests {
                 .any(|warning| warning.contains("vultr-line1-gateway"))
         );
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn candidate_rendered_configs_must_equal_exact_template_projection() {
+        let root = unique_test_dir();
+        let stack = root.join("stack");
+        for part in ["line1-gateway", "line2-proxy", "rendered"] {
+            fs::create_dir_all(stack.join(part)).unwrap();
+        }
+        let mut runtime = BTreeMap::new();
+        for key in LINE1_RUNTIME_TEMPLATE_KEYS {
+            runtime.insert(key.to_owned(), "value".to_owned());
+        }
+        for key in LINE2_RUNTIME_TEMPLATE_KEYS {
+            runtime.insert(key.to_owned(), "value".to_owned());
+        }
+        runtime.insert("TUNNEL_DOMAIN".to_owned(), "example.com".to_owned());
+        runtime.insert("ACME_PROVIDER".to_owned(), "letsencrypt".to_owned());
+        runtime.insert("PROXY_CERT_CN".to_owned(), "example.com".to_owned());
+        for (part, keys) in [
+            ("line1-gateway", LINE1_RUNTIME_TEMPLATE_KEYS.as_slice()),
+            ("line2-proxy", LINE2_RUNTIME_TEMPLATE_KEYS.as_slice()),
+        ] {
+            let template = keys
+                .iter()
+                .map(|key| format!("${{{key}}}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            fs::write(stack.join(part).join("config.template.json"), template).unwrap();
+        }
+        let line1 = expand_runtime_template(
+            &stack,
+            "line1-gateway/config.template.json",
+            &runtime,
+            &LINE1_RUNTIME_TEMPLATE_KEYS,
+        )
+        .unwrap();
+        let (cert, key) = line2_certificate_container_paths(&runtime).unwrap();
+        let mut line2_env = runtime.clone();
+        line2_env.insert("PROXY_CERT_PATH".to_owned(), cert);
+        line2_env.insert("PROXY_KEY_PATH".to_owned(), key);
+        let line2 = expand_runtime_template(
+            &stack,
+            "line2-proxy/config.template.json",
+            &line2_env,
+            &LINE2_RUNTIME_TEMPLATE_KEYS,
+        )
+        .unwrap();
+        fs::write(stack.join("rendered/line1-gateway.json"), line1).unwrap();
+        fs::write(stack.join("rendered/line2-proxy.json"), line2).unwrap();
+        assert!(verify_rendered_config_matches_vm_projection(&stack, &runtime).is_ok());
+
+        fs::write(stack.join("rendered/line1-gateway.json"), "stale").unwrap();
+        assert!(verify_rendered_config_matches_vm_projection(&stack, &runtime).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

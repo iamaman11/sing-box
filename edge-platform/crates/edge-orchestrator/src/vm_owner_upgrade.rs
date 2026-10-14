@@ -7,6 +7,9 @@ const OWNER: &str = "/usr/local/libexec/sing-box/edge-agent";
 const PREVIOUS: &str = "/usr/local/libexec/sing-box/edge-agent.previous";
 const NEXT: &str = "/usr/local/libexec/sing-box/.edge-agent.next";
 const JOURNAL: &str = "/usr/local/libexec/sing-box/.edge-agent-upgrade-begin";
+const JOURNAL_NEXT: &str = "/usr/local/libexec/sing-box/.edge-agent-upgrade-next-begin";
+const PREVIOUS_NEXT: &str = "/usr/local/libexec/sing-box/.edge-agent-previous-next";
+const HISTORY: &str = "/usr/local/libexec/sing-box/.edge-agent-upgrade-history";
 const STAGED: &str = "/tmp/singbox-owner-upgrade-next";
 const ROLLBACK_BEGIN: &str = "/usr/local/libexec/sing-box/.edge-agent-rollback-begin";
 const FAILED: &str = "/usr/local/libexec/sing-box/edge-agent.failed";
@@ -16,6 +19,33 @@ fn exact_sha(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// One recorded previous upgrade is admissible only if the current binary
+/// is exactly the successor named by the durable record and the predecessor
+/// hardlink has the exact SHA. A missing/partial record is UNKNOWN, not FIRST.
+fn bound_existing_owner_chain(record: &str, current: &str) -> Result<Option<String>, String> {
+    if !exact_sha(current) {
+        return Err("owner chain requires exact current SHA256".to_owned());
+    }
+    if record == "FIRST" {
+        return Ok(None);
+    }
+    let pair = record
+        .strip_prefix("PRIOR:")
+        .ok_or_else(|| "existing owner journal observation is malformed".to_owned())?;
+    let (previous, journal) = pair
+        .split_once(':')
+        .ok_or_else(|| "existing owner journal observation is incomplete".to_owned())?;
+    if !exact_sha(previous) || journal != format!("{previous} {current}") {
+        return Err(
+            "existing owner journal does not prove the installed predecessor chain".to_owned(),
+        );
+    }
+    if previous == current {
+        return Err("existing owner journal refuses identical predecessor and current".to_owned());
+    }
+    Ok(Some(previous.to_owned()))
 }
 
 fn bound_upgrade_preflight(current: &str, old: &str, next: &str) -> Result<bool, String> {
@@ -80,14 +110,37 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
         return Ok(());
     }
 
-    // A BEGIN marker or rollback copy means an earlier swap may have committed.
-    // Stop before staging; never infer it is safe to replay from a failed ACK.
-    let empty = capture(&format!(
-        "set -eu; test ! -e {JOURNAL}; test ! -L {JOURNAL};          test ! -e {PREVIOUS}; test ! -L {PREVIOUS};          test ! -e {NEXT}; test ! -L {NEXT};          test ! -e {STAGED}; test ! -L {STAGED}; echo PASS"
+    // A prior successful transition is a PROVEN chain, not permission to
+    // replay that transition. An inconsistent/partial pair is UNKNOWN.
+    let prior = capture(&format!(
+        "set -eu; \
+         if test -e {JOURNAL} || test -e {PREVIOUS}; then \
+           test -f {JOURNAL}; test ! -L {JOURNAL}; \
+           test \"$(stat -c '%u:%g:%a' {JOURNAL})\" = '0:0:600'; \
+           test -f {PREVIOUS}; test ! -L {PREVIOUS}; \
+           test \"$(stat -c '%u:%g:%a' {PREVIOUS})\" = '0:0:755'; \
+           printf 'PRIOR:%s:%s\n' \"$(sha256sum {PREVIOUS} | cut -d' ' -f1)\" \"$(sudo -n cat {JOURNAL})\"; \
+         else echo FIRST; fi"
     ))?;
-    if empty != "PASS" {
+    let prior_digest = bound_existing_owner_chain(&prior, &current)?;
+    let archive = format!("{HISTORY}/{current}");
+    let clean = capture(&format!(
+        "set -eu; \
+         test ! -e {NEXT}; test ! -L {NEXT}; \
+         test ! -e {STAGED}; test ! -L {STAGED}; \
+         test ! -e {JOURNAL_NEXT}; test ! -L {JOURNAL_NEXT}; \
+         test ! -e {PREVIOUS_NEXT}; test ! -L {PREVIOUS_NEXT}; \
+         test ! -e {ROLLBACK_BEGIN}; test ! -e {FAILED}; \
+         test ! -L {HISTORY}; \
+         if test -e {HISTORY}; then \
+           test -d {HISTORY}; \
+           test \"$(stat -c '%u:%g:%a' {HISTORY})\" = '0:0:700'; \
+         fi; \
+         test ! -e {archive}; test ! -L {archive}; echo PASS"
+    ))?;
+    if clean != "PASS" {
         return Err(
-            "VM owner upgrade already staged or uncertain; read-only reconciliation required"
+            "VM owner upgrade has a staged or uncertain successor; read-only reconciliation required"
                 .to_owned(),
         );
     }
@@ -110,11 +163,38 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
         );
     }
 
-    // All paths are fixed source constants and both interpolated digests passed
-    // exact lowercase SHA256 validation. Write durable BEGIN BEFORE atomic swap.
-    // A missing response is UNKNOWN and must be reconciled, never retried.
+    // All path/digest interpolation is from fixed constants or exact SHA256.
+    // Every new transition writes a *new durable BEGIN* before replacing the
+    // prior latest-journal pointer and binary. UNKNOWN is never replayed.
+    // The previous BEGIN is archived immutably; rollback retains only the
+    // immediate predecessor binary, not a parallel agent.
+    let prior_guard = match prior_digest.as_deref() {
+        Some(predecessor) => format!(
+            "test \"$(sudo -n cat {JOURNAL})\" = '{predecessor} {current}'; \
+             test \"$(sha256sum {PREVIOUS} | cut -d' ' -f1)\" = {predecessor}; \
+             test ! -e {archive}; \
+             sudo -n install -d -o root -g root -m 0700 {HISTORY}; \
+             sudo -n ln {JOURNAL} {archive}; sudo -n sync {HISTORY};"
+        ),
+        None => format!("test ! -e {JOURNAL}; test ! -e {PREVIOUS};"),
+    };
     let remote = format!(
-        "set -eu;          test ! -e {JOURNAL}; test ! -e {PREVIOUS}; test ! -e {NEXT};          test \"$(sha256sum {OWNER} | cut -d' ' -f1)\" = {current};          test \"$(sha256sum {STAGED} | cut -d' ' -f1)\" = {next};          sudo -n install -o root -g root -m 0755 {STAGED} {NEXT};          test \"$(sha256sum {NEXT} | cut -d' ' -f1)\" = {next};          printf '%s\\n' '{current} {next}' | sudo -n tee {JOURNAL} >/dev/null;          sudo -n chmod 0600 {JOURNAL};          sudo -n sync {JOURNAL}; sudo -n sync /usr/local/libexec/sing-box;          sudo -n ln {OWNER} {PREVIOUS};          sudo -n mv -T {NEXT} {OWNER};          rm -f {STAGED}",
+        "set -eu; \
+         test ! -e {NEXT}; test ! -e {JOURNAL_NEXT}; test ! -e {PREVIOUS_NEXT}; \
+         test \"$(sha256sum {OWNER} | cut -d' ' -f1)\" = {current}; \
+         test \"$(sha256sum {STAGED} | cut -d' ' -f1)\" = {next}; \
+         sudo -n install -o root -g root -m 0755 {STAGED} {NEXT}; \
+         test \"$(sha256sum {NEXT} | cut -d' ' -f1)\" = {next}; \
+         printf '%s\n' '{current} {next}' | sudo -n tee {JOURNAL_NEXT} >/dev/null; \
+         sudo -n chmod 0600 {JOURNAL_NEXT}; \
+         sudo -n sync {JOURNAL_NEXT}; sudo -n sync /usr/local/libexec/sing-box; \
+         {prior_guard} \
+         sudo -n ln {OWNER} {PREVIOUS_NEXT}; \
+         sudo -n mv -Tf {PREVIOUS_NEXT} {PREVIOUS}; \
+         sudo -n mv -Tf {JOURNAL_NEXT} {JOURNAL}; \
+         sudo -n sync {JOURNAL}; sudo -n sync /usr/local/libexec/sing-box; \
+         sudo -n mv -T {NEXT} {OWNER}; \
+         rm -f {STAGED}",
         next = expected.sha256
     );
     strict_ssh_run(target_ip, &args[1], &key, &public_key, &remote)?;
@@ -122,6 +202,14 @@ pub(super) async fn run(args: &[String], context: &OrchestrationContext) -> Resu
     if new_sha != expected.sha256 {
         return Err(
             "VM owner swap acknowledged but installed digest mismatched; STOP without replay"
+                .to_owned(),
+        );
+    }
+    let current_record = capture(&format!("sudo -n cat {JOURNAL}"))?;
+    let rollback_sha = capture(&format!("sha256sum {PREVIOUS} | cut -d' ' -f1"))?;
+    if current_record != format!("{current} {}", expected.sha256) || rollback_sha != current {
+        return Err(
+            "VM installed owner rollback chain is not exact after swap; STOP without replay"
                 .to_owned(),
         );
     }
@@ -266,6 +354,32 @@ mod tests {
         assert!(bound_upgrade_preflight(&old, &format!("{}x", old), &new).is_err());
         assert!(bound_upgrade_preflight(&old, &old.to_uppercase(), &new).is_err());
         assert!(!exact_sha(&"Z".repeat(64)));
+    }
+
+    #[test]
+    fn repeated_owner_upgrade_requires_exact_existing_chain_not_an_empty_replay() {
+        let old = "a".repeat(64);
+        let current = "b".repeat(64);
+        let next = "c".repeat(64);
+        assert_eq!(bound_existing_owner_chain("FIRST", &old), Ok(None));
+        assert_eq!(
+            bound_existing_owner_chain(&format!("PRIOR:{old}:{old} {current}"), &current),
+            Ok(Some(old.clone()))
+        );
+        assert_eq!(bound_upgrade_preflight(&current, &current, &next), Ok(true));
+        for invalid in [
+            format!("PRIOR:{old}:{old} {old}"),
+            format!("PRIOR:{old}:{current} {old}"),
+            format!("PRIOR:{current}:{current} {current}"),
+            format!("PRIOR:garbage:{old} {current}"),
+            format!("PRIOR:{old}:{old} {current} extra"),
+            "PARTIAL".to_owned(),
+        ] {
+            assert!(bound_existing_owner_chain(&invalid, &current).is_err());
+        }
+        assert!(bound_existing_owner_chain("FIRST", "bogus").is_err());
+        assert_ne!(JOURNAL, JOURNAL_NEXT);
+        assert_ne!(PREVIOUS, PREVIOUS_NEXT);
     }
 
     #[test]
