@@ -142,6 +142,7 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
     // issued credential appears in argv or environment or output.
     let output = Command::new(r"C:\Windows\System32\curl.exe")
         .args([
+            "-q", // Disable user .curlrc: the witness owns its exact proxy arguments.
             "--silent",
             "--show-error",
             "--fail",
@@ -165,7 +166,13 @@ fn curl_through(port: u16, target: &str) -> Result<(String, String), String> {
         .output()
         .map_err(|_| "Line1 external witness curl executable unavailable".to_owned())?;
     if !output.status.success() {
-        return Err("Line1 external HTTPS request failed".to_owned());
+        // Exit code is non-sensitive and distinguishes DNS/TLS/refused/timeout.
+        // Never print curl stderr, URLs, secrets or the rendered sing-box JSON.
+        let code = output.status.code().map_or_else(
+            || "UNKNOWN".to_owned(),
+            |value| value.to_string(),
+        );
+        return Err(format!("Line1 external HTTPS request failed curl_exit={code}"));
     }
     let text = String::from_utf8(output.stdout)
         .map_err(|_| "Line1 external HTTPS response is not UTF-8".to_owned())?;
@@ -195,7 +202,8 @@ fn globally_routable(address: Ipv4Addr) -> bool {
 }
 
 fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, String> {
-    let (positive, status) = curl_through(port, HTTPS_PROBE)?;
+    let (positive, status) = curl_through(port, HTTPS_PROBE)
+        .map_err(|err| format!("Line1 endpoint={tag} phase=https204 {err}"))?;
     if status != "204" || !positive.is_empty() {
         return Err(format!("{tag} external HTTPS 204 body was not empty"));
     }
@@ -204,7 +212,8 @@ fn check_endpoint(port: u16, invalid_port: u16, tag: &str) -> Result<Ipv4Addr, S
     if curl_through(invalid_port, HTTPS_PROBE).is_ok() {
         return Err(format!("{tag} accepted an invalid tunnel credential"));
     }
-    let (egress, status) = curl_through(port, EGRESS_PROBE)?;
+    let (egress, status) = curl_through(port, EGRESS_PROBE)
+        .map_err(|err| format!("Line1 endpoint={tag} phase=public_egress {err}"))?;
     if status != "200" {
         return Err(format!(
             "{tag} external egress service returned non-200 HTTP"
@@ -397,6 +406,14 @@ mod tests {
         let invalid = vec![1080u16; 8];
         assert_eq!(invalid.iter().copied().collect::<BTreeSet<_>>().len(), 1);
         assert!(allocate_loopback_ports(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn witness_failure_reports_only_named_endpoint_and_safe_curl_code() {
+        let cause = "Line1 external HTTPS request failed curl_exit=28";
+        let annotated = format!("Line1 endpoint={} phase=https204 {cause}", TAGS[0]);
+        assert_eq!(annotated, "Line1 endpoint=hysteria2-direct phase=https204 Line1 external HTTPS request failed curl_exit=28");
+        assert!(!annotated.contains("https://"));
     }
 
     #[test]
