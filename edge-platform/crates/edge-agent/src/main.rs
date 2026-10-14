@@ -6441,7 +6441,7 @@ mod tests {
         fs::write(stack.join(RUNTIME_ENV_FILE), "unrelated=not-a-runtime\n").unwrap();
         assert_eq!(
             observe_vm_rendered_credential_source(&stack),
-            VmRenderedCredentialSource::Unproven("NO_MATCHING_LOCAL_CREDENTIAL_SOURCE")
+            VmRenderedCredentialSource::Unproven("V2_ACTIVE_RENDER_MISMATCH")
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -6484,7 +6484,7 @@ mod tests {
         fs::create_dir_all(&stack).unwrap();
         fs::write(
             stack.join(RUNTIME_POLICY_FILE),
-            "PROXY_USERNAME=acceptance\\nPROXY_CERT_CN=acceptance.local\\n",
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
         )
         .unwrap();
         let store = CredentialStore::new(
@@ -6525,7 +6525,7 @@ mod tests {
         fs::create_dir_all(&stack).unwrap();
         fs::write(
             stack.join(RUNTIME_POLICY_FILE),
-            "PROXY_USERNAME=acceptance\\nPROXY_CERT_CN=acceptance.local\\n",
+            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n",
         )
         .unwrap();
         let store = CredentialStore::new(
