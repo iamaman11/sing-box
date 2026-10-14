@@ -351,7 +351,7 @@ jobs:
 
   windows_cleanup:
     needs: [source, access, windows, reboot, post_windows]
-    if: always() && needs.source.result == 'success' && needs.access.result != 'skipped'
+    if: always() && needs.source.result == 'success' && needs.windows.result != 'skipped'
     runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
     concurrency:
       group: sing-box-windows-physical
