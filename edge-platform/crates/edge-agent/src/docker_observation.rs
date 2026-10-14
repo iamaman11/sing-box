@@ -524,26 +524,17 @@ mod tests {
         assert_ne!(format!("{:?}", "bind"), "bind");
 
         for kind in [None, Some("volume"), Some("tmpfs"), Some("BIND"), Some("")] {
-            let result = require_exact_readonly_config_bind(
-                "vultr-line1-gateway",
-                kind,
-                Some(false),
-            );
+            let result =
+                require_exact_readonly_config_bind("vultr-line1-gateway", kind, Some(false));
             assert!(result.is_err());
         }
         for writable in [Some(true), None] {
-            let result = require_exact_readonly_config_bind(
-                "vultr-line2-proxy",
-                Some("bind"),
-                writable,
-            );
+            let result =
+                require_exact_readonly_config_bind("vultr-line2-proxy", Some("bind"), writable);
             assert!(result.is_err());
         }
-        let positive = require_exact_readonly_config_bind(
-            "vultr-line2-proxy",
-            Some("bind"),
-            Some(false),
-        );
+        let positive =
+            require_exact_readonly_config_bind("vultr-line2-proxy", Some("bind"), Some(false));
         assert_eq!(positive, Ok(()));
     }
 
