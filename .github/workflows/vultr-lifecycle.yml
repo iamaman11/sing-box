@@ -29,6 +29,8 @@ jobs:
       instance_action: ${{ steps.parse.outputs.instance_action }}
       destroy_digest: ${{ steps.parse.outputs.destroy_digest }}
       resume_source_run_id: ${{ steps.parse.outputs.resume_source_run_id }}
+      owner_previous_sha: ${{ steps.parse.outputs.owner_previous_sha }}
+      owner_current_sha: ${{ steps.parse.outputs.owner_current_sha }}
 
     steps:
       - name: Parse and authorize typed request
@@ -55,6 +57,8 @@ jobs:
           action = ""
           destroy_digest = ""
           resume_source_run_id = ""
+          owner_previous_sha = ""
+          owner_current_sha = ""
 
           tokens = os.environ.get("COMMENT_BODY", "").strip().split()
           if tokens == ["/vultr", "initial-vm-install"]:
@@ -96,6 +100,14 @@ jobs:
                   operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
               elif verb == "runner-bootstrap" and len(tokens) == 4:
                   operation, spec_path, machine_id = "runner-bootstrap", tokens[2], tokens[3]
+              elif verb == "owner-upgrade" and len(tokens) == 5:
+                  operation, spec_path, machine_id, owner_previous_sha = (
+                      "owner-upgrade", tokens[2], tokens[3], tokens[4]
+                  )
+              elif verb == "owner-rollback" and len(tokens) == 6:
+                  operation, spec_path, machine_id, owner_current_sha, owner_previous_sha = (
+                      "owner-rollback", tokens[2], tokens[3], tokens[4], tokens[5]
+                  )
               elif verb in {"start", "halt", "reboot"} and len(tokens) == 4:
                   operation, action, spec_path, machine_id = "action", verb, tokens[2], tokens[3]
               elif verb == "destroy-plan" and len(tokens) == 4:
@@ -114,7 +126,7 @@ jobs:
 
           if operation not in {
               "doctor", "inventory", "plan", "access-release", "action-plan", "apply",
-              "runner-bootstrap", "action", "destroy-plan", "destroy-apply",
+              "runner-bootstrap", "owner-upgrade", "owner-rollback", "action", "destroy-plan", "destroy-apply",
               "cleanup-plan", "cleanup", "acceptance", "initial-vm-install",
               "initial-acceptance-resume",
           }:
@@ -138,7 +150,7 @@ jobs:
               fail("invalid machine_id")
 
           if operation in {
-              "apply", "runner-bootstrap", "access-release", "action-plan", "action",
+              "apply", "runner-bootstrap", "owner-upgrade", "owner-rollback", "access-release", "action-plan", "action",
               "destroy-plan", "destroy-apply", "initial-vm-install",
               "initial-acceptance-resume"
           } and not machine_id:
@@ -146,6 +158,15 @@ jobs:
 
           if operation in {"action-plan", "action"} and action not in {"start", "halt", "reboot"}:
               fail("invalid instance action")
+
+          if operation in {"owner-upgrade", "owner-rollback"} and not digest_re.fullmatch(owner_previous_sha):
+              fail("owner transition requires observed previous SHA-256")
+          if operation == "owner-rollback" and not digest_re.fullmatch(owner_current_sha):
+              fail("owner-rollback requires observed current SHA-256")
+          if operation not in {"owner-upgrade", "owner-rollback"} and owner_previous_sha:
+              fail("owner previous digest is only valid for owner transitions")
+          if operation != "owner-rollback" and owner_current_sha:
+              fail("owner current digest is only valid for owner-rollback")
 
           if operation == "destroy-apply" and not digest_re.fullmatch(destroy_digest):
               fail("destroy-apply requires a lowercase 64-character digest")
@@ -172,6 +193,8 @@ jobs:
               handle.write(f"instance_action={action}\n")
               handle.write(f"destroy_digest={destroy_digest}\n")
               handle.write(f"resume_source_run_id={resume_source_run_id}\n")
+              handle.write(f"owner_previous_sha={owner_previous_sha}\n")
+              handle.write(f"owner_current_sha={owner_current_sha}\n")
           PY
 
   # Re-attest the ONE immutable published first-use generation. This is a
@@ -218,6 +241,8 @@ jobs:
       MACHINE_ID: ${{ needs.authorize.outputs.machine_id }}
       INSTANCE_ACTION: ${{ needs.authorize.outputs.instance_action }}
       DESTROY_DIGEST: ${{ needs.authorize.outputs.destroy_digest }}
+      OWNER_PREVIOUS_SHA: ${{ needs.authorize.outputs.owner_previous_sha }}
+      OWNER_CURRENT_SHA: ${{ needs.authorize.outputs.owner_current_sha }}
 
     steps:
       - name: Checkout exact canonical revision
@@ -607,6 +632,39 @@ jobs:
                 and .registration_token_persisted == false
               ' "${RUNNER_TEMP}/result.json" >/dev/null
               release_host_access "${spec}" "${machine}" "runner-bootstrap"
+              trap - EXIT
+              ;;
+            owner-upgrade)
+              test "${GITHUB_RUN_ATTEMPT}" = "1"
+              [[ "${OWNER_PREVIOUS_SHA}" =~ ^[0-9a-f]{64}$ ]]
+              acquire_host_access "${spec}" "${machine}" "owner-upgrade"
+              trap 'release_host_access "${spec}" "${machine}" "owner-upgrade-emergency" >/dev/null 2>&1 || true' EXIT
+              run_lifecycle owner-upgrade "${spec}" "${machine}" "${EDGE_LIFECYCLE_AGENT}" "${OWNER_PREVIOUS_SHA}" \
+                > "${RUNNER_TEMP}/result.json"
+              jq -e '
+                .status == "PASS" and
+                (.action == "OWNER_UPGRADED_ONCE" or .action == "NOOP_EXACT_OWNER") and
+                .runner_mutations == 0 and .container_mutations == 0 and
+                .credential_mutations == 0
+              ' "${RUNNER_TEMP}/result.json" >/dev/null
+              release_host_access "${spec}" "${machine}" "owner-upgrade"
+              trap - EXIT
+              ;;
+            owner-rollback)
+              test "${GITHUB_RUN_ATTEMPT}" = "1"
+              [[ "${OWNER_CURRENT_SHA}" =~ ^[0-9a-f]{64}$ ]]
+              [[ "${OWNER_PREVIOUS_SHA}" =~ ^[0-9a-f]{64}$ ]]
+              acquire_host_access "${spec}" "${machine}" "owner-rollback"
+              trap 'release_host_access "${spec}" "${machine}" "owner-rollback-emergency" >/dev/null 2>&1 || true' EXIT
+              run_lifecycle owner-rollback "${spec}" "${machine}" "${OWNER_CURRENT_SHA}" "${OWNER_PREVIOUS_SHA}" \
+                > "${RUNNER_TEMP}/result.json"
+              jq -e '
+                .status == "PASS" and .action == "OWNER_ROLLED_BACK_ONCE" and
+                .durable_nonreplay_begin == true and .failed_binary_retained == true and
+                .runner_mutations == 0 and .container_mutations == 0 and
+                .credential_mutations == 0 and .reboot_mutations == 0
+              ' "${RUNNER_TEMP}/result.json" >/dev/null
+              release_host_access "${spec}" "${machine}" "owner-rollback"
               trap - EXIT
               ;;
             action-plan)
