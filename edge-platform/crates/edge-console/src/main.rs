@@ -2937,6 +2937,51 @@ fn offline_activate_privileged_release_with_installer(
     ))
 }
 
+#[cfg(windows)]
+fn require_offline_bootstrap_installer_archive_identity(
+    verified_zip: &Path,
+    candidate_installer: &Path,
+) -> Result<(), String> {
+    // The target binary and ZIP have already passed verify-windows. The
+    // installer must ALSO be the exact script in that verified ZIP: otherwise
+    // a staged local file could execute arbitrary mutations before SCM hold.
+    // This is read-only and runs before the durable one-shot BEGIN.
+    let verify_script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+$archive = [IO.Compression.ZipFile]::OpenRead($env:EDGE_BOOTSTRAP_VERIFIED_ZIP)
+try {
+    $entries = @($archive.Entries | Where-Object {
+        [string]$_.FullName.Replace('\','/') -ceq 'bootstrap/install-windows-release.ps1'
+    })
+    if ($entries.Count -ne 1) { throw 'ambiguous exact bootstrap installer entry' }
+    $stream = $entries[0].Open()
+    try {
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $expected = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-','') }
+        finally { $hasher.Dispose() }
+    } finally { $stream.Dispose() }
+} finally { $archive.Dispose() }
+$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:EDGE_BOOTSTRAP_TARGET_INSTALLER).Hash
+if ($actual -cne $expected) { throw 'candidate installer hash differs from verified ZIP' }
+"#;
+    let exit = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", verify_script])
+        .env("EDGE_BOOTSTRAP_VERIFIED_ZIP", verified_zip)
+        .env("EDGE_BOOTSTRAP_TARGET_INSTALLER", candidate_installer)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: archive proof cannot run: {err}"))?;
+    if !exit.success() {
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: exact ZIP-to-installer SHA256 proof failed".to_owned(),
+        );
+    }
+    Ok(())
+}
+
 fn offline_bootstrap_identifiers_valid(revision: &str, digest: &str) -> bool {
     revision.len() == 40
         && digest.len() == 64
@@ -3036,6 +3081,10 @@ fn offline_bootstrap_privileged_release(
             "OFFLINE_BOOTSTRAP_BLOCKED: target ReleaseSet or binary verification failed".to_owned(),
         );
     }
+    require_offline_bootstrap_installer_archive_identity(
+        &candidate.join("edge-platform-windows.zip"),
+        &stage_installer,
+    )?;
 
     // Only an elevated local Windows admin can open CHANGE_CONFIG on this
     // SCM owner. Prove permission before creating the non-replayable intent.
@@ -3087,6 +3136,11 @@ fn offline_bootstrap_privileged_release(
         ));
     }
     require_offline_windows_owner(install_root, &before)?;
+
+    require_offline_bootstrap_installer_archive_identity(
+        &candidate.join("edge-platform-windows.zip"),
+        &stage_installer,
+    )?;
 
     // Create exactly one durable BEGIN before the first SCM mutation.
     // Never replay after a lost result, even if the old release was restored.
@@ -5046,6 +5100,17 @@ mod tests {
         );
         assert_eq!(fs::read(&current).unwrap(), b"torn-current");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_bootstrap_installer_proof_is_independent_of_cli_and_never_mutates_authority() {
+        // An offline bootstrap must verify the staged script before any
+        // SCM/pointer mutation; source-level invariant complements Windows CI.
+        let text = include_str!("main.rs");
+        let entry = text.split("fn offline_bootstrap_privileged_release(").nth(1).unwrap();
+        let pre_mutation = entry.split("offline-bootstrap-intent-v1").next().unwrap();
+        assert!(pre_mutation.contains("require_offline_bootstrap_installer_archive_identity("));
+        assert!(text.contains("candidate installer hash differs from verified ZIP"));
     }
 
     #[test]
