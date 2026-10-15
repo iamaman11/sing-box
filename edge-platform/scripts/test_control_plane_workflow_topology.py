@@ -103,6 +103,8 @@ def main() -> None:
         and 'fn read_bounded_windows_credential_cursor(' in windows_console
         and 'credential_cursor=ABSENT' in windows_console
         and 'credential_cursor=VALID;credential_active_present=' in windows_console
+        and 'credential_candidate_slot={slot}' in windows_console
+        and "';credential_candidate_slot=' + $Slot" in windows_first_use_stage
         and 'CredentialStore::open_existing(' in windows_console
         and 'privileged-stage-credential' in windows_first_use_stage
         and 'privileged-runtime-evidence' in windows_first_use_stage
