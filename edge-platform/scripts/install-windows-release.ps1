@@ -359,6 +359,9 @@ function Activate-ReleaseAuthority {
 if (($StageOnly -or $BootstrapNow) -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0 -or ($StageOnly -and $BootstrapNow))) {
     throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
 }
+if (($StageOnly -or $BootstrapNow) -and $Repository -cne 'iamaman11/sing-box') {
+    throw 'OFFLINE_BOOTSTRAP_BLOCKED: only canonical protected GitHub repository is allowed'
+}
 Assert-OfflineWindow
 
 $binDir = Join-Path $InstallRoot "bin"
@@ -507,6 +510,18 @@ if ($StageOnly -or $BootstrapNow) {
         [string]$old['managed_tun_present'] -cne 'false') {
         throw 'OFFLINE_BOOTSTRAP_BLOCKED: exact stopped former ManagedTun owner required'
     }
+    # Re-observe the ONLY existing SYSTEM/Highest dispatcher before calling
+    # the native one-shot owner. Never retarget an unrelated task.
+    $dispatch = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+    if ($null -eq $dispatch -or
+        [string]$dispatch.State -cne 'Ready' -or
+        [string]$dispatch.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+        [string]$dispatch.Principal.RunLevel -cne 'Highest' -or
+        @($dispatch.Actions).Count -ne 1 -or
+        [string]@($dispatch.Actions)[0].Execute.Trim('"') -cne [string]$old['console_path']) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: old exact SYSTEM task not proven'
+    }
+    Write-Output 'offline_bootstrap_task=EXACT_SYSTEM_OWNER'
     Write-Output 'offline_bootstrap_candidate=VERIFIED_STAGE_ONLY'
     Write-Output "offline_bootstrap_console=$console"
     if ($BootstrapNow) {
