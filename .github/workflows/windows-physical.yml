@@ -407,7 +407,7 @@ jobs:
                 [string]$v['scm_service_name'] -cne 'EdgePlatformController' -or
                 [string]$v['release_set_sha256'] -notmatch '^[0-9a-f]{64}$' -or
                 [string]$v['windows_datapath_mode'] -notin @('ManagedTun','ProxyOnly') -or
-                [string]$v['scm_start_type'] -notin @('AutoStart','Manual','Disabled')) {
+                [string]$v['scm_start_type'] -notin @('AutoStart','OnDemand','Disabled')) {
               throw 'READ_ONLY_DIAGNOSE_BLOCKED: exact release/SCM/mode incomplete'
             }
             $cleanStopped = (
